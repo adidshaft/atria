@@ -2902,7 +2902,8 @@ struct AtriaHomeView: View {
     private var debugWorkoutReviewHoldState: WorkoutReviewHoldState? { nil }
     #endif
 
-    private func endWorkoutSession(startedAt: Date) {
+    @discardableResult
+    private func endWorkoutSession(startedAt: Date) -> Bool {
         endWorkoutSession(startedAt: startedAt,
                           endedAt: Date(),
                           activityType: workoutSession?.activityType ?? .other,
@@ -2910,11 +2911,12 @@ struct AtriaHomeView: View {
                           excludedIntervals: [])
     }
 
+    @discardableResult
     private func endWorkoutSession(startedAt: Date,
                                    endedAt: Date = Date(),
                                    activityType: AtriaWorkoutActivityType,
                                    strengthSets: [LoggedSet],
-                                   excludedIntervals: [ExcludedInterval]) {
+                                   excludedIntervals: [ExcludedInterval]) -> Bool {
         let label = "Live workout"
         let stepEvidence = completedWorkoutStepEvidence(session: workoutSession, now: endedAt)
         let finalIntent = AtriaPendingWorkoutIntent(
@@ -2943,7 +2945,11 @@ struct AtriaHomeView: View {
         // terminal pause below. This preserves the established lifecycle
         // checkpoint contract while making the completed record authoritative.
         persistPendingWorkoutProgress(endedAt: endedAt)
-        finalIntent.save()
+        guard finalIntent.save() else {
+            AtriaDebugLog("ATRIADBG live_workout_end status=terminal_intent_save_failed started_unix=%d",
+                          Int(startedAt.timeIntervalSince1970.rounded()))
+            return false
+        }
         // Give the tap immediate visual acknowledgement. The durable pending
         // intent above remains the crash-recovery authority while the ordered
         // route/session/workout writes finish just after the dismissal frame.
@@ -3057,6 +3063,7 @@ struct AtriaHomeView: View {
               confirmed == nil ? 0 : 1,
               Int(startedAt.timeIntervalSince1970.rounded()))
         }
+        return true
     }
 
     private func workoutShareSnapshot(for workout: UserConfirmedWorkout,

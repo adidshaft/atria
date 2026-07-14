@@ -90,209 +90,342 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), "A future checkpoint clock must not suppress writes indefinitely")
     }
 
-    func testDisconnectStormSuppressionRecoversOnlyAfterStableFreshHRAndCooldown() {
-        XCTAssertTrue(AtriaBLEManager.shouldBeginProtectedR10PassiveReprobe(
-            streamSuppressed: true,
-            reprobePending: false,
-            connected: true,
-            stableHRDuration: 120,
-            latestHRAge: 1,
-            disconnectStormAge: 1_800,
-            lastAttemptAge: nil,
-            failureCount: 0
-        ))
-        XCTAssertFalse(AtriaBLEManager.shouldBeginProtectedR10PassiveReprobe(
-            streamSuppressed: true,
-            reprobePending: false,
-            connected: true,
-            stableHRDuration: 119.9,
-            latestHRAge: 1,
-            disconnectStormAge: 1_800,
-            lastAttemptAge: nil,
-            failureCount: 0
-        ))
-        XCTAssertFalse(AtriaBLEManager.shouldBeginProtectedR10PassiveReprobe(
-            streamSuppressed: true,
-            reprobePending: false,
-            connected: true,
-            stableHRDuration: 500,
-            latestHRAge: 10.1,
-            disconnectStormAge: 5_000,
-            lastAttemptAge: nil,
-            failureCount: 0
-        ), "cached UI state must not reopen stream 5 without current 2A37 truth")
-        XCTAssertFalse(AtriaBLEManager.shouldBeginProtectedR10PassiveReprobe(
-            streamSuppressed: true,
-            reprobePending: true,
-            connected: true,
-            stableHRDuration: 500,
-            latestHRAge: 0,
-            disconnectStormAge: 5_000,
-            lastAttemptAge: nil,
-            failureCount: 0
-        ), "only one passive probe may own the link")
-        XCTAssertFalse(AtriaBLEManager.shouldBeginProtectedR10PassiveReprobe(
-            streamSuppressed: true,
-            reprobePending: false,
-            connected: true,
-            stableHRDuration: 500,
-            latestHRAge: 0,
-            disconnectStormAge: 5_000,
-            lastAttemptAge: nil,
-            failureCount: 0,
-            batteryLevel: 13,
-            isCharging: false
-        ), "a passive recovery must not knowingly destabilize low-battery HR")
-    }
-
-    func testFailedPassiveReprobeRetriesOnlyAfterExponentialCooldown() {
-        XCTAssertFalse(AtriaBLEManager.shouldBeginProtectedR10PassiveReprobe(
-            streamSuppressed: true,
-            reprobePending: false,
-            connected: true,
-            stableHRDuration: 500,
-            latestHRAge: 0,
-            disconnectStormAge: 20_000,
-            lastAttemptAge: 3_599,
-            failureCount: 1,
-            initialCooldown: 1_800
-        ), "a failed passive probe must not become a recurring disconnect timer")
-        XCTAssertTrue(AtriaBLEManager.shouldBeginProtectedR10PassiveReprobe(
-            streamSuppressed: true,
-            reprobePending: false,
-            connected: true,
-            stableHRDuration: 500,
-            latestHRAge: 0,
-            disconnectStormAge: 20_000,
-            lastAttemptAge: 3_600,
-            failureCount: 1,
-            initialCooldown: 1_800
-        ), "a historical failure must not freeze strap steps forever")
-        XCTAssertTrue(AtriaBLEManager.shouldBeginProtectedR10PassiveReprobe(
-            streamSuppressed: true,
-            reprobePending: false,
-            connected: true,
-            stableHRDuration: 500,
-            latestHRAge: 0,
-            disconnectStormAge: 20_000,
-            lastAttemptAge: nil,
-            failureCount: 0
-        ))
-    }
-
-    func testPassiveRetryMigrationClearsOnlyObsoleteRetryHistoryOnce() throws {
-        let suite = "AtriaBLERecoveryCadenceTests.passiveRetryMigration.\(UUID().uuidString)"
+    func testCleanOwnerV7MigrationCutsSuppressedUsersToFreshProtectedV7Once() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.cleanOwnerV7.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set(true, forKey: "atria.protectedR10.streamSuppressed")
         defaults.set(3, forKey: "atria.protectedR10.passiveReprobeFailureCount")
         defaults.set(123.0, forKey: "atria.protectedR10.passiveReprobeAttemptAt")
+        defaults.set(true, forKey: "atria.protectedR10.passiveReprobePending")
+        defaults.set(true, forKey: "atria.protectedR10.passiveRetryMigrationV4")
 
-        XCTAssertTrue(AtriaBLEManager.migrateProtectedR10PassiveRetryIfNeeded(defaults: defaults))
-        XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.streamSuppressed"),
-                      "migration must retain the disconnect-storm safety fuse")
+        XCTAssertEqual(
+            AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(defaults: defaults),
+            .migratedToProtectedV7
+        )
+        XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwner"),
+                       "protected_v7")
+        XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwnerState"),
+                       "protected_launch_pending")
+        XCTAssertFalse(defaults.bool(forKey: "atria.protectedR10.streamSuppressed"))
+        XCTAssertFalse(defaults.bool(forKey: "atria.protectedR10.rollback"))
+        XCTAssertFalse(defaults.bool(forKey: "atria.protectedR10.cleanOwnerConnectionCutoverV7"))
         XCTAssertEqual(defaults.integer(forKey: "atria.protectedR10.passiveReprobeFailureCount"), 0)
         XCTAssertNil(defaults.object(forKey: "atria.protectedR10.passiveReprobeAttemptAt"))
+        XCTAssertFalse(defaults.bool(forKey: "atria.protectedR10.passiveReprobePending"))
 
         defaults.set(2, forKey: "atria.protectedR10.passiveReprobeFailureCount")
-        XCTAssertFalse(AtriaBLEManager.migrateProtectedR10PassiveRetryIfNeeded(defaults: defaults))
+        XCTAssertEqual(AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(defaults: defaults),
+                       .none)
         XCTAssertEqual(defaults.integer(forKey: "atria.protectedR10.passiveReprobeFailureCount"), 2,
-                       "a later real failure must retain its exponential cooldown")
+                       "the one-time launch migration must not erase later proof failures")
     }
 
-    func testPassiveReprobeShortDisconnectImmediatelyRestoresFuse() {
-        XCTAssertTrue(AtriaBLEManager.shouldAbortProtectedR10PassiveReprobeForDisconnect(
-            reprobePending: true,
-            userRequestedDisconnect: false,
-            atriaOwnedOfflineSyncDisconnect: false,
-            reprobeDuration: 5
-        ))
-        XCTAssertFalse(AtriaBLEManager.shouldAbortProtectedR10PassiveReprobeForDisconnect(
-            reprobePending: true,
-            userRequestedDisconnect: true,
-            atriaOwnedOfflineSyncDisconnect: false,
-            reprobeDuration: 5
-        ))
-        XCTAssertFalse(AtriaBLEManager.shouldAbortProtectedR10PassiveReprobeForDisconnect(
-            reprobePending: true,
-            userRequestedDisconnect: false,
-            atriaOwnedOfflineSyncDisconnect: true,
-            reprobeDuration: 5
-        ))
-        XCTAssertTrue(AtriaBLEManager.shouldAbortProtectedR10PassiveReprobeForDisconnect(
-            reprobePending: true,
-            userRequestedDisconnect: false,
-            atriaOwnedOfflineSyncDisconnect: false,
-            reprobeDuration: 91
-        ), "every disconnect before passive qualification must restore the fuse")
-        XCTAssertTrue(AtriaBLEManager.shouldAbortProtectedR10PassiveReprobeForDisconnect(
-            reprobePending: true,
-            userRequestedDisconnect: false,
-            atriaOwnedOfflineSyncDisconnect: false,
-            reprobeDuration: 100
-        ))
-        XCTAssertTrue(AtriaBLEManager.shouldAbortProtectedR10PassiveReprobeForDisconnect(
-            reprobePending: true,
-            userRequestedDisconnect: false,
-            atriaOwnedOfflineSyncDisconnect: false,
-            reprobeDuration: nil
-        ), "a restored pending probe without an attempt epoch must fail safe")
+    func testCleanOwnerV7RetriesThePrematureV6PureHRFallbackOnAFreshOwner() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.cleanOwnerV7Retry.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "atria.protectedR10.cleanOwnerMigrationV6")
+        defaults.set("pure_hr_v8", forKey: "atria.protectedR10.cleanOwner")
+        defaults.set("fallback_pending", forKey: "atria.protectedR10.cleanOwnerState")
+        defaults.set("clean_owner_stream5_notification_lost",
+                     forKey: "atria.protectedR10.cleanOwnerFailureReason")
+        defaults.set(true, forKey: "atria.protectedR10.streamSuppressed")
+
+        XCTAssertEqual(AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(defaults: defaults),
+                       .migratedToProtectedV7)
+        XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwner"),
+                       "protected_v7")
+        XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwnerState"),
+                       "protected_launch_pending")
+        XCTAssertFalse(defaults.bool(forKey: "atria.protectedR10.streamSuppressed"))
+        XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.cleanOwnerMigrationV7"))
     }
 
-    func testPassiveReprobeNoFrameWindowExpiresBoundedly() {
-        XCTAssertFalse(AtriaBLEManager.protectedR10PassiveReprobeHasExpired(
-            reprobePending: false,
+    func testCleanOwnerMigrationLeavesUnsuppressedLegacyOwnerUnchanged() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.cleanOwnerLegacy.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(false, forKey: "atria.protectedR10.streamSuppressed")
+
+        XCTAssertEqual(AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(defaults: defaults),
+                       .none)
+        XCTAssertNil(defaults.string(forKey: "atria.protectedR10.cleanOwner"))
+        XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.cleanOwnerMigrationV7"))
+    }
+
+    func testCleanOwnerFallbackActivatesPureHRV8OnlyAtNextProcessLaunch() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.cleanOwnerFallback.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "atria.protectedR10.cleanOwnerMigrationV7")
+        defaults.set("pure_hr_v8", forKey: "atria.protectedR10.cleanOwner")
+        defaults.set("fallback_pending", forKey: "atria.protectedR10.cleanOwnerState")
+        defaults.set(false, forKey: "atria.protectedR10.streamSuppressed")
+
+        XCTAssertEqual(AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(defaults: defaults),
+                       .activatedPureHRV8Fallback)
+        XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwnerState"),
+                       "fallback_active")
+        XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.streamSuppressed"))
+        XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.rollback"))
+    }
+
+    func testInterruptedV7ProofRestartsPassiveEpochWithoutBreakingCommandLease() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.cleanOwnerResume.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "atria.protectedR10.cleanOwnerMigrationV7")
+        defaults.set("protected_v7", forKey: "atria.protectedR10.cleanOwner")
+        defaults.set("proving", forKey: "atria.protectedR10.cleanOwnerState")
+        defaults.set(123.0, forKey: "atria.protectedR10.cleanOwnerProofStartedAt")
+        defaults.set(456.0, forKey: "atria.protectedR10.activationSentAt")
+
+        XCTAssertEqual(AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(defaults: defaults),
+                       .resumedProtectedV7Proof)
+        XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwnerState"),
+                       "protected_launch_pending")
+        XCTAssertNil(defaults.object(forKey: "atria.protectedR10.cleanOwnerProofStartedAt"))
+        XCTAssertEqual(defaults.double(forKey: "atria.protectedR10.activationSentAt"), 456,
+                       "process recovery must preserve the persisted 3F01 lease")
+    }
+
+    func testCleanOwnerNamespacePolicyIsExplicitAndNeverReusesContaminatedOwner() {
+        XCTAssertEqual(AtriaBLEManager.protectedR10CentralRestoreIdentifier(
+            diagnosticRestoreIdentifier: "diagnostic-owner",
+            cleanOwner: .protectedV7,
+            streamSuppressed: false
+        ), "diagnostic-owner")
+        XCTAssertEqual(AtriaBLEManager.protectedR10CentralRestoreIdentifier(
+            diagnosticRestoreIdentifier: nil,
+            cleanOwner: .protectedV7,
+            streamSuppressed: false
+        ), "com.adidshaft.atria.ble-central-v7-protected")
+        XCTAssertEqual(AtriaBLEManager.protectedR10CentralRestoreIdentifier(
+            diagnosticRestoreIdentifier: nil,
+            cleanOwner: .pureHRV8,
+            streamSuppressed: true
+        ), "com.adidshaft.atria.ble-central-v8-pure-hr")
+        XCTAssertEqual(AtriaBLEManager.protectedR10CentralRestoreIdentifier(
+            diagnosticRestoreIdentifier: nil,
+            cleanOwner: .legacy,
+            streamSuppressed: true
+        ), "com.adidshaft.atria.ble-central-v6-pure-hr")
+    }
+
+    func testCleanOwnerFencesAutomaticHistoryAcrossDisconnectAndFallback() {
+        for owner in [AtriaBLEManager.ProtectedR10CleanOwner.protectedV7, .pureHRV8] {
+            for state in [AtriaBLEManager.ProtectedR10CleanOwnerState.protectedLaunchPending,
+                          .proving, .qualified, .fallbackPending, .fallbackActive] {
+                XCTAssertTrue(AtriaBLEManager.shouldDeferAutomaticHistoryForCleanOwner(
+                    cleanOwner: owner,
+                    state: state,
+                    explicitUserRequest: false
+                ))
+                XCTAssertFalse(AtriaBLEManager.shouldDeferAutomaticHistoryForCleanOwner(
+                    cleanOwner: owner,
+                    state: state,
+                    explicitUserRequest: true
+                ))
+            }
+        }
+        XCTAssertFalse(AtriaBLEManager.shouldDeferAutomaticHistoryForCleanOwner(
+            cleanOwner: .legacy,
+            state: .none,
+            explicitUserRequest: false
+        ))
+    }
+
+    func testCleanOwnerProofWindowExpiresBoundedly() {
+        XCTAssertFalse(AtriaBLEManager.protectedR10CleanOwnerProofHasExpired(
+            proofActive: false,
             attemptAge: 10_000
         ))
-        XCTAssertFalse(AtriaBLEManager.protectedR10PassiveReprobeHasExpired(
-            reprobePending: true,
+        XCTAssertFalse(AtriaBLEManager.protectedR10CleanOwnerProofHasExpired(
+            proofActive: true,
             attemptAge: 119.9
         ))
-        XCTAssertTrue(AtriaBLEManager.protectedR10PassiveReprobeHasExpired(
-            reprobePending: true,
+        XCTAssertFalse(AtriaBLEManager.protectedR10CleanOwnerProofHasExpired(
+            proofActive: true,
             attemptAge: 120
         ))
-        XCTAssertTrue(AtriaBLEManager.protectedR10PassiveReprobeHasExpired(
-            reprobePending: true,
+        XCTAssertTrue(AtriaBLEManager.protectedR10CleanOwnerProofHasExpired(
+            proofActive: true,
+            attemptAge: 150
+        ))
+        XCTAssertTrue(AtriaBLEManager.protectedR10CleanOwnerProofHasExpired(
+            proofActive: true,
             attemptAge: nil
-        ), "persisted pending state without its epoch must be re-isolated at launch")
-        XCTAssertTrue(AtriaBLEManager.protectedR10PassiveReprobeHasExpired(
-            reprobePending: true,
+        ))
+        XCTAssertTrue(AtriaBLEManager.protectedR10CleanOwnerProofHasExpired(
+            proofActive: true,
             attemptAge: -1
         ), "a future/corrupt attempt epoch must fail closed")
     }
 
-    func testPassiveReprobeKeepsCommandRollbackLatchedAndUsesExistingLink() throws {
+    func testCleanOwnerRuntimeNeverTogglesStream5OrStartsHistoryOnProofFailure() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let source = try String(contentsOf: testsDirectory
             .deletingLastPathComponent()
             .appendingPathComponent("Atria/AtriaBLEManager.swift"), encoding: .utf8)
         let start = try XCTUnwrap(source.range(
-            of: "private func beginProtectedR10PassiveReprobeIfEligible"
+            of: "private func beginProtectedR10CleanOwnerProofIfNeeded"
         ))
         let end = try XCTUnwrap(source.range(
-            of: "/// CoreBluetooth restoration",
+            of: "/// Stream 5 may be subscribed exactly once",
             range: start.upperBound..<source.endIndex
         ))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(body.contains("forKey: Self.protectedR10RollbackKey"))
-        XCTAssertTrue(body.contains("peripheral.discoverServices([Self.UUIDs.strapService])"))
-        XCTAssertFalse(body.contains("central.cancelPeripheralConnection"))
-        XCTAssertFalse(body.contains("sendProtectedR10Activation"))
-        XCTAssertFalse(body.contains("sendR10R11Realtime"))
+        XCTAssertFalse(body.contains("setNotifyValue"))
+        XCTAssertFalse(body.contains("discoverServices"))
+        XCTAssertFalse(body.contains("discoverCharacteristics"))
+        XCTAssertFalse(body.contains("cancelPeripheralConnection"))
+        XCTAssertFalse(body.contains("startOfflineHistoricalSync"))
+        XCTAssertTrue(source.contains("sendProtectedR10ActivationIfReady"))
+        XCTAssertTrue(source.contains("ProtectedR10RecoveryDecision"))
+        XCTAssertTrue(source.contains("sendSingleLeasedActivation"))
+        XCTAssertFalse(source.contains("beginProtectedR10PassiveReprobeIfEligible"))
+        XCTAssertFalse(source.contains("resuppressProtectedR10Recovery"))
+        XCTAssertTrue(source.contains("action=keep_current_link_untouched_select_v8_next_process_no_history"))
+        XCTAssertTrue(body.contains("protectedR10CleanOwnerState == .protectedLaunchPending"))
+        XCTAssertTrue(body.contains("strapStream5NotifyConfirmed"))
+        XCTAssertTrue(body.contains("forKey: Self.protectedR10CleanOwnerProofStartedAtKey"))
 
-        let timeoutStart = try XCTUnwrap(source.range(
-            of: "private func expireProtectedR10PassiveReprobeIfNeeded"
+        let repairStart = try XCTUnwrap(source.range(
+            of: "private func reassertR10NotificationIfConnected"
         ))
-        let timeoutEnd = try XCTUnwrap(source.range(
-            of: "/// CoreBluetooth restoration",
-            range: timeoutStart.upperBound..<source.endIndex
+        let firstServiceLookup = try XCTUnwrap(source.range(
+            of: "guard let strapService",
+            range: repairStart.upperBound..<source.endIndex
         ))
-        let timeoutBody = String(source[timeoutStart.lowerBound..<timeoutEnd.lowerBound])
-        XCTAssertTrue(timeoutBody.contains("peripheral.setNotifyValue(false, for: stream5)"))
-        XCTAssertFalse(timeoutBody.contains("central.cancelPeripheralConnection"))
-        XCTAssertFalse(timeoutBody.contains("sendR10R11Realtime"))
+        let protectedRepairGate = String(source[repairStart.lowerBound..<firstServiceLookup.lowerBound])
+        XCTAssertTrue(protectedRepairGate.contains("if standardHROnlyMode"))
+        XCTAssertTrue(protectedRepairGate.contains("return"))
+        XCTAssertFalse(protectedRepairGate.contains("setNotifyValue"))
+        XCTAssertFalse(protectedRepairGate.contains("discoverServices"))
+        XCTAssertFalse(protectedRepairGate.contains("persistProtectedR10CleanOwnerFallback"))
+        XCTAssertTrue(source.contains("persistProtectedR10FallbackForStream5Callback"))
+        XCTAssertTrue(source.contains("clean_owner_stream5_notification_error"))
+        XCTAssertTrue(source.contains("clean_owner_stream5_notification_inactive"))
+
+        let cutoverStart = try XCTUnwrap(source.range(
+            of: "private func beginProtectedR10LaunchConnectionCutoverIfNeeded"
+        ))
+        let cutoverEnd = try XCTUnwrap(source.range(
+            of: "/// Explicit user action",
+            range: cutoverStart.upperBound..<source.endIndex
+        ))
+        let cutoverBody = String(source[cutoverStart.lowerBound..<cutoverEnd.lowerBound])
+        XCTAssertTrue(cutoverBody.contains("protectedR10CleanOwnerState == .protectedLaunchPending"))
+        XCTAssertTrue(cutoverBody.contains("protectedR10CleanOwnerConnectionCutoverKey"))
+        XCTAssertTrue(cutoverBody.contains("central.cancelPeripheralConnection(peripheral)"))
+        XCTAssertFalse(cutoverBody.contains("startOfflineHistoricalSync"))
+        XCTAssertTrue(source.contains("allowCleanOwnerLaunchCutover: true"))
+
+        let protectedDiscoveryStart = try XCTUnwrap(source.range(
+            of: "if discoveryUsesProtectedStandardHR,\n                   !protectedR10StreamSuppressed,\n                   ch.uuid == Self.UUIDs.strapStream5"
+        ))
+        let protectedDiscoveryEnd = try XCTUnwrap(source.range(
+            of: "} else if discoveryUsesProtectedStandardHR, UUIDs.allNotify.contains(ch.uuid)",
+            range: protectedDiscoveryStart.upperBound..<source.endIndex
+        ))
+        let protectedDiscovery = String(source[
+            protectedDiscoveryStart.lowerBound..<protectedDiscoveryEnd.lowerBound
+        ])
+        XCTAssertTrue(protectedDiscovery.contains("protectedStream5NeedingInitialSubscribe = ch"))
+        XCTAssertFalse(protectedDiscovery.contains("setNotifyValue"))
+
+        let restoredStreamStart = try XCTUnwrap(source.range(
+            of: "if let cachedStream5, cachedStream5.properties.contains(.notify)"
+        ))
+        let restoredStreamEnd = try XCTUnwrap(source.range(
+            of: "if let cachedBattery",
+            range: restoredStreamStart.upperBound..<source.endIndex
+        ))
+        let restoredStreamBody = String(source[
+            restoredStreamStart.lowerBound..<restoredStreamEnd.lowerBound
+        ])
+        XCTAssertTrue(restoredStreamBody.contains("requestProtectedR10InitialProfileNotificationIfAllowed"))
+        XCTAssertFalse(restoredStreamBody.contains("setNotifyValue"))
+    }
+
+    func testProtectedR10RecoveryDecisionIsPassiveFirstAndLeaseBounded() {
+        typealias Decision = AtriaBLEManager.ProtectedR10RecoveryDecision
+        func decide(age: TimeInterval = 20,
+                    lease: TimeInterval = 0,
+                    hrAge: TimeInterval? = 1,
+                    battery: Int = 50,
+                    notifying: Bool = true) -> Decision {
+            AtriaBLEManager.protectedR10RecoveryDecision(
+                pending: true,
+                connected: true,
+                stream5Notifying: notifying,
+                activationSent: false,
+                passiveObservationAge: age,
+                activationAge: nil,
+                activationLeaseRemaining: lease,
+                stableHRDuration: 180,
+                latestHRAge: hrAge,
+                batteryLevel: battery,
+                isCharging: false,
+                frames: 0,
+                lastFrameAge: nil
+            )
+        }
+
+        XCTAssertEqual(decide(age: 19.9), .observePassive)
+        XCTAssertEqual(decide(lease: 1), .observePassive)
+        XCTAssertEqual(decide(hrAge: 10.1), .observePassive)
+        XCTAssertEqual(decide(battery: 10), .observePassive)
+        XCTAssertEqual(decide(notifying: false), .observePassive)
+        XCTAssertEqual(decide(), .sendSingleLeasedActivation)
+    }
+
+    func testProtectedR10RecoveryDecisionRequiresDenseFreshProofOrResuppresses() {
+        func decide(connected: Bool = true,
+                    activationAge: TimeInterval? = 90,
+                    frames: Int,
+                    lastFrameAge: TimeInterval?) -> AtriaBLEManager.ProtectedR10RecoveryDecision {
+            AtriaBLEManager.protectedR10RecoveryDecision(
+                pending: true,
+                connected: connected,
+                stream5Notifying: true,
+                activationSent: true,
+                passiveObservationAge: 110,
+                activationAge: activationAge,
+                activationLeaseRemaining: 0,
+                stableHRDuration: 300,
+                latestHRAge: 1,
+                batteryLevel: 50,
+                isCharging: false,
+                frames: frames,
+                lastFrameAge: lastFrameAge
+            )
+        }
+
+        XCTAssertEqual(decide(connected: false, frames: 0, lastFrameAge: nil), .resuppress)
+        XCTAssertEqual(decide(activationAge: 19.9, frames: 0, lastFrameAge: nil), .awaitDensityProof)
+        XCTAssertEqual(decide(activationAge: 20, frames: 0, lastFrameAge: nil), .resuppress)
+        XCTAssertEqual(decide(frames: 74, lastFrameAge: 1), .resuppress)
+        XCTAssertEqual(decide(frames: 75, lastFrameAge: 5.1), .resuppress)
+        XCTAssertEqual(decide(frames: 75, lastFrameAge: 5), .qualify)
+        XCTAssertEqual(AtriaBLEManager.protectedR10RecoveryDecision(
+            pending: false,
+            connected: true,
+            stream5Notifying: true,
+            activationSent: false,
+            passiveObservationAge: 20,
+            activationAge: nil,
+            activationLeaseRemaining: 0,
+            stableHRDuration: 300,
+            latestHRAge: 1,
+            batteryLevel: 50,
+            isCharging: false,
+            frames: 0,
+            lastFrameAge: nil
+        ), .none)
     }
 
     func testProductionBatteryProbeRemainsDisabledUntilItPreservesR10() {

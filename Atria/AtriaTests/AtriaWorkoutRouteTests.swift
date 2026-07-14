@@ -24,7 +24,7 @@ final class AtriaWorkoutRouteTests: XCTestCase {
 
         XCTAssertTrue(main.contains("if activityType.supportsRouteRecording"))
         XCTAssertTrue(route.contains("AtriaLiveWorkoutRouteCard(routeRecorder: routeRecorder)"))
-        XCTAssertTrue(route.contains("AtriaLiveWorkoutRouteMetricsHUD(pulseStore: pulseStore,"))
+        XCTAssertTrue(route.contains("AtriaLiveWorkoutRouteMetricsHost(metricStore: metricStore,"))
         XCTAssertTrue(route.contains("routeWorkoutActions"))
         XCTAssertTrue(route.contains("Spacer(minLength: 24)"),
                       "The map must own the available center of the route screen")
@@ -37,7 +37,7 @@ final class AtriaWorkoutRouteTests: XCTestCase {
 
         XCTAssertTrue(standard.contains("ScrollView(showsIndicators: false)"))
         XCTAssertTrue(standard.contains("AtriaLiveWorkoutHeartBlock(pulseStore: pulseStore,"))
-        XCTAssertTrue(standard.contains("AtriaLiveWorkoutStrainGuidance(metricProjection: metricProjection,"))
+        XCTAssertTrue(standard.contains("AtriaLiveWorkoutStrainGuidanceHost(metricStore: metricStore,"))
         XCTAssertTrue(standard.contains("workoutActionsCard"))
         XCTAssertTrue(standard.contains("stopButton"),
                       "Strength and non-route workout behavior must remain intact")
@@ -84,6 +84,8 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         XCTAssertTrue(liveSource.contains("@ObservedObject var routeRecorder: AtriaWorkoutRouteRecorder"))
         XCTAssertTrue(mainView.contains("let routeRecorder: AtriaWorkoutRouteRecorder"))
         XCTAssertFalse(mainView.contains("@ObservedObject var routeRecorder"))
+        XCTAssertTrue(mainView.contains("let metricStore: AtriaLiveWorkoutMetricStore"))
+        XCTAssertFalse(mainView.contains("@ObservedObject var metricStore"))
         XCTAssertTrue(homeSource.contains("let workoutRouteRecorder: AtriaWorkoutRouteRecorder"),
                       "Home must hold the root-owned recorder without observing its GPS publishes")
         XCTAssertFalse(homeSource.contains("@ObservedObject var workoutRouteRecorder"))
@@ -121,8 +123,8 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         let main = String(source[mainStart.lowerBound..<mainEnd.lowerBound])
 
         XCTAssertTrue(main.contains("AtriaLiveWorkoutHeartBlock(pulseStore: pulseStore,"))
-        XCTAssertTrue(main.contains("metricProjection: metricProjection"))
-        XCTAssertTrue(main.contains("AtriaLiveWorkoutStrainGuidance(metricProjection: metricProjection,"))
+        XCTAssertTrue(main.contains("AtriaLiveWorkoutRouteMetricsHost(metricStore: metricStore,"))
+        XCTAssertTrue(main.contains("AtriaLiveWorkoutStrainGuidanceHost(metricStore: metricStore,"))
         XCTAssertFalse(main.contains("AtriaLiveWorkoutZoneCard("))
         XCTAssertFalse(main.contains("AtriaLiveWorkoutStatsRow("))
 

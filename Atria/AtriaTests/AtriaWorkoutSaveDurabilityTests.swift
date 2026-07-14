@@ -273,6 +273,57 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertTrue(source.contains("saved and ready to share."))
     }
 
+    func testTerminalIntentFailureKeepsWorkoutOpenAndOffersRetry() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
+        let home = try String(contentsOf: appDirectory.appendingPathComponent("AtriaHomeView.swift"),
+                              encoding: .utf8)
+        let live = try String(contentsOf: appDirectory.appendingPathComponent("AtriaLiveWorkoutView.swift"),
+                              encoding: .utf8)
+        let start = try XCTUnwrap(home.range(of: "private func endWorkoutSession(startedAt: Date,"))
+        let end = try XCTUnwrap(home.range(of: "private func workoutShareSnapshot(for workout:",
+                                           range: start.upperBound..<home.endIndex))
+        let completion = String(home[start.lowerBound..<end.lowerBound])
+        let persistenceGuard = try XCTUnwrap(completion.range(of: "guard finalIntent.save() else"))
+        let clearActiveWorkout = try XCTUnwrap(completion.range(of: "workoutSession = nil"))
+        let asynchronousCompletion = try XCTUnwrap(completion.range(of: "Task { @MainActor in"))
+
+        XCTAssertTrue(completion.contains("excludedIntervals: [ExcludedInterval]) -> Bool"))
+        XCTAssertLessThan(persistenceGuard.lowerBound, clearActiveWorkout.lowerBound)
+        XCTAssertLessThan(persistenceGuard.lowerBound, asynchronousCompletion.lowerBound)
+        XCTAssertTrue(completion.contains("status=terminal_intent_save_failed"))
+        XCTAssertTrue(completion.contains("return false"))
+        XCTAssertTrue(completion.contains("return true"))
+
+        XCTAssertTrue(live.contains("let onStop: () -> Bool"))
+        XCTAssertTrue(live.contains("if onStop() {\n            dismiss()"),
+                      "A successful terminal save must preserve the existing dismissal flow")
+        XCTAssertTrue(live.contains("showEndPersistenceError = true"))
+        XCTAssertTrue(live.contains(".alert(\"Workout still running\""))
+        XCTAssertTrue(live.contains("Button(\"Try again\", action: endWorkout)"))
+        XCTAssertTrue(live.contains("Button(\"Keep recording\", role: .cancel)"))
+        XCTAssertTrue(live.contains("Atria couldn't save the workout yet. Try ending it again."))
+    }
+
+    func testPendingWorkoutIntentSaveFailsClosedForNonFiniteTerminalState() throws {
+        let suite = "AtriaWorkoutSaveDurabilityTests.intent-failure.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let intent = AtriaPendingWorkoutIntent(
+            startedAt: Date(timeIntervalSince1970: 2_000_000_000),
+            endedAt: Date(timeIntervalSince1970: 2_000_000_060),
+            activityType: AtriaWorkoutActivityType.walking.rawValue,
+            strengthSets: [],
+            excludedIntervals: [],
+            targetStrain: .nan,
+            startingStepCount: 0,
+            startingDayStrain: 0
+        )
+
+        XCTAssertFalse(intent.save(defaults: defaults))
+        XCTAssertNil(AtriaPendingWorkoutIntent.load(defaults: defaults))
+    }
+
     func testExplicitWorkoutKeepsRRJournalDurableWithoutAllDayMode() {
         XCTAssertTrue(AtriaBLEManager.shouldPersistRRJournal(
             longWearEnabled: false,
