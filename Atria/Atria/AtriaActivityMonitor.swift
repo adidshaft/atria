@@ -194,8 +194,12 @@ enum AtriaActivityTimelineLanePacker {
 
 /// Compact, deterministic ticks for the 24-hour Activity timeline. Fixed
 /// six-hour anchors make position immediately readable; the trailing tick is
-/// live for today and the next-midnight boundary for completed days.
+/// live for today and the next-midnight boundary for completed days. A live
+/// label replaces an anchor when they would render too close together, rather
+/// than stacking two labels into the same few points of horizontal space.
 enum AtriaActivityTimelineAxis {
+    private static let minimumLiveTickSeparation: TimeInterval = 2 * 3_600
+
     static func ticks(selectedDay: Date,
                       calendar: Calendar,
                       now: Date = Date()) -> [AtriaActivityTimelineAxisTick] {
@@ -219,6 +223,9 @@ enum AtriaActivityTimelineAxis {
         }
         if calendar.isDate(selectedDay, inSameDayAs: now) {
             let boundedNow = min(max(now, dayStart), dayEnd)
+            ticks.removeAll {
+                abs($0.date.timeIntervalSince(boundedNow)) < minimumLiveTickSeparation
+            }
             ticks.append(AtriaActivityTimelineAxisTick(date: boundedNow,
                                                        label: "Now",
                                                        accessibilityLabel: "Now"))

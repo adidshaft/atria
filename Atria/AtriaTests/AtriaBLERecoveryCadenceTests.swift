@@ -2,6 +2,42 @@ import XCTest
 @testable import Atria
 
 final class AtriaBLERecoveryCadenceTests: XCTestCase {
+    func testAlwaysOnLongWearMigrationRepairsOrphanedDisabledCapture() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.alwaysOn.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: AtriaBLEManager.CaptureDefaults.configured)
+        defaults.set(false, forKey: AtriaBLEManager.LongWearDefaults.enabled)
+        defaults.set(true, forKey: AtriaBLEManager.LongWearDefaults.userSelected)
+
+        XCTAssertTrue(AtriaBLEManager.migrateAlwaysOnLongWearIfNeeded(
+            defaults: defaults,
+            arguments: []
+        ))
+        XCTAssertTrue(defaults.bool(forKey: AtriaBLEManager.LongWearDefaults.enabled))
+        XCTAssertFalse(defaults.bool(forKey: AtriaBLEManager.LongWearDefaults.userSelected))
+        XCTAssertTrue(defaults.bool(forKey: AtriaBLEManager.CaptureDefaults.alwaysOnLongWearMigrated))
+        XCTAssertFalse(AtriaBLEManager.migrateAlwaysOnLongWearIfNeeded(
+            defaults: defaults,
+            arguments: []
+        ), "the migration must be one-shot")
+    }
+
+    func testAlwaysOnLongWearMigrationDoesNotMutateDiagnosticLaunch() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.alwaysOnDiagnostic.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: AtriaBLEManager.CaptureDefaults.configured)
+        defaults.set(false, forKey: AtriaBLEManager.LongWearDefaults.enabled)
+
+        XCTAssertFalse(AtriaBLEManager.migrateAlwaysOnLongWearIfNeeded(
+            defaults: defaults,
+            arguments: ["--atria-full-protocol-mode"]
+        ))
+        XCTAssertFalse(defaults.bool(forKey: AtriaBLEManager.LongWearDefaults.enabled))
+        XCTAssertFalse(defaults.bool(forKey: AtriaBLEManager.CaptureDefaults.alwaysOnLongWearMigrated))
+    }
+
     func testStrapStepCheckpointIsBoundedByCountAndTime() {
         let now = Date(timeIntervalSince1970: 10_000)
 
@@ -2363,6 +2399,50 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 currentNotificationEpochHadRejectedCallback: rejectedEpochCallback,
                 now: now
             ), "a disputed or unadjudicated current-link callback must remain Pending")
+        }
+    }
+
+    func testKeepaliveRetainsReconnectBatteryBaselineUntilProofCanArrive() {
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let acceptedAt = now.addingTimeInterval(-25 * 60)
+        let validationStartedAt = now.addingTimeInterval(-8)
+
+        XCTAssertTrue(AtriaBLEManager.reconnectBatteryBaselineIsAwaitingProof(
+            level: 12,
+            acceptedAt: acceptedAt,
+            source: "live_2A19",
+            displayedIsCached: true,
+            requiresFreshConfirmation: true,
+            linkConnected: true,
+            sameSavedPeripheral: true,
+            validationStartedAt: validationStartedAt,
+            now: now
+        ), "the first keepalive tick must not erase a valid baseline before HR promotion")
+
+        XCTAssertFalse(AtriaBLEManager.reconnectBatteryBaselineIsAwaitingProof(
+            level: 12,
+            acceptedAt: acceptedAt,
+            source: "live_2A19",
+            displayedIsCached: true,
+            requiresFreshConfirmation: true,
+            linkConnected: true,
+            sameSavedPeripheral: true,
+            validationStartedAt: now.addingTimeInterval(-91),
+            now: now
+        ), "a failed reconnect must not retain an undisplayable baseline indefinitely")
+
+        for sentinel in [0, 10, 100] {
+            XCTAssertFalse(AtriaBLEManager.reconnectBatteryBaselineIsAwaitingProof(
+                level: sentinel,
+                acceptedAt: acceptedAt,
+                source: "live_2A19",
+                displayedIsCached: true,
+                requiresFreshConfirmation: true,
+                linkConnected: true,
+                sameSavedPeripheral: true,
+                validationStartedAt: validationStartedAt,
+                now: now
+            ))
         }
     }
 

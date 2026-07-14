@@ -300,6 +300,11 @@ struct AtriaHomeView: View {
     private static let connectionDiagnosisPersistenceDelay: TimeInterval = 15
     private static let strainTargetGuidanceRefreshInterval: TimeInterval = 10 * 60
     private static let strainTargetGuidanceTimer = Timer.publish(every: strainTargetGuidanceRefreshInterval, on: .main, in: .common).autoconnect()
+    /// Motion becomes stale after 15 seconds and HR after six. A dedicated
+    /// active-workout clock lets the foreground HUD cross those truth
+    /// boundaries even when the strap simply stops publishing (there is no
+    /// sensor event at the instant freshness expires).
+    nonisolated static let liveWorkoutFreshnessRefreshInterval: TimeInterval = 3
     private static let liveWidgetSnapshotMinimumInterval: TimeInterval = 45
     private static let liveWidgetSnapshotMeaningfulChangeInterval: TimeInterval = 15
     private static let liveWidgetSnapshotMeaningfulBPMDelta = 4
@@ -755,6 +760,7 @@ struct AtriaHomeView: View {
     @State private var completedWorkoutShareReceipt: AtriaWorkoutShareReceipt?
     @State private var foregroundResumeTask: Task<Void, Never>?
     @State private var pendingWorkoutRecoveryTask: Task<Void, Never>?
+    @State private var liveWorkoutFreshnessTask: Task<Void, Never>?
     // Lifetime owner only. Route publishes are observed by the presented live
     // workout map, not this entire tab shell; using StateObject here made every
     // one-second GPS snapshot invalidate the whole Home hierarchy.
@@ -897,6 +903,7 @@ struct AtriaHomeView: View {
             }
             updateHeartRateBroadcastState(reason: ended ? "workout_end" : "workout_start")
             updateLiveActivity()
+            updateLiveWorkoutFreshnessLoop()
         }
         .onChange(of: aiCoachSettings) { _, settings in
             settings.save()
@@ -2485,6 +2492,22 @@ struct AtriaHomeView: View {
                       workoutHeartRateBroadcastEnabled ? 1 : 0,
                       heartRateBroadcaster.isBroadcasting ? 1 : 0,
                       reason)
+    }
+
+    private func updateLiveWorkoutFreshnessLoop() {
+        liveWorkoutFreshnessTask?.cancel()
+        liveWorkoutFreshnessTask = nil
+        guard workoutSession != nil else { return }
+        liveWorkoutFreshnessTask = Task { @MainActor in
+            while !Task.isCancelled, workoutSession != nil {
+                try? await Task.sleep(for: .seconds(Self.liveWorkoutFreshnessRefreshInterval))
+                guard !Task.isCancelled, workoutSession != nil else { return }
+                // The accumulator is append-only, so a no-sample tick is O(1).
+                // Its purpose is to transition source availability at the
+                // timestamp boundary, not to manufacture new metric values.
+                updateLiveActivity()
+            }
+        }
     }
 
     private func updateLiveActivity(forceActivityWrite: Bool = false) {
@@ -7456,6 +7479,8 @@ final class AtriaHomeModel {
         let restingContext: RestingMetricContext
         let savedTodayTRIMP: Double
         let savedActiveSessionTRIMP: Double
+        let savedTodayActiveCalories: Double?
+        let savedActiveSessionActiveCalories: Double?
         let savedTodayStrapSteps: Int
         let savedActiveSessionStrapSteps: Int
         let savedActiveSessionTotalStrapSteps: Int
@@ -8458,6 +8483,11 @@ final class AtriaHomeModel {
             savedActiveSessionTotal: savedAggregate.savedActiveSessionTotalStrapSteps,
             liveActiveSession: ble.liveStrapStepResearchCount
         )
+        let activeCaloriesToday = SessionStore.mergedTodayActiveCalories(
+            savedToday: savedAggregate.savedTodayActiveCalories,
+            savedActiveSession: savedAggregate.savedActiveSessionActiveCalories,
+            liveActiveSession: liveSessionDerived.activeCalories
+        )
         return CoreLiveState(status: ble.status,
                              bluetoothPermissionDenied: ble.bluetoothPermissionDenied,
                              deviceName: deviceName,
@@ -8476,7 +8506,7 @@ final class AtriaHomeModel {
                              hasRecentHeartRateSample: hasRecentHeartRateSample(ble: ble),
                              lastReadingAt: liveSessionDerived.lastTimestamp,
                              liveTRIMP: liveSessionDerived.trimp,
-                             liveActiveCalories: liveSessionDerived.activeCalories,
+                             liveActiveCalories: activeCaloriesToday,
                              strapStepResearchCount: strapStepsToday,
                              strapStepResearchState: ble.liveStrapStepResearchState,
                              officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk,
@@ -9100,6 +9130,8 @@ final class AtriaHomeModel {
                               restingContext: restingContext,
                               savedTodayTRIMP: aggregate.savedTodayTRIMP,
                               savedActiveSessionTRIMP: aggregate.savedActiveSessionTRIMP,
+                              savedTodayActiveCalories: aggregate.savedTodayActiveCalories,
+                              savedActiveSessionActiveCalories: aggregate.savedActiveSessionActiveCalories,
                               savedTodayStrapSteps: aggregate.savedTodayStrapSteps,
                               savedActiveSessionStrapSteps: aggregate.savedActiveSessionStrapSteps,
                               savedActiveSessionTotalStrapSteps: aggregate.savedActiveSessionTotalStrapSteps,
