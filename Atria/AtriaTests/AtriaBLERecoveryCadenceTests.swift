@@ -965,6 +965,312 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), "a decoder alone cannot assert an unverified hardware transport")
     }
 
+    func testRawOnlyGapArchiveRunsOnceAtASafeNaturalDisconnect() {
+        XCTAssertTrue(AtriaBLEManager.shouldAttemptRawOnlyHistoricalRecovery(
+            exactGapPending: true,
+            rawHistoryVerified: true,
+            metricHistoryVerified: false,
+            linkConnected: false,
+            activeExplicitWorkout: false,
+            explicitUserRequest: false,
+            rawGapAlreadyArchived: false
+        ))
+
+        let unsafeVariants: [(Bool, Bool, Bool, Bool, Bool, Bool, Bool)] = [
+            (false, true, false, false, false, false, false),
+            (true, false, false, false, false, false, false),
+            (true, true, true, false, false, false, false),
+            (true, true, false, true, false, false, false),
+            (true, true, false, false, true, false, false),
+            (true, true, false, false, false, true, false),
+            (true, true, false, false, false, false, true),
+        ]
+        for variant in unsafeVariants {
+            XCTAssertFalse(AtriaBLEManager.shouldAttemptRawOnlyHistoricalRecovery(
+                exactGapPending: variant.0,
+                rawHistoryVerified: variant.1,
+                metricHistoryVerified: variant.2,
+                linkConnected: variant.3,
+                activeExplicitWorkout: variant.4,
+                explicitUserRequest: variant.5,
+                rawGapAlreadyArchived: variant.6
+            ))
+        }
+    }
+
+    func testHistoricalGapFingerprintIsStableAndChangesWithExactRange() throws {
+        let firstID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        let secondID = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+        let first = AtriaHistoricalGapLedger.Window(
+            id: firstID,
+            start: Date(timeIntervalSince1970: 100),
+            end: Date(timeIntervalSince1970: 130),
+            reason: "disconnect"
+        )
+        let second = AtriaHistoricalGapLedger.Window(
+            id: secondID,
+            start: Date(timeIntervalSince1970: 200),
+            end: Date(timeIntervalSince1970: 260),
+            reason: "accepted_hr_gap"
+        )
+
+        let forward = try XCTUnwrap(AtriaBLEManager.historicalGapFingerprint([first, second]))
+        XCTAssertEqual(forward,
+                       AtriaBLEManager.historicalGapFingerprint([second, first]))
+        var changed = second
+        changed.end = Date(timeIntervalSince1970: 261)
+        XCTAssertNotEqual(forward,
+                          AtriaBLEManager.historicalGapFingerprint([first, changed]))
+        XCTAssertNil(AtriaBLEManager.historicalGapFingerprint([]))
+    }
+
+    func testLegacyRequestedGapAlsoHasAStableOneShotFingerprint() throws {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let end = Date(timeIntervalSince1970: 1_300)
+        let first = try XCTUnwrap(AtriaBLEManager.historicalGapFingerprint(
+            windows: [],
+            recoveryStart: start,
+            recoveryEnd: end,
+            requestedAt: 900
+        ))
+        XCTAssertEqual(first, AtriaBLEManager.historicalGapFingerprint(
+            windows: [],
+            recoveryStart: start,
+            recoveryEnd: end,
+            requestedAt: 900
+        ))
+        XCTAssertNotEqual(first, AtriaBLEManager.historicalGapFingerprint(
+            windows: [],
+            recoveryStart: start,
+            recoveryEnd: end.addingTimeInterval(1),
+            requestedAt: 900
+        ))
+        XCTAssertNil(AtriaBLEManager.historicalGapFingerprint(
+            windows: [],
+            recoveryStart: nil,
+            recoveryEnd: nil,
+            requestedAt: nil
+        ))
+    }
+
+    func testSameLevelBatteryReadPreservesOnlyFreshIndependentChargingProof() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        XCTAssertTrue(AtriaBLEManager.shouldPreserveFreshChargingEvidence(
+            currentStatus: .charging,
+            lastEvidenceAt: now.addingTimeInterval(-480),
+            receivedAt: now,
+            maximumAge: 600
+        ), "a percentage-only callback must not erase the physical event between its normal reports")
+        XCTAssertFalse(AtriaBLEManager.shouldPreserveFreshChargingEvidence(
+            currentStatus: .charging,
+            lastEvidenceAt: now.addingTimeInterval(-601),
+            receivedAt: now,
+            maximumAge: 600
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldPreserveFreshChargingEvidence(
+            currentStatus: .levelOnly,
+            lastEvidenceAt: now,
+            receivedAt: now,
+            maximumAge: 600
+        ), "2A19 cannot originate charging state")
+        XCTAssertFalse(AtriaBLEManager.shouldPreserveFreshChargingEvidence(
+            currentStatus: .charging,
+            lastEvidenceAt: nil,
+            receivedAt: now,
+            maximumAge: 600
+        ))
+        XCTAssertTrue(AtriaBLEManager.hasFreshBatteryRiseEvidence(
+            lastRiseAt: now.addingTimeInterval(-599),
+            receivedAt: now,
+            maximumAge: 600
+        ))
+        XCTAssertFalse(AtriaBLEManager.hasFreshBatteryRiseEvidence(
+            lastRiseAt: now.addingTimeInterval(-601),
+            receivedAt: now,
+            maximumAge: 600
+        ))
+        XCTAssertFalse(AtriaBLEManager.hasFreshBatteryRiseEvidence(
+            lastRiseAt: nil,
+            receivedAt: now,
+            maximumAge: 600
+        ))
+    }
+
+    func testChargingTrajectoryNeedsMultipleAcceptedMidrangeRisesAcrossTime() throws {
+        let start = Date(timeIntervalSince1970: 20_000)
+        let first = try XCTUnwrap(AtriaBLEManager.updatedBatteryRiseCandidate(
+            current: nil,
+            previousLevel: 22,
+            previousAcceptedAt: start,
+            newLevel: 23,
+            receivedAt: start.addingTimeInterval(20)
+        ))
+        XCTAssertFalse(AtriaBLEManager.batteryRiseCandidateProvesCharging(first))
+        let second = try XCTUnwrap(AtriaBLEManager.updatedBatteryRiseCandidate(
+            current: first,
+            previousLevel: 23,
+            previousAcceptedAt: start.addingTimeInterval(20),
+            newLevel: 24,
+            receivedAt: start.addingTimeInterval(65)
+        ))
+        XCTAssertFalse(AtriaBLEManager.batteryRiseCandidateProvesCharging(second))
+        let third = try XCTUnwrap(AtriaBLEManager.updatedBatteryRiseCandidate(
+            current: second,
+            previousLevel: 24,
+            previousAcceptedAt: start.addingTimeInterval(65),
+            newLevel: 25,
+            receivedAt: start.addingTimeInterval(100)
+        ))
+        XCTAssertTrue(AtriaBLEManager.batteryRiseCandidateProvesCharging(third))
+        XCTAssertNil(AtriaBLEManager.updatedBatteryRiseCandidate(
+            current: third,
+            previousLevel: 25,
+            previousAcceptedAt: start.addingTimeInterval(100),
+            newLevel: 24,
+            receivedAt: start.addingTimeInterval(125)
+        ), "a decline immediately revokes the charge trajectory")
+    }
+
+    func testReconnectBaselineDoesNotEraseFreshPersistedChargingTruth() {
+        let now = Date(timeIntervalSince1970: 15_000)
+        XCTAssertTrue(AtriaBLEManager.shouldRetainPersistedChargingAcrossReconnect(
+            persistedStatus: .charging,
+            persistedAt: now.addingTimeInterval(-599),
+            batteryRecentlyDropping: false,
+            now: now,
+            maximumAge: 600
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldRetainPersistedChargingAcrossReconnect(
+            persistedStatus: .charging,
+            persistedAt: now.addingTimeInterval(-601),
+            batteryRecentlyDropping: false,
+            now: now,
+            maximumAge: 600
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldRetainPersistedChargingAcrossReconnect(
+            persistedStatus: .levelOnly,
+            persistedAt: now,
+            batteryRecentlyDropping: false,
+            now: now,
+            maximumAge: 600
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldRetainPersistedChargingAcrossReconnect(
+            persistedStatus: .charging,
+            persistedAt: now,
+            batteryRecentlyDropping: true,
+            now: now,
+            maximumAge: 600
+        ))
+    }
+
+    func testRiseCandidateSurvivesOnlySameStrapShortReconnect() throws {
+        let start = Date(timeIntervalSince1970: 16_000)
+        let strapID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let otherID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        let candidate = try XCTUnwrap(AtriaBLEManager.updatedBatteryRiseCandidate(
+            current: nil,
+            previousLevel: 30,
+            previousAcceptedAt: start,
+            newLevel: 31,
+            receivedAt: start.addingTimeInterval(20)
+        ))
+
+        XCTAssertEqual(AtriaBLEManager.batteryRiseCandidateAfterReconnect(
+            candidate,
+            candidatePeripheralID: strapID,
+            connectedPeripheralID: strapID,
+            now: start.addingTimeInterval(40),
+            maximumAge: 600
+        ), candidate)
+        XCTAssertNil(AtriaBLEManager.batteryRiseCandidateAfterReconnect(
+            candidate,
+            candidatePeripheralID: strapID,
+            connectedPeripheralID: otherID,
+            now: start.addingTimeInterval(40),
+            maximumAge: 600
+        ))
+        XCTAssertNil(AtriaBLEManager.batteryRiseCandidateAfterReconnect(
+            candidate,
+            candidatePeripheralID: strapID,
+            connectedPeripheralID: strapID,
+            now: start.addingTimeInterval(621),
+            maximumAge: 600
+        ))
+        XCTAssertNil(AtriaBLEManager.batteryRiseCandidateAfterReconnect(
+            candidate,
+            candidatePeripheralID: strapID,
+            connectedPeripheralID: strapID,
+            now: start,
+            maximumAge: 600
+        ))
+    }
+
+    func testChargingTrajectoryRejectsSingleJumpSentinelsAndFastCorrections() throws {
+        let start = Date(timeIntervalSince1970: 30_000)
+        let jump = try XCTUnwrap(AtriaBLEManager.updatedBatteryRiseCandidate(
+            current: nil,
+            previousLevel: 22,
+            previousAcceptedAt: start,
+            newLevel: 34,
+            receivedAt: start.addingTimeInterval(90)
+        ))
+        XCTAssertFalse(AtriaBLEManager.batteryRiseCandidateProvesCharging(jump),
+                       "one large correction cannot claim external power")
+        XCTAssertNil(AtriaBLEManager.updatedBatteryRiseCandidate(
+            current: nil,
+            previousLevel: 99,
+            previousAcceptedAt: start,
+            newLevel: 100,
+            receivedAt: start.addingTimeInterval(60)
+        ))
+        let rapidSecond = try XCTUnwrap(AtriaBLEManager.updatedBatteryRiseCandidate(
+            current: jump,
+            previousLevel: 34,
+            previousAcceptedAt: start.addingTimeInterval(90),
+            newLevel: 35,
+            receivedAt: start.addingTimeInterval(95)
+        ))
+        XCTAssertFalse(AtriaBLEManager.batteryRiseCandidateProvesCharging(rapidSecond),
+                       "one correction plus one later rise cannot claim charging with production defaults")
+        let sustainedThird = try XCTUnwrap(AtriaBLEManager.updatedBatteryRiseCandidate(
+            current: rapidSecond,
+            previousLevel: 35,
+            previousAcceptedAt: start.addingTimeInterval(95),
+            newLevel: 36,
+            receivedAt: start.addingTimeInterval(130)
+        ))
+        XCTAssertTrue(AtriaBLEManager.batteryRiseCandidateProvesCharging(sustainedThird),
+                      "two post-correction rises may establish a new trajectory")
+    }
+
+    func testExplicitNotChargingAndFullResetBatteryRiseTrajectory() throws {
+        let start = Date(timeIntervalSince1970: 40_000)
+        let candidate = try XCTUnwrap(AtriaBLEManager.updatedBatteryRiseCandidate(
+            current: nil,
+            previousLevel: 42,
+            previousAcceptedAt: start,
+            newLevel: 43,
+            receivedAt: start.addingTimeInterval(30)
+        ))
+
+        XCTAssertNil(AtriaBLEManager.batteryRiseCandidateAfterExplicitChargeStatus(
+            .notCharging,
+            current: candidate
+        ))
+        XCTAssertNil(AtriaBLEManager.batteryRiseCandidateAfterExplicitChargeStatus(
+            .full,
+            current: candidate
+        ))
+        XCTAssertEqual(AtriaBLEManager.batteryRiseCandidateAfterExplicitChargeStatus(
+            .charging,
+            current: candidate
+        ), candidate)
+        XCTAssertEqual(AtriaBLEManager.batteryRiseCandidateAfterExplicitChargeStatus(
+            .levelOnly,
+            current: candidate
+        ), candidate)
+    }
+
     func testHistoryCompletionStatusReportsRawOnlyAndExactCoverageTruthfully() {
         XCTAssertEqual(AtriaBLEManager.historicalSyncCompletionStatus(
             newRows: 0,

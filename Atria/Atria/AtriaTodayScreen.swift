@@ -2305,13 +2305,14 @@ private struct AtriaTodayLiveStatusStrip: View, Equatable {
         .accessibilityLabel("Live status. \(pulse.heartRate > 0 ? "\(pulse.heartRate) beats per minute" : live.status.rawValue). Zone \(pulse.heartRateZone?.shortLabel ?? "building").\(batteryAccessibilitySuffix)")
     }
 
-    /// Charging is visible on the home strip (user feedback 2026-07-07) and
-    /// composes with Live -- the strap can be Live and Charging at once.
-    /// States are mutually honest: Charging only with real charging evidence
-    /// (batteryShowsPowered), Low only when NOT charging, plain % otherwise.
+    /// Power state lives in the battery SF Symbol, keeping this compact value
+    /// to one line. VoiceOver still receives the detailed charging language
+    /// through `batteryAccessibilitySuffix` below.
     private var batteryPillText: String {
         guard live.batteryLevel >= 0 else { return "—" }
-        if live.batteryShowsPowered { return "\(live.batteryText) \u{00b7} Charging" }
+        if live.batteryShowsPowered || live.batteryChargeStatus == .full {
+            return live.batteryText
+        }
         if live.batteryLevel <= 20 { return "\(live.batteryText) \u{00b7} Low" }
         return live.batteryText
     }

@@ -77,6 +77,12 @@ final class AtriaActivityEditorObservationTests: XCTestCase {
                        "The add picker must show each activity's own symbol")
         XCTAssertTrue(add.contains("AtriaWorkoutActivityType(rawValue: activityType)?.icon"),
                       "The selected add value must retain its activity symbol")
+        XCTAssertTrue(add.contains("TextField(\"Activity name\", text: $activityLabel)"),
+                      "Detected and manual activities must expose the same editable name field as saved workouts")
+        XCTAssertTrue(add.contains("activitySubtype = subtype"))
+        XCTAssertTrue(add.contains("activityLabel: activityLabel"))
+        XCTAssertTrue(add.contains("activitySubtype: activitySubtype"),
+                      "Name, type, subtype, and window must enter one canonical Save call")
         XCTAssertTrue(add.contains("onDismissCandidate: (() -> Bool)? = nil"))
         XCTAssertTrue(add.contains("Button(\"Dismiss suggestion\", systemImage: \"trash\", role: .destructive)"))
         XCTAssertTrue(add.contains("Removes this suggestion from Activity without deleting recorded strap data or day strain."))
@@ -113,6 +119,11 @@ final class AtriaActivityEditorObservationTests: XCTestCase {
                       "Saving an adjusted sleep/nap review must durably settle its original detector window")
         XCTAssertTrue(sessionsSource.contains("addDismissedSleepCandidate(start: start, end: end)"),
                       "Confirming a sleep/nap candidate must prevent it from returning as actionable")
+        XCTAssertTrue(sessionsSource.contains("let activityLabel: String?"))
+        XCTAssertTrue(sessionsSource.contains("label: cleanedLabel ?? cleanedType ?? \"Live workout\""),
+                      "Off-main confirmation must persist the reviewed name in its canonical workout write")
+        XCTAssertTrue(sessionsSource.contains("workoutByMergingUserEditsAndStepEvidence"),
+                      "Re-saving an already materialized candidate must update its complete user metadata atomically")
     }
 }
 
@@ -176,9 +187,31 @@ final class AtriaActivityLifecycleTests: XCTestCase {
             maxHR: 190,
             source: marker,
             preserveUserDeclaredActivityWithoutHeartRate: true,
+            activityLabel: "Morning walk",
             activityType: AtriaWorkoutActivityType.walking.rawValue,
             reviewSource: marker
         ))
+        XCTAssertEqual(saved.label, "Morning walk")
+
+        let resaved = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+            start: start,
+            end: end,
+            rest: 60,
+            maxHR: 190,
+            source: marker,
+            preserveUserDeclaredActivityWithoutHeartRate: true,
+            activityLabel: "Incline walk",
+            activityType: AtriaWorkoutActivityType.cardio.rawValue,
+            activitySubtype: "Incline walk",
+            reviewSource: marker,
+            settlingCandidateWindow: (start: start, end: end)
+        ))
+        XCTAssertEqual(resaved.id, saved.id)
+        XCTAssertEqual(resaved.label, "Incline walk")
+        XCTAssertEqual(resaved.activityType, AtriaWorkoutActivityType.cardio.rawValue)
+        XCTAssertEqual(resaved.activitySubtype, "Incline walk")
+        XCTAssertEqual(store.confirmedWorkouts.filter { $0.id == saved.id }, [resaved],
+                       "Saving complete candidate state must update one authoritative activity")
         // The candidate-backed Add sheet settles the original detector window
         // after persisting the confirmed activity. The tombstone may remain,
         // but the saved row—not another candidate—is the authoritative item.
@@ -189,12 +222,12 @@ final class AtriaActivityLifecycleTests: XCTestCase {
         XCTAssertTrue(AtriaActivityReviewProjection.visibleDetections(
             [detection],
             workoutReview: nil,
-            confirmedWorkouts: [saved],
+            confirmedWorkouts: [resaved],
             selectedDay: start,
             calendar: calendar
         ).isEmpty)
 
-        XCTAssertTrue(store.deleteConfirmedWorkout(id: saved.id))
+        XCTAssertTrue(store.deleteConfirmedWorkout(id: resaved.id))
         let readded = try XCTUnwrap(store.confirmWorkoutWindowForUI(
             start: start,
             end: end,

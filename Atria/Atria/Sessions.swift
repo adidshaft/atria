@@ -4423,6 +4423,7 @@ final class SessionStore: ObservableObject {
         let source: String
         let allowManualSave: Bool
         let preserveUserDeclaredActivityWithoutHeartRate: Bool
+        let activityLabel: String?
         let activityType: String?
         let activitySubtype: String?
         let exerciseNames: [String]
@@ -7100,16 +7101,7 @@ final class SessionStore: ObservableObject {
         frozen: SavedDailyMetric,
         night: SleepHistorySnapshot.Night
     ) -> Bool {
-        guard !night.isNapEvidence else { return false }
-        let span = night.start.flatMap { start in
-            night.end.flatMap { end in end > start ? end.timeIntervalSince(start) : nil }
-        }
-        return frozen.sleepEnd == night.end
-            && frozen.sleepDuration == night.duration
-            && frozen.sleepSpan == span
-            && frozen.hrv == night.hrv
-            && frozen.restingHR == night.restingHR
-            && frozen.respiratoryRate == night.respiratoryRate
+        DailyRecoveryResolver.metricMatchesConfirmedNight(frozen, night: night)
     }
 
     nonisolated static func mergeDailyMetricHistory(existing: [SavedDailyMetric],
@@ -7938,9 +7930,11 @@ final class SessionStore: ObservableObject {
         let cycle = AtriaPhysiologicalCycle.current(now: now,
                                                     confirmedSleeps: cachedConfirmedSleeps,
                                                     calendar: calendar)
+        let latestSleep = currentPhysiologicalMainSleep(on: now, calendar: calendar)
         let frozen = DailyRecoveryResolver.summary(rollups: dailyRollupHistory,
                                                    metrics: dailyMetricHistory,
                                                    physiologicalCycle: cycle,
+                                                   anchorSleep: latestSleep,
                                                    calendar: calendar)?.recoveryEstimate
         // Preserve lazy semantics even for the terminal paths. The cache's
         // autoclosure contract is covered by counter tests so future refactors
@@ -7956,7 +7950,6 @@ final class SessionStore: ObservableObject {
             )
         }
 
-        let latestSleep = currentPhysiologicalMainSleep(on: now, calendar: calendar)
         let validatedHRV = latestReferenceValidatedRecoveryHRV(on: now, calendar: calendar)
         let fallbackHRV = validatedHRV ?? latestLocalRecoveryHRV(on: now, calendar: calendar)
         let respiratoryBaseline = sleepHistorySnapshot.respiratoryBaselineStats
@@ -11926,6 +11919,7 @@ final class SessionStore: ObservableObject {
                                    maxHR: Int,
                                    source: String = "ui_window",
                                    preserveUserDeclaredActivityWithoutHeartRate: Bool = false,
+                                   activityLabel: String? = nil,
                                    activityType: String? = nil,
                                    activitySubtype: String? = nil,
                                    exerciseNames: [String] = [],
@@ -11943,6 +11937,7 @@ final class SessionStore: ObservableObject {
                              source: source,
                              allowManualSave: true,
                              preserveUserDeclaredActivityWithoutHeartRate: preserveUserDeclaredActivityWithoutHeartRate,
+                             activityLabel: activityLabel,
                              activityType: activityType,
                              activitySubtype: activitySubtype,
                              exerciseNames: exerciseNames,
@@ -11966,6 +11961,7 @@ final class SessionStore: ObservableObject {
         maxHR: Int,
         source: String = "ui_window",
         preserveUserDeclaredActivityWithoutHeartRate: Bool = false,
+        activityLabel: String? = nil,
         activityType: String? = nil,
         activitySubtype: String? = nil,
         exerciseNames: [String] = [],
@@ -11991,6 +11987,7 @@ final class SessionStore: ObservableObject {
                 source: source,
                 allowManualSave: true,
                 preserveUserDeclaredActivityWithoutHeartRate: preserveUserDeclaredActivityWithoutHeartRate,
+                activityLabel: activityLabel,
                 activityType: activityType,
                 activitySubtype: activitySubtype,
                 exerciseNames: exerciseNames,
@@ -12397,6 +12394,7 @@ final class SessionStore: ObservableObject {
                     maxHR: request.maxHR,
                     source: request.source,
                     overlappingSessionCount: prepared.overlappingSessionCount,
+                    activityLabel: request.activityLabel,
                     activityType: request.activityType,
                     activitySubtype: request.activitySubtype,
                     exerciseNames: request.exerciseNames,
@@ -12445,8 +12443,11 @@ final class SessionStore: ObservableObject {
         let id = confirmedWorkoutID(start: request.start, end: request.end, source: workoutSource)
         if let index = existing.firstIndex(where: { $0.id == id }) {
             let already = existing[index]
-            let merged = Self.workoutByMergingStepEvidence(
+            let merged = Self.workoutByMergingUserEditsAndStepEvidence(
                 already,
+                activityLabel: request.activityLabel,
+                activityType: request.activityType,
+                activitySubtype: request.activitySubtype,
                 workoutSteps: request.workoutSteps,
                 workoutStepsAreEstimated: request.workoutStepsAreEstimated,
                 workoutStepsCapturedAt: request.workoutStepsCapturedAt
@@ -12470,9 +12471,11 @@ final class SessionStore: ObservableObject {
                         : "live_window_manual_confirmed")
                     : "live_window_candidate"))
         let typeValue = request.activityType?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let labelValue = request.activityLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let subtypeValue = request.activitySubtype?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let reviewValue = request.reviewSource?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let cleanedType = typeValue.isEmpty ? nil : typeValue
+        let cleanedLabel = labelValue.isEmpty ? nil : labelValue
         let cleanedSubtype = subtypeValue.isEmpty ? nil : subtypeValue
         let cleanedExercises = request.exerciseNames
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -12489,7 +12492,7 @@ final class SessionStore: ObservableObject {
             createdAt: Date(),
             start: request.start,
             end: request.end,
-            label: cleanedType ?? "Live workout",
+            label: cleanedLabel ?? cleanedType ?? "Live workout",
             source: workoutSource,
             confidence: confidence,
             sessions: prepared.overlappingSessionCount,
@@ -12568,6 +12571,7 @@ final class SessionStore: ObservableObject {
                                       source: String,
                                       allowManualSave: Bool = false,
                                       preserveUserDeclaredActivityWithoutHeartRate: Bool = false,
+                                      activityLabel: String? = nil,
                                       activityType: String? = nil,
                                       activitySubtype: String? = nil,
                                       exerciseNames: [String] = [],
@@ -12614,6 +12618,7 @@ final class SessionStore: ObservableObject {
                     maxHR: maxHR,
                     source: source,
                     overlappingSessionCount: overlapping.count,
+                    activityLabel: activityLabel,
                     activityType: activityType,
                     activitySubtype: activitySubtype,
                     exerciseNames: exerciseNames,
@@ -12673,8 +12678,11 @@ final class SessionStore: ObservableObject {
         let id = confirmedWorkoutID(start: requestedStart, end: requestedEnd, source: workoutSource)
         if let index = existing.firstIndex(where: { $0.id == id }) {
             let already = existing[index]
-            let merged = Self.workoutByMergingStepEvidence(
+            let merged = Self.workoutByMergingUserEditsAndStepEvidence(
                 already,
+                activityLabel: activityLabel,
+                activityType: activityType,
+                activitySubtype: activitySubtype,
                 workoutSteps: workoutSteps,
                 workoutStepsAreEstimated: workoutStepsAreEstimated,
                 workoutStepsCapturedAt: workoutStepsCapturedAt
@@ -12711,9 +12719,11 @@ final class SessionStore: ObservableObject {
                                                biologicalSex: profile.biologicalSex,
                                                excludedIntervals: excludedIntervals)
         let activityTypeValue = activityType?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let activityLabelValue = activityLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let activitySubtypeValue = activitySubtype?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let reviewSourceValue = reviewSource?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let cleanedActivityType = activityTypeValue.isEmpty ? nil : activityTypeValue
+        let cleanedActivityLabel = activityLabelValue.isEmpty ? nil : activityLabelValue
         let cleanedActivitySubtype = activitySubtypeValue.isEmpty ? nil : activitySubtypeValue
         let cleanedExercises = exerciseNames
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -12727,7 +12737,7 @@ final class SessionStore: ObservableObject {
                                              createdAt: Date(),
                                              start: requestedStart,
                                              end: requestedEnd,
-                                             label: cleanedActivityType ?? "Live workout",
+                                             label: cleanedActivityLabel ?? cleanedActivityType ?? "Live workout",
                                              source: workoutSource,
                                              confidence: confidence,
                                              sessions: overlapping.count,
@@ -12813,6 +12823,7 @@ final class SessionStore: ObservableObject {
         maxHR: Int,
         source: String,
         overlappingSessionCount: Int,
+        activityLabel: String?,
         activityType: String?,
         activitySubtype: String?,
         exerciseNames: [String],
@@ -12828,8 +12839,11 @@ final class SessionStore: ObservableObject {
         let id = confirmedWorkoutID(start: start, end: end, source: workoutSource)
         if let index = cachedConfirmedWorkouts.firstIndex(where: { $0.id == id }) {
             let existing = cachedConfirmedWorkouts[index]
-            let merged = Self.workoutByMergingStepEvidence(
+            let merged = Self.workoutByMergingUserEditsAndStepEvidence(
                 existing,
+                activityLabel: activityLabel,
+                activityType: activityType,
+                activitySubtype: activitySubtype,
                 workoutSteps: workoutSteps,
                 workoutStepsAreEstimated: workoutStepsAreEstimated,
                 workoutStepsCapturedAt: workoutStepsCapturedAt
@@ -12848,6 +12862,8 @@ final class SessionStore: ObservableObject {
 
         let cleanedType = activityType?
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanedLabel = activityLabel?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanedSubtype = activitySubtype?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanedExercises = exerciseNames
@@ -12856,6 +12872,7 @@ final class SessionStore: ObservableObject {
         let cleanedReviewSource = reviewSource?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let type = cleanedType.flatMap { $0.isEmpty ? nil : $0 }
+        let label = cleanedLabel.flatMap { $0.isEmpty ? nil : $0 }
         let subtype = cleanedSubtype.flatMap { $0.isEmpty ? nil : $0 }
         let review = cleanedReviewSource.flatMap { $0.isEmpty ? nil : $0 }
 
@@ -12871,7 +12888,7 @@ final class SessionStore: ObservableObject {
             createdAt: Date(),
             start: start,
             end: end,
-            label: type ?? "Workout",
+            label: label ?? type ?? "Workout",
             source: workoutSource,
             confidence: "user_confirmed_no_hr",
             sessions: overlappingSessionCount,
@@ -12924,20 +12941,63 @@ final class SessionStore: ObservableObject {
         return confirmed
     }
 
-    /// Completion recovery can arrive after the physiological workout record.
-    /// Merge only explicit motion evidence so an evidence-free retry never
-    /// erases an already durable workout count.
-    nonisolated private static func workoutByMergingStepEvidence(
+    /// Completion recovery or a repeated review can arrive after the physiological
+    /// workout record. Merge explicit user metadata and motion evidence so Save
+    /// remains one transaction and an evidence-free retry never erases a count.
+    nonisolated private static func workoutByMergingUserEditsAndStepEvidence(
         _ workout: UserConfirmedWorkout,
+        activityLabel: String?,
+        activityType: String?,
+        activitySubtype: String?,
         workoutSteps: Int?,
         workoutStepsAreEstimated: Bool?,
         workoutStepsCapturedAt: Date?
     ) -> UserConfirmedWorkout {
-        guard let workoutSteps else { return workout }
-        var merged = workout
-        merged.workoutSteps = max(0, workoutSteps)
-        merged.workoutStepsAreEstimated = workoutStepsAreEstimated ?? true
-        merged.workoutStepsCapturedAt = workoutStepsCapturedAt
+        let cleanedLabel = activityLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var merged = UserConfirmedWorkout(
+            id: workout.id,
+            createdAt: workout.createdAt,
+            start: workout.start,
+            end: workout.end,
+            label: cleanedLabel.flatMap { $0.isEmpty ? nil : $0 } ?? workout.label,
+            source: workout.source,
+            confidence: workout.confidence,
+            sessions: workout.sessions,
+            samples: workout.samples,
+            avgHR: workout.avgHR,
+            peakHR: workout.peakHR,
+            p95HR: workout.p95HR,
+            p99HR: workout.p99HR,
+            thresholdHR: workout.thresholdHR,
+            streamCoveragePercent: workout.streamCoveragePercent,
+            observedDuration: workout.observedDuration,
+            reason: workout.reason,
+            eventTimeZoneIdentifier: workout.eventTimeZoneIdentifier
+        )
+        merged.activityType = workout.activityType
+        merged.activitySubtype = workout.activitySubtype
+        merged.exerciseNames = workout.exerciseNames
+        merged.strengthSets = workout.strengthSets
+        merged.excludedIntervals = workout.excludedIntervals
+        merged.reviewSource = workout.reviewSource
+        merged.strain = workout.strain
+        merged.activeEnergyKilocalories = workout.activeEnergyKilocalories
+        merged.activeEnergyConfidence = workout.activeEnergyConfidence
+        merged.zoneSeconds = workout.zoneSeconds
+        merged.workoutSteps = workout.workoutSteps
+        merged.workoutStepsAreEstimated = workout.workoutStepsAreEstimated
+        merged.workoutStepsCapturedAt = workout.workoutStepsCapturedAt
+        if let cleanedType = activityType?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !cleanedType.isEmpty {
+            merged.activityType = cleanedType
+            merged.activitySubtype = AtriaWorkoutActivityType(rawValue: cleanedType)?
+                .normalizedSubtype(activitySubtype)
+        }
+        if let workoutSteps {
+            merged.workoutSteps = max(0, workoutSteps)
+            merged.workoutStepsAreEstimated = workoutStepsAreEstimated ?? true
+            merged.workoutStepsCapturedAt = workoutStepsCapturedAt
+        }
         return merged
     }
 

@@ -407,8 +407,10 @@ def emit_offline_sync_preferences():
     now = time.time()
     requested_at = pref(prefs, "offlineSync.rangeLossBackfillRequestedAt")
     started_at = pref(prefs, "offlineSync.rangeLossBackfillStartedAt")
+    raw_archived_at = pref(prefs, "offlineSync.rawArchivedGapAt.v1")
     requested_age = max(0.0, now - float(requested_at)) if isinstance(requested_at, (int, float)) and requested_at > 0 else -1.0
     started_age = max(0.0, now - float(started_at)) if isinstance(started_at, (int, float)) and started_at > 0 else -1.0
+    raw_archived_age = max(0.0, now - float(raw_archived_at)) if isinstance(raw_archived_at, (int, float)) and raw_archived_at > 0 else -1.0
     print(f"offline_sync_namespace={pref_namespace(prefs, 'offlineSync.lastStatus')}")
     print(f"offline_sync_enabled={bool_int(pref(prefs, 'offlineSync.enabled'))}")
     print(f"offline_sync_attempts={int(pref(prefs, 'offlineSync.attempts', 0) or 0)}")
@@ -418,6 +420,8 @@ def emit_offline_sync_preferences():
     print(f"offline_range_loss_backfill_reason={pref(prefs, 'offlineSync.rangeLossBackfillReason', 'none') or 'none'}")
     print(f"offline_range_loss_backfill_requested_age_s={requested_age:.1f}")
     print(f"offline_range_loss_backfill_started_age_s={started_age:.1f}")
+    print(f"offline_raw_gap_archived={bool_int(pref(prefs, 'offlineSync.rawArchivedGapFingerprint.v1'))}")
+    print(f"offline_raw_gap_archived_age_s={raw_archived_age:.1f}")
     radio_standard_only = bool(pref(prefs, "radio.standardHROnly", False))
     radio_user_selected = bool(pref(prefs, "radio.standardHROnlyUserSelected", False))
     step_full_protocol_migrated = bool(pref(prefs, "capture.strapStepFullProtocolMigrated", False))

@@ -746,6 +746,77 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             : "raw_archived_metric_unverified"
     }
 
+    /// Even before a historical payload layout is metric-validated, a natural
+    /// disconnect is a safe opportunity to copy the strap's raw backlog. This
+    /// never promotes HR/RR, never interrupts a connected realtime pipe, and
+    /// runs at most once for the exact durable gap set. A later decoder can then
+    /// repair that interval from locally archived evidence instead of asking a
+    /// finite strap buffer for the same data indefinitely.
+    nonisolated static func shouldAttemptRawOnlyHistoricalRecovery(
+        exactGapPending: Bool,
+        rawHistoryVerified: Bool,
+        metricHistoryVerified: Bool,
+        linkConnected: Bool,
+        activeExplicitWorkout: Bool,
+        explicitUserRequest: Bool,
+        rawGapAlreadyArchived: Bool
+    ) -> Bool {
+        exactGapPending
+            && rawHistoryVerified
+            && !metricHistoryVerified
+            && !linkConnected
+            && !activeExplicitWorkout
+            && !explicitUserRequest
+            && !rawGapAlreadyArchived
+    }
+
+    nonisolated static func historicalGapFingerprint(
+        _ windows: [AtriaHistoricalGapLedger.Window]
+    ) -> String? {
+        guard !windows.isEmpty else { return nil }
+        return windows
+            .sorted { lhs, rhs in
+                if lhs.start != rhs.start { return lhs.start < rhs.start }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+            .map { window in
+                let start = Int64((window.start.timeIntervalSince1970 * 1_000).rounded())
+                let end = window.end.map {
+                    Int64(($0.timeIntervalSince1970 * 1_000).rounded())
+                } ?? -1
+                return "\(window.id.uuidString):\(start):\(end)"
+            }
+            .joined(separator: "|")
+    }
+
+    /// Older installs can carry the durable range-loss request before the
+    /// per-gap ledger was introduced. Give that finite requested interval the
+    /// same one-shot raw archive semantics instead of re-pulling it after every
+    /// natural disconnect.
+    nonisolated static func historicalGapFingerprint(
+        windows: [AtriaHistoricalGapLedger.Window],
+        recoveryStart: Date?,
+        recoveryEnd: Date?,
+        requestedAt: Double?
+    ) -> String? {
+        if let ledgerFingerprint = historicalGapFingerprint(windows) {
+            return ledgerFingerprint
+        }
+        guard recoveryStart != nil || recoveryEnd != nil || requestedAt != nil else {
+            return nil
+        }
+        let start = recoveryStart.map {
+            Int64(($0.timeIntervalSince1970 * 1_000).rounded())
+        } ?? -1
+        let end = recoveryEnd.map {
+            Int64(($0.timeIntervalSince1970 * 1_000).rounded())
+        } ?? -1
+        let requested = requestedAt.map {
+            Int64(($0 * 1_000).rounded())
+        } ?? -1
+        return "legacy:\(start):\(end):\(requested)"
+    }
+
     /// The displayed connection status. NEVER written ad-hoc — it is recomputed as a
     /// pure function of CoreBluetooth ground truth via `recomputeConnectionStatus`.
     @Published private(set) var status: Status = .disconnected
@@ -1195,7 +1266,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private nonisolated static let chargePatternMaxEntries = 14
     private nonisolated static let chargePatternDedupeWindow: TimeInterval = 4 * 60 * 60
     private nonisolated static let activeBatteryChargeEvidenceMaxAge: TimeInterval = 10 * 60
-    private nonisolated static let activeBatteryChargeDisplayMaxAge: TimeInterval = 2 * 60
+    /// The CRC-validated autonomous power event is typically separated by
+    /// roughly eight minutes on the physical strap. Keep that proof visible
+    /// through one complete event interval; a 2A1B not-charging update or a
+    /// falling 2A19 percentage still revokes it immediately.
+    private nonisolated static let activeBatteryChargeDisplayMaxAge: TimeInterval = 10 * 60
     private nonisolated static let implausibleBatteryDropThreshold = 20
     private nonisolated static let implausibleBatteryDropMinimumConfirmationSpan: TimeInterval = 60
     private nonisolated static let freshBatteryConfirmationMinimumSpan: TimeInterval = 12
@@ -1243,6 +1318,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let level: Int
         let firstSeenAt: Date
         let lastSeenAt: Date
+        let confirmations: Int
+    }
+    struct BatteryRiseCandidate: Equatable {
+        let startLevel: Int
+        let startAt: Date
+        let lastLevel: Int
+        let lastAt: Date
         let confirmations: Int
     }
     struct BatteryEventReading: Equatable {
@@ -1313,6 +1395,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         static let recoveryWindowStart = "atria.offlineSync.recoveryWindowStart"
         static let recoveryWindowEnd = "atria.offlineSync.recoveryWindowEnd"
         static let verifiedHistoryPeripheralID = "atria.offlineSync.verifiedHistoryPeripheralID"
+        static let rawArchivedGapFingerprint = "atria.offlineSync.rawArchivedGapFingerprint.v1"
+        static let rawArchivedGapAt = "atria.offlineSync.rawArchivedGapAt.v1"
     }
     private enum HRVCadenceDefaults {
         static let lastReadyAnalysisAt = "atria.hrv.lastReadyAnalysisAt"
@@ -1534,6 +1618,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var staleRangeLossReconciliationInFlight = false
     private var lastStaleRangeLossReconciliationAttemptAt: Date?
     private var offlineHistoricalSyncStartRows = 0
+    /// Non-nil only for a history-first reconnect that archives an unvalidated
+    /// raw gap. It is persisted after rows land so the same finite strap backlog
+    /// is not requested again on every later connection edge.
+    private var offlineHistoricalSyncRawOnlyGapFingerprint: String?
     /// True only when this sync appended metric-usable HR inside the exact
     /// workout-recovery window. This is progress evidence, not completion:
     /// SessionStore owns completion after it rebuilds the matching workout and
@@ -2255,9 +2343,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var batteryStatusCharacteristic: CBCharacteristic?
     private var lastBatteryReadRequestedAt: Date?
     private var lastActiveBatteryChargeEvidenceAt: Date?
+    private var lastPlausibleBatteryRiseEvidenceAt: Date?
+    private var lastUncorroboratedChargingStatusAt: Date?
     private var lastAcceptedBatteryLevelAt: Date?
     private var displayedBatteryLevelIsCached = false
     private var pendingBatteryDropCandidate: BatteryDropCandidate?
+    private var batteryRiseCandidate: BatteryRiseCandidate?
+    private var batteryRiseCandidatePeripheralID: UUID?
     private enum ProprietaryBatteryRefreshPhase: Equatable {
         case idle
         case discoveringResponse
@@ -2705,6 +2797,136 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard previousLevel >= 0 else { return newLevel >= 100 ? .full : nil }
         if newLevel >= 100 { return .full }
         return newLevel < previousLevel ? .notCharging : nil
+    }
+
+    /// A same-level 2A19 callback contains no external-power information. It
+    /// must not erase a still-fresh CRC-validated charging event, but it also
+    /// must never originate or extend charging truth by itself.
+    nonisolated static func shouldPreserveFreshChargingEvidence(
+        currentStatus: BatteryChargeStatus,
+        lastEvidenceAt: Date?,
+        receivedAt: Date,
+        maximumAge: TimeInterval = activeBatteryChargeDisplayMaxAge
+    ) -> Bool {
+        guard currentStatus == .charging,
+              let lastEvidenceAt,
+              receivedAt >= lastEvidenceAt else { return false }
+        return receivedAt.timeIntervalSince(lastEvidenceAt) <= maximumAge
+    }
+
+    nonisolated static func hasFreshBatteryRiseEvidence(
+        lastRiseAt: Date?,
+        receivedAt: Date,
+        maximumAge: TimeInterval = activeBatteryChargeEvidenceMaxAge
+    ) -> Bool {
+        guard let lastRiseAt, receivedAt >= lastRiseAt else { return false }
+        return receivedAt.timeIntervalSince(lastRiseAt) <= maximumAge
+    }
+
+    /// A reconnect temporarily makes the live manager level-only while it
+    /// proves the new 2A19 subscription. Do not erase a recent, independently
+    /// established charging fact during that short proof window. The UI still
+    /// bounds this projection by age, while a decline or explicit status packet
+    /// replaces it immediately.
+    nonisolated static func shouldRetainPersistedChargingAcrossReconnect(
+        persistedStatus: BatteryChargeStatus,
+        persistedAt: Date?,
+        batteryRecentlyDropping: Bool,
+        now: Date,
+        maximumAge: TimeInterval = activeBatteryChargeEvidenceMaxAge
+    ) -> Bool {
+        guard !batteryRecentlyDropping else { return false }
+        return shouldPreserveFreshChargingEvidence(
+            currentStatus: persistedStatus,
+            lastEvidenceAt: persistedAt,
+            receivedAt: now,
+            maximumAge: maximumAge
+        )
+    }
+
+    /// Some WHOOP 4-class firmware exposes a reliable percentage but no usable
+    /// powered bit on the protected production transport. Three accepted
+    /// mid-range increases spanning real time establish a candidate plus two
+    /// subsequent rises; one correction/jump is deliberately insufficient.
+    nonisolated static func updatedBatteryRiseCandidate(
+        current: BatteryRiseCandidate?,
+        previousLevel: Int,
+        previousAcceptedAt: Date?,
+        newLevel: Int,
+        receivedAt: Date,
+        maximumSpan: TimeInterval = activeBatteryChargeEvidenceMaxAge
+    ) -> BatteryRiseCandidate? {
+        guard (0...99).contains(previousLevel),
+              (1...99).contains(newLevel),
+              newLevel >= previousLevel,
+              previousAcceptedAt.map({ receivedAt >= $0 }) ?? true else { return nil }
+        if let current,
+           receivedAt >= current.lastAt,
+           receivedAt.timeIntervalSince(current.startAt) <= maximumSpan {
+            if newLevel == current.lastLevel { return current }
+            guard newLevel > current.lastLevel else { return nil }
+            return BatteryRiseCandidate(startLevel: current.startLevel,
+                                        startAt: current.startAt,
+                                        lastLevel: newLevel,
+                                        lastAt: receivedAt,
+                                        confirmations: current.confirmations + 1)
+        }
+        guard newLevel > previousLevel else { return nil }
+        // The first changed callback establishes a candidate baseline; it does
+        // not itself count as trajectory proof. That first change may be a gauge
+        // correction, so charging needs two additional accepted rises after it.
+        // Proof begins at this sample even though callers also supply the prior
+        // acceptance time to reject out-of-order callbacks above.
+        return BatteryRiseCandidate(startLevel: newLevel,
+                                    startAt: receivedAt,
+                                    lastLevel: newLevel,
+                                    lastAt: receivedAt,
+                                    confirmations: 1)
+    }
+
+    nonisolated static func batteryRiseCandidateProvesCharging(
+        _ candidate: BatteryRiseCandidate,
+        minimumRise: Int = 2,
+        minimumSpan: TimeInterval = 30,
+        maximumSpan: TimeInterval = activeBatteryChargeEvidenceMaxAge
+    ) -> Bool {
+        let span = candidate.lastAt.timeIntervalSince(candidate.startAt)
+        return candidate.confirmations >= 3
+            && candidate.lastLevel - candidate.startLevel >= minimumRise
+            && span >= minimumSpan
+            && span <= maximumSpan
+    }
+
+    /// An explicit end-of-charge signal is a hard trajectory boundary. Keeping
+    /// pre-revocation rises would let a single later percentage increase revive
+    /// Charging from evidence observed before Not charging / Full.
+    nonisolated static func batteryRiseCandidateAfterExplicitChargeStatus(
+        _ status: BatteryChargeStatus,
+        current: BatteryRiseCandidate?
+    ) -> BatteryRiseCandidate? {
+        switch status {
+        case .notCharging, .full:
+            return nil
+        case .charging, .levelOnly:
+            return current
+        }
+    }
+
+    /// Short BLE reconnects are not negative power evidence. Keep an unfinished
+    /// trajectory only for the same physical strap and only inside its bounded
+    /// evidence window; switching straps or an expired/future candidate resets.
+    nonisolated static func batteryRiseCandidateAfterReconnect(
+        _ candidate: BatteryRiseCandidate?,
+        candidatePeripheralID: UUID?,
+        connectedPeripheralID: UUID,
+        now: Date,
+        maximumAge: TimeInterval = activeBatteryChargeEvidenceMaxAge
+    ) -> BatteryRiseCandidate? {
+        guard let candidate,
+              candidatePeripheralID == connectedPeripheralID,
+              now >= candidate.lastAt,
+              now.timeIntervalSince(candidate.lastAt) <= maximumAge else { return nil }
+        return candidate
     }
 
     private nonisolated static func corroboratedBatteryLevelDecision(
@@ -3586,10 +3808,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         assignIfChanged(\.batteryIsCharging, false)
         assignIfChanged(\.batteryChargeStatus, .levelOnly)
         assignIfChanged(\.batteryRecentlyDropping, false)
-        Self.persistBatteryChargeStatusProjection(.levelOnly,
-                                                  source: "reconnect_2A19_baseline",
-                                                  defaults: defaults,
-                                                  now: now)
+        let persistedChargeStatus = BatteryChargeStatus(
+            rawValue: defaults.string(forKey: BatteryDefaults.chargeStatus) ?? ""
+        ) ?? .levelOnly
+        let persistedChargeAt = (defaults.object(forKey: BatteryDefaults.chargeAt) as? Double)
+            .map(Date.init(timeIntervalSince1970:))
+        if !Self.shouldRetainPersistedChargingAcrossReconnect(
+            persistedStatus: persistedChargeStatus,
+            persistedAt: persistedChargeAt,
+            batteryRecentlyDropping: batteryRecentlyDropping,
+            now: now
+        ) {
+            Self.persistBatteryChargeStatusProjection(.levelOnly,
+                                                      source: "reconnect_2A19_baseline",
+                                                      defaults: defaults,
+                                                      now: now)
+        }
         batteryProjectionRevision &+= 1
         AtriaDebugLog("ATRIADBG battery level=%d source=%@ status=accepted reason=%@ detail=recent_midrange_active_2a19_and_current_connection_hr accepted_age_s=%.1f",
                       batteryLevel,
@@ -5026,16 +5260,49 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             requestedAt: defaults.object(forKey: OfflineSyncDefaults.rangeLossBackfillRequestedAt) as? Double,
             now: Date()
         )
+        let recoveryStartValue = defaults.object(forKey: OfflineSyncDefaults.recoveryWindowStart)
+        let recoveryEndValue = defaults.object(forKey: OfflineSyncDefaults.recoveryWindowEnd)
+        let recoveryStart = (recoveryStartValue as? Date)
+            ?? (recoveryStartValue as? Double).map(Date.init(timeIntervalSince1970:))
+        let recoveryEnd = (recoveryEndValue as? Date)
+            ?? (recoveryEndValue as? Double).map(Date.init(timeIntervalSince1970:))
+        let gapFingerprint = Self.historicalGapFingerprint(
+            windows: AtriaHistoricalGapLedger.windows(defaults: defaults),
+            recoveryStart: recoveryStart,
+            recoveryEnd: recoveryEnd,
+            requestedAt: defaults.object(forKey: OfflineSyncDefaults.rangeLossBackfillRequestedAt) as? Double
+        )
+        let rawGapAlreadyArchived = gapFingerprint != nil
+            && gapFingerprint == defaults.string(forKey: OfflineSyncDefaults.rawArchivedGapFingerprint)
+        let rawOnlyDisconnectedRecovery = Self.shouldAttemptRawOnlyHistoricalRecovery(
+            exactGapPending: recoverableGapPending,
+            rawHistoryVerified: verifiedHistoryCapability,
+            metricHistoryVerified: verifiedMetricHistoryCapability,
+            linkConnected: connectedLink,
+            activeExplicitWorkout: activeExplicitWorkout,
+            explicitUserRequest: explicitUserRequest,
+            rawGapAlreadyArchived: rawGapAlreadyArchived
+        )
         if recoverableGapPending,
            verifiedHistoryCapability,
            !verifiedMetricHistoryCapability,
-           !explicitUserRequest {
+           !explicitUserRequest,
+           !rawOnlyDisconnectedRecovery {
             pendingOfflineHistoricalSyncReason = reason
-            defaults.set("gap_retained_metric_history_unverified",
+            let status = rawGapAlreadyArchived
+                ? "raw_gap_archived_awaiting_layout_validation"
+                : "gap_retained_metric_history_unverified"
+            defaults.set(status,
                          forKey: OfflineSyncDefaults.lastStatus)
             defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
-            AtriaDebugLog("ATRIADBG offline_sync status=gap_retained_metric_history_unverified reason=%@ detail=raw_transport_only action=preserve_realtime_and_gap explicit=0",
-                          reason)
+            AtriaDebugLog("ATRIADBG offline_sync status=%@ reason=%@ detail=raw_transport_only connected=%d archived=%d action=%@ explicit=0",
+                          status,
+                          reason,
+                          connectedLink ? 1 : 0,
+                          rawGapAlreadyArchived ? 1 : 0,
+                          rawGapAlreadyArchived
+                            ? "await_layout_validation_without_repull"
+                            : "preserve_realtime_until_natural_disconnect")
             return false
         }
         // Evaluate the narrow history-first reconnect admission before the
@@ -5185,6 +5452,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set(defaults.integer(forKey: OfflineSyncDefaults.attempts) + 1, forKey: OfflineSyncDefaults.attempts)
         defaults.set("starting", forKey: OfflineSyncDefaults.lastStatus)
         defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+        offlineHistoricalSyncRawOnlyGapFingerprint = rawOnlyDisconnectedRecovery
+            ? gapFingerprint
+            : nil
         if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) {
             defaults.set(Date().timeIntervalSince1970, forKey: OfflineSyncDefaults.rangeLossBackfillStartedAt)
         }
@@ -5771,6 +6041,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           offlineHistoricalSyncGeneration)
             return
         }
+        let rawOnlyGapFingerprint = offlineHistoricalSyncRawOnlyGapFingerprint
+        offlineHistoricalSyncRawOnlyGapFingerprint = nil
         let rows = historicalArchiveRows
         let newRows = max(0, rows - offlineHistoricalSyncStartRows)
         historyOnlyProbeEnabled = false
@@ -5784,30 +6056,42 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         offlineHistoricalSyncTimeoutTask?.cancel()
         offlineHistoricalSyncTimeoutTask = nil
         offlineHistoricalSyncStartRows = rows
-        let completionStatus = Self.historicalSyncCompletionStatus(
+        let rawOnlyGapArchived = rawOnlyGapFingerprint != nil && newRows > 0
+        let completionStatus = rawOnlyGapArchived
+            ? "raw_gap_archived_awaiting_layout_validation"
+            : Self.historicalSyncCompletionStatus(
             newRows: newRows,
             requestedWindowMetricProgress: offlineHistoricalSyncMadeRequestedMetricProgress,
             ledgerCoverageResolved: offlineHistoricalSyncResolvedGapCoverage
         )
-        UserDefaults.standard.set(completionStatus, forKey: OfflineSyncDefaults.lastStatus)
-        UserDefaults.standard.set(reason, forKey: OfflineSyncDefaults.lastReason)
-        AtriaDebugLog("ATRIADBG offline_sync status=%@ reason=%@ rows=%d new_rows=%d failures=%d action=return_standard_hr metrics_fail_closed=0",
+        let defaults = UserDefaults.standard
+        if let rawOnlyGapFingerprint, rawOnlyGapArchived {
+            defaults.set(rawOnlyGapFingerprint,
+                         forKey: OfflineSyncDefaults.rawArchivedGapFingerprint)
+            defaults.set(Date().timeIntervalSince1970,
+                         forKey: OfflineSyncDefaults.rawArchivedGapAt)
+        }
+        defaults.set(completionStatus, forKey: OfflineSyncDefaults.lastStatus)
+        defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+        AtriaDebugLog("ATRIADBG offline_sync status=%@ reason=%@ rows=%d new_rows=%d failures=%d action=return_standard_hr metrics_fail_closed=%d",
               completionStatus,
               reason,
               rows,
               newRows,
-              historicalArchiveWriteFailures)
+              historicalArchiveWriteFailures,
+              HistoricalArchive.hasValidatedMetricLayout ? 0 : 1)
         // Static handoff compatibility markers for the original clear gate:
         // if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending)
         // defaults.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)
         // assignIfChanged(\.rangeLossBackfillPending, false)
         // if newRows > 0
-        if !reconcileRangeLossBackfillPendingWithArchive(
+        let rangeLossResolved = reconcileRangeLossBackfillPendingWithArchive(
             reason: reason,
             newRows: newRows,
             requestedWindowMetricProgress: offlineHistoricalSyncMadeRequestedMetricProgress,
             ledgerCoverageResolved: offlineHistoricalSyncResolvedGapCoverage
-        ) {
+        )
+        if !rangeLossResolved && !rawOnlyGapArchived {
             scheduleRangeLossBackfillRetry(reason: reason)
         }
         let restoredStandardHROnlyMode = Self.standardHROnlyModeAfterOfflineSync(
@@ -6429,13 +6713,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let rangeReason = evidenceToken(defaults.string(forKey: OfflineSyncDefaults.rangeLossBackfillReason) ?? "none")
         let requestedAt = defaults.object(forKey: OfflineSyncDefaults.rangeLossBackfillRequestedAt) as? Double
         let startedAt = defaults.object(forKey: OfflineSyncDefaults.rangeLossBackfillStartedAt) as? Double
+        let rawArchivedAt = defaults.object(forKey: OfflineSyncDefaults.rawArchivedGapAt) as? Double
         let requestedAge = requestedAt.map { max(0, Date().timeIntervalSince1970 - $0) } ?? -1
         let startedAge = startedAt.map { max(0, Date().timeIntervalSince1970 - $0) } ?? -1
+        let rawArchivedAge = rawArchivedAt.map { max(0, Date().timeIntervalSince1970 - $0) } ?? -1
         let missingWindows = AtriaHistoricalGapLedger.windows(defaults: defaults)
         let oldestCoverage = missingWindows.first.map {
             AtriaHistoricalGapLedger.coveragePercent(for: $0)
         } ?? 0
-        return String(format: "offline_sync_enabled=%d; offline_sync_attempts=%d; offline_sync_last_status=%@; offline_sync_last_reason=%@; offline_range_loss_backfill_pending=%d; offline_range_loss_backfill_reason=%@; offline_range_loss_backfill_requested_age_s=%.1f; offline_range_loss_backfill_started_age_s=%.1f; offline_missing_windows=%d; offline_oldest_gap_coverage_percent=%d; offline_metric_layout_verified=%d",
+        return String(format: "offline_sync_enabled=%d; offline_sync_attempts=%d; offline_sync_last_status=%@; offline_sync_last_reason=%@; offline_range_loss_backfill_pending=%d; offline_range_loss_backfill_reason=%@; offline_range_loss_backfill_requested_age_s=%.1f; offline_range_loss_backfill_started_age_s=%.1f; offline_raw_gap_archived=%d; offline_raw_gap_archived_age_s=%.1f; offline_missing_windows=%d; offline_oldest_gap_coverage_percent=%d; offline_metric_layout_verified=%d",
                       defaults.bool(forKey: OfflineSyncDefaults.enabled) ? 1 : 0,
                       defaults.integer(forKey: OfflineSyncDefaults.attempts),
                       status,
@@ -6444,6 +6730,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       rangeReason,
                       requestedAge,
                       startedAge,
+                      defaults.string(forKey: OfflineSyncDefaults.rawArchivedGapFingerprint) == nil ? 0 : 1,
+                      rawArchivedAge,
                       missingWindows.count,
                       oldestCoverage,
                       HistoricalArchive.hasValidatedMetricLayout ? 1 : 0)
@@ -13603,6 +13891,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 // as SOC and plausible cell voltage, so it can originate charge
                 // truth without waiting for a second percentage sample.
                 let acceptedChargeStatus = proposedChargeStatus
+                batteryRiseCandidate = Self.batteryRiseCandidateAfterExplicitChargeStatus(
+                    acceptedChargeStatus,
+                    current: batteryRiseCandidate
+                )
+                if batteryRiseCandidate == nil {
+                    batteryRiseCandidatePeripheralID = nil
+                }
+                if acceptedChargeStatus == .notCharging || acceptedChargeStatus == .full {
+                    lastPlausibleBatteryRiseEvidenceAt = nil
+                    lastUncorroboratedChargingStatusAt = nil
+                }
                 assignIfChanged(\.batteryLevel, level)
                 assignIfChanged(\.batteryIsCharging, acceptedChargeStatus == .charging)
                 assignIfChanged(\.batteryChargeStatus, acceptedChargeStatus)
@@ -16384,6 +16683,17 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
         Task { @MainActor in
             self.batteryConnectionRestoredSamePeripheral = false
             self.recentReconnectBatteryBaselineProjectionPublished = false
+            self.lastPlausibleBatteryRiseEvidenceAt = nil
+            self.lastUncorroboratedChargingStatusAt = nil
+            self.batteryRiseCandidate = Self.batteryRiseCandidateAfterReconnect(
+                self.batteryRiseCandidate,
+                candidatePeripheralID: self.batteryRiseCandidatePeripheralID,
+                connectedPeripheralID: peripheral.identifier,
+                now: Date()
+            )
+            if self.batteryRiseCandidate == nil {
+                self.batteryRiseCandidatePeripheralID = nil
+            }
             if UserDefaults.standard.bool(forKey: BatteryDefaults.proprietaryRefreshPending) {
                 failProprietaryBatteryRefresh(reason: "stale_pending_request_after_connect")
             }
@@ -17237,6 +17547,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     UserDefaults.standard.set(receivedAt.timeIntervalSince1970,
                                               forKey: BatteryDefaults.notificationLeaseAt)
                 }
+                let previousAcceptedBatteryAt = self.lastAcceptedBatteryLevelAt
                 self.lastAcceptedBatteryLevelAt = receivedAt
                 // 2A19 exposes percentage, not external-power state. A single
                 // small rise can be quantization/correction and must never claim
@@ -17250,22 +17561,71 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 if previous >= 0 {
                     let delta = newLevel - previous
                     if chargeEvidenceFromThisRead == .full {
+                        lastPlausibleBatteryRiseEvidenceAt = nil
+                        lastUncorroboratedChargingStatusAt = nil
+                        batteryRiseCandidate = nil
+                        batteryRiseCandidatePeripheralID = nil
                         assignIfChanged(\.batteryIsCharging, false)
                         assignIfChanged(\.batteryChargeStatus, .full)
                         assignIfChanged(\.batteryRecentlyDropping, false)
                         clearBatteryDropMarker()
                     } else if delta > 0 {
+                        lastPlausibleBatteryRiseEvidenceAt = receivedAt
+                        batteryRiseCandidate = Self.updatedBatteryRiseCandidate(
+                            current: batteryRiseCandidate,
+                            previousLevel: previous,
+                            previousAcceptedAt: previousAcceptedBatteryAt,
+                            newLevel: newLevel,
+                            receivedAt: receivedAt
+                        )
+                        batteryRiseCandidatePeripheralID = batteryRiseCandidate == nil
+                            ? nil : peripheral.identifier
                         if batteryChargeStatus != .charging {
                             assignIfChanged(\.batteryIsCharging, false)
                             assignIfChanged(\.batteryChargeStatus, .levelOnly)
                         }
                         assignIfChanged(\.batteryRecentlyDropping, false)
                         clearBatteryDropMarker()
+                        // 2A1B can arrive before the first changed 2A19 level on
+                        // a new subscription. Pair the two independent signals
+                        // in either order without issuing an explicit status
+                        // read, which remains disabled to protect R10 continuity.
+                        if Self.hasFreshBatteryRiseEvidence(
+                            lastRiseAt: lastUncorroboratedChargingStatusAt,
+                            receivedAt: receivedAt
+                        ) {
+                            assignIfChanged(\.batteryIsCharging, true)
+                            assignIfChanged(\.batteryChargeStatus, .charging)
+                            lastUncorroboratedChargingStatusAt = nil
+                            persistBatteryChargeStatus(.charging,
+                                                       source: "live_2A1B_plus_2A19_rise")
+                            recordBatteryChargeEvidence(.charging,
+                                                        reason: "battery_status_plus_rise")
+                        } else if let batteryRiseCandidate,
+                                  Self.batteryRiseCandidateProvesCharging(
+                                    batteryRiseCandidate
+                                  ) {
+                            assignIfChanged(\.batteryIsCharging, true)
+                            assignIfChanged(\.batteryChargeStatus, .charging)
+                            persistBatteryChargeStatus(.charging,
+                                                       source: "live_2A19_charge_trajectory")
+                            recordBatteryChargeEvidence(.charging,
+                                                        reason: "battery_rise_trajectory")
+                        }
                     } else if delta < 0 {
+                        lastPlausibleBatteryRiseEvidenceAt = nil
+                        lastUncorroboratedChargingStatusAt = nil
+                        batteryRiseCandidate = nil
+                        batteryRiseCandidatePeripheralID = nil
                         assignIfChanged(\.batteryIsCharging, false)
                         assignIfChanged(\.batteryChargeStatus, .notCharging)
                         assignIfChanged(\.batteryRecentlyDropping, true)
-                    } else if batteryChargeStatus == .charging {
+                    } else if batteryChargeStatus == .charging,
+                              !Self.shouldPreserveFreshChargingEvidence(
+                                currentStatus: batteryChargeStatus,
+                                lastEvidenceAt: lastActiveBatteryChargeEvidenceAt,
+                                receivedAt: receivedAt
+                              ) {
                         assignIfChanged(\.batteryIsCharging, false)
                         assignIfChanged(\.batteryChargeStatus, .levelOnly)
                     }
@@ -17298,13 +17658,22 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 }
                 if let parsedStatus = Self.parseBatteryChargeStatus(data) {
                     let proposedStatus: BatteryChargeStatus = batteryLevel >= 100 && parsedStatus == .charging ? .full : parsedStatus
-                    let hasPlausibleRiseEvidence = self.pendingBatteryDropCandidate == nil &&
-                        (self.batteryChargeStatus == .charging || self.batteryChargeStatus == .full)
+                    let hasPlausibleRiseEvidence = self.pendingBatteryDropCandidate == nil && (
+                        self.batteryChargeStatus == .charging
+                            || self.batteryChargeStatus == .full
+                            || Self.hasFreshBatteryRiseEvidence(
+                                lastRiseAt: self.lastPlausibleBatteryRiseEvidenceAt,
+                                receivedAt: receivedAt
+                            )
+                    )
                     guard let status = Self.acceptedBatteryChargeStatus(
                         proposedStatus,
                         batteryLevel: self.batteryLevel,
                         hasPlausibleRiseEvidence: hasPlausibleRiseEvidence
                     ) else {
+                        if proposedStatus == .charging {
+                            self.lastUncorroboratedChargingStatusAt = receivedAt
+                        }
                         // A powered/full status packet cannot overrule a
                         // disputed level. Keep every projection fail-closed and
                         // leave the last credible percentage untouched.
@@ -17321,6 +17690,19 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     }
                     assignIfChanged(\.batteryIsCharging, status == .charging)
                     assignIfChanged(\.batteryChargeStatus, status)
+                    self.batteryRiseCandidate = Self.batteryRiseCandidateAfterExplicitChargeStatus(
+                        status,
+                        current: self.batteryRiseCandidate
+                    )
+                    if self.batteryRiseCandidate == nil {
+                        self.batteryRiseCandidatePeripheralID = nil
+                    }
+                    if status == .notCharging || status == .full {
+                        self.lastPlausibleBatteryRiseEvidenceAt = nil
+                        self.lastUncorroboratedChargingStatusAt = nil
+                    } else if status == .charging {
+                        self.lastUncorroboratedChargingStatusAt = nil
+                    }
                     if self.r10MotionIsEligible, self.realtimeArmed {
                         self.ensureR10LivenessWatchdog(reason: "charging_eligible")
                         self.evaluateR10Liveness(now: receivedAt, reason: "charging_eligible")

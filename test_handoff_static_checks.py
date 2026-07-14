@@ -1046,7 +1046,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .disconnected:\n                displayStatus = freshPulse ? .connected : .disconnected",
             "case .connected, .connecting, .scanning:\n                displayStatus = .connected",
             'label = "Live · Battery pending"',
-            'label = "\\(input.batteryLevel)% · Charging"',
+            'accessorySymbol = "bolt.fill"',
+            'accessibilityLabel = "\\(input.batteryLevel)%, Charging"',
             'label = "\\(input.batteryLevel)% · Low"',
             'label = "\\(input.batteryLevel)% · \\(batteryRecencyText(verifiedAt: input.batteryLastVerifiedAt, now: now))"',
             "var batteryLastVerifiedAt: Date?",
@@ -2440,7 +2441,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "ble.$pendingKnownReconnectReason.removeDuplicates()",
             "ble.$rangeLossBackfillPending.removeDuplicates()",
             "live.bluetoothPermissionDenied",
-            "batteryRecentlyDropping: displayableBatteryLevel != nil && ble.batteryRecentlyDropping",
+            "let batteryRecentlyDropping = displayableBatteryLevel != nil && ble.batteryRecentlyDropping",
             "officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk",
             "lastScanRequestedAt: ble.lastScanRequestedAt",
             "lastScanMatchAt: ble.lastScanMatchAt",
@@ -2574,7 +2575,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "title: batterySaver ? \"Heart rate + strap motion\" : \"Diagnostic full protocol\"",
             "Atria never substitutes phone motion.",
             "Keeps richer strap streams available for beat-to-beat, HRV, Recovery and sleep research.",
-            "Atria reconnects the strap when the radio mode changes.",
+            ".accessibilityHint(\"Changing mode reconnects the strap.\")",
             ".onChange(of: batterySaver) { _, value in onUpdateBatterySaver(value) }",
         ]:
             assert_contains(self, settings, needle)
@@ -2683,6 +2684,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "var batteryAccessibilityChargeText: String",
             "var batteryAccessibilityText: String",
             "var batteryStatusSummaryText: String",
+            "if batteryShowsPowered || batteryChargeStatus == .full",
             "var batteryDetailText: String",
             "private var hasActiveChargingEvidence: Bool",
             "batteryIsCharging && batteryChargeStatus == .charging && !batteryRecentlyDropping",
@@ -2700,9 +2702,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "return \"Strap battery \\(batteryText), \\(batteryAccessibilityChargeText).\"",
             "guard batteryLevel >= 0 else { return \"—\" }",
             "batteryChargeStatus == .levelOnly",
-            "if batteryShowsPowered { return \"battery.100percent.bolt\" }",
+            "if batteryShowsPowered || batteryChargeStatus == .full",
             "ble.$batteryChargeStatus.removeDuplicates()",
-            "batteryChargeStatus: displayableChargeStatus",
+            "batteryChargeStatus: batteryChargeProjection.status",
             ".accessibilityLabel(presentation.accessibilityLabel)",
             "guard batteryLevel >= 0 else { return \"questionmark.circle\" }",
             "value: coreLiveStore.state.batteryStatusSummaryText",
@@ -2959,6 +2961,7 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "struct AtriaHapticAlertSettingsCard: View, Equatable",
             ".atriaInsetCard(tint: .purple)",
+            ".accessibilityLabel(\"Notifications. Choose coaching nudges Atria can send on this phone. Nothing leaves your device.\")",
         ]:
             assert_contains(self, haptics, needle)
         assert_not_contains(self, haptics, ".atriaRaisedCard(")
@@ -2967,7 +2970,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaHapticAlertSettingsCard(settings: haptics) { next in",
             "haptics = next",
             "AtriaNotificationSettingsCard()",
-            "Text(\"Phone-side alerts and on-device notifications only. Nothing leaves your phone.\")",
         ]:
             assert_contains(self, settings, needle)
         for forbidden in [
@@ -3730,7 +3732,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "reviewSource: String? = nil",
             "cleanedActivityType",
             "cleanedExercises.isEmpty ? nil : cleanedExercises",
-            "label: cleanedActivityType ?? \"Live workout\"",
+            "label: cleanedActivityLabel ?? cleanedActivityType ?? \"Live workout\"",
             # 2026-07-07: enriched metrics now computed over the onset-trimmed
             # displayStart (getting-ready lead-in removed); id/readiness stay
             # on the untrimmed bestStart.
@@ -8189,7 +8191,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "Sleep-only evidence; no SpO2 percentage or Health export yet.",
             "Body temperature signal",
             "Skin-temp deviation only; no absolute body temperature or Health export.",
-            "Atria shows only hardware-backed readings.",
         ]:
             assert_contains(self, settings, needle)
 

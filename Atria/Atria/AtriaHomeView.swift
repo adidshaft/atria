@@ -6909,6 +6909,54 @@ private struct AtriaStandByMetric: View {
 @MainActor
 final class AtriaHomeModel {
     nonisolated static let liveHeartRateFreshnessInterval: TimeInterval = 6
+    /// The strap's CRC-validated power event normally arrives about every eight
+    /// minutes. Retain that explicit proof through one event interval, matching
+    /// the BLE truth gate, without treating a rising percentage as power state.
+    nonisolated static let freshChargerEvidenceInterval: TimeInterval = 10 * 60
+
+    struct BatteryChargeProjection: Equatable {
+        let status: AtriaBLEManager.BatteryChargeStatus
+        let isCharging: Bool
+    }
+
+    nonisolated static func resolvedBatteryChargeProjection(
+        liveStatus: AtriaBLEManager.BatteryChargeStatus,
+        liveIsCharging: Bool,
+        batteryRecentlyDropping: Bool,
+        persistedStatus: AtriaBLEManager.BatteryChargeStatus,
+        persistedAge: TimeInterval,
+        freshnessInterval: TimeInterval = freshChargerEvidenceInterval
+    ) -> BatteryChargeProjection {
+        if !batteryRecentlyDropping,
+           liveStatus == .charging,
+           liveIsCharging {
+            return BatteryChargeProjection(status: .charging, isCharging: true)
+        }
+
+        // A live, explicit non-powered state always outranks older persisted
+        // charger proof, even while that older event is still within its TTL.
+        if liveStatus == .notCharging || liveStatus == .full {
+            return BatteryChargeProjection(status: liveStatus, isCharging: false)
+        }
+
+        let hasFreshPersistedChargerEvent = persistedStatus == .charging
+            && persistedAge >= 0
+            && persistedAge <= freshnessInterval
+        if !batteryRecentlyDropping,
+           liveStatus == .levelOnly,
+           !liveIsCharging,
+           hasFreshPersistedChargerEvent {
+            return BatteryChargeProjection(status: .charging, isCharging: true)
+        }
+
+        // A status/flag mismatch is not charger evidence. Fail closed until a
+        // fresh explicit event arrives; percentage movement is intentionally
+        // absent from this resolver.
+        if liveStatus == .charging || liveIsCharging {
+            return BatteryChargeProjection(status: .levelOnly, isCharging: false)
+        }
+        return BatteryChargeProjection(status: liveStatus, isCharging: false)
+    }
 
     struct StatusState: Equatable {
         var status: AtriaBLEManager.Status
@@ -7005,6 +7053,11 @@ final class AtriaHomeModel {
         }
         var batteryStatusSummaryText: String {
             guard batteryLevel >= 0 else { return "—" }
+            // Compact surfaces communicate external power with the battery
+            // symbol's bolt; repeating "Charging" wastes space and truncates.
+            if batteryShowsPowered || batteryChargeStatus == .full {
+                return batteryText
+            }
             if batteryReadingIsRecentBaseline {
                 return "\(batteryText) · \(batteryRecencyText)"
             }
@@ -7124,7 +7177,9 @@ final class AtriaHomeModel {
         /// SF Symbol matching the level, with the bolt overlay while charging.
         var batterySymbol: String {
             guard batteryLevel >= 0 else { return "questionmark.circle" }
-            if batteryShowsPowered { return "battery.100percent.bolt" }
+            if batteryShowsPowered || batteryChargeStatus == .full {
+                return "battery.100percent.bolt"
+            }
             switch batteryLevel {
             case ..<13: return "battery.0percent"
             case ..<38: return "battery.25percent"
@@ -8483,9 +8538,25 @@ final class AtriaHomeModel {
                                           savedAggregate: SavedAggregate) -> CoreLiveState {
         let deviceName = ble.resolvedDeviceName
         let displayableBatteryLevel = ble.displayableBatteryLevel()
-        let displayableChargeStatus = displayableBatteryLevel == nil
-            ? AtriaBLEManager.BatteryChargeStatus.levelOnly
-            : ble.batteryChargeStatus
+        let batteryRecentlyDropping = displayableBatteryLevel != nil && ble.batteryRecentlyDropping
+        let batteryChargeProjection: BatteryChargeProjection
+        if displayableBatteryLevel != nil {
+            let now = Date()
+            let persistedBattery = AtriaBLEManager.cachedBattery(
+                chargeMaxAge: freshChargerEvidenceInterval,
+                now: now
+            )
+            batteryChargeProjection = resolvedBatteryChargeProjection(
+                liveStatus: ble.batteryChargeStatus,
+                liveIsCharging: ble.batteryIsCharging,
+                batteryRecentlyDropping: batteryRecentlyDropping,
+                persistedStatus: persistedBattery.chargeStatus,
+                persistedAge: persistedBattery.chargeAge
+            )
+        } else {
+            batteryChargeProjection = BatteryChargeProjection(status: .levelOnly,
+                                                               isCharging: false)
+        }
         let strapStepsToday = mergedStrapStepResearchCount(
             savedToday: savedAggregate.savedTodayStrapSteps,
             savedActiveSession: savedAggregate.savedActiveSessionStrapSteps,
@@ -8502,9 +8573,9 @@ final class AtriaHomeModel {
                              deviceName: deviceName,
                              displayDeviceName: AtriaDeviceDisplayName.shortName(for: deviceName),
                              batteryLevel: displayableBatteryLevel ?? -1,
-                             batteryIsCharging: displayableBatteryLevel != nil && ble.batteryIsCharging,
-                             batteryChargeStatus: displayableChargeStatus,
-                             batteryRecentlyDropping: displayableBatteryLevel != nil && ble.batteryRecentlyDropping,
+                             batteryIsCharging: batteryChargeProjection.isCharging,
+                             batteryChargeStatus: batteryChargeProjection.status,
+                             batteryRecentlyDropping: batteryRecentlyDropping,
                              batteryReadingIsRecentBaseline: displayableBatteryLevel != nil && ble.batteryReadingIsRecentBaseline,
                              batteryLastVerifiedAt: ble.lastVerifiedBatteryLevelAt,
                              strapStreamState: ble.strapStreamState,
@@ -9513,8 +9584,24 @@ struct AtriaTopStatusPresentation: Equatable {
 
     let label: String
     let symbol: String
+    let accessorySymbol: String?
+    let accessibilityLabel: String
     let tone: Tone
     let isConnected: Bool
+
+    init(label: String,
+         symbol: String,
+         tone: Tone,
+         isConnected: Bool,
+         accessorySymbol: String? = nil,
+         accessibilityLabel: String? = nil) {
+        self.label = label
+        self.symbol = symbol
+        self.accessorySymbol = accessorySymbol
+        self.accessibilityLabel = accessibilityLabel ?? label
+        self.tone = tone
+        self.isConnected = isConnected
+    }
 }
 
 struct AtriaTopStatusProjectionInput: Equatable {
@@ -9667,17 +9754,23 @@ enum AtriaTopStatusProjection {
         // demonstrably live, use that high-value space for battery truth instead
         // of a redundant second "Live" label. A current reading says Live/Low;
         // a bounded verified reconnect baseline says exactly how old it is.
-        // Restoration sentinels never reach this projection.
+        // Restoration sentinels never reach this projection. Charging stays a
+        // compact visual state; VoiceOver still receives its full meaning.
+        var accessorySymbol: String?
+        var accessibilityLabel: String?
         if displayStatus == .connected,
            hasPulseSignal || input.strapStreamState == .live {
             if input.batteryLevel >= 0 {
-                symbol = batterySymbol(level: input.batteryLevel,
-                                        isCharging: input.batteryShowsPowered)
+                symbol = batterySymbol(level: input.batteryLevel)
                 if input.batteryShowsPowered {
-                    label = "\(input.batteryLevel)% · Charging"
+                    label = "\(input.batteryLevel)%"
+                    accessorySymbol = "bolt.fill"
+                    accessibilityLabel = "\(input.batteryLevel)%, Charging"
                     tone = .green
                 } else if input.batteryChargeStatus == .full {
-                    label = "\(input.batteryLevel)% · Full"
+                    label = "\(input.batteryLevel)%"
+                    accessorySymbol = "bolt.fill"
+                    accessibilityLabel = "\(input.batteryLevel)%, Charging, Full"
                     tone = .green
                 } else if input.batteryLevel <= 20 {
                     label = "\(input.batteryLevel)% · Low"
@@ -9699,11 +9792,12 @@ enum AtriaTopStatusProjection {
         return AtriaTopStatusPresentation(label: label,
                                           symbol: symbol,
                                           tone: tone,
-                                          isConnected: displayStatus == .connected)
+                                          isConnected: displayStatus == .connected,
+                                          accessorySymbol: accessorySymbol,
+                                          accessibilityLabel: accessibilityLabel)
     }
 
-    private static func batterySymbol(level: Int, isCharging: Bool) -> String {
-        if isCharging { return "battery.100percent.bolt" }
+    private static func batterySymbol(level: Int) -> String {
         switch level {
         case ..<13: return "battery.0percent"
         case ..<38: return "battery.25percent"
@@ -9982,6 +10076,12 @@ private struct AtriaTopStatusChip: View, Equatable {
             Text(presentation.label)
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
+            if let accessorySymbol = presentation.accessorySymbol {
+                Image(systemName: accessorySymbol)
+                    .font(.caption2.weight(.black))
+                    .imageScale(.small)
+                    .accessibilityHidden(true)
+            }
         }
         .font(.caption.weight(.bold))
         // The state hue already lives in the glass surface. Adaptive primary
@@ -9999,7 +10099,7 @@ private struct AtriaTopStatusChip: View, Equatable {
             in: .capsule
         )
         .contentShape(Capsule())
-        .accessibilityLabel("Strap status \(presentation.label)")
+        .accessibilityLabel("Strap status \(presentation.accessibilityLabel)")
     }
 
     private var toneColor: Color {
