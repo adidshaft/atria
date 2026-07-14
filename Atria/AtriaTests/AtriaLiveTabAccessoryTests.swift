@@ -237,6 +237,59 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         XCTAssertEqual(presentation.accessibilityLabel, "100%, Charging, Full")
     }
 
+    func testHeaderBatterySnapshotFailsClosedOnContradictoryChargingFields() {
+        let snapshot = AtriaHeaderBatterySnapshot(
+            level: 43,
+            showsPowered: false,
+            chargeStatus: .charging,
+            isRecentBaseline: false,
+            verifiedAt: Date()
+        )
+
+        XCTAssertEqual(snapshot.level, 43)
+        XCTAssertEqual(snapshot.powerState, .none)
+
+        let input = topStatusInput(status: .connected,
+                                   hasRecentHeartRateSample: true,
+                                   lastReadingAt: Date(),
+                                   batteryLevel: 43,
+                                   batteryShowsPowered: false,
+                                   batteryChargeStatus: .charging,
+                                   hasEverConnected: true)
+        let presentation = AtriaTopStatusProjection.presentation(input: input, now: Date())
+        XCTAssertEqual(presentation.label, "43% · Live")
+        XCTAssertNil(presentation.accessorySymbol)
+    }
+
+    func testHeaderBatterySnapshotDropsStatusAndTimestampWhenLevelIsUnavailable() {
+        let snapshot = AtriaHeaderBatterySnapshot(
+            level: -1,
+            showsPowered: true,
+            chargeStatus: .charging,
+            isRecentBaseline: true,
+            verifiedAt: Date()
+        )
+
+        XCTAssertNil(snapshot.level)
+        XCTAssertEqual(snapshot.powerState, .none)
+        XCTAssertFalse(snapshot.isRecentBaseline)
+        XCTAssertNil(snapshot.verifiedAt)
+    }
+
+    func testPullToRefreshFeedbackDoesNotDuplicateBatterySnapshot() throws {
+        let source = try String(contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaHomeView.swift"),
+                                encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private var connectivityPillText"))
+        let end = try XCTUnwrap(source.range(of: "private func handleConnectivityRefresh",
+                                              range: start.upperBound..<source.endIndex))
+        let feedback = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertFalse(feedback.contains("batteryText"))
+        XCTAssertFalse(feedback.contains("batteryLevel"))
+        XCTAssertFalse(feedback.contains("connectivityFreshnessText"))
+        XCTAssertTrue(feedback.contains("Refreshing strap…"))
+    }
+
     func testAtAGlanceBatteryCardKeepsPoweredValueCompactAndAccessible() throws {
         let source = try String(contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaTodayScreen.swift"),
                                 encoding: .utf8)
@@ -399,11 +452,13 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                       pendingKnownReconnectStartedAt: pendingKnownReconnectStartedAt,
                                       rangeLossBackfillPending: rangeLossBackfillPending,
                                       hasEverConnected: hasEverConnected,
-                                      batteryLevel: batteryLevel,
-                                      batteryShowsPowered: batteryShowsPowered,
-                                      batteryChargeStatus: batteryChargeStatus,
-                                      batteryReadingIsRecentBaseline: batteryReadingIsRecentBaseline,
-                                      batteryLastVerifiedAt: batteryLastVerifiedAt)
+                                      battery: AtriaHeaderBatterySnapshot(
+                                        level: batteryLevel,
+                                        showsPowered: batteryShowsPowered,
+                                        chargeStatus: batteryChargeStatus,
+                                        isRecentBaseline: batteryReadingIsRecentBaseline,
+                                        verifiedAt: batteryLastVerifiedAt
+                                      ))
     }
 
     private var sourceRoot: URL {

@@ -13937,21 +13937,46 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return now.timeIntervalSince(lastRepairAt) >= minimumInterval
     }
 
+    /// The protected R10 transport blocks experimental/maintenance writes by
+    /// default. A user-started workout haptic is the sole narrow exception: it
+    /// is bounded to real zone transitions and is never a periodic probe.
+    nonisolated static func shouldAllowProtectedTransportCommand(
+        command: UInt8,
+        standardHROnlyMode: Bool,
+        historyOnlyProbeEnabled: Bool,
+        explicitWorkoutHaptic: Bool
+    ) -> Bool {
+        !standardHROnlyMode
+            || historyOnlyProbeEnabled
+            || (explicitWorkoutHaptic && command == Cmd.runHapticsPattern)
+    }
+
     /// Send a COMMAND packet on CMD_TO_STRAP: [0x23, seq, cmd, data...].
-    private func sendCommand(_ cmd: UInt8, _ data: [UInt8], mode: CommandWriteMode) {
+    /// Returns true only after CoreBluetooth accepted a supported write path,
+    /// so callers never report a blocked command as sent.
+    @discardableResult
+    private func sendCommand(_ cmd: UInt8,
+                             _ data: [UInt8],
+                             mode: CommandWriteMode,
+                             explicitWorkoutHaptic: Bool = false) -> Bool {
         guard motionHandshakeDiagnostic == nil else {
             recordMotionHandshakeEvidence(event: "proprietary_tx_blocked",
                                           detail: String(format: "cmd_%02x", cmd))
-            return
+            return false
         }
-        guard !standardHROnlyMode || historyOnlyProbeEnabled else {
+        guard Self.shouldAllowProtectedTransportCommand(
+            command: cmd,
+            standardHROnlyMode: standardHROnlyMode,
+            historyOnlyProbeEnabled: historyOnlyProbeEnabled,
+            explicitWorkoutHaptic: explicitWorkoutHaptic
+        ) else {
             incrementRadioCounter(RadioDefaults.realtimeStartSkipped, reason: "standard_hr_only_write_blocked")
             AtriaDebugLog("ATRIADBG writeSkip mode=%@ reason=standard_hr_only_no_strap_writes cmd=%02x",
                   mode.rawValue, cmd)
             dbgWrite = "standard hr only blocked"
-            return
+            return false
         }
-        guard let tx = txCharacteristic, let p = peripheral else { return }
+        guard let tx = txCharacteristic, let p = peripheral else { return false }
         let payload = [Packet.command, cmdSeq, cmd] + data
         let seq = cmdSeq
         cmdSeq &+= 1
@@ -13964,20 +13989,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             guard tx.properties.contains(.writeWithoutResponse) else {
                 AtriaDebugLog("ATRIADBG writeSkip mode=wwr reason=unsupported props=%lu", tx.properties.rawValue)
                 dbgWrite = "wwr unsupported"
-                return
+                return false
             }
             p.writeValue(frame, for: tx, type: .withoutResponse)
         case .withResponse:
             guard tx.properties.contains(.write) else {
                 AtriaDebugLog("ATRIADBG writeSkip mode=wr reason=unsupported props=%lu", tx.properties.rawValue)
                 dbgWrite = "wr unsupported"
-                return
+                return false
             }
             p.writeValue(frame, for: tx, type: .withResponse)
         }
         dbgWriteMode = mode.rawValue
         dbgWrite = mode == .withoutResponse ? "sent" : "pending"
         dbgCmdSends += 1
+        return true
     }
 
     /// Plays a short, bounded WHOOP 4 haptic pattern for live zone coaching.
@@ -13991,10 +14017,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG workout_zone_haptic status=skipped pulses=%d reason=strap_not_write_ready", pulses)
             return
         }
-        sendCommand(Cmd.runHapticsPattern,
-                    [0x02, UInt8(pulses), 0x00, 0x00, 0x00],
-                    mode: .withoutResponse)
-        AtriaDebugLog("ATRIADBG workout_zone_haptic status=sent pattern=2 pulses=%d", pulses)
+        let sent = sendCommand(Cmd.runHapticsPattern,
+                               [0x02, UInt8(pulses), 0x00, 0x00, 0x00],
+                               mode: .withoutResponse,
+                               explicitWorkoutHaptic: true)
+        AtriaDebugLog("ATRIADBG workout_zone_haptic status=%@ pattern=2 pulses=%d transport=protected_r10_bounded",
+                      sent ? "sent" : "blocked",
+                      pulses)
     }
 
     /// Installs or updates the persisted target owned by the current explicit

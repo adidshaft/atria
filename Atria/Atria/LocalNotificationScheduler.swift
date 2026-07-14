@@ -1811,12 +1811,17 @@ enum LocalNotificationScheduler {
 final class AtriaNotificationDeepLinkInbox: @unchecked Sendable {
     static let shared = AtriaNotificationDeepLinkInbox()
     static let didEnqueueNotification = NotificationDeliveryLogger.deepLinkNotification
+    private static let retainedResponseKeyLimit = 64
 
     private let notificationCenter: NotificationCenter
     private let lock = NSLock()
     private var pendingURL: URL?
-    private var pendingResponseKey: String?
-    private var lastConsumedResponseKey: String?
+    // Notification response delegates can be replayed around scene restoration.
+    // Remember more than only the last response: A, B, then a replay of A must
+    // still be idempotent. The bounded FIFO keeps that protection for a whole
+    // burst without turning a long-running process into an unbounded log.
+    private var retainedResponseKeys: [String] = []
+    private var retainedResponseKeySet: Set<String> = []
 
     init(notificationCenter: NotificationCenter = .default) {
         self.notificationCenter = notificationCenter
@@ -1826,13 +1831,17 @@ final class AtriaNotificationDeepLinkInbox: @unchecked Sendable {
     func enqueue(_ url: URL, responseKey: String) -> Bool {
         guard url.scheme?.lowercased() == "atria" else { return false }
         lock.lock()
-        guard responseKey != pendingResponseKey,
-              responseKey != lastConsumedResponseKey else {
+        guard !retainedResponseKeySet.contains(responseKey) else {
             lock.unlock()
             return false
         }
+        retainedResponseKeys.append(responseKey)
+        retainedResponseKeySet.insert(responseKey)
+        if retainedResponseKeys.count > Self.retainedResponseKeyLimit {
+            let expiredKey = retainedResponseKeys.removeFirst()
+            retainedResponseKeySet.remove(expiredKey)
+        }
         pendingURL = url
-        pendingResponseKey = responseKey
         lock.unlock()
 
         Task { @MainActor [notificationCenter] in
@@ -1845,10 +1854,18 @@ final class AtriaNotificationDeepLinkInbox: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let pendingURL else { return nil }
-        lastConsumedResponseKey = pendingResponseKey
         self.pendingURL = nil
-        pendingResponseKey = nil
         return pendingURL
+    }
+
+    /// The route stays durable while UIKit/SwiftUI is still transitioning the
+    /// scene. Consuming only once the scene is active avoids changing the root
+    /// TabView in the launch transaction that previously produced a blank view.
+    func consume(sceneIsActive: Bool) -> URL? {
+        guard AtriaNotificationDeepLinkActivationPolicy.shouldConsume(
+            sceneIsActive: sceneIsActive
+        ) else { return nil }
+        return consume()
     }
 }
 

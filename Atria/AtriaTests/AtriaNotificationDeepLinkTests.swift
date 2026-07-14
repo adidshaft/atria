@@ -25,6 +25,20 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
         XCTAssertNil(inbox.consume())
     }
 
+    func testOlderResponseReplayStaysIdempotentAfterAnotherResponseWasConsumed() throws {
+        let inbox = AtriaNotificationDeepLinkInbox(notificationCenter: NotificationCenter())
+        let journal = try XCTUnwrap(URL(string: "atria://journal"))
+        let overview = try XCTUnwrap(URL(string: "atria://overview"))
+
+        XCTAssertTrue(inbox.enqueue(journal, responseKey: "morning|default"))
+        XCTAssertEqual(inbox.consume(), journal)
+        XCTAssertTrue(inbox.enqueue(overview, responseKey: "summary|default"))
+        XCTAssertEqual(inbox.consume(), overview)
+
+        XCTAssertFalse(inbox.enqueue(journal, responseKey: "morning|default"))
+        XCTAssertNil(inbox.consume())
+    }
+
     func testInboxRejectsRoutesOutsideAtria() throws {
         let inbox = AtriaNotificationDeepLinkInbox(notificationCenter: NotificationCenter())
         let url = try XCTUnwrap(URL(string: "https://example.com/journal"))
@@ -48,6 +62,16 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
     func testRouteWaitsForActiveSceneInsteadOfBeingLostDuringTransition() {
         XCTAssertFalse(AtriaNotificationDeepLinkActivationPolicy.shouldConsume(sceneIsActive: false))
         XCTAssertTrue(AtriaNotificationDeepLinkActivationPolicy.shouldConsume(sceneIsActive: true))
+    }
+
+    func testInactiveSceneCannotConsumeRetainedRoute() throws {
+        let inbox = AtriaNotificationDeepLinkInbox(notificationCenter: NotificationCenter())
+        let journal = try XCTUnwrap(URL(string: "atria://journal"))
+
+        XCTAssertTrue(inbox.enqueue(journal, responseKey: "cold-launch|default"))
+        XCTAssertNil(inbox.consume(sceneIsActive: false))
+        XCTAssertEqual(inbox.consume(sceneIsActive: true), journal)
+        XCTAssertNil(inbox.consume(sceneIsActive: true))
     }
 
     func testJournalActionOverridesMorningSummaryDefaultDestination() {

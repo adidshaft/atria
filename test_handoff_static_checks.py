@@ -1047,9 +1047,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .connected, .connecting, .scanning:\n                displayStatus = .connected",
             'label = "Live · Battery pending"',
             'accessorySymbol = "bolt.fill"',
-            'accessibilityLabel = "\\(input.batteryLevel)%, Charging"',
-            'label = "\\(input.batteryLevel)% · Low"',
-            'label = "\\(input.batteryLevel)% · \\(batteryRecencyText(verifiedAt: input.batteryLastVerifiedAt, now: now))"',
+            "struct AtriaHeaderBatterySnapshot: Equatable",
+            'accessibilityLabel = "\\(batteryLevel)%, Charging"',
+            'label = "\\(batteryLevel)% · Low"',
+            'label = "\\(batteryLevel)% · \\(batteryRecencyText(verifiedAt: input.battery.verifiedAt, now: now))"',
             "var batteryLastVerifiedAt: Date?",
             "batteryLastVerifiedAt: ble.lastVerifiedBatteryLevelAt",
             "label = hasPulseSignal ? \"Live\" : \"No signal\"",
@@ -1545,7 +1546,10 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "private struct AtriaSettingsPresentationRevision: Equatable",
-            "private struct AtriaSettingsPresentationHost<Content: View>: View, Equatable",
+            "private struct AtriaSettingsPresentationHost: View, Equatable",
+            "private struct AtriaDeferredSettingsSheet: View",
+            "private let content: () -> AnyView",
+            "Task.sleep(for: .milliseconds(34))",
             "revision: settingsPresentationRevision",
             "lhs.coordinator === rhs.coordinator && lhs.revision == rhs.revision",
             ".equatable()",
@@ -7489,16 +7493,26 @@ class HandoffStaticChecks(unittest.TestCase):
 
     def test_standard_hr_only_mode_blocks_strap_writes(self):
         text = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
-        match = re.search(r"private func sendCommand\(_ cmd: UInt8, _ data: \[UInt8\], mode: CommandWriteMode\) \{(?P<body>.*?)\n    \}", text, re.S)
+        match = re.search(
+            r"private func sendCommand\(_ cmd: UInt8,\s*"
+            r"_ data: \[UInt8\],\s*"
+            r"mode: CommandWriteMode,\s*"
+            r"explicitWorkoutHaptic: Bool = false\) -> Bool \{"
+            r"(?P<body>.*?)\n    \}",
+            text,
+            re.S,
+        )
         self.assertIsNotNone(match)
         body = match.group("body")
 
-        guard_index = body.find("guard !standardHROnlyMode || historyOnlyProbeEnabled else")
+        guard_index = body.find("guard Self.shouldAllowProtectedTransportCommand(")
         first_write_index = body.find("writeValue(")
         self.assertGreaterEqual(guard_index, 0)
         self.assertGreater(first_write_index, guard_index)
         assert_contains(self, body, "standard_hr_only_no_strap_writes")
         assert_contains(self, body, "standard_hr_only_write_blocked")
+        assert_contains(self, text, "explicitWorkoutHaptic && command == Cmd.runHapticsPattern")
+        assert_contains(self, text, "explicitWorkoutHaptic: true")
         # Eight tightly-scoped writes intentionally exist outside generic
         # sendCommand: the original explicit diagnostic, the two-write isolated
         # response/event/data R10+IMU diagnostic, the production-protected
@@ -10037,12 +10051,16 @@ class HandoffStaticChecks(unittest.TestCase):
             "ble.requestStrapStatusRead(reason: \"pull_to_refresh\")",
             "requestOfflineHistoricalSyncIfNeeded(reason: \"pull_to_refresh\", force: true)",
             "showConnectivityPill = true",
-            "let battery = live.batteryLevel >= 0 ? \" · \\(live.batteryText)\" : \"\"",
-            "return \"Strap · \\(status)\\(battery) · \\(live.connectivityFreshnessText)\"",
+            "return \"Refreshing strap…\"",
             "Self.debugLaunchFixtureValue(arguments: arguments) == \"refresh-connectivity-pill\"",
             "await handleConnectivityRefresh()",
         ]:
             assert_contains(self, home, needle)
+        refresh_start = home.index("private var connectivityPillText")
+        refresh_end = home.index("private func handleConnectivityRefresh", refresh_start)
+        refresh_feedback = home[refresh_start:refresh_end]
+        assert_not_contains(self, refresh_feedback, "batteryText")
+        assert_not_contains(self, refresh_feedback, "connectivityFreshnessText")
 
     def test_feat4_weekly_report_fixture_opens_sheet(self):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")

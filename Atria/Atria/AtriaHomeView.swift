@@ -35,14 +35,14 @@ private struct AtriaSettingsPresentationRevision: Equatable {
     let developerModeEnabled: Bool
 }
 
-private struct AtriaSettingsPresentationHost<Content: View>: View, Equatable {
+private struct AtriaSettingsPresentationHost: View, Equatable {
     @ObservedObject var coordinator: AtriaSettingsPresentationCoordinator
     let revision: AtriaSettingsPresentationRevision
-    private let content: () -> Content
+    private let content: () -> AnyView
 
     init(coordinator: AtriaSettingsPresentationCoordinator,
          revision: AtriaSettingsPresentationRevision,
-         @ViewBuilder content: @escaping () -> Content) {
+         content: @escaping () -> AnyView) {
         self.coordinator = coordinator
         self.revision = revision
         self.content = content
@@ -58,8 +58,49 @@ private struct AtriaSettingsPresentationHost<Content: View>: View, Equatable {
             .allowsHitTesting(false)
             .accessibilityHidden(true)
             .sheet(isPresented: $coordinator.isPresented) {
-                content()
+                AtriaDeferredSettingsSheet(content: content)
             }
+    }
+}
+
+/// The presentation transaction gets one deliberately cheap frame before the
+/// full Settings graph is requested. This keeps the gear responsive even when
+/// live BLE/defaults publications are already occupying the main run loop.
+/// Type erasure also prevents the large Settings body's generic metadata from
+/// becoming part of the Home sheet host's first-frame type graph.
+private struct AtriaDeferredSettingsSheet: View {
+    let content: () -> AnyView
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var isContentReady = false
+
+    var body: some View {
+        Group {
+            if isContentReady {
+                content()
+            } else {
+                NavigationStack {
+                    ProgressView()
+                        .controlSize(.small)
+                        .navigationTitle("Settings")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button("Close") { dismiss() }
+                                    .font(.body.weight(.semibold))
+                            }
+                        }
+                }
+            }
+        }
+        .task {
+            guard !isContentReady else { return }
+            // Sleeping across a display refresh, instead of mutating from
+            // onAppear, lets the sheet commit and accept gestures first.
+            try? await Task.sleep(for: .milliseconds(34))
+            guard !Task.isCancelled else { return }
+            isContentReady = true
+        }
     }
 }
 
@@ -1338,7 +1379,7 @@ struct AtriaHomeView: View {
     private var settingsPresentationHost: some View {
         AtriaSettingsPresentationHost(coordinator: settingsPresentation,
                                       revision: settingsPresentationRevision) {
-            AtriaSettingsView(profile: model.profileStore.profile,
+            AnyView(AtriaSettingsView(profile: model.profileStore.profile,
                               restingBaseline: store.baseline.restingInt,
                               myWeeklyRecovery: WeeklyReport(rollups: store.dailyRollupHistory).recoveryAvg,
                               strapName: ble.resolvedDeviceName,
@@ -1396,7 +1437,7 @@ struct AtriaHomeView: View {
                               onForgetStrap: { ble.forgetSavedStrap(reason: "user_settings") },
                               researchValidationContent: developerModeEnabled ? {
                                   AnyView(researchValidationContent)
-                              } : nil)
+                              } : nil))
         }
         .equatable()
     }
@@ -1474,7 +1515,9 @@ struct AtriaHomeView: View {
     }
 
     private func drainPendingNotificationDeepLink() {
-        guard let url = AtriaNotificationDeepLinkInbox.shared.consume() else { return }
+        guard let url = AtriaNotificationDeepLinkInbox.shared.consume(
+            sceneIsActive: scenePhase == .active
+        ) else { return }
         handleDeepLink(url)
     }
 
@@ -1485,10 +1528,7 @@ struct AtriaHomeView: View {
             // root TabView selection. If the scene is not active, retain the
             // URL; the active scene edge schedules another drain.
             await Task.yield()
-            guard !Task.isCancelled,
-                  AtriaNotificationDeepLinkActivationPolicy.shouldConsume(
-                    sceneIsActive: scenePhase == .active
-                  ) else { return }
+            guard !Task.isCancelled else { return }
             drainPendingNotificationDeepLink()
             notificationDeepLinkDrainTask = nil
         }
@@ -3785,21 +3825,22 @@ struct AtriaHomeView: View {
 
     private var connectivityPillText: String {
         let live = model.coreLiveStore.state
-        let status: String
+        // Pull-to-refresh feedback must never render a second battery value or
+        // timestamp below the canonical header snapshot. A fresh HR packet can
+        // prove connection without refreshing battery, which was how the old
+        // lower pill contradicted the header (for example 80% now vs 81% 32m).
         switch live.status {
         case .connected:
-            status = "Connected"
+            return "Refreshing strap…"
         case .connecting:
-            status = "Connecting"
+            return "Connecting to strap…"
         case .scanning:
-            status = "Scanning"
+            return "Looking for strap…"
         case .poweredOff:
-            status = "Bluetooth off"
+            return "Bluetooth is off"
         case .disconnected:
-            status = "Disconnected"
+            return "Strap is disconnected"
         }
-        let battery = live.batteryLevel >= 0 ? " · \(live.batteryText)" : ""
-        return "Strap · \(status)\(battery) · \(live.connectivityFreshnessText)"
     }
 
     private func handleConnectivityRefresh() async {
@@ -9679,11 +9720,50 @@ struct AtriaTopStatusProjectionInput: Equatable {
     let pendingKnownReconnectStartedAt: Date?
     let rangeLossBackfillPending: Bool
     let hasEverConnected: Bool
-    let batteryLevel: Int
-    let batteryShowsPowered: Bool
-    let batteryChargeStatus: AtriaBLEManager.BatteryChargeStatus
-    let batteryReadingIsRecentBaseline: Bool
-    let batteryLastVerifiedAt: Date?
+    let battery: AtriaHeaderBatterySnapshot
+}
+
+/// One value-semantic battery observation feeds the entire top-left control.
+/// Keeping percentage, power state and verification time together prevents a
+/// render from pairing a new percentage with an older charging/timestamp state.
+struct AtriaHeaderBatterySnapshot: Equatable {
+    enum PowerState: Equatable {
+        case none
+        case charging
+        case full
+    }
+
+    let level: Int?
+    let powerState: PowerState
+    let isRecentBaseline: Bool
+    let verifiedAt: Date?
+
+    init(level rawLevel: Int,
+         showsPowered: Bool,
+         chargeStatus: AtriaBLEManager.BatteryChargeStatus,
+         isRecentBaseline: Bool,
+         verifiedAt: Date?) {
+        guard (0...100).contains(rawLevel) else {
+            level = nil
+            powerState = .none
+            self.isRecentBaseline = false
+            self.verifiedAt = nil
+            return
+        }
+
+        level = rawLevel
+        if showsPowered && chargeStatus == .charging {
+            powerState = .charging
+        } else if chargeStatus == .full {
+            powerState = .full
+        } else {
+            // A status/flag mismatch is not charger evidence. The header fails
+            // closed rather than briefly showing a false bolt.
+            powerState = .none
+        }
+        self.isRecentBaseline = isRecentBaseline
+        self.verifiedAt = verifiedAt
+    }
 }
 
 struct AtriaTopStatusPulseTrigger: Equatable {
@@ -9819,26 +9899,26 @@ enum AtriaTopStatusProjection {
         var accessibilityLabel: String?
         if displayStatus == .connected,
            hasPulseSignal || input.strapStreamState == .live {
-            if input.batteryLevel >= 0 {
-                symbol = batterySymbol(level: input.batteryLevel)
-                if input.batteryShowsPowered {
-                    label = "\(input.batteryLevel)%"
+            if let batteryLevel = input.battery.level {
+                symbol = batterySymbol(level: batteryLevel)
+                if input.battery.powerState == .charging {
+                    label = "\(batteryLevel)%"
                     accessorySymbol = "bolt.fill"
-                    accessibilityLabel = "\(input.batteryLevel)%, Charging"
+                    accessibilityLabel = "\(batteryLevel)%, Charging"
                     tone = .green
-                } else if input.batteryChargeStatus == .full {
-                    label = "\(input.batteryLevel)%"
+                } else if input.battery.powerState == .full {
+                    label = "\(batteryLevel)%"
                     accessorySymbol = "bolt.fill"
-                    accessibilityLabel = "\(input.batteryLevel)%, Charging, Full"
+                    accessibilityLabel = "\(batteryLevel)%, Charging, Full"
                     tone = .green
-                } else if input.batteryLevel <= 20 {
-                    label = "\(input.batteryLevel)% · Low"
+                } else if batteryLevel <= 20 {
+                    label = "\(batteryLevel)% · Low"
                     tone = .orange
-                } else if input.batteryReadingIsRecentBaseline {
-                    label = "\(input.batteryLevel)% · \(batteryRecencyText(verifiedAt: input.batteryLastVerifiedAt, now: now))"
+                } else if input.battery.isRecentBaseline {
+                    label = "\(batteryLevel)% · \(batteryRecencyText(verifiedAt: input.battery.verifiedAt, now: now))"
                     tone = .cyan
                 } else {
-                    label = "\(input.batteryLevel)% · Live"
+                    label = "\(batteryLevel)% · Live"
                     tone = .green
                 }
             } else {
@@ -9876,8 +9956,8 @@ enum AtriaTopStatusProjection {
                 ? input.lastScanMatchAt?.addingTimeInterval(liveRecoveryGraceInterval) : nil,
             input.rangeLossBackfillPending
                 ? input.lastScanRequestedAt?.addingTimeInterval(liveRecoveryGraceInterval) : nil,
-            nextBatteryRecencyDeadline(verifiedAt: input.batteryLastVerifiedAt,
-                                       isRecent: input.batteryReadingIsRecentBaseline,
+            nextBatteryRecencyDeadline(verifiedAt: input.battery.verifiedAt,
+                                       isRecent: input.battery.isRecentBaseline,
                                        now: now),
         ]
         return candidates.compactMap { $0 }.filter { $0 >= now }.min()
@@ -10032,11 +10112,7 @@ final class AtriaTopStatusProjectionStore: ObservableObject {
                                       pendingKnownReconnectStartedAt: core.pendingKnownReconnectStartedAt,
                                       rangeLossBackfillPending: core.rangeLossBackfillPending,
                                       hasEverConnected: hasEverConnected,
-                                      batteryLevel: core.batteryLevel,
-                                      batteryShowsPowered: core.batteryShowsPowered,
-                                      batteryChargeStatus: core.batteryChargeStatus,
-                                      batteryReadingIsRecentBaseline: core.batteryReadingIsRecentBaseline,
-                                      batteryLastVerifiedAt: core.batteryLastVerifiedAt)
+                                      battery: core.battery)
     }
 }
 
@@ -10057,11 +10133,7 @@ private struct AtriaTopStatusCoreTrigger: Equatable {
     let lastScanMatchAt: Date?
     let pendingKnownReconnectStartedAt: Date?
     let rangeLossBackfillPending: Bool
-    let batteryLevel: Int
-    let batteryShowsPowered: Bool
-    let batteryChargeStatus: AtriaBLEManager.BatteryChargeStatus
-    let batteryReadingIsRecentBaseline: Bool
-    let batteryLastVerifiedAt: Date?
+    let battery: AtriaHeaderBatterySnapshot
 
     init(_ state: AtriaHomeModel.CoreLiveState) {
         hasRecentHeartRateSample = state.hasRecentHeartRateSample
@@ -10074,11 +10146,13 @@ private struct AtriaTopStatusCoreTrigger: Equatable {
         lastScanMatchAt = state.lastScanMatchAt
         pendingKnownReconnectStartedAt = state.pendingKnownReconnectStartedAt
         rangeLossBackfillPending = state.rangeLossBackfillPending
-        batteryLevel = state.batteryLevel
-        batteryShowsPowered = state.batteryShowsPowered
-        batteryChargeStatus = state.batteryChargeStatus
-        batteryReadingIsRecentBaseline = state.batteryReadingIsRecentBaseline
-        batteryLastVerifiedAt = state.batteryLastVerifiedAt
+        battery = AtriaHeaderBatterySnapshot(
+            level: state.batteryLevel,
+            showsPowered: state.batteryShowsPowered,
+            chargeStatus: state.batteryChargeStatus,
+            isRecentBaseline: state.batteryReadingIsRecentBaseline,
+            verifiedAt: state.batteryLastVerifiedAt
+        )
     }
 }
 

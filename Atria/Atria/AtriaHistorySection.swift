@@ -81,15 +81,37 @@ struct AtriaHistoryModel: Equatable {
                       workouts: [UserConfirmedWorkout],
                       sleeps: [UserConfirmedSleep],
                       calendar: Calendar = .current) -> AtriaHistoryModel {
-        let workoutsByDay = Dictionary(grouping: workouts) { calendar.startOfDay(for: $0.start) }
-        let sleepsByDay = Dictionary(grouping: sleeps) { calendar.startOfDay(for: $0.start) }
+        let rollupsByDay = Dictionary(grouping: rollups) {
+            calendar.startOfDay(for: $0.day)
+        }.compactMapValues(\.first)
+        let workoutsByDay = Dictionary(grouping: workouts) {
+            EventCivilTime.day(containing: $0.start,
+                               eventTimeZoneIdentifier: $0.eventTimeZoneIdentifier,
+                               outputCalendar: calendar)
+        }
+        // A main sleep belongs to the morning it completed, matching recovery,
+        // Sleep History and the physiological wake boundary. Grouping it by
+        // bedtime made a successfully saved overnight disappear from today's
+        // Activity Center (and appear on yesterday only after a rollup existed).
+        let sleepsByDay = Dictionary(grouping: sleeps) {
+            EventCivilTime.day(containing: $0.end,
+                               eventTimeZoneIdentifier: $0.eventTimeZoneIdentifier,
+                               outputCalendar: calendar)
+        }
+        // Saved activity is authoritative even before the asynchronous metric
+        // rollup is minted. Build the list from the union so Save immediately
+        // produces an editable Activity day instead of an apparently empty tab.
+        let activityDays = Set(rollupsByDay.keys)
+            .union(workoutsByDay.keys)
+            .union(sleepsByDay.keys)
 
-        let days: [AtriaHistoryDay] = rollups.map { rollup in
-            let dayWorkouts = workoutsByDay[rollup.day] ?? []
-            let daySleeps = sleepsByDay[rollup.day] ?? []
+        let days: [AtriaHistoryDay] = activityDays.sorted(by: >).map { day in
+            let rollup = rollupsByDay[day]
+            let dayWorkouts = workoutsByDay[day] ?? []
+            let daySleeps = sleepsByDay[day] ?? []
             let confirmedWorkoutCount = dayWorkouts.count
             let confirmedSleepCount = daySleeps.count
-            let reviewPending = reviewPendingCount(for: rollup.day)
+            let reviewPending = reviewPendingCount(for: day)
 
             let state: AtriaHistoryDay.DayState
             if confirmedWorkoutCount > 0 {
@@ -102,13 +124,16 @@ struct AtriaHistoryModel: Equatable {
                 state = .none
             }
 
-            return AtriaHistoryDay(date: rollup.day,
-                                    strain: rollup.strain,
-                                    recovery: rollup.recovery,
-                                    rhrInt: rollup.rhr,
-                                    hrvMs: rollup.lnRMSSD.map(exp),
-                                    sleepSeconds: rollup.sleepSeconds,
-                                    sleepPerformance: rollup.sleepPerformance,
+            let confirmedSleepSeconds = daySleeps.reduce(0) { $0 + $1.duration }
+            return AtriaHistoryDay(date: day,
+                                    strain: rollup?.strain,
+                                    recovery: rollup?.recovery,
+                                    rhrInt: rollup?.rhr,
+                                    hrvMs: rollup?.lnRMSSD.map(exp),
+                                    sleepSeconds: confirmedSleepSeconds > 0
+                                        ? confirmedSleepSeconds
+                                        : rollup?.sleepSeconds,
+                                    sleepPerformance: rollup?.sleepPerformance,
                                     confirmedWorkoutCount: confirmedWorkoutCount,
                                     confirmedSleepCount: confirmedSleepCount,
                                     savedDurationSeconds: dayWorkouts.reduce(0) { $0 + $1.duration },
@@ -714,7 +739,7 @@ struct AtriaDetectionsListSheet: View {
     private func uniqueNight(for event: DetectionEvent) -> SleepHistorySnapshot.Night? {
         guard let store, event.kind == "sleepAutoConfirmed" else { return nil }
         let snapshot = store.sleepHistorySnapshot
-        let allSleepsByID = (snapshot.nights + snapshot.napNights)
+        let allSleepsByID = (snapshot.nights + snapshot.additionalMainNights + snapshot.napNights)
             .reduce(into: [String: SleepHistorySnapshot.Night]()) { result, night in
                 result[night.id] = night
             }

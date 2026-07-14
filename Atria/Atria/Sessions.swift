@@ -23308,7 +23308,11 @@ struct SleepHistorySnapshot: Equatable {
         var additionalMainNightsList: [Night] = []
         var napNightsList: [Night] = []
         for sleep in confirmedSleeps {
-            let day = EventCivilTime.day(containing: sleep.start,
+            // Sleep is a wake-boundary event. Candidates, frozen recovery and
+            // Activity already use the morning the sleep ended; re-keying the
+            // same evidence to bedtime after confirmation made Save appear to
+            // change recovery and could leave today's sleep row empty.
+            let day = EventCivilTime.day(containing: sleep.end,
                                          eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
                                          outputCalendar: calendar)
             let stageSegments = sleep.stageSegments
@@ -23571,8 +23575,31 @@ struct SleepHistorySnapshot: Equatable {
     }
 
     func sameDayNapHours(for night: Night, calendar: Calendar = .current) -> Double {
-        napNights
-            .filter { calendar.isDate($0.day, inSameDayAs: night.day) }
+        guard let mainStart = night.start else {
+            return napNights
+                .filter { $0.confirmed && calendar.isDate($0.day, inSameDayAs: night.day) }
+                .reduce(0) { $0 + $1.durationHours }
+        }
+        // `Night.day` is the wake day. Nap credit for this sleep need belongs
+        // to the preceding wake-to-bed interval, not to the civil morning on
+        // which the main sleep ended. Find the prior main wake when available;
+        // otherwise keep the search bounded to one day before bedtime.
+        let previousMainWake = nights.lazy
+            .filter { candidate in
+                guard candidate.id != night.id,
+                      !candidate.isNapEvidence,
+                      let end = candidate.end else { return false }
+                return end <= mainStart
+            }
+            .compactMap(\.end)
+            .max()
+        let lowerBound = previousMainWake ?? mainStart.addingTimeInterval(-24 * 60 * 60)
+        return napNights
+            .filter { nap in
+                guard nap.confirmed,
+                      let napEnd = nap.end else { return false }
+                return napEnd > lowerBound && napEnd <= mainStart
+            }
             .reduce(0) { $0 + $1.durationHours }
     }
 

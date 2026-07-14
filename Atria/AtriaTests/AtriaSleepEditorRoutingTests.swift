@@ -33,7 +33,10 @@ final class AtriaSleepEditorRoutingTests: XCTestCase {
 
     func testActivityPreservesEveryConfirmedMainSleepWhileChoosingOneCanonicalDaySleep() {
         let calendar = Calendar(identifier: .gregorian)
-        let day = Date(timeIntervalSince1970: 1_720_944_000)
+        // Anchor at civil midnight so both fixtures actually share a WAKE day.
+        // Confirmed sleep is intentionally attributed to completion morning,
+        // not bedtime.
+        let day = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_720_944_000))
         let shortStart = day.addingTimeInterval(60 * 60)
         let longStart = day.addingTimeInterval(4 * 60 * 60)
         let short = UserConfirmedSleep(id: "short-fragment",
