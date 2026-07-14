@@ -145,8 +145,8 @@ final class AtriaStrapCalibrationArchive: @unchecked Sendable {
         let row = PendingRow(receivedAt: receivedAt,
                              source: Self.sanitizedSource(source),
                              frame: frame)
-        let deviceTimestampMS = AtriaR10MotionDecoder.decode(frame: frame).flatMap {
-            $0.deviceTimestamp > 0 ? Int64($0.deviceTimestamp) * 1_000 : nil
+        let deviceTimestampMS = AtriaR10MotionDecoder.validatedDeviceTimestamp(frame: frame).flatMap {
+            $0 > 0 ? Int64($0) * 1_000 : nil
         }
         queue.async { [self] in
             pendingRows.append(row)

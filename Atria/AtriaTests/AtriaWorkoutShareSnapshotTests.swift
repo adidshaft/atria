@@ -180,6 +180,41 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
         XCTAssertTrue(preview.contains(where: { $0.startsNewSegment && $0.latitude == points[500].latitude }))
     }
 
+    func testWorkoutShareRouteProjectionKeepsEndpointsInsideStoryTrace() {
+        let points = [
+            AtriaWorkoutShareSnapshot.RoutePoint(latitude: 28.6139,
+                                                 longitude: 77.2090,
+                                                 startsNewSegment: true),
+            AtriaWorkoutShareSnapshot.RoutePoint(latitude: 28.6148,
+                                                 longitude: 77.2110,
+                                                 startsNewSegment: false),
+            AtriaWorkoutShareSnapshot.RoutePoint(latitude: 28.6160,
+                                                 longitude: 77.2102,
+                                                 startsNewSegment: false)
+        ]
+        let rect = CGRect(x: 0, y: 0, width: 280, height: 80)
+
+        let projected = AtriaWorkoutShareRouteProjection.projectedPoints(points, in: rect)
+
+        XCTAssertEqual(projected.count, points.count)
+        XCTAssertTrue(projected.allSatisfy { rect.contains($0) })
+        XCTAssertNotEqual(projected.first, projected.last)
+    }
+
+    func testWorkoutShareRouteTraceMarksStartAndFinish() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaShareCard.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private struct AtriaWorkoutShareRouteTrace"))
+        let end = try XCTUnwrap(source.range(of: "private struct AtriaWorkoutShareRouteShape",
+                                             range: start.upperBound..<source.endIndex))
+        let trace = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(trace.contains("routeEndpoint(at: start, tint: .green)"))
+        XCTAssertTrue(trace.contains("routeEndpoint(at: finish, tint: .red)"))
+        XCTAssertTrue(trace.contains(".overlay(Circle().stroke(.white.opacity(0.92), lineWidth: 1.5))"))
+    }
+
     func testPrimaryWorkoutShareDoesNotSilentlyAttachExactGPX() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
