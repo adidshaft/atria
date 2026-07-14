@@ -4805,19 +4805,21 @@ final class AtriaAnalyticsTests: XCTestCase {
         HistoricalArchive.resetRecentGravityCacheForTesting()
 
         let fileManager = FileManager.default
-        let url = HistoricalArchive.fileURL
-        let directory = url.deletingLastPathComponent()
-        let existing = try? Data(contentsOf: url)
-        if fileManager.fileExists(atPath: url.path) {
-            try fileManager.removeItem(at: url)
+        let directory = HistoricalArchive.fileURL.deletingLastPathComponent()
+        let backupDirectory = fileManager.temporaryDirectory
+            .appendingPathComponent("atria-historical-test-backup-\(UUID().uuidString)", isDirectory: true)
+        let hadExistingDirectory = fileManager.fileExists(atPath: directory.path)
+        if hadExistingDirectory {
+            try fileManager.moveItem(at: directory, to: backupDirectory)
         }
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         defer {
             HistoricalArchive.resetRecentGravityCacheForTesting()
-            try? fileManager.removeItem(at: url)
-            if let existing {
-                try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-                try? existing.write(to: url, options: .atomic)
+            try? fileManager.removeItem(at: directory)
+            if hadExistingDirectory {
+                try? fileManager.moveItem(at: backupDirectory, to: directory)
+            } else {
+                try? fileManager.removeItem(at: backupDirectory)
             }
         }
         try body()

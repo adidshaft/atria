@@ -573,7 +573,10 @@ enum LocalNotificationScheduler {
                 // battery value that created this decision may have been
                 // quarantined while they were in flight, so revalidate against
                 // the latest accepted cache immediately before scheduling.
-                let current = AtriaBLEManager.cachedBattery(maxAge: 10 * 60)
+                let current = AtriaBLEManager.cachedBattery(
+                    maxAge: 10 * 60,
+                    permitActiveNotificationLease: true
+                )
                 let charging = current.chargeStatus == .charging || current.chargeStatus == .full
                 guard Self.batteryAlertStillValid(level: current.level,
                                                   usable: current.usable,
@@ -1509,14 +1512,22 @@ enum LocalNotificationScheduler {
         let cached = AtriaBLEManager.cachedBattery(
             maxAge: AtriaBLEManager.batteryDisplayFreshnessLimit,
             defaults: defaults,
-            now: now
+            now: now,
+            permitActiveNotificationLease: true
         )
         if cached.usable {
             let liveMatchesAcceptedProjection = liveLevel == cached.level
             let chargeStatus = liveMatchesAcceptedProjection && liveChargeStatus != .levelOnly
                 ? liveChargeStatus
                 : cached.chargeStatus
-            let source = liveMatchesAcceptedProjection ? "live_2A19_fresh" : cached.source
+            let source: String
+            if liveMatchesAcceptedProjection {
+                source = cached.age <= AtriaBLEManager.batteryDisplayFreshnessLimit
+                    ? "live_2A19_fresh"
+                    : "live_2A19_active_lease"
+            } else {
+                source = cached.source
+            }
             return (cached.level, source, cached.age, chargeStatus, true, drop.recent)
         }
         return (cached.level, cached.source == "none" ? "learning" : "\(cached.source)_stale", cached.age, cached.chargeStatus, false, false)

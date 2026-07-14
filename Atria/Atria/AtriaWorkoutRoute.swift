@@ -1093,6 +1093,18 @@ enum AtriaWorkoutRouteStore {
         }
     }
 
+    /// Awaitable persistence for launch/foreground recovery. The caller may be
+    /// main-actor isolated, but route JSON encoding and atomic file I/O remain on
+    /// the same utility queue as ordinary workout completion.
+    static func saveAsync(_ draft: AtriaWorkoutRouteRecorder.Draft,
+                          workoutID: String) async -> AtriaWorkoutRoute? {
+        await withCheckedContinuation { continuation in
+            persistenceQueue.async {
+                continuation.resume(returning: save(draft, workoutID: workoutID))
+            }
+        }
+    }
+
     static func load(workoutID: String) -> AtriaWorkoutRoute? {
         guard let data = try? Data(contentsOf: fileURL(workoutID: workoutID)) else { return nil }
         return try? JSONDecoder.atriaRoute.decode(AtriaWorkoutRoute.self, from: data)

@@ -726,6 +726,7 @@ struct AtriaWorkoutStartSheet: View {
     let initial: AtriaWorkoutStartConfiguration
     let onStart: (AtriaWorkoutStartConfiguration) -> Void
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var configuration: AtriaWorkoutStartConfiguration
     @State private var showAllActivityTypes = false
     @State private var activitySearch = ""
@@ -771,19 +772,7 @@ struct AtriaWorkoutStartSheet: View {
                         }
                     }
 
-                    HStack(spacing: 10) {
-                        Text("Heart-rate target")
-                            .font(.title2.weight(.bold))
-                        Spacer(minLength: 8)
-                        Label(selectedZoneRangeText, systemImage: "scope")
-                            .font(.caption.weight(.black).monospacedDigit())
-                            .foregroundStyle(.cyan)
-                            .lineLimit(1)
-                            .padding(.horizontal, 10)
-                            .frame(minHeight: 32)
-                            .background(.cyan.opacity(0.12), in: Capsule())
-                            .accessibilityLabel("Target heart rate \(selectedZoneRangeText)")
-                    }
+                    targetHeader
                     GlassEffectContainer(spacing: 10) {
                         VStack(spacing: 12) {
                             zoneSelector(title: "Target lower zone", selection: $configuration.lowerTargetZone)
@@ -872,6 +861,38 @@ struct AtriaWorkoutStartSheet: View {
             : "Z\(range.lowerBound)–Z\(range.upperBound)"
     }
 
+    @ViewBuilder
+    private var targetHeader: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 8) {
+                targetTitle
+                targetRangeBadge
+            }
+        } else {
+            HStack(spacing: 10) {
+                targetTitle
+                Spacer(minLength: 8)
+                targetRangeBadge
+            }
+        }
+    }
+
+    private var targetTitle: some View {
+        Text("Heart-rate target")
+            .font(.title2.weight(.bold))
+    }
+
+    private var targetRangeBadge: some View {
+        Label(selectedZoneRangeText, systemImage: "scope")
+            .font(.caption.weight(.black).monospacedDigit())
+            .foregroundStyle(.cyan)
+            .lineLimit(1)
+            .padding(.horizontal, 10)
+            .frame(minHeight: 32)
+            .background(.cyan.opacity(0.12), in: Capsule())
+            .accessibilityLabel("Target heart rate \(selectedZoneRangeText)")
+    }
+
     private var compactActivityTypes: [AtriaWorkoutActivityType] {
         let stored = UserDefaults.standard.stringArray(forKey: "atria.workout.recentActivityTypes") ?? []
         let recent = stored.compactMap(AtriaWorkoutActivityType.init(rawValue:))
@@ -913,19 +934,32 @@ struct AtriaWorkoutStartSheet: View {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
+    @ViewBuilder
     private func zoneSelector(title: String, selection: Binding<Int>) -> some View {
-        HStack {
-            Text(title).font(.headline)
-            Spacer()
-            Picker(title, selection: selection) {
-                ForEach(HRZone.allCases.filter { $0 != .rest }, id: \.rawValue) { zone in
-                    Text("Z\(zone.rawValue) · \(zone.name)").tag(zone.rawValue)
-                }
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title).font(.headline)
+                zonePicker(title: title, selection: selection)
+                    .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
             }
-            .pickerStyle(.menu)
-            .buttonStyle(.glass)
+        } else {
+            HStack {
+                Text(title).font(.headline)
+                Spacer()
+                zonePicker(title: title, selection: selection)
+            }
+            .frame(minHeight: 52)
         }
-        .frame(minHeight: 52)
+    }
+
+    private func zonePicker(title: String, selection: Binding<Int>) -> some View {
+        Picker(title, selection: selection) {
+            ForEach(HRZone.allCases.filter { $0 != .rest }, id: \.rawValue) { zone in
+                Text("Z\(zone.rawValue) · \(zone.name)").tag(zone.rawValue)
+            }
+        }
+        .pickerStyle(.menu)
+        .buttonStyle(.glass)
     }
 }
 
