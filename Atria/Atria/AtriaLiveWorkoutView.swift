@@ -1133,10 +1133,10 @@ private struct AtriaLiveWorkoutRouteCard: View {
 /// existing live stores (no new pipeline); the strap is already recording.
 struct AtriaLiveWorkoutView: View {
     let pulseStore: AtriaHomeModel.PulseLiveStore
-    /// The workout surface is the sole observer. This intentionally must not
-    /// move back to a value read at the Home root or rapid sensor updates will
-    /// invalidate the whole app shell while this cover is presented.
-    @ObservedObject var metricStore: AtriaLiveWorkoutMetricStore
+    /// Rapid metric publications are observed only by the two small metric
+    /// hosts below. Keeping this reference plain prevents strain, calorie and
+    /// step changes from invalidating workout controls, sheets and set logging.
+    let metricStore: AtriaLiveWorkoutMetricStore
     // The route map owns the 1 Hz observation. Keeping this reference plain
     // prevents GPS publishes from invalidating HR, zones, strain and set logging.
     let routeRecorder: AtriaWorkoutRouteRecorder
@@ -1155,7 +1155,7 @@ struct AtriaLiveWorkoutView: View {
     let broadcastPersistsAfterWorkout: Bool
     let onMinimize: () -> Void
     let onTogglePause: () -> Void
-    let onStop: () -> Void
+    let onStop: () -> Bool
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1168,10 +1168,7 @@ struct AtriaLiveWorkoutView: View {
     @State private var restTimerEndsAt: Date?
     @State private var editingSetID: UUID?
     @State private var latestPRSetID: UUID?
-
-    private var metricProjection: AtriaLiveWorkoutMetricProjection {
-        metricStore.state
-    }
+    @State private var showEndPersistenceError = false
 
     var body: some View {
         Group {
@@ -1195,6 +1192,12 @@ struct AtriaLiveWorkoutView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
                 .preferredColorScheme(.dark)
+        }
+        .alert("Workout still running", isPresented: $showEndPersistenceError) {
+            Button("Try again", action: endWorkout)
+            Button("Keep recording", role: .cancel) {}
+        } message: {
+            Text("Atria couldn't save the workout yet. Try ending it again.")
         }
         .onAppear {
             #if DEBUG
@@ -1224,12 +1227,12 @@ struct AtriaLiveWorkoutView: View {
             VStack(spacing: 10) {
                 header
                 Spacer(minLength: 24)
-                AtriaLiveWorkoutRouteMetricsHUD(pulseStore: pulseStore,
-                                                metricProjection: metricProjection,
-                                                maxHR: maxHR,
-                                                lowerTargetZone: lowerTargetZone,
-                                                upperTargetZone: upperTargetZone,
-                                                onEditTarget: { showTargetPicker = true })
+                AtriaLiveWorkoutRouteMetricsHost(metricStore: metricStore,
+                                                 pulseStore: pulseStore,
+                                                 maxHR: maxHR,
+                                                 lowerTargetZone: lowerTargetZone,
+                                                 upperTargetZone: upperTargetZone,
+                                                 onEditTarget: { showTargetPicker = true })
                 routeWorkoutActions
             }
             .padding(.horizontal, 16)
@@ -1254,10 +1257,10 @@ struct AtriaLiveWorkoutView: View {
                                                    lowerTargetZone: lowerTargetZone,
                                                    upperTargetZone: upperTargetZone)
                             .padding(.top, 2)
-                        AtriaLiveWorkoutStrainGuidance(metricProjection: metricProjection,
-                                                       guidanceTarget: strainTarget,
-                                                       targetChoice: $targetChoice,
-                                                       showTargetPicker: $showTargetPicker)
+                        AtriaLiveWorkoutStrainGuidanceHost(metricStore: metricStore,
+                                                          guidanceTarget: strainTarget,
+                                                          targetChoice: $targetChoice,
+                                                          showTargetPicker: $showTargetPicker)
                         workoutActionsCard
                     }
                     .padding(22)
@@ -1773,8 +1776,12 @@ struct AtriaLiveWorkoutView: View {
 
     private func endWorkout() {
         finalizePauseIfNeeded()
-        onStop()
-        dismiss()
+        if onStop() {
+            dismiss()
+        } else {
+            showEndPersistenceError = true
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+        }
     }
 
     private func elapsedText(_ date: Date) -> String {
@@ -1813,6 +1820,24 @@ private struct AtriaLiveWorkoutBackdrop: View {
 
 /// One compact, pulse-driven overlay for outdoor workouts. Keeping HR here
 /// isolates rapid strap publications from the map and pinned action controls.
+private struct AtriaLiveWorkoutRouteMetricsHost: View {
+    @ObservedObject var metricStore: AtriaLiveWorkoutMetricStore
+    let pulseStore: AtriaHomeModel.PulseLiveStore
+    let maxHR: Int
+    let lowerTargetZone: Int?
+    let upperTargetZone: Int?
+    let onEditTarget: () -> Void
+
+    var body: some View {
+        AtriaLiveWorkoutRouteMetricsHUD(pulseStore: pulseStore,
+                                        metricProjection: metricStore.state,
+                                        maxHR: maxHR,
+                                        lowerTargetZone: lowerTargetZone,
+                                        upperTargetZone: upperTargetZone,
+                                        onEditTarget: onEditTarget)
+    }
+}
+
 private struct AtriaLiveWorkoutRouteMetricsHUD: View {
     @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
     let metricProjection: AtriaLiveWorkoutMetricProjection
@@ -2040,6 +2065,20 @@ private struct AtriaLiveWorkoutHeartBlock: View {
         return "\(lower)-\(upper)"
     }
 
+}
+
+private struct AtriaLiveWorkoutStrainGuidanceHost: View {
+    @ObservedObject var metricStore: AtriaLiveWorkoutMetricStore
+    let guidanceTarget: Double?
+    @Binding var targetChoice: AtriaWorkoutTargetChoice?
+    @Binding var showTargetPicker: Bool
+
+    var body: some View {
+        AtriaLiveWorkoutStrainGuidance(metricProjection: metricStore.state,
+                                       guidanceTarget: guidanceTarget,
+                                       targetChoice: $targetChoice,
+                                       showTargetPicker: $showTargetPicker)
+    }
 }
 
 private struct AtriaLiveWorkoutStrainGuidance: View {

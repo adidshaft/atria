@@ -179,14 +179,29 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
     func testRapidWorkoutMetricsAreObservedOnlyByPresentedWorkoutLeaf() throws {
         let home = try appSource("AtriaHomeView.swift")
         let workout = try appSource("AtriaLiveWorkoutView.swift")
+        let rootStart = try XCTUnwrap(workout.range(of: "struct AtriaLiveWorkoutView: View"))
+        let rootEnd = try XCTUnwrap(workout.range(of: "private struct AtriaLiveWorkoutBackdrop",
+                                                  range: rootStart.upperBound..<workout.endIndex))
+        let root = String(workout[rootStart.lowerBound..<rootEnd.lowerBound])
 
         XCTAssertTrue(home.contains("@State private var liveWorkoutMetricStore = AtriaLiveWorkoutMetricStore()"))
         XCTAssertFalse(home.contains("@State private var liveWorkoutMetricProjection"),
                        "Rapid workout metrics must not invalidate the complete Home hierarchy")
         XCTAssertTrue(home.contains("metricStore: liveWorkoutMetricStore"))
         XCTAssertTrue(home.contains("liveWorkoutMetricStore.publishIfChanged(metricProjection)"))
-        XCTAssertTrue(workout.contains("@ObservedObject var metricStore: AtriaLiveWorkoutMetricStore"))
-        XCTAssertTrue(workout.contains("private var metricProjection: AtriaLiveWorkoutMetricProjection"))
+        XCTAssertTrue(root.contains("let metricStore: AtriaLiveWorkoutMetricStore"))
+        XCTAssertFalse(root.contains("@ObservedObject var metricStore"),
+                       "Rapid metric publications must not invalidate the whole workout root")
+        XCTAssertFalse(root.contains("metricStore.state"),
+                       "Only metric-dependent leaf hosts may read the published projection")
+        XCTAssertTrue(root.contains("AtriaLiveWorkoutRouteMetricsHost(metricStore: metricStore"))
+        XCTAssertTrue(root.contains("AtriaLiveWorkoutStrainGuidanceHost(metricStore: metricStore"))
+
+        XCTAssertTrue(workout.contains("private struct AtriaLiveWorkoutRouteMetricsHost: View"))
+        XCTAssertTrue(workout.contains("private struct AtriaLiveWorkoutStrainGuidanceHost: View"))
+        XCTAssertEqual(workout.components(separatedBy: "@ObservedObject var metricStore: AtriaLiveWorkoutMetricStore").count - 1,
+                       2,
+                       "Exactly the route HUD and stationary guidance hosts should observe rapid metrics")
     }
 
     func testDecorativeDetailAnimationsPauseOutsideActiveScene() throws {

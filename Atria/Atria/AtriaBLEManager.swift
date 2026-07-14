@@ -2097,7 +2097,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var protectedR10ActivationGraceTask: Task<Void, Never>?
     private var protectedR10MissingFrameTask: Task<Void, Never>?
     private var protectedR10StabilityTask: Task<Void, Never>?
-    private var protectedR10PassiveReprobeTimeoutTask: Task<Void, Never>?
+    private var protectedR10CleanOwnerProofTimeoutTask: Task<Void, Never>?
+    private var protectedR10InitialProfilePeripheralID: UUID?
+    private var protectedR10InitialProfileNotificationRequested = false
     nonisolated private static let protectedR10RollbackKey = "atria.protectedR10.rollback"
     nonisolated private static let protectedR10StreamSuppressedKey = "atria.protectedR10.streamSuppressed"
     nonisolated private static let protectedR10DisconnectStormAtKey = "atria.protectedR10.disconnectStormAt"
@@ -2105,7 +2107,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let protectedR10PassiveReprobePendingKey = "atria.protectedR10.passiveReprobePending"
     nonisolated private static let protectedR10PassiveReprobeAttemptAtKey = "atria.protectedR10.passiveReprobeAttemptAt"
     nonisolated private static let protectedR10PassiveReprobeFailureCountKey = "atria.protectedR10.passiveReprobeFailureCount"
-    nonisolated private static let protectedR10PassiveRetryMigrationKey = "atria.protectedR10.passiveRetryMigrationV3"
+    nonisolated private static let protectedR10CleanOwnerMigrationKey = "atria.protectedR10.cleanOwnerMigrationV7"
+    nonisolated private static let protectedR10CleanOwnerConnectionCutoverKey = "atria.protectedR10.cleanOwnerConnectionCutoverV7"
+    nonisolated private static let protectedR10CleanOwnerKey = "atria.protectedR10.cleanOwner"
+    nonisolated private static let protectedR10CleanOwnerStateKey = "atria.protectedR10.cleanOwnerState"
+    nonisolated private static let protectedR10CleanOwnerProofStartedAtKey = "atria.protectedR10.cleanOwnerProofStartedAt"
+    nonisolated private static let protectedR10CleanOwnerFailureReasonKey = "atria.protectedR10.cleanOwnerFailureReason"
     nonisolated private static let protectedR10EarlyDisconnectsKey = "atria.protectedR10.earlyDisconnects"
     nonisolated private static let protectedR10ActivationSentAtKey = "atria.protectedR10.activationSentAt"
     nonisolated private static let protectedR10ActivationCountKey = "atria.protectedR10.activationCount"
@@ -2113,7 +2120,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let protectedR10RetryCountKey = "atria.protectedR10.retryCount"
     nonisolated private static let protectedR10StableTransportKey = "atria.protectedR10.stableTransport"
     nonisolated private static let protectedR10StableTransportQualifiedAtKey = "atria.protectedR10.stableTransportQualifiedAt"
-    // V5 also clears the rollback previously latched by passive restoration
+    // V7 also clears the rollback previously latched by passive restoration
     // edges before Atria had sent its one protected activation command.
     nonisolated private static let protectedR10HistoryInterlockMigrationKey = "atria.protectedR10.realtimeActivationMigrationV5"
     nonisolated private static let protectedR10MissingFrameTimeout: TimeInterval = 20
@@ -2123,10 +2130,115 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let protectedR10RollbackRetryBaseDelay: TimeInterval = 10 * 60
     nonisolated private static let protectedR10RollbackRetryMaximumDelay: TimeInterval = 6 * 60 * 60
     nonisolated private static let protectedR10RollbackRetryStableHRDuration: TimeInterval = 60
-    nonisolated private static let protectedR10PassiveReprobeStableHRDuration: TimeInterval = 2 * 60
-    nonisolated private static let protectedR10PassiveReprobeInitialCooldown: TimeInterval = 30 * 60
-    nonisolated private static let protectedR10PassiveReprobeMaximumCooldown: TimeInterval = 6 * 60 * 60
-    nonisolated private static let protectedR10PassiveReprobeTimeout: TimeInterval = 2 * 60
+    nonisolated private static let protectedR10PassiveReprobeTimeout: TimeInterval = 150
+
+    enum ProtectedR10CleanOwner: String, Equatable {
+        case legacy
+        case protectedV7 = "protected_v7"
+        case pureHRV8 = "pure_hr_v8"
+    }
+
+    enum ProtectedR10CleanOwnerState: String, Equatable {
+        case none
+        case protectedLaunchPending = "protected_launch_pending"
+        case proving
+        case qualified
+        case fallbackPending = "fallback_pending"
+        case fallbackActive = "fallback_active"
+    }
+
+    enum ProtectedR10RecoveryDecision: Equatable {
+        case none
+        case observePassive
+        case sendSingleLeasedActivation
+        case awaitDensityProof
+        case qualify
+        case resuppress
+    }
+
+    /// Pure proof policy for the clean v7 owner. Stream 5 must be part of the
+    /// initial connection profile; this policy never enables, disables,
+    /// rediscovers or reconnects it on an established link.
+    nonisolated static func protectedR10RecoveryDecision(
+        pending: Bool,
+        connected: Bool,
+        stream5Notifying: Bool,
+        activationSent: Bool,
+        passiveObservationAge: TimeInterval?,
+        activationAge: TimeInterval?,
+        activationLeaseRemaining: TimeInterval,
+        stableHRDuration: TimeInterval,
+        latestHRAge: TimeInterval?,
+        batteryLevel: Int,
+        isCharging: Bool,
+        frames: Int,
+        lastFrameAge: TimeInterval?,
+        passiveGrace: TimeInterval = protectedR10PassiveGraceDuration,
+        missingFrameTimeout: TimeInterval = protectedR10MissingFrameTimeout,
+        proofDuration: TimeInterval = protectedR10EarlyDisconnectWindow,
+        proofFrames: Int = 75,
+        proofFreshness: TimeInterval = 5,
+        overallTimeout: TimeInterval = protectedR10PassiveReprobeTimeout
+    ) -> ProtectedR10RecoveryDecision {
+        guard pending else { return .none }
+        guard connected else { return .resuppress }
+        let observationAge = passiveObservationAge ?? -1
+        guard observationAge >= 0 else { return .resuppress }
+        if observationAge >= overallTimeout { return .resuppress }
+        guard stream5Notifying else { return .observePassive }
+
+        if activationSent {
+            guard let activationAge, activationAge >= 0 else { return .resuppress }
+            if frames == 0 {
+                return activationAge >= missingFrameTimeout ? .resuppress : .awaitDensityProof
+            }
+            guard activationAge >= proofDuration else { return .awaitDensityProof }
+            let frameIsFresh = lastFrameAge.map { $0 >= 0 && $0 <= proofFreshness } ?? false
+            return frames >= proofFrames && frameIsFresh ? .qualify : .resuppress
+        }
+
+        // CRC-valid passive frames own the existing passive qualification path;
+        // never send a command after the strap has already begun transmitting.
+        if frames > 0 { return .observePassive }
+        guard observationAge >= passiveGrace,
+              activationLeaseRemaining <= 0,
+              stableHRDuration >= passiveGrace,
+              let latestHRAge,
+              latestHRAge >= 0,
+              latestHRAge <= 10,
+              shouldArmHighFrequencyMotion(batteryLevel: batteryLevel,
+                                           isCharging: isCharging) else {
+            return .observePassive
+        }
+        return .sendSingleLeasedActivation
+    }
+
+    nonisolated static func protectedR10CentralRestoreIdentifier(
+        diagnosticRestoreIdentifier: String?,
+        cleanOwner: ProtectedR10CleanOwner,
+        streamSuppressed: Bool
+    ) -> String {
+        if let diagnosticRestoreIdentifier { return diagnosticRestoreIdentifier }
+        switch cleanOwner {
+        case .protectedV7:
+            return "com.adidshaft.atria.ble-central-v7-protected"
+        case .pureHRV8:
+            return "com.adidshaft.atria.ble-central-v8-pure-hr"
+        case .legacy:
+            return streamSuppressed
+                ? "com.adidshaft.atria.ble-central-v6-pure-hr"
+                : "com.adidshaft.atria.ble-central-v5"
+        }
+    }
+
+    nonisolated static func shouldDeferAutomaticHistoryForCleanOwner(
+        cleanOwner: ProtectedR10CleanOwner,
+        state: ProtectedR10CleanOwnerState,
+        explicitUserRequest: Bool
+    ) -> Bool {
+        guard !explicitUserRequest else { return false }
+        return cleanOwner != .legacy || state != .none
+    }
 
     nonisolated static func shouldLatchProtectedR10RollbackForEarlyDisconnect(
         activationSent: Bool,
@@ -2165,82 +2277,86 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return max(0, minimumInterval - now.timeIntervalSince(lastActivationAt))
     }
 
-    /// A disconnect-storm fuse must protect HR immediately, but it must not
-    /// turn a transient field failure into permanently frozen strap steps. The
-    /// recovery probe is deliberately passive: after a long, healthy 2A37
-    /// window it only rediscovers/subscribes stream 5 on the existing link.
-    /// It does not reconnect and it keeps the command rollback latched until a
-    /// dense CRC-valid R10 window independently proves the transport.
-    nonisolated static func shouldBeginProtectedR10PassiveReprobe(
-        streamSuppressed: Bool,
-        reprobePending: Bool,
-        connected: Bool,
-        stableHRDuration: TimeInterval,
-        latestHRAge: TimeInterval?,
-        disconnectStormAge: TimeInterval?,
-        lastAttemptAge: TimeInterval?,
-        failureCount: Int,
-        batteryLevel: Int = -1,
-        isCharging: Bool = false,
-        stableHRMinimum: TimeInterval = protectedR10PassiveReprobeStableHRDuration,
-        initialCooldown: TimeInterval = protectedR10PassiveReprobeInitialCooldown,
-        maximumCooldown: TimeInterval = protectedR10PassiveReprobeMaximumCooldown
-    ) -> Bool {
-        let retryMultiplier = pow(2.0, Double(min(max(0, failureCount), 5)))
-        let requiredCooldown = min(initialCooldown * retryMultiplier, maximumCooldown)
-        guard streamSuppressed,
-              !reprobePending,
-              connected,
-              shouldArmHighFrequencyMotion(batteryLevel: batteryLevel,
-                                           isCharging: isCharging),
-              stableHRDuration >= stableHRMinimum,
-              let latestHRAge,
-              latestHRAge >= 0,
-              latestHRAge <= 10,
-              let disconnectStormAge,
-              disconnectStormAge >= requiredCooldown else { return false }
+    enum ProtectedR10LaunchPreparation: Equatable {
+        case none
+        case migratedToProtectedV7
+        case resumedProtectedV7Proof
+        case activatedPureHRV8Fallback
+    }
 
-        if let lastAttemptAge {
-            guard lastAttemptAge >= requiredCooldown else { return false }
+    /// Selects the process owner before `CBCentralManager` is created. The V5
+    /// cutover never mutates the connected v6 link: a unique v7 restoration
+    /// namespace establishes HR, 2A19 and stream 5 together on its first link.
+    /// A failed v7 proof is similarly moved to v8 pure HR only on a later
+    /// process launch.
+    @discardableResult
+    nonisolated static func prepareProtectedR10CleanOwnerAtLaunch(
+        defaults: UserDefaults = .standard
+    ) -> ProtectedR10LaunchPreparation {
+        let owner = ProtectedR10CleanOwner(
+            rawValue: defaults.string(forKey: protectedR10CleanOwnerKey) ?? ""
+        ) ?? .legacy
+        let state = ProtectedR10CleanOwnerState(
+            rawValue: defaults.string(forKey: protectedR10CleanOwnerStateKey) ?? ""
+        ) ?? .none
+
+        if !defaults.bool(forKey: protectedR10CleanOwnerMigrationKey) {
+            defaults.set(true, forKey: protectedR10CleanOwnerMigrationKey)
+            defaults.set(false, forKey: protectedR10PassiveReprobePendingKey)
+            defaults.removeObject(forKey: protectedR10PassiveReprobeAttemptAtKey)
+            defaults.set(0, forKey: protectedR10PassiveReprobeFailureCountKey)
+            guard defaults.bool(forKey: protectedR10StreamSuppressedKey) else {
+                return .none
+            }
+            defaults.set(ProtectedR10CleanOwner.protectedV7.rawValue,
+                         forKey: protectedR10CleanOwnerKey)
+            defaults.set(ProtectedR10CleanOwnerState.protectedLaunchPending.rawValue,
+                         forKey: protectedR10CleanOwnerStateKey)
+            defaults.set(false, forKey: protectedR10StreamSuppressedKey)
+            defaults.set(false, forKey: protectedR10RollbackKey)
+            defaults.set(false, forKey: protectedR10StableTransportKey)
+            defaults.set(false, forKey: protectedR10CleanOwnerConnectionCutoverKey)
+            defaults.removeObject(forKey: protectedR10StableTransportQualifiedAtKey)
+            defaults.removeObject(forKey: protectedR10CleanOwnerProofStartedAtKey)
+            defaults.removeObject(forKey: protectedR10CleanOwnerFailureReasonKey)
+            defaults.set("clean_owner_v7_launch_pending",
+                         forKey: RadioDefaults.passiveR10Status)
+            return .migratedToProtectedV7
         }
 
-        return true
+        if owner == .pureHRV8 {
+            defaults.set(true, forKey: protectedR10StreamSuppressedKey)
+            defaults.set(true, forKey: protectedR10RollbackKey)
+            defaults.set(false, forKey: protectedR10PassiveReprobePendingKey)
+            defaults.removeObject(forKey: protectedR10CleanOwnerProofStartedAtKey)
+            if state == .fallbackPending {
+                defaults.set(ProtectedR10CleanOwnerState.fallbackActive.rawValue,
+                             forKey: protectedR10CleanOwnerStateKey)
+                defaults.set("clean_owner_v8_pure_hr_active",
+                             forKey: RadioDefaults.passiveR10Status)
+                return .activatedPureHRV8Fallback
+            }
+            return .none
+        }
+
+        if owner == .protectedV7, state == .proving {
+            defaults.set(ProtectedR10CleanOwnerState.protectedLaunchPending.rawValue,
+                         forKey: protectedR10CleanOwnerStateKey)
+            defaults.removeObject(forKey: protectedR10CleanOwnerProofStartedAtKey)
+            defaults.set(false, forKey: protectedR10PassiveReprobePendingKey)
+            defaults.set("clean_owner_v7_launch_pending",
+                         forKey: RadioDefaults.passiveR10Status)
+            return .resumedProtectedV7Proof
+        }
+        return .none
     }
 
-    /// Older builds permanently suppressed stream 5 after one passive probe,
-    /// including probes guaranteed to fail because their battery eligibility
-    /// was not checked before discovery. Preserve the safety fuse but clear
-    /// that poisoned retry history once so an eligible healthy link can run the
-    /// corrected bounded probe.
-    @discardableResult
-    nonisolated static func migrateProtectedR10PassiveRetryIfNeeded(
-        defaults: UserDefaults = .standard
-    ) -> Bool {
-        guard !defaults.bool(forKey: protectedR10PassiveRetryMigrationKey) else { return false }
-        defaults.set(true, forKey: protectedR10PassiveRetryMigrationKey)
-        defaults.set(0, forKey: protectedR10PassiveReprobeFailureCountKey)
-        defaults.removeObject(forKey: protectedR10PassiveReprobeAttemptAtKey)
-        return true
-    }
-
-    nonisolated static func shouldAbortProtectedR10PassiveReprobeForDisconnect(
-        reprobePending: Bool,
-        userRequestedDisconnect: Bool,
-        atriaOwnedOfflineSyncDisconnect: Bool,
-        reprobeDuration: TimeInterval?
-    ) -> Bool {
-        _ = reprobeDuration // retained for deterministic diagnostics/callers
-        return reprobePending
-            && !userRequestedDisconnect
-            && !atriaOwnedOfflineSyncDisconnect
-    }
-
-    nonisolated static func protectedR10PassiveReprobeHasExpired(
-        reprobePending: Bool,
+    nonisolated static func protectedR10CleanOwnerProofHasExpired(
+        proofActive: Bool,
         attemptAge: TimeInterval?,
         timeout: TimeInterval = protectedR10PassiveReprobeTimeout
     ) -> Bool {
-        guard reprobePending else { return false }
+        guard proofActive else { return false }
         guard let attemptAge, attemptAge >= 0 else { return true }
         return attemptAge >= timeout
     }
@@ -2293,16 +2409,32 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private var centralRestoreIdentifier: String {
-        // v4 briefly subscribed the proprietary stream-4 battery-event
-        // characteristic during a physical experiment. CoreBluetooth can
-        // restore that CCCD state even after the source subscription is rolled
-        // back, which leaves the strap reconnecting about every ten seconds.
-        // A fresh production namespace guarantees the stable HR + R10 profile
-        // starts from a clean connection instead of inheriting that experiment.
-        motionHandshakeDiagnostic?.restoreIdentifier
-            ?? (protectedR10StreamSuppressed
-                ? "com.adidshaft.atria.ble-central-v6-pure-hr"
-                : "com.adidshaft.atria.ble-central-v5")
+        Self.protectedR10CentralRestoreIdentifier(
+            diagnosticRestoreIdentifier: motionHandshakeDiagnostic?.restoreIdentifier,
+            cleanOwner: protectedR10CleanOwner,
+            streamSuppressed: protectedR10StreamSuppressed
+        )
+    }
+
+    nonisolated private var protectedR10CleanOwner: ProtectedR10CleanOwner {
+        ProtectedR10CleanOwner(
+            rawValue: UserDefaults.standard.string(
+                forKey: Self.protectedR10CleanOwnerKey
+            ) ?? ""
+        ) ?? .legacy
+    }
+
+    nonisolated private var protectedR10CleanOwnerState: ProtectedR10CleanOwnerState {
+        ProtectedR10CleanOwnerState(
+            rawValue: UserDefaults.standard.string(
+                forKey: Self.protectedR10CleanOwnerStateKey
+            ) ?? ""
+        ) ?? .none
+    }
+
+    nonisolated private var protectedR10CleanOwnerProofIsActive: Bool {
+        protectedR10CleanOwner == .protectedV7
+            && protectedR10CleanOwnerState == .proving
     }
 
     nonisolated private var protectedR10RollbackEnabled: Bool {
@@ -3540,15 +3672,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             migrateStableR10TransportDefaultIfNeeded(arguments: arguments)
             migrateOfflineSyncDefaultIfNeeded(arguments: arguments)
             migrateProtectedR10HistoryInterlockIfNeeded()
-            if Self.migrateProtectedR10PassiveRetryIfNeeded() {
-                AtriaDebugLog("ATRIADBG protected_r10 status=migrated_retry_policy action=clear_permanent_failure_keep_stream_fuse")
-            }
             migrateFailedProprietaryBatteryRefreshIfNeeded()
             isolateRecentProtectedR10DisconnectStormIfNeeded()
-            _ = expireProtectedR10PassiveReprobeIfNeeded(
-                now: Date(),
-                reason: "launch_stale_pending"
+            let cleanOwnerPreparation = Self.prepareProtectedR10CleanOwnerAtLaunch(
+                defaults: defaults
             )
+            if cleanOwnerPreparation != .none {
+                AtriaDebugLog("ATRIADBG protected_r10 status=clean_owner_launch preparation=%@ owner=%@ state=%@ action=select_unique_namespace_before_primary_central",
+                              String(describing: cleanOwnerPreparation),
+                              protectedR10CleanOwner.rawValue,
+                              protectedR10CleanOwnerState.rawValue)
+            }
             if arguments.contains("--atria-long-wear-mode") {
                 UserDefaults.standard.set(true, forKey: CaptureDefaults.configured)
                 UserDefaults.standard.set(true, forKey: LongWearDefaults.userSelected)
@@ -3644,7 +3778,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                        CBCentralManagerOptionRestoreIdentifierKey: centralRestoreIdentifier,
                                        CBCentralManagerOptionShowPowerAlertKey: true
         ])
-        scheduleProtectedR10PassiveReprobeTimeout()
     }
 
     private func applyEarlyHistoricalLaunchConfiguration(arguments: [String]) {
@@ -4520,6 +4653,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               let peripheral,
               peripheral.state == .connected else { return }
 
+        if standardHROnlyMode {
+            if strapStream5NotifyConfirmed {
+                AtriaDebugLog("ATRIADBG r10_notify_repair status=preserved reason=%@ action=keep_initial_profile_cccd",
+                              reason)
+            } else {
+                // The liveness/foreground path can race the first CoreBluetooth
+                // notification-state callback. It may observe `false` while the
+                // one allowed initial subscribe is still in flight, so it must
+                // never decide fallback. The callback itself owns confirmed
+                // error/inactive fallback; restored-cache discovery owns the
+                // no-callback case.
+                AtriaDebugLog("ATRIADBG r10_notify_repair status=awaiting_initial_profile reason=%@ action=no_mid_link_cccd_or_fallback",
+                              reason)
+            }
+            // Physical V4 evidence showed that enabling or disabling stream 5
+            // on an established protected link causes rapid disconnects. Only
+            // initial characteristic discovery may establish this CCCD.
+            return
+        }
+
         guard let strapService = peripheral.services?.first(where: {
             $0.uuid == Self.UUIDs.strapService
         }) else {
@@ -5305,6 +5458,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             : "preserve_realtime_until_natural_disconnect")
             return false
         }
+        // A clean-owner cutover/proof/fallback owns the process radio even
+        // across a disconnect. The physical V4 proof showed that admitting a
+        // natural-disconnect history worker here immediately created a second
+        // short link and obscured the protected-profile result.
+        if Self.shouldDeferAutomaticHistoryForCleanOwner(
+            cleanOwner: protectedR10CleanOwner,
+            state: protectedR10CleanOwnerState,
+            explicitUserRequest: explicitUserRequest
+        ) {
+            pendingOfflineHistoricalSyncReason = reason
+            defaults.set("deferred_clean_owner_transition",
+                         forKey: OfflineSyncDefaults.lastStatus)
+            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            AtriaDebugLog("ATRIADBG offline_sync status=deferred reason=%@ detail=clean_owner_%@_%@ action=preserve_gap_no_history_reconnect",
+                          reason,
+                          protectedR10CleanOwner.rawValue,
+                          protectedR10CleanOwnerState.rawValue)
+            return false
+        }
+
         // Evaluate the narrow history-first reconnect admission before the
         // protected-R10 deferrals. Otherwise the automatic guards below return
         // before a disconnected, verified exact gap can ever be recovered.
@@ -5532,11 +5705,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func sendProtectedR10ActivationIfReady() {
+        let cleanProofActive = protectedR10CleanOwnerProofIsActive
         guard motionHandshakeDiagnostic == nil,
               standardHROnlyMode,
               !historyOnlyProbeMode,
-              !protectedR10RollbackEnabled,
-              !protectedR10PassiveReprobePending,
+              cleanProofActive
+                || (protectedR10CleanOwner == .legacy
+                    && !protectedR10RollbackEnabled),
               !protectedR10ActivationSent,
               protectedR10ActivationGraceTask == nil,
               strapStream5NotifyConfirmed,
@@ -5556,7 +5731,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             .map(Date.init(timeIntervalSince1970:))
         let leaseDelay = Self.protectedR10ActivationLeaseDelay(lastActivationAt: persistedActivationAt,
                                                                now: Date())
-        let observationDelay = max(Self.protectedR10PassiveGraceDuration, leaseDelay)
+        let observationDelay: TimeInterval
+        if cleanProofActive {
+            let proofStartedAt = (defaults.object(
+                forKey: Self.protectedR10CleanOwnerProofStartedAtKey
+            ) as? Double).map(Date.init(timeIntervalSince1970:))
+            let observationAge = proofStartedAt.map {
+                max(0, Date().timeIntervalSince($0))
+            } ?? 0
+            observationDelay = max(0.001,
+                                   max(Self.protectedR10PassiveGraceDuration - observationAge,
+                                       leaseDelay))
+        } else {
+            observationDelay = max(Self.protectedR10PassiveGraceDuration, leaseDelay)
+        }
         protectedR10ActivationGraceTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(observationDelay))
             guard let self, !Task.isCancelled else { return }
@@ -5566,11 +5754,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func sendProtectedR10ActivationNowIfReady() {
+        let cleanProofActive = protectedR10CleanOwnerProofIsActive
         guard motionHandshakeDiagnostic == nil,
               standardHROnlyMode,
               !historyOnlyProbeMode,
-              !protectedR10RollbackEnabled,
-              !protectedR10PassiveReprobePending,
+              cleanProofActive
+                || (protectedR10CleanOwner == .legacy
+                    && !protectedR10RollbackEnabled),
               !protectedR10ActivationSent,
               strapStream5NotifyConfirmed,
               heartRateCharacteristic?.isNotifying == true,
@@ -5578,6 +5768,36 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               peripheral.state == .connected,
               let txCharacteristic,
               txCharacteristic.properties.contains(.writeWithoutResponse) else { return }
+
+        if cleanProofActive {
+            let now = Date()
+            let defaults = UserDefaults.standard
+            let proofStartedAt = (defaults.object(
+                forKey: Self.protectedR10CleanOwnerProofStartedAtKey
+            ) as? Double).map(Date.init(timeIntervalSince1970:))
+            let lastActivationAt = (defaults.object(
+                forKey: Self.protectedR10ActivationSentAtKey
+            ) as? Double).map(Date.init(timeIntervalSince1970:))
+            let decision = Self.protectedR10RecoveryDecision(
+                pending: true,
+                connected: status == .connected && peripheral.state == .connected,
+                stream5Notifying: strapStream5NotifyConfirmed,
+                activationSent: false,
+                passiveObservationAge: proofStartedAt.map { now.timeIntervalSince($0) },
+                activationAge: nil,
+                activationLeaseRemaining: Self.protectedR10ActivationLeaseDelay(
+                    lastActivationAt: lastActivationAt,
+                    now: now
+                ),
+                stableHRDuration: proofStartedAt.map { now.timeIntervalSince($0) } ?? 0,
+                latestHRAge: lastRawHRNotificationAt.map { now.timeIntervalSince($0) },
+                batteryLevel: motionEligibilityBatteryLevel(now: now),
+                isCharging: motionEligibilityIsCharging,
+                frames: protectedR10FramesAfterActivation,
+                lastFrameAge: lastR10MotionFrameAt.map { now.timeIntervalSince($0) }
+            )
+            guard decision == .sendSingleLeasedActivation else { return }
+        }
 
         protectedR10ActivationSent = true
         protectedR10FramesAfterActivation = 0
@@ -5603,7 +5823,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     activationSent: self.protectedR10ActivationSent,
                     framesAfterActivation: self.protectedR10FramesAfterActivation
                   ) else { return }
-            self.latchProtectedR10Rollback(reason: "missing_r10_after_activation")
+            if self.protectedR10CleanOwnerProofIsActive {
+                self.persistProtectedR10CleanOwnerFallback(
+                    reason: "missing_r10_after_clean_owner_activation"
+                )
+            } else {
+                self.latchProtectedR10Rollback(reason: "missing_r10_after_activation")
+            }
         }
         protectedR10StabilityTask?.cancel()
         protectedR10StabilityTask = Task { @MainActor [weak self] in
@@ -5623,14 +5849,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                               Self.protectedR10EarlyDisconnectWindow,
                               self.protectedR10FramesAfterActivation,
                               self.lastR10MotionFrameAt.map { verifiedAt.timeIntervalSince($0) } ?? -1)
-                self.latchProtectedR10Rollback(reason: "insufficient_r10_stability_density")
+                if self.protectedR10CleanOwnerProofIsActive {
+                    self.persistProtectedR10CleanOwnerFallback(
+                        reason: "insufficient_clean_owner_r10_density"
+                    )
+                } else {
+                    self.latchProtectedR10Rollback(reason: "insufficient_r10_stability_density")
+                }
                 return
             }
-            UserDefaults.standard.set(0, forKey: Self.protectedR10EarlyDisconnectsKey)
-            UserDefaults.standard.set(0, forKey: Self.protectedR10RetryCountKey)
-            UserDefaults.standard.set(true, forKey: Self.protectedR10StableTransportKey)
-            UserDefaults.standard.set(verifiedAt.timeIntervalSince1970,
-                                      forKey: Self.protectedR10StableTransportQualifiedAtKey)
+            self.qualifyProtectedR10RecoveryIfNeeded(at: verifiedAt,
+                                                     status: "receiving_crc_valid")
             AtriaDebugLog("ATRIADBG protected_r10 status=stable_window_complete duration_s=%.0f frames=%d action=clear_early_disconnect_streak",
                           Self.protectedR10EarlyDisconnectWindow,
                           self.protectedR10FramesAfterActivation)
@@ -5638,176 +5867,183 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func retryProtectedR10AfterStableHRIfEligible(now: Date) {
-        let defaults = UserDefaults.standard
         guard motionHandshakeDiagnostic == nil,
               standardHROnlyMode,
               !offlineHistoricalSyncInProgress,
               !historyOnlyProbeEnabled,
               !historyOnlyProbeMode,
-              peripheral?.state == .connected,
-              let connectedAt,
-              now.timeIntervalSince(connectedAt) >= Self.protectedR10RollbackRetryStableHRDuration else { return }
+              peripheral?.state == .connected else { return }
 
-        if protectedR10PassiveReprobePending,
-           expireProtectedR10PassiveReprobeIfNeeded(now: now,
-                                                    reason: "accepted_hr_timeout_check") {
-            return
-        }
-
-        if protectedR10StreamSuppressed {
-            beginProtectedR10PassiveReprobeIfEligible(now: now,
-                                                      connectedAt: connectedAt)
-            return
-        }
-
-        // The disconnect-storm recovery owns a passive-only observation
-        // window. Do not let the older rollback retry clear its command fuse;
-        // only dense, current-connection CRC-valid R10 evidence may do that.
-        guard !protectedR10PassiveReprobePending,
-              defaults.bool(forKey: Self.protectedR10RollbackKey) else { return }
-        let retryCount = max(0, defaults.integer(forKey: Self.protectedR10RetryCountKey))
-        let multiplier = pow(2.0, Double(min(retryCount, 5)))
-        let delay = min(Self.protectedR10RollbackRetryBaseDelay * multiplier,
-                        Self.protectedR10RollbackRetryMaximumDelay)
-        let rollbackAt = defaults.double(forKey: "atria.protectedR10.rollbackAt")
-        guard rollbackAt > 0, now.timeIntervalSince1970 - rollbackAt >= delay,
-              let peripheral else { return }
-
-        defaults.set(false, forKey: Self.protectedR10RollbackKey)
-        defaults.set(false, forKey: Self.protectedR10StableTransportKey)
-        defaults.removeObject(forKey: Self.protectedR10StableTransportQualifiedAtKey)
-        defaults.set(retryCount + 1, forKey: Self.protectedR10RetryCountKey)
-        defaults.set(0, forKey: Self.protectedR10EarlyDisconnectsKey)
-        defaults.set("retry_after_stable_2a37", forKey: RadioDefaults.passiveR10Status)
-        protectedR10ActivationGraceTask?.cancel()
-        protectedR10ActivationGraceTask = nil
-        protectedR10ActivationSent = false
-        protectedR10ActivationAt = nil
-        protectedR10FramesAfterActivation = 0
-        AtriaDebugLog("ATRIADBG protected_r10 status=rollback_retry retry=%d stable_hr_s=%.0f cooldown_s=%.0f action=discover_minimal_service_no_reconnect",
-                      retryCount + 1,
-                      now.timeIntervalSince(connectedAt),
-                      delay)
-        let cachedServices = peripheral.services ?? []
-        if cachedServices.contains(where: { $0.uuid == Self.UUIDs.strapService }) {
-            resumeProtectedR10FromRestoredCache(peripheral)
-        } else {
-            peripheral.discoverServices([Self.UUIDs.heartRateService, Self.UUIDs.strapService])
+        if protectedR10CleanOwnerProofIsActive {
+            if Self.protectedR10CleanOwnerProofHasExpired(
+                proofActive: true,
+                attemptAge: (UserDefaults.standard.object(
+                    forKey: Self.protectedR10CleanOwnerProofStartedAtKey
+                ) as? Double).map { now.timeIntervalSince1970 - $0 }
+            ) {
+                persistProtectedR10CleanOwnerFallback(
+                    reason: "clean_owner_proof_timeout_on_hr"
+                )
+                return
+            }
+            // HR may become fresh after the 20-second passive timer. Recheck
+            // only the leased command gate; never rediscover or toggle stream5.
+            sendProtectedR10ActivationIfReady()
         }
     }
 
-    private func beginProtectedR10PassiveReprobeIfEligible(now: Date,
-                                                           connectedAt: Date) {
+    private func beginProtectedR10CleanOwnerProofIfNeeded(at startedAt: Date) {
         let defaults = UserDefaults.standard
-        let stormAt = (defaults.object(forKey: Self.protectedR10DisconnectStormAtKey) as? Double)
-            .map(Date.init(timeIntervalSince1970:))
-        let lastAttemptAt = (defaults.object(forKey: Self.protectedR10PassiveReprobeAttemptAtKey) as? Double)
-            .map(Date.init(timeIntervalSince1970:))
-        let latestHRAge = lastRawHRNotificationAt.map { now.timeIntervalSince($0) }
-        guard Self.shouldBeginProtectedR10PassiveReprobe(
-            streamSuppressed: protectedR10StreamSuppressed,
-            reprobePending: protectedR10PassiveReprobePending,
-            connected: status == .connected && peripheral?.state == .connected,
-            stableHRDuration: now.timeIntervalSince(connectedAt),
-            latestHRAge: latestHRAge,
-            disconnectStormAge: stormAt.map { now.timeIntervalSince($0) },
-            lastAttemptAge: lastAttemptAt.map { now.timeIntervalSince($0) },
-            failureCount: defaults.integer(forKey: Self.protectedR10PassiveReprobeFailureCountKey),
-            batteryLevel: motionEligibilityBatteryLevel(now: now),
-            isCharging: motionEligibilityIsCharging
-        ), let peripheral else { return }
-
-        defaults.set(now.timeIntervalSince1970,
-                     forKey: Self.protectedR10PassiveReprobeAttemptAtKey)
-        defaults.set(true, forKey: Self.protectedR10PassiveReprobePendingKey)
-        defaults.set(false, forKey: Self.protectedR10StreamSuppressedKey)
-        // Keep every command path fail-closed. recordProtectedR10EvidenceIfNeeded
-        // clears this only after the existing 85 s / 75-frame passive proof.
-        defaults.set(true, forKey: Self.protectedR10RollbackKey)
+        guard protectedR10CleanOwner == .protectedV7,
+              protectedR10CleanOwnerState == .protectedLaunchPending,
+              strapStream5NotifyConfirmed,
+              status == .connected,
+              peripheral?.state == .connected else { return }
+        defaults.set(ProtectedR10CleanOwnerState.proving.rawValue,
+                     forKey: Self.protectedR10CleanOwnerStateKey)
+        defaults.set(startedAt.timeIntervalSince1970,
+                     forKey: Self.protectedR10CleanOwnerProofStartedAtKey)
+        defaults.set(false, forKey: Self.protectedR10RollbackKey)
         defaults.set(false, forKey: Self.protectedR10StableTransportKey)
         defaults.removeObject(forKey: Self.protectedR10StableTransportQualifiedAtKey)
-        defaults.set("passive_reprobe_after_stable_hr",
-                     forKey: "atria.protectedR10.rollbackReason")
-        defaults.set("passive_reprobe_discovering_stream5",
+        defaults.set("clean_owner_v7_passive_proof",
                      forKey: RadioDefaults.passiveR10Status)
         protectedR10ActivationGraceTask?.cancel()
         protectedR10ActivationGraceTask = nil
         protectedR10ActivationSent = false
         protectedR10ActivationAt = nil
         protectedR10FramesAfterActivation = 0
-        peripheral.discoverServices([Self.UUIDs.strapService])
-        scheduleProtectedR10PassiveReprobeTimeout(now: now)
-        AtriaDebugLog("ATRIADBG protected_r10 status=passive_reprobe_started stable_hr_s=%.0f storm_age_s=%.0f failures=%d action=discover_stream5_existing_link_no_reconnect_no_command",
-                      now.timeIntervalSince(connectedAt),
-                      stormAt.map { now.timeIntervalSince($0) } ?? -1,
-                      defaults.integer(forKey: Self.protectedR10PassiveReprobeFailureCountKey))
+        scheduleProtectedR10CleanOwnerProofTimeout(startedAt: startedAt)
+        sendProtectedR10ActivationIfReady()
+        AtriaDebugLog("ATRIADBG protected_r10 status=clean_owner_proof_started owner=v7 grace_s=%.0f action=observe_initial_profile_no_cccd_mutation",
+                      Self.protectedR10PassiveGraceDuration)
     }
 
-    private func scheduleProtectedR10PassiveReprobeTimeout(now: Date = Date()) {
-        protectedR10PassiveReprobeTimeoutTask?.cancel()
-        protectedR10PassiveReprobeTimeoutTask = nil
-        let defaults = UserDefaults.standard
-        guard defaults.bool(forKey: Self.protectedR10PassiveReprobePendingKey) else { return }
-        let attemptAt = (defaults.object(forKey: Self.protectedR10PassiveReprobeAttemptAtKey) as? Double)
-            .map(Date.init(timeIntervalSince1970:))
-        let age = attemptAt.map { now.timeIntervalSince($0) }
-        if Self.protectedR10PassiveReprobeHasExpired(reprobePending: true,
-                                                     attemptAge: age) {
-            _ = expireProtectedR10PassiveReprobeIfNeeded(now: now,
-                                                         reason: "restored_stale_pending")
-            return
-        }
-        let remaining = max(0, Self.protectedR10PassiveReprobeTimeout - (age ?? 0))
-        protectedR10PassiveReprobeTimeoutTask = Task { @MainActor [weak self] in
+    private func scheduleProtectedR10CleanOwnerProofTimeout(startedAt: Date) {
+        protectedR10CleanOwnerProofTimeoutTask?.cancel()
+        protectedR10CleanOwnerProofTimeoutTask = Task { @MainActor [weak self] in
+            let age = max(0, Date().timeIntervalSince(startedAt))
+            let remaining = max(0, Self.protectedR10PassiveReprobeTimeout - age)
             try? await Task.sleep(for: .seconds(remaining))
-            guard let self, !Task.isCancelled else { return }
-            self.protectedR10PassiveReprobeTimeoutTask = nil
-            _ = self.expireProtectedR10PassiveReprobeIfNeeded(
-                now: Date(),
-                reason: "no_crc_valid_r10_timeout"
+            guard let self, !Task.isCancelled,
+                  self.protectedR10CleanOwnerProofIsActive else { return }
+            self.protectedR10CleanOwnerProofTimeoutTask = nil
+            self.persistProtectedR10CleanOwnerFallback(
+                reason: "clean_owner_proof_timeout"
             )
         }
     }
 
-    @discardableResult
-    private func expireProtectedR10PassiveReprobeIfNeeded(now: Date,
-                                                          reason: String) -> Bool {
+    private func qualifyProtectedR10RecoveryIfNeeded(at qualifiedAt: Date,
+                                                     status: String) {
         let defaults = UserDefaults.standard
-        let attemptAt = (defaults.object(forKey: Self.protectedR10PassiveReprobeAttemptAtKey) as? Double)
-            .map(Date.init(timeIntervalSince1970:))
-        guard Self.protectedR10PassiveReprobeHasExpired(
-            reprobePending: defaults.bool(forKey: Self.protectedR10PassiveReprobePendingKey),
-            attemptAge: attemptAt.map { now.timeIntervalSince($0) }
-        ) else { return false }
+        defaults.set(0, forKey: Self.protectedR10EarlyDisconnectsKey)
+        defaults.set(0, forKey: Self.protectedR10RetryCountKey)
+        defaults.set(true, forKey: Self.protectedR10StableTransportKey)
+        defaults.set(qualifiedAt.timeIntervalSince1970,
+                     forKey: Self.protectedR10StableTransportQualifiedAtKey)
+        defaults.set(false, forKey: Self.protectedR10RollbackKey)
+        defaults.set(false, forKey: Self.protectedR10StreamSuppressedKey)
+        defaults.set(false, forKey: Self.protectedR10PassiveReprobePendingKey)
+        defaults.set(0, forKey: Self.protectedR10PassiveReprobeFailureCountKey)
+        if protectedR10CleanOwner == .protectedV7 {
+            defaults.set(ProtectedR10CleanOwnerState.qualified.rawValue,
+                         forKey: Self.protectedR10CleanOwnerStateKey)
+            defaults.removeObject(forKey: Self.protectedR10CleanOwnerProofStartedAtKey)
+            defaults.removeObject(forKey: Self.protectedR10CleanOwnerFailureReasonKey)
+        }
+        defaults.set(status, forKey: RadioDefaults.passiveR10Status)
+        protectedR10CleanOwnerProofTimeoutTask?.cancel()
+        protectedR10CleanOwnerProofTimeoutTask = nil
+        protectedR10MissingFrameTask?.cancel()
+        protectedR10MissingFrameTask = nil
+    }
+
+    /// Persist a clean v8 pure-HR owner for the next process. The current v7
+    /// link is left untouched: no stream5 disable, service rediscovery,
+    /// connection cancellation or history handoff is allowed here.
+    private func persistProtectedR10CleanOwnerFallback(reason: String) {
+        let defaults = UserDefaults.standard
         let failures = defaults.integer(forKey: Self.protectedR10PassiveReprobeFailureCountKey) + 1
         defaults.set(failures, forKey: Self.protectedR10PassiveReprobeFailureCountKey)
+        defaults.set(ProtectedR10CleanOwner.pureHRV8.rawValue,
+                     forKey: Self.protectedR10CleanOwnerKey)
+        defaults.set(ProtectedR10CleanOwnerState.fallbackPending.rawValue,
+                     forKey: Self.protectedR10CleanOwnerStateKey)
         defaults.set(false, forKey: Self.protectedR10PassiveReprobePendingKey)
         defaults.set(true, forKey: Self.protectedR10StreamSuppressedKey)
-        defaults.set("passive_reprobe_no_valid_r10",
-                     forKey: Self.protectedR10DisconnectStormReasonKey)
-        defaults.set("passive_reprobe_timed_out_hr_preserved",
+        defaults.set(true, forKey: Self.protectedR10RollbackKey)
+        defaults.set(reason, forKey: Self.protectedR10DisconnectStormReasonKey)
+        defaults.set(reason, forKey: Self.protectedR10CleanOwnerFailureReasonKey)
+        defaults.removeObject(forKey: Self.protectedR10CleanOwnerProofStartedAtKey)
+        defaults.set("clean_owner_v8_fallback_pending",
                      forKey: RadioDefaults.passiveR10Status)
-        protectedR10PassiveReprobeTimeoutTask?.cancel()
-        protectedR10PassiveReprobeTimeoutTask = nil
-        if let peripheral,
-           peripheral.state == .connected,
-           let stream5 = peripheral.services?
-            .first(where: { $0.uuid == Self.UUIDs.strapService })?
-            .characteristics?
-            .first(where: { $0.uuid == Self.UUIDs.strapStream5 }),
-           stream5.isNotifying {
-            // The probe timed out without transport proof. Stop the attempted
-            // radio source itself; merely ignoring callbacks would leave the
-            // strap transmitting the stream that may have caused the storm.
-            peripheral.setNotifyValue(false, for: stream5)
-        }
-        strapStream5NotifyConfirmed = false
-        activeProprietaryNotifyUUIDs.remove(Self.UUIDs.strapStream5)
-        stopR10LivenessWatchdog(reason: "passive_reprobe_timeout")
-        AtriaDebugLog("ATRIADBG protected_r10 status=passive_reprobe_timeout reason=%@ failures=%d action=resuppress_stream5_keep_existing_hr_link_no_command",
+        protectedR10ActivationGraceTask?.cancel()
+        protectedR10ActivationGraceTask = nil
+        protectedR10MissingFrameTask?.cancel()
+        protectedR10MissingFrameTask = nil
+        protectedR10StabilityTask?.cancel()
+        protectedR10StabilityTask = nil
+        protectedR10CleanOwnerProofTimeoutTask?.cancel()
+        protectedR10CleanOwnerProofTimeoutTask = nil
+        protectedR10ActivationSent = false
+        protectedR10ActivationAt = nil
+        protectedR10FramesAfterActivation = 0
+        protectedR10InitialProfilePeripheralID = nil
+        protectedR10InitialProfileNotificationRequested = false
+        stopR10LivenessWatchdog(reason: reason)
+        AtriaDebugLog("ATRIADBG protected_r10 status=clean_owner_fallback_pending reason=%@ failures=%d action=keep_current_link_untouched_select_v8_next_process_no_history",
                       reason,
                       failures)
-        return true
+    }
+
+    /// Stream 5 may be subscribed exactly once as part of a newly connected
+    /// protected profile. Service restoration and watchdog rediscovery happen
+    /// on an established link and must never mutate its CCCD.
+    private func requestProtectedR10InitialProfileNotificationIfAllowed(
+        _ characteristic: CBCharacteristic,
+        peripheral: CBPeripheral
+    ) {
+        guard standardHROnlyMode,
+              !historyOnlyProbeMode,
+              !protectedR10StreamSuppressed,
+              characteristic.uuid == Self.UUIDs.strapStream5,
+              characteristic.properties.contains(.notify),
+              !characteristic.isNotifying else { return }
+        guard protectedR10InitialProfilePeripheralID == peripheral.identifier else {
+            AtriaDebugLog("ATRIADBG protected_r10 status=stream5_inactive action=skip_mid_link_cccd_mutation owner=%@ state=%@",
+                          protectedR10CleanOwner.rawValue,
+                          protectedR10CleanOwnerState.rawValue)
+            if protectedR10CleanOwner == .protectedV7,
+               (protectedR10CleanOwnerState == .protectedLaunchPending
+                || protectedR10CleanOwnerState == .proving
+                || protectedR10CleanOwnerState == .qualified) {
+                persistProtectedR10CleanOwnerFallback(
+                    reason: "clean_owner_stream5_inactive_after_initial_profile"
+                )
+            }
+            return
+        }
+        guard !protectedR10InitialProfileNotificationRequested else { return }
+        protectedR10InitialProfileNotificationRequested = true
+        peripheral.setNotifyValue(true, for: characteristic)
+        incrementRadioCounter(RadioDefaults.customNotifyEnabled,
+                              reason: "protected_r10_initial_profile")
+        dbgSubsReq += 1
+        AtriaDebugLog("ATRIADBG protected_r10 status=stream5_subscribe_requested action=initial_profile_once owner=%@",
+                      protectedR10CleanOwner.rawValue)
+    }
+
+    /// Only a completed CoreBluetooth callback may reject the initial v7
+    /// profile. Foreground/liveness observations are intentionally excluded
+    /// because they can run while the subscribe request is still in flight.
+    private func persistProtectedR10FallbackForStream5Callback(reason: String) {
+        guard standardHROnlyMode,
+              protectedR10CleanOwner == .protectedV7,
+              protectedR10CleanOwnerState == .protectedLaunchPending
+                || protectedR10CleanOwnerState == .proving
+                || protectedR10CleanOwnerState == .qualified else { return }
+        persistProtectedR10CleanOwnerFallback(reason: reason)
     }
 
     /// CoreBluetooth restoration can hand back a connected peripheral whose
@@ -5864,7 +6100,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 strapStream5NotifyConfirmed = true
                 markPassiveR10SubscriptionConfirmed()
             } else {
-                peripheral.setNotifyValue(true, for: cachedStream5)
+                requestProtectedR10InitialProfileNotificationIfAllowed(
+                    cachedStream5,
+                    peripheral: peripheral
+                )
             }
         }
         if let cachedBattery {
@@ -10961,7 +11200,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// background, and app relaunch. This is the "connect once, stay connected"
     /// primitive. Returns false only if no strap is saved yet (first-time setup).
     @discardableResult
-    func reconnectToSavedPeripheralIfPossible(reason: String) -> Bool {
+    func reconnectToSavedPeripheralIfPossible(reason: String,
+                                               allowCleanOwnerLaunchCutover: Bool = false) -> Bool {
         let defaults = UserDefaults.standard
         guard let uuidString = defaults.string(forKey: LinkDefaults.savedPeripheralUUID),
               let uuid = UUID(uuidString: uuidString),
@@ -10972,6 +11212,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         self.peripheral = saved
         assignIfChanged(\.deviceName, saved.name ?? deviceName)
         if saved.state == .connected {
+            if allowCleanOwnerLaunchCutover,
+               beginProtectedR10LaunchConnectionCutoverIfNeeded(
+                peripheral: saved,
+                central: central,
+                reason: reason
+               ) {
+                return true
+            }
             clearPendingKnownReconnect(reason: "\(reason)_already_connected")
             recomputeConnectionStatus(reason: "event")
             if motionHandshakeDiagnostic != nil {
@@ -10997,6 +11245,34 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             central.connect(saved, options: nil)
             AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=%@ action=pending_connect", reason)
         }
+        return true
+    }
+
+    /// A unique restoration namespace does not guarantee a physical BLE edge:
+    /// iOS may hand the new process the old still-connected peripheral. Perform
+    /// one persisted launch-only cutover before proof so stream 5 is established
+    /// by `didConnect`, never by mutating an inherited link mid-connection.
+    private func beginProtectedR10LaunchConnectionCutoverIfNeeded(
+        peripheral: CBPeripheral,
+        central: CBCentralManager,
+        reason: String
+    ) -> Bool {
+        let defaults = UserDefaults.standard
+        guard standardHROnlyMode,
+              !historyOnlyProbeMode,
+              !protectedR10StreamSuppressed,
+              protectedR10CleanOwner == .protectedV7,
+              protectedR10CleanOwnerState == .protectedLaunchPending,
+              peripheral.state == .connected,
+              !defaults.bool(forKey: Self.protectedR10CleanOwnerConnectionCutoverKey) else {
+            return false
+        }
+        defaults.set(true, forKey: Self.protectedR10CleanOwnerConnectionCutoverKey)
+        protectedR10InitialProfilePeripheralID = nil
+        protectedR10InitialProfileNotificationRequested = false
+        central.cancelPeripheralConnection(peripheral)
+        AtriaDebugLog("ATRIADBG protected_r10 status=clean_owner_launch_cutover reason=%@ action=single_disconnect_then_didconnect_profile_no_history",
+                      reason)
         return true
     }
 
@@ -13127,20 +13403,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
 
         if standardHROnlyMode {
-            // Reuse the physically bounded protected path: passive grace,
-            // persisted command lease, missing-frame rollback and the early-
-            // disconnect circuit breaker all remain authoritative.
-            protectedR10ActivationGraceTask?.cancel()
-            protectedR10ActivationGraceTask = nil
-            protectedR10MissingFrameTask?.cancel()
-            protectedR10MissingFrameTask = nil
-            protectedR10StabilityTask?.cancel()
-            protectedR10StabilityTask = nil
-            protectedR10ActivationSent = false
-            protectedR10ActivationAt = nil
-            protectedR10FramesAfterActivation = 0
-            sendProtectedR10ActivationIfReady()
-            AtriaDebugLog("ATRIADBG r10_watchdog status=repair_scheduled mode=protected reason=%@ action=passive_grace_then_leased_3f01",
+            if protectedR10CleanOwnerProofIsActive {
+                sendProtectedR10ActivationIfReady()
+            }
+            // Retired diagnostic vocabulary retained for audit continuity:
+            // status=repair_scheduled mode=protected. Clean owners do not
+            // schedule a CCCD repair; only the in-flight proof command gate is
+            // re-evaluated above.
+            AtriaDebugLog("ATRIADBG r10_watchdog status=observed mode=protected reason=%@ action=no_mid_link_cccd_or_epoch_reset",
                           reason)
             return
         }
@@ -14037,7 +14307,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             protectedR10FramesAfterActivation += 1
             if !UserDefaults.standard.bool(forKey: Self.protectedR10StableTransportKey),
                let passiveEpoch = protectedR10ActivationAt,
-               receivedAt.timeIntervalSince(passiveEpoch) >= 85,
+               receivedAt.timeIntervalSince(passiveEpoch) >= Self.protectedR10EarlyDisconnectWindow,
                Self.protectedR10StabilityWindowIsProven(
                 framesAfterActivation: protectedR10FramesAfterActivation,
                 lastFrameAt: receivedAt,
@@ -14045,16 +14315,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 activationAt: passiveEpoch,
                 now: receivedAt
                ) {
-                UserDefaults.standard.set(true, forKey: Self.protectedR10StableTransportKey)
-                UserDefaults.standard.set(receivedAt.timeIntervalSince1970,
-                                          forKey: Self.protectedR10StableTransportQualifiedAtKey)
-                UserDefaults.standard.set(0, forKey: Self.protectedR10EarlyDisconnectsKey)
-                UserDefaults.standard.set(0, forKey: Self.protectedR10RetryCountKey)
-                UserDefaults.standard.set(false, forKey: Self.protectedR10RollbackKey)
-                UserDefaults.standard.set(false, forKey: Self.protectedR10PassiveReprobePendingKey)
-                UserDefaults.standard.set(0, forKey: Self.protectedR10PassiveReprobeFailureCountKey)
-                protectedR10PassiveReprobeTimeoutTask?.cancel()
-                protectedR10PassiveReprobeTimeoutTask = nil
+                qualifyProtectedR10RecoveryIfNeeded(at: receivedAt,
+                                                     status: "receiving_crc_valid_passive")
                 AtriaDebugLog("ATRIADBG protected_r10 status=stable_window_complete path=passive duration_s=%.0f frames=%d action=qualify_transport",
                               receivedAt.timeIntervalSince(passiveEpoch),
                               protectedR10FramesAfterActivation)
@@ -14290,6 +14552,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func markPassiveR10SubscriptionConfirmed() {
         let subscribedAt = Date()
+        protectedR10InitialProfilePeripheralID = nil
+        protectedR10InitialProfileNotificationRequested = false
         ensureR10LivenessWatchdog(reason: "protected_stream5_subscribed")
         let defaults = UserDefaults.standard
         defaults.set("subscribed_waiting_for_crc_valid_frame",
@@ -14312,6 +14576,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                  "passive_r10_unavailable")
             AtriaDebugLog("ATRIADBG passive_r10 status=unavailable action=preserve_2a37_no_writes_no_reconnect")
         }
+        beginProtectedR10CleanOwnerProofIfNeeded(at: subscribedAt)
         AtriaDebugLog("ATRIADBG passive_r10 status=subscribed source=stream5 hr_source=2a37 writes=0")
     }
 
@@ -16552,7 +16817,10 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     recordLinkAttempt(reason: "powered_on_\(reason)", peripheral: earlyPendingConnect)
                     markPendingKnownReconnect(reason: "powered_on_\(reason)")
                     AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=powered_on_%@ action=pending_connect", reason)
-                } else if reconnectToSavedPeripheralIfPossible(reason: "powered_on_\(reason)") {
+                } else if reconnectToSavedPeripheralIfPossible(
+                    reason: "powered_on_\(reason)",
+                    allowCleanOwnerLaunchCutover: true
+                ) {
                     // Fallback path (e.g. saved peripheral was already connected,
                     // or became available only after the early precheck ran).
                     // Re-armed a standing pending connection to the known strap.
@@ -16602,6 +16870,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             self.assignIfChanged(\.deviceName, restoredPeripheral.name ?? self.deviceName)
             switch restoredPeripheral.state {
             case .connected:
+                self.protectedR10InitialProfilePeripheralID = nil
+                self.protectedR10InitialProfileNotificationRequested = false
                 let savedPeripheralIdentifier = UserDefaults.standard
                     .string(forKey: LinkDefaults.savedPeripheralUUID)
                     .flatMap(UUID.init(uuidString:))
@@ -16624,6 +16894,13 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 self.protectedR10MissingFrameTask = nil
                 self.protectedR10StabilityTask?.cancel()
                 self.protectedR10StabilityTask = nil
+                if self.beginProtectedR10LaunchConnectionCutoverIfNeeded(
+                    peripheral: restoredPeripheral,
+                    central: central,
+                    reason: "state_restore_connected"
+                ) {
+                    return
+                }
                 self.recordLinkObservedConnected(reason: "state_restore_connected", peripheral: restoredPeripheral)
                 self.scheduleRangeLossBackfillIfNeeded(reason: "state_restore_connected")
                 if self.beginRetiredBatteryProbeRecoveryIfNeeded(restoredPeripheral) {
@@ -16737,6 +17014,12 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             assignIfChanged(\.batteryChargeStatus, .levelOnly)
             recordBatteryChargeEvidence(batteryChargeStatus, reason: "did_connect")
             connectedAt = Date()
+            protectedR10InitialProfilePeripheralID = standardHROnlyMode
+                && !historyOnlyProbeMode
+                && !protectedR10StreamSuppressed
+                ? peripheral.identifier
+                : nil
+            protectedR10InitialProfileNotificationRequested = false
             protectedR10ActivationGraceTask?.cancel()
             protectedR10ActivationGraceTask = nil
             protectedR10ActivationSent = false
@@ -16775,14 +17058,15 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             let wasR10RetryActiveAtDisconnect = r10ArmRetryTask != nil
             let protectedActivationWasSent = protectedR10ActivationSent
             let protectedFrames = protectedR10FramesAfterActivation
+            let cleanOwnerProofWasActive = protectedR10CleanOwnerProofIsActive
             protectedR10ActivationGraceTask?.cancel()
             protectedR10ActivationGraceTask = nil
             protectedR10MissingFrameTask?.cancel()
             protectedR10MissingFrameTask = nil
             protectedR10StabilityTask?.cancel()
             protectedR10StabilityTask = nil
-            protectedR10PassiveReprobeTimeoutTask?.cancel()
-            protectedR10PassiveReprobeTimeoutTask = nil
+            protectedR10CleanOwnerProofTimeoutTask?.cancel()
+            protectedR10CleanOwnerProofTimeoutTask = nil
             recomputeConnectionStatus(reason: "event")
             freshScanFallbackTask?.cancel()
             freshScanFallbackTask = nil
@@ -16800,6 +17084,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             proprietaryNotifyFallbackTask = nil
             activeProprietaryNotifyUUIDs.removeAll()
             strapStream5NotifyConfirmed = false
+            protectedR10InitialProfilePeripheralID = nil
+            protectedR10InitialProfileNotificationRequested = false
             let defaults = UserDefaults.standard
             defaults.removeObject(forKey: BatteryDefaults.notificationLeaseAt)
             defaults.removeObject(forKey: BatteryDefaults.notificationConfirmedAt)
@@ -16817,41 +17103,17 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             let atriaOwnedOfflineSyncDisconnect = offlineHistoricalSyncInProgress
                 || historyOnlyProbeEnabled
                 || historyOnlyProbeMode
-            let passiveReprobeAttemptAt = (defaults.object(
-                forKey: Self.protectedR10PassiveReprobeAttemptAtKey
-            ) as? Double).map(Date.init(timeIntervalSince1970:))
-            let passiveReprobeDuration = passiveReprobeAttemptAt.map {
-                disconnectNow.timeIntervalSince($0)
-            }
-            if Self.shouldAbortProtectedR10PassiveReprobeForDisconnect(
-                reprobePending: defaults.bool(forKey: Self.protectedR10PassiveReprobePendingKey),
-                userRequestedDisconnect: wasUserRequestedDisconnect,
-                atriaOwnedOfflineSyncDisconnect: atriaOwnedOfflineSyncDisconnect,
-                reprobeDuration: passiveReprobeDuration
-            ) {
-                let failures = defaults.integer(
-                    forKey: Self.protectedR10PassiveReprobeFailureCountKey
-                ) + 1
-                defaults.set(failures,
-                             forKey: Self.protectedR10PassiveReprobeFailureCountKey)
-                defaults.set(false,
-                             forKey: Self.protectedR10PassiveReprobePendingKey)
-                defaults.set(true,
-                             forKey: Self.protectedR10StreamSuppressedKey)
-                defaults.set("passive_reprobe_short_disconnect",
-                             forKey: Self.protectedR10DisconnectStormReasonKey)
-                defaults.set("passive_reprobe_failed_hr_preserved",
-                             forKey: RadioDefaults.passiveR10Status)
-                AtriaDebugLog("ATRIADBG protected_r10 status=passive_reprobe_failed reprobe_s=%.1f connected_s=%.1f failures=%d action=resuppress_stream5_before_reconnect_backoff_no_command",
-                              passiveReprobeDuration ?? -1,
-                              connectedDuration,
-                              failures)
+            if cleanOwnerProofWasActive {
+                persistProtectedR10CleanOwnerFallback(
+                    reason: "clean_owner_proof_disconnect"
+                )
             }
             let previousProtectedEarlyDisconnects = defaults.integer(
                 forKey: Self.protectedR10EarlyDisconnectsKey
             )
             if motionHandshakeDiagnostic == nil,
                protectedActivationWasSent,
+               !cleanOwnerProofWasActive,
                !wasUserRequestedDisconnect,
                !atriaOwnedOfflineSyncDisconnect,
                connectedDuration > 0,
@@ -17010,6 +17272,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             self.proprietaryNotifyFallbackTask = nil
             self.activeProprietaryNotifyUUIDs.removeAll()
             self.strapStream5NotifyConfirmed = false
+            self.protectedR10InitialProfilePeripheralID = nil
+            self.protectedR10InitialProfileNotificationRequested = false
             self.txCharacteristic = nil
             self.heartRateCharacteristic = nil
             self.lastMissingHeartRateDiscoveryAt = nil
@@ -17139,6 +17403,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         var usedStandardHROnly = false
         var requestedCustomNotifyCount = 0
         var passiveR10AlreadyNotifying = false
+        var protectedStream5NeedingInitialSubscribe: CBCharacteristic?
         let discoveryUsesProtectedStandardHR = Self.discoveryShouldUseProtectedStandardHR(
             standardSnapshot: standardHROnlyMode,
             historyOnlyProbeMode: historyOnlyProbeMode
@@ -17210,10 +17475,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                    ch.uuid == Self.UUIDs.strapStream5,
                    ch.properties.contains(.notify) {
                     if !ch.isNotifying {
-                        peripheral.setNotifyValue(true, for: ch)
-                        requestedCustomNotifyCount += 1
-                        radioCounters.append((RadioDefaults.customNotifyEnabled,
-                                              "protected_r10_minimal"))
+                        protectedStream5NeedingInitialSubscribe = ch
                     } else {
                         passiveR10AlreadyNotifying = true
                     }
@@ -17251,7 +17513,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         // Set the command characteristic and request realtime HR + RR intervals
         // (the HRV source) in ONE task, so tx is assigned before we send. Verified
         // command: [0x23, seq, 0x03, 0x01] → CMD_RESP ack → REALTIME_DATA stream.
-        if foundTX != nil || foundHeartRateCharacteristic != nil || !radioCounters.isEmpty || requestedCustomNotifyCount > 0 || !alreadyActiveProprietaryNotifications.isEmpty || passiveR10AlreadyNotifying || skippedCustomNotify || usedStandardHROnly {
+        if foundTX != nil || foundHeartRateCharacteristic != nil || !radioCounters.isEmpty || requestedCustomNotifyCount > 0 || protectedStream5NeedingInitialSubscribe != nil || !alreadyActiveProprietaryNotifications.isEmpty || passiveR10AlreadyNotifying || skippedCustomNotify || usedStandardHROnly {
             Task { @MainActor in
                 if let heartRateCharacteristic = foundHeartRateCharacteristic {
                     self.heartRateCharacteristic = heartRateCharacteristic
@@ -17265,6 +17527,12 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 }
                 if requestedCustomNotifyCount > 0 {
                     self.dbgSubsReq += requestedCustomNotifyCount
+                }
+                if let protectedStream5NeedingInitialSubscribe {
+                    self.requestProtectedR10InitialProfileNotificationIfAllowed(
+                        protectedStream5NeedingInitialSubscribe,
+                        peripheral: peripheral
+                    )
                 }
                 if !alreadyActiveProprietaryNotifications.isEmpty {
                     self.activeProprietaryNotifyUUIDs.formUnion(alreadyActiveProprietaryNotifications)
@@ -17386,7 +17654,13 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 self.dbgLast = "suberr \(short):\(err.prefix(14))"
                 if isData {
                     self.strapStream5NotifyConfirmed = false
-                    self.reassertR10NotificationIfConnected(reason: "stream5_notify_error")
+                    if self.standardHROnlyMode {
+                        self.persistProtectedR10FallbackForStream5Callback(
+                            reason: "clean_owner_stream5_notification_error"
+                        )
+                    } else {
+                        self.reassertR10NotificationIfConnected(reason: "stream5_notify_error")
+                    }
                 }
             } else if !notifying,
                       self.pendingNotifyReenableUUIDs.remove(characteristic.uuid) != nil {
@@ -17429,7 +17703,13 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 self.activeProprietaryNotifyUUIDs.remove(characteristic.uuid)
                 if isData {
                     self.strapStream5NotifyConfirmed = false
-                    self.reassertR10NotificationIfConnected(reason: "stream5_notify_inactive")
+                    if self.standardHROnlyMode {
+                        self.persistProtectedR10FallbackForStream5Callback(
+                            reason: "clean_owner_stream5_notification_inactive"
+                        )
+                    } else {
+                        self.reassertR10NotificationIfConnected(reason: "stream5_notify_inactive")
+                    }
                 }
             }
         }

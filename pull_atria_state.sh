@@ -426,10 +426,21 @@ def emit_offline_sync_preferences():
     radio_user_selected = bool(pref(prefs, "radio.standardHROnlyUserSelected", False))
     step_full_protocol_migrated = bool(pref(prefs, "capture.strapStepFullProtocolMigrated", False))
     passive_r10_status = str(pref(prefs, "radio.passiveR10Status", "none") or "none")
+    clean_owner = str(pref(prefs, "protectedR10.cleanOwner", "legacy") or "legacy")
+    clean_owner_state = str(pref(prefs, "protectedR10.cleanOwnerState", "none") or "none")
+    clean_owner_failure = str(pref(prefs, "protectedR10.cleanOwnerFailureReason", "none") or "none")
+    passive_r10_last_valid_at = pref(prefs, "radio.passiveR10LastValidAt")
+    passive_r10_age = (
+        now - float(passive_r10_last_valid_at)
+        if isinstance(passive_r10_last_valid_at, (int, float)) and passive_r10_last_valid_at > 0
+        else -1.0
+    )
+    passive_r10_is_fresh = 0.0 <= passive_r10_age <= 15.0
     protected_r10_active = (
         radio_standard_only
         and not radio_user_selected
-        and passive_r10_status == "receiving_crc_valid"
+        and passive_r10_status in ("receiving_crc_valid", "receiving_crc_valid_passive")
+        and passive_r10_is_fresh
     )
     # `standardHROnly` is a legacy key name. Production-safe mode now keeps
     # 2A37 HR plus the isolated stream-5 R10 motion subscription, so a true key
@@ -456,6 +467,10 @@ def emit_offline_sync_preferences():
     print(f"radio_effective_mode={effective_radio_mode}")
     print(f"radio_protected_r10_active={bool_int(protected_r10_active)}")
     print(f"radio_passive_r10_status={passive_r10_status}")
+    print(f"radio_passive_r10_age_s={passive_r10_age:.1f}")
+    print(f"radio_clean_owner={clean_owner}")
+    print(f"radio_clean_owner_state={clean_owner_state}")
+    print(f"radio_clean_owner_failure={clean_owner_failure}")
     print(f"protocol_packets={int(pref(prefs, 'protocol.packets', 0) or 0)}")
     print(f"protocol_imu_frames={int(pref(prefs, 'protocol.imuFrames', 0) or 0)}")
     print(f"protocol_last_packet_type={pref(prefs, 'protocol.lastPacketType', 'none') or 'none'}")
