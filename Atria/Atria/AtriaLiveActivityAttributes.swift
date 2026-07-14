@@ -16,13 +16,9 @@ struct AtriaLiveActivityAttributes: ActivityAttributes {
         var batteryChargeStatus: String
         var batteryChargeText: String
         var readingCount: Int
-        var mediaTitle: String
-        var mediaArtist: String
-        var mediaIsPlaying: Bool
-        var mediaHasNowPlayingInfo: Bool
         var updatedAt: Date
         // Sensor-source freshness must not be re-stamped by unrelated battery,
-        // media or timer updates. Optional for activities from older builds.
+        // UI or timer updates. Optional for activities from older builds.
         var heartRateCapturedAt: Date? = nil
         var sensorHasContact: Bool? = nil
         var heartRateAvailability: AtriaLiveSensorAvailability? = nil

@@ -10541,7 +10541,8 @@ class HandoffStaticChecks(unittest.TestCase):
                        workout.index("private struct AtriaLiveWorkoutBackdrop: View")]
 
         assert_contains(self, root, "let pulseStore: AtriaHomeModel.PulseLiveStore")
-        assert_contains(self, root, "let metricProjection: AtriaLiveWorkoutMetricProjection")
+        assert_contains(self, root, "@ObservedObject var metricStore: AtriaLiveWorkoutMetricStore")
+        assert_contains(self, root, "private var metricProjection: AtriaLiveWorkoutMetricProjection")
         assert_not_contains(self, root, "@ObservedObject var pulseStore")
         assert_not_contains(self, root, "@ObservedObject var liveStore")
         for leaf in [
@@ -14227,7 +14228,11 @@ class HandoffStaticChecks(unittest.TestCase):
         root_end = workout.index("private struct AtriaLiveWorkoutBackdrop", root_start)
         root = workout[root_start:root_end]
 
-        assert_contains(self, root, "let metricProjection: AtriaLiveWorkoutMetricProjection")
+        assert_contains(self, root, "@ObservedObject var metricStore: AtriaLiveWorkoutMetricStore")
+        assert_contains(self, root, "private var metricProjection: AtriaLiveWorkoutMetricProjection")
+        assert_contains(self, home, "@State private var liveWorkoutMetricStore = AtriaLiveWorkoutMetricStore()")
+        assert_not_contains(self, home, "@State private var liveWorkoutMetricProjection")
+        assert_contains(self, home, "liveWorkoutMetricStore.publishIfChanged(metricProjection)")
         self.assertNotIn("heroStore.state.strain", root)
         assert_contains(self, workout, "private struct AtriaLiveWorkoutStrainGuidance: View")
         assert_contains(self, workout, "AtriaLiveWorkoutStrainGuidance(metricProjection: metricProjection")

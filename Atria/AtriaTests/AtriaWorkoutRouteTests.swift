@@ -294,20 +294,43 @@ final class AtriaWorkoutRouteTests: XCTestCase {
 
     func testLiveRoutePreviewStaysBoundedWithoutLosingEndpoints() {
         let limit = 64
-        var preview: [CLLocationCoordinate2D] = []
+        var preview: [[CLLocationCoordinate2D]] = []
         for index in 0..<20_000 {
-            preview = AtriaWorkoutRouteRecorder.previewCoordinates(
+            preview = AtriaWorkoutRouteRecorder.previewSegments(
                 byAppending: CLLocationCoordinate2D(latitude: Double(index),
                                                      longitude: -Double(index)),
+                startsNewSegment: index == 0,
                 to: preview,
                 limit: limit
             )
-            XCTAssertLessThanOrEqual(preview.count, limit)
+            XCTAssertLessThanOrEqual(preview.reduce(0, { $0 + $1.count }), limit)
         }
 
-        XCTAssertEqual(preview.first?.latitude, 0)
-        XCTAssertEqual(preview.last?.latitude, 19_999)
-        XCTAssertEqual(preview.last?.longitude, -19_999)
+        XCTAssertEqual(preview.first?.first?.latitude, 0)
+        XCTAssertEqual(preview.last?.last?.latitude, 19_999)
+        XCTAssertEqual(preview.last?.last?.longitude, -19_999)
+    }
+
+    func testLiveRoutePreviewKeepsPauseSegmentsSeparateWhileCompacting() {
+        let limit = 40
+        var preview: [[CLLocationCoordinate2D]] = []
+        for index in 0..<160 {
+            preview = AtriaWorkoutRouteRecorder.previewSegments(
+                byAppending: CLLocationCoordinate2D(latitude: Double(index),
+                                                     longitude: Double(index)),
+                startsNewSegment: index == 0 || index == 80,
+                to: preview,
+                limit: limit
+            )
+        }
+
+        XCTAssertEqual(preview.count, 2,
+                       "Pause/resume must remain two polylines instead of inventing a connecting path")
+        XCTAssertLessThanOrEqual(preview.reduce(0, { $0 + $1.count }), limit)
+        XCTAssertEqual(preview[0].first?.latitude, 0)
+        XCTAssertEqual(preview[0].last?.latitude, 79)
+        XCTAssertEqual(preview[1].first?.latitude, 80)
+        XCTAssertEqual(preview[1].last?.latitude, 159)
     }
 
     func testLiveRouteMapConsumesPrecomputedBoundedCoordinates() throws {
@@ -328,7 +351,8 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         XCTAssertTrue(mapSource.contains(".userLocation("))
         XCTAssertFalse(mapSource.contains("points.map"))
         XCTAssertTrue(routeSource.contains("maximumLivePreviewPointCount = 512"))
-        XCTAssertTrue(routeSource.contains("snapshot.previewCoordinates = previewCoordinates"))
+        XCTAssertTrue(mapSource.contains("ForEach(Array(segments.enumerated())"))
+        XCTAssertTrue(routeSource.contains("snapshot.previewSegments = previewSegments"))
         XCTAssertFalse(routeSource.contains("snapshot.points = points"))
     }
 

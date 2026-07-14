@@ -95,9 +95,21 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             lastAttemptAge: nil,
             failureCount: 0
         ), "only one passive probe may own the link")
+        XCTAssertFalse(AtriaBLEManager.shouldBeginProtectedR10PassiveReprobe(
+            streamSuppressed: true,
+            reprobePending: false,
+            connected: true,
+            stableHRDuration: 500,
+            latestHRAge: 0,
+            disconnectStormAge: 5_000,
+            lastAttemptAge: nil,
+            failureCount: 0,
+            batteryLevel: 13,
+            isCharging: false
+        ), "a passive recovery must not knowingly destabilize low-battery HR")
     }
 
-    func testFailedPassiveReprobeStaysSuppressedUntilExplicitCalibration() {
+    func testFailedPassiveReprobeRetriesOnlyAfterExponentialCooldown() {
         XCTAssertFalse(AtriaBLEManager.shouldBeginProtectedR10PassiveReprobe(
             streamSuppressed: true,
             reprobePending: false,
@@ -105,9 +117,21 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             stableHRDuration: 500,
             latestHRAge: 0,
             disconnectStormAge: 20_000,
-            lastAttemptAge: 100_000,
-            failureCount: 1
-        ), "a physically failed passive probe must never become a recurring disconnect timer")
+            lastAttemptAge: 3_599,
+            failureCount: 1,
+            initialCooldown: 1_800
+        ), "a failed passive probe must not become a recurring disconnect timer")
+        XCTAssertTrue(AtriaBLEManager.shouldBeginProtectedR10PassiveReprobe(
+            streamSuppressed: true,
+            reprobePending: false,
+            connected: true,
+            stableHRDuration: 500,
+            latestHRAge: 0,
+            disconnectStormAge: 20_000,
+            lastAttemptAge: 3_600,
+            failureCount: 1,
+            initialCooldown: 1_800
+        ), "a historical failure must not freeze strap steps forever")
         XCTAssertTrue(AtriaBLEManager.shouldBeginProtectedR10PassiveReprobe(
             streamSuppressed: true,
             reprobePending: false,
@@ -118,6 +142,26 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             lastAttemptAge: nil,
             failureCount: 0
         ))
+    }
+
+    func testPassiveRetryMigrationClearsOnlyObsoleteRetryHistoryOnce() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.passiveRetryMigration.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "atria.protectedR10.streamSuppressed")
+        defaults.set(3, forKey: "atria.protectedR10.passiveReprobeFailureCount")
+        defaults.set(123.0, forKey: "atria.protectedR10.passiveReprobeAttemptAt")
+
+        XCTAssertTrue(AtriaBLEManager.migrateProtectedR10PassiveRetryIfNeeded(defaults: defaults))
+        XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.streamSuppressed"),
+                      "migration must retain the disconnect-storm safety fuse")
+        XCTAssertEqual(defaults.integer(forKey: "atria.protectedR10.passiveReprobeFailureCount"), 0)
+        XCTAssertNil(defaults.object(forKey: "atria.protectedR10.passiveReprobeAttemptAt"))
+
+        defaults.set(2, forKey: "atria.protectedR10.passiveReprobeFailureCount")
+        XCTAssertFalse(AtriaBLEManager.migrateProtectedR10PassiveRetryIfNeeded(defaults: defaults))
+        XCTAssertEqual(defaults.integer(forKey: "atria.protectedR10.passiveReprobeFailureCount"), 2,
+                       "a later real failure must retain its exponential cooldown")
     }
 
     func testPassiveReprobeShortDisconnectImmediatelyRestoresFuse() {
@@ -2876,7 +2920,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(source.contains("sendCommand(Cmd.linkValid"))
     }
 
-    func testLowBatteryPreservesHeartRateInsteadOfForcingHighFrequencyMotion() {
+    func testLowBatteryPreservesHeartRateUntilMotionTransportIsSafe() {
         XCTAssertFalse(AtriaBLEManager.shouldArmHighFrequencyMotion(batteryLevel: 10,
                                                                    isCharging: false))
         XCTAssertFalse(AtriaBLEManager.shouldArmHighFrequencyMotion(batteryLevel: 25,

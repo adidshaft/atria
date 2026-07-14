@@ -1304,13 +1304,6 @@ private struct AtriaLiveActivityLockScreenView: View {
     }
 }
 
-private func mediaLine(for state: AtriaLiveActivityAttributes.ContentState) -> String {
-    if state.mediaArtist.isEmpty || state.mediaArtist == "System player" {
-        return state.mediaTitle
-    }
-    return "\(state.mediaTitle) · \(state.mediaArtist)"
-}
-
 private func elapsedText(since start: Date) -> String {
     let seconds = max(0, Int(Date().timeIntervalSince(start)))
     let minutes = seconds / 60

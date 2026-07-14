@@ -13864,7 +13864,12 @@ final class SessionStore: ObservableObject {
            latest.confirmed == false,
            let start = latest.start,
            let end = latest.end,
-           !confirmedSleeps.contains(where: { $0.end > start && $0.start < end }),
+           (!confirmedSleeps.contains(where: { $0.end > start && $0.start < end })
+            || sleepReviewExtensionTarget(existing: confirmedSleeps,
+                                          candidateStart: start,
+                                          candidateEnd: end,
+                                          candidateDuration: latest.duration,
+                                          isNap: latest.isNapEvidence) != nil),
            !dismissedCandidates.contains(where: { $0.overlaps(start: start, end: end) }) {
             // Daily rollups are intentionally cheap and can include a long,
             // quiet awake lead-in or stop at a BLE gap. Prefer the robust
@@ -13887,7 +13892,12 @@ final class SessionStore: ObservableObject {
                                                    calendar: calendar,
                                                    historicalMotionPolicy: .boundedRecent)
         guard let candidate = preferredSleepCandidateForReview(from: candidates),
-              !confirmedSleeps.contains(where: { sleepWindowsOverlap($0, candidate: candidate) }),
+              (!confirmedSleeps.contains(where: { sleepWindowsOverlap($0, candidate: candidate) })
+               || sleepReviewExtensionTarget(existing: confirmedSleeps,
+                                             candidateStart: candidate.start,
+                                             candidateEnd: candidate.end,
+                                             candidateDuration: candidate.duration,
+                                             isNap: candidate.kind == "nap_candidate") != nil),
               !dismissedCandidates.contains(where: {
                   $0.overlaps(start: candidate.start, end: candidate.end)
               }) else {
@@ -14012,8 +14022,14 @@ final class SessionStore: ObservableObject {
                 && startHour >= 8 && endHour <= 20
                 && captured >= AggregateSleepCandidate.napMinimumDuration
                 && span <= AggregateSleepCandidate.napMaximumSpan
+            let overlapsConfirmed = confirmedSleeps.contains { $0.end > start && $0.start < end }
+            let extendsConfirmed = sleepReviewExtensionTarget(existing: confirmedSleeps,
+                                                               candidateStart: start,
+                                                               candidateEnd: end,
+                                                               candidateDuration: min(captured, span),
+                                                               isNap: nap) != nil
             guard mainSleep || nap,
-                  !confirmedSleeps.contains(where: { $0.end > start && $0.start < end }),
+                  !overlapsConfirmed || extendsConfirmed,
                   !dismissedCandidates.contains(where: { $0.overlaps(start: start, end: end) }) else { return nil }
             let source = mainSleep ? "sleep_episode_review" : "nap_candidate"
             let day = endHour <= 11 ? calendar.startOfDay(for: end) : calendar.startOfDay(for: start)
@@ -14089,8 +14105,20 @@ final class SessionStore: ObservableObject {
             return nil
         }
 
+        let extensionTarget = Self.sleepReviewExtensionTarget(
+            existing: cachedConfirmedSleeps,
+            candidateStart: start,
+            candidateEnd: end,
+            candidateDuration: duration,
+            isNap: isNap
+        )
+        // A five-minute physiology bucket may start just after the already
+        // saved automatic night. Preserve the earlier durable boundary when
+        // the review is an approved continuation; Save must only grow sleep.
+        let confirmedStart = min(start, extensionTarget?.start ?? start)
+        let confirmedSpan = max(duration, end.timeIntervalSince(confirmedStart))
         let sleepSource = reviewedSleepSource(for: night)
-        let id = confirmedSleepID(start: start, end: end, source: sleepSource)
+        let id = confirmedSleepID(start: confirmedStart, end: end, source: sleepSource)
         var existing = cachedConfirmedSleeps
         if let already = existing.first(where: { $0.id == id }) {
             // Repair older saved reviews that predate durable candidate
@@ -14120,13 +14148,13 @@ final class SessionStore: ObservableObject {
         // utility worker. Prefer its exact-window HRV so confirming does not
         // discard that evidence and visibly change recovery color. Finished
         // canonical sessions remain the fallback for older review records.
-        let metrics = confirmedSleepWindowMetrics(start: start, end: end, rest: rest)
+        let metrics = confirmedSleepWindowMetrics(start: confirmedStart, end: end, rest: rest)
         let motionValidated = night.confidence.caseInsensitiveCompare("ready") == .orderedSame
             || night.stageEvidence == .validated
         let stageSegments = night.displayStageSegments.isEmpty ? nil : night.displayStageSegments
         let confirmed = UserConfirmedSleep(id: id,
                                            createdAt: Date(),
-                                           start: start,
+                                           start: confirmedStart,
                                            end: end,
                                            source: sleepSource,
                                            confidence: motionValidated ? "user_confirmed_motion_validated" : "user_confirmed_hr_only",
@@ -14139,12 +14167,23 @@ final class SessionStore: ObservableObject {
                                            hrvWindowCount: max(night.hrvWindowCount,
                                                                metrics.hrvWindowCount),
                                            duration: duration,
-                                           span: span,
+                                           span: confirmedSpan,
                                            reason: "\(source); \(night.confirmationText); \(night.confidenceText)",
                                            motionSource: motionValidated ? "user_review_validated" : "user_review",
                                            motionValidated: motionValidated,
                                            stageSegments: stageSegments,
-                                           eventTimeZoneIdentifier: TimeZone.current.identifier)
+                                           eventTimeZoneIdentifier: night.eventTimeZoneIdentifier
+                                            ?? extensionTarget?.eventTimeZoneIdentifier
+                                            ?? TimeZone.current.identifier)
+        if extensionTarget != nil {
+            // A continuation can cover more than one legacy automatic fragment.
+            // Remove every auto main-sleep record it subsumes so Activity and
+            // recovery receive one canonical major sleep, never duplicates.
+            existing = Self.sleepReviewInsertionBase(existing: existing,
+                                                     extensionTarget: extensionTarget,
+                                                     candidateStart: confirmedStart,
+                                                     candidateEnd: end)
+        }
         existing.append(confirmed)
         guard saveConfirmedSleeps(existing) else { return nil }
         // Confirm permanently settles the detector suggestion only after the
@@ -15199,6 +15238,69 @@ final class SessionStore: ObservableObject {
 
     private nonisolated static func sleepWindowsOverlap(_ sleep: UserConfirmedSleep, candidate: AggregateSleepCandidate) -> Bool {
         sleep.start < candidate.end && sleep.end > candidate.start
+    }
+
+    /// A low-HR review episode may legitimately grow the automatic main sleep
+    /// that was saved at the first wake. Without this exception, the generic
+    /// overlap suppression hides the resumed portion forever whenever low
+    /// battery or a transport gap leaves motion evidence unavailable.
+    ///
+    /// This is deliberately review-only and extend-only: it never touches a
+    /// manual/adjusted record, never absorbs a nap or separate later episode,
+    /// never trims the saved head, and requires meaningful new sensor-credited
+    /// sleep as well as a later wake. Automatic settlement keeps its stricter
+    /// motion gate; this helper only decides whether the user may review/save a
+    /// conservative continuation.
+    nonisolated static func sleepReviewExtensionTarget(
+        existing: [UserConfirmedSleep],
+        candidateStart: Date,
+        candidateEnd: Date,
+        candidateDuration: TimeInterval,
+        isNap: Bool,
+        maximumStartLead: TimeInterval = 30 * 60,
+        startTolerance: TimeInterval = 5 * 60,
+        minimumEndGain: TimeInterval = 30 * 60,
+        minimumDurationGain: TimeInterval = 20 * 60
+    ) -> UserConfirmedSleep? {
+        guard !isNap,
+              candidateEnd > candidateStart,
+              candidateDuration > 0 else { return nil }
+        let overlapping = existing.filter {
+            $0.start < candidateEnd && $0.end > candidateStart
+        }
+        guard !overlapping.isEmpty,
+              !overlapping.contains(where: { isUserAuthoredSleepSource($0.source) }),
+              overlapping.allSatisfy({ isExtendableAutoNight($0) }),
+              let target = overlapping.max(by: { $0.duration < $1.duration }) else {
+            return nil
+        }
+        // Five-minute physiology bins can begin at the next bucket after the
+        // persisted boundary. Permit only that rounding error; anything later
+        // is a separate episode and must not replace the original night.
+        guard candidateStart >= target.start.addingTimeInterval(-maximumStartLead),
+              candidateStart <= target.start.addingTimeInterval(startTolerance),
+              candidateEnd >= target.end.addingTimeInterval(minimumEndGain),
+              candidateDuration >= target.duration + minimumDurationGain else {
+            return nil
+        }
+        return target
+    }
+
+    /// Produces the persistence base for an explicitly reviewed continuation.
+    /// Factored as a pure function so the transaction's duplicate-removal rule
+    /// is testable independently of UserDefaults.
+    nonisolated static func sleepReviewInsertionBase(
+        existing: [UserConfirmedSleep],
+        extensionTarget: UserConfirmedSleep?,
+        candidateStart: Date,
+        candidateEnd: Date
+    ) -> [UserConfirmedSleep] {
+        guard extensionTarget != nil else { return existing }
+        return existing.filter {
+            !isExtendableAutoNight($0)
+                || $0.start >= candidateEnd
+                || $0.end <= candidateStart
+        }
     }
 
     /// Returns the records an auto-confirmed candidate may be inserted beside.

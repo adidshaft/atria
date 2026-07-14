@@ -232,10 +232,6 @@ final class AtriaLiveActivityCoordinator {
         var batteryLevel: Int
         var batteryChargeStatus: AtriaBLEManager.BatteryChargeStatus
         var readingCount: Int
-        var mediaTitle: String
-        var mediaArtist: String
-        var mediaIsPlaying: Bool
-        var mediaHasNowPlayingInfo: Bool
         var startedAt: Date
         var activityName: String
         var activitySystemImage: String
@@ -364,11 +360,10 @@ final class AtriaLiveActivityCoordinator {
                                             content: ActivityContent(state: state,
                                                                      staleDate: staleDate(for: snapshot)),
                                             pushType: nil)
-            AtriaDebugLog("ATRIADBG live_activity status=started bpm=%d strain=%.1f readings=%d media_now_playing=%d local_only=1",
+            AtriaDebugLog("ATRIADBG live_activity status=started bpm=%d strain=%.1f readings=%d local_only=1",
                           snapshot.heartRate,
                           snapshot.strain,
-                          snapshot.readingCount,
-                          snapshot.mediaHasNowPlayingInfo ? 1 : 0)
+                          snapshot.readingCount)
         } catch {
             AtriaDebugLog("ATRIADBG live_activity status=start_failed error=%@ local_only=1",
                           String(describing: error))
@@ -398,11 +393,10 @@ final class AtriaLiveActivityCoordinator {
         pendingActivityUpdateTask?.cancel()
         pendingActivityUpdateTask = nil
         activityUpdateChain = nil
-        AtriaDebugLog("ATRIADBG live_activity status=ended bpm=%d strain=%.1f readings=%d media_now_playing=%d local_only=1",
+        AtriaDebugLog("ATRIADBG live_activity status=ended bpm=%d strain=%.1f readings=%d local_only=1",
                       snapshot.heartRate,
                       snapshot.strain,
-                      snapshot.readingCount,
-                      snapshot.mediaHasNowPlayingInfo ? 1 : 0)
+                      snapshot.readingCount)
     }
 
     private func contentState(from snapshot: Snapshot,
@@ -415,10 +409,6 @@ final class AtriaLiveActivityCoordinator {
                                                  batteryChargeStatus: snapshot.batteryChargeStatus.rawValue,
                                                  batteryChargeText: snapshot.batteryChargeStatus.label,
                                                  readingCount: snapshot.readingCount,
-                                                 mediaTitle: snapshot.mediaTitle,
-                                                 mediaArtist: snapshot.mediaArtist,
-                                                 mediaIsPlaying: snapshot.mediaIsPlaying,
-                                                 mediaHasNowPlayingInfo: snapshot.mediaHasNowPlayingInfo,
                                                  updatedAt: now,
                                                  heartRateCapturedAt: snapshot.heartRateCapturedAt,
                                                  sensorHasContact: snapshot.sensorHasContact,
@@ -555,11 +545,7 @@ final class AtriaLiveActivityCoordinator {
                                                                 elapsedSinceLastWrite: TimeInterval) -> Bool {
         let elapsed = max(0, elapsedSinceLastWrite)
 
-        if current.mediaTitle != previous.mediaTitle
-            || current.mediaArtist != previous.mediaArtist
-            || current.mediaIsPlaying != previous.mediaIsPlaying
-            || current.mediaHasNowPlayingInfo != previous.mediaHasNowPlayingInfo
-            || current.batteryLevel != previous.batteryLevel
+        if current.batteryLevel != previous.batteryLevel
             || current.batteryChargeStatus != previous.batteryChargeStatus {
             return true
         }

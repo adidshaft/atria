@@ -203,6 +203,25 @@ struct AtriaLiveWorkoutMetricProjection: Equatable {
     }
 }
 
+/// Narrow publication owner for the rapidly changing workout metrics. Home
+/// retains this object by identity without observing it; only the presented
+/// workout HUD subscribes. Keeping the value out of `AtriaHomeView`'s own
+/// `@State` prevents every 750 ms strain/calorie/step refresh from rebuilding
+/// the complete tab shell behind the full-screen workout.
+@MainActor
+final class AtriaLiveWorkoutMetricStore: ObservableObject {
+    @Published private(set) var state: AtriaLiveWorkoutMetricProjection
+
+    init(state: AtriaLiveWorkoutMetricProjection = .empty) {
+        self.state = state
+    }
+
+    func publishIfChanged(_ next: AtriaLiveWorkoutMetricProjection) {
+        guard next != state else { return }
+        state = next
+    }
+}
+
 /// Incremental, pause-aware Banister load and active energy owned by one
 /// explicit workout. Keeping these separate from day totals avoids subtracting
 /// two nonlinear 0...21 scores and prevents a visible jump at finalization.
@@ -974,27 +993,32 @@ enum AtriaWorkoutTargetMath {
 /// parent workout HUD refreshes for heart rate and timers. This Equatable leaf
 /// prevents rebuilding and remapping the entire polyline on every pulse tick.
 private struct AtriaLiveWorkoutRouteMap: View, Equatable {
-    let coordinates: [CLLocationCoordinate2D]
+    let segments: [[CLLocationCoordinate2D]]
     @State private var cameraPosition: MapCameraPosition = .userLocation(
         followsHeading: false,
         fallback: .automatic
     )
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        guard lhs.coordinates.count == rhs.coordinates.count else { return false }
-        guard let lhsLast = lhs.coordinates.last, let rhsLast = rhs.coordinates.last else {
-            return lhs.coordinates.isEmpty && rhs.coordinates.isEmpty
+        guard lhs.segments.count == rhs.segments.count,
+              lhs.segments.reduce(0, { $0 + $1.count })
+                == rhs.segments.reduce(0, { $0 + $1.count }) else { return false }
+        guard let lhsLast = lhs.segments.last?.last,
+              let rhsLast = rhs.segments.last?.last else {
+            return lhs.segments.isEmpty && rhs.segments.isEmpty
         }
         return lhsLast.latitude == rhsLast.latitude && lhsLast.longitude == rhsLast.longitude
     }
 
     var body: some View {
         Map(position: $cameraPosition) {
-            MapPolyline(coordinates: coordinates)
-            .stroke(.cyan,
-                    style: StrokeStyle(lineWidth: 5,
-                                       lineCap: .round,
-                                       lineJoin: .round))
+            ForEach(Array(segments.enumerated()), id: \.offset) { _, coordinates in
+                MapPolyline(coordinates: coordinates)
+                    .stroke(.cyan,
+                            style: StrokeStyle(lineWidth: 5,
+                                               lineCap: .round,
+                                               lineJoin: .round))
+            }
             UserAnnotation()
         }
         .mapStyle(.standard(pointsOfInterest: .excludingAll))
@@ -1010,7 +1034,7 @@ private struct AtriaLiveWorkoutRouteCard: View {
     var body: some View {
         let route = routeRecorder.snapshot
         ZStack(alignment: .topLeading) {
-            AtriaLiveWorkoutRouteMap(coordinates: route.previewCoordinates)
+            AtriaLiveWorkoutRouteMap(segments: route.previewSegments)
                 .equatable()
 
             routeStatus(route)
@@ -1075,7 +1099,10 @@ private struct AtriaLiveWorkoutRouteCard: View {
 /// existing live stores (no new pipeline); the strap is already recording.
 struct AtriaLiveWorkoutView: View {
     let pulseStore: AtriaHomeModel.PulseLiveStore
-    let metricProjection: AtriaLiveWorkoutMetricProjection
+    /// The workout surface is the sole observer. This intentionally must not
+    /// move back to a value read at the Home root or rapid sensor updates will
+    /// invalidate the whole app shell while this cover is presented.
+    @ObservedObject var metricStore: AtriaLiveWorkoutMetricStore
     // The route map owns the 1 Hz observation. Keeping this reference plain
     // prevents GPS publishes from invalidating HR, zones, strain and set logging.
     let routeRecorder: AtriaWorkoutRouteRecorder
@@ -1107,6 +1134,10 @@ struct AtriaLiveWorkoutView: View {
     @State private var restTimerEndsAt: Date?
     @State private var editingSetID: UUID?
     @State private var latestPRSetID: UUID?
+
+    private var metricProjection: AtriaLiveWorkoutMetricProjection {
+        metricStore.state
+    }
 
     var body: some View {
         Group {
