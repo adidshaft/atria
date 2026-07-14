@@ -138,8 +138,9 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
         let home = try source("AtriaHomeView.swift")
 
         XCTAssertTrue(home.contains("private final class AtriaSettingsPresentationCoordinator: ObservableObject"))
-        XCTAssertTrue(home.contains("private struct AtriaSettingsPresentationHost<Content: View>: View, Equatable"))
+        XCTAssertTrue(home.contains("private struct AtriaSettingsPresentationHost: View, Equatable"))
         XCTAssertTrue(home.contains("private struct AtriaSettingsPresentationRevision: Equatable"))
+        XCTAssertTrue(home.contains("private struct AtriaDeferredSettingsSheet: View"))
         XCTAssertTrue(home.contains("@State private var settingsPresentation = AtriaSettingsPresentationCoordinator()"))
         XCTAssertTrue(home.contains("AtriaSettingsPresentationHost(coordinator: settingsPresentation,"))
         XCTAssertTrue(home.contains("revision: settingsPresentationRevision"))
@@ -149,6 +150,24 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
         XCTAssertFalse(home.contains("@State private var showSettings"),
                        "The gear must not invalidate and rebuild the complete Home hierarchy")
         XCTAssertFalse(home.contains(".sheet(isPresented: $showSettings)"))
+    }
+
+    func testSettingsSheetCommitsAnInteractiveFrameBeforeBuildingSettingsGraph() throws {
+        let home = try source("AtriaHomeView.swift")
+        let hostStart = try XCTUnwrap(home.range(of: "private struct AtriaSettingsPresentationHost"))
+        let containerStart = try XCTUnwrap(home.range(of: "struct AtriaHomeContainer",
+                                                      range: hostStart.upperBound..<home.endIndex))
+        let host = String(home[hostStart.lowerBound..<containerStart.lowerBound])
+
+        XCTAssertTrue(host.contains("private let content: () -> AnyView"),
+                      "The large Settings view must remain outside Home's first-frame generic graph")
+        XCTAssertTrue(host.contains("AtriaDeferredSettingsSheet(content: content)"))
+        XCTAssertTrue(host.contains("@State private var isContentReady = false"))
+        XCTAssertTrue(host.contains("Task.sleep(for: .milliseconds(34))"),
+                      "The sheet must commit at least one responsive frame before constructing Settings")
+        XCTAssertTrue(host.contains("guard !Task.isCancelled else { return }"))
+        XCTAssertTrue(host.contains("Button(\"Close\") { dismiss() }"),
+                      "The lightweight frame must remain dismissible")
     }
 
     func testDeveloperValidationGraphIsBuiltOnlyAfterDeveloperDestinationOpens() throws {

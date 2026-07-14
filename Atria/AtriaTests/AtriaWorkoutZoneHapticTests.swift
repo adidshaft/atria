@@ -112,6 +112,33 @@ final class AtriaWorkoutZoneHapticTests: XCTestCase {
         XCTAssertEqual(configuration.normalizedZoneRange, 2...4)
     }
 
+    func testProtectedTransportAllowsOnlyTheExplicitWorkoutHapticException() {
+        XCTAssertFalse(AtriaBLEManager.shouldAllowProtectedTransportCommand(
+            command: AtriaBLEManager.Cmd.toggleRealtimeHR,
+            standardHROnlyMode: true,
+            historyOnlyProbeEnabled: false,
+            explicitWorkoutHaptic: false
+        ), "ordinary proprietary writes stay blocked on the protected transport")
+        XCTAssertTrue(AtriaBLEManager.shouldAllowProtectedTransportCommand(
+            command: AtriaBLEManager.Cmd.runHapticsPattern,
+            standardHROnlyMode: true,
+            historyOnlyProbeEnabled: false,
+            explicitWorkoutHaptic: true
+        ), "a user-requested zone transition must reach the strap")
+        XCTAssertTrue(AtriaBLEManager.shouldAllowProtectedTransportCommand(
+            command: AtriaBLEManager.Cmd.toggleRealtimeHR,
+            standardHROnlyMode: false,
+            historyOnlyProbeEnabled: false,
+            explicitWorkoutHaptic: false
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldAllowProtectedTransportCommand(
+            command: AtriaBLEManager.Cmd.toggleRealtimeHR,
+            standardHROnlyMode: true,
+            historyOnlyProbeEnabled: false,
+            explicitWorkoutHaptic: true
+        ), "the exception is command-level, not a generic proprietary-write bypass")
+    }
+
     func testPendingIntentDecodesPayloadWrittenBeforeZoneTargetsExisted() throws {
         let json = #"{"startedAt":0,"activityType":"Walking","strengthSets":[],"excludedIntervals":[],"startingStepCount":0,"startingDayStrain":0}"#.data(using: .utf8)!
         let decoder = JSONDecoder()
@@ -158,6 +185,7 @@ final class AtriaWorkoutZoneHapticTests: XCTestCase {
         XCTAssertFalse(liveView.contains("AtriaWorkoutZoneHapticObserver"))
         XCTAssertFalse(liveView.contains("onZoneHaptic:"))
         XCTAssertTrue(manager.contains("workoutZoneHapticLifecycle.accept(bpm: displayRate)"))
+        XCTAssertTrue(manager.contains("explicitWorkoutHaptic: true"))
         XCTAssertTrue(home.contains("onChange(of: workoutZoneHapticConfiguration, initial: true)"))
         XCTAssertTrue(home.contains("lowerTargetZone: workoutSession.lowerTargetZone"))
         XCTAssertTrue(home.contains("upperTargetZone: workoutSession.upperTargetZone"))
