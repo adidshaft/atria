@@ -15,7 +15,7 @@ enum AtriaFitnessAge {
     /// One day's persisted fitness-age delta, as stored on
     /// `DailyRollupStoreEntry.fitnessAgeDelta` — the raw input to the
     /// pace-of-aging trend below.
-    struct DailyDelta: Equatable, Sendable {
+    struct DailyDelta: Codable, Equatable, Sendable {
         let day: Date
         let delta: Int
 
@@ -28,12 +28,24 @@ enum AtriaFitnessAge {
     /// Honest "pace of aging" summary: clock pace plus the slope of the
     /// persisted weekly fitness-age observations over calendar time. Four
     /// weekly checks cover the same initial 28-day calibration window.
-    struct PaceOfAging: Equatable, Sendable {
+    struct PaceOfAging: Codable, Equatable, Sendable {
         let isReady: Bool
         /// Years of biological aging per one calendar year, e.g. `0.8` means
         /// slower than the clock, `1.2` means faster. `nil` while not ready.
         let yearsPerCalendarYear: Double?
         let copyText: String
+    }
+
+    /// Persisted, display-ready history for the weekly Healthspan detail.
+    ///
+    /// This is produced beside the weekly biological-age summary. Opening the
+    /// detail screen only maps these bounded values into view rows; it never
+    /// re-collapses daily rollups or re-runs the pace regression.
+    struct DetailProjection: Codable, Equatable, Sendable {
+        let weeklyObservations: [DailyDelta]
+        let paceOfAging: PaceOfAging
+        let trendChangeText: String?
+        let cachedAt: Date?
     }
 
     static let footnoteText = "Estimate from heart data — not a medical measurement."
@@ -44,6 +56,30 @@ enum AtriaFitnessAge {
     /// Requires four distinct weekly observations before leaving calibration.
     static func paceOfAging(deltas: [DailyDelta], calendar: Calendar = .current) -> PaceOfAging {
         let observations = weeklyObservations(from: deltas, calendar: calendar)
+        return paceOfAging(weeklyObservations: observations)
+    }
+
+    /// Builds the complete Healthspan history projection once, on the same
+    /// weekly cadence as biological age.
+    static func detailProjection(deltas: [DailyDelta],
+                                 calendar: Calendar = .current) -> DetailProjection {
+        let observations = weeklyObservations(from: deltas, calendar: calendar)
+        let changeText: String?
+        if let first = observations.first?.delta,
+           let last = observations.last?.delta,
+           observations.count >= 2 {
+            let change = last - first
+            changeText = change == 0 ? "Stable" : "\(change > 0 ? "+" : "")\(change)y"
+        } else {
+            changeText = nil
+        }
+        return DetailProjection(weeklyObservations: observations,
+                                paceOfAging: paceOfAging(weeklyObservations: observations),
+                                trendChangeText: changeText,
+                                cachedAt: observations.last?.day)
+    }
+
+    private static func paceOfAging(weeklyObservations observations: [DailyDelta]) -> PaceOfAging {
         guard observations.count >= paceMinimumEntries else {
             return PaceOfAging(isReady: false, yearsPerCalendarYear: nil, copyText: paceCalibratingCopy)
         }

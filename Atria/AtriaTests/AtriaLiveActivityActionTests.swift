@@ -21,6 +21,36 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(controls.contains(".accessibilityLabel(\"End workout\")"))
     }
 
+    func testLiveActivityMetricsStaySingleLineWithThreeDigitHeartRate() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("AtriaWidget/AtriaWidget.swift"), encoding: .utf8)
+
+        let islandStart = try XCTUnwrap(source.range(of: "struct AtriaLiveActivityWidget: Widget"))
+        let lockScreenStart = try XCTUnwrap(source.range(of: "private struct AtriaLiveActivityLockScreenView"))
+        let island = String(source[islandStart.lowerBound..<lockScreenStart.lowerBound])
+        let lockScreen = String(source[lockScreenStart.lowerBound...])
+
+        XCTAssertTrue(island.contains("Text(signalFresh ? \"\\(context.state.heartRate) bpm\" : \"-- bpm\")"))
+        XCTAssertTrue(island.contains(".lineLimit(1)"))
+        XCTAssertTrue(island.contains(".minimumScaleFactor(0.62)"))
+        XCTAssertTrue(island.contains(".allowsTightening(true)"))
+        XCTAssertTrue(island.contains(".layoutPriority(2)"))
+        XCTAssertTrue(island.contains("Text(signalFresh ? \"\\(context.state.heartRate)\" : \"--\")"),
+                      "the compact island must show the live numeric HR without an overflowing suffix")
+
+        XCTAssertTrue(lockScreen.contains(".font(.system(size: 34, weight: .black, design: .rounded))"))
+        XCTAssertTrue(lockScreen.contains(".minimumScaleFactor(0.58)"))
+        XCTAssertTrue(lockScreen.contains(".layoutPriority(3)"))
+        XCTAssertTrue(lockScreen.contains("Text(\"BPM\")"))
+        XCTAssertTrue(lockScreen.contains(".fixedSize()"),
+                      "the BPM suffix must stay separate so a three-digit reading cannot wrap it")
+        XCTAssertTrue(lockScreen.contains(".lineLimit(1)"))
+        XCTAssertTrue(lockScreen.contains(".minimumScaleFactor(0.68)"),
+                      "the HR-zone, step, calorie, and strain row must shrink rather than wrap")
+    }
+
     func testActionStoreConsumesRecentSessionMatchedCommandQueueOnceInTapOrder() throws {
         let suite = "AtriaLiveActivityActionTests.recent.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -96,6 +126,144 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertNil(defaults.data(forKey: AtriaLiveWorkoutActionStore.key))
     }
 
+    func testActionFileQueueClaimsSortsAndAcknowledgesEveryTap() throws {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let start = now.addingTimeInterval(-1_200)
+        let queue = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AtriaLiveActionQueueTests-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(at: queue,
+                                                withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: queue) }
+
+        let pause = AtriaPendingLiveWorkoutAction(action: .pause,
+                                                  workoutStartedAt: start,
+                                                  issuedAt: now.addingTimeInterval(-4))
+        let resume = AtriaPendingLiveWorkoutAction(action: .resume,
+                                                   workoutStartedAt: start,
+                                                   issuedAt: now.addingTimeInterval(-3))
+        let end = AtriaPendingLiveWorkoutAction(action: .end,
+                                                workoutStartedAt: start,
+                                                issuedAt: now.addingTimeInterval(-2))
+        // Unique files model three extension processes racing to append. File
+        // enumeration order must not determine application order.
+        try writeAction(end, to: queue, name: "pending-c.json")
+        try writeAction(pause, to: queue, name: "pending-a.json")
+        try writeAction(resume, to: queue, name: "pending-b.json")
+
+        let consumed = AtriaLiveWorkoutActionStore.consumeAll(
+            now: now,
+            defaults: nil,
+            queueDirectoryURL: queue
+        )
+
+        XCTAssertEqual(consumed, [pause, resume, end])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: queue.path).count, 3,
+                       "claims must survive until the workout owner applies them")
+        consumed.forEach {
+            AtriaLiveWorkoutActionStore.acknowledge($0, queueDirectoryURL: queue)
+        }
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: queue.path).isEmpty,
+                      "claimed command files should be acknowledged exactly once")
+        XCTAssertTrue(AtriaLiveWorkoutActionStore.consumeAll(
+            now: now,
+            defaults: nil,
+            queueDirectoryURL: queue
+        ).isEmpty)
+    }
+
+    func testActionFileQueueDropsMalformedStaleAndFutureCommands() throws {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let queue = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AtriaLiveActionValidationTests-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(at: queue,
+                                                withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: queue) }
+
+        let stale = AtriaPendingLiveWorkoutAction(action: .pause,
+                                                  workoutStartedAt: now.addingTimeInterval(-800),
+                                                  issuedAt: now.addingTimeInterval(-301))
+        let future = AtriaPendingLiveWorkoutAction(action: .end,
+                                                   workoutStartedAt: now,
+                                                   issuedAt: now.addingTimeInterval(6))
+        try writeAction(stale, to: queue, name: "pending-stale.json")
+        try writeAction(future, to: queue, name: "pending-future.json")
+        try Data("not-json".utf8).write(to: queue.appendingPathComponent("pending-bad.json"))
+
+        XCTAssertTrue(AtriaLiveWorkoutActionStore.consumeAll(
+            now: now,
+            defaults: nil,
+            queueDirectoryURL: queue
+        ).isEmpty)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: queue.path).isEmpty,
+                      "invalid commands must be acknowledged rather than replayed")
+    }
+
+    func testActionFileQueueRecoversOnlyExpiredClaims() throws {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let start = now.addingTimeInterval(-100)
+        let queue = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AtriaLiveActionClaimTests-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(at: queue,
+                                                withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: queue) }
+
+        let expired = AtriaPendingLiveWorkoutAction(action: .pause,
+                                                    workoutStartedAt: start,
+                                                    issuedAt: now.addingTimeInterval(-4))
+        let active = AtriaPendingLiveWorkoutAction(action: .resume,
+                                                   workoutStartedAt: start,
+                                                   issuedAt: now.addingTimeInterval(-3))
+        let expiredURL = try writeAction(expired, to: queue, name: "claimed-old.json")
+        let activeURL = try writeAction(active, to: queue, name: "claimed-active.json")
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-31)],
+                                              ofItemAtPath: expiredURL.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-5)],
+                                              ofItemAtPath: activeURL.path)
+
+        XCTAssertEqual(AtriaLiveWorkoutActionStore.consumeAll(
+            now: now,
+            defaults: nil,
+            queueDirectoryURL: queue
+        ), [expired])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: activeURL.path),
+                      "a live consumer's claim must not be stolen")
+    }
+
+    func testActionFileQueueReleaseMakesSessionRestorationRetryImmediate() throws {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let queue = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AtriaLiveActionReleaseTests-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(at: queue,
+                                                withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: queue) }
+        let pause = AtriaPendingLiveWorkoutAction(action: .pause,
+                                                  workoutStartedAt: now.addingTimeInterval(-60),
+                                                  issuedAt: now.addingTimeInterval(-1))
+        try writeAction(pause, to: queue, name: "pending-pause.json")
+
+        let firstClaim = try XCTUnwrap(AtriaLiveWorkoutActionStore.consumeAll(
+            now: now,
+            defaults: nil,
+            queueDirectoryURL: queue
+        ).first)
+        AtriaLiveWorkoutActionStore.release(firstClaim, queueDirectoryURL: queue)
+        let retry = AtriaLiveWorkoutActionStore.consumeAll(
+            now: now,
+            defaults: nil,
+            queueDirectoryURL: queue
+        )
+
+        XCTAssertEqual(retry, [pause])
+        retry.forEach {
+            AtriaLiveWorkoutActionStore.acknowledge($0, queueDirectoryURL: queue)
+        }
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: queue.path).isEmpty)
+    }
+
     func testElapsedTimerTicksAloneDoNotScheduleActivityKitWrites() {
         let first = liveSnapshot(elapsed: 100, heartRate: 122)
         let timerTick = liveSnapshot(elapsed: 101, heartRate: 122)
@@ -109,6 +277,15 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             previous: timerTick,
             current: newHeartRate
         ))
+    }
+
+    @discardableResult
+    private func writeAction(_ action: AtriaPendingLiveWorkoutAction,
+                             to directory: URL,
+                             name: String) throws -> URL {
+        let url = directory.appendingPathComponent(name)
+        try JSONEncoder().encode(action).write(to: url, options: .atomic)
+        return url
     }
 
     func testExistingLiveActivityIsAdoptedOnlyForTheSameWorkout() {
@@ -155,6 +332,27 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             current: oneMoreStep,
             elapsedSinceLastWrite: 5
         ))
+
+        var moreCalories = baseline
+        moreCalories.activeEnergyKilocalories = 81
+        XCTAssertFalse(AtriaLiveActivityCoordinator.shouldSendActivityUpdateImmediately(
+            previous: baseline,
+            current: moreCalories,
+            elapsedSinceLastWrite: 4.9
+        ))
+        XCTAssertTrue(AtriaLiveActivityCoordinator.shouldSendActivityUpdateImmediately(
+            previous: baseline,
+            current: moreCalories,
+            elapsedSinceLastWrite: 5
+        ))
+
+        var caloriesUnavailable = baseline
+        caloriesUnavailable.activeEnergyKilocalories = nil
+        XCTAssertTrue(AtriaLiveActivityCoordinator.shouldSendActivityUpdateImmediately(
+            previous: baseline,
+            current: caloriesUnavailable,
+            elapsedSinceLastWrite: 0.1
+        ), "calorie availability must update immediately rather than leave a prior estimate visible")
 
         var staleSteps = baseline
         staleSteps.steps = nil
@@ -226,9 +424,49 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         ))
     }
 
+    func testPauseResumeAndSourceRecoveryTransitionsBypassCadence() {
+        let running = liveSnapshot(elapsed: 100, heartRate: 122)
+        var paused = running
+        paused.isPaused = true
+        XCTAssertTrue(AtriaLiveActivityCoordinator.shouldSendActivityUpdateImmediately(
+            previous: running,
+            current: paused,
+            elapsedSinceLastWrite: 0.1
+        ))
+
+        var resumed = paused
+        resumed.isPaused = false
+        XCTAssertTrue(AtriaLiveActivityCoordinator.shouldSendActivityUpdateImmediately(
+            previous: paused,
+            current: resumed,
+            elapsedSinceLastWrite: 0.1
+        ))
+
+        var stale = resumed
+        stale.heartRateAvailability = .stale
+        stale.stepsAvailability = .stale
+        XCTAssertTrue(AtriaLiveActivityCoordinator.shouldSendActivityUpdateImmediately(
+            previous: resumed,
+            current: stale,
+            elapsedSinceLastWrite: 0.1
+        ))
+
+        var recovered = stale
+        recovered.heartRateAvailability = .live
+        recovered.stepsAvailability = .live
+        recovered.heartRateCapturedAt = recovered.heartRateCapturedAt?.addingTimeInterval(1)
+        recovered.stepsCapturedAt = recovered.stepsCapturedAt?.addingTimeInterval(1)
+        XCTAssertTrue(AtriaLiveActivityCoordinator.shouldSendActivityUpdateImmediately(
+            previous: stale,
+            current: recovered,
+            elapsedSinceLastWrite: 0.1
+        ))
+    }
+
     func testExactDailyStepGoalCrossingPublishesImmediatelyButEstimateDoesNotClaimIt() {
         var below = liveSnapshot(elapsed: 100, heartRate: 122)
         below.dailySteps = 7_999
+        below.dailyStepsAreEstimated = false
         below.dailyStepGoal = 8_000
         var reached = below
         reached.dailySteps = 8_000
@@ -262,7 +500,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         ))
     }
 
-    func testActivityStaleDeadlineUsesNewestIndependentSensorSource() {
+    func testActivityStaleDeadlineRedrawsAtFirstIndependentSensorExpiry() {
         let fallback = Date(timeIntervalSince1970: 2_000_000_000)
         let oldHeartRate = fallback.addingTimeInterval(-70)
         let reconnectedMotion = fallback.addingTimeInterval(-2)
@@ -271,12 +509,43 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             heartRateCapturedAt: oldHeartRate,
             stepsCapturedAt: reconnectedMotion,
             fallback: fallback
-        ), reconnectedMotion.addingTimeInterval(90))
+        ), reconnectedMotion.addingTimeInterval(15))
+        XCTAssertEqual(AtriaLiveActivityCoordinator.sensorStaleDate(
+            heartRateCapturedAt: fallback,
+            stepsCapturedAt: reconnectedMotion,
+            fallback: fallback
+        ), reconnectedMotion.addingTimeInterval(15))
         XCTAssertEqual(AtriaLiveActivityCoordinator.sensorStaleDate(
             heartRateCapturedAt: nil,
             stepsCapturedAt: nil,
             fallback: fallback
         ), fallback.addingTimeInterval(90))
+    }
+
+    func testExpiredOrUnavailableSourceCannotKeepFreshWorkoutContentGloballyStale() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let freshHeartRate = now.addingTimeInterval(-2)
+        let expiredMotion = now.addingTimeInterval(-20)
+
+        XCTAssertEqual(AtriaLiveActivityCoordinator.sensorStaleDate(
+            heartRateCapturedAt: freshHeartRate,
+            stepsCapturedAt: expiredMotion,
+            fallback: now,
+            heartRateAvailability: .live,
+            stepsAvailability: .stale,
+            sensorHasContact: true
+        ), freshHeartRate.addingTimeInterval(90),
+        "stale steps stay labelled stale, but must not mark current HR and workout metrics globally stale")
+
+        XCTAssertEqual(AtriaLiveActivityCoordinator.sensorStaleDate(
+            heartRateCapturedAt: freshHeartRate,
+            stepsCapturedAt: now,
+            fallback: now,
+            heartRateAvailability: .reconnecting,
+            stepsAvailability: .unavailable,
+            sensorHasContact: false
+        ), now,
+        "without a live source, ActivityKit should consider the content stale immediately")
     }
 
     func testBackgroundEdgeForcesLatestLiveActivityWrite() throws {
@@ -292,6 +561,20 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             .appendingPathComponent("Atria/AtriaLiveActivityCoordinator.swift"), encoding: .utf8)
         XCTAssertTrue(coordinator.contains("beginBackgroundTask(withName: \"Atria live workout snapshot\")"))
         XCTAssertTrue(coordinator.contains("endBackgroundTask(backgroundTask)"))
+    }
+
+    func testLockScreenActionPreservesIndependentSensorFreshness() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("AtriaShared/AtriaLiveWorkoutControlIntent.swift"), encoding: .utf8)
+
+        XCTAssertTrue(source.contains("state.heartRateCapturedAt?.addingTimeInterval(90)"))
+        XCTAssertTrue(source.contains("state.stepsCapturedAt?.addingTimeInterval(15)"))
+        XCTAssertTrue(source.contains("expiry > canonicalState.appliedAt"),
+                      "an already-expired source must not keep a fresh source globally stale")
+        XCTAssertTrue(source.contains("let staleDate = sourceExpiries.min()"),
+                      "a Lock Screen command should advance to the next live source expiry")
     }
 
     func testAppAndWidgetLiveActivitySchemasStayEncodingCompatible() throws {
@@ -320,15 +603,18 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             .appendingPathComponent("AtriaWidget/AtriaWidget.swift")
         let source = try String(contentsOf: widgetSourceURL, encoding: .utf8)
 
-        XCTAssertTrue(source.contains("contextIsStale: context.isStale"))
         XCTAssertTrue(source.contains("state.sensorHasContact != false"))
-        XCTAssertTrue(source.contains("now.timeIntervalSince(capturedAt) <= 90"))
+        XCTAssertTrue(source.contains("now.timeIntervalSince(capturedAt) <= atriaHeartRateFreshness"))
+        XCTAssertFalse(source.contains("state.heartRateCapturedAt ?? state.updatedAt"),
+                       "unrelated activity updates must not make a legacy HR reading fresh")
+        XCTAssertTrue(source.contains("guard let capturedAt = state.heartRateCapturedAt"),
+                      "HR without its independent source timestamp must fail closed")
         XCTAssertTrue(source.contains("case .reconnecting: return \"Reconnecting\""))
         XCTAssertTrue(source.contains("case .stale: return \"HR stale\""))
         XCTAssertTrue(source.contains("case .unavailable: return \"Unavailable\""))
         XCTAssertTrue(source.contains("state.stepsAreEstimated ?? false"))
         XCTAssertTrue(source.contains("let capturedAt = state.stepsCapturedAt"))
-        XCTAssertTrue(source.contains("now.timeIntervalSince(capturedAt) <= 90"))
+        XCTAssertTrue(source.contains("now.timeIntervalSince(capturedAt) <= atriaStepFreshness"))
         XCTAssertTrue(source.contains("labelText: \"Steps reconnecting\""))
         XCTAssertTrue(source.contains("labelText: \"Steps stale\""))
         XCTAssertTrue(source.contains("labelText: \"Steps unavailable\""))
@@ -343,6 +629,31 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(source.contains("state.dailyStepsAreEstimated ?? false"))
         XCTAssertTrue(source.contains("reached && !estimated"),
                       "preliminary steps must never claim an exact goal completion")
+        XCTAssertTrue(source.contains("liveActivitySensorStatusText"))
+        XCTAssertTrue(source.contains("return statuses.isEmpty ? nil"),
+                      "healthy live sources must not waste Lock Screen space on a redundant status row")
+        XCTAssertTrue(source.contains("\\(label) last \\(atriaCaptureTimeText($0))"),
+                      "stale sensor values must reveal their actual capture time")
+        XCTAssertTrue(source.contains("|| dailyStepGoal != nil"),
+                      "the daily goal remains visible as an honest unavailable/stale state")
+        XCTAssertTrue(source.contains("Label(dailyStepGoal.text, systemImage: \"target\")"))
+        XCTAssertTrue(source.contains("liveActivityCaloriesText(for: context.state)"))
+        XCTAssertTrue(source.contains("Approximately \\(Int(calories.rounded())) active calories"))
+        XCTAssertTrue(source.contains("guard let calories = state.activeEnergyKilocalories"))
+        XCTAssertTrue(source.contains("calories.isFinite"))
+        XCTAssertTrue(source.contains("calories >= 0 else { return \"-- kcal\" }"),
+                      "invalid or missing energy evidence must never be rendered as a fabricated calorie value")
+        XCTAssertTrue(source.contains(".disabled(state.isEnding ?? false)"),
+                      "controls must lock after End is accepted to prevent duplicate commands")
+
+        let home = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        XCTAssertTrue(home.contains("steps: metricProjection.steps.count"))
+        XCTAssertTrue(home.contains("activeEnergyKilocalories: metricProjection.activeCalories"))
+        XCTAssertTrue(home.contains("stepsCapturedAt: metricProjection.steps.capturedAt"),
+                      "A stale transition must retain its real source time for the Lock Screen's last-seen label")
+        XCTAssertFalse(home.contains("stepsCapturedAt: metricProjection.steps.liveCapturedAt"))
     }
 
     func testWorkoutTargetZonesFlowIntoBackwardCompatibleLiveActivityUI() throws {
@@ -395,6 +706,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             dailyStepGoal: 8_000,
             workoutStrain: 5.4,
             targetWorkoutStrain: 10,
+            activeEnergyKilocalories: 80,
             isPaused: false,
             elapsedDuration: elapsed
         )

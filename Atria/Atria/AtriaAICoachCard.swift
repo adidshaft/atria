@@ -5,17 +5,13 @@ struct AtriaAICoachCard: View, Equatable {
     let preparedPayload: AtriaCoachPayload?
     let settings: AtriaAICoachSettings
     let hasAPIKey: Bool
-    let onSettingsChange: (AtriaAICoachSettings) -> Void
-    let onSaveAPIKey: (String) -> Void
-    let onDeleteAPIKey: () -> Void
 
-    @State private var answer = AtriaCoachAnswer(title: "Coach off",
-                                                 detail: "Enable local mode for an offline summary, or review bring-your-own-key cloud mode when a provider client is available.",
-                                                 disclosure: "Off by default.",
+    @State private var answer = AtriaCoachAnswer(title: "Preparing your summary",
+                                                 detail: "Using your latest Atria data.",
+                                                 disclosure: "",
                                                  networkPolicy: .none)
     @State private var payload: AtriaCoachPayload?
     @State private var fabricationFlags: [String] = []
-    @State private var apiKeyDraft = ""
     @State private var showsPayloadAudit = false
 
     static func == (lhs: AtriaAICoachCard, rhs: AtriaAICoachCard) -> Bool {
@@ -26,7 +22,7 @@ struct AtriaAICoachCard: View, Equatable {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Image(systemName: "brain.head.profile")
                     .font(.headline.weight(.semibold))
@@ -34,50 +30,44 @@ struct AtriaAICoachCard: View, Equatable {
                     .frame(width: 38, height: 38)
                     .background(AtriaIconTileBackground(cornerRadius: 12, tint: .indigo))
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("AI coach")
-                        .font(.subheadline.weight(.semibold))
-                    Text(settings.mode == .off ? "Off by default" : answer.disclosure)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
+                Text("Coach")
+                    .font(.subheadline.weight(.semibold))
 
-            Picker("Coach mode", selection: modeBinding) {
-                ForEach(AtriaAICoachSettings.Mode.allCases, id: \.self) { mode in
-                    Text(mode.title).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
+                Spacer(minLength: 8)
 
-            if settings.mode == .cloud {
-                cloudControls
+                Text(modeLabel)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.indigo)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(.indigo.opacity(0.12), in: Capsule())
             }
 
             VStack(alignment: .leading, spacing: 5) {
-                Text(answer.title)
+                Text(displayTitle)
                     .font(.footnote.weight(.semibold))
-                Text(answer.detail)
+                Text(displayDetail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                if let payload {
-                    Button {
-                        showsPayloadAudit = true
-                    } label: {
-                        Text(payload.receiptSummary)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.indigo)
-                            .multilineTextAlignment(.leading)
+                HStack(spacing: 12) {
+                    if let payload {
+                        Button {
+                            showsPayloadAudit = true
+                        } label: {
+                            Label("Sources", systemImage: "checkmark.shield")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.indigo)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(payload.receiptSummary)
+                        .accessibilityHint("Opens the exact Atria data used for this answer.")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityHint("Opens the exact data sent to the coach.")
-                }
-                if !fabricationFlags.isEmpty {
-                    Text("⚠ Contains figures not from your data")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(Metrics.electricYellow)
+                    if !fabricationFlags.isEmpty {
+                        Label("Check figures", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(Metrics.electricYellow)
+                    }
                 }
             }
             .padding(10)
@@ -97,72 +87,22 @@ struct AtriaAICoachCard: View, Equatable {
         }
     }
 
-    private var cloudControls: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Picker("Provider", selection: providerBinding) {
-                ForEach(AtriaAICoachSettings.CloudProvider.allCases, id: \.self) { provider in
-                    Text(provider.title).tag(provider)
-                }
-            }
-            .pickerStyle(.segmented)
-
-            SecureField(hasAPIKey ? "API key saved" : "Paste API key", text: $apiKeyDraft)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .privacySensitive()
-                .font(.caption)
-                .padding(10)
-                .atriaInsetCard(cornerRadius: 14, tint: .indigo)
-
-            HStack(spacing: 8) {
-                Button {
-                    onSaveAPIKey(apiKeyDraft)
-                    apiKeyDraft = ""
-                } label: {
-                    Text("Save key")
-                        .frame(maxWidth: .infinity)
-                }
-                .atriaCardAction(tint: .indigo)
-
-                if hasAPIKey {
-                    Button {
-                        apiKeyDraft = ""
-                        onDeleteAPIKey()
-                    } label: {
-                        Text("Remove key")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .atriaCardAction(prominent: false, tint: .gray)
-                }
-            }
-
-            Text("Cloud mode is opt-in. This build stores your key locally and does not send metrics until a reviewed \(settings.cloudProvider.title) client is enabled.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+    private var modeLabel: String {
+        switch settings.mode {
+        case .off: return "Off"
+        case .local: return "On-device"
+        case .cloud: return settings.cloudProvider.title
         }
     }
 
-    private var modeBinding: Binding<AtriaAICoachSettings.Mode> {
-        Binding(
-            get: { settings.mode },
-            set: { mode in
-                var next = settings
-                next.mode = mode
-                onSettingsChange(next)
-            }
-        )
+    private var displayTitle: String {
+        answer.networkPolicy == .cloudDisabled ? "Cloud coach isn't available yet" : answer.title
     }
 
-    private var providerBinding: Binding<AtriaAICoachSettings.CloudProvider> {
-        Binding(
-            get: { settings.cloudProvider },
-            set: { provider in
-                var next = settings
-                next.cloudProvider = provider
-                onSettingsChange(next)
-            }
-        )
+    private var displayDetail: String {
+        answer.networkPolicy == .cloudDisabled
+            ? "Switch to On-device in Settings for private summaries now."
+            : answer.detail
     }
 
     private var refreshID: String {
@@ -173,8 +113,8 @@ struct AtriaAICoachCard: View, Equatable {
     private func refreshAnswer() async {
         guard let provider = AtriaCoachProviderFactory.make(settings: settings, hasAPIKey: hasAPIKey) else {
             answer = AtriaCoachAnswer(title: "Coach off",
-                                      detail: "Enable local mode for an offline summary, or keep cloud mode off until a reviewed provider client is available.",
-                                      disclosure: "Off by default.",
+                                      detail: "Turn it on in Settings when you want summaries.",
+                                      disclosure: "",
                                       networkPolicy: .none)
             payload = nil
             fabricationFlags = []

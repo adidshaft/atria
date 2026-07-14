@@ -75,9 +75,9 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                    hasEverConnected: true)
 
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: fresh, now: now),
-                       AtriaTopStatusPresentation(label: "Live",
-                                                  symbol: "bolt.heart.fill",
-                                                  tone: .green,
+                       AtriaTopStatusPresentation(label: "Live · Battery pending",
+                                                  symbol: "questionmark.circle",
+                                                  tone: .cyan,
                                                   isConnected: true))
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: stale, now: now),
                        AtriaTopStatusPresentation(label: "Reconnecting…",
@@ -97,10 +97,92 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                    hasEverConnected: true)
 
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: input, now: now),
-                       AtriaTopStatusPresentation(label: "Live",
-                                                  symbol: "bolt.heart.fill",
-                                                  tone: .green,
+                       AtriaTopStatusPresentation(label: "Live · Battery pending",
+                                                  symbol: "questionmark.circle",
+                                                  tone: .cyan,
                                                   isConnected: true))
+    }
+
+    func testTopStatusUsesFreshBatteryTruthAndPreservesPendingState() {
+        let now = Date(timeIntervalSince1970: 1_800_200_000)
+        let normal = topStatusInput(status: .connected,
+                                    hasRecentHeartRateSample: true,
+                                    lastReadingAt: now,
+                                    batteryLevel: 43,
+                                    hasEverConnected: true)
+        let charging = topStatusInput(status: .connected,
+                                      hasRecentHeartRateSample: true,
+                                      lastReadingAt: now,
+                                      batteryLevel: 43,
+                                      batteryShowsPowered: true,
+                                      batteryChargeStatus: .charging,
+                                      hasEverConnected: true)
+        let low = topStatusInput(status: .connected,
+                                 hasRecentHeartRateSample: true,
+                                 lastReadingAt: now,
+                                 batteryLevel: 10,
+                                 batteryChargeStatus: .notCharging,
+                                 hasEverConnected: true)
+        let pending = topStatusInput(status: .connected,
+                                     hasRecentHeartRateSample: true,
+                                     lastReadingAt: now,
+                                     hasEverConnected: true)
+        let recent = topStatusInput(status: .connected,
+                                    hasRecentHeartRateSample: true,
+                                    lastReadingAt: now,
+                                    batteryLevel: 30,
+                                    batteryReadingIsRecentBaseline: true,
+                                    batteryLastVerifiedAt: now.addingTimeInterval(-75 * 60),
+                                    hasEverConnected: true)
+        let freshCachedLow = topStatusInput(status: .connected,
+                                            hasRecentHeartRateSample: true,
+                                            lastReadingAt: now,
+                                            batteryLevel: 14,
+                                            batteryReadingIsRecentBaseline: true,
+                                            batteryLastVerifiedAt: now.addingTimeInterval(-30),
+                                            hasEverConnected: true)
+
+        XCTAssertEqual(AtriaTopStatusProjection.presentation(input: normal, now: now).label,
+                       "43% · Live")
+        XCTAssertEqual(AtriaTopStatusProjection.presentation(input: normal, now: now).symbol,
+                       "battery.50percent")
+        XCTAssertEqual(AtriaTopStatusProjection.presentation(input: charging, now: now).label,
+                       "43% · Charging")
+        XCTAssertEqual(AtriaTopStatusProjection.presentation(input: charging, now: now).symbol,
+                       "battery.100percent.bolt")
+        XCTAssertEqual(AtriaTopStatusProjection.presentation(input: low, now: now).label,
+                       "10% · Low")
+        XCTAssertEqual(AtriaTopStatusProjection.presentation(input: pending, now: now).label,
+                       "Live · Battery pending")
+        XCTAssertEqual(AtriaTopStatusProjection.presentation(input: recent, now: now),
+                       AtriaTopStatusPresentation(label: "30% · 1h ago",
+                                                  symbol: "battery.25percent",
+                                                  tone: .cyan,
+                                                  isConnected: true))
+        XCTAssertEqual(AtriaTopStatusProjection.presentation(input: freshCachedLow, now: now),
+                       AtriaTopStatusPresentation(label: "14% · Low",
+                                                  symbol: "battery.25percent",
+                                                  tone: .orange,
+                                                  isConnected: true))
+    }
+
+    func testBatteryTruthRevisionInvalidatesHomeAndWidgetProjections() throws {
+        let source = try String(contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaHomeView.swift"),
+                                encoding: .utf8)
+        XCTAssertTrue(source.contains("ble.$batteryProjectionRevision.removeDuplicates().map { _ in () }"))
+        XCTAssertTrue(source.contains("ble.$batteryReadingIsRecentBaseline.removeDuplicates().map { _ in () }"))
+    }
+
+    func testTopStatusPillOwnsStrapNavigationWithoutRedundantHeaderButton() throws {
+        let source = try String(contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaHomeView.swift"),
+                                encoding: .utf8)
+        let chromeStart = try XCTUnwrap(source.range(of: "private struct AtriaHomeTopChrome: View"))
+        let chromeEnd = try XCTUnwrap(source.range(of: "private enum AtriaHeaderControlMetrics",
+                                                   range: chromeStart.upperBound..<source.endIndex))
+        let chrome = String(source[chromeStart.lowerBound..<chromeEnd.lowerBound])
+
+        XCTAssertTrue(chrome.contains("onTapWhenConnected: onShowStrap"))
+        XCTAssertFalse(chrome.contains("Button(action: onShowStrap)"))
     }
 
     func testNeverConnectedAndPendingReconnectLabelsRemainDistinct() {
@@ -148,6 +230,11 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         lastScanMatchAt: Date? = nil,
         pendingKnownReconnectStartedAt: Date? = nil,
         rangeLossBackfillPending: Bool = false,
+        batteryLevel: Int = -1,
+        batteryShowsPowered: Bool = false,
+        batteryChargeStatus: AtriaBLEManager.BatteryChargeStatus = .levelOnly,
+        batteryReadingIsRecentBaseline: Bool = false,
+        batteryLastVerifiedAt: Date? = nil,
         hasEverConnected: Bool
     ) -> AtriaTopStatusProjectionInput {
         AtriaTopStatusProjectionInput(status: status,
@@ -164,7 +251,12 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                       lastScanMatchAt: lastScanMatchAt,
                                       pendingKnownReconnectStartedAt: pendingKnownReconnectStartedAt,
                                       rangeLossBackfillPending: rangeLossBackfillPending,
-                                      hasEverConnected: hasEverConnected)
+                                      hasEverConnected: hasEverConnected,
+                                      batteryLevel: batteryLevel,
+                                      batteryShowsPowered: batteryShowsPowered,
+                                      batteryChargeStatus: batteryChargeStatus,
+                                      batteryReadingIsRecentBaseline: batteryReadingIsRecentBaseline,
+                                      batteryLastVerifiedAt: batteryLastVerifiedAt)
     }
 
     private var sourceRoot: URL {

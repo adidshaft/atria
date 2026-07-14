@@ -15,7 +15,8 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
     private func sleep(id: String,
                        start: Date,
                        end: Date,
-                       source: String = "manual_sleep") -> UserConfirmedSleep {
+                       source: String = "manual_sleep",
+                       hrv: Int? = 60) -> UserConfirmedSleep {
         UserConfirmedSleep(id: id,
                            createdAt: end,
                            start: start,
@@ -27,8 +28,8 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
                            avgHR: 52,
                            peakHR: 60,
                            restingHR: 48,
-                           hrv: 60,
-                           hrvWindowCount: 4,
+                           hrv: hrv,
+                           hrvWindowCount: hrv == nil ? 0 : 4,
                            duration: end.timeIntervalSince(start),
                            span: end.timeIntervalSince(start),
                            reason: "test",
@@ -67,6 +68,118 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
                                                    calendar: calendar)
 
         XCTAssertEqual(cycle.start, shiftSleep.end)
+        XCTAssertEqual(cycle.boundaryKind, .mainSleep)
+    }
+
+    func testShiftWorkerRecoveryCanSettleAtTwoAMFromConfirmedWake() throws {
+        let day = calendar.startOfDay(for: date(3, 2))
+        let shiftSleep = sleep(id: "shift-2am",
+                               start: date(2, 18),
+                               end: date(3, 2),
+                               source: "manual_sleep")
+        let snapshot = SleepHistorySnapshot(rollups: [],
+                                            confirmedSleeps: [shiftSleep],
+                                            calendar: calendar)
+
+        let metric = try XCTUnwrap(SessionStore.makeMorningFrozenDailyMetric(
+            for: day,
+            computed: [],
+            sessions: [],
+            sleep: snapshot,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: date(3, 2),
+            calendar: calendar
+        ))
+
+        XCTAssertEqual(metric.sleepEnd, shiftSleep.end)
+        XCTAssertEqual(metric.hrv, shiftSleep.hrv)
+        XCTAssertEqual(metric.sleepDuration, shiftSleep.duration)
+    }
+
+    func testConfirmedSleepWithoutHRVDoesNotBorrowWholeSessionOrDayHRV() throws {
+        let day = calendar.startOfDay(for: date(3, 7))
+        let mainSleep = sleep(id: "sleep-without-qualified-hrv",
+                              start: date(2, 23),
+                              end: date(3, 7),
+                              hrv: nil)
+        let snapshot = SleepHistorySnapshot(rollups: [],
+                                            confirmedSleeps: [mainSleep],
+                                            calendar: calendar)
+        let overlapping = SavedSession(id: UUID(),
+                                       start: date(2, 20),
+                                       end: date(3, 9),
+                                       label: "Long wear with out-of-window HRV",
+                                       points: stride(from: 0.0, through: 13 * 3_600.0, by: 10).map {
+                                           SavedSession.Point(t: $0, bpm: 52)
+                                       },
+                                       hrv: 91)
+        let computed = SavedDailyMetric(day: day,
+                                        recoveryPercent: 80,
+                                        recoveryConfidence: "test",
+                                        hrv: 87,
+                                        restingHR: 50,
+                                        respiratoryRate: 14,
+                                        sleepDuration: nil,
+                                        sleepSpan: nil,
+                                        sleepStart: nil,
+                                        sleepEnd: nil,
+                                        sleepSource: nil,
+                                        sleepStageSegments: [],
+                                        sleepConsistencyPercent: nil,
+                                        strain: 3)
+
+        let metric = try XCTUnwrap(SessionStore.makeMorningFrozenDailyMetric(
+            for: day,
+            computed: [computed],
+            sessions: [overlapping],
+            sleep: snapshot,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: date(3, 9),
+            calendar: calendar
+        ))
+
+        XCTAssertNil(metric.hrv)
+        XCTAssertEqual(metric.sleepEnd, mainSleep.end)
+        XCTAssertEqual(metric.sleepDuration, mainSleep.duration)
+    }
+
+    func testCivilMidnightDoesNotMintAnotherRecoveryBeforeNextConfirmedSleep() {
+        let previous = sleep(id: "previous", start: date(1, 23), end: date(2, 7))
+        let snapshot = SleepHistorySnapshot(rollups: [],
+                                            confirmedSleeps: [previous],
+                                            calendar: calendar)
+        let currentCivilDay = calendar.startOfDay(for: date(3, 5))
+        let wear = SavedSession(id: UUID(),
+                                start: date(2, 22),
+                                end: date(3, 5),
+                                label: "Overnight wear",
+                                points: stride(from: 0.0, through: 7 * 3_600.0, by: 60).map {
+                                    SavedSession.Point(t: $0, bpm: 52)
+                                })
+
+        let metric = SessionStore.makeMorningFrozenDailyMetric(for: currentCivilDay,
+                                                                computed: [],
+                                                                sessions: [wear],
+                                                                sleep: snapshot,
+                                                                baseline: PersonalBaseline(),
+                                                                maxHR: 190,
+                                                                now: date(3, 5),
+                                                                calendar: calendar)
+
+        XCTAssertNil(metric)
+    }
+
+    func testSplitResumedConfirmedSleepKeepsLatestWakeAsSingleCycleBoundary() {
+        let first = sleep(id: "first-fragment", start: date(1, 23), end: date(2, 3))
+        let resumed = sleep(id: "resumed-fragment", start: date(2, 4), end: date(2, 8))
+        let cycle = AtriaPhysiologicalCycle.current(now: date(2, 12),
+                                                   confirmedSleeps: [first, resumed],
+                                                   calendar: calendar)
+
+        XCTAssertEqual(cycle.start, resumed.end)
+        XCTAssertEqual(cycle.anchorSleepID, resumed.id)
         XCTAssertEqual(cycle.boundaryKind, .mainSleep)
     }
 

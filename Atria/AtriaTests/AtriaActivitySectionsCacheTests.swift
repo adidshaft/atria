@@ -166,6 +166,48 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         ))
     }
 
+    func testDismissedWorkoutWindowLeavesSleepAndPhysiologicalHistoryIntact() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let dismissed = ActivityDetection(id: UUID(),
+                                          kind: .activityCandidate,
+                                          confidence: .medium,
+                                          start: start,
+                                          end: start.addingTimeInterval(1_800),
+                                          duration: 1_800,
+                                          avgHR: 118,
+                                          peakHR: 150,
+                                          reason: "test")
+        let otherActivity = ActivityDetection(id: UUID(),
+                                              kind: .workout,
+                                              confidence: .medium,
+                                              start: start.addingTimeInterval(7_200),
+                                              end: start.addingTimeInterval(9_000),
+                                              duration: 1_800,
+                                              avgHR: 125,
+                                              peakHR: 160,
+                                              reason: "test")
+        let sleep = ActivityDetection(id: UUID(),
+                                      kind: .sleepCandidate,
+                                      confidence: .medium,
+                                      start: start,
+                                      end: start.addingTimeInterval(28_800),
+                                      duration: 28_800,
+                                      avgHR: 55,
+                                      peakHR: 72,
+                                      reason: "test")
+        let tombstone = AtriaDismissedWorkoutCandidate(start: start.addingTimeInterval(60),
+                                                       end: start.addingTimeInterval(1_740))
+
+        let visible = SessionStore.activityDetectionsForUI(
+            [dismissed, otherActivity, sleep],
+            dismissedCandidates: [tombstone]
+        )
+
+        XCTAssertEqual(Set(visible.map(\.id)), [otherActivity.id, sleep.id])
+        XCTAssertTrue(visible.contains(sleep),
+                      "Workout dismissal must not erase sleep evidence from physiological history")
+    }
+
     func testSelectedDayTimelineIncludesEveryConfirmedActivityTypeWithItsOwnIcon() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
@@ -198,6 +240,121 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
             XCTAssertNotNil(UIImage(systemName: type.icon),
                             "\(type.rawValue) must use an available native SF Symbol")
         }
+    }
+
+    func testActivityIconsPreferSpecificSubtypeAndLegacyUserLabel() {
+        XCTAssertEqual(AtriaActivityDisplayIcon.icon(activityType: "Sport",
+                                                     subtype: "Basketball",
+                                                     label: "Sport"),
+                       AtriaWorkoutActivityType.basketball.icon)
+        XCTAssertEqual(AtriaActivityDisplayIcon.icon(activityType: "Cardio",
+                                                     subtype: "Stair climber",
+                                                     label: "Cardio"),
+                       AtriaWorkoutActivityType.stairClimber.icon)
+        XCTAssertEqual(AtriaActivityDisplayIcon.icon(activityType: "HIIT",
+                                                     subtype: "Jump rope",
+                                                     label: "Intervals"),
+                       AtriaWorkoutActivityType.jumpRope.icon)
+        XCTAssertEqual(AtriaActivityDisplayIcon.icon(activityType: "Other",
+                                                     subtype: nil,
+                                                     label: "Evening dance"),
+                       AtriaWorkoutActivityType.dance.icon)
+        XCTAssertEqual(AtriaActivityDisplayIcon.icon(activityType: "Strength",
+                                                     subtype: "Push",
+                                                     label: "Chest"),
+                       AtriaWorkoutActivityType.strength.icon)
+    }
+
+    func testSleepTimelineAndRowsShareCanonicalCrossDayDeduplication() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let firstDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026,
+                                                                        month: 7,
+                                                                        day: 12)))
+        let secondDay = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: firstDay))
+        let savedStart = firstDay.addingTimeInterval(23 * 3_600)
+        let savedEnd = secondDay.addingTimeInterval(7 * 3_600)
+        let saved = activitySleep(id: "saved",
+                                  day: secondDay,
+                                  start: savedStart,
+                                  end: savedEnd,
+                                  confirmed: true)
+        let duplicatePending = activitySleep(id: "pending-duplicate",
+                                             day: secondDay,
+                                             start: savedStart.addingTimeInterval(5 * 60),
+                                             end: savedEnd.addingTimeInterval(-5 * 60),
+                                             confirmed: false)
+        let snapshot = SleepHistorySnapshot(nights: [saved],
+                                            confirmedCount: 1,
+                                            candidateCount: 0)
+
+        let canonical = AtriaActivitySelectedDaySleeps.canonical(
+            snapshot: snapshot,
+            pendingReview: duplicatePending
+        )
+        let firstDayRows = AtriaActivitySelectedDaySleeps.overlapping(
+            snapshot: snapshot,
+            pendingReview: duplicatePending,
+            selectedDay: firstDay,
+            calendar: calendar
+        )
+        let secondDayRows = AtriaActivitySelectedDaySleeps.overlapping(
+            snapshot: snapshot,
+            pendingReview: duplicatePending,
+            selectedDay: secondDay,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(canonical.map(\.id), [saved.id],
+                       "A detector replay must not draw a second icon for a saved sleep")
+        XCTAssertEqual(firstDayRows.map(\.id), [saved.id])
+        XCTAssertEqual(secondDayRows.map(\.id), [saved.id],
+                       "A cross-midnight timeline marker must have an editable row on both days")
+    }
+
+    func testSleepProjectionKeepsDistinctPendingNapAndLegacyDayOnlyRecord() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026,
+                                                                   month: 7,
+                                                                   day: 12)))
+        let saved = activitySleep(id: "legacy",
+                                  day: day,
+                                  start: nil,
+                                  end: nil,
+                                  confirmed: true)
+        let pendingNap = activitySleep(id: "pending-nap",
+                                       day: day,
+                                       start: day.addingTimeInterval(15 * 3_600),
+                                       end: day.addingTimeInterval(15.5 * 3_600),
+                                       confirmed: false)
+        let snapshot = SleepHistorySnapshot(nights: [saved],
+                                            confirmedCount: 1,
+                                            candidateCount: 0)
+
+        let visible = AtriaActivitySelectedDaySleeps.overlapping(
+            snapshot: snapshot,
+            pendingReview: pendingNap,
+            selectedDay: day,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(Set(visible.map(\.id)), [saved.id, pendingNap.id])
+    }
+
+    func testSleepStatusUsesCompactHumanCopyInsteadOfRawEnumText() {
+        XCTAssertEqual(AtriaActivitySleepStatusPresentation.badge(
+            confirmed: false,
+            confidence: "review_needed"
+        ), "Review")
+        XCTAssertEqual(AtriaActivitySleepStatusPresentation.badge(
+            confirmed: false,
+            confidence: "HIGH-CONFIDENCE"
+        ), "High Confidence")
+        XCTAssertEqual(AtriaActivitySleepStatusPresentation.badge(
+            confirmed: true,
+            confidence: "review_needed"
+        ), "Confirmed")
     }
 
     func testTimelineAxisUsesCompactSixHourLabelsAndContextualFinalTick() throws {
@@ -465,5 +622,32 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                              reason: "test",
                              activityType: type.rawValue,
                              zoneSeconds: [:])
+    }
+
+
+    private func activitySleep(id: String,
+                               day: Date,
+                               start: Date?,
+                               end: Date?,
+                               confirmed: Bool) -> SleepHistorySnapshot.Night {
+        let duration: TimeInterval
+        if let start, let end {
+            duration = max(0, end.timeIntervalSince(start))
+        } else {
+            duration = 0
+        }
+        return SleepHistorySnapshot.Night(id: id,
+                                          day: day,
+                                          start: start,
+                                          end: end,
+                                          duration: duration,
+                                          restingHR: 55,
+                                          hrv: nil,
+                                          respiratoryRate: nil,
+                                          sleepEfficiency: nil,
+                                          confidence: confirmed ? "confirmed" : "review_needed",
+                                          source: confirmed ? "manual_sleep" : "sleep_candidate",
+                                          confirmed: confirmed,
+                                          stageSegments: [])
     }
 }

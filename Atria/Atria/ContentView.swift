@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     let ble: AtriaBLEManager
     let store: SessionStore
+    let workoutRouteRecorder: AtriaWorkoutRouteRecorder
     @State private var showOnboarding = false
     @State private var onboardingStage: OnboardingStage = .flow
     @State private var showOnboardingConsentSheet = false
@@ -30,9 +31,12 @@ struct ContentView: View {
     /// onAppear-assigned value were both always `.flow`. Computing both in
     /// `init` sidesteps the whole class of bug: the very first render already
     /// reflects the right stage.
-    init(ble: AtriaBLEManager, store: SessionStore) {
+    init(ble: AtriaBLEManager,
+         store: SessionStore,
+         workoutRouteRecorder: AtriaWorkoutRouteRecorder) {
         self.ble = ble
         self.store = store
+        self.workoutRouteRecorder = workoutRouteRecorder
         let debugOnboardingStep = Self.debugOnboardingStepArgument()
         let debugCompletesOnboarding = AtriaDeveloperMode.isEnabled
             && ProcessInfo.processInfo.arguments.contains("--atria-complete-onboarding")
@@ -41,7 +45,9 @@ struct ContentView: View {
     }
 
     var body: some View {
-        AtriaHomeContainer(ble: ble, store: store)
+        AtriaHomeContainer(ble: ble,
+                           store: store,
+                           workoutRouteRecorder: workoutRouteRecorder)
             .equatable()
             .fullScreenCover(isPresented: $showOnboarding) {
                 switch onboardingStage {
@@ -466,14 +472,14 @@ struct AtriaOnboardingSharingChoiceStep: View {
                 AtriaDashboardBackdrop()
                     .ignoresSafeArea()
                 ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 14) {
                         Image(systemName: "shippingbox")
-                            .font(.system(size: 42, weight: .semibold))
+                            .font(.system(size: 36, weight: .semibold))
                             .foregroundStyle(.blue)
                             .symbolRenderingMode(.hierarchical)
                         Text("Help improve Atria")
-                            .font(.system(size: 34, weight: .bold, design: .rounded))
-                        Text("Share anonymized heart-rate, sleep and workout series, daily scores, and journal answers to improve Atria. No identity, no location — and you can inspect the exact bundle before agreeing.")
+                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                        Text("Anonymous data only. No identity or location. Review the bundle before sharing.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -481,11 +487,12 @@ struct AtriaOnboardingSharingChoiceStep: View {
                         Toggle(isOn: $sharingEnabled) {
                             Label("Share anonymously with developers", systemImage: "shippingbox")
                         }
-                        .padding(18)
+                        .padding(14)
                         .atriaCard(emphasis: .soft)
+                        .accessibilityHint("Includes heart rate, sleep, workouts, daily scores, and journal answers after you inspect the bundle.")
 
                         DisclosureGroup("Privacy details") {
-                            Text("Prepared nightly and queued on this phone until a server is configured. Bundles use a random code—never your name, exact dates, or location. Turn sharing off any time in Settings without affecting Atria.")
+                            Text("Nightly bundles use a random code and scrambled dates. They stay on this phone until a server is configured. Turn sharing off anytime.")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -715,5 +722,7 @@ private struct SparklineShape: Shape, Equatable {
 }
 
 #Preview {
-    ContentView(ble: AtriaBLEManager(), store: SessionStore())
+    ContentView(ble: AtriaBLEManager(),
+                store: SessionStore(),
+                workoutRouteRecorder: AtriaWorkoutRouteRecorder())
 }

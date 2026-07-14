@@ -15,6 +15,7 @@ logs/
 # Generated physical-device evidence can include private health/device data.
 # Keep curated evidence tracked only when explicitly staged with -f.
 docs/evidence/**
+evidence/
 
 # Xcode / iOS
 DerivedData/

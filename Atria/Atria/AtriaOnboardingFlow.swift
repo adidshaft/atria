@@ -178,7 +178,7 @@ struct AtriaOnboardingFlow: View {
                 handleBackupImport(result)
             }
             .safeAreaBar(edge: .bottom) {
-                VStack(spacing: 10) {
+                VStack(spacing: 8) {
                     progressDots
                     PrimaryActionButton(ble: ble, step: step) {
                         if step.isLast {
@@ -205,7 +205,7 @@ struct AtriaOnboardingFlow: View {
 
     private func page<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 12) {
                 content()
             }
             .padding(.horizontal, 20)
@@ -215,9 +215,9 @@ struct AtriaOnboardingFlow: View {
     }
 
     private var whatThisIsPage: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("Your strap. Your data.")
-                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .font(.system(size: 28, weight: .bold, design: .rounded))
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityHint("WHOOP insights without the subscription.")
             onboardingRingCard
@@ -246,7 +246,7 @@ struct AtriaOnboardingFlow: View {
     }
 
     private var strapPage: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             onboardingHeader("Connect your strap",
                              systemImage: "battery.100percent.bolt",
                              tint: .blue)
@@ -264,9 +264,9 @@ struct AtriaOnboardingFlow: View {
     }
 
     private var youPage: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             onboardingHeader("You", systemImage: "person.crop.circle.fill", tint: .purple)
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 12) {
                 numericProfileField("Age", value: ageBinding, suffix: "years")
                 Picker("Sex", selection: $draft.biologicalSex) {
                     ForEach(AthleteProfile.BiologicalSex.allCases) { sex in
@@ -277,7 +277,7 @@ struct AtriaOnboardingFlow: View {
                 numericProfileField("Height", value: heightBinding, suffix: "cm")
                 numericProfileField("Weight", value: weightBinding, suffix: "kg")
             }
-            .padding(18)
+            .padding(14)
             .atriaCard(emphasis: .soft)
         }
     }
@@ -296,9 +296,9 @@ struct AtriaOnboardingFlow: View {
                         .recovery: { moveFocus(to: .recovery) },
                         .strain: { moveFocus(to: .strain) }
                      ])
-            .frame(maxWidth: 300)
+            .frame(maxWidth: 260)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
+            .padding(.vertical, 4)
             .padding(.horizontal, 12)
             .atriaCard(emphasis: .soft)
     }
@@ -324,9 +324,9 @@ struct AtriaOnboardingFlow: View {
     }
 
     private var expectationsPage: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             onboardingHeader("Wear it tonight", systemImage: "moon.stars.fill", tint: .indigo)
-            HStack(spacing: 8) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
                 expectationPill(icon: "moon.fill",
                                 title: "Wear",
                                 hint: "Wear your strap tonight.",
@@ -392,7 +392,7 @@ struct AtriaOnboardingFlow: View {
 
     private func onboardingIcon(_ systemName: String, tint: Color) -> some View {
         Image(systemName: systemName)
-            .font(.system(size: 42, weight: .semibold))
+            .font(.system(size: 34, weight: .semibold))
             .foregroundStyle(tint)
             .symbolRenderingMode(.hierarchical)
     }
@@ -402,10 +402,10 @@ struct AtriaOnboardingFlow: View {
                                   tint: Color) -> some View {
         HStack(alignment: .center, spacing: 12) {
             onboardingIcon(systemImage, tint: tint)
-                .frame(width: 48)
+                .frame(width: 40)
                 .accessibilityHidden(true)
             Text(title)
-                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .font(.system(size: 28, weight: .bold, design: .rounded))
                 .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .combine)
@@ -488,7 +488,7 @@ struct AtriaOnboardingFlow: View {
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
         .padding(10)
         .atriaInsetCard(tint: .blue)
         .accessibilityElement(children: .ignore)
@@ -508,7 +508,7 @@ struct AtriaOnboardingFlow: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
         }
-        .frame(maxWidth: .infinity, minHeight: 64)
+        .frame(maxWidth: .infinity, minHeight: 58)
         .padding(.horizontal, 6)
         .atriaInsetCard(tint: tint)
         .accessibilityElement(children: .combine)

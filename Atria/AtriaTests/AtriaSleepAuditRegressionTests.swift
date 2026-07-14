@@ -204,6 +204,95 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
                       "a 3h47 HR-only midnight window is quiet-awake ambiguous")
     }
 
+    func testMotionValidatedQuietAwakeWindowRemainsDiagnosticOnly() throws {
+        // Regression for the reported 10:18pm–2:05am false sleep. Sustained
+        // stillness and low HR are still compatible with quiet TV/reading. A
+        // sub-five-hour window with less than majority sleep-core overlap must
+        // remain diagnostic-only: no Home card and no Activity Center row.
+        let quietAwake = session(start: date(2032, 7, 3, 22, 18),
+                                 end: date(2032, 7, 4, 2, 5),
+                                 bpm: 52,
+                                 motionValidated: true)
+        let candidate = try XCTUnwrap(candidates([quietAwake]).first)
+        XCTAssertTrue(candidate.motionEvidenceValidated)
+        XCTAssertFalse(SessionStore.isReviewWorthySleepCandidate(candidate))
+        XCTAssertFalse(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
+        XCTAssertEqual(SessionStore.autoSleepClassification(for: candidate).source,
+                       "sleep_review_motion_validated")
+
+        let physiological = SessionStore.physiologicalSleepReviewNight(
+            in: [quietAwake],
+            rest: 50,
+            calendar: Self.utcCalendar
+        )
+        XCTAssertNil(physiological,
+                     "the five-minute fallback must not recreate a rejected quiet-awake window")
+
+        let legacyDetection = try XCTUnwrap(quietAwake.detectedActivity(rest: 50,
+                                                                        maxHR: 190,
+                                                                        calendar: Self.utcCalendar))
+        XCTAssertEqual(legacyDetection.kind, .sleepCandidate)
+        let rollups = SessionStore.makeHistoryDailyRollups(sessions: [quietAwake],
+                                                           detections: [legacyDetection],
+                                                           confirmedWorkouts: [],
+                                                           rest: 50,
+                                                           maxHR: 190,
+                                                           calendar: Self.utcCalendar)
+        let wakeDay = Self.utcCalendar.startOfDay(for: quietAwake.end)
+        let rollup = try XCTUnwrap(rollups.first { $0.day == wakeDay })
+        XCTAssertEqual(rollup.sleepCandidates, 0)
+        XCTAssertEqual(rollup.sleepReady, 0)
+        XCTAssertNil(rollup.sleepStart)
+        XCTAssertNil(rollup.sleepEnd)
+    }
+
+    func testReportedMorningResumptionMergesIntoOneMainSleep() throws {
+        // Reported 2026-07-13 shape: first sleep 03:50–08:34, brief wake, then
+        // sleep again until 11:38. The first fragment is not yet a full main
+        // sleep, so the morning fragment must extend it rather than becoming a
+        // separate nap merely because it starts after 08:00.
+        let first = session(start: date(2032, 7, 8, 3, 50),
+                            end: date(2032, 7, 8, 8, 34),
+                            bpm: 52,
+                            motionValidated: true)
+        let resumed = session(start: date(2032, 7, 8, 8, 44),
+                              end: date(2032, 7, 8, 11, 38),
+                              bpm: 53,
+                              motionValidated: true)
+
+        let sleepCandidates = candidates([first, resumed])
+        let candidate = try XCTUnwrap(sleepCandidates.first)
+        XCTAssertEqual(sleepCandidates.count, 1)
+        XCTAssertEqual(candidate.sessions, 2)
+        XCTAssertEqual(candidate.start, first.start)
+        XCTAssertEqual(candidate.end, resumed.end)
+        XCTAssertEqual(candidate.kind, "overnight_sleep")
+        XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(candidate))
+        XCTAssertTrue(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
+    }
+
+    func testMotionValidatedNightWithSustainedAwakeTailDoesNotAutoConfirm() throws {
+        let start = date(2032, 7, 6, 22, 30)
+        let end = date(2032, 7, 7, 5, 30)
+        let duration = end.timeIntervalSince(start)
+        let points = stride(from: 0.0, to: duration, by: 60.0).map {
+            SavedSession.Point(t: $0, bpm: $0 < 6 * 60 * 60 ? 52 : 92)
+        }
+        // Keep the fixture mutable to mirror the persisted sensor record.
+        var awakeTail = SavedSession(id: UUID(),
+                                     start: start,
+                                     end: end,
+                                     label: "Motionless night with awake tail",
+                                     points: points,
+                                     eventTimeZoneIdentifier: "UTC")
+        awakeTail.motionEvidenceValidated = true
+        awakeTail.motionEvidenceSource = "validated_strap_stillness"
+
+        let candidate = try XCTUnwrap(candidates([awakeTail]).first)
+        XCTAssertGreaterThanOrEqual(candidate.elevatedSampleFraction, 0.10)
+        XCTAssertFalse(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
+    }
+
     func testStableFiveHourHROnlyMainSleepRemainsReviewable() throws {
         let mainSleep = session(start: date(2032, 7, 4, 23, 0),
                                 end: date(2032, 7, 5, 4, 30),

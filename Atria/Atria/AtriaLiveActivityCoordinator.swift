@@ -2,16 +2,25 @@ import ActivityKit
 import Foundation
 import UIKit
 
-enum AtriaLiveWorkoutAction: String, Codable, Equatable {
+enum AtriaLiveWorkoutAction: String, Codable, Equatable, Sendable {
     case pause
     case resume
     case end
 }
 
-struct AtriaPendingLiveWorkoutAction: Codable, Equatable {
+struct AtriaPendingLiveWorkoutAction: Codable, Equatable, Sendable {
     let action: AtriaLiveWorkoutAction
     let workoutStartedAt: Date
     let issuedAt: Date
+    /// Transport-only receipt for an atomically claimed file. Widget JSON from
+    /// older and current builds omits it; the app attaches it after claiming.
+    var claimReceipt: String? = nil
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.action == rhs.action
+            && lhs.workoutStartedAt == rhs.workoutStartedAt
+            && lhs.issuedAt == rhs.issuedAt
+    }
 }
 
 /// Cross-process handoff from the Live Activity extension. The session start
@@ -20,26 +29,179 @@ struct AtriaPendingLiveWorkoutAction: Codable, Equatable {
 enum AtriaLiveWorkoutActionStore {
     static let key = "atria.liveWorkout.pendingAction.v1"
     static let appGroupID = "group.com.adidshaft.atria"
+    static let queueDirectoryName = "AtriaLiveWorkoutActions-v2"
+    static let pendingFilePrefix = "pending-"
+    static let claimedFilePrefix = "claimed-"
+    static let maximumQueuedCommands = 16
     static let maximumCommandAge: TimeInterval = 5 * 60
     static let sessionMatchTolerance: TimeInterval = 1
+    private static let futureClockTolerance: TimeInterval = 5
+    private static let abandonedClaimAge: TimeInterval = 30
 
-    static func consumeAll(now: Date = Date(),
-                           defaults: UserDefaults? = UserDefaults(suiteName: appGroupID)) -> [AtriaPendingLiveWorkoutAction] {
+    /// Claims every pending command file before decoding it. A unique file per
+    /// tap removes the extension's previous cross-process read/modify/write
+    /// race, where Pause -> Resume (or Pause -> End) could lose one action.
+    /// The legacy defaults blob is still drained during migration.
+    static func consumeAll(now: Date = Date()) -> [AtriaPendingLiveWorkoutAction] {
+        consumeAll(now: now,
+                   defaults: UserDefaults(suiteName: appGroupID),
+                   queueDirectoryURL: defaultQueueDirectoryURL())
+    }
+
+    /// Test and migration entry point that consumes only the supplied legacy
+    /// defaults. Production callers use `consumeAll(now:)` above.
+    static func consumeAll(now: Date,
+                           defaults: UserDefaults?) -> [AtriaPendingLiveWorkoutAction] {
+        consumeAll(now: now, defaults: defaults, queueDirectoryURL: nil)
+    }
+
+    static func consumeAll(now: Date,
+                           defaults: UserDefaults?,
+                           queueDirectoryURL: URL?) -> [AtriaPendingLiveWorkoutAction] {
+        var commands = consumeClaimedFiles(now: now,
+                                           queueDirectoryURL: queueDirectoryURL)
+        commands.append(contentsOf: consumeLegacyDefaults(defaults))
+        let sorted = commands
+            .filter { isValid($0, now: now) }
+            .sorted { lhs, rhs in
+                if lhs.issuedAt == rhs.issuedAt {
+                    return lhs.action.rawValue < rhs.action.rawValue
+                }
+                return lhs.issuedAt < rhs.issuedAt
+            }
+        let overflowCount = max(0, sorted.count - maximumQueuedCommands)
+        for command in sorted.prefix(overflowCount) {
+            acknowledge(command, queueDirectoryURL: queueDirectoryURL)
+        }
+        return Array(sorted.suffix(maximumQueuedCommands))
+    }
+
+    private static func defaultQueueDirectoryURL() -> URL? {
+        FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: appGroupID)?
+            .appendingPathComponent(queueDirectoryName, isDirectory: true)
+    }
+
+    private static func consumeLegacyDefaults(_ defaults: UserDefaults?) -> [AtriaPendingLiveWorkoutAction] {
         guard let defaults,
               let data = defaults.data(forKey: key) else { return [] }
-        // Consume before validation so malformed or stale commands cannot
-        // repeatedly affect foreground launches.
+        // Remove before decoding so malformed or stale migration data cannot
+        // replay forever. New extension versions never write this blob.
         defaults.removeObject(forKey: key)
         let decoder = JSONDecoder()
-        let commands = (try? decoder.decode([AtriaPendingLiveWorkoutAction].self, from: data))
+        return (try? decoder.decode([AtriaPendingLiveWorkoutAction].self, from: data))
             ?? (try? decoder.decode(AtriaPendingLiveWorkoutAction.self, from: data)).map { [$0] }
             ?? []
-        return commands
-            .filter {
-                $0.issuedAt <= now.addingTimeInterval(5)
-                    && now.timeIntervalSince($0.issuedAt) <= maximumCommandAge
+    }
+
+    private static func consumeClaimedFiles(now: Date,
+                                            queueDirectoryURL: URL?) -> [AtriaPendingLiveWorkoutAction] {
+        guard let queueDirectoryURL else { return [] }
+        let manager = FileManager.default
+        guard let files = try? manager.contentsOfDirectory(
+            at: queueDirectoryURL,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        let consumerID = UUID().uuidString
+        var commands: [AtriaPendingLiveWorkoutAction] = []
+        for sourceURL in files where sourceURL.pathExtension == "json" {
+            let name = sourceURL.lastPathComponent
+            let isPending = name.hasPrefix(pendingFilePrefix)
+            let isAbandonedClaim: Bool
+            if name.hasPrefix(claimedFilePrefix),
+               let modifiedAt = try? sourceURL.resourceValues(
+                   forKeys: [.contentModificationDateKey]
+               ).contentModificationDate {
+                isAbandonedClaim = now.timeIntervalSince(modifiedAt) >= abandonedClaimAge
+            } else {
+                isAbandonedClaim = false
             }
-            .sorted { $0.issuedAt < $1.issuedAt }
+            guard isPending || isAbandonedClaim else { continue }
+
+            // A same-volume rename is the claim operation. If another app
+            // activation already won it, `moveItem` fails and this consumer
+            // simply skips the command.
+            let claimedURL = queueDirectoryURL.appendingPathComponent(
+                "\(claimedFilePrefix)\(consumerID)-\(UUID().uuidString).json"
+            )
+            do {
+                try manager.moveItem(at: sourceURL, to: claimedURL)
+                try? manager.setAttributes([.modificationDate: now],
+                                           ofItemAtPath: claimedURL.path)
+            } catch {
+                continue
+            }
+
+            guard let data = try? Data(contentsOf: claimedURL),
+                  var command = try? JSONDecoder().decode(
+                      AtriaPendingLiveWorkoutAction.self,
+                      from: data
+                  ) else {
+                // Malformed files can never be applied, so acknowledging them
+                // now is safe and prevents a permanent launch poison pill.
+                try? manager.removeItem(at: claimedURL)
+                continue
+            }
+            guard isValid(command, now: now) else {
+                // Expired and impossible-future actions are intentionally
+                // rejected before they can affect any workout.
+                try? manager.removeItem(at: claimedURL)
+                continue
+            }
+            command.claimReceipt = claimedURL.lastPathComponent
+            commands.append(command)
+        }
+        return commands
+    }
+
+    /// Acknowledge only after the canonical workout owner has durably applied
+    /// (or safely rejected) the command. Until then the claimed file remains
+    /// available for replay after the short abandoned-claim lease.
+    static func acknowledge(_ command: AtriaPendingLiveWorkoutAction) {
+        acknowledge(command, queueDirectoryURL: defaultQueueDirectoryURL())
+    }
+
+    static func acknowledge(_ command: AtriaPendingLiveWorkoutAction,
+                            queueDirectoryURL: URL?) {
+        guard let fileURL = claimedFileURL(for: command,
+                                           queueDirectoryURL: queueDirectoryURL) else { return }
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
+    /// Session restoration may briefly run after scene activation. Release a
+    /// claim back to pending rather than losing the command or waiting for the
+    /// abandoned-claim lease before the restored session can consume it.
+    static func release(_ command: AtriaPendingLiveWorkoutAction) {
+        release(command, queueDirectoryURL: defaultQueueDirectoryURL())
+    }
+
+    static func release(_ command: AtriaPendingLiveWorkoutAction,
+                        queueDirectoryURL: URL?) {
+        guard let sourceURL = claimedFileURL(for: command,
+                                             queueDirectoryURL: queueDirectoryURL),
+              let queueDirectoryURL else { return }
+        let pendingURL = queueDirectoryURL.appendingPathComponent(
+            "\(pendingFilePrefix)\(UUID().uuidString).json"
+        )
+        try? FileManager.default.moveItem(at: sourceURL, to: pendingURL)
+    }
+
+    private static func claimedFileURL(for command: AtriaPendingLiveWorkoutAction,
+                                       queueDirectoryURL: URL?) -> URL? {
+        guard let queueDirectoryURL,
+              let receipt = command.claimReceipt,
+              receipt == URL(fileURLWithPath: receipt).lastPathComponent,
+              receipt.hasPrefix(claimedFilePrefix),
+              receipt.hasSuffix(".json") else { return nil }
+        return queueDirectoryURL.appendingPathComponent(receipt)
+    }
+
+    private static func isValid(_ command: AtriaPendingLiveWorkoutAction,
+                                now: Date) -> Bool {
+        command.issuedAt <= now.addingTimeInterval(futureClockTolerance)
+            && now.timeIntervalSince(command.issuedAt) <= maximumCommandAge
     }
 
     static func matches(_ command: AtriaPendingLiveWorkoutAction,
@@ -88,6 +250,7 @@ final class AtriaLiveActivityCoordinator {
         var dailyStepGoal: Int? = nil
         var workoutStrain: Double
         var targetWorkoutStrain: Double? = nil
+        var activeEnergyKilocalories: Double? = nil
         var targetLowerHeartRateZone: Int? = nil
         var targetUpperHeartRateZone: Int? = nil
         var isPaused: Bool
@@ -273,6 +436,7 @@ final class AtriaLiveActivityCoordinator {
                                                  dailyStepGoal: snapshot.dailyStepGoal,
                                                  workoutStrain: snapshot.workoutStrain,
                                                  targetWorkoutStrain: snapshot.targetWorkoutStrain,
+                                                 activeEnergyKilocalories: snapshot.activeEnergyKilocalories,
                                                  targetLowerHeartRateZone: snapshot.targetLowerHeartRateZone,
                                                  targetUpperHeartRateZone: snapshot.targetUpperHeartRateZone,
                                                  isPaused: snapshot.isPaused,
@@ -326,23 +490,52 @@ final class AtriaLiveActivityCoordinator {
     }
 
     private func staleDate(for snapshot: Snapshot) -> Date {
-        Self.sensorStaleDate(heartRateCapturedAt: snapshot.heartRateCapturedAt,
-                             stepsCapturedAt: snapshot.stepsCapturedAt)
+        let now = Date()
+        return Self.sensorStaleDate(heartRateCapturedAt: snapshot.heartRateCapturedAt,
+                                    stepsCapturedAt: snapshot.stepsCapturedAt,
+                                    fallback: now,
+                                    heartRateAvailability: snapshot.heartRateAvailability,
+                                    stepsAvailability: snapshot.stepsAvailability,
+                                    sensorHasContact: snapshot.sensorHasContact)
     }
 
     /// ActivityKit has one activity-level stale deadline, while HR and motion
-    /// are independent streams. Use the newest genuine sensor timestamp for
-    /// the system deadline; each metric still validates its own timestamp in
-    /// the widget, so a fresh reconnecting motion stream cannot make old HR
-    /// look live (or be hidden merely because HR stopped).
+    /// have independent freshness windows. Ask the system to redraw at the
+    /// first source expiry. The widget then evaluates each source clock on its
+    /// own, so 15-second motion staleness cannot keep looking live until the
+    /// 90-second HR deadline (or incorrectly make fresh HR stale).
     nonisolated static func sensorStaleDate(heartRateCapturedAt: Date?,
                                             stepsCapturedAt: Date?,
                                             fallback: Date = Date(),
-                                            freshnessWindow: TimeInterval = 90) -> Date {
-        let newestSource = [heartRateCapturedAt, stepsCapturedAt]
-            .compactMap { $0 }
-            .max() ?? fallback
-        return newestSource.addingTimeInterval(freshnessWindow)
+                                            heartRateFreshnessWindow: TimeInterval = 90,
+                                            stepFreshnessWindow: TimeInterval = 15,
+                                            heartRateAvailability: AtriaLiveSensorAvailability? = nil,
+                                            stepsAvailability: AtriaLiveSensorAvailability? = nil,
+                                            sensorHasContact: Bool? = nil) -> Date {
+        let heartRateExpiry = heartRateCapturedAt?.addingTimeInterval(heartRateFreshnessWindow)
+        let stepsExpiry = stepsCapturedAt?.addingTimeInterval(stepFreshnessWindow)
+        let hasExplicitSourceState = heartRateAvailability != nil
+            || stepsAvailability != nil
+            || sensorHasContact != nil
+        let expiries = [
+            (date: heartRateExpiry,
+             canAdvance: sensorHasContact != false
+                && (heartRateAvailability == nil || heartRateAvailability == .live)),
+            (date: stepsExpiry,
+             canAdvance: stepsAvailability == nil || stepsAvailability == .live)
+        ].compactMap { source -> Date? in
+            guard source.canAdvance,
+                  let expiry = source.date,
+                  expiry > fallback else { return nil }
+            return expiry
+        }
+        if let nextExpiry = expiries.min() { return nextExpiry }
+        // Legacy call sites without source state retain the historical fallback.
+        // Production snapshots pass explicit availability, so a workout with no
+        // live source becomes stale now instead of pretending to be fresh for 90s.
+        return hasExplicitSourceState
+            ? fallback
+            : fallback.addingTimeInterval(heartRateFreshnessWindow)
     }
 
     private func shouldSendActivityUpdateImmediately(_ snapshot: Snapshot, now: Date) -> Bool {
@@ -375,6 +568,7 @@ final class AtriaLiveActivityCoordinator {
             || current.activitySystemImage != previous.activitySystemImage
             || current.heartRateZoneIndex != previous.heartRateZoneIndex
             || current.targetWorkoutStrain != previous.targetWorkoutStrain
+            || (current.activeEnergyKilocalories == nil) != (previous.activeEnergyKilocalories == nil)
             || current.targetLowerHeartRateZone != previous.targetLowerHeartRateZone
             || current.targetUpperHeartRateZone != previous.targetUpperHeartRateZone
             || current.isPaused != previous.isPaused

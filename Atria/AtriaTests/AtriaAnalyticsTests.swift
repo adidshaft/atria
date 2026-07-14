@@ -3067,11 +3067,14 @@ final class AtriaAnalyticsTests: XCTestCase {
                                      heightCm: 178,
                                      updated: nil,
                                      hasCompletedOnboarding: true)
-        let activeCalories = AtriaAnalytics.Daily.dayCalories([
-            .init(t: start, bpm: 60),
-            .init(t: start.addingTimeInterval(60), bpm: 130),
-            .init(t: start.addingTimeInterval(120), bpm: 150)
-        ], rest: 60, profile: profile)
+        let activeCalories = AtriaAnalytics.Daily.dayCalories(
+            stride(from: 0.0, through: 120.0, by: 10.0).map { offset in
+                .init(t: start.addingTimeInterval(offset),
+                      bpm: offset == 0 ? 60 : (offset <= 60 ? 130 : 150))
+            },
+            rest: 60,
+            profile: profile
+        )
         XCTAssertGreaterThan(activeCalories ?? 0, 4.0)
 
         let gapDroppedCalories = AtriaAnalytics.Daily.dayCalories([
@@ -3081,14 +3084,14 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(gapDroppedCalories, 0)
 
         let zoneSeconds = AtriaAnalytics.Strain.maxHeartRateZoneSeconds([
-            (0, 90), (60, 110), (120, 130), (180, 150), (240, 170), (300, 190), (900, 190)
+            (0, 90), (10, 110), (20, 130), (30, 150), (40, 170), (50, 190), (650, 190)
         ], maxHR: 200)
         XCTAssertEqual(zoneSeconds.rest, 0)
-        XCTAssertEqual(zoneSeconds.warmup, 60)
-        XCTAssertEqual(zoneSeconds.fatBurn, 60)
-        XCTAssertEqual(zoneSeconds.aerobic, 60)
-        XCTAssertEqual(zoneSeconds.anaerobic, 60)
-        XCTAssertEqual(zoneSeconds.max, 60)
+        XCTAssertEqual(zoneSeconds.warmup, 10)
+        XCTAssertEqual(zoneSeconds.fatBurn, 10)
+        XCTAssertEqual(zoneSeconds.aerobic, 10)
+        XCTAssertEqual(zoneSeconds.anaerobic, 10)
+        XCTAssertEqual(zoneSeconds.max, 10)
         XCTAssertEqual(zoneSeconds.droppedGapSeconds, 600)
     }
 
@@ -3182,11 +3185,13 @@ final class AtriaAnalyticsTests: XCTestCase {
             let secondStart = utcDate(2027, 3, 3, 0, 0)
             let sessions = [
                 flatHRSession(start: firstStart,
-                              end: firstStart.addingTimeInterval(4 * 60 * 60),
-                              bpm: 52),
+                              end: firstStart.addingTimeInterval(6 * 60 * 60),
+                              bpm: 52,
+                              stepSeconds: 10),
                 flatHRSession(start: secondStart,
-                              end: secondStart.addingTimeInterval(4 * 60 * 60),
-                              bpm: 52),
+                              end: secondStart.addingTimeInterval(6 * 60 * 60),
+                              bpm: 52,
+                              stepSeconds: 10),
             ]
 
             let result = runOffMain {
@@ -3212,10 +3217,8 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                                reason: "invalid_jsonl_row_12")
         XCTAssertFalse(parseFailed.metricReady)
         XCTAssertEqual(parseFailed.valueText, "Repair")
-        // currentSessionUsableRows > 0 takes priority in metricGateText even when the
-        // archive fails to parse; valueText ("Repair") still fails closed for the
-        // headline status. See SessionStore.HistoricalArchiveStatus.metricGateText.
-        XCTAssertEqual(parseFailed.metricGateText, "Saved only")
+        // A partial row count must not make an unreadable archive look usable.
+        XCTAssertEqual(parseFailed.metricGateText, "Repair needed")
         XCTAssertEqual(parseFailed.userFootnoteText, "Archive needs repair.")
 
         let gated = SessionStore.HistoricalArchiveStatus(exists: true,
@@ -3226,8 +3229,9 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                          reason: "ok")
         XCTAssertFalse(gated.metricReady)
         XCTAssertEqual(gated.valueText, "Saved")
-        XCTAssertEqual(gated.metricGateText, "Saved only")
-        XCTAssertTrue(gated.userFootnoteText.contains("checking whether they can affect HRV, Recovery and Sleep"))
+        XCTAssertEqual(gated.metricGateText, "Raw only")
+        XCTAssertTrue(gated.userFootnoteText.contains("raw history rows saved"))
+        XCTAssertTrue(gated.userFootnoteText.contains("Missing time stays excluded"))
 
         let ready = SessionStore.HistoricalArchiveStatus(exists: true,
                                                          parseOK: true,
@@ -3872,7 +3876,7 @@ final class AtriaAnalyticsTests: XCTestCase {
 
     func testSavedSessionTRIMPExcludesPausedIntervals() {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
-        let points = stride(from: 0.0, through: 9 * 60.0, by: 60.0).map {
+        let points = stride(from: 0.0, through: 9 * 60.0, by: 10.0).map {
             SavedSession.Point(t: $0, bpm: 150)
         }
         let active = SavedSession(id: UUID(),
@@ -3928,7 +3932,7 @@ final class AtriaAnalyticsTests: XCTestCase {
 
     func testSavedSessionPauseExcludesCaloriesAndZones() {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
-        let points = stride(from: 0.0, through: 9 * 60.0, by: 60.0).map {
+        let points = stride(from: 0.0, through: 9 * 60.0, by: 10.0).map {
             SavedSession.Point(t: $0, bpm: 150)
         }
         let profile = AthleteProfile(age: 30,
@@ -3981,8 +3985,9 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                                      day: 13,
                                                                      hour: 23,
                                                                      minute: 50)))
-        let points = (0...20).map { minute in
-            SavedSession.Point(t: Double(minute * 60), bpm: minute < 10 ? 75 : 180)
+        let points = (0...120).map { sample in
+            let offset = sample * 10
+            return SavedSession.Point(t: Double(offset), bpm: offset < 10 * 60 ? 75 : 180)
         }
         let session = SavedSession(id: UUID(),
                                    start: start,
@@ -4012,8 +4017,8 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                                      month: 7,
                                                                      day: 13,
                                                                      hour: 12)))
-        let points = (0...20).map {
-            SavedSession.Point(t: Double($0 * 60), bpm: 170)
+        let points = (0...120).map {
+            SavedSession.Point(t: Double($0 * 10), bpm: 170)
         }
         let pause = ExcludedInterval(start: start.addingTimeInterval(5 * 60),
                                      end: start.addingTimeInterval(15 * 60))
@@ -4035,8 +4040,8 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                            calendar: calendar)
 
         XCTAssertEqual(summary.daysEvaluated, 1)
-        XCTAssertEqual(summary.samples, 10)
-        XCTAssertEqual(summary.totalSeconds, 8 * 60, accuracy: 0.001)
+        XCTAssertEqual(summary.samples, 58)
+        XCTAssertEqual(summary.totalSeconds, 580, accuracy: 0.001)
         XCTAssertEqual(summary.trimp,
                        session.trimp(rest: 60, max: 190, within: interval),
                        accuracy: 0.0001)

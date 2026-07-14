@@ -54,6 +54,86 @@ final class AtriaStressDetailViewTests: XCTestCase {
         XCTAssertEqual(AtriaStressTimelinePoint.segment(readings).map(\.segment), [0, 0])
     }
 
+    func testElevatedEvidenceFindsOnlyMeasuredSustainedWindows() {
+        let readings = stride(from: 0.0, through: 20 * 60.0, by: 30).map { offset in
+            let minute = offset / 60
+            let elevated = (5...9).contains(minute) || (14...18).contains(minute)
+            return AtriaStressDetailReading(date: now.addingTimeInterval(offset),
+                                             score: elevated ? 2.2 : 0.7)
+        }
+
+        let evidence = AtriaStressElevatedEvidence.analyze(readings)
+
+        XCTAssertTrue(evidence.isSupported)
+        XCTAssertEqual(evidence.windows.count, 2)
+        XCTAssertEqual(evidence.countText, "2 elevated windows")
+        XCTAssertEqual(evidence.windows.map(\.duration), [4 * 60, 4 * 60])
+        XCTAssertTrue(evidence.windows.allSatisfy {
+            $0.readingCount >= AtriaStressElevatedEvidence.minimumWindowReadings
+        })
+    }
+
+    func testSparseElevatedReadingsSuppressWindowOverlayAndCount() {
+        let readings = (0..<6).map { index in
+            AtriaStressDetailReading(date: now.addingTimeInterval(Double(index) * 30),
+                                     score: 2.5)
+        }
+
+        let evidence = AtriaStressElevatedEvidence.analyze(readings)
+
+        XCTAssertFalse(evidence.isSupported)
+        XCTAssertTrue(evidence.windows.isEmpty)
+        XCTAssertNil(evidence.countText)
+        XCTAssertNil(evidence.interventionDetail(state: scoredState(activation: 0.8),
+                                                  updatedAt: readings.last?.date))
+    }
+
+    func testElevatedWindowAnalysisNeverBridgesARealTelemetryGap() {
+        var readings = stride(from: 0.0, through: 2 * 60.0, by: 30).map {
+            AtriaStressDetailReading(date: now.addingTimeInterval($0), score: 2.4)
+        }
+        readings += stride(from: 4 * 60.0, through: 6 * 60.0, by: 30).map {
+            AtriaStressDetailReading(date: now.addingTimeInterval($0), score: 2.4)
+        }
+        readings += stride(from: 6.5 * 60.0, through: 17 * 60.0, by: 30).map {
+            AtriaStressDetailReading(date: now.addingTimeInterval($0), score: 0.6)
+        }
+
+        let evidence = AtriaStressElevatedEvidence.analyze(readings)
+
+        XCTAssertTrue(evidence.isSupported)
+        XCTAssertTrue(evidence.windows.isEmpty)
+        XCTAssertEqual(evidence.countText, "No elevated windows")
+    }
+
+    func testInterventionDetailUsesActiveMeasuredDurationAndScoringReason() throws {
+        let readings = stride(from: 0.0, through: 15 * 60.0, by: 30).map { offset in
+            AtriaStressDetailReading(date: now.addingTimeInterval(offset),
+                                     score: offset >= 11 * 60 ? 2.3 : 0.6)
+        }
+        let evidence = AtriaStressElevatedEvidence.analyze(readings)
+        let last = try XCTUnwrap(readings.last?.date)
+
+        XCTAssertEqual(evidence.interventionDetail(state: scoredState(activation: 0.8),
+                                                    updatedAt: last),
+                       "4 min elevated · HR + HRV vs your baseline")
+        XCTAssertNil(evidence.interventionDetail(state: scoredState(activation: 0.8),
+                                                  updatedAt: last.addingTimeInterval(91)))
+        XCTAssertNil(evidence.interventionDetail(state: AtriaStressState(
+            level: .low,
+            label: "Low",
+            detail: "HR + HRV vs your baseline",
+            kind: .scored,
+            confidence: 0.85,
+            rawActivation: 0.3,
+            hrvAvailable: true
+        ), updatedAt: last))
+    }
+
+    func testRelaxActionStatesItsThreeMinuteDuration() {
+        XCTAssertEqual(AtriaStressDetailCopy.relaxButtonTitle, "Relax · 3 min")
+    }
+
     private func scoredState(activation: Double) -> AtriaStressState {
         AtriaStressState(level: .medium,
                          label: "Medium",

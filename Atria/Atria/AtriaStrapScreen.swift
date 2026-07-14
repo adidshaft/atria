@@ -45,7 +45,7 @@ struct AtriaStrapScreen: View {
                                     value: coreLiveStore.state.batteryLevel >= 0
                                         ? coreLiveStore.state.batteryText : "—",
                                     detail: coreLiveStore.state.batteryLevel >= 0
-                                        ? coreLiveStore.state.batteryChargeCompactText : "No fresh reading",
+                                        ? coreLiveStore.state.batteryChargeCompactText : "Unavailable",
                                     systemImage: coreLiveStore.state.batterySymbol,
                                     tint: coreLiveStore.state.batteryShowsPowered ? .green : .cyan)
                 AtriaStrapStatusRow(title: "Mode",

@@ -758,13 +758,14 @@ private struct AtriaSleepReviewHost: View {
                                           evidenceNight: adjustment,
                                           evidencePerformancePercent: state.sleepHistorySnapshot.sleepPerformancePercent(for: adjustment,
                                                                                                                          baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
-                        let saved = store.adjustSleepNight(originalStart: adjustment.start,
-                                                           originalEnd: adjustment.end,
-                                                           newStart: start,
-                                                           newEnd: end,
-                                                           isNap: isNap,
-                                                           rest: store.baseline.restingInt ?? 60,
-                                                           source: "overview_sleep_review_adjust") != nil
+                        let saved = store.saveSleepReviewNightForUI(
+                            adjustment,
+                            start: start,
+                            end: end,
+                            isNap: isNap,
+                            rest: store.baseline.restingInt ?? 60,
+                            source: "overview_sleep_review_adjust"
+                        ) != nil
                         if saved {
                             adjustmentNight = nil
                         }
@@ -1009,9 +1010,9 @@ private struct AtriaSleepSyncNeededCard: View, Equatable {
                 .frame(width: 50, height: 50)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(protectsLiveStream ? "Sleep recording protected" : "Sync sleep data")
+                    Text(protectsLiveStream ? "Sleep tracking continues" : "Sleep data gap")
                         .font(.headline.weight(.semibold))
-                    Text(protectsLiveStream ? "Keep wearing. Atria will sync the gap after recording is safe." : "Pull missed strap data. If Atria finds sleep, review it next.")
+                    Text(protectsLiveStream ? "Live data continues; missing time stays excluded." : "Check the strap for recoverable history.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1020,14 +1021,14 @@ private struct AtriaSleepSyncNeededCard: View, Equatable {
 
             HStack(spacing: 8) {
                 statusPill(symbol: protectsLiveStream ? "heart.fill" : "tray.and.arrow.down.fill",
-                           title: protectsLiveStream ? "Live" : "Sync",
-                           value: protectsLiveStream ? "Protected" : "Ready")
+                           title: protectsLiveStream ? "Live" : "History",
+                           value: protectsLiveStream ? "On" : "Check")
                 statusPill(symbol: "bed.double.fill",
-                           title: "Sleep",
-                           value: protectsLiveStream ? "Recording" : "Waiting")
+                           title: "Gap",
+                           value: "Saved")
                 statusPill(symbol: "checkmark.circle",
-                           title: "Review",
-                           value: protectsLiveStream ? "Morning" : "If found")
+                           title: "Metrics",
+                           value: "Excluded")
             }
         }
         .padding(16)
@@ -1042,8 +1043,8 @@ private struct AtriaSleepSyncNeededCard: View, Equatable {
 
     private var accessibilityLabel: String {
         protectsLiveStream
-            ? "Sleep recording protected. Keep wearing. Atria will sync the gap after recording is safe."
-            : "Sync sleep data. Pull missed strap data. If Atria finds sleep, review it next."
+            ? "Sleep tracking continues. Live data continues; missing time stays excluded."
+            : "Sleep data gap. Check the strap for recoverable history. Missing time stays excluded until verified."
     }
 
     private func statusPill(symbol: String, title: String, value: String) -> some View {
@@ -1684,13 +1685,71 @@ final class AtriaOverviewReadinessProjectionStore: ObservableObject {
     }
 }
 
+/// Equality-gated slice of `CoreLiveState` used by the large Today readiness
+/// tree. The strap can publish a new core state for every accepted sample, but
+/// this surface displays only connection/battery truth, whole-calorie changes,
+/// exact strap steps, and a coarse collection-progress indicator. Keeping that
+/// contract here prevents an unrelated RR/HRV/sample update from rebuilding
+/// every ring, report, and glance card.
+struct AtriaOverviewLiveProjectionState: Equatable {
+    let live: AtriaHomeModel.CoreLiveState
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.live.status == rhs.live.status
+            && lhs.live.batteryStatusSummaryText == rhs.live.batteryStatusSummaryText
+            && lhs.live.liveActiveCaloriesText == rhs.live.liveActiveCaloriesText
+            && lhs.live.strapStepResearchCount == rhs.live.strapStepResearchCount
+            && lhs.live.strapStepResearchState == rhs.live.strapStepResearchState
+            && sessionProgressBucket(lhs.live.sessionSampleCount)
+                == sessionProgressBucket(rhs.live.sessionSampleCount)
+    }
+
+    /// Twenty visible progress bands across the 720-sample readiness ramp.
+    /// Zero and the first real sample remain distinct so “ready” changes at
+    /// once, while a continuous stream no longer republishes this large tree
+    /// once per packet.
+    static func sessionProgressBucket(_ sampleCount: Int) -> Int {
+        guard sampleCount > 0 else { return 0 }
+        let capped = min(sampleCount, 720)
+        return 1 + ((capped - 1) / 36)
+    }
+}
+
+@MainActor
+final class AtriaOverviewLiveProjectionStore: ObservableObject {
+    @Published private(set) var state: AtriaOverviewLiveProjectionState
+    private var cancellable: AnyCancellable?
+
+    init(liveStore: AtriaHomeModel.CoreLiveStore) {
+        state = AtriaOverviewLiveProjectionState(live: liveStore.state)
+        cancellable = liveStore.$state
+            .map { AtriaOverviewLiveProjectionState(live: $0) }
+            .removeDuplicates()
+            .sink { [weak self] state in
+                self?.refresh(state)
+            }
+    }
+
+    init(state: AtriaOverviewLiveProjectionState) {
+        self.state = state
+    }
+
+    @discardableResult
+    func refresh(_ next: AtriaOverviewLiveProjectionState) -> Bool {
+        guard next != state else { return false }
+        state = next
+        return true
+    }
+}
+
 struct AtriaOverviewReadinessSectionHost: View {
-    @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
+    let liveStore: AtriaHomeModel.CoreLiveStore
     let pulseStore: AtriaHomeModel.HeroPulseStore
     @ObservedObject var heroStore: AtriaHomeModel.HeroStore
     @ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
     @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
     let store: SessionStore
+    @StateObject private var liveProjectionStore: AtriaOverviewLiveProjectionStore
     @StateObject private var projectionStore: AtriaOverviewReadinessProjectionStore
     var hapticSettings: AtriaHapticAlertSettings = AtriaHapticAlertSettings()
     let subtitle: String
@@ -1756,13 +1815,17 @@ struct AtriaOverviewReadinessSectionHost: View {
         self.onOpenCollection = onOpenCollection
         self.onOpenInsights = onOpenInsights
         self.onStartWorkout = onStartWorkout
+        _liveProjectionStore = StateObject(
+            wrappedValue: AtriaOverviewLiveProjectionStore(liveStore: liveStore)
+        )
         _projectionStore = StateObject(wrappedValue: AtriaOverviewReadinessProjectionStore(store: store))
     }
 
     var body: some View {
         let projection = projectionStore.state
+        let live = liveProjectionStore.state.live
         AtriaOverviewReadinessSection(hero: heroStore.state,
-                                     live: liveStore.state,
+                                     live: live,
                                      pulseStore: pulseStore,
                                      vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                                      biologicalAgeSummary: profileMetricsStore.state.biologicalAgeSummary,
@@ -2563,10 +2626,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             && lhs.hero.hrZoneMinutes == rhs.hero.hrZoneMinutes
             && lhs.snapshot.sleepValue == rhs.snapshot.sleepValue
             && lhs.live.status == rhs.live.status
-            && lhs.live.sessionSampleCount == rhs.live.sessionSampleCount
+            && AtriaOverviewLiveProjectionState.sessionProgressBucket(lhs.live.sessionSampleCount)
+                == AtriaOverviewLiveProjectionState.sessionProgressBucket(rhs.live.sessionSampleCount)
             && lhs.live.batteryStatusSummaryText == rhs.live.batteryStatusSummaryText
             && lhs.live.liveActiveCaloriesText == rhs.live.liveActiveCaloriesText
-            && lhs.live.liveActiveCalories == rhs.live.liveActiveCalories
             && lhs.live.strapStepResearchCount == rhs.live.strapStepResearchCount
             && lhs.live.strapStepResearchState == rhs.live.strapStepResearchState
             && lhs.biologicalAgeSummary == rhs.biologicalAgeSummary
@@ -3186,7 +3249,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .poweredOff:
             return "Bluetooth off"
         case .disconnected:
-            return live.batteryLevel >= 0 ? "Last seen \(live.batteryText)" : "Waiting"
+            return live.batteryLevel >= 0 ? "Last seen \(live.batteryText)" : "Unavailable"
         }
     }
 
@@ -4280,6 +4343,7 @@ private struct AtriaOverviewBreathworkSessionHost: View {
     var body: some View {
         AtriaBreathworkSession(currentHeartRate: pulseStore.state.heartRate,
                                currentRRSamples: pulseStore.state.recentRRSamples,
+                               currentStress: nil,
                                onSave: { _ in },
                                onClose: onDismiss)
     }
@@ -5217,7 +5281,11 @@ struct AtriaStrapStepLiveStatus: Equatable {
     }
 
     static let persistedMotionKey = "atria.radio.passiveR10LastValidAt"
-    static let liveWindow: TimeInterval = 90
+    /// R10 is a one-device-second motion stream. A count cannot honestly stay
+    /// "live" for a minute and a half after those frames stop, even if 2A37 HR
+    /// remains connected. Allow short Bluetooth delivery jitter, then fail the
+    /// step tile closed while retaining the last saved estimate.
+    static let liveWindow: TimeInterval = 15
     static let futureTolerance: TimeInterval = 5
 
     let count: Int
@@ -9531,7 +9599,7 @@ private struct AtriaPreparedMetricChart: View {
         }
         if let selectedPoint, !companions.isEmpty {
             HStack(spacing: 8) {
-                ForEach(Array(companions.enumerated()), id: \.offset) { index, companion in
+                ForEach(Array(companions.enumerated()), id: \.element.title) { index, companion in
                     let match = prepared.companionPointIndex(at: index, on: selectedPoint.day).map { companion.points[$0] }
                     VStack(alignment: .leading, spacing: 2) {
                         Text(companion.title.uppercased()).font(.caption2.weight(.black)).foregroundStyle(.tertiary)
@@ -9735,6 +9803,7 @@ private struct AtriaRecoveryScoreHero: View {
     let tint: Color
     let baselineComparison: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
     @State private var ringRevealed = false
     @State private var haloExpanded = false
 
@@ -9746,7 +9815,7 @@ private struct AtriaRecoveryScoreHero: View {
                     .frame(width: 178, height: 178)
                     .scaleEffect(reduceMotion ? 1 : (haloExpanded ? 1.06 : 0.94))
                     .shadow(color: tint.opacity(haloExpanded ? 0.28 : 0.12), radius: 18)
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 2.8).repeatForever(autoreverses: true),
+                    .animation(motionEnabled ? .easeInOut(duration: 2.8).repeatForever(autoreverses: true) : nil,
                                value: haloExpanded)
                 Circle().stroke(tint.opacity(0.14), lineWidth: 14)
                 if let score {
@@ -9758,7 +9827,7 @@ private struct AtriaRecoveryScoreHero: View {
                         .shadow(color: tint.opacity(haloExpanded ? 0.38 : 0.16), radius: 9)
                         .animation(reduceMotion ? nil : .timingCurve(0.22, 1, 0.36, 1, duration: 2.6),
                                    value: ringRevealed)
-                        .animation(reduceMotion ? nil : .easeInOut(duration: 2.8).repeatForever(autoreverses: true),
+                        .animation(motionEnabled ? .easeInOut(duration: 2.8).repeatForever(autoreverses: true) : nil,
                                    value: haloExpanded)
                 }
                 VStack(spacing: 1) {
@@ -9789,16 +9858,27 @@ private struct AtriaRecoveryScoreHero: View {
         .onAppear(perform: startMotion)
         .onChange(of: score) { _, _ in startMotion() }
         .onChange(of: reduceMotion) { _, _ in startMotion() }
+        .onChange(of: scenePhase) { _, _ in startMotion() }
     }
 
     private func startMotion() {
         ringRevealed = reduceMotion
         haloExpanded = false
         guard !reduceMotion else { return }
+        guard scenePhase == .active else {
+            // Keep the full score visible while the scene is inactive without
+            // leaving a repeating animation running in the background.
+            ringRevealed = true
+            return
+        }
         withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 2.6)) {
             ringRevealed = true
         }
         haloExpanded = true
+    }
+
+    private var motionEnabled: Bool {
+        !reduceMotion && scenePhase == .active
     }
 }
 
@@ -12088,7 +12168,7 @@ struct AtriaStrainBandGauge: View {
                 // that rendered as fat scattered dots — read as broken, esp. at
                 // low strain where the fill arc is nearly invisible. The natural
                 // gaps between the band ranges now delineate the zones.
-                ForEach(Array(bands.enumerated()), id: \.offset) { _, band in
+                ForEach(Array(bands.enumerated()), id: \.element.label) { _, band in
                     Circle()
                         .trim(from: band.range.lowerBound / 21, to: band.range.upperBound / 21)
                         .stroke(.primary.opacity(0.12), style: StrokeStyle(lineWidth: 16, lineCap: .butt))
@@ -12191,13 +12271,14 @@ struct AtriaOverviewMorningJournalHost: View {
                                       evidenceNight: adjustment,
                                       evidencePerformancePercent: sleepHistory.sleepPerformancePercent(for: adjustment,
                                                                                                        baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
-                    let saved = store.adjustSleepNight(originalStart: adjustment.start,
-                                                       originalEnd: adjustment.end,
-                                                       newStart: start,
-                                                       newEnd: end,
-                                                       isNap: isNap,
-                                                       rest: store.baseline.restingInt ?? 60,
-                                                       source: "morning_journal_adjust") != nil
+                    let saved = store.saveSleepReviewNightForUI(
+                        adjustment,
+                        start: start,
+                        end: end,
+                        isNap: isNap,
+                        rest: store.baseline.restingInt ?? 60,
+                        source: "morning_journal_adjust"
+                    ) != nil
                     if saved { adjustmentNight = nil }
                     return saved
                 }
@@ -14148,7 +14229,7 @@ private struct AtriaDisconnectedOverviewChecklistCard: View, Equatable {
                     .font(.headline.weight(.semibold))
             }
 
-            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+            ForEach(Array(items.enumerated()), id: \.element) { index, item in
                 HStack(alignment: .top, spacing: 10) {
                     Text("\(index + 1)")
                         .font(.caption.weight(.bold))

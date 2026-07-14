@@ -355,25 +355,13 @@ struct AtriaVitalsTabContent: View {
         }
     }
 
-    private var healthMonitorLatestRollup: DailyRollupStoreEntry? {
-        // `dailyRollupHistory` is already newest-first; keep the sheet context O(1).
-        vitalsStore.state.dailyRollupHistory.first
-    }
-
     private var healthMonitorRecoveryEstimate: Metrics.RecoveryEstimate {
-        if let rollup = healthMonitorLatestRollup,
-           let recovery = rollup.recovery {
-            return Metrics.RecoveryEstimate(percent: recovery,
-                                            confidence: .validated,
-                                            usesHRV: rollup.lnRMSSD != nil,
-                                            detail: "Saved Health Monitor rollup",
-                                            contributors: [])
-        }
-        return Metrics.RecoveryEstimate(percent: nil,
-                                        confidence: .learning,
-                                        usesHRV: false,
-                                        detail: "Health Monitor baseline building",
-                                        contributors: [])
+        // The Home hero owns the current physiological cycle's immutable
+        // recovery (including its confidence, HRV provenance, contributors and
+        // no-sleep fallback). Reusing that exact estimate keeps Health Monitor
+        // from presenting yesterday's newest calendar rollup as a newly
+        // validated score after midnight or across a split sleep.
+        heroStore.state.recoveryEstimate
     }
 
     private var healthMonitorGuidance: Coach.Guidance {
@@ -1631,7 +1619,7 @@ private struct AtriaDutyCycleToggleCard: View {
                 ble.updateDutyCycleState(reason: "settings_toggle")
             }
 
-            Text("During the day, Atria checks your heart rate every few minutes instead of continuously. Full detail resumes automatically during your usual sleep hours, during workouts, when your heart rate rises, or when you open the live screen. Saves strap battery. Daytime beat-to-beat (HRV) detail is not recorded — your recovery score already comes from sleep.")
+            Text("Checks periodically by day. Full detail resumes for sleep, workouts, raised heart rate, and live screens. Daytime HRV gaps are expected.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -1794,6 +1782,8 @@ private struct AtriaVitalsPulseCardHost: View {
     @State private var historicalHeartRatePoints: [AtriaHomeModel.HeartRateChartPoint] = []
     @State private var mergeCache = AtriaHeartRateMergeCache()
     @State private var archiveRefreshGate = AtriaVitalsActivityGate()
+    @State private var didDebugOpenHeartRateExplorer = false
+    @StateObject private var heartRateExplorerPresenter = AtriaHeartRateExplorerPresentationController()
     let pulseSparklineStore: AtriaHomeModel.PulseSparklineStore
 
     init(liveStore: AtriaHomeModel.CoreLiveStore,
@@ -1865,8 +1855,6 @@ private struct AtriaVitalsPulseCardHost: View {
     var body: some View {
         AtriaPulseCard(isConnected: displayedLive.status == .connected,
                        live: displayedPulse,
-                       chartPoints: chartPoints,
-                       timelineKey: timelineKey,
                        miniTimelineSeries: miniTimelineSeries,
                        restingHeartRate: displayedHomeStats.restingHeartRate,
                        restingHeartRateText: displayedHomeStats.restingHeartRateText,
@@ -1876,8 +1864,18 @@ private struct AtriaVitalsPulseCardHost: View {
                        baselineTarget: baselineSnapshot.baselineTarget,
                        restingGreenDelta: restingGreenDelta,
                        restingYellowDelta: restingYellowDelta,
-                       debugOpensHeartRateTimeline: Self.debugOpensHeartRateTimeline(arguments: ProcessInfo.processInfo.arguments))
+                       onOpen: openHeartRateExplorer)
             .equatable()
+            .onAppear(perform: openDebugTimelineIfReady)
+            .onChange(of: timelineKey, initial: true) { _, _ in
+                heartRateExplorerPresenter.updateLiveInput(points: chartPoints,
+                                                            currentBPM: displayedPulse.heartRate)
+                openDebugTimelineIfReady()
+            }
+            .onChange(of: displayedPulse.heartRate) { _, bpm in
+                heartRateExplorerPresenter.updateLiveInput(points: chartPoints,
+                                                            currentBPM: bpm)
+            }
             .onChange(of: isActive, initial: true) { _, active in
                 guard active else { return }
                 seedCurrentValues()
@@ -1904,6 +1902,23 @@ private struct AtriaVitalsPulseCardHost: View {
                     }
                 }
             }
+    }
+
+    private func openHeartRateExplorer() {
+        let points = chartPoints
+        let bpm = displayedPulse.heartRate
+        AtriaDebugLog("ATRIADBG hr_explorer_tap status=requested points=%d bpm=%d",
+                      points.count,
+                      bpm)
+        heartRateExplorerPresenter.present(points: points, currentBPM: bpm)
+    }
+
+    private func openDebugTimelineIfReady() {
+        guard Self.debugOpensHeartRateTimeline(arguments: ProcessInfo.processInfo.arguments),
+              !didDebugOpenHeartRateExplorer,
+              timelineKey.count > 0 else { return }
+        didDebugOpenHeartRateExplorer = true
+        openHeartRateExplorer()
     }
 
     private func seedCurrentValues() {
@@ -2265,15 +2280,16 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
     private func adjustSleepCandidate(night: SleepHistorySnapshot.Night,
                                       start: Date,
                                       end: Date,
-                                      isNap: Bool) {
+                                      isNap: Bool) -> Bool {
         let baseline = vitalsStore.state.baseline
-        _ = store.adjustSleepNight(originalStart: night.start,
-                                   originalEnd: night.end,
-                                   newStart: start,
-                                   newEnd: end,
-                                   isNap: isNap,
-                                   rest: baseline.restingInt ?? 60,
-                                   source: "vitals_sleep_history_adjust")
+        return store.saveSleepReviewNightForUI(
+            night,
+            start: start,
+            end: end,
+            isNap: isNap,
+            rest: baseline.restingInt ?? 60,
+            source: "vitals_sleep_history_adjust"
+        ) != nil
     }
 
     private func confirmSleepCandidate() {
@@ -2617,7 +2633,7 @@ enum AtriaExperimentalSensorCopy {
         if strapModel == .strap3 {
             return "Not available on this strap"
         }
-        return decoderAvailable ? "No SpO2 reading yet" : "Decoder unavailable"
+        return decoderAvailable ? "No SpO2 reading yet" : "Not available yet"
     }
 
     static func bloodOxygenFootnote(strapModel: AtriaBLEManager.AtriaStrapModel,
@@ -2647,7 +2663,7 @@ enum AtriaExperimentalSensorCopy {
 
     static func skinTemperatureStatus(summary: IMUAuditSummary.SkinTemperatureDeviationSummary,
                                       decoderAvailable: Bool) -> String {
-        guard decoderAvailable else { return "Decoder unavailable" }
+        guard decoderAvailable else { return "Not available yet" }
         return summary.detailText
     }
 
@@ -2791,7 +2807,7 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                 targetMetric: nil)
             }
 
-            Text("Early sensor rows show evidence counts, not measurements. Atria shows skin temperature only as a sleep-baseline deviation, never as an absolute body-temperature value.")
+            Text("Rows show evidence counts until checked. Skin temperature is only a sleep-baseline change.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -2835,7 +2851,7 @@ private struct AtriaResearchSignalInfoSheet: View {
                                         summary: skinTemperatureSummary,
                                         decoderAvailable: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable))
 
-                    Text("Experimental readings stay local, depend on sleep data, and are not medical advice. Atria does not write SpO2 or body-temperature values to HealthKit.")
+                    Text("Experimental, local, and not medical advice. SpO2 and temperature are not written to HealthKit.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -3191,12 +3207,12 @@ private struct AtriaCollectionControlsCardHost: View {
             VStack(spacing: 12) {
                 if developerModeEnabled {
                     AtriaCollectionToggleCard(
-                        title: "Battery saver",
+                        title: "Stable sensor mode",
                         subtitle: collectionLiveStore.state.standardHROnlyEnabled
-                            ? "Heart-rate only. HR stays live; HRV, Recovery and sleep detail wait for validated beat-to-beat windows."
-                            : "Full sensor mode. Beat-to-beat, HRV, Recovery and sleep estimates stay available.",
-                        systemImage: collectionLiveStore.state.standardHROnlyEnabled ? "battery.75percent" : "waveform.path.ecg",
-                        tint: collectionLiveStore.state.standardHROnlyEnabled ? .green : .purple,
+                            ? "Recommended minimal connection with heart rate and strap-native motion."
+                            : "Diagnostic full protocol; richer transport may be less stable.",
+                        systemImage: collectionLiveStore.state.standardHROnlyEnabled ? "antenna.radiowaves.left.and.right" : "wrench.and.screwdriver.fill",
+                        tint: collectionLiveStore.state.standardHROnlyEnabled ? .green : .orange,
                         isOn: Binding(
                             get: { collectionLiveStore.state.standardHROnlyEnabled },
                             set: { enabled in
@@ -3396,7 +3412,7 @@ private struct AtriaCollectionStatusCardHost: View {
                         state: projectionStore.state.batteryLevel >= 0 ? .live : .learning,
                         tint: projectionStore.state.batteryShowsPowered ? .green : .blue,
                         footnote: projectionStore.state.batteryLevel >= 0
-                            ? projectionStore.state.batteryDetailText : "No fresh reading")
+                            ? projectionStore.state.batteryDetailText : "Unavailable")
         AtriaMetricTile(label: "Mode",
                         value: projectionStore.state.modeLabel,
                         state: projectionStore.state.longWearModeEnabled ? .live : .local,
@@ -3570,8 +3586,6 @@ private struct AtriaCollectionProfilePicker: View, Equatable {
 private struct AtriaPulseCard: View, Equatable {
     let isConnected: Bool
     let live: AtriaVitalsPulsePresentationState
-    let chartPoints: [AtriaHomeModel.HeartRateChartPoint]
-    let timelineKey: AtriaHeartRateMergeCache.SeriesKey
     let miniTimelineSeries: AtriaHeartRateChartSeries
     let restingHeartRate: Int
     let restingHeartRateText: String
@@ -3581,14 +3595,11 @@ private struct AtriaPulseCard: View, Equatable {
     let baselineTarget: AtriaBaselineTargetSnapshot
     let restingGreenDelta: Int
     let restingYellowDelta: Int
-    let debugOpensHeartRateTimeline: Bool
-    @State private var showHeartRateExplorer = false
-    @State private var didDebugOpenHeartRateExplorer = false
+    let onOpen: () -> Void
 
     static func == (lhs: AtriaPulseCard, rhs: AtriaPulseCard) -> Bool {
         lhs.isConnected == rhs.isConnected
             && lhs.live == rhs.live
-            && lhs.timelineKey == rhs.timelineKey
             && lhs.miniTimelineSeries == rhs.miniTimelineSeries
             && lhs.restingHeartRate == rhs.restingHeartRate
             && lhs.restingHeartRateText == rhs.restingHeartRateText
@@ -3598,7 +3609,6 @@ private struct AtriaPulseCard: View, Equatable {
             && lhs.baselineTarget == rhs.baselineTarget
             && lhs.restingGreenDelta == rhs.restingGreenDelta
             && lhs.restingYellowDelta == rhs.restingYellowDelta
-            && lhs.debugOpensHeartRateTimeline == rhs.debugOpensHeartRateTimeline
     }
 
     private var hasReadablePulse: Bool {
@@ -3635,34 +3645,197 @@ private struct AtriaPulseCard: View, Equatable {
                                resting: restingHeartRateText,
                                restingTint: restingHeartRateZone?.tint ?? .blue)
 
-            AtriaHeartRateTimelineCard(series: miniTimelineSeries,
-                                       onOpen: {
-                                           AtriaHeartRateOrientation.prepareLandscapePresentation()
-                                           showHeartRateExplorer = true
-                                       })
+            AtriaHeartRateTimelineCard(series: miniTimelineSeries, onOpen: onOpen)
         }
         .padding(18)
         .atriaCard(emphasis: .soft)
-        .fullScreenCover(isPresented: $showHeartRateExplorer) {
-            AtriaHeartRateExplorer(points: chartPoints,
-                                   currentBPM: live.heartRate,
-                                   onDismiss: { showHeartRateExplorer = false })
-        }
-        .onAppear(perform: openDebugTimelineIfReady)
-        .onChange(of: timelineKey) { _, _ in
-            openDebugTimelineIfReady()
-        }
     }
 
-    private func openDebugTimelineIfReady() {
-        guard debugOpensHeartRateTimeline,
-              !didDebugOpenHeartRateExplorer,
-              timelineKey.count > 0 else { return }
-        didDebugOpenHeartRateExplorer = true
+}
+
+/// Direct presentation owner for the heart-rate explorer. The earlier hidden
+/// `UIViewControllerRepresentable` anchor could remain detached from a window,
+/// so a valid tap changed SwiftUI state but had no controller capable of
+/// presenting. This object resolves the active key-window controller at tap
+/// time and retries briefly through in-flight UIKit transitions.
+@MainActor
+private final class AtriaHeartRateExplorerPresentationController: ObservableObject {
+    private var presentationModel: AtriaHeartRateExplorerPresentationModel?
+    private weak var hostingController: AtriaHeartRateLandscapeHostingController?
+    private var isPresenting = false
+    private var isDismissing = false
+    private var pendingPoints: [AtriaHomeModel.HeartRateChartPoint] = []
+    private var pendingCurrentBPM = 0
+    private var presentationRetryTask: Task<Void, Never>?
+
+    func present(points: [AtriaHomeModel.HeartRateChartPoint], currentBPM: Int) {
+        pendingPoints = points
+        pendingCurrentBPM = currentBPM
+        updateLiveInput(points: points, currentBPM: currentBPM)
+
+        guard hostingController == nil, !isPresenting, !isDismissing else {
+            AtriaDebugLog("ATRIADBG hr_explorer_present status=already_active presenting=%d dismissing=%d",
+                          isPresenting ? 1 : 0,
+                          isDismissing ? 1 : 0)
+            return
+        }
+        attemptPresentation(attempt: 0)
+    }
+
+    func updateLiveInput(points: [AtriaHomeModel.HeartRateChartPoint], currentBPM: Int) {
+        pendingPoints = points
+        pendingCurrentBPM = currentBPM
+        presentationModel?.update(points: points, currentBPM: currentBPM)
+    }
+
+    private func attemptPresentation(attempt: Int) {
+        guard hostingController == nil, !isPresenting, !isDismissing else { return }
+        guard let presenter = Self.activePresentationSource(),
+              presenter.viewIfLoaded?.window != nil,
+              !presenter.isBeingDismissed else {
+            schedulePresentationRetry(after: attempt)
+            return
+        }
+
+        presentationRetryTask?.cancel()
+        presentationRetryTask = nil
+        isPresenting = true
         AtriaHeartRateOrientation.prepareLandscapePresentation()
-        showHeartRateExplorer = true
+
+        let model = AtriaHeartRateExplorerPresentationModel(points: pendingPoints,
+                                                            currentBPM: pendingCurrentBPM)
+        presentationModel = model
+        let root = AtriaHeartRateExplorerPresentationRoot(model: model) { [weak self] in
+            self?.dismiss(animated: true)
+        }
+        let hosting = AtriaHeartRateLandscapeHostingController(rootView: root)
+        hosting.modalPresentationStyle = .fullScreen
+        hosting.isModalInPresentation = true
+        hostingController = hosting
+
+        AtriaDebugLog("ATRIADBG hr_explorer_present status=presenting attempt=%d source=%@ points=%d bpm=%d",
+                      attempt,
+                      String(describing: type(of: presenter)),
+                      pendingPoints.count,
+                      pendingCurrentBPM)
+        presenter.present(hosting, animated: true) { [weak self, weak hosting] in
+            guard let self else { return }
+            self.isPresenting = false
+            hosting?.setNeedsUpdateOfSupportedInterfaceOrientations()
+            AtriaDebugLog("ATRIADBG hr_explorer_present status=presented")
+        }
     }
 
+    private func schedulePresentationRetry(after attempt: Int) {
+        let nextAttempt = attempt + 1
+        guard nextAttempt <= 10 else {
+            AtriaDebugLog("ATRIADBG hr_explorer_present status=failed reason=no_attached_presenter attempts=%d",
+                          attempt)
+            AtriaHeartRateOrientation.restorePortraitAfterDismissal()
+            return
+        }
+        presentationRetryTask?.cancel()
+        presentationRetryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(100))
+            guard !Task.isCancelled else { return }
+            self?.attemptPresentation(attempt: nextAttempt)
+        }
+    }
+
+    func dismiss(animated: Bool) {
+        presentationRetryTask?.cancel()
+        presentationRetryTask = nil
+        guard !isDismissing else { return }
+        guard let hosting = hostingController else {
+            isPresenting = false
+            AtriaHeartRateOrientation.restorePortraitAfterDismissal()
+            return
+        }
+
+        isDismissing = true
+        AtriaHeartRateOrientation.preparePortraitDismissal()
+        hosting.dismiss(animated: animated) { [weak self] in
+            guard let self else { return }
+            self.hostingController = nil
+            self.presentationModel = nil
+            self.isPresenting = false
+            self.isDismissing = false
+            AtriaHeartRateOrientation.restorePortraitAfterDismissal()
+            AtriaDebugLog("ATRIADBG hr_explorer_present status=dismissed")
+        }
+    }
+
+    private static func activePresentationSource() -> UIViewController? {
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive }),
+              let root = scene.windows.first(where: \.isKeyWindow)?.rootViewController else {
+            return nil
+        }
+        var topmost = root
+        while let presented = topmost.presentedViewController {
+            topmost = presented
+        }
+        return topmost
+    }
+
+}
+
+@MainActor
+private final class AtriaHeartRateExplorerPresentationModel: ObservableObject {
+    @Published private(set) var points: [AtriaHomeModel.HeartRateChartPoint]
+    @Published private(set) var currentBPM: Int
+    private var pointsKey: AtriaHeartRateMergeCache.SeriesKey
+
+    init(points: [AtriaHomeModel.HeartRateChartPoint], currentBPM: Int) {
+        self.points = points
+        self.currentBPM = currentBPM
+        self.pointsKey = AtriaHeartRateMergeCache.SeriesKey(points: points)
+    }
+
+    func update(points: [AtriaHomeModel.HeartRateChartPoint], currentBPM: Int) {
+        let key = AtriaHeartRateMergeCache.SeriesKey(points: points)
+        if key != pointsKey {
+            pointsKey = key
+            self.points = points
+        }
+        if self.currentBPM != currentBPM {
+            self.currentBPM = currentBPM
+        }
+    }
+}
+
+private struct AtriaHeartRateExplorerPresentationRoot: View {
+    @ObservedObject var model: AtriaHeartRateExplorerPresentationModel
+    let onDismiss: () -> Void
+
+    var body: some View {
+        AtriaHeartRateExplorer(points: model.points,
+                               currentBPM: model.currentBPM,
+                               onDismiss: onDismiss)
+    }
+}
+
+private final class AtriaHeartRateLandscapeHostingController:
+    UIHostingController<AtriaHeartRateExplorerPresentationRoot> {
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        AtriaHeartRateExplorerOrientationPolicy.presentedMask
+    }
+    override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation {
+        AtriaHeartRateExplorerOrientationPolicy.preferredOrientation
+    }
+    override var shouldAutorotate: Bool { true }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        setNeedsUpdateOfSupportedInterfaceOrientations()
+        // `preferredInterfaceOrientationForPresentation` is only a preference.
+        // Request scene geometry once the full-screen controller is attached so
+        // iPhone Mirroring and rotation-lock transitions cannot leave the
+        // landscape hierarchy squeezed into a portrait canvas.
+        AtriaHeartRateOrientation.ensureLandscapeAfterPresentation()
+        AtriaDebugLog("ATRIADBG hr_explorer_orientation status=landscape_host_visible preferred=landscapeRight")
+    }
 }
 
 private struct AtriaPulseStatRail: View {
@@ -3733,6 +3906,10 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
                                         buckets: series.buckets,
                                         selectedTime: .constant(nil),
                                         showsXAxis: false)
+                    // This is a preview inside one large button, not an
+                    // inspector. Disable the chart's selection gesture so a
+                    // plot-area tap always reaches the card action.
+                    .allowsHitTesting(false)
                     .padding(.top, 2)
                     .padding(.trailing, 2)
                     .frame(maxWidth: .infinity)
@@ -3747,6 +3924,7 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
             .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
             .clipped()
             .compositingGroup()
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Open heart rate timeline")
@@ -3831,6 +4009,85 @@ struct AtriaHeartRateChartSeries: Equatable {
     }
 }
 
+/// One orientation contract shared by the presentation controller, scene
+/// geometry request, and tests. Keeping these values together prevents UIKit's
+/// supported-mask and preferred-orientation answers from drifting apart.
+struct AtriaHeartRateExplorerOrientationPolicy {
+    static let transitionMask: UIInterfaceOrientationMask = .allButUpsideDown
+    static let presentedMask: UIInterfaceOrientationMask = .landscape
+    static let preferredOrientation: UIInterfaceOrientation = .landscapeRight
+}
+
+/// Chooses the rendered stage independently from UIKit's window orientation.
+/// iPhone Mirroring can reject `requestGeometryUpdate` with UIScene error 101;
+/// in that mode a landscape-sized stage is rotated inside the portrait window
+/// so the monitor is still genuinely readable when the phone/view is turned.
+struct AtriaHeartRateExplorerStageLayout: Equatable {
+    enum Mode: Equatable {
+        case landscape
+        case portrait
+        case rotatedLandscapeFallback
+    }
+
+    let mode: Mode
+    let stageSize: CGSize
+    let rotationDegrees: Double
+
+    init(containerSize: CGSize, usesRotatedPortraitFallback: Bool) {
+        if containerSize.width > containerSize.height {
+            mode = .landscape
+            stageSize = containerSize
+            rotationDegrees = 0
+        } else if usesRotatedPortraitFallback {
+            mode = .rotatedLandscapeFallback
+            stageSize = CGSize(width: containerSize.height, height: containerSize.width)
+            rotationDegrees = 90
+        } else {
+            mode = .portrait
+            stageSize = containerSize
+            rotationDegrees = 0
+        }
+    }
+}
+
+/// Geometry-derived layout for the full-screen heart-rate monitor. It does not
+/// trust `UIDevice.orientation`, which can remain stale during cover
+/// presentation and iPhone Mirroring. The rendered container is the source of
+/// truth, so a real rotation immediately swaps between chart-first landscape
+/// and the safe portrait fallback.
+struct AtriaHeartRateExplorerLayout: Equatable {
+    let isLandscape: Bool
+    let outerPadding: CGFloat
+    let contentSpacing: CGFloat
+    let controlRailHeight: CGFloat
+    let minimumChartHeight: CGFloat
+    let estimatedChartWidth: CGFloat
+
+    init(size: CGSize) {
+        isLandscape = size.width > size.height
+        let shortEdge = min(size.width, size.height)
+        outerPadding = shortEdge < 390 ? 10 : 12
+        contentSpacing = isLandscape ? 12 : 10
+
+        if isLandscape {
+            // Controls form one shallow rail above the plot. Nothing sits
+            // beside the graph, so a landscape iPhone always gives the time
+            // axis its complete usable width.
+            controlRailHeight = shortEdge < 390 ? 44 : 48
+            estimatedChartWidth = max(0, size.width - outerPadding * 2)
+            minimumChartHeight = max(220,
+                                     size.height
+                                        - outerPadding * 2
+                                        - contentSpacing
+                                        - controlRailHeight)
+        } else {
+            controlRailHeight = 0
+            estimatedChartWidth = max(0, size.width - outerPadding * 2)
+            minimumChartHeight = max(260, size.height * 0.48)
+        }
+    }
+}
+
 struct AtriaHeartRateExplorer: View {
     enum SelectionMode: String, CaseIterable, Identifiable {
         case point = "Point"
@@ -3856,6 +4113,7 @@ struct AtriaHeartRateExplorer: View {
     @State private var pinchAnchorIndex: Double?
     @State private var series: AtriaHeartRateChartSeries
     @State private var didDebugLoadMetricArchive = false
+    @State private var usesRotatedPortraitFallback = false
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -3890,133 +4148,290 @@ struct AtriaHeartRateExplorer: View {
     }
 
     var body: some View {
-        NavigationStack {
-            HStack(alignment: .top, spacing: 18) {
-                VStack(alignment: .leading, spacing: 14) {
-                    selectionSummary
+        GeometryReader { proxy in
+            let stage = AtriaHeartRateExplorerStageLayout(
+                containerSize: proxy.size,
+                usesRotatedPortraitFallback: usesRotatedPortraitFallback
+            )
 
-                    Picker("Inspection mode", selection: $selectionMode) {
-                        ForEach(SelectionMode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: selectionMode) { _, mode in
-                        if mode == .point { selectedRange = nil }
-                        else { selectedTime = nil }
-                    }
+            ZStack {
+                AtriaBackdropLayer(isDark: colorScheme == .dark,
+                                   reduceTransparency: reduceTransparency)
+                    .ignoresSafeArea()
 
-                    zoomControls
-                }
-                .frame(width: 230)
-
-                AtriaHeartRateAxisChart(points: series.visiblePoints,
-                                        yDomain: series.yDomain,
-                                        buckets: series.buckets,
-                                        selectedTime: $selectedTime,
-                                        selectedRange: $selectedRange,
-                                        selectionMode: selectionMode,
-                                        visibleDomain: currentWindow.seconds,
-                                        scrollPosition: $scrollPosition)
-                    .frame(maxHeight: .infinity)
-                    .frame(minHeight: 260)
-                    // Native pinch-to-zoom over the same window the slider drives
-                    // (2026-07-08). Two-finger, so it never fights the one-finger
-                    // tap/drag inspection.
-                    .gesture(
-                        MagnifyGesture()
-                            .onChanged { value in
-                                let anchor = pinchAnchorIndex ?? windowIndex
-                                if pinchAnchorIndex == nil { pinchAnchorIndex = anchor }
-                                windowIndex = AtriaVitalsHeartRateTimeline.windowIndex(
-                                    fromPinchAnchor: anchor,
-                                    magnification: value.magnification,
-                                    maxIndex: Double(AtriaVitalsHeartRateTimeline.Window.allCases.count - 1))
-                            }
-                            .onEnded { _ in pinchAnchorIndex = nil }
-                    )
-                    // Tactile detent each time zoom crosses a window level, from
-                    // either pinch or slider (2026-07-08, native feel).
-                    .sensoryFeedback(.selection, trigger: currentWindow)
-
+                explorerStage(stage)
             }
-            .padding(20)
-            .background(AtriaBackdropLayer(isDark: colorScheme == .dark,
-                                           reduceTransparency: reduceTransparency).ignoresSafeArea())
-            .navigationTitle("Heart rate")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(action: onDismiss) {
-                        Label("Done", systemImage: "xmark")
-                    }
-                    .labelStyle(.iconOnly)
-                    .atriaCardAction(prominent: false, tint: .secondary)
-                    .accessibilityLabel("Done")
-                }
-            }
-            .onChange(of: windowIndex) { _, _ in
-                clearSelection()
-                anchorChartToLatest()
-            }
-            .onChange(of: pointsKey) { _, _ in
-                refreshSeries(points)
-            }
-            .onAppear {
-                AtriaHeartRateOrientation.requestLandscapeAfterPresentation()
-                anchorChartToLatest()
-                Task { await loadMetricArchiveForDebugProofIfNeeded() }
-            }
-            .onDisappear {
-                AtriaHeartRateOrientation.request(.portrait)
-            }
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: AtriaHeartRateOrientation.landscapeFallbackNotification
+        )) { _ in
+            usesRotatedPortraitFallback = true
+        }
+        .onChange(of: windowIndex) { _, _ in
+            clearSelection()
+            anchorChartToLatest()
+        }
+        .onChange(of: pointsKey) { _, _ in
+            refreshSeries(points)
+        }
+        .onAppear {
+            anchorChartToLatest()
+            Task { await loadMetricArchiveForDebugProofIfNeeded() }
         }
     }
 
     @ViewBuilder
-    private var selectionSummary: some View {
-        if selectionMode == .range, let summary = selectedRangeSummary {
-            Text("\(summary.average) bpm")
-                .font(.system(size: 42, weight: .bold, design: .rounded))
-                .monospacedDigit()
-            Text("\(summary.durationText) · \(summary.minimum)-\(summary.maximum) bpm")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text("\(summary.changeText) from start to end")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(summary.change == 0 ? Color.secondary : (summary.change > 0 ? Color.red : Color.green))
-        } else {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(selectedPoint.map { "\($0.bpm)" } ?? (currentBPM > 0 ? "\(currentBPM)" : "--"))
-                    .font(.system(size: 48, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                Text("bpm")
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(.secondary)
+    private func explorerStage(_ stage: AtriaHeartRateExplorerStageLayout) -> some View {
+        let layout = AtriaHeartRateExplorerLayout(size: stage.stageSize)
+
+        switch stage.mode {
+        case .landscape:
+            landscapeContent(layout: layout)
+                .padding(layout.outerPadding)
+        case .portrait:
+            portraitContent(layout: layout)
+                .padding(layout.outerPadding)
+        case .rotatedLandscapeFallback:
+            // Build at true landscape dimensions first, then rotate the whole
+            // interactive stage. SwiftUI transforms hit testing with the view,
+            // so the chart gestures and the single-circle close action remain
+            // in the same visible positions after rotation.
+            landscapeContent(layout: layout)
+                .padding(layout.outerPadding)
+                .frame(width: stage.stageSize.width,
+                       height: stage.stageSize.height)
+                .rotationEffect(.degrees(stage.rotationDegrees))
+                .frame(width: stage.stageSize.height,
+                       height: stage.stageSize.width)
+        }
+    }
+
+    private func landscapeContent(layout: AtriaHeartRateExplorerLayout) -> some View {
+        VStack(alignment: .leading, spacing: layout.contentSpacing) {
+            landscapeControlRail
+                .frame(height: layout.controlRailHeight)
+
+            heartRateChart
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minHeight: layout.minimumChartHeight)
+                .layoutPriority(1)
+        }
+    }
+
+    private func portraitContent(layout: AtriaHeartRateExplorerLayout) -> some View {
+        VStack(alignment: .leading, spacing: layout.contentSpacing) {
+            explorerHeader
+
+            heartRateChart
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minHeight: layout.minimumChartHeight)
+                .layoutPriority(1)
+
+            inspector(showsHeader: false)
+        }
+    }
+
+    private var heartRateChart: some View {
+        AtriaHeartRateAxisChart(points: series.visiblePoints,
+                                yDomain: series.yDomain,
+                                buckets: series.buckets,
+                                selectedTime: $selectedTime,
+                                selectedRange: $selectedRange,
+                                selectionMode: selectionMode,
+                                visibleDomain: currentWindow.seconds,
+                                scrollPosition: $scrollPosition)
+            // Native pinch-to-zoom over the same window the slider drives.
+            // Two fingers never fight the one-finger point/range inspection.
+            .gesture(
+                MagnifyGesture()
+                    .onChanged { value in
+                        let anchor = pinchAnchorIndex ?? windowIndex
+                        if pinchAnchorIndex == nil { pinchAnchorIndex = anchor }
+                        windowIndex = AtriaVitalsHeartRateTimeline.windowIndex(
+                            fromPinchAnchor: anchor,
+                            magnification: value.magnification,
+                            maxIndex: Double(AtriaVitalsHeartRateTimeline.Window.allCases.count - 1))
+                    }
+                    .onEnded { _ in pinchAnchorIndex = nil }
+            )
+            .sensoryFeedback(.selection, trigger: currentWindow)
+    }
+
+    private func inspector(showsHeader: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if showsHeader {
+                explorerHeader
             }
-            if let selectedPoint {
-                Text(selectedPoint.t, format: .dateTime.hour().minute().second())
-                    .font(.subheadline.weight(.semibold))
+
+            selectionSummary
+            selectionModePicker
+            zoomControls
+        }
+    }
+
+    /// A single-row landscape control surface keeps the plot full width. The
+    /// previous side-by-side inspector could reproduce the field screenshot's
+    /// narrow strip chart on compact landscape windows.
+    private var landscapeControlRail: some View {
+        HStack(spacing: 10) {
+            Text("Heart rate")
+                .font(.headline.weight(.bold))
+                .lineLimit(1)
+
+            Divider()
+                .frame(height: 24)
+
+            compactSelectionSummary
+                .frame(minWidth: 96, alignment: .leading)
+
+            selectionModePicker
+                .frame(width: 150)
+                .controlSize(.small)
+
+            HStack(spacing: 8) {
+                Text(currentWindow.label)
+                    .font(.caption.weight(.bold).monospacedDigit())
+                    .frame(minWidth: 30, alignment: .trailing)
+                Slider(value: $windowIndex,
+                       in: 0...Double(AtriaVitalsHeartRateTimeline.Window.allCases.count - 1),
+                       step: 1)
+                    .frame(width: 128)
+                    .accessibilityLabel("Visible heart-rate window")
+                    .accessibilityValue(currentWindow.label)
+            }
+
+            Spacer(minLength: 0)
+
+            closeButton
+        }
+    }
+
+    @ViewBuilder
+    private var compactSelectionSummary: some View {
+        if selectionMode == .range, let summary = selectedRangeSummary {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text("\(summary.average)")
+                    .font(.title3.weight(.bold).monospacedDigit())
+                Text("bpm · \(summary.durationText)")
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-            } else {
-                Text(selectionMode == .range ? "Drag across the graph to compare a range." : "Tap or drag to inspect a sample.")
-                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+            }
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(selectedPoint.map { "\($0.bpm)" } ?? (currentBPM > 0 ? "\(currentBPM)" : "--"))
+                    .font(.title3.weight(.bold).monospacedDigit())
+                Text("bpm")
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
         }
     }
 
+    private var explorerHeader: some View {
+        HStack(spacing: 8) {
+            Text("Heart rate")
+                .font(.headline.weight(.bold))
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+
+            closeButton
+        }
+    }
+
+    private var closeButton: some View {
+        Button(action: onDismiss) {
+            Image(systemName: "xmark")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 36, height: 36)
+                // One visual circle and one 44-point hit frame. Keeping the
+                // glass on the label avoids toolbar/button-style chrome being
+                // wrapped around a second pre-drawn circle.
+                .glassEffect(.regular.interactive(), in: .circle)
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Close heart-rate monitor")
+    }
+
+    private var selectionSummary: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if selectionMode == .range, let summary = selectedRangeSummary {
+                Text("\(summary.average) bpm")
+                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                Text("\(summary.durationText) · \(summary.minimum)-\(summary.maximum)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+                Text(summary.changeText)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(summary.change == 0 ? Color.secondary : (summary.change > 0 ? Color.red : Color.green))
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Text(selectedPoint.map { "\($0.bpm)" } ?? (currentBPM > 0 ? "\(currentBPM)" : "--"))
+                        .font(.system(size: 38, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                    Text("bpm")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+
+                if let selectedPoint {
+                    Text(selectedPoint.t, format: .dateTime.hour().minute().second())
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(selectionMode == .range ? "Select a range" : "Live")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .accessibilityHint(selectionMode == .range
+                           ? "Drag across the graph to compare a range."
+                           : "Tap or drag to inspect a sample.")
+    }
+
+    private var selectionModePicker: some View {
+        Picker("Inspection mode", selection: $selectionMode) {
+            ForEach(SelectionMode.allCases) { mode in
+                Text(mode.rawValue).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .onChange(of: selectionMode) { _, mode in
+            if mode == .point { selectedRange = nil }
+            else { selectedTime = nil }
+        }
+    }
+
     private var zoomControls: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Visible window · \(currentWindow.label)")
-                .font(.subheadline.weight(.bold))
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Text("Window")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Text(currentWindow.label)
+                    .font(.caption.weight(.bold).monospacedDigit())
+            }
             Slider(value: $windowIndex,
                    in: 0...Double(AtriaVitalsHeartRateTimeline.Window.allCases.count - 1),
                    step: 1)
-            Text("Pinch to zoom · swipe the chart to move through time")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .accessibilityLabel("Visible heart-rate window")
+                .accessibilityValue(currentWindow.label)
         }
-        .foregroundStyle(.secondary)
     }
 
     private func clearSelection() {
@@ -4127,33 +4542,171 @@ struct AtriaHeartRateRangeSummary: Equatable {
     var changeText: String { String(format: "%+d bpm", change) }
 }
 
-@MainActor
-private enum AtriaHeartRateOrientation {
-    static func prepareLandscapePresentation() {
-        AtriaAppDelegate.supportedOrientations = .landscape
-        request(.landscape)
+enum AtriaTransientPresentationState {
+    private static let standBySuppressionUntilKey = "atria.ui.standBySuppressionUntil"
+
+    static var suppressesStandBy: Bool {
+        UserDefaults.standard.double(forKey: standBySuppressionUntilKey) > Date().timeIntervalSince1970
     }
 
-    static func requestLandscapeAfterPresentation() {
+    static func suppressStandBy(for duration: TimeInterval = 20) {
+        UserDefaults.standard.set(Date().addingTimeInterval(duration).timeIntervalSince1970,
+                                  forKey: standBySuppressionUntilKey)
+    }
+
+    static func clearStandBySuppression() {
+        UserDefaults.standard.removeObject(forKey: standBySuppressionUntilKey)
+    }
+}
+
+@MainActor
+private enum AtriaHeartRateOrientation {
+    static let landscapeFallbackNotification = Notification.Name(
+        "atria.heartRateExplorer.landscapeFallback"
+    )
+    private static var landscapeRequestTask: Task<Void, Never>?
+
+    static func prepareLandscapePresentation() {
+        // Keep the outgoing portrait controller and incoming landscape host in
+        // the app-mask intersection throughout the presentation transition.
+        AtriaTransientPresentationState.suppressStandBy()
+        AtriaAppDelegate.supportedOrientations = AtriaHeartRateExplorerOrientationPolicy.transitionMask
+        requestLandscape(reason: "presentation_prepare")
+    }
+
+    static func ensureLandscapeAfterPresentation() {
+        AtriaAppDelegate.supportedOrientations = AtriaHeartRateExplorerOrientationPolicy.transitionMask
+        requestLandscape(reason: "host_visible")
+    }
+
+    static func preparePortraitDismissal() {
+        // Widen BEFORE dismissing. Narrowing while the landscape host is still
+        // topmost leaves UIKit with no supported portrait intersection.
+        landscapeRequestTask?.cancel()
+        landscapeRequestTask = nil
+        AtriaTransientPresentationState.suppressStandBy()
+        AtriaAppDelegate.supportedOrientations = AtriaHeartRateExplorerOrientationPolicy.transitionMask
+    }
+
+    static func restorePortraitAfterDismissal() {
+        preparePortraitDismissal()
         Task { @MainActor in
             await Task.yield()
-            request(.landscape)
-            try? await Task.sleep(for: .milliseconds(250))
-            request(.landscape)
+            for attempt in 1...5 {
+                guard let scene = activeScene() else {
+                    try? await Task.sleep(for: .milliseconds(150))
+                    continue
+                }
+                if scene.effectiveGeometry.interfaceOrientation == .portrait {
+                    finalizePortrait(on: scene, attempt: attempt)
+                    return
+                }
+                requestSceneOrientation(.portrait,
+                                        on: scene,
+                                        reason: "dismiss_restore",
+                                        attempt: attempt)
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+
+            let current = activeScene()?.effectiveGeometry.interfaceOrientation
+            AtriaDebugLog("ATRIADBG heart_rate_orientation status=portrait_pending orientation=%@ app_mask=allButUpsideDown",
+                          String(describing: current))
         }
     }
 
-    static func request(_ orientations: UIInterfaceOrientationMask) {
-        AtriaAppDelegate.supportedOrientations = orientations
-        guard let scene = UIApplication.shared.connectedScenes
+    private static func activeScene() -> UIWindowScene? {
+        UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
-            .first(where: { $0.activationState == .foregroundActive }) else { return }
+            .first(where: { $0.activationState == .foregroundActive })
+    }
+
+    private static func requestLandscape(reason: String) {
+        landscapeRequestTask?.cancel()
+        landscapeRequestTask = Task { @MainActor in
+            await Task.yield()
+            for attempt in 1...5 {
+                guard !Task.isCancelled else { return }
+                guard let scene = activeScene() else {
+                    try? await Task.sleep(for: .milliseconds(120))
+                    continue
+                }
+                if scene.effectiveGeometry.interfaceOrientation.isLandscape {
+                    AtriaDebugLog("ATRIADBG heart_rate_orientation status=landscape_confirmed reason=%@ attempt=%d",
+                                  reason,
+                                  attempt)
+                    landscapeRequestTask = nil
+                    return
+                }
+                requestSceneOrientation(AtriaHeartRateExplorerOrientationPolicy.presentedMask,
+                                        on: scene,
+                                        reason: reason,
+                                        attempt: attempt)
+                try? await Task.sleep(for: .milliseconds(160))
+            }
+
+            let current = activeScene()?.effectiveGeometry.interfaceOrientation
+            AtriaDebugLog("ATRIADBG heart_rate_orientation status=landscape_pending reason=%@ orientation=%@",
+                          reason,
+                          String(describing: current))
+            activateRotatedLandscapeFallback(reason: "request_unchanged")
+            landscapeRequestTask = nil
+        }
+    }
+
+    private static func requestSceneOrientation(_ orientations: UIInterfaceOrientationMask,
+                                                on scene: UIWindowScene,
+                                                reason: String,
+                                                attempt: Int) {
+        if let root = scene.windows.first(where: \.isKeyWindow)?.rootViewController {
+            topmostPresentedViewController(from: root)
+                .setNeedsUpdateOfSupportedInterfaceOrientations()
+        }
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: orientations)) { error in
+            let nsError = error as NSError
+            AtriaDebugLog("ATRIADBG heart_rate_orientation status=failed reason=%@ attempt=%d domain=%@ code=%@ description=%@ userInfo=%@",
+                          reason,
+                          attempt,
+                          nsError.domain,
+                          String(nsError.code),
+                          nsError.localizedDescription,
+                          String(describing: nsError.userInfo))
+            if orientations == AtriaHeartRateExplorerOrientationPolicy.presentedMask,
+               nsError.domain == "UISceneErrorDomain",
+               nsError.code == 101 {
+                Task { @MainActor in
+                    activateRotatedLandscapeFallback(reason: "windowing_mode_denied")
+                }
+            }
+        }
+        AtriaDebugLog("ATRIADBG heart_rate_orientation status=requested reason=%@ attempt=%d mask=%@",
+                      reason,
+                      attempt,
+                      String(describing: orientations))
+    }
+
+    private static func activateRotatedLandscapeFallback(reason: String) {
+        AtriaDebugLog("ATRIADBG heart_rate_orientation status=rotated_fallback reason=%@",
+                      reason)
+        NotificationCenter.default.post(name: landscapeFallbackNotification,
+                                        object: nil)
+    }
+
+    private static func finalizePortrait(on scene: UIWindowScene, attempt: Int) {
+        AtriaAppDelegate.supportedOrientations = .portrait
         scene.windows.first(where: \.isKeyWindow)?
             .rootViewController?
             .setNeedsUpdateOfSupportedInterfaceOrientations()
-        scene.requestGeometryUpdate(.iOS(interfaceOrientations: orientations)) { error in
-            AtriaDebugLog("ATRIADBG heart_rate_orientation status=failed error=%@", error.localizedDescription)
+        AtriaTransientPresentationState.clearStandBySuppression()
+        AtriaDebugLog("ATRIADBG heart_rate_orientation status=portrait_confirmed attempt=%d app_mask=portrait",
+                      attempt)
+    }
+
+    private static func topmostPresentedViewController(from root: UIViewController) -> UIViewController {
+        var topmost = root
+        while let presented = topmost.presentedViewController {
+            topmost = presented
         }
+        return topmost
     }
 }
 
@@ -4264,6 +4817,12 @@ struct AtriaHeartRateAxisChart: View, Equatable {
                 RuleMark(x: .value("Selected", selectedTime))
                     .foregroundStyle(.secondary.opacity(0.55))
                     .lineStyle(.init(lineWidth: 1, dash: [4, 4]))
+                if let selectedPoint = nearestPoint(to: selectedTime) {
+                    PointMark(x: .value("Selected time", selectedPoint.t),
+                              y: .value("Selected BPM", selectedPoint.bpm))
+                        .foregroundStyle(.red)
+                        .symbolSize(52)
+                }
             }
             if let selectedRange {
                 RectangleMark(xStart: .value("Range start", selectedRange.lowerBound),
@@ -4275,9 +4834,15 @@ struct AtriaHeartRateAxisChart: View, Equatable {
         .chartXAxis {
             if showsXAxis {
                 AxisMarks(values: .automatic(desiredCount: 4)) { value in
-                    AxisGridLine()
-                    AxisTick()
-                    AxisValueLabel(format: .dateTime.hour().minute())
+                    AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
+                    AxisTick().foregroundStyle(.secondary.opacity(0.45))
+                    AxisValueLabel {
+                        if let time = value.as(Date.self) {
+                            Text(time, format: .dateTime.hour().minute())
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
             }
         }
@@ -4285,11 +4850,13 @@ struct AtriaHeartRateAxisChart: View, Equatable {
             // Trailing axis: the leading bpm gutter (~28pt) was the largest
             // single left inset on the Vitals tab (space audit 2026-07-07).
             AxisMarks(position: .trailing, values: .automatic(desiredCount: 5)) { value in
-                AxisGridLine()
-                AxisTick()
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
+                AxisTick().foregroundStyle(.secondary.opacity(0.45))
                 AxisValueLabel {
                     if let bpm = value.as(Int.self) {
                         Text("\(bpm)")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -4301,6 +4868,23 @@ struct AtriaHeartRateAxisChart: View, Equatable {
                 .clipped()
         }
         .mask(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func nearestPoint(to selectedTime: Date) -> AtriaHomeModel.HeartRateChartPoint? {
+        guard !points.isEmpty else { return nil }
+        var low = 0
+        var high = points.count
+        while low < high {
+            let mid = low + (high - low) / 2
+            if points[mid].t < selectedTime { low = mid + 1 } else { high = mid }
+        }
+        if low == 0 { return points[0] }
+        if low >= points.count { return points[points.count - 1] }
+        let before = points[low - 1]
+        let after = points[low]
+        return selectedTime.timeIntervalSince(before.t) <= after.t.timeIntervalSince(selectedTime)
+            ? before
+            : after
     }
 
     @ViewBuilder
@@ -4479,7 +5063,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     let sleepEfficiencyGreenLower: Double
     let sleepEfficiencyYellowLower: Double
     let onAddManualSleep: (Date, Date, Bool) -> Void
-    let onAdjustSleep: (SleepHistorySnapshot.Night, Date, Date, Bool) -> Void
+    let onAdjustSleep: (SleepHistorySnapshot.Night, Date, Date, Bool) -> Bool
     let onConfirmSleep: () -> Void
 
     static func == (lhs: AtriaRecoveryStrainCard, rhs: AtriaRecoveryStrainCard) -> Bool {
@@ -4659,7 +5243,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     let sleepEfficiencyGreenLower: Double
     let sleepEfficiencyYellowLower: Double
     let onAddManualSleep: (Date, Date, Bool) -> Void
-    let onAdjustSleep: (SleepHistorySnapshot.Night, Date, Date, Bool) -> Void
+    let onAdjustSleep: (SleepHistorySnapshot.Night, Date, Date, Bool) -> Bool
     let onConfirmSleep: () -> Void
     @State private var showManualSleepSheet = false
     @State private var showNightDetails = false
@@ -4938,12 +5522,9 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                   evidenceNight: night,
                                   evidencePerformancePercent: snapshot.sleepPerformancePercent(for: night,
                                                                                                baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
-                // The card's callback can't report back; the store-side
-                // fail-closed guard still logs, and this path re-lists the
-                // night if the adjust didn't take.
-                onAdjustSleep(night, start, end, isNap)
-                adjustmentNight = nil
-                return true
+                let saved = onAdjustSleep(night, start, end, isNap)
+                if saved { adjustmentNight = nil }
+                return saved
             }
         }
     }
@@ -5217,7 +5798,7 @@ struct AtriaSleepStageBuildingSummary: View, Equatable {
                 }
             }
 
-            Text("Stage breakdown needs checked sleep-stage evidence; duration, RHR, HRV, and respiratory estimates stay visible while Atria learns.")
+            Text("Stages need checked evidence. Duration and overnight vitals remain available while Atria learns.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

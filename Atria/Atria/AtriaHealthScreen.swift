@@ -36,6 +36,10 @@ struct AtriaHealthScreen: View {
     // detail sheet rather than just the education sheet.
     @State private var metricDetail: AtriaMetricDetailKind?
     @State private var showBreathworkSession = false
+    /// Reference identity lives here, but HealthScreen deliberately does not
+    /// observe its publications. Only the presented session host observes the
+    /// reading, keeping 30-second stress updates from rebuilding all of Vitals.
+    @State private var breathworkStressStore = AtriaHealthBreathworkStressStore()
     @State private var showHealthspanDetail = false
     @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AtriaDefault("atria.sleep.baseNeedHours") private var sleepBaseNeedHours: Double = 8.0
@@ -202,6 +206,7 @@ struct AtriaHealthScreen: View {
         }
         .fullScreenCover(isPresented: $showBreathworkSession) {
             AtriaHealthBreathworkSessionHost(pulseStore: pulseStore,
+                                             stressStore: breathworkStressStore,
                                              onSave: { session in
                                                  store.add(session)
                                              }) {
@@ -213,7 +218,7 @@ struct AtriaHealthScreen: View {
                 AtriaHealthspanDetailView(
                     model: healthspanDetailModel(
                         summary: profileMetricsStore.state.biologicalAgeSummary,
-                        rollups: vitals.dailyRollupHistory
+                        projection: store.biologicalAgeHealthspanDetailProjection
                     ),
                     onViewPlan: {
                         showHealthspanDetail = false
@@ -232,13 +237,10 @@ struct AtriaHealthScreen: View {
         }
     }
 
-    private func healthspanDetailModel(summary: BiologicalAgeSummary,
-                                       rollups: [DailyRollupStoreEntry]) -> AtriaHealthspanDetailModel {
-        let dailyDeltas = rollups.compactMap { entry in
-            entry.fitnessAgeDelta.map { AtriaFitnessAge.DailyDelta(day: entry.day, delta: $0) }
-        }
-        let weekly = AtriaFitnessAge.weeklyObservations(from: dailyDeltas)
-        let pace = AtriaFitnessAge.paceOfAging(deltas: dailyDeltas)
+    private func healthspanDetailModel(
+        summary: BiologicalAgeSummary,
+        projection: AtriaFitnessAge.DetailProjection?
+    ) -> AtriaHealthspanDetailModel {
         let contributors = summary.factors.map { factor in
             let tone: AtriaHealthspanDetailModel.ContributorTone
             switch factor.direction {
@@ -251,30 +253,22 @@ struct AtriaHealthScreen: View {
                                                           valueText: factor.deltaText,
                                                           tone: tone)
         }
-        let points = weekly.map {
+        let points = (projection?.weeklyObservations ?? []).map {
             AtriaHealthspanDetailModel.TrendPoint(
                 day: $0.day,
                 value: Double(summary.chronologicalAge + $0.delta)
             )
         }
-        let changeText: String?
-        if let first = points.first?.value, let last = points.last?.value, points.count >= 2 {
-            let change = Int((last - first).rounded())
-            changeText = change == 0 ? "Stable" : "\(change > 0 ? "+" : "")\(change)y"
-        } else {
-            changeText = nil
-        }
-        let cachedAt = weekly.last?.day
         return AtriaHealthspanDetailModel(
             summary: summary,
-            paceOfAging: pace,
+            paceOfAging: projection?.paceOfAging,
             contributors: contributors,
             trendPoints: points,
             trendTitle: "Fitness age · 6 months",
-            trendChangeText: changeText,
+            trendChangeText: projection?.trendChangeText,
             confidence: .init(level: summary.isReady ? "Estimate ready" : "Learning",
                               detail: summary.footnote),
-            cachedAt: cachedAt
+            cachedAt: projection?.cachedAt
         )
     }
 
@@ -466,6 +460,7 @@ struct AtriaHealthScreen: View {
                                      maxHeartRate: profileStore.profile.maxHR,
                                      behaviorJournalEntries: store.behaviorJournalEntries,
                                      isActive: isActive,
+                                     breathworkStressStore: breathworkStressStore,
                                      onStartBreathwork: {
                                          showBreathworkSession = true
                                      },
@@ -943,12 +938,14 @@ struct AtriaHealthScreen: View {
 /// open breathwork session continues receiving every HR and RR update.
 private struct AtriaHealthBreathworkSessionHost: View {
     @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
+    @ObservedObject var stressStore: AtriaHealthBreathworkStressStore
     let onSave: (SavedSession) -> Void
     let onClose: () -> Void
 
     var body: some View {
         AtriaBreathworkSession(currentHeartRate: pulseStore.state.heartRate,
                                currentRRSamples: pulseStore.state.recentRRSamples,
+                               currentStress: stressStore.reading,
                                onSave: onSave,
                                onClose: onClose)
     }
@@ -961,6 +958,7 @@ private struct AtriaHealthStressSection: View {
     let maxHeartRate: Int
     let behaviorJournalEntries: [BehaviorJournalEntry]
     let isActive: Bool
+    let breathworkStressStore: AtriaHealthBreathworkStressStore
     let onStartBreathwork: () -> Void
     let onOpenEducation: () -> Void
 
@@ -1080,6 +1078,10 @@ private struct AtriaHealthStressSection: View {
                                   restingMaxHR: (rest: baseline.restingInt ?? 60,
                                                 max: maxHeartRate),
                                   now: now)
+        breathworkStressStore.update(
+            AtriaBreathworkStressReading(state: stressMonitorStore.state,
+                                         measuredAt: now)
+        )
     }
 
     private var stressValue: String {
@@ -1117,6 +1119,20 @@ private struct AtriaHealthStressSection: View {
     private var stressHint: String? {
         guard stressMonitorStore.state.level == .high else { return nil }
         return "High \u{2014} try a few slow breaths"
+    }
+}
+
+/// Narrow sibling-to-presentation bridge for measured stress. The large Health
+/// screen holds this as plain `@State` identity; only the full-screen host uses
+/// `@ObservedObject`, so live feedback updates cannot invalidate every Vitals
+/// chart and metric row behind it.
+@MainActor
+private final class AtriaHealthBreathworkStressStore: ObservableObject {
+    @Published private(set) var reading: AtriaBreathworkStressReading?
+
+    func update(_ next: AtriaBreathworkStressReading?) {
+        guard next != reading else { return }
+        reading = next
     }
 }
 

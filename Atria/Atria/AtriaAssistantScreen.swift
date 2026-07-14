@@ -15,9 +15,6 @@ struct AtriaAssistantScreen: View {
     let coachPayload: AtriaCoachPayload?
     let aiCoachSettings: AtriaAICoachSettings
     let aiCoachHasAPIKey: Bool
-    let onAICoachSettingsChange: (AtriaAICoachSettings) -> Void
-    let onSaveAICoachAPIKey: (String) -> Void
-    let onDeleteAICoachAPIKey: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -57,13 +54,12 @@ struct AtriaAssistantScreen: View {
 
             promptChips
 
-            AtriaAICoachCard(context: context,
-                             preparedPayload: coachPayload,
-                             settings: aiCoachSettings,
-                             hasAPIKey: aiCoachHasAPIKey,
-                             onSettingsChange: onAICoachSettingsChange,
-                             onSaveAPIKey: onSaveAICoachAPIKey,
-                             onDeleteAPIKey: onDeleteAICoachAPIKey)
+            if aiCoachSettings.mode != .off {
+                AtriaAICoachCard(context: context,
+                                 preparedPayload: coachPayload,
+                                 settings: aiCoachSettings,
+                                 hasAPIKey: aiCoachHasAPIKey)
+            }
         }
         .padding(16)
         .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: exchanges)

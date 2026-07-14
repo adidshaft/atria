@@ -459,6 +459,93 @@ final class ActiveSessionJournalCacheTests: XCTestCase {
         XCTAssertFalse(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
     }
 
+    func testRestorePreparationBuildsBoundedLiveArraysAndCachesOffActor() throws {
+        var source = record(sampleCount: 100, rrCount: 0)
+        source.rrSamples = (90..<100).map {
+            ActiveSessionJournalRecord.RRSample(
+                t: baseDate.addingTimeInterval(Double($0)),
+                ms: 700 + $0
+            )
+        }
+        source.strapStepResearchCount = 88
+        source.strapStepResearchRawCount = 80
+        source.strapStepResearchState = "r10_live_calibrating"
+
+        let prepared = AtriaBLEManager.prepareActiveSessionJournalRestore(
+            source,
+            now: source.updatedAt.addingTimeInterval(1),
+            maxAge: 1_000,
+            maxSamples: 8,
+            segmentGapLimit: 90,
+            biologicalSex: .unspecified
+        )
+        guard case let .live(payload) = prepared.payload else {
+            return XCTFail("Expected a live restore payload")
+        }
+
+        XCTAssertEqual(payload.session.map(\.bpm), Array(162...169))
+        XCTAssertEqual(payload.sessionPoints.map(\.t), Array(0...7).map(Double.init))
+        XCTAssertEqual(payload.rrArchive.count, 8)
+        XCTAssertEqual(payload.rrPoints.count, 8)
+        XCTAssertEqual(payload.stats.minimum, 162)
+        XCTAssertEqual(payload.stats.maximum, 169)
+        XCTAssertEqual(payload.stats.total, 1_324)
+        XCTAssertEqual(payload.stats.count, 8)
+        XCTAssertEqual(payload.stats.mean, 165.5, accuracy: 0.000_001)
+        XCTAssertEqual(payload.stats.m2, 42, accuracy: 0.000_001)
+        XCTAssertEqual(payload.lastHeartRates, Array(162...169))
+        XCTAssertEqual(payload.recentValid, Array(165...169))
+        XCTAssertEqual(payload.displayHeartRate, 167)
+        XCTAssertEqual(payload.researchAggregates?.strapSteps, 88)
+        XCTAssertEqual(payload.researchAggregates?.strapRawSteps, 80)
+    }
+
+    func testRestorePreparationBuildsFinishedSessionBeforeMainActorPublication() throws {
+        let source = record(sampleCount: 4, rrCount: 3)
+        let prepared = AtriaBLEManager.prepareActiveSessionJournalRestore(
+            source,
+            now: source.updatedAt.addingTimeInterval(95),
+            maxAge: 1_000,
+            maxSamples: 90_000,
+            segmentGapLimit: 90,
+            biologicalSex: .female
+        )
+        guard case let .staleSegment(payload) = prepared.payload else {
+            return XCTFail("Expected a stale-segment save payload")
+        }
+
+        XCTAssertEqual(payload.savedSession.id, source.id)
+        XCTAssertEqual(payload.savedSession.points.map(\.bpm), [70, 71, 72, 73])
+        XCTAssertEqual(payload.savedSession.rrSampleCount, 3)
+        XCTAssertEqual(payload.savedSession.biologicalSex, .female)
+        XCTAssertEqual(payload.age, 95, accuracy: 0.000_001)
+    }
+
+    func testConditionalClearCannotEraseNewerJournalCheckpoint() throws {
+        let initial = record(sampleCount: 2, rrCount: 1)
+        try ActiveSessionJournal.save(initial)
+        let newer = record(id: initial.id, sampleCount: 3, rrCount: 2)
+        try ActiveSessionJournal.save(newer, previousSampleCount: 2, previousRRCount: 1)
+
+        XCTAssertFalse(ActiveSessionJournal.clearIfUnchanged(
+            id: initial.id,
+            updatedAt: initial.updatedAt,
+            schema: initial.schema,
+            sampleCount: initial.samples.count,
+            rrSampleCount: initial.rrSamples?.count ?? 0
+        ))
+        XCTAssertEqual(ActiveSessionJournal.load()?.samples.count, 3)
+
+        XCTAssertTrue(ActiveSessionJournal.clearIfUnchanged(
+            id: newer.id,
+            updatedAt: newer.updatedAt,
+            schema: newer.schema,
+            sampleCount: newer.samples.count,
+            rrSampleCount: newer.rrSamples?.count ?? 0
+        ))
+        XCTAssertNil(ActiveSessionJournal.load())
+    }
+
     private func record(id: UUID = UUID(),
                         sampleCount: Int,
                         rrCount: Int) -> ActiveSessionJournalRecord {

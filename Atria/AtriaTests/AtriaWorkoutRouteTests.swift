@@ -3,6 +3,71 @@ import CoreLocation
 @testable import Atria
 
 final class AtriaWorkoutRouteTests: XCTestCase {
+    func testRouteWorkoutIsMapFirstWithPinnedGlanceableMetricsAndActions() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaLiveWorkoutView.swift"), encoding: .utf8)
+        let mainStart = try XCTUnwrap(source.range(of: "struct AtriaLiveWorkoutView: View"))
+        let mainEnd = try XCTUnwrap(source.range(of: "private struct AtriaLiveWorkoutBackdrop",
+                                                range: mainStart.upperBound..<source.endIndex))
+        let main = String(source[mainStart.lowerBound..<mainEnd.lowerBound])
+        let routeStart = try XCTUnwrap(main.range(of: "private var routeWorkoutContent: some View"))
+        let standardStart = try XCTUnwrap(main.range(of: "private var standardWorkoutContent: some View",
+                                                     range: routeStart.upperBound..<main.endIndex))
+        let actionsStart = try XCTUnwrap(main.range(of: "private var routeWorkoutActions: some View",
+                                                    range: standardStart.upperBound..<main.endIndex))
+        let headerStart = try XCTUnwrap(main.range(of: "private var header: some View",
+                                                   range: actionsStart.upperBound..<main.endIndex))
+        let route = String(main[routeStart.lowerBound..<standardStart.lowerBound])
+        let standard = String(main[standardStart.lowerBound..<actionsStart.lowerBound])
+        let actions = String(main[actionsStart.lowerBound..<headerStart.lowerBound])
+
+        XCTAssertTrue(main.contains("if activityType.supportsRouteRecording"))
+        XCTAssertTrue(route.contains("AtriaLiveWorkoutRouteCard(routeRecorder: routeRecorder)"))
+        XCTAssertTrue(route.contains("AtriaLiveWorkoutRouteMetricsHUD(pulseStore: pulseStore,"))
+        XCTAssertTrue(route.contains("routeWorkoutActions"))
+        XCTAssertTrue(route.contains("Spacer(minLength: 24)"),
+                      "The map must own the available center of the route screen")
+        XCTAssertFalse(route.contains("ScrollView"),
+                       "Outdoor metrics and controls must not scroll off the live map")
+        XCTAssertTrue(actions.contains("Label(isPaused ? \"Resume\" : \"Pause\""))
+        XCTAssertTrue(actions.contains("Label(\"End\", systemImage: \"stop.fill\")"))
+        XCTAssertTrue(actions.contains("Button(role: .destructive, action: endWorkout)"))
+        XCTAssertTrue(actions.contains("GlassEffectContainer(spacing: 10)"))
+
+        XCTAssertTrue(standard.contains("ScrollView(showsIndicators: false)"))
+        XCTAssertTrue(standard.contains("AtriaLiveWorkoutHeartBlock(pulseStore: pulseStore,"))
+        XCTAssertTrue(standard.contains("AtriaLiveWorkoutStrainGuidance(metricProjection: metricProjection,"))
+        XCTAssertTrue(standard.contains("workoutActionsCard"))
+        XCTAssertTrue(standard.contains("stopButton"),
+                      "Strength and non-route workout behavior must remain intact")
+    }
+
+    func testRouteHUDKeepsThreeDigitHeartRateOnOneLineAndExposesEveryLiveMetric() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaLiveWorkoutView.swift"), encoding: .utf8)
+        let hudStart = try XCTUnwrap(source.range(of: "private struct AtriaLiveWorkoutRouteMetricsHUD: View"))
+        let hudEnd = try XCTUnwrap(source.range(of: "private struct AtriaLiveWorkoutHeartBlock: View",
+                                               range: hudStart.upperBound..<source.endIndex))
+        let hud = String(source[hudStart.lowerBound..<hudEnd.lowerBound])
+
+        XCTAssertTrue(hud.contains("@ObservedObject var pulseStore"))
+        XCTAssertTrue(hud.contains("Text(heartRate > 0 ? \"\\(heartRate)\" : \"--\")"))
+        XCTAssertTrue(hud.contains(".monospacedDigit()"))
+        XCTAssertTrue(hud.contains(".lineLimit(1)"))
+        XCTAssertTrue(hud.contains(".minimumScaleFactor(0.58)"))
+        XCTAssertTrue(hud.contains(".layoutPriority(3)"))
+        XCTAssertTrue(hud.contains("metricProjection.steps.hudText"))
+        XCTAssertTrue(hud.contains("metricProjection.steps.accessibilityText"))
+        XCTAssertTrue(hud.contains("metricProjection.strainHUDText"))
+        XCTAssertTrue(hud.contains("metricProjection.activeCalories"))
+        XCTAssertTrue(hud.contains("Text(zoneText)"))
+        XCTAssertTrue(hud.contains(".accessibilityLabel(\"Heart rate"))
+        XCTAssertTrue(hud.contains(".atriaWorkoutGlassSurface(cornerRadius: 24"),
+                      "The pinned map overlay should use the native Liquid Glass surface")
+    }
+
     func testRouteObservationIsScopedToMapLeaf() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
@@ -19,7 +84,9 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         XCTAssertTrue(liveSource.contains("@ObservedObject var routeRecorder: AtriaWorkoutRouteRecorder"))
         XCTAssertTrue(mainView.contains("let routeRecorder: AtriaWorkoutRouteRecorder"))
         XCTAssertFalse(mainView.contains("@ObservedObject var routeRecorder"))
-        XCTAssertTrue(homeSource.contains("@State private var workoutRouteRecorder: AtriaWorkoutRouteRecorder"))
+        XCTAssertTrue(homeSource.contains("let workoutRouteRecorder: AtriaWorkoutRouteRecorder"),
+                      "Home must hold the root-owned recorder without observing its GPS publishes")
+        XCTAssertFalse(homeSource.contains("@ObservedObject var workoutRouteRecorder"))
         XCTAssertFalse(homeSource.contains("@StateObject private var workoutRouteRecorder: AtriaWorkoutRouteRecorder"))
     }
 
@@ -546,11 +613,11 @@ final class AtriaWorkoutRouteTests: XCTestCase {
                                                     pausedDuration: 0)
         XCTAssertNotNil(AtriaWorkoutRouteStore.save(draft, workoutID: oldID))
 
-        AtriaWorkoutRouteStore.reconcile(from: oldID,
-                                         to: newID,
-                                         activityType: .running,
-                                         start: start.addingTimeInterval(30),
-                                         end: start.addingTimeInterval(90))
+        XCTAssertNoThrow(try AtriaWorkoutRouteStore.reconcile(from: oldID,
+                                                              to: newID,
+                                                              activityType: .running,
+                                                              start: start.addingTimeInterval(30),
+                                                              end: start.addingTimeInterval(90)).get())
         let edited = try XCTUnwrap(AtriaWorkoutRouteStore.load(workoutID: newID))
         XCTAssertNil(AtriaWorkoutRouteStore.load(workoutID: oldID))
         XCTAssertEqual(edited.activityType, AtriaWorkoutActivityType.running.rawValue)
@@ -559,12 +626,262 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         XCTAssertEqual(edited.startedAt, start.addingTimeInterval(30))
         XCTAssertEqual(edited.endedAt, start.addingTimeInterval(90))
 
-        AtriaWorkoutRouteStore.reconcile(from: newID,
-                                         to: newID,
-                                         activityType: .strength,
-                                         start: edited.startedAt,
-                                         end: edited.endedAt)
+        XCTAssertNoThrow(try AtriaWorkoutRouteStore.reconcile(from: newID,
+                                                              to: newID,
+                                                              activityType: .strength,
+                                                              start: edited.startedAt,
+                                                              end: edited.endedAt).get())
         XCTAssertNil(AtriaWorkoutRouteStore.load(workoutID: newID))
+    }
+
+    @MainActor
+    func testFailedRouteReconciliationReportsFailureAndPreservesOriginalAssociation() throws {
+        let oldID = "route-reconcile-source-\(UUID().uuidString)"
+        let newID = "route-reconcile-blocked-\(UUID().uuidString)"
+        let routesDirectory = FileManager.default.urls(for: .documentDirectory,
+                                                       in: .userDomainMask).first!
+            .appendingPathComponent("atria-workout-routes", isDirectory: true)
+        let blockedDestination = routesDirectory.appendingPathComponent("\(newID).json",
+                                                                         isDirectory: true)
+        defer {
+            _ = AtriaWorkoutRouteStore.delete(workoutID: oldID)
+            _ = AtriaWorkoutRouteStore.delete(workoutID: newID)
+        }
+
+        let start = Date(timeIntervalSince1970: 30_000)
+        let points = (0..<3).map { index in
+            AtriaWorkoutRoute.Point(latitude: 28.61 + Double(index) * 0.0001,
+                                    longitude: 77.20,
+                                    altitude: 200,
+                                    timestamp: start.addingTimeInterval(Double(index) * 30),
+                                    horizontalAccuracy: 5,
+                                    verticalAccuracy: 5,
+                                    startsNewSegment: index == 0)
+        }
+        let draft = AtriaWorkoutRouteRecorder.Draft(activityType: .walking,
+                                                    startedAt: start,
+                                                    endedAt: start.addingTimeInterval(60),
+                                                    coverageStartedAt: start,
+                                                    points: points,
+                                                    distanceMeters: 25,
+                                                    elevationGainMeters: 0,
+                                                    pausedDuration: 0)
+        XCTAssertNotNil(AtriaWorkoutRouteStore.save(draft, workoutID: oldID))
+        try FileManager.default.createDirectory(at: blockedDestination,
+                                                withIntermediateDirectories: true)
+
+        let result = AtriaWorkoutRouteStore.reconcile(from: oldID,
+                                                      to: newID,
+                                                      activityType: .walking,
+                                                      start: start,
+                                                      end: start.addingTimeInterval(60))
+
+        guard case .failure(.writeFailed) = result else {
+            return XCTFail("A blocked destination must report a route write failure")
+        }
+        XCTAssertNotNil(AtriaWorkoutRouteStore.load(workoutID: oldID),
+                        "A failed route write must leave the original workout route intact")
+        XCTAssertNil(AtriaWorkoutRouteStore.load(workoutID: newID))
+    }
+
+    @MainActor
+    func testPendingEditCommitsForwardAfterMetadataWasDurable() throws {
+        let oldID = "route-transaction-old-\(UUID().uuidString)"
+        let newID = "route-transaction-new-\(UUID().uuidString)"
+        _ = AtriaWorkoutRouteStore.clearPendingTransaction()
+        defer {
+            _ = AtriaWorkoutRouteStore.delete(workoutID: oldID)
+            _ = AtriaWorkoutRouteStore.delete(workoutID: newID)
+            _ = AtriaWorkoutRouteStore.clearPendingTransaction()
+        }
+        let start = Date(timeIntervalSince1970: 40_000)
+        let points = (0..<5).map { index in
+            AtriaWorkoutRoute.Point(latitude: 28.61 + Double(index) * 0.0001,
+                                    longitude: 77.20,
+                                    altitude: 200,
+                                    timestamp: start.addingTimeInterval(Double(index) * 30),
+                                    horizontalAccuracy: 5,
+                                    verticalAccuracy: 5,
+                                    startsNewSegment: index == 0)
+        }
+        let draft = AtriaWorkoutRouteRecorder.Draft(activityType: .walking,
+                                                    startedAt: start,
+                                                    endedAt: start.addingTimeInterval(120),
+                                                    coverageStartedAt: start,
+                                                    points: points,
+                                                    distanceMeters: 44,
+                                                    elevationGainMeters: 0,
+                                                    pausedDuration: 0)
+        XCTAssertNotNil(AtriaWorkoutRouteStore.save(draft, workoutID: oldID))
+        let original = AtriaWorkoutRouteStore.CanonicalWorkoutState(
+            id: oldID,
+            activityType: AtriaWorkoutActivityType.walking.rawValue,
+            start: start,
+            end: start.addingTimeInterval(120)
+        )
+        let editedStart = start.addingTimeInterval(30)
+        let editedEnd = start.addingTimeInterval(90)
+        XCTAssertTrue(AtriaWorkoutRouteStore.beginEditTransaction(
+            from: original,
+            to: newID,
+            activityType: .running,
+            start: editedStart,
+            end: editedEnd
+        ))
+
+        let recovery = AtriaWorkoutRouteStore.recoverPendingTransaction(canonicalWorkouts: [
+            .init(id: newID,
+                  activityType: AtriaWorkoutActivityType.running.rawValue,
+                  start: editedStart,
+                  end: editedEnd)
+        ])
+
+        XCTAssertEqual(recovery, .completed)
+        XCTAssertFalse(AtriaWorkoutRouteStore.hasPendingTransaction)
+        XCTAssertNil(AtriaWorkoutRouteStore.load(workoutID: oldID))
+        let route = try XCTUnwrap(AtriaWorkoutRouteStore.load(workoutID: newID))
+        XCTAssertEqual(route.activityType, AtriaWorkoutActivityType.running.rawValue)
+        XCTAssertEqual(route.points.count, 3)
+        XCTAssertEqual(route.startedAt, editedStart)
+        XCTAssertEqual(route.endedAt, editedEnd)
+    }
+
+    @MainActor
+    func testPendingEditRestoresOriginalRouteWhenMetadataRolledBackToDifferentID() throws {
+        let oldID = "route-transaction-original-\(UUID().uuidString)"
+        let requestedID = "route-transaction-requested-\(UUID().uuidString)"
+        let rollbackID = "route-transaction-rollback-\(UUID().uuidString)"
+        _ = AtriaWorkoutRouteStore.clearPendingTransaction()
+        defer {
+            for id in [oldID, requestedID, rollbackID] {
+                _ = AtriaWorkoutRouteStore.delete(workoutID: id)
+            }
+            _ = AtriaWorkoutRouteStore.clearPendingTransaction()
+        }
+        let start = Date(timeIntervalSince1970: 50_000)
+        let end = start.addingTimeInterval(120)
+        let points = [
+            AtriaWorkoutRoute.Point(latitude: 28.61, longitude: 77.20, altitude: 200,
+                                    timestamp: start, horizontalAccuracy: 5,
+                                    startsNewSegment: true),
+            AtriaWorkoutRoute.Point(latitude: 28.62, longitude: 77.21, altitude: 201,
+                                    timestamp: end, horizontalAccuracy: 5)
+        ]
+        let draft = AtriaWorkoutRouteRecorder.Draft(activityType: .walking,
+                                                    startedAt: start,
+                                                    endedAt: end,
+                                                    coverageStartedAt: start,
+                                                    points: points,
+                                                    distanceMeters: 1_500,
+                                                    elevationGainMeters: 1,
+                                                    pausedDuration: 0)
+        XCTAssertNotNil(AtriaWorkoutRouteStore.save(draft, workoutID: oldID))
+        XCTAssertTrue(AtriaWorkoutRouteStore.beginEditTransaction(
+            from: .init(id: oldID,
+                        activityType: AtriaWorkoutActivityType.walking.rawValue,
+                        start: start,
+                        end: end),
+            to: requestedID,
+            activityType: .running,
+            start: start.addingTimeInterval(30),
+            end: end
+        ))
+        // Simulate a destination written before route reconciliation failed.
+        XCTAssertNotNil(AtriaWorkoutRouteStore.save(draft, workoutID: requestedID))
+
+        let recovery = AtriaWorkoutRouteStore.recoverPendingTransaction(canonicalWorkouts: [
+            .init(id: rollbackID,
+                  activityType: AtriaWorkoutActivityType.walking.rawValue,
+                  start: start,
+                  end: end)
+        ])
+
+        XCTAssertEqual(recovery, .completed)
+        XCTAssertFalse(AtriaWorkoutRouteStore.hasPendingTransaction)
+        XCTAssertNil(AtriaWorkoutRouteStore.load(workoutID: oldID))
+        XCTAssertNil(AtriaWorkoutRouteStore.load(workoutID: requestedID))
+        let restored = try XCTUnwrap(AtriaWorkoutRouteStore.load(workoutID: rollbackID))
+        XCTAssertEqual(restored.workoutID, rollbackID)
+        XCTAssertEqual(restored.points, points)
+        XCTAssertEqual(restored.activityType, AtriaWorkoutActivityType.walking.rawValue)
+    }
+
+    @MainActor
+    func testPendingDeleteFollowsCanonicalMetadataState() throws {
+        let workoutID = "route-transaction-delete-\(UUID().uuidString)"
+        _ = AtriaWorkoutRouteStore.clearPendingTransaction()
+        defer {
+            _ = AtriaWorkoutRouteStore.delete(workoutID: workoutID)
+            _ = AtriaWorkoutRouteStore.clearPendingTransaction()
+        }
+        let start = Date(timeIntervalSince1970: 60_000)
+        let end = start.addingTimeInterval(60)
+        let draft = AtriaWorkoutRouteRecorder.Draft(
+            activityType: .walking,
+            startedAt: start,
+            endedAt: end,
+            coverageStartedAt: start,
+            points: [
+                .init(latitude: 28.61, longitude: 77.20, altitude: 200,
+                      timestamp: start, horizontalAccuracy: 5, startsNewSegment: true),
+                .init(latitude: 28.62, longitude: 77.21, altitude: 201,
+                      timestamp: end, horizontalAccuracy: 5)
+            ],
+            distanceMeters: 1_500,
+            elevationGainMeters: 1,
+            pausedDuration: 0
+        )
+        XCTAssertNotNil(AtriaWorkoutRouteStore.save(draft, workoutID: workoutID))
+        XCTAssertTrue(AtriaWorkoutRouteStore.beginDeleteTransaction(workoutID: workoutID))
+
+        let preserved = AtriaWorkoutRouteStore.recoverPendingTransaction(canonicalWorkouts: [
+            .init(id: workoutID,
+                  activityType: AtriaWorkoutActivityType.walking.rawValue,
+                  start: start,
+                  end: end)
+        ])
+        XCTAssertEqual(preserved, .completed)
+        XCTAssertNotNil(AtriaWorkoutRouteStore.load(workoutID: workoutID),
+                        "A route must survive when canonical metadata deletion did not commit")
+
+        XCTAssertTrue(AtriaWorkoutRouteStore.beginDeleteTransaction(workoutID: workoutID))
+        let deleted = AtriaWorkoutRouteStore.recoverPendingTransaction(canonicalWorkouts: [])
+        XCTAssertEqual(deleted, .completed)
+        XCTAssertNil(AtriaWorkoutRouteStore.load(workoutID: workoutID),
+                     "A durable metadata deletion must finish orphan-route cleanup")
+        XCTAssertFalse(AtriaWorkoutRouteStore.hasPendingTransaction)
+    }
+
+    func testActivityEditorWrapsMetadataAndRouteMutationsInDurableIntent() throws {
+        let sourceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaActivityMonitor.swift"),
+            encoding: .utf8
+        )
+        let saveStart = try XCTUnwrap(source.range(of: "private func saveAll()"))
+        let deleteStart = try XCTUnwrap(source.range(of: "private func deleteWorkout()",
+                                                     range: saveStart.upperBound..<source.endIndex))
+        let routeCardStart = try XCTUnwrap(source.range(of: "private var routeCard:",
+                                                        range: deleteStart.upperBound..<source.endIndex))
+        let saveBody = String(source[saveStart.lowerBound..<deleteStart.lowerBound])
+        let deleteBody = String(source[deleteStart.lowerBound..<routeCardStart.lowerBound])
+
+        let beginEdit = try XCTUnwrap(saveBody.range(of: "beginEditTransaction"))
+        let metadataEdit = try XCTUnwrap(saveBody.range(of: "store.editConfirmedWorkout"))
+        let routeEdit = try XCTUnwrap(saveBody.range(of: "AtriaWorkoutRouteStore.reconcile"))
+        XCTAssertLessThan(beginEdit.lowerBound, metadataEdit.lowerBound)
+        XCTAssertLessThan(metadataEdit.lowerBound, routeEdit.lowerBound)
+        XCTAssertTrue(saveBody.contains("AtriaWorkoutRouteStore.clearPendingTransaction()"))
+        XCTAssertTrue(saveBody.contains("recoverPendingTransaction("),
+                      "A failed route write must drive the durable rollback recovery path")
+
+        let beginDelete = try XCTUnwrap(deleteBody.range(of: "beginDeleteTransaction"))
+        let metadataDelete = try XCTUnwrap(deleteBody.range(of: "store.deleteConfirmedWorkout"))
+        let routeDelete = try XCTUnwrap(deleteBody.range(of: "AtriaWorkoutRouteStore.delete"))
+        XCTAssertLessThan(beginDelete.lowerBound, metadataDelete.lowerBound)
+        XCTAssertLessThan(metadataDelete.lowerBound, routeDelete.lowerBound)
     }
 
     func testLegacyRouteWithoutPausedDurationStillDecodes() throws {

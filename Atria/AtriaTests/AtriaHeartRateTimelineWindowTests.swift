@@ -43,6 +43,98 @@ final class AtriaHeartRateTimelineWindowTests: XCTestCase {
         ))
     }
 
+    func testExplorerLandscapeLayoutKeepsMostWidthForChart() {
+        let layout = AtriaHeartRateExplorerLayout(size: CGSize(width: 852, height: 393))
+
+        XCTAssertTrue(layout.isLandscape)
+        XCTAssertLessThanOrEqual(layout.controlRailHeight, 48)
+        XCTAssertGreaterThan(layout.estimatedChartWidth, 820)
+        XCTAssertGreaterThan(layout.estimatedChartWidth / 852, 0.96)
+        XCTAssertGreaterThanOrEqual(layout.minimumChartHeight, 300)
+    }
+
+    func testExplorerPortraitFallbackUsesRenderedGeometry() {
+        let layout = AtriaHeartRateExplorerLayout(size: CGSize(width: 393, height: 852))
+
+        XCTAssertFalse(layout.isLandscape)
+        XCTAssertEqual(layout.estimatedChartWidth, 369, accuracy: 0.01)
+        XCTAssertGreaterThanOrEqual(layout.minimumChartHeight, 400)
+    }
+
+    func testExplorerPresentationHasOneLandscapeOrientationContract() {
+        XCTAssertEqual(AtriaHeartRateExplorerOrientationPolicy.transitionMask, .allButUpsideDown)
+        XCTAssertEqual(AtriaHeartRateExplorerOrientationPolicy.presentedMask, .landscape)
+        XCTAssertEqual(AtriaHeartRateExplorerOrientationPolicy.preferredOrientation, .landscapeRight)
+    }
+
+    func testExplorerUsesSwappedLandscapeStageWhenPortraitWindowCannotRotate() {
+        let stage = AtriaHeartRateExplorerStageLayout(
+            containerSize: CGSize(width: 393, height: 852),
+            usesRotatedPortraitFallback: true
+        )
+
+        XCTAssertEqual(stage.mode, .rotatedLandscapeFallback)
+        XCTAssertEqual(stage.stageSize, CGSize(width: 852, height: 393))
+        XCTAssertEqual(stage.rotationDegrees, 90)
+        XCTAssertTrue(AtriaHeartRateExplorerLayout(size: stage.stageSize).isLandscape)
+    }
+
+    func testExplorerNeverDoubleRotatesAnActualLandscapeWindow() {
+        let stage = AtriaHeartRateExplorerStageLayout(
+            containerSize: CGSize(width: 852, height: 393),
+            usesRotatedPortraitFallback: true
+        )
+
+        XCTAssertEqual(stage.mode, .landscape)
+        XCTAssertEqual(stage.stageSize, CGSize(width: 852, height: 393))
+        XCTAssertEqual(stage.rotationDegrees, 0)
+    }
+
+    func testExplorerRequestsLandscapeGeometryAndUsesOneGlassCloseCircle() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaVitalsCollectionSections.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("AtriaHeartRateOrientation.ensureLandscapeAfterPresentation()"))
+        XCTAssertTrue(source.contains("requestSceneOrientation(AtriaHeartRateExplorerOrientationPolicy.presentedMask"))
+        XCTAssertTrue(source.contains("AtriaHeartRateOrientation.landscapeFallbackNotification"))
+        XCTAssertTrue(source.contains("case .rotatedLandscapeFallback:"))
+        XCTAssertTrue(source.contains(".rotationEffect(.degrees(stage.rotationDegrees))"))
+        XCTAssertTrue(source.contains("nsError.code == 101"))
+
+        let closeStart = try XCTUnwrap(source.range(of: "private var closeButton: some View"))
+        let closeEnd = try XCTUnwrap(source.range(of: "private var selectionSummary: some View",
+                                                  range: closeStart.upperBound..<source.endIndex))
+        let close = String(source[closeStart.lowerBound..<closeEnd.lowerBound])
+        XCTAssertEqual(close.components(separatedBy: ".glassEffect(").count - 1, 1)
+        XCTAssertTrue(close.contains(".buttonStyle(.plain)"))
+        XCTAssertFalse(close.contains(".atriaGlassIconAction"))
+        XCTAssertFalse(close.contains(".buttonStyle(.glass)"))
+    }
+
+    func testExplorerLandscapeUsesFullWidthPlotBelowCompactControls() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaVitalsCollectionSections.swift"),
+            encoding: .utf8
+        )
+
+        let contentStart = try XCTUnwrap(source.range(of: "private func landscapeContent"))
+        let contentEnd = try XCTUnwrap(source.range(of: "private func portraitContent",
+                                                    range: contentStart.upperBound..<source.endIndex))
+        let content = String(source[contentStart.lowerBound..<contentEnd.lowerBound])
+        XCTAssertTrue(content.contains("VStack"))
+        XCTAssertTrue(content.contains("landscapeControlRail"))
+        XCTAssertTrue(content.contains("heartRateChart"))
+        XCTAssertFalse(content.contains("inspector("))
+    }
+
     func testWindowedKeepsOnlyLastTwelveHoursOfDay() {
         let end = Date(timeIntervalSince1970: 1_800_000_000)
         let pts = points(spanHours: 24, count: 1440, endingAt: end)

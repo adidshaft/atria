@@ -15,6 +15,17 @@ final class AtriaTodaySessionProjectionTests: XCTestCase {
         withExtendedLifetime(cancellable) {}
     }
 
+    func testIrrelevantDashboardRevisionDoesNotPublishTodayProjection() {
+        let sessionStore = SessionStore()
+        let projection = AtriaTodaySessionProjectionStore(store: sessionStore)
+        var publications = 0
+        let cancellable = projection.objectWillChange.sink { publications += 1 }
+
+        XCTAssertFalse(projection.refreshForDashboardRevision())
+        XCTAssertEqual(publications, 0)
+        withExtendedLifetime(cancellable) {}
+    }
+
     func testRelevantProfileChangePublishesProjectedMaxHeartRate() async {
         let sessionStore = SessionStore()
         let originalProfile = sessionStore.profile
@@ -56,5 +67,27 @@ final class AtriaTodaySessionProjectionTests: XCTestCase {
         XCTAssertTrue(source.contains("@ObservedObject var sessionProjectionStore: AtriaTodaySessionProjectionStore"))
         XCTAssertFalse(source.contains("@ObservedObject var store: SessionStore"))
         XCTAssertTrue(source.contains("guard next != state else { return false }"))
+    }
+
+    func testBroadDashboardSignalIsRevisionGatedBeforeTodaySnapshotRebuild() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaTodayScreen.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let storeStart = try XCTUnwrap(
+            source.range(of: "final class AtriaTodaySessionProjectionStore: ObservableObject")
+        )
+        let screenStart = try XCTUnwrap(
+            source.range(of: "struct AtriaTodayScreen: View", range: storeStart.upperBound..<source.endIndex)
+        )
+        let projectionStore = String(source[storeStart.lowerBound..<screenStart.lowerBound])
+
+        XCTAssertTrue(projectionStore.contains("store.$dashboardRevision"))
+        XCTAssertTrue(projectionStore.contains("refreshForDashboardRevision()"))
+        XCTAssertTrue(projectionStore.contains("store.confirmedWorkoutsRevision != state.confirmedWorkoutsRevision"))
+        XCTAssertTrue(projectionStore.contains("store.behaviorJournalRevision != state.behaviorJournalRevision"))
+        XCTAssertFalse(projectionStore.contains("store.$dailyMetricHistory"),
+                       "Today does not project dailyMetricHistory, so that publisher must not trigger a full snapshot rebuild")
     }
 }

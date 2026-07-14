@@ -27,6 +27,19 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
         XCTAssertTrue(source.contains("onboardingHeader(\"Wear it tonight\""))
     }
 
+    func testExpectationTilesWrapInsteadOfForcingThreeAcross() throws {
+        let source = try source("AtriaOnboardingFlow.swift")
+        let start = try XCTUnwrap(source.range(of: "private var expectationsPage"))
+        let end = try XCTUnwrap(source.range(of: "private var progressDots",
+                                              range: start.upperBound..<source.endIndex))
+        let page = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(page.contains("LazyVGrid(columns: [GridItem(.adaptive(minimum: 92)"))
+        XCTAssertFalse(page.contains("HStack(spacing: 8)"),
+                       "Expectation tiles must wrap for narrow widths and larger text")
+        XCTAssertEqual(page.components(separatedBy: "expectationPill(").count - 1, 3)
+    }
+
     func testOnboardingKeepsSupportingCopyForVoiceOverWithoutRenderingExtraLines() throws {
         let source = try source("AtriaOnboardingFlow.swift")
 
@@ -36,7 +49,7 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
         XCTAssertTrue(source.contains("title: \"Sleep\""))
         XCTAssertTrue(source.contains("title: \"Recovery\""))
         XCTAssertFalse(source.contains("detail: \"First sleep\""))
-        XCTAssertTrue(source.contains(".frame(maxWidth: .infinity, minHeight: 64)"))
+        XCTAssertTrue(source.contains(".frame(maxWidth: .infinity, minHeight: 58)"))
     }
 
     func testOverviewRemovesDuplicateVisibleConnectionDetailButKeepsVoiceOverHint() throws {
@@ -58,6 +71,49 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
 
         XCTAssertTrue(row.contains("if !item.isComplete"))
         XCTAssertTrue(row.contains(".accessibilityHint(item.detail)"))
+    }
+
+    func testOverviewGatesHighFrequencyLiveStateBeforeLargeReadinessTree() throws {
+        let source = try source("AtriaOverviewSections.swift")
+        let stateStart = try XCTUnwrap(source.range(of: "struct AtriaOverviewLiveProjectionState"))
+        let hostStart = try XCTUnwrap(source.range(of: "struct AtriaOverviewReadinessSectionHost",
+                                                   range: stateStart.upperBound..<source.endIndex))
+        let state = String(source[stateStart.lowerBound..<hostStart.lowerBound])
+        let hostEnd = try XCTUnwrap(source.range(of: "private func moveMetric",
+                                                 range: hostStart.upperBound..<source.endIndex))
+        let host = String(source[hostStart.lowerBound..<hostEnd.lowerBound])
+
+        XCTAssertTrue(state.contains(".removeDuplicates()"))
+        XCTAssertTrue(state.contains("sessionProgressBucket"))
+        XCTAssertTrue(state.contains("liveActiveCaloriesText"))
+        XCTAssertTrue(state.contains("strapStepResearchCount"),
+                      "Exact strap-step changes must remain immediate")
+        XCTAssertTrue(host.contains("let liveStore: AtriaHomeModel.CoreLiveStore"))
+        XCTAssertFalse(host.contains("@ObservedObject var liveStore"),
+                       "Every accepted strap sample must not invalidate the full readiness host")
+        XCTAssertTrue(host.contains("@StateObject private var liveProjectionStore"))
+    }
+
+    func testOverviewDynamicRowsUseDomainIdentityInsteadOfMutableOffsets() throws {
+        let source = try source("AtriaOverviewSections.swift")
+
+        XCTAssertTrue(source.contains("id: \\.element.title) { index, companion in"))
+        XCTAssertTrue(source.contains("id: \\.element.label) { _, band in"))
+        XCTAssertTrue(source.contains("id: \\.element) { index, item in"))
+        XCTAssertFalse(source.contains("ForEach(Array(companions.enumerated()), id: \\.offset)"))
+        XCTAssertFalse(source.contains("ForEach(Array(bands.enumerated()), id: \\.offset)"))
+        XCTAssertFalse(source.contains("ForEach(Array(items.enumerated()), id: \\.offset)"))
+    }
+
+    func testVitalsAndAdvancedSettingsKeepVisibleExplanationsCompact() throws {
+        let vitals = try source("AtriaVitalsCollectionSections.swift")
+        let settings = try source("AtriaSettingsView.swift")
+
+        XCTAssertTrue(vitals.contains("Checks periodically by day."))
+        XCTAssertFalse(vitals.contains("During the day, Atria checks your heart rate every few minutes instead of continuously."))
+        XCTAssertTrue(vitals.contains("Rows show evidence counts until checked."))
+        XCTAssertTrue(settings.contains("Tunes sleep-baseline colors and evidence thresholds"))
+        XCTAssertFalse(settings.contains("These bands tune sleep-only deviations and candidate-frame evidence."))
     }
 
     func testFirstLaunchStopsAtFiveMandatoryPagesWithoutDuplicatePersonalization() throws {

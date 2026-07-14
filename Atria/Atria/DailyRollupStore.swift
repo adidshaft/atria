@@ -266,6 +266,61 @@ enum DailyRecoveryResolver {
         return rollup.resolvedRecoverySummary(matching: metric, calendar: calendar)
     }
 
+    /// Resolves the immutable recovery minted at the wake boundary that owns
+    /// the active physiological cycle. Civil midnight must not move recovery
+    /// to a different rollup while that wake-to-wake cycle is still active.
+    static func summary(rollups: [DailyRollupStoreEntry],
+                        metrics: [SavedDailyMetric],
+                        physiologicalCycle: AtriaPhysiologicalCycle,
+                        calendar: Calendar = .current) -> FrozenRecoverySummary? {
+        guard physiologicalCycle.boundaryKind == .mainSleep else { return nil }
+        guard let rollup = rollups.first(where: {
+            calendar.isDate($0.day, inSameDayAs: physiologicalCycle.start)
+                && $0.recovery != nil
+        }) else { return nil }
+        let metric = metrics.first {
+            calendar.isDate($0.day, inSameDayAs: rollup.day)
+                && $0.recoveryPercent == rollup.recovery
+        }
+        return rollup.resolvedRecoverySummary(matching: metric, calendar: calendar)
+    }
+
+    /// One source of truth for non-interactive consumers such as widgets and
+    /// notifications. Main-sleep cycles prefer the frozen morning result;
+    /// all-nighter fallback cycles fail closed to red rather than reusing a
+    /// live HRV estimate from the prior physiological day.
+    static func currentEstimate(liveEstimate: Metrics.RecoveryEstimate,
+                                rollups: [DailyRollupStoreEntry],
+                                metrics: [SavedDailyMetric],
+                                physiologicalCycle: AtriaPhysiologicalCycle,
+                                calendar: Calendar = .current) -> Metrics.RecoveryEstimate {
+        if physiologicalCycle.boundaryKind == .noSleepFallback {
+            return noSleepEstimate
+        }
+        return summary(rollups: rollups,
+                       metrics: metrics,
+                       physiologicalCycle: physiologicalCycle,
+                       calendar: calendar)?.recoveryEstimate
+            ?? liveEstimate
+    }
+
+    static var noSleepEstimate: Metrics.RecoveryEstimate {
+        Metrics.RecoveryEstimate(
+            percent: 1,
+            confidence: .unverified,
+            usesHRV: false,
+            detail: "No main sleep was recorded for this physiological cycle. Recovery stays red until a main sleep is confirmed.",
+            contributors: [
+                Metrics.RecoveryEstimate.Contributor(kind: .sleep,
+                                                     zScore: -3,
+                                                     weight: 1,
+                                                     detail: "No main sleep recorded",
+                                                     displayValue: "0h",
+                                                     direction: -1)
+            ]
+        )
+    }
+
     static func applyingNap(to summary: FrozenRecoverySummary,
                             sleepHistory: SleepHistorySnapshot,
                             latestSleep: SleepHistorySnapshot.Night?,
