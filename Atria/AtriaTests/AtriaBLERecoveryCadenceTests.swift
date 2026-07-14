@@ -1959,6 +1959,51 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
     }
 
     @MainActor
+    func testBatteryNotificationAndWidgetConsumersHonorActiveMidrangeLease() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.notificationBatteryLease.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        defaults.set(12, forKey: AtriaBLEManager.BatteryDefaults.level)
+        defaults.set("live_2A19", forKey: AtriaBLEManager.BatteryDefaults.source)
+        defaults.set(now.addingTimeInterval(-40 * 60).timeIntervalSince1970,
+                     forKey: AtriaBLEManager.BatteryDefaults.at)
+        defaults.set(now.addingTimeInterval(-20).timeIntervalSince1970,
+                     forKey: AtriaBLEManager.BatteryDefaults.notificationLeaseAt)
+        defaults.set(now.addingTimeInterval(-5 * 60).timeIntervalSince1970,
+                     forKey: AtriaBLEManager.BatteryDefaults.notificationConfirmedAt)
+
+        XCTAssertTrue(AtriaBLEManager.cachedBattery(
+            maxAge: 10 * 60,
+            defaults: defaults,
+            now: now,
+            permitActiveNotificationLease: true
+        ).usable)
+        XCTAssertTrue(LocalNotificationScheduler.batterySnapshot(
+            liveLevel: 12,
+            liveChargeStatus: .levelOnly,
+            defaults: defaults,
+            now: now
+        ).usable)
+
+        defaults.set(true, forKey: AtriaBLEManager.BatteryDefaults.requiresFreshConfirmation)
+        XCTAssertFalse(AtriaBLEManager.cachedBattery(
+            maxAge: 10 * 60,
+            defaults: defaults,
+            now: now,
+            permitActiveNotificationLease: true
+        ).usable)
+        defaults.set(false, forKey: AtriaBLEManager.BatteryDefaults.requiresFreshConfirmation)
+        defaults.set(10, forKey: AtriaBLEManager.BatteryDefaults.level)
+        XCTAssertFalse(AtriaBLEManager.cachedBattery(
+            maxAge: 10 * 60,
+            defaults: defaults,
+            now: now,
+            permitActiveNotificationLease: true
+        ).usable, "restoration sentinels must remain unavailable even under an active lease")
+    }
+
+    @MainActor
     func testCachedBatteryAcceptsOnlyVerifiedLivePercentageSources() throws {
         let suite = "AtriaBLERecoveryCadenceTests.batterySource.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

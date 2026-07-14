@@ -14,7 +14,12 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
             AtriaDismissedWorkoutCandidateStore.save(originalDismissals)
         }
 
-        let seed = Date().addingTimeInterval(400 * 24 * 60 * 60 + Double.random(in: 0..<10_000))
+        // This store intentionally retains only its 64 newest windows. Other
+        // tests may already have populated the shared simulator defaults with
+        // far-future fixtures, so anchor beyond the newest existing tombstone
+        // instead of assuming "today + 400 days" will survive that bound.
+        let newestExistingEnd = originalDismissals.map(\.end).max() ?? Date()
+        let seed = newestExistingEnd.addingTimeInterval(24 * 60 * 60 + Double.random(in: 0..<10_000))
         let candidateStart = seed
         let candidateEnd = candidateStart.addingTimeInterval(30 * 60)
         let adjustedStart = candidateEnd.addingTimeInterval(2 * 60 * 60)

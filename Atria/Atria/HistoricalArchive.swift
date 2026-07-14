@@ -26,6 +26,7 @@ enum HistoricalArchive {
     private static let archiveDateFormatter = ISO8601DateFormatter()
     private static var recentGravityCache: RecentGravityCache?
     private static var recentGravityLoadInFlight = false
+    private static var recentGravityLoadGeneration: UInt64 = 0
 
     struct Diagnostics {
         let exists: Bool
@@ -1141,6 +1142,7 @@ enum HistoricalArchive {
             return []
         }
         recentGravityLoadInFlight = true
+        let loadGeneration = recentGravityLoadGeneration
         recentGravityCacheLock.unlock()
 
         // Never decode archive JSON from a UI update. Main-thread callers fail
@@ -1148,13 +1150,17 @@ enum HistoricalArchive {
         if Thread.isMainThread {
             DispatchQueue.global(qos: .utility).async {
                 let samples = loadRecentGravitySamplesUncached(targetBytes: targetBytes)
-                publishRecentGravityCache(samples: samples, targetBytes: targetBytes)
+                publishRecentGravityCache(samples: samples,
+                                          targetBytes: targetBytes,
+                                          generation: loadGeneration)
             }
             return []
         }
 
         let samples = loadRecentGravitySamplesUncached(targetBytes: targetBytes)
-        publishRecentGravityCache(samples: samples, targetBytes: targetBytes)
+        publishRecentGravityCache(samples: samples,
+                                  targetBytes: targetBytes,
+                                  generation: loadGeneration)
         return samples
     }
 
@@ -1169,8 +1175,14 @@ enum HistoricalArchive {
         return latestTimestamp >= end.timeIntervalSince1970 - 120
     }
 
-    private static func publishRecentGravityCache(samples: [GravitySample], targetBytes: UInt64) {
+    private static func publishRecentGravityCache(samples: [GravitySample],
+                                                  targetBytes: UInt64,
+                                                  generation: UInt64) {
         recentGravityCacheLock.lock()
+        guard generation == recentGravityLoadGeneration else {
+            recentGravityCacheLock.unlock()
+            return
+        }
         recentGravityCache = RecentGravityCache(loadedAt: Date(),
                                                 targetBytes: targetBytes,
                                                 samples: samples,
@@ -1182,6 +1194,7 @@ enum HistoricalArchive {
 #if DEBUG
     static func resetRecentGravityCacheForTesting() {
         recentGravityCacheLock.lock()
+        recentGravityLoadGeneration &+= 1
         recentGravityCache = nil
         recentGravityLoadInFlight = false
         recentGravityCacheLock.unlock()

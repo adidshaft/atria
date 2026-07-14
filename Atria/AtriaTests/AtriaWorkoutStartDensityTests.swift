@@ -36,6 +36,24 @@ final class AtriaWorkoutStartDensityTests: XCTestCase {
         XCTAssertTrue(sheet.contains(".buttonStyle(.glassProminent)"))
     }
 
+    func testStartSheetStacksTargetControlsAtAccessibilitySizes() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaLiveWorkoutView.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "struct AtriaWorkoutStartSheet: View"))
+        let end = try XCTUnwrap(source.range(of: "enum AtriaWorkoutTargetChoice",
+                                             range: start.upperBound..<source.endIndex))
+        let sheet = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(sheet.contains("@Environment(\\.dynamicTypeSize) private var dynamicTypeSize"))
+        XCTAssertTrue(sheet.contains("private var targetHeader: some View"))
+        XCTAssertTrue(sheet.contains("if dynamicTypeSize.isAccessibilitySize"))
+        XCTAssertTrue(sheet.contains("VStack(alignment: .leading, spacing: 8)"))
+        XCTAssertTrue(sheet.contains("zonePicker(title: title, selection: selection)"))
+        XCTAssertTrue(sheet.contains(".frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)"),
+                      "The accessibility zone menu should use a full-width 52-point row")
+    }
+
     func testAppOptsIntoFrequentLiveActivityUpdatesForWorkoutMetrics() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let info = try String(contentsOf: testsDirectory

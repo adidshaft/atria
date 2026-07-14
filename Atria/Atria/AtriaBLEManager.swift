@@ -6491,7 +6491,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                               chargeMaxAge: TimeInterval = AtriaBLEManager.activeBatteryChargeEvidenceMaxAge,
                               defaults: UserDefaults = .standard,
                               now: Date = Date(),
-                              permitPendingReconnectBaseline: Bool = false) -> (level: Int, source: String, age: TimeInterval, chargeStatus: BatteryChargeStatus, chargeAge: TimeInterval, usable: Bool) {
+                              permitPendingReconnectBaseline: Bool = false,
+                              permitActiveNotificationLease: Bool = false) -> (level: Int, source: String, age: TimeInterval, chargeStatus: BatteryChargeStatus, chargeAge: TimeInterval, usable: Bool) {
         let level = defaults.object(forKey: BatteryDefaults.level) as? Int ?? -1
         let at = defaults.object(forKey: BatteryDefaults.at) as? Double
         let requiresFreshConfirmation = defaults.bool(forKey: BatteryDefaults.requiresFreshConfirmation)
@@ -6509,16 +6510,54 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let chargeFresh = storedChargeStatus == .levelOnly || (chargeAge >= 0 && chargeAge <= chargeMaxAge)
         let effectiveChargeStatus = chargeFresh ? storedChargeStatus : .levelOnly
         let sourceIsEligible = batteryCacheSourceIsDisplayEligible(source)
+        let activeNotificationLease = permitActiveNotificationLease
+            && persistedBatteryNotificationLeaseSupportsDisplay(
+                level: level,
+                source: source,
+                requiresFreshConfirmation: requiresFreshConfirmation,
+                notificationLeaseAt: (defaults.object(forKey: BatteryDefaults.notificationLeaseAt) as? Double)
+                    .map(Date.init(timeIntervalSince1970:)),
+                notificationConfirmedAt: (defaults.object(forKey: BatteryDefaults.notificationConfirmedAt) as? Double)
+                    .map(Date.init(timeIntervalSince1970:)),
+                now: now
+            )
         // Persisted 0/10/100 values cannot carry their live trajectory proof
         // across process boundaries. These are exactly the values the physical
         // strap has replayed incorrectly, so cached consumers fail closed even
         // when an older build stamped them as recent.
-        let usable = (11...99).contains(level)
+        let rawLevelIsUsable = (11...99).contains(level)
             && age >= 0
             && age <= maxAge
             && sourceIsEligible
             && (!requiresFreshConfirmation || permitPendingReconnectBaseline)
+        let usable = rawLevelIsUsable || activeNotificationLease
         return (level, source, age, effectiveChargeStatus, chargeAge, usable)
+    }
+
+    /// Cross-process consumers (widgets and asynchronous notification
+    /// scheduling) cannot inspect CoreBluetooth objects, but they can verify a
+    /// lease that the live app renews only while the same 2A19 subscription is
+    /// proven. This never refreshes the level packet's timestamp and never
+    /// admits the observed restoration sentinels 0/10/100.
+    nonisolated static func persistedBatteryNotificationLeaseSupportsDisplay(
+        level: Int,
+        source: String,
+        requiresFreshConfirmation: Bool,
+        notificationLeaseAt: Date?,
+        notificationConfirmedAt: Date?,
+        now: Date,
+        leaseMaximumAge: TimeInterval = batteryDisplayFreshnessLimit,
+        confirmationMaximumAge: TimeInterval = batteryRestoredNotificationConfirmationMaximumAge
+    ) -> Bool {
+        guard (11...99).contains(level),
+              batteryReconnectBaselineSourceIsLeaseEligible(source),
+              !requiresFreshConfirmation,
+              let notificationLeaseAt,
+              let notificationConfirmedAt,
+              notificationLeaseAt <= now,
+              notificationConfirmedAt <= now else { return false }
+        return now.timeIntervalSince(notificationLeaseAt) <= leaseMaximumAge
+            && now.timeIntervalSince(notificationConfirmedAt) <= confirmationMaximumAge
     }
 
     nonisolated static func batteryCacheSourceIsDisplayEligible(_ source: String) -> Bool {

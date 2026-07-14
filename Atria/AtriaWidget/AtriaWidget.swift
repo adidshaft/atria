@@ -718,6 +718,7 @@ struct AtriaLiveActivityWidget: Widget {
                                 .font(.caption2.monospacedDigit())
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
+                                .accessibilityLabel("Sensor status \(sensorStatus)")
                         }
                         AtriaLiveActivityControls(state: context.state,
                                                   startedAt: context.attributes.startedAt,
@@ -737,6 +738,7 @@ struct AtriaLiveActivityWidget: Widget {
                     Image(systemName: context.state.activitySystemImage ?? "figure.mixed.cardio")
                         .foregroundStyle(liveActivityZoneColor(for: context.state,
                                                               availability: heartAvailability))
+                        .accessibilityLabel("\(context.state.activityName ?? "Workout") workout")
                 }
             } compactTrailing: {
                 Text(signalFresh ? "\(context.state.heartRate)" : "--")
@@ -751,6 +753,7 @@ struct AtriaLiveActivityWidget: Widget {
                 Image(systemName: context.state.activitySystemImage ?? "figure.mixed.cardio")
                     .foregroundStyle(liveActivityZoneColor(for: context.state,
                                                           availability: heartAvailability))
+                    .accessibilityLabel("\(context.state.activityName ?? "Workout") workout")
             }
             .keylineTint(.red)
         }
@@ -760,12 +763,18 @@ struct AtriaLiveActivityWidget: Widget {
 private func liveActivityBatteryText(for state: AtriaLiveActivityAttributes.ContentState) -> String {
     guard state.batteryLevel >= 0 else { return "Battery" }
     switch state.batteryChargeStatus {
-    case "charging", "full":
-        return state.batteryChargeText.isEmpty ? "\(state.batteryLevel)%" : "\(state.batteryLevel)% · \(state.batteryChargeText)"
+    case "charging":
+        return "\(state.batteryLevel)% · Charging"
+    case "full":
+        return "\(state.batteryLevel)% · Fully charged"
     case "notCharging":
-        return "\(state.batteryLevel)% · Not chg"
+        return state.batteryLevel <= 20
+            ? "\(state.batteryLevel)% · Low"
+            : "\(state.batteryLevel)% · Not charging"
     default:
-        return "\(state.batteryLevel)%"
+        return state.batteryLevel <= 20
+            ? "\(state.batteryLevel)% · Low"
+            : "\(state.batteryLevel)%"
     }
 }
 
@@ -785,7 +794,7 @@ private func liveActivityBatterySymbol(for state: AtriaLiveActivityAttributes.Co
 private func liveActivityBatteryTint(for state: AtriaLiveActivityAttributes.ContentState) -> Color {
     switch state.batteryChargeStatus {
     case "charging", "full": return .green
-    default: return .secondary
+    default: return state.batteryLevel >= 0 && state.batteryLevel <= 20 ? .red : .secondary
     }
 }
 
@@ -1105,6 +1114,9 @@ private struct AtriaLiveActivityControls: View {
             }
             .tint((state.isPaused ?? false) ? .green : .orange)
             .accessibilityLabel((state.isPaused ?? false) ? "Resume workout" : "Pause workout")
+            .accessibilityHint((state.isPaused ?? false)
+                               ? "Resumes workout time and route tracking"
+                               : "Pauses workout time and route tracking")
 
             Button(intent: AtriaLiveWorkoutControlIntent(action: .end,
                                                          workoutStartedAt: startedAt)) {
@@ -1118,6 +1130,7 @@ private struct AtriaLiveActivityControls: View {
             }
             .tint(.red)
             .accessibilityLabel("End workout")
+            .accessibilityHint("Ends the active workout")
         }
         .buttonStyle(.borderedProminent)
         .labelStyle(.titleAndIcon)
@@ -1184,9 +1197,10 @@ private struct AtriaLiveActivityLockScreenView: View {
                 if context.state.batteryLevel >= 0 {
                     Label("\(context.state.batteryLevel)%",
                           systemImage: liveActivityBatterySymbol(for: context.state))
-                        .labelStyle(.iconOnly)
+                        .labelStyle(.titleAndIcon)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(liveActivityBatteryTint(for: context.state))
+                        .lineLimit(1)
                         .accessibilityLabel(liveActivityBatteryText(for: context.state))
                 }
             }
@@ -1293,7 +1307,7 @@ private struct AtriaLiveActivityLockScreenView: View {
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .accessibilityLabel("Sensor status")
+                    .accessibilityLabel("Sensor status \(sensorStatus)")
             }
 
             AtriaLiveActivityControls(state: context.state,

@@ -3,6 +3,23 @@ import UIKit
 import Combine
 @testable import Atria
 
+private final class AtriaTestLockedArray<Element>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Element] = []
+
+    func append(_ value: Element) {
+        lock.lock()
+        values.append(value)
+        lock.unlock()
+    }
+
+    func snapshot() -> [Element] {
+        lock.lock()
+        defer { lock.unlock() }
+        return values
+    }
+}
+
 final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
     private func appSource(_ relativePath: String) throws -> String {
         let testsURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
@@ -80,15 +97,13 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
         let releaseFirst = DispatchSemaphore(value: 0)
         let completions = expectation(description: "all coalesced callers complete")
         completions.expectedFulfillmentCount = 3
-        let lock = NSLock()
-        var performed: [Int] = []
-        var outputs: [Int] = []
+        let performed = AtriaTestLockedArray<Int>()
+        let outputs = AtriaTestLockedArray<Int>()
         let worker = AtriaCoalescingSerialWorker<Int, Int>(
-            label: "com.adidshaft.atria.tests.coalescing-worker"
+            label: "com.adidshaft.atria.tests.coalescing-worker",
+            qos: .userInteractive
         ) { input in
-            lock.lock()
             performed.append(input)
-            lock.unlock()
             if input == 1 {
                 firstStarted.signal()
                 _ = releaseFirst.wait(timeout: .now() + 2)
@@ -97,25 +112,23 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
         }
 
         worker.enqueueLatest(1) { output in
-            lock.lock(); outputs.append(output); lock.unlock()
+            outputs.append(output)
             completions.fulfill()
         }
         XCTAssertEqual(firstStarted.wait(timeout: .now() + 1), .success)
         worker.enqueueLatest(2) { output in
-            lock.lock(); outputs.append(output); lock.unlock()
+            outputs.append(output)
             completions.fulfill()
         }
         worker.enqueueLatest(3) { output in
-            lock.lock(); outputs.append(output); lock.unlock()
+            outputs.append(output)
             completions.fulfill()
         }
         releaseFirst.signal()
         wait(for: [completions], timeout: 3)
 
-        lock.lock()
-        let performedSnapshot = performed
-        let outputSnapshot = outputs.sorted()
-        lock.unlock()
+        let performedSnapshot = performed.snapshot()
+        let outputSnapshot = outputs.snapshot().sorted()
         XCTAssertEqual(performedSnapshot, [1, 3])
         XCTAssertEqual(outputSnapshot, [10, 30, 30])
     }
@@ -256,7 +269,7 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
         )
 
         let result = await Task.detached(priority: .utility) {
-            let wasMainThread = Thread.isMainThread
+            let wasMainThread = pthread_main_np() != 0
             let prepared = SessionStore.prepareWorkoutWindowConfirmation(
                 snapshot: snapshot,
                 activeJournalSession: activeJournal

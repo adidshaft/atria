@@ -113,11 +113,11 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let shared = try String(contentsOf: root
-            .appendingPathComponent("AtriaShared/AtriaLiveWorkoutControlIntent.swift"))
+            .appendingPathComponent("AtriaShared/AtriaLiveWorkoutControlIntent.swift"), encoding: .utf8)
         let project = try String(contentsOf: root
-            .appendingPathComponent("Atria.xcodeproj/project.pbxproj"))
+            .appendingPathComponent("Atria.xcodeproj/project.pbxproj"), encoding: .utf8)
         let app = try String(contentsOf: root
-            .appendingPathComponent("Atria/AtriaApp.swift"))
+            .appendingPathComponent("Atria/AtriaApp.swift"), encoding: .utf8)
 
         XCTAssertFalse(shared.contains("openAppWhenRun = true"))
         XCTAssertTrue(shared.contains("@Dependency(default: AtriaLiveWorkoutCommandHandler.unavailable)"))
@@ -131,7 +131,7 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
 
     func testPendingActionQueueLoadRunsOffMainThread() async {
         let executedOnMainThread = await AtriaWorkoutRuntime.performPendingActionLoad {
-            Thread.isMainThread
+            pthread_main_np() != 0
         }
 
         XCTAssertFalse(executedOnMainThread,
@@ -143,11 +143,11 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let app = try String(contentsOf: root
-            .appendingPathComponent("Atria/AtriaApp.swift"))
+            .appendingPathComponent("Atria/AtriaApp.swift"), encoding: .utf8)
         let home = try String(contentsOf: root
-            .appendingPathComponent("Atria/AtriaHomeView.swift"))
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
         let runtime = try String(contentsOf: root
-            .appendingPathComponent("Atria/AtriaWorkoutRuntime.swift"))
+            .appendingPathComponent("Atria/AtriaWorkoutRuntime.swift"), encoding: .utf8)
 
         XCTAssertFalse(app.contains("workoutRuntime.replayPendingActions()"))
         XCTAssertTrue(app.contains("workoutRuntime.schedulePendingActionReplay()"))
@@ -164,7 +164,7 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let home = try String(contentsOf: root
-            .appendingPathComponent("Atria/AtriaHomeView.swift"))
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
         let appearStart = try XCTUnwrap(home.range(of: ".onAppear {"))
         let appearEnd = try XCTUnwrap(home.range(of: ".onChange(of: selectedTab)",
                                                range: appearStart.upperBound..<home.endIndex))

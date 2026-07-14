@@ -956,6 +956,51 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         XCTAssertEqual(AtriaWorkoutRouteStore.load(workoutID: workoutID)?.points.count, 2)
     }
 
+    @MainActor
+    func testAwaitableRouteSavePersistsRecoveryDraftOffTheCallerPath() async throws {
+        let workoutID = "route-async-recovery-\(UUID().uuidString)"
+        defer { AtriaWorkoutRouteStore.delete(workoutID: workoutID) }
+        let start = Date(timeIntervalSince1970: 21_000)
+        let draft = AtriaWorkoutRouteRecorder.Draft(
+            activityType: .walking,
+            startedAt: start,
+            endedAt: start.addingTimeInterval(90),
+            coverageStartedAt: start.addingTimeInterval(5),
+            points: [
+                AtriaWorkoutRoute.Point(latitude: 28.61, longitude: 77.20, altitude: 200,
+                                        timestamp: start.addingTimeInterval(5), horizontalAccuracy: 5,
+                                        startsNewSegment: true),
+                AtriaWorkoutRoute.Point(latitude: 28.62, longitude: 77.21, altitude: 201,
+                                        timestamp: start.addingTimeInterval(90), horizontalAccuracy: 5),
+            ],
+            distanceMeters: 1_200,
+            elevationGainMeters: 1,
+            pausedDuration: 10
+        )
+
+        let saved = await AtriaWorkoutRouteStore.saveAsync(draft, workoutID: workoutID)
+
+        XCTAssertEqual(saved?.workoutID, workoutID)
+        XCTAssertEqual(saved?.coverageStartedAt, draft.coverageStartedAt)
+        XCTAssertEqual(saved?.pausedDuration, 10)
+        XCTAssertEqual(AtriaWorkoutRouteStore.load(workoutID: workoutID), saved)
+    }
+
+    func testRecoveredWorkoutRoutePersistenceNeverBlocksMainActor() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let home = try String(contentsOf: root.appendingPathComponent("Atria/AtriaHomeView.swift"),
+                              encoding: .utf8)
+        let start = try XCTUnwrap(home.range(of: "private func finalizePendingWorkoutIntent("))
+        let end = try XCTUnwrap(home.range(of: "private func schedulePendingWorkoutRecoveryRetries()",
+                                           range: start.upperBound..<home.endIndex))
+        let recovery = String(home[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(recovery.contains("await AtriaWorkoutRouteStore.saveAsync("))
+        XCTAssertFalse(recovery.contains("AtriaWorkoutRouteStore.save("))
+    }
+
     func testWorkoutEndUsesAsynchronousRoutePersistence() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

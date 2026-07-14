@@ -1831,8 +1831,14 @@ struct AtriaHomeView: View {
                                                                 workoutSteps: pending.completedStepCount,
                                                                 workoutStepsAreEstimated: pending.completedStepsAreEstimated,
                                                                 workoutStepsCapturedAt: pending.completedStepsCapturedAt) {
-                let recoveredRoute = recoveredRouteDraft.flatMap {
-                    AtriaWorkoutRouteStore.save($0, workoutID: confirmed.id)
+                let recoveredRoute: AtriaWorkoutRoute?
+                if let recoveredRouteDraft {
+                    recoveredRoute = await AtriaWorkoutRouteStore.saveAsync(
+                        recoveredRouteDraft,
+                        workoutID: confirmed.id
+                    )
+                } else {
+                    recoveredRoute = nil
                 }
                 let routeDurable = recoveredRouteDraft == nil || recoveredRoute != nil
                 if routeDurable,
@@ -2716,6 +2722,7 @@ struct AtriaHomeView: View {
             && WidgetSnapshotPublisher.strapStepsArePublishable(
                 state: core.strapStepResearchState
             ) ? max(0, core.strapStepResearchCount) : nil
+        let displayableBatteryLevel = ble.displayableBatteryLevel()
         WidgetSnapshotPublisher.scheduleLiveWorkoutPatch(
             heartRate: liveHeartRate,
             heartRateCapturedAt: liveHeartRate == nil ? nil : ble.lastAcceptedHeartRateAt,
@@ -2724,11 +2731,13 @@ struct AtriaHomeView: View {
             stepsCapturedAt: steps == nil ? nil : ble.liveStrapMotionCapturedAt
                 ?? AtriaStrapStepLiveStatus.persistedMotionDate(),
             strain: model.heroStore.state.strain,
-            batteryLevel: core.batteryLevel >= 0 && !core.batteryReadingIsRecentBaseline
-                ? core.batteryLevel
-                : nil,
-            batteryChargeStatus: core.batteryChargeStatus.rawValue,
-            batteryChargeText: core.batteryChargeStatus.label,
+            batteryLevel: displayableBatteryLevel,
+            batteryChargeStatus: displayableBatteryLevel == nil
+                ? AtriaBLEManager.BatteryChargeStatus.levelOnly.rawValue
+                : core.batteryChargeStatus.rawValue,
+            batteryChargeText: displayableBatteryLevel == nil
+                ? AtriaBLEManager.BatteryChargeStatus.levelOnly.label
+                : core.batteryChargeStatus.label,
             reason: reason,
             delay: delay
         )

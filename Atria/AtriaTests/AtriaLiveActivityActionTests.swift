@@ -19,6 +19,9 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(controls.contains("Image(systemName: \"stop.fill\")"))
         XCTAssertTrue(controls.contains(".accessibilityLabel((state.isPaused ?? false) ? \"Resume workout\" : \"Pause workout\")"))
         XCTAssertTrue(controls.contains(".accessibilityLabel(\"End workout\")"))
+        XCTAssertTrue(controls.contains("Resumes workout time and route tracking"))
+        XCTAssertTrue(controls.contains("Pauses workout time and route tracking"))
+        XCTAssertTrue(controls.contains("Ends the active workout"))
     }
 
     func testLiveActivityMetricsStaySingleLineWithThreeDigitHeartRate() throws {
@@ -49,6 +52,24 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(lockScreen.contains(".lineLimit(1)"))
         XCTAssertTrue(lockScreen.contains(".minimumScaleFactor(0.68)"),
                       "the HR-zone, step, calorie, and strain row must shrink rather than wrap")
+    }
+
+    func testLiveActivityExposesTruthfulBatteryAndSensorStatus() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("AtriaWidget/AtriaWidget.swift"), encoding: .utf8)
+
+        XCTAssertTrue(source.contains(".labelStyle(.titleAndIcon)"),
+                      "the Lock Screen must show the strap percentage instead of hiding the title")
+        XCTAssertTrue(source.contains("\"\\(state.batteryLevel)% · Charging\""))
+        XCTAssertTrue(source.contains("\"\\(state.batteryLevel)% · Low\""))
+        XCTAssertTrue(source.contains("state.batteryLevel <= 20 ? .red : .secondary"))
+        XCTAssertTrue(source.contains(".accessibilityLabel(\"Sensor status \\(sensorStatus)\")"),
+                      "VoiceOver must read the actual syncing/stale status")
+        XCTAssertFalse(source.contains(".accessibilityLabel(\"Sensor status\")"))
+        XCTAssertTrue(source.contains(".accessibilityLabel(\"\\(context.state.activityName ?? \"Workout\") workout\")"),
+                      "compact and minimal island presentations need a meaningful activity label")
     }
 
     func testActionStoreConsumesRecentSessionMatchedCommandQueueOnceInTapOrder() throws {

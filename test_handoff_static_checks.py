@@ -2707,7 +2707,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "guard batteryLevel >= 0 else { return \"questionmark.circle\" }",
             "value: coreLiveStore.state.batteryStatusSummaryText",
             "detail: coreLiveStore.state.batteryDetailText",
-            "core.batteryLevel >= 0 && !core.batteryReadingIsRecentBaseline",
+            "let displayableBatteryLevel = ble.displayableBatteryLevel()",
+            "batteryLevel: displayableBatteryLevel",
         ]:
             assert_contains(self, home, needle)
         assert_not_contains(self, home, "var batteryText: String { batteryLevel >= 0 ? \"\\(batteryLevel)%\" : \"Waiting\" }")
@@ -2743,7 +2744,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "let batteryChargeStatus: String?",
             "let batteryChargeText: String?",
             "batteryLevel: displayableBatteryLevel",
-            "let displayableBatteryLevel = ble.batteryReadingIsRecentBaseline",
+            "let displayableBatteryLevel = ble.displayableBatteryLevel()",
             "batteryChargeStatus: displayableChargeStatus.rawValue",
             "batteryChargeText: displayableChargeStatus.label",
             "battery=%@ charge=%@",
@@ -2764,7 +2765,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "liveActivityBatterySymbol(for: context.state)",
             "liveActivityBatteryTint(for: context.state)",
             "private func liveActivityBatteryText(for state: AtriaLiveActivityAttributes.ContentState) -> String",
-            "return state.batteryChargeText.isEmpty ? \"\\(state.batteryLevel)%\" : \"\\(state.batteryLevel)% · \\(state.batteryChargeText)\"",
+            "return \"\\(state.batteryLevel)% · Charging\"",
+            "? \"\\(state.batteryLevel)% · Low\"",
         ]:
             assert_contains(self, widget, needle)
 

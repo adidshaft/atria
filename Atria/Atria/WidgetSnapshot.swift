@@ -393,13 +393,12 @@ enum WidgetSnapshotPublisher {
         }
         let layout = currentHomeLayoutConfig()
         let widgetDiagnostics = Self.diagnostics
-        // Widgets have no room to carry the app's explicit "N h ago" qualifier.
-        // Never flatten an aged reconnect baseline into an apparently current
-        // percentage on the Lock/Home Screen; the in-app status pill can show
-        // the same value honestly together with its original verification age.
-        let displayableBatteryLevel = ble.batteryReadingIsRecentBaseline
-            ? nil
-            : ble.displayableBatteryLevel()
+        // `displayableBatteryLevel` already fails closed unless the level is a
+        // validated mid-range packet or the running app is renewing a proven
+        // change-driven 2A19 lease. Re-applying the older "recent baseline"
+        // veto here made widgets disagree with the app and show Learning while
+        // the same connected strap truthfully showed 12% · Low.
+        let displayableBatteryLevel = ble.displayableBatteryLevel()
         let displayableChargeStatus = displayableBatteryLevel == nil
             ? AtriaBLEManager.BatteryChargeStatus.levelOnly
             : ble.batteryChargeStatus
