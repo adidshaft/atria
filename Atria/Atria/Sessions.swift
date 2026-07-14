@@ -866,6 +866,34 @@ struct SavedSession: Codable, Identifiable {
         return segmentCalories.reduce(0, +)
     }
 
+    /// Active-energy estimate contributed inside one physiological-day slice.
+    /// This uses the same interpolated, gap-bounded and pause-aware point
+    /// projection as TRIMP so a cross-boundary session is neither dropped nor
+    /// counted twice. `nil` means the athlete profile cannot support energy
+    /// estimation; a genuine zero remains a valid, publishable estimate.
+    func activeCalories(rest: Int,
+                        profile: AthleteProfile,
+                        within interval: DateInterval) -> Double? {
+        guard profile.hasEnergyProfile,
+              interval.end > interval.start,
+              end > interval.start,
+              start < interval.end else { return nil }
+        let projected = loadPoints(within: interval)
+        guard projected.count >= 2 else { return nil }
+        let clippedExclusions = (excludedIntervals ?? []).compactMap { exclusion -> ExcludedInterval? in
+            let clippedStart = Swift.max(exclusion.start, interval.start)
+            let clippedEnd = Swift.min(exclusion.end, interval.end)
+            guard clippedEnd > clippedStart else { return nil }
+            return ExcludedInterval(start: clippedStart, end: clippedEnd)
+        }
+        let samples = projected.map { HRSample(t: $0.date, bpm: $0.bpm) }
+        let segmentCalories = AtriaAnalytics.Strain
+            .contiguousSegments(samples, excluding: clippedExclusions)
+            .compactMap { Metrics.activeCalories($0, rest: rest, profile: profile) }
+        guard !segmentCalories.isEmpty else { return nil }
+        return segmentCalories.reduce(0, +)
+    }
+
     var durationText: String {
         let s = Int(duration)
         return s >= 60 ? "\(s/60)m \(s%60)s" : "\(s)s"
@@ -4593,6 +4621,8 @@ final class SessionStore: ObservableObject {
         let biologicalSex: AthleteProfile.BiologicalSex
         let savedTodayTRIMP: Double
         let savedActiveSessionTRIMP: Double
+        let savedTodayActiveCalories: Double?
+        let savedActiveSessionActiveCalories: Double?
         let savedTodayStrapSteps: Int
         let savedActiveSessionStrapSteps: Int
         let savedActiveSessionTotalStrapSteps: Int
@@ -8358,6 +8388,7 @@ final class SessionStore: ObservableObject {
                                                 rest: rest,
                                                 maxHR: maxHR,
                                                 biologicalSex: profile.biologicalSex,
+                                                profile: profile,
                                                 activeSessionID: activeSessionID,
                                                 calendar: calendar,
                                                 now: now,
@@ -8372,6 +8403,7 @@ final class SessionStore: ObservableObject {
                                                rest: Int,
                                                maxHR: Int,
                                                biologicalSex: AthleteProfile.BiologicalSex,
+                                               profile: AthleteProfile? = nil,
                                                activeSessionID: UUID? = nil,
                                                calendar: Calendar = .current,
                                                now: Date = Date(),
@@ -8397,6 +8429,30 @@ final class SessionStore: ObservableObject {
                                                                      max: maxHR,
                                                                      within: dayInterval)
         } ?? 0
+        let savedTodayActiveCalories: Double?
+        let savedActiveSessionActiveCalories: Double?
+        if let profile, profile.hasEnergyProfile {
+            let canonicalCalorieValues = todaySessions.compactMap {
+                $0.activeCalories(rest: rest, profile: profile, within: dayInterval)
+            }
+            let archiveCalories = archiveOnlyActiveCalories(
+                archiveHeartRatePoints,
+                excludingCoverageFrom: todaySessions,
+                within: dayInterval,
+                rest: rest,
+                profile: profile
+            )
+            savedTodayActiveCalories = canonicalCalorieValues.isEmpty && archiveCalories == nil
+                ? nil
+                : canonicalCalorieValues.reduce(0, +) + (archiveCalories ?? 0)
+            savedActiveSessionActiveCalories = activeSessionID.flatMap { activeID in
+                todaySessions.first(where: { $0.id == activeID })?
+                    .activeCalories(rest: rest, profile: profile, within: dayInterval)
+            }
+        } else {
+            savedTodayActiveCalories = nil
+            savedActiveSessionActiveCalories = nil
+        }
         let savedTodayStrapSteps = todaySessions.reduce(0) {
             $0 + $1.attributedStrapSteps(within: dayInterval)
         }
@@ -8412,6 +8468,8 @@ final class SessionStore: ObservableObject {
                                   biologicalSex: biologicalSex,
                                   savedTodayTRIMP: savedTodayTRIMP,
                                   savedActiveSessionTRIMP: savedActiveSessionTRIMP,
+                                  savedTodayActiveCalories: savedTodayActiveCalories,
+                                  savedActiveSessionActiveCalories: savedActiveSessionActiveCalories,
                                   savedTodayStrapSteps: savedTodayStrapSteps,
                                   savedActiveSessionStrapSteps: savedActiveSessionStrapSteps,
                                   savedActiveSessionTotalStrapSteps: max(0, savedActiveSessionTotalStrapSteps),
@@ -8435,7 +8493,46 @@ final class SessionStore: ObservableObject {
         biologicalSex: AthleteProfile.BiologicalSex
     ) -> Double {
         guard maxHR > rest, !archivePoints.isEmpty else { return 0 }
+        let segments = archiveOnlyHeartRateSegments(archivePoints,
+                                                    excludingCoverageFrom: sessions,
+                                                    within: interval)
+        return segments.reduce(0) { total, segment in
+            guard let origin = segment.first?.t else { return total }
+            return total + Metrics.trimp(segment.map { ($0.t.timeIntervalSince(origin), $0.bpm) },
+                                         rest: rest,
+                                         max: maxHR,
+                                         sex: biologicalSex)
+        }
+    }
 
+    /// Active-energy counterpart to `archiveOnlyTRIMP`. Both scorers consume
+    /// the exact same deduplicated archive-only segments, keeping daily strain
+    /// and calorie coverage aligned while preserving their distinct formulas.
+    nonisolated static func archiveOnlyActiveCalories(
+        _ archivePoints: [HistoricalArchive.HeartRatePoint],
+        excludingCoverageFrom sessions: [SavedSession],
+        within interval: DateInterval,
+        rest: Int,
+        profile: AthleteProfile
+    ) -> Double? {
+        guard profile.hasEnergyProfile, !archivePoints.isEmpty else { return nil }
+        let segments = archiveOnlyHeartRateSegments(archivePoints,
+                                                    excludingCoverageFrom: sessions,
+                                                    within: interval)
+        guard !segments.isEmpty else { return nil }
+        return segments.reduce(0) { total, segment in
+            total + (Metrics.dayCalories(segment.map {
+                Metrics.HeartRateEnergySample(t: $0.t, bpm: $0.bpm)
+            }, rest: rest, profile: profile) ?? 0)
+        }
+    }
+
+    private nonisolated static func archiveOnlyHeartRateSegments(
+        _ archivePoints: [HistoricalArchive.HeartRatePoint],
+        excludingCoverageFrom sessions: [SavedSession],
+        within interval: DateInterval
+    ) -> [[HistoricalArchive.HeartRatePoint]] {
+        guard !archivePoints.isEmpty else { return [] }
         var coverage: [DateInterval] = []
         for session in sessions where session.end > interval.start && session.start < interval.end {
             let active = AtriaStrengthLog.pointsExcludingIntervals(session.points,
@@ -8482,7 +8579,7 @@ final class SessionStore: ObservableObject {
             unique[Int64((point.t.timeIntervalSince1970 * 1_000).rounded())] = point
         }
         let remaining = unique.values.sorted { $0.t < $1.t }
-        guard remaining.count > 1 else { return 0 }
+        guard remaining.count > 1 else { return [] }
 
         var segments: [[HistoricalArchive.HeartRatePoint]] = []
         var current: [HistoricalArchive.HeartRatePoint] = []
@@ -8499,13 +8596,7 @@ final class SessionStore: ObservableObject {
             current.append(point)
         }
         if current.count > 1 { segments.append(current) }
-        return segments.reduce(0) { total, segment in
-            guard let origin = segment.first?.t else { return total }
-            return total + Metrics.trimp(segment.map { ($0.t.timeIntervalSince(origin), $0.bpm) },
-                                         rest: rest,
-                                         max: maxHR,
-                                         sex: biologicalSex)
-        }
+        return segments
     }
 
     /// Replace the checkpointed prefix of the current live session with the
@@ -8517,6 +8608,21 @@ final class SessionStore: ObservableObject {
         let saved = max(0, savedToday)
         let savedActive = min(saved, max(0, savedActiveSession))
         return saved - savedActive + max(savedActive, max(0, liveActiveSession))
+    }
+
+    /// Replace the checkpointed prefix of the current live session without
+    /// resetting the physiological-day active-energy estimate on reconnect.
+    /// Optionality is provenance: no complete age/sex/weight profile means no
+    /// calorie number, rather than a fabricated zero.
+    nonisolated static func mergedTodayActiveCalories(savedToday: Double?,
+                                                      savedActiveSession: Double?,
+                                                      liveActiveSession: Double?) -> Double? {
+        guard savedToday != nil || savedActiveSession != nil || liveActiveSession != nil else {
+            return nil
+        }
+        let saved = max(0, savedToday ?? 0)
+        let savedActive = min(saved, max(0, savedActiveSession ?? 0))
+        return saved - savedActive + max(savedActive, max(0, liveActiveSession ?? 0))
     }
 
     private func scheduleSessionFilePersist(reason: String, delay: TimeInterval) {

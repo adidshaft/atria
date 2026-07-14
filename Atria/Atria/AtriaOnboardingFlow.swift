@@ -8,6 +8,7 @@ struct AtriaOnboardingFlow: View {
     let onComplete: (AthleteProfile) -> Void
     let onRestoreBackup: ((URL) -> Bool)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var step: Step = .whatThisIs
     @State private var focusMetric: OnboardingFocusMetric = .recovery
     @State private var backupImportPresented = false
@@ -438,36 +439,58 @@ struct AtriaOnboardingFlow: View {
     }
 
     private func numericProfileField(_ title: String, value: Binding<Int>, suffix: String) -> some View {
-        HStack(spacing: 12) {
-            Text(title)
-            Spacer()
+        profileFieldLayout(title: title, suffix: suffix) {
             TextField(title, value: value, format: .number)
                 .keyboardType(.numberPad)
                 .multilineTextAlignment(.trailing)
                 .monospacedDigit()
-                .frame(minWidth: 74)
-                .fixedSize()
+                .frame(minWidth: 88, idealWidth: 96, maxWidth: 132)
+                .frame(minHeight: 44)
                 .textFieldStyle(.roundedBorder)
-            Text(suffix)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
         }
     }
 
     private func numericProfileField(_ title: String, value: Binding<Double>, suffix: String) -> some View {
-        HStack(spacing: 12) {
-            Text(title)
-            Spacer()
+        profileFieldLayout(title: title, suffix: suffix) {
             TextField(title, value: value, format: .number.precision(.fractionLength(0)))
                 .keyboardType(.numberPad)
                 .multilineTextAlignment(.trailing)
                 .monospacedDigit()
-                .frame(minWidth: 74)
-                .fixedSize()
+                .frame(minWidth: 88, idealWidth: 96, maxWidth: 132)
+                .frame(minHeight: 44)
                 .textFieldStyle(.roundedBorder)
-            Text(suffix)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func profileFieldLayout<Editor: View>(
+        title: String,
+        suffix: String,
+        @ViewBuilder editor: () -> Editor
+    ) -> some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline)
+                HStack(spacing: 8) {
+                    editor()
+                    Text(suffix)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        } else {
+            HStack(spacing: 12) {
+                Text(title)
+                Spacer(minLength: 8)
+                editor()
+                Text(suffix)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(minHeight: 44)
         }
     }
 

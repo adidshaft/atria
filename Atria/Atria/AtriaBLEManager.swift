@@ -1277,6 +1277,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     enum CaptureDefaults {
         static let configured = "atria.capture.defaultsConfigured"
         static let protectedLongWearMigrated = "atria.capture.protectedLongWearMigrated"
+        /// The old Settings surface exposed an all-day capture toggle. That
+        /// control was removed when continuous strap collection became Atria's
+        /// core behavior, but existing installs could remain silently disabled
+        /// forever. Migrate that orphaned state exactly once.
+        static let alwaysOnLongWearMigrated = "atria.capture.alwaysOnLongWearMigratedV1"
         static let strapStepFullProtocolMigrated = "atria.capture.strapStepFullProtocolMigrated"
         /// V2 replaces the unstable broad proprietary profile with the
         /// physically verified minimal 2A37 + stream-5 R10 transport. Keep a
@@ -3002,6 +3007,39 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return now.timeIntervalSince(acceptedAt) <= maximumAge
     }
 
+    /// Keep an already-validated mid-range baseline in memory while a freshly
+    /// connected strap is proving its HR + 2A19 notification paths. The
+    /// foreground keepalive can tick before the first HR packet; clearing the
+    /// value during that short race makes later promotion impossible and leaves
+    /// the UI on `Battery pending` until the percentage changes. This is a
+    /// retention gate only: it does not make the value displayable, refresh its
+    /// timestamp, or authorize battery alerts.
+    nonisolated static func reconnectBatteryBaselineIsAwaitingProof(
+        level: Int,
+        acceptedAt: Date?,
+        source: String,
+        displayedIsCached: Bool,
+        requiresFreshConfirmation: Bool,
+        linkConnected: Bool,
+        sameSavedPeripheral: Bool,
+        validationStartedAt: Date,
+        now: Date,
+        proofGrace: TimeInterval = 90,
+        maximumAge: TimeInterval = activeBatterySubscriptionBaselineMaximumAge
+    ) -> Bool {
+        guard displayedIsCached,
+              requiresFreshConfirmation,
+              linkConnected,
+              sameSavedPeripheral,
+              (11...99).contains(level),
+              batteryReconnectBaselineSourceIsLeaseEligible(source),
+              let acceptedAt,
+              acceptedAt <= now,
+              validationStartedAt <= now else { return false }
+        return now.timeIntervalSince(acceptedAt) <= maximumAge
+            && now.timeIntervalSince(validationStartedAt) <= proofGrace
+    }
+
     private func freshConnectedCachedBatteryBaselineIsDisplayable(
         now: Date,
         defaults: UserDefaults = .standard
@@ -3271,6 +3309,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         } else {
             bootstrapProductionCaptureDefaultsIfNeeded(arguments: arguments)
             migrateAutomaticLongWearDefaultIfNeeded(arguments: arguments)
+            if Self.migrateAlwaysOnLongWearIfNeeded(defaults: defaults,
+                                                    arguments: arguments) {
+                longWearModeEnabled = true
+                updateSessionPointCacheMode()
+                AtriaDebugLog("ATRIADBG long_wear_mode status=migrated_always_on action=enabled reason=orphaned_legacy_toggle")
+            }
             migrateStableR10TransportDefaultIfNeeded(arguments: arguments)
             migrateOfflineSyncDefaultIfNeeded(arguments: arguments)
             migrateProtectedR10HistoryInterlockIfNeeded()
@@ -3715,6 +3759,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         forceFreshScanOnRestore = true
         recordRadioMode("protected_r10_minimal", reason: "protected_default_migration")
         AtriaDebugLog("ATRIADBG long_wear_mode status=migrated_default action=enabled reason=protected_background_collection_default")
+    }
+
+    /// Continuous strap capture is a product invariant. Older builds let the
+    /// user disable it, then later removed that control; preserving the hidden
+    /// false value strands the app in foreground-only collection and prevents
+    /// sleep/activity evidence from being journaled. Full-protocol diagnostics
+    /// remain isolated and never consume the production migration.
+    @discardableResult
+    nonisolated static func migrateAlwaysOnLongWearIfNeeded(
+        defaults: UserDefaults = .standard,
+        arguments: [String] = ProcessInfo.processInfo.arguments
+    ) -> Bool {
+        guard !arguments.contains("--atria-full-protocol-mode") else { return false }
+        guard defaults.bool(forKey: CaptureDefaults.configured) else { return false }
+        guard !defaults.bool(forKey: CaptureDefaults.alwaysOnLongWearMigrated) else { return false }
+
+        defaults.set(true, forKey: CaptureDefaults.alwaysOnLongWearMigrated)
+        defaults.set(true, forKey: LongWearDefaults.enabled)
+        // The retired toggle must not continue to block later automatic
+        // migrations. This does not change the independent battery-saver/radio
+        // preference.
+        defaults.set(false, forKey: LongWearDefaults.userSelected)
+        return true
     }
 
     private func migrateOfflineSyncDefaultIfNeeded(arguments: [String]) {
@@ -4689,9 +4756,27 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 now: now,
                 defaults: defaults
             )
+        let savedPeripheralIdentifier = defaults
+            .string(forKey: LinkDefaults.savedPeripheralUUID)
+            .flatMap(UUID.init(uuidString:))
+        let reconnectBatteryBaselineAwaitingProof =
+            Self.reconnectBatteryBaselineIsAwaitingProof(
+                level: batteryLevel,
+                acceptedAt: lastAcceptedBatteryLevelAt,
+                source: defaults.string(forKey: BatteryDefaults.source) ?? "none",
+                displayedIsCached: displayedBatteryLevelIsCached,
+                requiresFreshConfirmation: defaults.bool(
+                    forKey: BatteryDefaults.requiresFreshConfirmation
+                ),
+                linkConnected: peripheral.state == .connected && status == .connected,
+                sameSavedPeripheral: peripheral.identifier == savedPeripheralIdentifier,
+                validationStartedAt: batteryBaselineValidationStartedAt,
+                now: now
+            )
         if batteryLevel >= 0,
            !Self.batteryLevelIsFresh(lastAcceptedAt: lastAcceptedBatteryLevelAt, now: now),
            !recentReconnectBatteryBaselineDisplayable,
+           !reconnectBatteryBaselineAwaitingProof,
            !(batteryNotificationTransportActive
                 && !displayedBatteryLevelIsCached
                 && !UserDefaults.standard.bool(forKey: BatteryDefaults.requiresFreshConfirmation)) {

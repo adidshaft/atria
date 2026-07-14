@@ -496,9 +496,28 @@ def emit_battery_preferences():
     drop_delta = int(pref(prefs, "battery.dropDelta", 0) or 0)
     drop_at = pref(prefs, "battery.dropAt")
     drop_age = max(0.0, now - float(drop_at)) if isinstance(drop_at, (int, float)) and drop_at > 0 else -1.0
-    # Match the app's fail-closed presentation contract: a persisted 2A19
-    # percentage is history, not current strap truth, after ten minutes.
-    usable = isinstance(level, int) and level >= 0 and 0 <= age <= 10 * 60
+    # Match the app's fail-closed presentation contract. The raw level packet
+    # is fresh for ten minutes. Beyond that, a mid-range value remains usable
+    # only while this running connection is actively renewing its proven 2A19
+    # notification lease; the lease never rescues restoration sentinels.
+    requires_fresh = bool(pref(prefs, "battery.requiresFreshConfirmation", False))
+    lease_at = pref(prefs, "battery.notificationLeaseAt")
+    lease_age = max(0.0, now - float(lease_at)) if isinstance(lease_at, (int, float)) and lease_at > 0 else -1.0
+    confirmed_at = pref(prefs, "battery.notificationConfirmedAt")
+    confirmed_age = max(0.0, now - float(confirmed_at)) if isinstance(confirmed_at, (int, float)) and confirmed_at > 0 else -1.0
+    raw_fresh = isinstance(level, int) and 11 <= level <= 99 and 0 <= age <= 10 * 60
+    active_notification_lease = (
+        isinstance(level, int)
+        and 11 <= level <= 99
+        and source in ("live_2A19", "live_battery_event")
+        and not requires_fresh
+        and 0 <= lease_age <= 10 * 60
+        and 0 <= confirmed_age <= 60 * 60
+    )
+    usable = raw_fresh or active_notification_lease
+    projection_basis = "fresh_level_packet" if raw_fresh else (
+        "active_notification_lease" if active_notification_lease else "none"
+    )
     recent_drop = drop_delta > 0 and 0 <= drop_age <= 6 * 60 * 60
     charging = charge_status in ("charging", "full")
     print(f"battery_namespace={pref_namespace(prefs, 'battery.level')}")
@@ -509,6 +528,8 @@ def emit_battery_preferences():
     print(f"battery_charge_age_s={charge_age:.1f}")
     print(f"battery_is_charging={bool_int(charging)}")
     print(f"battery_usable={bool_int(usable)}")
+    print(f"battery_projection_basis={projection_basis}")
+    print(f"battery_notification_lease_age_s={lease_age:.1f}")
     print(f"battery_effective_level={int(level) if usable else -1}")
     print(f"battery_effective_status={'live' if usable else 'pending'}")
     print(f"battery_drop_recent={bool_int(recent_drop)}")

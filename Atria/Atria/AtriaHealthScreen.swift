@@ -1,6 +1,14 @@
 import SwiftUI
 import Charts
 
+enum AtriaHealthMonitorGrid {
+    static func columnCount(for dynamicTypeSize: DynamicTypeSize) -> Int {
+        if dynamicTypeSize.isAccessibilitySize { return 1 }
+        if dynamicTypeSize >= .xxLarge { return 2 }
+        return 3
+    }
+}
+
 struct AtriaHealthScreen: View {
     private enum Scope: String, CaseIterable, Identifiable {
         case live = "Live"
@@ -529,17 +537,15 @@ struct AtriaHealthScreen: View {
     }
 
     /// Complete rows avoid the large half-empty grid rows visible on compact
-    /// phones. Accessibility sizes intentionally return to one full-width item.
+    /// phones. Very large text gets two columns before accessibility sizes
+    /// return to one full-width item, keeping titles and values readable.
     private var monitorGridColumns: [GridItem] {
-        if dynamicTypeSize.isAccessibilitySize {
-            return [GridItem(.flexible(), spacing: 8, alignment: .top)]
-        }
-        return compactThreeColumnGrid
-    }
-
-    private var compactThreeColumnGrid: [GridItem] {
-        Array(repeating: GridItem(.flexible(minimum: 76), spacing: 8, alignment: .top),
-              count: 3)
+        let count = AtriaHealthMonitorGrid.columnCount(for: dynamicTypeSize)
+        let minimum: CGFloat = count == 3 ? 76 : 112
+        return Array(repeating: GridItem(.flexible(minimum: minimum),
+                                         spacing: 8,
+                                         alignment: .top),
+                     count: count)
     }
 
     @MainActor

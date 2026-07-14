@@ -14197,7 +14197,9 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertNotIn("let newLevel = Int(data.first ?? 0)", ble)
 
         pull = source(ROOT / "pull_atria_state.sh")
-        assert_contains(self, pull, "0 <= age <= 10 * 60")
+        assert_contains(self, pull, "raw_fresh = isinstance(level, int) and 11 <= level <= 99 and 0 <= age <= 10 * 60")
+        assert_contains(self, pull, "active_notification_lease = (")
+        assert_contains(self, pull, '"active_notification_lease" if active_notification_lease else "none"')
         assert_contains(self, pull, "battery_effective_status={'live' if usable else 'pending'}")
 
     def test_fitness_age_pace_counts_weekly_checks_not_daily_cache_copies(self):

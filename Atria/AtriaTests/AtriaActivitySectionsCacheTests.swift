@@ -384,6 +384,23 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertEqual(pastTicks.last?.accessibilityLabel, "End of day, 12 AM")
     }
 
+    func testTimelineAxisReplacesAnchorThatWouldCollideWithNow() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026,
+                                                                   month: 7,
+                                                                   day: 12)))
+        let now = day.addingTimeInterval(17 * 3_600 + 39 * 60)
+
+        let ticks = AtriaActivityTimelineAxis.ticks(selectedDay: day,
+                                                    calendar: calendar,
+                                                    now: now)
+
+        XCTAssertEqual(ticks.map(\.label), ["12a", "6a", "12p", "Now"])
+        XCTAssertFalse(ticks.contains { calendar.component(.hour, from: $0.date) == 18 })
+        XCTAssertEqual(ticks.last?.date, now)
+    }
+
     func testTimelineKeepsOverlappingActivitiesVisibleInSeparateLanesAndClipsCrossDaySpans() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
