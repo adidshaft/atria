@@ -630,11 +630,26 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                        "Name, type, time, sets and pause state must commit in one durable revision")
     }
 
-    func testActivityEditorRederivesMetricsWithoutCountingPreservedPauseIntervals() throws {
+    func testActivityEditorRederivesMetricsWithoutCountingPreservedPauseIntervals() async throws {
         let store = SessionStore()
+        // Xcode repetitions reuse the simulator container. Let SessionStore
+        // finish merging its durable sessions before inserting this fixture;
+        // otherwise a late deferred load can add a previous repetition's
+        // synthetic session while the editor is rebuilding metrics.
+        await store.waitForDeferredSessionLoadIfNeeded()
+        // `add` also performs the launch-time safety-backup reconciliation.
+        // Do that before choosing the fixture window so a backup retained by a
+        // previous repetition cannot appear after the anchor was calculated.
+        store.reconcileCanonicalSessionsFromBackupIfNeeded(
+            reason: "pause_aware_edit_test_setup"
+        )
         let marker = "pause-aware-edit-" + UUID().uuidString
         let sessionID = UUID()
-        let start = Date(timeIntervalSince1970: 2_140_000_000 + Double.random(in: 0..<100_000))
+        let newestLoadedEnd = store.sessions.map(\.end).max()
+            ?? Date(timeIntervalSince1970: 2_140_000_000)
+        let start = max(newestLoadedEnd,
+                        Date(timeIntervalSince1970: 2_140_000_000))
+            .addingTimeInterval(24 * 60 * 60 + Double.random(in: 0..<10_000))
         let end = start.addingTimeInterval(20 * 60)
         let pause = ExcludedInterval(start: start.addingTimeInterval(8 * 60),
                                      end: start.addingTimeInterval(12 * 60))
@@ -650,6 +665,15 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                                points: points,
                                hrv: nil,
                                eventTimeZoneIdentifier: "UTC"))
+        defer {
+            for workout in store.confirmedWorkouts where workout.reviewSource == marker {
+                _ = store.deleteConfirmedWorkout(id: workout.id)
+            }
+            store.deleteSession(id: sessionID)
+            // Cancel the delayed fixture write and durably persist the cleaned
+            // session set before a repeated test process opens this container.
+            store.flushScheduledPersistence(reason: "pause_aware_edit_test_cleanup")
+        }
         let original = try XCTUnwrap(store.confirmWorkoutWindowForUI(
             start: start,
             end: end,
@@ -660,12 +684,6 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
             excludedIntervals: [pause],
             reviewSource: marker
         ))
-        defer {
-            for workout in store.confirmedWorkouts where workout.reviewSource == marker {
-                _ = store.deleteConfirmedWorkout(id: workout.id)
-            }
-            store.deleteSession(id: sessionID)
-        }
 
         XCTAssertEqual(original.zoneSeconds?["max"] ?? 0, 0, accuracy: 0.001)
         let saved = try XCTUnwrap(store.editConfirmedWorkout(

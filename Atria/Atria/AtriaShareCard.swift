@@ -878,12 +878,9 @@ struct AtriaWorkoutShareCardView: View {
             .textCase(.uppercase)
             .foregroundStyle(foreground.opacity(0.64))
 
-            AtriaWorkoutShareRouteShape(points: snapshot.routePoints)
-                .stroke(accent,
-                        style: StrokeStyle(lineWidth: format == .story ? 4.5 : 3.5,
-                                           lineCap: .round,
-                                           lineJoin: .round))
-                .shadow(color: accent.opacity(0.30), radius: 5)
+            AtriaWorkoutShareRouteTrace(points: snapshot.routePoints,
+                                        tint: accent,
+                                        lineWidth: format == .story ? 4.5 : 3.5)
                 .padding(5)
         }
         .padding(11)
@@ -998,36 +995,91 @@ struct AtriaWorkoutShareCardView: View {
     }
 }
 
+enum AtriaWorkoutShareRouteProjection {
+    static func projectedPoints(_ points: [AtriaWorkoutShareSnapshot.RoutePoint],
+                                in rect: CGRect) -> [CGPoint] {
+        guard points.count >= 2 else { return [] }
+        // Keep the 9-point endpoint dots fully inside the exported canvas.
+        // Projecting exactly onto maxX/maxY lets the route line render, but
+        // clips half of a start/finish marker at an extreme coordinate.
+        let horizontalInset = min(5, max(0, rect.width / 2))
+        let verticalInset = min(5, max(0, rect.height / 2))
+        let drawingRect = rect.insetBy(dx: horizontalInset, dy: verticalInset)
+        let meanLatitude = points.map(\.latitude).reduce(0, +) / Double(points.count)
+        let longitudeScale = max(cos(meanLatitude * .pi / 180), 0.01)
+        let source = points.map { point in
+            CGPoint(x: point.longitude * longitudeScale, y: point.latitude)
+        }
+        let minX = source.map(\.x).min() ?? 0
+        let maxX = source.map(\.x).max() ?? 0
+        let minY = source.map(\.y).min() ?? 0
+        let maxY = source.map(\.y).max() ?? 0
+        let sourceWidth = max(maxX - minX, 0.000_000_1)
+        let sourceHeight = max(maxY - minY, 0.000_000_1)
+        let scale = min(drawingRect.width / sourceWidth, drawingRect.height / sourceHeight)
+        let drawnWidth = sourceWidth * scale
+        let drawnHeight = sourceHeight * scale
+        let originX = drawingRect.minX + (drawingRect.width - drawnWidth) / 2
+        let originY = drawingRect.minY + (drawingRect.height - drawnHeight) / 2
+
+        return source.map { point in
+            CGPoint(x: originX + (point.x - minX) * scale,
+                    y: originY + (maxY - point.y) * scale)
+        }
+    }
+}
+
+private struct AtriaWorkoutShareRouteTrace: View {
+    let points: [AtriaWorkoutShareSnapshot.RoutePoint]
+    let tint: Color
+    let lineWidth: CGFloat
+
+    var body: some View {
+        GeometryReader { proxy in
+            let projected = AtriaWorkoutShareRouteProjection.projectedPoints(
+                points,
+                in: CGRect(origin: .zero, size: proxy.size)
+            )
+            ZStack {
+                AtriaWorkoutShareRouteShape(points: points)
+                    .stroke(tint,
+                            style: StrokeStyle(lineWidth: lineWidth,
+                                               lineCap: .round,
+                                               lineJoin: .round))
+                    .shadow(color: tint.opacity(0.30), radius: 5)
+
+                if let start = projected.first {
+                    routeEndpoint(at: start, tint: .green)
+                }
+                if let finish = projected.last {
+                    routeEndpoint(at: finish, tint: .red)
+                }
+            }
+        }
+    }
+
+    private func routeEndpoint(at point: CGPoint, tint: Color) -> some View {
+        Circle()
+            .fill(tint)
+            .overlay(Circle().stroke(.white.opacity(0.92), lineWidth: 1.5))
+            .frame(width: 9, height: 9)
+            .position(point)
+    }
+}
+
 private struct AtriaWorkoutShareRouteShape: Shape {
     let points: [AtriaWorkoutShareSnapshot.RoutePoint]
 
     func path(in rect: CGRect) -> Path {
-        guard points.count >= 2 else { return Path() }
-        let meanLatitude = points.map(\.latitude).reduce(0, +) / Double(points.count)
-        let longitudeScale = max(cos(meanLatitude * .pi / 180), 0.01)
-        let projected = points.map { point in
-            CGPoint(x: point.longitude * longitudeScale, y: point.latitude)
-        }
-        let minX = projected.map(\.x).min() ?? 0
-        let maxX = projected.map(\.x).max() ?? 0
-        let minY = projected.map(\.y).min() ?? 0
-        let maxY = projected.map(\.y).max() ?? 0
-        let sourceWidth = max(maxX - minX, 0.000_000_1)
-        let sourceHeight = max(maxY - minY, 0.000_000_1)
-        let scale = min(rect.width / sourceWidth, rect.height / sourceHeight)
-        let drawnWidth = sourceWidth * scale
-        let drawnHeight = sourceHeight * scale
-        let originX = rect.minX + (rect.width - drawnWidth) / 2
-        let originY = rect.minY + (rect.height - drawnHeight) / 2
+        let projected = AtriaWorkoutShareRouteProjection.projectedPoints(points, in: rect)
+        guard projected.count == points.count else { return Path() }
 
         var path = Path()
         for (index, projectedPoint) in projected.enumerated() {
-            let point = CGPoint(x: originX + (projectedPoint.x - minX) * scale,
-                                y: originY + (maxY - projectedPoint.y) * scale)
             if index == 0 || points[index].startsNewSegment {
-                path.move(to: point)
+                path.move(to: projectedPoint)
             } else {
-                path.addLine(to: point)
+                path.addLine(to: projectedPoint)
             }
         }
         return path
