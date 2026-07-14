@@ -596,6 +596,73 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertEqual(normalizedSchema(app), normalizedSchema(widget))
     }
 
+    func testLiveActivityPayloadExcludesUnrenderedNowPlayingStateAndStaysBounded() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let projectDirectory = testsDirectory.deletingLastPathComponent()
+        let schema = try String(contentsOf: projectDirectory
+            .appendingPathComponent("Atria/AtriaLiveActivityAttributes.swift"), encoding: .utf8)
+        let home = try String(contentsOf: projectDirectory
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+
+        for unrenderedField in ["mediaTitle", "mediaArtist", "mediaIsPlaying", "mediaHasNowPlayingInfo"] {
+            XCTAssertFalse(schema.contains(unrenderedField))
+        }
+        let publisherStart = try XCTUnwrap(home.range(of: "private var liveActivityUpdates"))
+        let publisherEnd = try XCTUnwrap(home.range(of: "private var hapticUpdates",
+                                                    range: publisherStart.upperBound..<home.endIndex))
+        XCTAssertFalse(home[publisherStart.lowerBound..<publisherEnd.lowerBound]
+            .contains("mediaController.$state"),
+            "Now Playing changes must not force an ActivityKit write for UI that never renders media")
+
+        let state = AtriaLiveActivityAttributes.ContentState(
+            heartRate: 188,
+            strain: 20.9,
+            batteryLevel: 100,
+            batteryChargeStatus: "notCharging",
+            batteryChargeText: "Not charging",
+            readingCount: .max,
+            updatedAt: Date(timeIntervalSince1970: 2_000_000_000),
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_000_000_000),
+            sensorHasContact: true,
+            heartRateAvailability: .live,
+            activityName: String(repeating: "W", count: 64),
+            activitySystemImage: "figure.run",
+            heartRateZoneIndex: 5,
+            heartRateZoneName: String(repeating: "Z", count: 64),
+            steps: .max,
+            stepsAreEstimated: false,
+            stepsCapturedAt: Date(timeIntervalSince1970: 2_000_000_000),
+            stepsAvailability: .live,
+            dailySteps: .max,
+            dailyStepsAreEstimated: false,
+            dailyStepGoal: .max,
+            workoutStrain: 20.9,
+            targetWorkoutStrain: 21,
+            activeEnergyKilocalories: 99_999,
+            targetLowerHeartRateZone: 1,
+            targetUpperHeartRateZone: 5,
+            isPaused: false,
+            isEnding: false,
+            timerAnchor: Date(timeIntervalSince1970: 2_000_000_000),
+            elapsedDuration: 86_400
+        )
+        let encoded = try JSONEncoder().encode(state)
+        XCTAssertLessThan(encoded.count, 4_096,
+                          "ActivityKit rejects dynamic content whose encoded state exceeds 4 KB")
+
+        var legacyObject = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded)
+            as? [String: Any])
+        legacyObject["mediaTitle"] = "Previously playing"
+        legacyObject["mediaArtist"] = "Legacy artist"
+        legacyObject["mediaIsPlaying"] = true
+        legacyObject["mediaHasNowPlayingInfo"] = true
+        let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
+        XCTAssertEqual(try JSONDecoder().decode(AtriaLiveActivityAttributes.ContentState.self,
+                                                from: legacyData),
+                       state,
+                       "Removing unrendered keys must continue decoding an in-flight activity from the previous build")
+    }
+
     func testWidgetFailsClosedAndDistinguishesLiveReconnectStaleUnavailable() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let widgetSourceURL = testsDirectory
@@ -688,10 +755,6 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             batteryLevel: 53,
             batteryChargeStatus: .levelOnly,
             readingCount: 100,
-            mediaTitle: "",
-            mediaArtist: "",
-            mediaIsPlaying: false,
-            mediaHasNowPlayingInfo: false,
             startedAt: Date(timeIntervalSince1970: 2_000_000_000),
             activityName: "Strength",
             activitySystemImage: "dumbbell.fill",

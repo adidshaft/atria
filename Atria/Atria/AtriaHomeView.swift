@@ -745,7 +745,10 @@ struct AtriaHomeView: View {
     @State private var suppressNextExcludedIntervalPersistence = false
     @State private var liveWorkoutPauseStartedAt: Date?
     @State private var liveWorkoutTRIMPAccumulator = AtriaLiveWorkoutTRIMPAccumulator()
-    @State private var liveWorkoutMetricProjection = AtriaLiveWorkoutMetricProjection.empty
+    // Retain by identity without subscribing Home's 10k-line hierarchy. The
+    // presented AtriaLiveWorkoutView is the sole observer, so 750 ms live
+    // metric publications cannot rebuild every underlying tab and sheet.
+    @State private var liveWorkoutMetricStore = AtriaLiveWorkoutMetricStore()
     @State private var liveWorkoutMinimized = false
     @State private var workoutEndNotice: AtriaWorkoutEndNotice?
     @State private var queuedWorkoutShareSnapshot: AtriaWorkoutShareSnapshot?
@@ -1198,7 +1201,7 @@ struct AtriaHomeView: View {
         .fullScreenCover(isPresented: liveWorkoutPresentationBinding) {
             if let session = workoutSession {
                 AtriaLiveWorkoutView(pulseStore: model.pulseLiveStore,
-                                     metricProjection: liveWorkoutMetricProjection,
+                                     metricStore: liveWorkoutMetricStore,
                                      routeRecorder: workoutRouteRecorder,
                                      maxHR: store.profile.maxHR,
                                      strainTarget: model.heroStore.state.guidance.target,
@@ -1900,7 +1903,6 @@ struct AtriaHomeView: View {
             model.pulseLiveStore.$state.map { _ in () }.eraseToAnyPublisher(),
             model.heroStore.$state.map { _ in () }.eraseToAnyPublisher(),
             ble.$liveStrapMotionCapturedAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            mediaController.$state.map { _ in () }.eraseToAnyPublisher(),
             Self.strainTargetGuidanceTimer.map { _ in () }.eraseToAnyPublisher()
         ])
         .throttle(for: .milliseconds(750), scheduler: RunLoop.main, latest: true)
@@ -2502,9 +2504,7 @@ struct AtriaHomeView: View {
                                                                sensorAvailability: heartRateAvailability)
         let storedDailyStepGoal = UserDefaults.standard.integer(forKey: "atria.target.steps.goal")
         let dailyStepGoal = storedDailyStepGoal > 0 ? storedDailyStepGoal : 8_000
-        if liveWorkoutMetricProjection != metricProjection {
-            liveWorkoutMetricProjection = metricProjection
-        }
+        liveWorkoutMetricStore.publishIfChanged(metricProjection)
         let movingDuration = session.map {
             AtriaWorkoutMovingDuration.project(
                 startedAt: $0.start,
@@ -2523,10 +2523,6 @@ struct AtriaHomeView: View {
             batteryLevel: model.coreLiveStore.state.batteryLevel,
             batteryChargeStatus: model.coreLiveStore.state.batteryChargeStatus,
             readingCount: model.coreLiveStore.state.sessionSampleCount,
-            mediaTitle: mediaController.state.title,
-            mediaArtist: mediaController.state.artist,
-            mediaIsPlaying: mediaController.state.isPlaying,
-            mediaHasNowPlayingInfo: mediaController.state.hasNowPlayingInfo,
             startedAt: session?.start ?? Date(),
             activityName: activityType == .other ? "Workout" : activityType.rawValue,
             activitySystemImage: activityType.icon,

@@ -213,14 +213,14 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
         var authorizationStatus: CLAuthorizationStatus = .notDetermined
         /// Bounded geometry intended only for the live map. Complete route fixes
         /// remain private in `points` for recovery and export fidelity.
-        var previewCoordinates: [CLLocationCoordinate2D] = []
+        var previewSegments: [[CLLocationCoordinate2D]] = []
         var pointCount = 0
         var distanceMeters: Double = 0
         var elevationGainMeters: Double = 0
         var lastError: String?
 
         var latestCoordinate: CLLocationCoordinate2D? {
-            previewCoordinates.last
+            previewSegments.last?.last
         }
     }
 
@@ -241,7 +241,7 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
     private var activeType: AtriaWorkoutActivityType?
     private var startedAt: Date?
     private var points: [AtriaWorkoutRoute.Point] = []
-    private var previewCoordinates: [CLLocationCoordinate2D] = []
+    private var previewSegments: [[CLLocationCoordinate2D]] = []
     private var distanceMeters: Double = 0
     private var elevationGainMeters: Double = 0
     private var lastPublishedAt: Date?
@@ -487,9 +487,10 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
                                                   horizontalAccuracy: location.horizontalAccuracy,
                                                   verticalAccuracy: location.verticalAccuracy,
                                                   startsNewSegment: startsNewSegment))
-            previewCoordinates = Self.previewCoordinates(
+            previewSegments = Self.previewSegments(
                 byAppending: location.coordinate,
-                to: previewCoordinates
+                startsNewSegment: startsNewSegment,
+                to: previewSegments
             )
             needsNewRouteSegment = false
         }
@@ -551,38 +552,69 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
             && accuracyAuthorization == .reducedAccuracy
     }
 
-    /// Incrementally bounds live map geometry. Compaction touches at most
-    /// `limit + 1` coordinates and always keeps both route endpoints; it never
-    /// traverses or mutates the full-fidelity route array.
-    nonisolated static func previewCoordinates(
+    /// Incrementally bounds live map geometry without joining pause/resume
+    /// gaps. Compaction touches only the already-bounded preview, preserves
+    /// each retained segment's endpoints, and never traverses or mutates the
+    /// full-fidelity route array.
+    nonisolated static func previewSegments(
         byAppending coordinate: CLLocationCoordinate2D,
-        to existing: [CLLocationCoordinate2D],
+        startsNewSegment: Bool,
+        to existing: [[CLLocationCoordinate2D]],
         limit: Int = maximumLivePreviewPointCount
-    ) -> [CLLocationCoordinate2D] {
-        guard limit >= 2 else { return [coordinate] }
-        var result = existing
-        result.append(coordinate)
-        guard result.count > limit else { return result }
-        var compacted: [CLLocationCoordinate2D] = []
-        compacted.reserveCapacity((result.count / 2) + 2)
-        compacted.append(result[0])
-        var index = 2
-        while index < result.count - 1 {
-            compacted.append(result[index])
-            index += 2
+    ) -> [[CLLocationCoordinate2D]] {
+        guard limit > 0 else { return [] }
+        var result = existing.filter { !$0.isEmpty }
+        if startsNewSegment || result.isEmpty {
+            result.append([coordinate])
+        } else {
+            result[result.count - 1].append(coordinate)
         }
-        compacted.append(result[result.count - 1])
-        return compacted
+
+        func pointCount(_ segments: [[CLLocationCoordinate2D]]) -> Int {
+            segments.reduce(0) { $0 + $1.count }
+        }
+        while pointCount(result) > limit {
+            if let longest = result.indices
+                .filter({ result[$0].count > 2 })
+                .max(by: { result[$0].count < result[$1].count }) {
+                let segment = result[longest]
+                var compacted: [CLLocationCoordinate2D] = [segment[0]]
+                compacted.reserveCapacity((segment.count / 2) + 2)
+                var index = 2
+                while index < segment.count - 1 {
+                    compacted.append(segment[index])
+                    index += 2
+                }
+                compacted.append(segment[segment.count - 1])
+                result[longest] = compacted
+                continue
+            }
+
+            // An extreme number of one/two-point pause segments cannot all fit
+            // in a finite preview. Drop the oldest interior segment first,
+            // retaining the complete route's first and newest endpoints.
+            if result.count > 2 {
+                result.remove(at: 1)
+            } else if result.first?.count == 2 {
+                result[0] = [result[0][0]]
+            } else if result.count == 2, result[1].count == 2 {
+                result[1] = [result[1][1]]
+            } else {
+                result = [[coordinate]]
+            }
+        }
+        return result
     }
 
-    nonisolated static func boundedPreviewCoordinates(
+    nonisolated static func boundedPreviewSegments(
         from points: [AtriaWorkoutRoute.Point],
         limit: Int = maximumLivePreviewPointCount
-    ) -> [CLLocationCoordinate2D] {
-        points.reduce(into: [CLLocationCoordinate2D]()) { preview, point in
-            preview = previewCoordinates(
+    ) -> [[CLLocationCoordinate2D]] {
+        points.reduce(into: [[CLLocationCoordinate2D]]()) { preview, point in
+            preview = previewSegments(
                 byAppending: CLLocationCoordinate2D(latitude: point.latitude,
                                                      longitude: point.longitude),
+                startsNewSegment: preview.isEmpty || point.startsNewSegment == true,
                 to: preview,
                 limit: limit
             )
@@ -619,7 +651,7 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
     }
 
     private func publishSnapshot() {
-        snapshot.previewCoordinates = previewCoordinates
+        snapshot.previewSegments = previewSegments
         snapshot.pointCount = points.count
         snapshot.distanceMeters = distanceMeters
         snapshot.elevationGainMeters = elevationGainMeters
@@ -649,7 +681,7 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
               abs(checkpoint.startedAt.timeIntervalSince(startedAt)) <= 2,
               checkpoint.activityType == activityType.rawValue else { return }
         points = checkpoint.points
-        previewCoordinates = Self.boundedPreviewCoordinates(from: checkpoint.points)
+        previewSegments = Self.boundedPreviewSegments(from: checkpoint.points)
         distanceMeters = checkpoint.distanceMeters
         elevationGainMeters = checkpoint.elevationGainMeters
         pauseStartedAt = checkpoint.pauseStartedAt
@@ -734,7 +766,7 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
         activeType = nil
         startedAt = nil
         points = []
-        previewCoordinates = []
+        previewSegments = []
         distanceMeters = 0
         elevationGainMeters = 0
         lastPublishedAt = nil

@@ -70,6 +70,29 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
                            stageSegments: nil)
     }
 
+    private func automaticSleep(start: Date, end: Date) -> UserConfirmedSleep {
+        UserConfirmedSleep(id: "automatic-\(Int(start.timeIntervalSince1970))",
+                           createdAt: end,
+                           start: start,
+                           end: end,
+                           source: "auto_confirmed_sleep",
+                           confidence: "high",
+                           sessions: 1,
+                           samples: 500,
+                           avgHR: 58,
+                           peakHR: 70,
+                           restingHR: 55,
+                           hrv: 48,
+                           hrvWindowCount: 4,
+                           duration: end.timeIntervalSince(start),
+                           span: end.timeIntervalSince(start),
+                           reason: "test",
+                           motionSource: "strap_motion",
+                           motionValidated: true,
+                           stageSegments: nil,
+                           eventTimeZoneIdentifier: "UTC")
+    }
+
     func testUnconfirmedSnapshotNightKeepsPriorityOverAggregatedSession() {
         let expected = reviewNight(id: "snapshot-wins")
         let snapshot = SleepHistorySnapshot(nights: [expected], confirmedCount: 0, candidateCount: 1)
@@ -145,6 +168,50 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
         XCTAssertEqual(result.end, date(day: 10, hour: 12).addingTimeInterval(20 * 60))
         XCTAssertFalse(result.confirmed)
         XCTAssertLessThan(result.sleepEfficiency ?? 1, 0.8)
+    }
+
+    func testPhysiologicalReviewSurfacesResumedSleepAfterAutomaticFirstWakeSave() throws {
+        let recordingStart = date(day: 10, hour: 2)
+        var points: [SavedSession.Point] = []
+        func append(from startMinute: Int, through endMinute: Int, bpm: Int) {
+            for minute in startMinute...endMinute {
+                points.append(SavedSession.Point(t: TimeInterval(minute * 60), bpm: bpm))
+            }
+        }
+        append(from: 110, through: 394, bpm: 58) // 03:50–08:34 first sleep
+        append(from: 410, through: 578, bpm: 59) // brief wake, then sleep to 11:38
+        let session = SavedSession(id: UUID(),
+                                   start: recordingStart,
+                                   end: recordingStart.addingTimeInterval(579 * 60),
+                                   label: "Resumed sleep",
+                                   points: points)
+        let firstWake = automaticSleep(start: recordingStart.addingTimeInterval(110 * 60),
+                                       end: recordingStart.addingTimeInterval(394 * 60))
+
+        let result = try XCTUnwrap(SessionStore.physiologicalSleepReviewNight(
+            in: [session],
+            confirmedSleeps: [firstWake],
+            rest: 60,
+            calendar: calendar
+        ))
+
+        XCTAssertEqual(result.source, "sleep_episode_review")
+        XCTAssertEqual(result.start, firstWake.start)
+        XCTAssertGreaterThanOrEqual(result.end ?? .distantPast,
+                                    firstWake.end.addingTimeInterval(2.5 * 60 * 60))
+        XCTAssertFalse(result.confirmed)
+    }
+
+    func testPhysiologicalReviewDoesNotReplaceUserAuthoredFirstSleep() {
+        let session = sleepSession(day: 10, startHour: 2, durationHours: 9, bpm: 55)
+        let manual = confirmedSleep(overlapping: session)
+
+        XCTAssertNil(SessionStore.physiologicalSleepReviewNight(
+            in: [session],
+            confirmedSleeps: [manual],
+            rest: 60,
+            calendar: calendar
+        ))
     }
 
     func testMotionReadyFragmentedCandidateRemainsReviewable() {

@@ -95,4 +95,73 @@ final class AtriaSleepExtendTests: XCTestCase {
         XCTAssertFalse(SessionStore.sleepExtendReplacement(existing: [existing],
                                                             candidate: longerWindowWithLessCreditedSleep))
     }
+
+    func testReviewCanSurfaceLowMotionContinuationOfAutomaticNight() throws {
+        let original = sleep(source: "auto_confirmed_sleep", start: at(0), end: at(7))
+
+        let target = try XCTUnwrap(SessionStore.sleepReviewExtensionTarget(
+            existing: [original],
+            candidateStart: at(0),
+            candidateEnd: at(9),
+            candidateDuration: 8.25 * 60 * 60,
+            isNap: false
+        ))
+
+        XCTAssertEqual(target.id, original.id)
+    }
+
+    func testReviewContinuationNeverReplacesManualOrSeparateSleep() {
+        let automatic = sleep(source: "auto_confirmed_sleep", start: at(0), end: at(7))
+        let manual = sleep(source: "manual_sleep", start: at(0), end: at(7))
+
+        XCTAssertNil(SessionStore.sleepReviewExtensionTarget(
+            existing: [manual],
+            candidateStart: at(0),
+            candidateEnd: at(9),
+            candidateDuration: 8.25 * 60 * 60,
+            isNap: false
+        ))
+        XCTAssertNil(SessionStore.sleepReviewExtensionTarget(
+            existing: [automatic],
+            candidateStart: at(7.5),
+            candidateEnd: at(10),
+            candidateDuration: 2.5 * 60 * 60,
+            isNap: false
+        ))
+        XCTAssertNil(SessionStore.sleepReviewExtensionTarget(
+            existing: [automatic],
+            candidateStart: at(0),
+            candidateEnd: at(9),
+            candidateDuration: 7.1 * 60 * 60,
+            isNap: false
+        ))
+        XCTAssertNil(SessionStore.sleepReviewExtensionTarget(
+            existing: [automatic],
+            candidateStart: at(-2),
+            candidateEnd: at(9),
+            candidateDuration: 10 * 60 * 60,
+            isNap: false
+        ))
+    }
+
+    func testReviewSaveBaseRemovesSubsumedAutoFragmentsButPreservesOtherActivity() {
+        let first = sleep(source: "auto_confirmed_sleep", start: at(0), end: at(7))
+        let legacyFragment = sleep(source: "auto_sleep", start: at(6.5), end: at(8))
+        let laterNap = sleep(source: "manual_nap", start: at(14), end: at(15))
+
+        let base = SessionStore.sleepReviewInsertionBase(
+            existing: [first, legacyFragment, laterNap],
+            extensionTarget: first,
+            candidateStart: at(0),
+            candidateEnd: at(9)
+        )
+
+        XCTAssertEqual(base.map(\.id), [laterNap.id])
+        XCTAssertEqual(SessionStore.sleepReviewInsertionBase(
+            existing: [first, laterNap],
+            extensionTarget: nil,
+            candidateStart: at(0),
+            candidateEnd: at(9)
+        ).map(\.id), [first.id, laterNap.id])
+    }
 }

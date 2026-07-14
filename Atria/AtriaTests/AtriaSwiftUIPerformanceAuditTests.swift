@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import Combine
 @testable import Atria
 
 final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
@@ -140,6 +141,39 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
         XCTAssertTrue(source.contains("updateConnectionDiagnosisVisibility(reason: \"candidate_deadline\")"))
         XCTAssertTrue(source.contains("updateConnectionDiagnosisVisibility(reason: \"scene_foreground_deferred\")"),
                       "Returning from suspension must re-derive a candidate whose deadline was cancelled")
+    }
+
+    @MainActor
+    func testLiveWorkoutMetricStorePublishesOnlyChangedLeafState() {
+        let store = AtriaLiveWorkoutMetricStore()
+        var publications = 0
+        let cancellable = store.$state
+            .dropFirst()
+            .sink { _ in publications += 1 }
+
+        store.publishIfChanged(.empty)
+        var changed = AtriaLiveWorkoutMetricProjection.empty
+        changed.strain = 1.4
+        changed.hasSensorEvidence = true
+        store.publishIfChanged(changed)
+        store.publishIfChanged(changed)
+
+        XCTAssertEqual(publications, 1)
+        XCTAssertEqual(store.state, changed)
+        withExtendedLifetime(cancellable) {}
+    }
+
+    func testRapidWorkoutMetricsAreObservedOnlyByPresentedWorkoutLeaf() throws {
+        let home = try appSource("AtriaHomeView.swift")
+        let workout = try appSource("AtriaLiveWorkoutView.swift")
+
+        XCTAssertTrue(home.contains("@State private var liveWorkoutMetricStore = AtriaLiveWorkoutMetricStore()"))
+        XCTAssertFalse(home.contains("@State private var liveWorkoutMetricProjection"),
+                       "Rapid workout metrics must not invalidate the complete Home hierarchy")
+        XCTAssertTrue(home.contains("metricStore: liveWorkoutMetricStore"))
+        XCTAssertTrue(home.contains("liveWorkoutMetricStore.publishIfChanged(metricProjection)"))
+        XCTAssertTrue(workout.contains("@ObservedObject var metricStore: AtriaLiveWorkoutMetricStore"))
+        XCTAssertTrue(workout.contains("private var metricProjection: AtriaLiveWorkoutMetricProjection"))
     }
 
     func testDecorativeDetailAnimationsPauseOutsideActiveScene() throws {

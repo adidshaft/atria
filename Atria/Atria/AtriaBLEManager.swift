@@ -2012,6 +2012,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let protectedR10PassiveReprobePendingKey = "atria.protectedR10.passiveReprobePending"
     nonisolated private static let protectedR10PassiveReprobeAttemptAtKey = "atria.protectedR10.passiveReprobeAttemptAt"
     nonisolated private static let protectedR10PassiveReprobeFailureCountKey = "atria.protectedR10.passiveReprobeFailureCount"
+    nonisolated private static let protectedR10PassiveRetryMigrationKey = "atria.protectedR10.passiveRetryMigrationV2"
     nonisolated private static let protectedR10EarlyDisconnectsKey = "atria.protectedR10.earlyDisconnects"
     nonisolated private static let protectedR10ActivationSentAtKey = "atria.protectedR10.activationSentAt"
     nonisolated private static let protectedR10ActivationCountKey = "atria.protectedR10.activationCount"
@@ -2031,6 +2032,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let protectedR10RollbackRetryStableHRDuration: TimeInterval = 60
     nonisolated private static let protectedR10PassiveReprobeStableHRDuration: TimeInterval = 2 * 60
     nonisolated private static let protectedR10PassiveReprobeInitialCooldown: TimeInterval = 30 * 60
+    nonisolated private static let protectedR10PassiveReprobeMaximumCooldown: TimeInterval = 6 * 60 * 60
     nonisolated private static let protectedR10PassiveReprobeTimeout: TimeInterval = 2 * 60
 
     nonisolated static func shouldLatchProtectedR10RollbackForEarlyDisconnect(
@@ -2085,21 +2087,46 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         disconnectStormAge: TimeInterval?,
         lastAttemptAge: TimeInterval?,
         failureCount: Int,
+        batteryLevel: Int = -1,
+        isCharging: Bool = false,
         stableHRMinimum: TimeInterval = protectedR10PassiveReprobeStableHRDuration,
-        initialCooldown: TimeInterval = protectedR10PassiveReprobeInitialCooldown
+        initialCooldown: TimeInterval = protectedR10PassiveReprobeInitialCooldown,
+        maximumCooldown: TimeInterval = protectedR10PassiveReprobeMaximumCooldown
     ) -> Bool {
-        _ = lastAttemptAge // retained for persisted-state compatibility and diagnostics
+        let retryMultiplier = pow(2.0, Double(min(max(0, failureCount), 5)))
+        let requiredCooldown = min(initialCooldown * retryMultiplier, maximumCooldown)
         guard streamSuppressed,
               !reprobePending,
-              failureCount == 0,
               connected,
+              shouldArmHighFrequencyMotion(batteryLevel: batteryLevel,
+                                           isCharging: isCharging),
               stableHRDuration >= stableHRMinimum,
               let latestHRAge,
               latestHRAge >= 0,
               latestHRAge <= 10,
               let disconnectStormAge,
-              disconnectStormAge >= initialCooldown else { return false }
+              disconnectStormAge >= requiredCooldown else { return false }
 
+        if let lastAttemptAge {
+            guard lastAttemptAge >= requiredCooldown else { return false }
+        }
+
+        return true
+    }
+
+    /// Older builds permanently suppressed stream 5 after one passive probe,
+    /// including probes guaranteed to fail because their battery eligibility
+    /// was not checked before discovery. Preserve the safety fuse but clear
+    /// that poisoned retry history once so an eligible healthy link can run the
+    /// corrected bounded probe.
+    @discardableResult
+    nonisolated static func migrateProtectedR10PassiveRetryIfNeeded(
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        guard !defaults.bool(forKey: protectedR10PassiveRetryMigrationKey) else { return false }
+        defaults.set(true, forKey: protectedR10PassiveRetryMigrationKey)
+        defaults.set(0, forKey: protectedR10PassiveReprobeFailureCountKey)
+        defaults.removeObject(forKey: protectedR10PassiveReprobeAttemptAtKey)
         return true
     }
 
@@ -3247,6 +3274,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             migrateStableR10TransportDefaultIfNeeded(arguments: arguments)
             migrateOfflineSyncDefaultIfNeeded(arguments: arguments)
             migrateProtectedR10HistoryInterlockIfNeeded()
+            if Self.migrateProtectedR10PassiveRetryIfNeeded() {
+                AtriaDebugLog("ATRIADBG protected_r10 status=migrated_retry_policy action=clear_permanent_failure_keep_stream_fuse")
+            }
             migrateFailedProprietaryBatteryRefreshIfNeeded()
             isolateRecentProtectedR10DisconnectStormIfNeeded()
             _ = expireProtectedR10PassiveReprobeIfNeeded(
@@ -5327,7 +5357,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             latestHRAge: latestHRAge,
             disconnectStormAge: stormAt.map { now.timeIntervalSince($0) },
             lastAttemptAge: lastAttemptAt.map { now.timeIntervalSince($0) },
-            failureCount: defaults.integer(forKey: Self.protectedR10PassiveReprobeFailureCountKey)
+            failureCount: defaults.integer(forKey: Self.protectedR10PassiveReprobeFailureCountKey),
+            batteryLevel: motionEligibilityBatteryLevel(now: now),
+            isCharging: batteryIsCharging
         ), let peripheral else { return }
 
         defaults.set(now.timeIntervalSince1970,
@@ -12555,6 +12587,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated static func shouldArmHighFrequencyMotion(batteryLevel: Int,
                                                          isCharging: Bool,
                                                          calibrationActive: Bool = false) -> Bool {
+        // A physical 13% proof delivered R10 frames but dropped the BLE link
+        // after roughly twelve seconds. Below the warning boundary, preserving
+        // continuous HR/strain is safer than repeatedly destabilizing both
+        // streams. Charging or an explicit calibration may deliberately opt in.
         calibrationActive || batteryLevel < 0 || isCharging || batteryLevel > lowBatteryWarningThreshold
     }
 
