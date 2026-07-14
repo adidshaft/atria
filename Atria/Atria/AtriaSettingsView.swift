@@ -260,24 +260,16 @@ struct AtriaSettingsView: View {
                         .font(.body.weight(.semibold))
                 }
             }
-            // Value navigation keeps all five destination view graphs out of
-            // the first presentation frame. SwiftUI asks for exactly one page
-            // only after the user selects it.
+            // Value navigation keeps all destination view graphs out of the
+            // first presentation frame. The AnyView boundary below is
+            // intentional: without it, this closure's opaque return type joins
+            // six large Form graphs into one deeply nested generic metadata
+            // tree. Device hang reports showed the main thread spending seconds
+            // in swift_getTypeByMangledName while the Settings sheet appeared.
+            // A destination changes only after a user tap, so type erasure here
+            // is a much smaller cost than instantiating that tree on every open.
             .navigationDestination(for: Destination.self) { destination in
-                switch destination {
-                case .personal:
-                    personalSettingsPage
-                case .strap:
-                    strapSettingsPage
-                case .alerts:
-                    alertsSettingsPage
-                case .data:
-                    dataSettingsPage
-                case .privacy:
-                    privacySettingsPage
-                case .developer:
-                    developerSettingsPage
-                }
+                destinationPage(for: destination)
             }
         }
         .onChange(of: draft) { _, value in onUpdateProfile { $0 = value } }
@@ -348,6 +340,26 @@ struct AtriaSettingsView: View {
         Destination.allCases.filter { destination in
             destination != .developer
                 || researchValidationContent != nil
+        }
+    }
+
+    /// A low-frequency navigation boundary that caps Swift runtime metadata
+    /// work. The switch evaluates only the selected branch, so unopened Forms,
+    /// defaults observers, and developer validation content remain lazy.
+    private func destinationPage(for destination: Destination) -> AnyView {
+        switch destination {
+        case .personal:
+            return AnyView(personalSettingsPage)
+        case .strap:
+            return AnyView(strapSettingsPage)
+        case .alerts:
+            return AnyView(alertsSettingsPage)
+        case .data:
+            return AnyView(dataSettingsPage)
+        case .privacy:
+            return AnyView(privacySettingsPage)
+        case .developer:
+            return AnyView(developerSettingsPage)
         }
     }
 

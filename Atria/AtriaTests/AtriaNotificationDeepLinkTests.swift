@@ -33,6 +33,23 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
         XCTAssertNil(inbox.consume())
     }
 
+    func testColdLaunchEnqueueDoesNotRequireMainActor() async throws {
+        let inbox = AtriaNotificationDeepLinkInbox(notificationCenter: NotificationCenter())
+        let url = try XCTUnwrap(URL(string: "atria://journal"))
+
+        let accepted = await Task.detached {
+            inbox.enqueue(url, responseKey: "cold-launch|default")
+        }.value
+
+        XCTAssertTrue(accepted)
+        XCTAssertEqual(inbox.consume(), url)
+    }
+
+    func testRouteWaitsForActiveSceneInsteadOfBeingLostDuringTransition() {
+        XCTAssertFalse(AtriaNotificationDeepLinkActivationPolicy.shouldConsume(sceneIsActive: false))
+        XCTAssertTrue(AtriaNotificationDeepLinkActivationPolicy.shouldConsume(sceneIsActive: true))
+    }
+
     func testJournalActionOverridesMorningSummaryDefaultDestination() {
         XCTAssertEqual(
             NotificationDeliveryLogger.resolvedDeepLink(
@@ -80,5 +97,18 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
 
         XCTAssertTrue(source.contains("didFinishLaunchingWithOptions"))
         XCTAssertTrue(source.contains("LocalNotificationScheduler.configureForApplicationLaunch()"))
+    }
+
+    func testNotificationResponseDoesNotWaitForMainActorBeforeReturning() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/LocalNotificationScheduler.swift"), encoding: .utf8)
+        let handlerStart = try XCTUnwrap(source.range(of: "func userNotificationCenter(_ center: UNUserNotificationCenter,\n                                didReceive response:"))
+        let handlerSuffix = source[handlerStart.lowerBound...]
+        let handlerEnd = try XCTUnwrap(handlerSuffix.range(of: "\n    static func resolvedDeepLink"))
+        let handler = handlerSuffix[..<handlerEnd.lowerBound]
+
+        XCTAssertTrue(handler.contains("AtriaNotificationDeepLinkInbox.shared.enqueue"))
+        XCTAssertFalse(handler.contains("await MainActor.run"))
     }
 }

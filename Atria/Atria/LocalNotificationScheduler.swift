@@ -1797,17 +1797,23 @@ enum LocalNotificationScheduler {
     }
 }
 
-/// A one-item, main-actor inbox bridges UIKit notification responses into the
+/// A one-item, thread-safe inbox bridges UIKit notification responses into the
 /// SwiftUI tab shell. `NotificationCenter` alone is not sufficient here: its
 /// delivery is transient, so a cold-launch response posted before Home mounts
 /// disappears. Retaining the route until Home consumes it makes foreground,
 /// background and cold-launch delivery follow the same idempotent path.
-@MainActor
-final class AtriaNotificationDeepLinkInbox {
+///
+/// This deliberately does not require the main actor. UIKit waits for the
+/// notification-response delegate to return, and a cold launch can otherwise
+/// block on the first (and most expensive) SwiftUI mount before it records the
+/// route. The notification used to wake an already-mounted Home view is posted
+/// asynchronously on the main actor; the durable inbox mutation is immediate.
+final class AtriaNotificationDeepLinkInbox: @unchecked Sendable {
     static let shared = AtriaNotificationDeepLinkInbox()
-    nonisolated static let didEnqueueNotification = NotificationDeliveryLogger.deepLinkNotification
+    static let didEnqueueNotification = NotificationDeliveryLogger.deepLinkNotification
 
     private let notificationCenter: NotificationCenter
+    private let lock = NSLock()
     private var pendingURL: URL?
     private var pendingResponseKey: String?
     private var lastConsumedResponseKey: String?
@@ -1819,20 +1825,39 @@ final class AtriaNotificationDeepLinkInbox {
     @discardableResult
     func enqueue(_ url: URL, responseKey: String) -> Bool {
         guard url.scheme?.lowercased() == "atria" else { return false }
+        lock.lock()
         guard responseKey != pendingResponseKey,
-              responseKey != lastConsumedResponseKey else { return false }
+              responseKey != lastConsumedResponseKey else {
+            lock.unlock()
+            return false
+        }
         pendingURL = url
         pendingResponseKey = responseKey
-        notificationCenter.post(name: Self.didEnqueueNotification, object: url)
+        lock.unlock()
+
+        Task { @MainActor [notificationCenter] in
+            notificationCenter.post(name: Self.didEnqueueNotification, object: url)
+        }
         return true
     }
 
     func consume() -> URL? {
+        lock.lock()
+        defer { lock.unlock() }
         guard let pendingURL else { return nil }
         lastConsumedResponseKey = pendingResponseKey
         self.pendingURL = nil
         pendingResponseKey = nil
         return pendingURL
+    }
+}
+
+enum AtriaNotificationDeepLinkActivationPolicy {
+    /// Navigation changes during the background-to-active handoff can race the
+    /// root TabView's first transaction and leave a blank presentation. Keep
+    /// the retained URL in the inbox until Home is actually interactive.
+    static func shouldConsume(sceneIsActive: Bool) -> Bool {
+        sceneIsActive
     }
 }
 
@@ -1887,15 +1912,15 @@ final class NotificationDeliveryLogger: NSObject, UNUserNotificationCenterDelega
             AtriaDebugLog("ATRIADBG notification_deeplink status=posted kind=%@ url=%@",
                           kind(for: request.identifier),
                           url.absoluteString)
-            await MainActor.run {
-                // Legacy handoff marker: NotificationCenter.default.post(name: Self.deepLinkNotification, object: url)
-                // The inbox now retains before publishing so a cold launch
-                // cannot lose this formerly transient notification.
-                _ = AtriaNotificationDeepLinkInbox.shared.enqueue(
-                    url,
-                    responseKey: "\(request.identifier)|\(response.notification.date.timeIntervalSince1970)|\(response.actionIdentifier)"
-                )
-            }
+            // Do not await the main actor here. UIKit keeps the notification
+            // launch transaction open until this delegate returns, so waiting
+            // behind the initial SwiftUI mount can present as a black screen.
+            // `enqueue` is thread-safe and wakes Home on the main actor after
+            // the route is already durable.
+            _ = AtriaNotificationDeepLinkInbox.shared.enqueue(
+                url,
+                responseKey: "\(request.identifier)|\(response.notification.date.timeIntervalSince1970)|\(response.actionIdentifier)"
+            )
         }
     }
 

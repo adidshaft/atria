@@ -2049,10 +2049,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         static let runIDArgument = "--atria-motion-handshake-run-id"
         static let addHRDelayArgument = "--atria-motion-handshake-add-hr-after"
         static let activationConsentArgument = "--atria-confirm-single-r10-command-3f01"
+        static let responseEventDataProfileArgument = "--atria-confirm-response-event-data-profile"
+        static let r10IMUSequenceConsentArgument = "--atria-confirm-r10-imu-command-sequence"
 
         let runID: String
         let addHRDelay: TimeInterval
         let sendSingleR10Activation: Bool
+        let useResponseEventDataProfile: Bool
+        let sendR10IMUSequence: Bool
 
         var restoreIdentifier: String {
             "com.adidshaft.atria.ble-motion-diagnostic-\(runID)"
@@ -2080,9 +2084,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                (15...300).contains(parsed) {
                 delay = parsed
             }
+            let useResponseEventDataProfile = arguments.contains(
+                responseEventDataProfileArgument
+            )
+            let sendR10IMUSequence = arguments.contains(
+                r10IMUSequenceConsentArgument
+            )
+            // The R10+IMU sequence is intentionally unavailable unless the
+            // caller also consents to the public response/event/data
+            // subscription profile. This prevents testing commands against
+            // the already-proven-incomplete stream-5-only setup.
+            guard !sendR10IMUSequence || useResponseEventDataProfile else {
+                return nil
+            }
             return Self(runID: runID,
                         addHRDelay: delay,
-                        sendSingleR10Activation: arguments.contains(activationConsentArgument))
+                        sendSingleR10Activation: arguments.contains(activationConsentArgument),
+                        useResponseEventDataProfile: useResponseEventDataProfile,
+                        sendR10IMUSequence: sendR10IMUSequence)
         }
     }
 
@@ -2091,6 +2110,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     )
     private var motionHandshakeAddHRTask: Task<Void, Never>?
     private var motionHandshakeActivationSent = false
+    private var motionHandshakeCommandSequenceTask: Task<Void, Never>?
+    private var motionHandshakeProfileCharacteristics: [CBUUID: CBCharacteristic] = [:]
+    private var motionHandshakeRequestedNotifyUUIDs = Set<CBUUID>()
+    private var motionHandshakeConfirmedNotifyUUIDs = Set<CBUUID>()
+    private var motionHandshakeLaunchCutoverInProgress = false
     private var protectedR10ActivationSent = false
     private var protectedR10ActivationAt: Date?
     private var protectedR10FramesAfterActivation = 0
@@ -2100,6 +2124,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var protectedR10CleanOwnerProofTimeoutTask: Task<Void, Never>?
     private var protectedR10InitialProfilePeripheralID: UUID?
     private var protectedR10InitialProfileNotificationRequested = false
+    // CoreBluetooth delegates for this manager are delivered on the main queue,
+    // but the protocol requirements are nonisolated under Swift 6. Keep only
+    // the two read-through discovery gates unsafe; all mutation remains on the
+    // main actor in the bounded owner state machine below.
+    nonisolated(unsafe) private var protectedR10ProfileCharacteristics: [CBUUID: CBCharacteristic] = [:]
+    private var protectedR10ProfileRequestedNotifyUUIDs = Set<CBUUID>()
+    private var protectedR10ProfileConfirmedNotifyUUIDs = Set<CBUUID>()
+    private var protectedR10CommandSequenceTask: Task<Void, Never>?
+    private var protectedR10StandardDiscoveryTask: Task<Void, Never>?
+    nonisolated(unsafe) private var protectedR10StandardDiscoveryStarted = false
+
+    nonisolated static func motionHandshakeNotifyOrder(
+        useResponseEventDataProfile: Bool
+    ) -> [CBUUID] {
+        useResponseEventDataProfile
+            ? [UUIDs.strapRX, UUIDs.strapStream4, UUIDs.strapStream5]
+            : [UUIDs.strapStream5]
+    }
+    nonisolated static let protectedR10ResponseEventDataNotifyOrder = [
+        UUIDs.strapRX,
+        UUIDs.strapStream4,
+        UUIDs.strapStream5,
+    ]
     nonisolated private static let protectedR10RollbackKey = "atria.protectedR10.rollback"
     nonisolated private static let protectedR10StreamSuppressedKey = "atria.protectedR10.streamSuppressed"
     nonisolated private static let protectedR10DisconnectStormAtKey = "atria.protectedR10.disconnectStormAt"
@@ -2109,6 +2156,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let protectedR10PassiveReprobeFailureCountKey = "atria.protectedR10.passiveReprobeFailureCount"
     nonisolated private static let protectedR10CleanOwnerMigrationKey = "atria.protectedR10.cleanOwnerMigrationV7"
     nonisolated private static let protectedR10CleanOwnerConnectionCutoverKey = "atria.protectedR10.cleanOwnerConnectionCutoverV7"
+    nonisolated private static let protectedR10ResponseEventDataMigrationKey = "atria.protectedR10.responseEventDataMigrationV9"
+    nonisolated private static let protectedR10ResponseEventDataConnectionCutoverKey = "atria.protectedR10.responseEventDataConnectionCutoverV9"
+    nonisolated private static let protectedR10ResponseEventDataSequenceSentKey = "atria.protectedR10.responseEventDataSequenceSentV9"
+    nonisolated private static let protectedR10PureHRV10InProcessCutoverKey = "atria.protectedR10.pureHRV10InProcessCutover"
     nonisolated private static let protectedR10CleanOwnerKey = "atria.protectedR10.cleanOwner"
     nonisolated private static let protectedR10CleanOwnerStateKey = "atria.protectedR10.cleanOwnerState"
     nonisolated private static let protectedR10CleanOwnerProofStartedAtKey = "atria.protectedR10.cleanOwnerProofStartedAt"
@@ -2131,11 +2182,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let protectedR10RollbackRetryMaximumDelay: TimeInterval = 6 * 60 * 60
     nonisolated private static let protectedR10RollbackRetryStableHRDuration: TimeInterval = 60
     nonisolated private static let protectedR10PassiveReprobeTimeout: TimeInterval = 150
+    nonisolated static let protectedR10StandardDiscoveryDelay: TimeInterval = 15
+    nonisolated static let protectedR10CommandPacingDelay: TimeInterval = 0.120
 
     enum ProtectedR10CleanOwner: String, Equatable {
         case legacy
         case protectedV7 = "protected_v7"
         case pureHRV8 = "pure_hr_v8"
+        case protectedV9 = "protected_redp_v9"
+        case pureHRV10 = "pure_hr_v10"
     }
 
     enum ProtectedR10CleanOwnerState: String, Equatable {
@@ -2220,6 +2275,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     ) -> String {
         if let diagnosticRestoreIdentifier { return diagnosticRestoreIdentifier }
         switch cleanOwner {
+        case .protectedV9:
+            return "com.adidshaft.atria.ble-central-v9-response-event-data"
+        case .pureHRV10:
+            return "com.adidshaft.atria.ble-central-v10-pure-hr"
         case .protectedV7:
             return "com.adidshaft.atria.ble-central-v7-protected"
         case .pureHRV8:
@@ -2282,6 +2341,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case migratedToProtectedV7
         case resumedProtectedV7Proof
         case activatedPureHRV8Fallback
+        case migratedPureHRV8ToProtectedV9
+        case activatedPureHRV10Fallback
     }
 
     /// Selects the process owner before `CBCentralManager` is created. The V5
@@ -2300,28 +2361,58 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             rawValue: defaults.string(forKey: protectedR10CleanOwnerStateKey) ?? ""
         ) ?? .none
 
+        // The physically-proven response/event/data profile gets a fresh owner
+        // and restoration namespace. Only users already suppressed by the old
+        // pure-HR v8 fallback are migrated, exactly once; an unsuppressed or
+        // legacy transport is not silently cut over.
+        if !defaults.bool(forKey: protectedR10ResponseEventDataMigrationKey) {
+            defaults.set(true, forKey: protectedR10ResponseEventDataMigrationKey)
+            if owner == .pureHRV8,
+               defaults.bool(forKey: protectedR10StreamSuppressedKey) {
+                defaults.set(ProtectedR10CleanOwner.protectedV9.rawValue,
+                             forKey: protectedR10CleanOwnerKey)
+                defaults.set(ProtectedR10CleanOwnerState.protectedLaunchPending.rawValue,
+                             forKey: protectedR10CleanOwnerStateKey)
+                defaults.set(false, forKey: protectedR10StreamSuppressedKey)
+                defaults.set(false, forKey: protectedR10RollbackKey)
+                defaults.set(false, forKey: protectedR10StableTransportKey)
+                defaults.set(false, forKey: protectedR10ResponseEventDataConnectionCutoverKey)
+                defaults.set(false, forKey: protectedR10ResponseEventDataSequenceSentKey)
+                defaults.set(false, forKey: protectedR10PureHRV10InProcessCutoverKey)
+                defaults.removeObject(forKey: protectedR10StableTransportQualifiedAtKey)
+                defaults.removeObject(forKey: protectedR10CleanOwnerProofStartedAtKey)
+                defaults.removeObject(forKey: protectedR10CleanOwnerFailureReasonKey)
+                defaults.set("clean_owner_v9_launch_pending",
+                             forKey: RadioDefaults.passiveR10Status)
+                return .migratedPureHRV8ToProtectedV9
+            }
+        }
+
         if !defaults.bool(forKey: protectedR10CleanOwnerMigrationKey) {
             defaults.set(true, forKey: protectedR10CleanOwnerMigrationKey)
             defaults.set(false, forKey: protectedR10PassiveReprobePendingKey)
             defaults.removeObject(forKey: protectedR10PassiveReprobeAttemptAtKey)
             defaults.set(0, forKey: protectedR10PassiveReprobeFailureCountKey)
-            guard defaults.bool(forKey: protectedR10StreamSuppressedKey) else {
-                return .none
+            // V7 is solely the legacy-owner migration. A newer owner may
+            // legitimately arrive here with this obsolete flag unset; do not
+            // return early and mask its v9/v10 launch handling below.
+            if owner == .legacy,
+               defaults.bool(forKey: protectedR10StreamSuppressedKey) {
+                defaults.set(ProtectedR10CleanOwner.protectedV7.rawValue,
+                             forKey: protectedR10CleanOwnerKey)
+                defaults.set(ProtectedR10CleanOwnerState.protectedLaunchPending.rawValue,
+                             forKey: protectedR10CleanOwnerStateKey)
+                defaults.set(false, forKey: protectedR10StreamSuppressedKey)
+                defaults.set(false, forKey: protectedR10RollbackKey)
+                defaults.set(false, forKey: protectedR10StableTransportKey)
+                defaults.set(false, forKey: protectedR10CleanOwnerConnectionCutoverKey)
+                defaults.removeObject(forKey: protectedR10StableTransportQualifiedAtKey)
+                defaults.removeObject(forKey: protectedR10CleanOwnerProofStartedAtKey)
+                defaults.removeObject(forKey: protectedR10CleanOwnerFailureReasonKey)
+                defaults.set("clean_owner_v7_launch_pending",
+                             forKey: RadioDefaults.passiveR10Status)
+                return .migratedToProtectedV7
             }
-            defaults.set(ProtectedR10CleanOwner.protectedV7.rawValue,
-                         forKey: protectedR10CleanOwnerKey)
-            defaults.set(ProtectedR10CleanOwnerState.protectedLaunchPending.rawValue,
-                         forKey: protectedR10CleanOwnerStateKey)
-            defaults.set(false, forKey: protectedR10StreamSuppressedKey)
-            defaults.set(false, forKey: protectedR10RollbackKey)
-            defaults.set(false, forKey: protectedR10StableTransportKey)
-            defaults.set(false, forKey: protectedR10CleanOwnerConnectionCutoverKey)
-            defaults.removeObject(forKey: protectedR10StableTransportQualifiedAtKey)
-            defaults.removeObject(forKey: protectedR10CleanOwnerProofStartedAtKey)
-            defaults.removeObject(forKey: protectedR10CleanOwnerFailureReasonKey)
-            defaults.set("clean_owner_v7_launch_pending",
-                         forKey: RadioDefaults.passiveR10Status)
-            return .migratedToProtectedV7
         }
 
         if owner == .pureHRV8 {
@@ -2337,6 +2428,37 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 return .activatedPureHRV8Fallback
             }
             return .none
+        }
+
+        if owner == .pureHRV10 {
+            defaults.set(true, forKey: protectedR10StreamSuppressedKey)
+            defaults.set(true, forKey: protectedR10RollbackKey)
+            defaults.set(false, forKey: protectedR10PassiveReprobePendingKey)
+            defaults.removeObject(forKey: protectedR10CleanOwnerProofStartedAtKey)
+            if state == .fallbackPending {
+                defaults.set(ProtectedR10CleanOwnerState.fallbackActive.rawValue,
+                             forKey: protectedR10CleanOwnerStateKey)
+                defaults.set("clean_owner_v10_pure_hr_active",
+                             forKey: RadioDefaults.passiveR10Status)
+                return .activatedPureHRV10Fallback
+            }
+            return .none
+        }
+
+        // A v9 proof that lost its process after the command pair began must
+        // never replay that pair. Move it to the fresh pure-HR namespace on the
+        // next launch instead of resuming a half-known device state.
+        if owner == .protectedV9, state == .proving {
+            defaults.set(ProtectedR10CleanOwner.pureHRV10.rawValue,
+                         forKey: protectedR10CleanOwnerKey)
+            defaults.set(ProtectedR10CleanOwnerState.fallbackActive.rawValue,
+                         forKey: protectedR10CleanOwnerStateKey)
+            defaults.set(true, forKey: protectedR10StreamSuppressedKey)
+            defaults.set(true, forKey: protectedR10RollbackKey)
+            defaults.removeObject(forKey: protectedR10CleanOwnerProofStartedAtKey)
+            defaults.set("clean_owner_v10_pure_hr_active",
+                         forKey: RadioDefaults.passiveR10Status)
+            return .activatedPureHRV10Fallback
         }
 
         if owner == .protectedV7, state == .proving {
@@ -2433,7 +2555,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     nonisolated private var protectedR10CleanOwnerProofIsActive: Bool {
-        protectedR10CleanOwner == .protectedV7
+        (protectedR10CleanOwner == .protectedV7
+            || protectedR10CleanOwner == .protectedV9)
+            && protectedR10CleanOwnerState == .proving
+    }
+
+    nonisolated private var protectedR10ResponseEventDataProofIsActive: Bool {
+        protectedR10CleanOwner == .protectedV9
             && protectedR10CleanOwnerState == .proving
     }
 
@@ -2453,6 +2581,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private var discoveryServicesForCurrentMode: [CBUUID] {
         if motionHandshakeDiagnostic != nil { return [Self.UUIDs.strapService] }
+        if standardHROnlyMode,
+           !historyOnlyProbeMode,
+           !protectedR10StreamSuppressed,
+           protectedR10CleanOwner == .protectedV9,
+           (protectedR10CleanOwnerState == .protectedLaunchPending
+            || protectedR10CleanOwnerState == .proving) {
+            // Match the physically successful proof: establish the proprietary
+            // response/event/data profile first. HR and battery are discovered
+            // by a separate task fifteen seconds after the command pair.
+            return [Self.UUIDs.strapService]
+        }
         if standardHROnlyMode, !historyOnlyProbeMode {
             return Self.protectedStandardHRServices(
                 streamSuppressed: protectedR10StreamSuppressed
@@ -2627,9 +2766,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// rapid reconnect churn. A latched rollback suppresses both without
     /// changing the standard 2A37 heart-rate subscription.
     nonisolated static func protectedStandardHRStrapCharacteristics(
-        streamSuppressed: Bool
+        streamSuppressed: Bool,
+        cleanOwner: ProtectedR10CleanOwner = .legacy
     ) -> [CBUUID]? {
-        streamSuppressed ? nil : [UUIDs.strapStream5, UUIDs.strapTX]
+        guard !streamSuppressed else { return nil }
+        if cleanOwner == .protectedV9 {
+            return protectedR10ResponseEventDataNotifyOrder + [UUIDs.strapTX]
+        }
+        return [UUIDs.strapStream5, UUIDs.strapTX]
     }
 
     /// Protected production keeps standard HR and the standard battery-level
@@ -2651,7 +2795,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// outside the stable HR + R10 transport profile.
     nonisolated static func protectedStandardHRCharacteristics(
         for service: CBUUID,
-        streamSuppressed: Bool
+        streamSuppressed: Bool,
+        cleanOwner: ProtectedR10CleanOwner = .legacy
     ) -> [CBUUID]? {
         switch service {
         case UUIDs.heartRateService:
@@ -2660,7 +2805,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return [UUIDs.batteryLevel]
         case UUIDs.strapService:
             return protectedStandardHRStrapCharacteristics(
-                streamSuppressed: streamSuppressed
+                streamSuppressed: streamSuppressed,
+                cleanOwner: cleanOwner
             )
         default:
             return nil
@@ -3740,12 +3886,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             defaults.set(diagnostic.addHRDelay, forKey: "atria.motionHandshake.addHRDelay")
             defaults.set(diagnostic.sendSingleR10Activation,
                          forKey: "atria.motionHandshake.singleR10ActivationConsented")
+            defaults.set(diagnostic.useResponseEventDataProfile,
+                         forKey: "atria.motionHandshake.responseEventDataProfileConsented")
+            defaults.set(diagnostic.sendR10IMUSequence,
+                         forKey: "atria.motionHandshake.r10IMUSequenceConsented")
             defaults.set(diagnostic.restoreIdentifier, forKey: "atria.motionHandshake.restoreIdentifier")
-            AtriaDebugLog("ATRIADBG motion_handshake status=configured run=%@ restore=%@ add_hr_after_s=%.1f single_3f01=%d isolation=stream5_then_hr_no_other_tx_no_offline_no_battery",
+            AtriaDebugLog("ATRIADBG motion_handshake status=configured run=%@ restore=%@ add_hr_after_s=%.1f single_3f01=%d response_event_data=%d r10_imu_sequence=%d isolation=diagnostic_profile_then_hr_no_offline_no_battery",
                           diagnostic.runID,
                           diagnostic.restoreIdentifier,
                           diagnostic.addHRDelay,
-                          diagnostic.sendSingleR10Activation ? 1 : 0)
+                          diagnostic.sendSingleR10Activation ? 1 : 0,
+                          diagnostic.useResponseEventDataProfile ? 1 : 0,
+                          diagnostic.sendR10IMUSequence ? 1 : 0)
         }
         applyEarlyHistoricalLaunchConfiguration(arguments: arguments)
         if motionHandshakeDiagnostic == nil {
@@ -5652,6 +5804,138 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       diagnostic.runID, sequence, event, detail, now)
     }
 
+    /// Establish the public WHOOP response/event/data notification profile in
+    /// deterministic order. CoreBluetooth can otherwise complete three CCCD
+    /// writes in an arbitrary order, which makes a disconnect impossible to
+    /// attribute. Every characteristic is requested at most once per fresh
+    /// diagnostic connection.
+    private func beginMotionHandshakeNotificationProfile(
+        peripheral: CBPeripheral,
+        characteristics: [CBCharacteristic]
+    ) {
+        guard let diagnostic = motionHandshakeDiagnostic,
+              peripheral.state == .connected else { return }
+        motionHandshakeProfileCharacteristics = Dictionary(
+            uniqueKeysWithValues: characteristics.map { ($0.uuid, $0) }
+        )
+        motionHandshakeRequestedNotifyUUIDs.removeAll()
+        motionHandshakeConfirmedNotifyUUIDs = Set(
+            characteristics.compactMap { characteristic in
+                characteristic.isNotifying ? characteristic.uuid : nil
+            }
+        )
+        let required = Self.motionHandshakeNotifyOrder(
+            useResponseEventDataProfile: diagnostic.useResponseEventDataProfile
+        )
+        let missing = required.filter {
+            motionHandshakeProfileCharacteristics[$0] == nil
+        }
+        guard missing.isEmpty else {
+            recordMotionHandshakeEvidence(
+                event: "notification_profile_missing",
+                detail: missing.map(\.uuidString).joined(separator: ",")
+            )
+            return
+        }
+        recordMotionHandshakeEvidence(
+            event: "notification_profile_discovered",
+            detail: required.map(\.uuidString).joined(separator: ",")
+        )
+        advanceMotionHandshakeNotificationProfile(peripheral: peripheral)
+    }
+
+    private func advanceMotionHandshakeNotificationProfile(peripheral: CBPeripheral) {
+        guard let diagnostic = motionHandshakeDiagnostic,
+              peripheral.state == .connected else { return }
+        let required = Self.motionHandshakeNotifyOrder(
+            useResponseEventDataProfile: diagnostic.useResponseEventDataProfile
+        )
+        if let nextUUID = required.first(where: {
+            !motionHandshakeConfirmedNotifyUUIDs.contains($0)
+                && !motionHandshakeRequestedNotifyUUIDs.contains($0)
+        }), let characteristic = motionHandshakeProfileCharacteristics[nextUUID] {
+            guard characteristic.properties.contains(.notify) else {
+                recordMotionHandshakeEvidence(
+                    event: "notification_profile_unsupported",
+                    detail: nextUUID.uuidString
+                )
+                return
+            }
+            motionHandshakeRequestedNotifyUUIDs.insert(nextUUID)
+            recordMotionHandshakeEvidence(
+                event: "notification_profile_request",
+                detail: nextUUID.uuidString
+            )
+            peripheral.setNotifyValue(true, for: characteristic)
+            return
+        }
+        guard required.allSatisfy(motionHandshakeConfirmedNotifyUUIDs.contains) else {
+            return
+        }
+        recordMotionHandshakeEvidence(
+            event: "notification_profile_confirmed",
+            detail: required.map(\.uuidString).joined(separator: ",")
+        )
+        if diagnostic.sendR10IMUSequence {
+            // Public WHOOP implementations send the stream commands as soon as
+            // response/event/data CCCDs are confirmed. Waiting for the later
+            // standard-HR addition left the strap in a subscribed-but-unarmed
+            // state and the physical link closed at 13.25 seconds before any
+            // command could be evaluated.
+            sendMotionHandshakeR10IMUSequenceIfReady()
+        }
+        scheduleMotionHandshakeStandardHRAddition(peripheral: peripheral)
+    }
+
+    private func handleMotionHandshakeNotificationState(
+        peripheral: CBPeripheral,
+        characteristic: CBCharacteristic,
+        error: Error?
+    ) {
+        guard let diagnostic = motionHandshakeDiagnostic else { return }
+        let required = Self.motionHandshakeNotifyOrder(
+            useResponseEventDataProfile: diagnostic.useResponseEventDataProfile
+        )
+        guard required.contains(characteristic.uuid) else {
+            if characteristic.uuid == Self.UUIDs.heartRateMeasure {
+                if let error {
+                    recordMotionHandshakeEvidence(
+                        event: "hr_notify_error",
+                        detail: error.localizedDescription
+                    )
+                } else if characteristic.isNotifying {
+                    recordMotionHandshakeEvidence(event: "hr_notify_active")
+                    if diagnostic.sendR10IMUSequence {
+                        sendMotionHandshakeR10IMUSequenceIfReady()
+                    } else {
+                        sendMotionHandshakeSingleR10ActivationIfReady()
+                    }
+                }
+            }
+            return
+        }
+        if let error {
+            recordMotionHandshakeEvidence(
+                event: "notification_profile_error",
+                detail: "\(characteristic.uuid.uuidString)_\(error.localizedDescription)"
+            )
+            return
+        }
+        guard characteristic.isNotifying else {
+            recordMotionHandshakeEvidence(
+                event: "notification_profile_inactive",
+                detail: characteristic.uuid.uuidString
+            )
+            return
+        }
+        motionHandshakeConfirmedNotifyUUIDs.insert(characteristic.uuid)
+        recordMotionHandshakeEvidence(
+            event: "notification_profile_active",
+            detail: characteristic.uuid.uuidString
+        )
+        advanceMotionHandshakeNotificationProfile(peripheral: peripheral)
+    }
+
     private func scheduleMotionHandshakeStandardHRAddition(peripheral: CBPeripheral) {
         guard let diagnostic = motionHandshakeDiagnostic,
               motionHandshakeAddHRTask == nil else { return }
@@ -5704,8 +5988,318 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         peripheral.writeValue(frame, for: txCharacteristic, type: .withoutResponse)
     }
 
+    /// Hardware-research profile used only behind four diagnostic launch
+    /// consents: once response/event/data notifications are confirmed, send
+    /// one paced 3F/01 then one 6A/01. Standard HR is added later as an
+    /// independent coexistence probe. Optical 6B is omitted to
+    /// reduce airtime because exact steps need R10 IMU, not raw optical data.
+    private func sendMotionHandshakeR10IMUSequenceIfReady() {
+        guard let diagnostic = motionHandshakeDiagnostic,
+              diagnostic.useResponseEventDataProfile,
+              diagnostic.sendR10IMUSequence,
+              motionHandshakeCommandSequenceTask == nil,
+              !motionHandshakeActivationSent else { return }
+        let required = Self.motionHandshakeNotifyOrder(
+            useResponseEventDataProfile: true
+        )
+        guard required.allSatisfy(motionHandshakeConfirmedNotifyUUIDs.contains),
+              let peripheral,
+              peripheral.state == .connected,
+              let txCharacteristic,
+              txCharacteristic.properties.contains(.writeWithoutResponse) else {
+            recordMotionHandshakeEvidence(
+                event: "r10_imu_sequence_not_ready",
+                detail: "profile_or_tx_missing"
+            )
+            return
+        }
+        let runSequenceKey = "atria.motionHandshake.\(diagnostic.runID).r10IMUSequenceSent"
+        guard !UserDefaults.standard.bool(forKey: runSequenceKey) else {
+            recordMotionHandshakeEvidence(
+                event: "r10_imu_sequence_suppressed",
+                detail: "already_sent_for_run"
+            )
+            return
+        }
+        UserDefaults.standard.set(true, forKey: runSequenceKey)
+        motionHandshakeActivationSent = true
+        motionHandshakeCommandSequenceTask = Task { @MainActor [weak self, weak peripheral] in
+            guard let self, let peripheral, !Task.isCancelled,
+                  peripheral.state == .connected else { return }
+            let defaults = UserDefaults.standard
+            let startedAt = Date()
+            defaults.set(startedAt.timeIntervalSince1970,
+                         forKey: "atria.motionHandshake.r10IMUSequenceStartedAt")
+            defaults.set(defaults.integer(forKey: "atria.motionHandshake.r10IMUSequenceCount") + 1,
+                         forKey: "atria.motionHandshake.r10IMUSequenceCount")
+
+            let r10Sequence = self.cmdSeq
+            self.cmdSeq &+= 1
+            let r10Frame = encodeFrame([
+                Packet.command, r10Sequence, Cmd.sendR10R11Realtime, 0x01
+            ])
+            self.recordMotionHandshakeEvidence(
+                event: "activation_3f01_sent",
+                detail: "wwr_seq_\(r10Sequence)_bytes_\(r10Frame.count)"
+            )
+            peripheral.writeValue(r10Frame, for: txCharacteristic, type: .withoutResponse)
+
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled, peripheral.state == .connected else { return }
+            let imuSequence = self.cmdSeq
+            self.cmdSeq &+= 1
+            let imuFrame = encodeFrame([
+                Packet.command, imuSequence, Cmd.toggleIMUMode, 0x01
+            ])
+            self.recordMotionHandshakeEvidence(
+                event: "activation_6a01_sent",
+                detail: "wwr_seq_\(imuSequence)_bytes_\(imuFrame.count)"
+            )
+            peripheral.writeValue(imuFrame, for: txCharacteristic, type: .withoutResponse)
+            defaults.set(Date().timeIntervalSince1970,
+                         forKey: "atria.motionHandshake.r10IMUSequenceCompletedAt")
+            self.motionHandshakeCommandSequenceTask = nil
+        }
+    }
+
+    /// Production form of the physically-proven response/event/data profile.
+    /// It is intentionally a separate owner from the launch-argument diagnostic:
+    /// one fresh link, one ordered CCCD pass, one command pair, no repair loop.
+    private func beginProtectedR10ResponseEventDataProfile(
+        peripheral: CBPeripheral,
+        characteristics: [CBCharacteristic],
+        error: Error?
+    ) {
+        guard motionHandshakeDiagnostic == nil,
+              standardHROnlyMode,
+              !historyOnlyProbeMode,
+              protectedR10CleanOwner == .protectedV9,
+              protectedR10CleanOwnerState == .protectedLaunchPending,
+              protectedR10InitialProfilePeripheralID == peripheral.identifier,
+              peripheral.state == .connected else { return }
+        if let error {
+            persistProtectedR10CleanOwnerFallback(
+                reason: "response_event_data_discovery_error_\(error.localizedDescription)"
+            )
+            return
+        }
+
+        protectedR10ProfileCharacteristics = Dictionary(
+            uniqueKeysWithValues: characteristics.map { ($0.uuid, $0) }
+        )
+        protectedR10ProfileRequestedNotifyUUIDs.removeAll()
+        protectedR10ProfileConfirmedNotifyUUIDs = Set(
+            characteristics.compactMap { $0.isNotifying ? $0.uuid : nil }
+        )
+        guard let tx = protectedR10ProfileCharacteristics[Self.UUIDs.strapTX],
+              tx.properties.contains(.writeWithoutResponse) else {
+            persistProtectedR10CleanOwnerFallback(reason: "response_event_data_tx_missing")
+            return
+        }
+        txCharacteristic = tx
+        dbgTxReady = true
+
+        let missing = Self.protectedR10ResponseEventDataNotifyOrder.filter {
+            protectedR10ProfileCharacteristics[$0] == nil
+        }
+        guard missing.isEmpty else {
+            persistProtectedR10CleanOwnerFallback(
+                reason: "response_event_data_characteristic_missing_\(missing.map(\.uuidString).joined(separator: "_"))"
+            )
+            return
+        }
+        let unsupported = Self.protectedR10ResponseEventDataNotifyOrder.filter {
+            protectedR10ProfileCharacteristics[$0]?.properties.contains(.notify) != true
+        }
+        guard unsupported.isEmpty else {
+            persistProtectedR10CleanOwnerFallback(
+                reason: "response_event_data_notify_unsupported_\(unsupported.map(\.uuidString).joined(separator: "_"))"
+            )
+            return
+        }
+
+        let startedAt = Date()
+        let defaults = UserDefaults.standard
+        defaults.set(ProtectedR10CleanOwnerState.proving.rawValue,
+                     forKey: Self.protectedR10CleanOwnerStateKey)
+        defaults.set(startedAt.timeIntervalSince1970,
+                     forKey: Self.protectedR10CleanOwnerProofStartedAtKey)
+        defaults.set(false, forKey: Self.protectedR10StableTransportKey)
+        defaults.set("clean_owner_v9_profile_subscribing",
+                     forKey: RadioDefaults.passiveR10Status)
+        protectedR10ActivationSent = false
+        protectedR10ActivationAt = nil
+        protectedR10FramesAfterActivation = 0
+        scheduleProtectedR10CleanOwnerProofTimeout(startedAt: startedAt)
+        advanceProtectedR10ResponseEventDataProfile(peripheral: peripheral)
+    }
+
+    private func advanceProtectedR10ResponseEventDataProfile(peripheral: CBPeripheral) {
+        guard protectedR10ResponseEventDataProofIsActive,
+              peripheral.state == .connected else { return }
+        if let nextUUID = Self.protectedR10ResponseEventDataNotifyOrder.first(where: {
+            !protectedR10ProfileConfirmedNotifyUUIDs.contains($0)
+                && !protectedR10ProfileRequestedNotifyUUIDs.contains($0)
+        }), let characteristic = protectedR10ProfileCharacteristics[nextUUID] {
+            protectedR10ProfileRequestedNotifyUUIDs.insert(nextUUID)
+            peripheral.setNotifyValue(true, for: characteristic)
+            incrementRadioCounter(RadioDefaults.customNotifyEnabled,
+                                  reason: "protected_v9_initial_profile")
+            dbgSubsReq += 1
+            AtriaDebugLog("ATRIADBG protected_r10 status=profile_subscribe_requested owner=v9 ch=%@ action=ordered_once",
+                          nextUUID.uuidString)
+            return
+        }
+        guard Self.protectedR10ResponseEventDataNotifyOrder.allSatisfy(
+            protectedR10ProfileConfirmedNotifyUUIDs.contains
+        ) else { return }
+        sendProtectedR10ResponseEventDataSequenceIfReady(peripheral: peripheral)
+    }
+
+    @discardableResult
+    private func handleProtectedR10ResponseEventDataNotificationState(
+        peripheral: CBPeripheral,
+        characteristic: CBCharacteristic,
+        error: Error?
+    ) -> Bool {
+        guard motionHandshakeDiagnostic == nil,
+              standardHROnlyMode,
+              protectedR10CleanOwner == .protectedV9,
+              Self.protectedR10ResponseEventDataNotifyOrder.contains(characteristic.uuid),
+              (protectedR10CleanOwnerState == .proving
+                || protectedR10CleanOwnerState == .qualified) else { return false }
+        if let error {
+            persistProtectedR10CleanOwnerFallback(
+                reason: "response_event_data_notify_error_\(characteristic.uuid.uuidString)_\(error.localizedDescription)"
+            )
+            return true
+        }
+        guard characteristic.isNotifying else {
+            persistProtectedR10CleanOwnerFallback(
+                reason: "response_event_data_notify_inactive_\(characteristic.uuid.uuidString)"
+            )
+            return true
+        }
+        protectedR10ProfileConfirmedNotifyUUIDs.insert(characteristic.uuid)
+        activeProprietaryNotifyUUIDs.insert(characteristic.uuid)
+        if characteristic.uuid == Self.UUIDs.strapStream5 {
+            strapStream5NotifyConfirmed = true
+            markPassiveR10SubscriptionConfirmed()
+        }
+        advanceProtectedR10ResponseEventDataProfile(peripheral: peripheral)
+        return true
+    }
+
+    private func sendProtectedR10ResponseEventDataSequenceIfReady(peripheral: CBPeripheral) {
+        guard protectedR10ResponseEventDataProofIsActive,
+              protectedR10CommandSequenceTask == nil,
+              !protectedR10ActivationSent,
+              Self.protectedR10ResponseEventDataNotifyOrder.allSatisfy(
+                protectedR10ProfileConfirmedNotifyUUIDs.contains
+              ),
+              let txCharacteristic,
+              txCharacteristic.properties.contains(.writeWithoutResponse),
+              peripheral.state == .connected else { return }
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: Self.protectedR10ResponseEventDataSequenceSentKey) else {
+            persistProtectedR10CleanOwnerFallback(reason: "response_event_data_sequence_already_sent")
+            return
+        }
+
+        let startedAt = Date()
+        defaults.set(true, forKey: Self.protectedR10ResponseEventDataSequenceSentKey)
+        defaults.set(startedAt.timeIntervalSince1970,
+                     forKey: Self.protectedR10ActivationSentAtKey)
+        defaults.set(defaults.integer(forKey: Self.protectedR10ActivationCountKey) + 1,
+                     forKey: Self.protectedR10ActivationCountKey)
+        defaults.set("response_event_data_commands_started",
+                     forKey: RadioDefaults.passiveR10Status)
+        protectedR10ActivationSent = true
+        protectedR10ActivationAt = startedAt
+        protectedR10FramesAfterActivation = 0
+        scheduleProtectedR10StandardDiscovery(peripheral: peripheral)
+
+        protectedR10CommandSequenceTask = Task { @MainActor [weak self, weak peripheral] in
+            guard let self, let peripheral, !Task.isCancelled,
+                  peripheral.state == .connected,
+                  self.protectedR10ResponseEventDataProofIsActive else { return }
+            let r10Sequence = self.cmdSeq
+            self.cmdSeq &+= 1
+            let r10Frame = encodeFrame([
+                Packet.command, r10Sequence, Cmd.sendR10R11Realtime, 0x01
+            ])
+            peripheral.writeValue(r10Frame, for: txCharacteristic, type: .withoutResponse)
+            AtriaDebugLog("ATRIADBG protected_r10 status=command_sent owner=v9 cmd=3f data=01 seq=%d action=exactly_once",
+                          Int(r10Sequence))
+
+            try? await Task.sleep(for: .seconds(Self.protectedR10CommandPacingDelay))
+            guard !Task.isCancelled, peripheral.state == .connected,
+                  self.protectedR10ResponseEventDataProofIsActive else { return }
+            let imuSequence = self.cmdSeq
+            self.cmdSeq &+= 1
+            let imuFrame = encodeFrame([
+                Packet.command, imuSequence, Cmd.toggleIMUMode, 0x01
+            ])
+            peripheral.writeValue(imuFrame, for: txCharacteristic, type: .withoutResponse)
+            AtriaDebugLog("ATRIADBG protected_r10 status=command_sent owner=v9 cmd=6a data=01 seq=%d pacing_ms=120 action=exactly_once_complete",
+                          Int(imuSequence))
+            self.protectedR10CommandSequenceTask = nil
+        }
+
+        protectedR10MissingFrameTask?.cancel()
+        protectedR10MissingFrameTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.protectedR10MissingFrameTimeout))
+            guard let self, !Task.isCancelled,
+                  self.protectedR10ResponseEventDataProofIsActive,
+                  self.protectedR10FramesAfterActivation == 0 else { return }
+            self.persistProtectedR10CleanOwnerFallback(
+                reason: "response_event_data_missing_r10_frames"
+            )
+        }
+        protectedR10StabilityTask?.cancel()
+        protectedR10StabilityTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.protectedR10EarlyDisconnectWindow))
+            guard let self, !Task.isCancelled,
+                  self.protectedR10ResponseEventDataProofIsActive,
+                  self.peripheral?.state == .connected else { return }
+            let now = Date()
+            guard Self.protectedR10StabilityWindowIsProven(
+                framesAfterActivation: self.protectedR10FramesAfterActivation,
+                lastFrameAt: self.lastR10MotionFrameAt,
+                connectedAt: self.connectedAt,
+                activationAt: startedAt,
+                now: now
+            ) else {
+                self.persistProtectedR10CleanOwnerFallback(
+                    reason: "response_event_data_insufficient_r10_density"
+                )
+                return
+            }
+            self.qualifyProtectedR10RecoveryIfNeeded(
+                at: now,
+                status: "response_event_data_receiving_crc_valid"
+            )
+        }
+    }
+
+    private func scheduleProtectedR10StandardDiscovery(peripheral: CBPeripheral) {
+        guard protectedR10StandardDiscoveryTask == nil else { return }
+        protectedR10StandardDiscoveryTask = Task { @MainActor [weak self, weak peripheral] in
+            try? await Task.sleep(for: .seconds(Self.protectedR10StandardDiscoveryDelay))
+            guard let self, let peripheral, !Task.isCancelled,
+                  peripheral.state == .connected,
+                  self.protectedR10ResponseEventDataProofIsActive else { return }
+            self.protectedR10StandardDiscoveryStarted = true
+            peripheral.discoverServices([Self.UUIDs.heartRateService,
+                                         Self.UUIDs.batteryService])
+            AtriaDebugLog("ATRIADBG protected_r10 status=standard_services_requested owner=v9 delay_s=15 services=hr,battery action=single_delayed_discovery")
+            self.protectedR10StandardDiscoveryTask = nil
+        }
+    }
+
     private func sendProtectedR10ActivationIfReady() {
-        let cleanProofActive = protectedR10CleanOwnerProofIsActive
+        let cleanProofActive = protectedR10CleanOwner == .protectedV7
+            && protectedR10CleanOwnerProofIsActive
         guard motionHandshakeDiagnostic == nil,
               standardHROnlyMode,
               !historyOnlyProbeMode,
@@ -5754,7 +6348,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func sendProtectedR10ActivationNowIfReady() {
-        let cleanProofActive = protectedR10CleanOwnerProofIsActive
+        let cleanProofActive = protectedR10CleanOwner == .protectedV7
+            && protectedR10CleanOwnerProofIsActive
         guard motionHandshakeDiagnostic == nil,
               standardHROnlyMode,
               !historyOnlyProbeMode,
@@ -5946,7 +6541,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set(false, forKey: Self.protectedR10StreamSuppressedKey)
         defaults.set(false, forKey: Self.protectedR10PassiveReprobePendingKey)
         defaults.set(0, forKey: Self.protectedR10PassiveReprobeFailureCountKey)
-        if protectedR10CleanOwner == .protectedV7 {
+        if protectedR10CleanOwner == .protectedV7
+            || protectedR10CleanOwner == .protectedV9 {
             defaults.set(ProtectedR10CleanOwnerState.qualified.rawValue,
                          forKey: Self.protectedR10CleanOwnerStateKey)
             defaults.removeObject(forKey: Self.protectedR10CleanOwnerProofStartedAtKey)
@@ -5959,14 +6555,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         protectedR10MissingFrameTask = nil
     }
 
-    /// Persist a clean v8 pure-HR owner for the next process. The current v7
-    /// link is left untouched: no stream5 disable, service rediscovery,
+    /// Persist a clean pure-HR owner for the next process. The current proof
+    /// link is left untouched: no CCCD disable, service rediscovery,
     /// connection cancellation or history handoff is allowed here.
     private func persistProtectedR10CleanOwnerFallback(reason: String) {
         let defaults = UserDefaults.standard
         let failures = defaults.integer(forKey: Self.protectedR10PassiveReprobeFailureCountKey) + 1
         defaults.set(failures, forKey: Self.protectedR10PassiveReprobeFailureCountKey)
-        defaults.set(ProtectedR10CleanOwner.pureHRV8.rawValue,
+        let fallbackOwner: ProtectedR10CleanOwner = protectedR10CleanOwner == .protectedV9
+            ? .pureHRV10
+            : .pureHRV8
+        defaults.set(fallbackOwner.rawValue,
                      forKey: Self.protectedR10CleanOwnerKey)
         defaults.set(ProtectedR10CleanOwnerState.fallbackPending.rawValue,
                      forKey: Self.protectedR10CleanOwnerStateKey)
@@ -5976,7 +6575,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set(reason, forKey: Self.protectedR10DisconnectStormReasonKey)
         defaults.set(reason, forKey: Self.protectedR10CleanOwnerFailureReasonKey)
         defaults.removeObject(forKey: Self.protectedR10CleanOwnerProofStartedAtKey)
-        defaults.set("clean_owner_v8_fallback_pending",
+        defaults.set(fallbackOwner == .pureHRV10
+                        ? "clean_owner_v10_fallback_pending"
+                        : "clean_owner_v8_fallback_pending",
                      forKey: RadioDefaults.passiveR10Status)
         protectedR10ActivationGraceTask?.cancel()
         protectedR10ActivationGraceTask = nil
@@ -5986,13 +6587,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         protectedR10StabilityTask = nil
         protectedR10CleanOwnerProofTimeoutTask?.cancel()
         protectedR10CleanOwnerProofTimeoutTask = nil
+        protectedR10CommandSequenceTask?.cancel()
+        protectedR10CommandSequenceTask = nil
+        protectedR10StandardDiscoveryTask?.cancel()
+        protectedR10StandardDiscoveryTask = nil
+        protectedR10ProfileCharacteristics.removeAll()
+        protectedR10ProfileRequestedNotifyUUIDs.removeAll()
+        protectedR10ProfileConfirmedNotifyUUIDs.removeAll()
         protectedR10ActivationSent = false
         protectedR10ActivationAt = nil
         protectedR10FramesAfterActivation = 0
         protectedR10InitialProfilePeripheralID = nil
         protectedR10InitialProfileNotificationRequested = false
         stopR10LivenessWatchdog(reason: reason)
-        AtriaDebugLog("ATRIADBG protected_r10 status=clean_owner_fallback_pending reason=%@ failures=%d action=keep_current_link_untouched_select_v8_next_process_no_history",
+        AtriaDebugLog("ATRIADBG protected_r10 status=clean_owner_fallback_pending owner=%@ reason=%@ failures=%d action=keep_current_link_untouched_select_fresh_pure_hr_next_process_no_history",
+                      fallbackOwner.rawValue,
                       reason,
                       failures)
     }
@@ -11212,6 +11821,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         self.peripheral = saved
         assignIfChanged(\.deviceName, saved.name ?? deviceName)
         if saved.state == .connected {
+            if beginMotionHandshakeLaunchConnectionCutoverIfNeeded(
+                peripheral: saved,
+                central: central,
+                reason: reason
+            ) {
+                return true
+            }
             if allowCleanOwnerLaunchCutover,
                beginProtectedR10LaunchConnectionCutoverIfNeeded(
                 peripheral: saved,
@@ -11258,21 +11874,101 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reason: String
     ) -> Bool {
         let defaults = UserDefaults.standard
+        let isV7Pending = protectedR10CleanOwner == .protectedV7
+            && protectedR10CleanOwnerState == .protectedLaunchPending
+        let isV9Pending = protectedR10CleanOwner == .protectedV9
+            && protectedR10CleanOwnerState == .protectedLaunchPending
+        let cutoverKey = isV9Pending
+            ? Self.protectedR10ResponseEventDataConnectionCutoverKey
+            : Self.protectedR10CleanOwnerConnectionCutoverKey
         guard standardHROnlyMode,
               !historyOnlyProbeMode,
               !protectedR10StreamSuppressed,
-              protectedR10CleanOwner == .protectedV7,
-              protectedR10CleanOwnerState == .protectedLaunchPending,
+              isV7Pending || isV9Pending,
               peripheral.state == .connected,
-              !defaults.bool(forKey: Self.protectedR10CleanOwnerConnectionCutoverKey) else {
+              !defaults.bool(forKey: cutoverKey) else {
             return false
         }
-        defaults.set(true, forKey: Self.protectedR10CleanOwnerConnectionCutoverKey)
+        defaults.set(true, forKey: cutoverKey)
         protectedR10InitialProfilePeripheralID = nil
         protectedR10InitialProfileNotificationRequested = false
         central.cancelPeripheralConnection(peripheral)
-        AtriaDebugLog("ATRIADBG protected_r10 status=clean_owner_launch_cutover reason=%@ action=single_disconnect_then_didconnect_profile_no_history",
+        AtriaDebugLog("ATRIADBG protected_r10 status=clean_owner_launch_cutover owner=%@ reason=%@ action=single_disconnect_then_didconnect_profile_no_history",
+                      protectedR10CleanOwner.rawValue,
                       reason)
+        return true
+    }
+
+    /// Once a failed v9 link is fully down, move immediately to the fresh v10
+    /// pure-HR restoration namespace. This is a single bounded owner cutover,
+    /// not a retry loop: the new central follows the ordinary saved-peripheral
+    /// standing-connect path and can never replay the v9 command pair.
+    private func beginProtectedR10PureHRV10InProcessCutoverIfNeeded(
+        reason: String
+    ) -> Bool {
+        let defaults = UserDefaults.standard
+        guard protectedR10CleanOwner == .pureHRV10,
+              protectedR10CleanOwnerState == .fallbackPending,
+              !defaults.bool(forKey: Self.protectedR10PureHRV10InProcessCutoverKey) else {
+            return false
+        }
+        defaults.set(true, forKey: Self.protectedR10PureHRV10InProcessCutoverKey)
+        defaults.set(ProtectedR10CleanOwnerState.fallbackActive.rawValue,
+                     forKey: Self.protectedR10CleanOwnerStateKey)
+        defaults.set(true, forKey: Self.protectedR10StreamSuppressedKey)
+        defaults.set(true, forKey: Self.protectedR10RollbackKey)
+        defaults.set("clean_owner_v10_pure_hr_active",
+                     forKey: RadioDefaults.passiveR10Status)
+        standardHROnlyMode = true
+        standardHROnlyEnabled = true
+        isActivelyScanning = false
+        central.stopScan()
+        peripheral = nil
+        central = CBCentralManager(
+            delegate: self,
+            queue: centralQueue,
+            options: [
+                CBCentralManagerOptionRestoreIdentifierKey:
+                    Self.protectedR10CentralRestoreIdentifier(
+                        diagnosticRestoreIdentifier: nil,
+                        cleanOwner: .pureHRV10,
+                        streamSuppressed: true
+                    ),
+                CBCentralManagerOptionShowPowerAlertKey: true,
+            ]
+        )
+        recomputeConnectionStatus(reason: "event")
+        AtriaDebugLog("ATRIADBG protected_r10 status=v10_in_process_cutover reason=%@ action=single_fresh_pure_hr_central_no_command_no_history",
+                      reason)
+        return true
+    }
+
+    /// A diagnostic restoration identifier can still inherit the physical
+    /// connection owned by the previous process. A single run-scoped cutover
+    /// guarantees that the response/event/data CCCDs are installed only after
+    /// a genuine `didConnect` edge. Repeated launch or restoration callbacks
+    /// cannot disconnect the strap again for the same run ID.
+    private func beginMotionHandshakeLaunchConnectionCutoverIfNeeded(
+        peripheral: CBPeripheral,
+        central: CBCentralManager,
+        reason: String
+    ) -> Bool {
+        guard let diagnostic = motionHandshakeDiagnostic,
+              diagnostic.useResponseEventDataProfile,
+              peripheral.state == .connected else { return false }
+        let key = "atria.motionHandshake.\(diagnostic.runID).connectionCutover"
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: key) else { return false }
+        defaults.set(true, forKey: key)
+        motionHandshakeLaunchCutoverInProgress = true
+        motionHandshakeProfileCharacteristics.removeAll()
+        motionHandshakeRequestedNotifyUUIDs.removeAll()
+        motionHandshakeConfirmedNotifyUUIDs.removeAll()
+        central.cancelPeripheralConnection(peripheral)
+        recordMotionHandshakeEvidence(
+            event: "fresh_connection_cutover",
+            detail: reason
+        )
         return true
     }
 
@@ -14297,6 +14993,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func recordProtectedR10EvidenceIfNeeded(receivedAt: Date) {
         guard motionHandshakeDiagnostic == nil else { return }
+        // The v9 proof is specifically evidence for the command-armed profile.
+        // Frames arriving between the final CCCD callback and 3F/01 must not
+        // start or qualify a separate passive epoch.
+        if protectedR10ResponseEventDataProofIsActive,
+           !protectedR10ActivationSent {
+            return
+        }
         if !protectedR10ActivationSent,
            Self.protectedR10FrameBelongsToCurrentConnection(lastFrameAt: receivedAt,
                                                             connectedAt: connectedAt) {
@@ -16806,7 +17509,13 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 let reason = pendingScanReason ?? "central_powered_on"
                 pendingScanReason = nil
                 if let peripheral, peripheral.state == .connected {
-                    peripheral.discoverServices(discoveryServicesForCurrentMode)
+                    if !beginMotionHandshakeLaunchConnectionCutoverIfNeeded(
+                        peripheral: peripheral,
+                        central: central,
+                        reason: "powered_on_\(reason)"
+                    ) {
+                        peripheral.discoverServices(discoveryServicesForCurrentMode)
+                    }
                 } else if let earlyPendingConnect {
                     // The standing connect was already issued synchronously
                     // above; this only publishes bookkeeping/UI state for it.
@@ -16894,6 +17603,13 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 self.protectedR10MissingFrameTask = nil
                 self.protectedR10StabilityTask?.cancel()
                 self.protectedR10StabilityTask = nil
+                if self.beginMotionHandshakeLaunchConnectionCutoverIfNeeded(
+                    peripheral: restoredPeripheral,
+                    central: central,
+                    reason: "state_restore_connected"
+                ) {
+                    return
+                }
                 if self.beginProtectedR10LaunchConnectionCutoverIfNeeded(
                     peripheral: restoredPeripheral,
                     central: central,
@@ -17014,6 +17730,19 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             assignIfChanged(\.batteryChargeStatus, .levelOnly)
             recordBatteryChargeEvidence(batteryChargeStatus, reason: "did_connect")
             connectedAt = Date()
+            motionHandshakeCommandSequenceTask?.cancel()
+            motionHandshakeCommandSequenceTask = nil
+            motionHandshakeProfileCharacteristics.removeAll()
+            motionHandshakeRequestedNotifyUUIDs.removeAll()
+            motionHandshakeConfirmedNotifyUUIDs.removeAll()
+            protectedR10CommandSequenceTask?.cancel()
+            protectedR10CommandSequenceTask = nil
+            protectedR10StandardDiscoveryTask?.cancel()
+            protectedR10StandardDiscoveryTask = nil
+            protectedR10ProfileCharacteristics.removeAll()
+            protectedR10ProfileRequestedNotifyUUIDs.removeAll()
+            protectedR10ProfileConfirmedNotifyUUIDs.removeAll()
+            protectedR10StandardDiscoveryStarted = false
             protectedR10InitialProfilePeripheralID = standardHROnlyMode
                 && !historyOnlyProbeMode
                 && !protectedR10StreamSuppressed
@@ -17059,6 +17788,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             let protectedActivationWasSent = protectedR10ActivationSent
             let protectedFrames = protectedR10FramesAfterActivation
             let cleanOwnerProofWasActive = protectedR10CleanOwnerProofIsActive
+            let pureHRV10CutoverWasPending = protectedR10CleanOwner == .pureHRV10
+                && protectedR10CleanOwnerState == .fallbackPending
             protectedR10ActivationGraceTask?.cancel()
             protectedR10ActivationGraceTask = nil
             protectedR10MissingFrameTask?.cancel()
@@ -17067,6 +17798,19 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             protectedR10StabilityTask = nil
             protectedR10CleanOwnerProofTimeoutTask?.cancel()
             protectedR10CleanOwnerProofTimeoutTask = nil
+            motionHandshakeCommandSequenceTask?.cancel()
+            motionHandshakeCommandSequenceTask = nil
+            motionHandshakeProfileCharacteristics.removeAll()
+            motionHandshakeRequestedNotifyUUIDs.removeAll()
+            motionHandshakeConfirmedNotifyUUIDs.removeAll()
+            protectedR10CommandSequenceTask?.cancel()
+            protectedR10CommandSequenceTask = nil
+            protectedR10StandardDiscoveryTask?.cancel()
+            protectedR10StandardDiscoveryTask = nil
+            protectedR10ProfileCharacteristics.removeAll()
+            protectedR10ProfileRequestedNotifyUUIDs.removeAll()
+            protectedR10ProfileConfirmedNotifyUUIDs.removeAll()
+            protectedR10StandardDiscoveryStarted = false
             recomputeConnectionStatus(reason: "event")
             freshScanFallbackTask?.cancel()
             freshScanFallbackTask = nil
@@ -17103,7 +17847,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             let atriaOwnedOfflineSyncDisconnect = offlineHistoricalSyncInProgress
                 || historyOnlyProbeEnabled
                 || historyOnlyProbeMode
-            if cleanOwnerProofWasActive {
+            if cleanOwnerProofWasActive || pureHRV10CutoverWasPending {
                 persistProtectedR10CleanOwnerFallback(
                     reason: "clean_owner_proof_disconnect"
                 )
@@ -17209,12 +17953,55 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                   autoSaveSamples,
                   autoSaveDuration,
                   reconnectPolicy)
+            if self.motionHandshakeDiagnostic != nil {
+                if self.motionHandshakeLaunchCutoverInProgress {
+                    self.motionHandshakeLaunchCutoverInProgress = false
+                    self.peripheral = peripheral
+                    peripheral.delegate = self
+                    self.recordMotionHandshakeEvidence(
+                        event: "fresh_connection_requested",
+                        detail: "after_controlled_cutover"
+                    )
+                    self.recordLinkAttempt(
+                        reason: "motion_handshake_fresh_connection",
+                        peripheral: peripheral
+                    )
+                    central.connect(peripheral, options: nil)
+                    self.recomputeConnectionStatus(reason: "event")
+                } else {
+                    if self.peripheral === peripheral {
+                        self.peripheral = nil
+                    }
+                    self.recomputeConnectionStatus(reason: "event")
+                    self.recordMotionHandshakeEvidence(
+                        event: "diagnostic_stopped",
+                        detail: "single_connection_complete_no_reconnect"
+                    )
+                }
+                return
+            }
             if wasUserRequestedDisconnect {
                 if self.peripheral === peripheral {
                     self.peripheral = nil
                 }
                 recomputeConnectionStatus(reason: "event")
                 AtriaDebugLog("ATRIADBG ble_link status=disconnected reason=user_disconnect action=stay_disconnected")
+                return
+            }
+            if cleanOwnerProofWasActive {
+                // The failed physical link is now fully down. Replace its v9
+                // central exactly once with the fresh v10 pure-HR namespace;
+                // never reconnect or replay commands through the failed owner.
+                if self.peripheral === peripheral {
+                    self.peripheral = nil
+                }
+                self.recomputeConnectionStatus(reason: "event")
+                if self.beginProtectedR10PureHRV10InProcessCutoverIfNeeded(
+                    reason: "proof_disconnect"
+                ) {
+                    return
+                }
+                AtriaDebugLog("ATRIADBG protected_r10 status=proof_disconnect_stopped action=v10_cutover_already_consumed_no_loop_no_history")
                 return
             }
             if shouldPreserveLongWearSession,
@@ -17278,6 +18065,41 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             self.heartRateCharacteristic = nil
             self.lastMissingHeartRateDiscoveryAt = nil
             self.dbgTxReady = false
+            if self.motionHandshakeDiagnostic != nil {
+                self.motionHandshakeLaunchCutoverInProgress = false
+                self.motionHandshakeCommandSequenceTask?.cancel()
+                self.motionHandshakeCommandSequenceTask = nil
+                self.motionHandshakeProfileCharacteristics.removeAll()
+                self.motionHandshakeRequestedNotifyUUIDs.removeAll()
+                self.motionHandshakeConfirmedNotifyUUIDs.removeAll()
+                if self.peripheral === peripheral {
+                    self.peripheral = nil
+                }
+                self.recomputeConnectionStatus(reason: "event")
+                self.recordMotionHandshakeEvidence(
+                    event: "diagnostic_stopped",
+                    detail: "fresh_connection_failed_no_retry"
+                )
+                return
+            }
+            if self.protectedR10CleanOwner == .protectedV9,
+               (self.protectedR10CleanOwnerState == .protectedLaunchPending
+                || self.protectedR10CleanOwnerState == .proving) {
+                self.persistProtectedR10CleanOwnerFallback(
+                    reason: "response_event_data_connect_failed"
+                )
+                if self.peripheral === peripheral {
+                    self.peripheral = nil
+                }
+                self.recomputeConnectionStatus(reason: "event")
+                if self.beginProtectedR10PureHRV10InProcessCutoverIfNeeded(
+                    reason: "v9_connect_failed"
+                ) {
+                    return
+                }
+                AtriaDebugLog("ATRIADBG protected_r10 status=connect_failed owner=v9 action=v10_cutover_already_consumed_no_loop")
+                return
+            }
             let savedUUID = UserDefaults.standard.string(forKey: LinkDefaults.savedPeripheralUUID)
                 .flatMap(UUID.init(uuidString:))
             let disposition = Self.failedConnectRecoveryDisposition(
@@ -17309,6 +18131,18 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
 // MARK: - CBPeripheralDelegate
 extension AtriaBLEManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        if let error {
+            Task { @MainActor in
+                if self.protectedR10CleanOwner == .protectedV9,
+                   (self.protectedR10CleanOwnerState == .protectedLaunchPending
+                    || self.protectedR10CleanOwnerState == .proving) {
+                    self.persistProtectedR10CleanOwnerFallback(
+                        reason: "response_event_data_service_discovery_error_\(error.localizedDescription)"
+                    )
+                }
+            }
+            return
+        }
         Task { @MainActor in
             self.recordLinkObservedConnected(reason: "service_discovery", peripheral: peripheral)
         }
@@ -17317,18 +18151,48 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             if motionHandshakeDiagnostic != nil {
                 switch service.uuid {
                 case Self.UUIDs.strapService:
-                    characteristics = motionHandshakeDiagnostic?.sendSingleR10Activation == true
-                        ? [Self.UUIDs.strapStream5, Self.UUIDs.strapTX]
-                        : [Self.UUIDs.strapStream5]
+                    if motionHandshakeDiagnostic?.useResponseEventDataProfile == true {
+                        characteristics = [Self.UUIDs.strapRX,
+                                           Self.UUIDs.strapStream4,
+                                           Self.UUIDs.strapStream5,
+                                           Self.UUIDs.strapTX]
+                    } else {
+                        characteristics = motionHandshakeDiagnostic?.sendSingleR10Activation == true
+                            ? [Self.UUIDs.strapStream5, Self.UUIDs.strapTX]
+                            : [Self.UUIDs.strapStream5]
+                    }
                 case Self.UUIDs.heartRateService:
                     characteristics = [Self.UUIDs.heartRateMeasure]
                 default:
                     characteristics = nil
                 }
+            } else if standardHROnlyMode,
+                      !historyOnlyProbeMode,
+                      protectedR10CleanOwner == .protectedV9,
+                      (protectedR10CleanOwnerState == .protectedLaunchPending
+                        || protectedR10CleanOwnerState == .proving) {
+                if service.uuid == Self.UUIDs.strapService {
+                    characteristics = protectedR10ProfileCharacteristics.isEmpty
+                        ? Self.protectedStandardHRCharacteristics(
+                            for: service.uuid,
+                            streamSuppressed: protectedR10StreamSuppressed,
+                            cleanOwner: protectedR10CleanOwner
+                        )
+                        : nil
+                } else if protectedR10StandardDiscoveryStarted {
+                    characteristics = Self.protectedStandardHRCharacteristics(
+                        for: service.uuid,
+                        streamSuppressed: protectedR10StreamSuppressed,
+                        cleanOwner: protectedR10CleanOwner
+                    )
+                } else {
+                    characteristics = nil
+                }
             } else if standardHROnlyMode, !historyOnlyProbeMode {
                 characteristics = Self.protectedStandardHRCharacteristics(
                     for: service.uuid,
-                    streamSuppressed: protectedR10StreamSuppressed
+                    streamSuppressed: protectedR10StreamSuppressed,
+                    cleanOwner: protectedR10CleanOwner
                 )
             } else {
                 characteristics = Self.discoveryCharacteristics(for: service.uuid)
@@ -17361,36 +18225,56 @@ extension AtriaBLEManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral,
                     didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         if motionHandshakeDiagnostic != nil {
-            for characteristic in service.characteristics ?? [] {
-                if characteristic.uuid == Self.UUIDs.strapStream5,
-                   characteristic.properties.contains(.notify) {
-                    if !characteristic.isNotifying {
-                        peripheral.setNotifyValue(true, for: characteristic)
-                        Task { @MainActor in
-                            self.recordMotionHandshakeEvidence(event: "stream5_notify_requested")
-                        }
-                    } else {
-                        Task { @MainActor in
-                            self.recordMotionHandshakeEvidence(event: "stream5_already_notifying")
-                            self.scheduleMotionHandshakeStandardHRAddition(peripheral: peripheral)
-                        }
-                    }
-                } else if characteristic.uuid == Self.UUIDs.heartRateMeasure {
-                    Task { @MainActor in
-                        self.heartRateCharacteristic = characteristic
-                        self.recordMotionHandshakeEvidence(event: "hr_characteristic_discovered")
-                    }
-                    if characteristic.properties.contains(.notify), !characteristic.isNotifying {
-                        peripheral.setNotifyValue(true, for: characteristic)
-                    }
-                } else if characteristic.uuid == Self.UUIDs.strapTX,
-                          self.motionHandshakeDiagnostic?.sendSingleR10Activation == true {
-                    Task { @MainActor in
-                        self.txCharacteristic = characteristic
-                        self.recordMotionHandshakeEvidence(event: "activation_tx_discovered",
-                                                           detail: "write_without_response_\(characteristic.properties.contains(.writeWithoutResponse) ? 1 : 0)")
+            let characteristics = service.characteristics ?? []
+            Task { @MainActor in
+                if let tx = characteristics.first(where: {
+                    $0.uuid == Self.UUIDs.strapTX
+                }), self.motionHandshakeDiagnostic?.sendSingleR10Activation == true
+                    || self.motionHandshakeDiagnostic?.sendR10IMUSequence == true {
+                    self.txCharacteristic = tx
+                    self.recordMotionHandshakeEvidence(
+                        event: "activation_tx_discovered",
+                        detail: "write_without_response_\(tx.properties.contains(.writeWithoutResponse) ? 1 : 0)"
+                    )
+                }
+                if let heartRate = characteristics.first(where: {
+                    $0.uuid == Self.UUIDs.heartRateMeasure
+                }) {
+                    self.heartRateCharacteristic = heartRate
+                    self.recordMotionHandshakeEvidence(
+                        event: "hr_characteristic_discovered"
+                    )
+                    if heartRate.properties.contains(.notify), !heartRate.isNotifying {
+                        peripheral.setNotifyValue(true, for: heartRate)
+                    } else if heartRate.isNotifying {
+                        self.handleMotionHandshakeNotificationState(
+                            peripheral: peripheral,
+                            characteristic: heartRate,
+                            error: nil
+                        )
                     }
                 }
+                if service.uuid == Self.UUIDs.strapService {
+                    self.beginMotionHandshakeNotificationProfile(
+                        peripheral: peripheral,
+                        characteristics: characteristics
+                    )
+                }
+            }
+            return
+        }
+        if standardHROnlyMode,
+           protectedR10CleanOwner == .protectedV9,
+           service.uuid == Self.UUIDs.strapService,
+           (protectedR10CleanOwnerState == .protectedLaunchPending
+            || protectedR10CleanOwnerState == .proving) {
+            let characteristics = service.characteristics ?? []
+            Task { @MainActor in
+                self.beginProtectedR10ResponseEventDataProfile(
+                    peripheral: peripheral,
+                    characteristics: characteristics,
+                    error: error
+                )
             }
             return
         }
@@ -17626,18 +18510,18 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 }
             }
             if self.motionHandshakeDiagnostic != nil {
-                if let err {
-                    self.recordMotionHandshakeEvidence(event: "notify_error",
-                                                       detail: "\(short)_\(err)")
-                } else if notifying, isData {
-                    self.recordMotionHandshakeEvidence(event: "stream5_notify_active")
-                    self.scheduleMotionHandshakeStandardHRAddition(peripheral: peripheral)
-                } else if notifying, characteristic.uuid == Self.UUIDs.heartRateMeasure {
-                    self.recordMotionHandshakeEvidence(event: "hr_notify_active")
-                    self.sendMotionHandshakeSingleR10ActivationIfReady()
-                } else {
-                    self.recordMotionHandshakeEvidence(event: "notify_inactive", detail: short)
-                }
+                self.handleMotionHandshakeNotificationState(
+                    peripheral: peripheral,
+                    characteristic: characteristic,
+                    error: error
+                )
+                return
+            }
+            if self.handleProtectedR10ResponseEventDataNotificationState(
+                peripheral: peripheral,
+                characteristic: characteristic,
+                error: error
+            ) {
                 return
             }
             if characteristic.uuid == Self.UUIDs.strapRX,

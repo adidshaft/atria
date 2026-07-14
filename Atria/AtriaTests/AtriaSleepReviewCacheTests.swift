@@ -289,6 +289,40 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
             + store.sleepHistorySnapshot.additionalMainNights
             + store.sleepHistorySnapshot.napNights).contains { $0.id == saved.id },
                       "a successful Save must be visible to Activity immediately")
+
+        let activityRows = AtriaActivitySelectedDaySleeps.overlapping(
+            snapshot: store.sleepHistorySnapshot,
+            pendingReview: review,
+            selectedDay: calendar.startOfDay(for: start),
+            calendar: calendar
+        )
+        XCTAssertEqual(activityRows.map(\.id), [saved.id],
+                       "Activity must show the durable sleep and suppress a stale copy of its settled candidate")
+    }
+
+    func testVitalsConfirmBindsTheExactDisplayedReviewCandidate() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaVitalsCollectionSections.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let cardStart = try XCTUnwrap(source.range(of: "private struct AtriaSleepHistoryCard: View"))
+        let cardEnd = try XCTUnwrap(source.range(of: "private struct AtriaSleepContextLens: View",
+                                                 range: cardStart.upperBound..<source.endIndex))
+        let card = String(source[cardStart.lowerBound..<cardEnd.lowerBound])
+        let hostStart = try XCTUnwrap(source.range(of: "private func confirmSleepCandidate("))
+        let hostEnd = try XCTUnwrap(source.range(of: "#if DEBUG",
+                                                 range: hostStart.upperBound..<source.endIndex))
+        let host = String(source[hostStart.lowerBound..<hostEnd.lowerBound])
+
+        XCTAssertTrue(card.contains("let onConfirmSleep: (SleepHistorySnapshot.Night) -> Void"))
+        XCTAssertTrue(card.contains("guard let latest = snapshot.latestReviewable"))
+        XCTAssertTrue(card.contains("latest.confirmed == false"))
+        XCTAssertTrue(card.contains("onConfirmSleep(latest)"))
+        XCTAssertTrue(host.contains("confirmSleepCandidate(_ night: SleepHistorySnapshot.Night)"))
+        XCTAssertTrue(host.contains("confirmSleepHistoryNightForUI(night"))
+        XCTAssertFalse(host.contains("latestMainSleep"),
+                       "Confirm must never replace the displayed candidate with the physiological main sleep")
     }
 
     func testReviewSaveRoutesUnchangedWindowToConfirmationAndEditedWindowToRederivation() {

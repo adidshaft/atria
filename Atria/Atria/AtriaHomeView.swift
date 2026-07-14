@@ -825,6 +825,7 @@ struct AtriaHomeView: View {
     @State private var workoutReviewHoldState: WorkoutReviewHoldState?
     @State private var showConnectivityPill = false
     @State private var connectivityPillTask: Task<Void, Never>?
+    @State private var notificationDeepLinkDrainTask: Task<Void, Never>?
     @State private var showJournalSheet = false
     @State private var workoutHeartRateBroadcastEnabled = false
     // Plain @State, not @AppStorage, for the same dotted-key KVO storm reason
@@ -967,7 +968,7 @@ struct AtriaHomeView: View {
             batteryState = UIDevice.current.batteryState
         }
         .onReceive(NotificationCenter.default.publisher(for: NotificationDeliveryLogger.deepLinkNotification)) { _ in
-            drainPendingNotificationDeepLink()
+            schedulePendingNotificationDeepLinkDrain()
         }
         .onOpenURL(perform: handleDeepLink)
         .sheet(item: $sleepReviewSheetRoute) { route in
@@ -1475,6 +1476,22 @@ struct AtriaHomeView: View {
     private func drainPendingNotificationDeepLink() {
         guard let url = AtriaNotificationDeepLinkInbox.shared.consume() else { return }
         handleDeepLink(url)
+    }
+
+    private func schedulePendingNotificationDeepLinkDrain() {
+        notificationDeepLinkDrainTask?.cancel()
+        notificationDeepLinkDrainTask = Task { @MainActor in
+            // Let the foreground/launch transaction commit before changing the
+            // root TabView selection. If the scene is not active, retain the
+            // URL; the active scene edge schedules another drain.
+            await Task.yield()
+            guard !Task.isCancelled,
+                  AtriaNotificationDeepLinkActivationPolicy.shouldConsume(
+                    sceneIsActive: scenePhase == .active
+                  ) else { return }
+            drainPendingNotificationDeepLink()
+            notificationDeepLinkDrainTask = nil
+        }
     }
 
     private static func isSleepReviewDeepLink(_ url: URL) -> Bool {
@@ -3336,9 +3353,9 @@ struct AtriaHomeView: View {
 
     private func handleHomeAppear() {
         // UIKit may have delivered a notification response before this view's
-        // publisher subscription existed. Drain the sticky route before any
-        // optional diagnostics/startup work so Journal paints immediately.
-        drainPendingNotificationDeepLink()
+        // publisher subscription existed. Schedule the sticky route before
+        // optional diagnostics, but apply it only after the active first frame.
+        schedulePendingNotificationDeepLinkDrain()
         if scenePhase == .active {
             motionActivityMonitor.start()
         }
@@ -3488,7 +3505,7 @@ struct AtriaHomeView: View {
             }
             return
         }
-        drainPendingNotificationDeepLink()
+        schedulePendingNotificationDeepLinkDrain()
         foregroundResumeTask?.cancel()
         foregroundResumeTask = Task { @MainActor in
             // Let the returning scene draw first. Widget encoding, Keychain reads,
@@ -3511,6 +3528,14 @@ struct AtriaHomeView: View {
             // refreshed by the settings/key mutation paths that can change it.
             if !isDebugUIScreenLaunchActive {
                 consumePendingIntentCommandIfNeeded()
+            }
+            if workoutSession != nil {
+                // A suspended process may not have delivered the final sensor
+                // publisher pulse. Refresh the complete HR/zone/steps/strain/
+                // calorie snapshot after the first returning frame, before any
+                // sleep/archive settlement work, and let the coordinator's
+                // bounded writer coalesce it with an in-flight ActivityKit call.
+                updateLiveActivity(forceActivityWrite: true)
             }
             updateHapticCoordinator()
 
@@ -3774,7 +3799,7 @@ struct AtriaHomeView: View {
             status = "Disconnected"
         }
         let battery = live.batteryLevel >= 0 ? " · \(live.batteryText)" : ""
-        return "Strap · \(status)\(battery) · updated \(live.lastReadingAgeText)"
+        return "Strap · \(status)\(battery) · \(live.connectivityFreshnessText)"
     }
 
     private func handleConnectivityRefresh() async {
@@ -7080,6 +7105,33 @@ final class AtriaHomeModel {
             if age < 60 { return "just now" }
             if age < 3_600 { return "\(max(1, Int(age / 60)))m ago" }
             return "\(max(1, Int(age / 3_600)))h ago"
+        }
+        /// If a connectivity surface includes a percentage, its age belongs
+        /// to the level-bearing battery packet. A newer HR packet proves only
+        /// that the link is alive and must not make an older battery value look
+        /// freshly measured.
+        var connectivityFreshnessText: String {
+            Self.connectivityFreshnessText(
+                batteryLevel: batteryLevel,
+                batteryVerifiedAt: batteryLastVerifiedAt,
+                heartRateReadingAt: lastReadingAt
+            )
+        }
+        static func connectivityFreshnessText(
+            batteryLevel: Int,
+            batteryVerifiedAt: Date?,
+            heartRateReadingAt: Date?,
+            now: Date = Date()
+        ) -> String {
+            if batteryLevel >= 0 {
+                return batteryRecencyText(verifiedAt: batteryVerifiedAt, now: now)
+            }
+            guard let heartRateReadingAt else { return "recently" }
+            let age = max(0, now.timeIntervalSince(heartRateReadingAt))
+            if age < 2 { return "just now" }
+            if age < 60 { return "\(Int(age.rounded())) s ago" }
+            if age < 3_600 { return "\(Int((age / 60).rounded())) min ago" }
+            return "\(Int((age / 3_600).rounded())) hr ago"
         }
         var lastReadingAgeText: String {
             guard let lastReadingAt else { return "recently" }

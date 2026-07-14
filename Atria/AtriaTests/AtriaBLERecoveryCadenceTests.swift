@@ -2,6 +2,78 @@ import XCTest
 @testable import Atria
 
 final class AtriaBLERecoveryCadenceTests: XCTestCase {
+    func testMotionDiagnosticRequiresProfileConsentForR10IMUSequence() {
+        let base = [
+            AtriaBLEManager.MotionHandshakeDiagnosticConfiguration.enableArgument,
+            AtriaBLEManager.MotionHandshakeDiagnosticConfiguration.confirmationArgument,
+            AtriaBLEManager.MotionHandshakeDiagnosticConfiguration.runIDArgument,
+            "profile-test"
+        ]
+
+        XCTAssertNil(AtriaBLEManager.MotionHandshakeDiagnosticConfiguration.parse(
+            arguments: base + [
+                AtriaBLEManager.MotionHandshakeDiagnosticConfiguration
+                    .r10IMUSequenceConsentArgument
+            ]
+        ))
+
+        let configuration = AtriaBLEManager.MotionHandshakeDiagnosticConfiguration.parse(
+            arguments: base + [
+                AtriaBLEManager.MotionHandshakeDiagnosticConfiguration
+                    .responseEventDataProfileArgument,
+                AtriaBLEManager.MotionHandshakeDiagnosticConfiguration
+                    .r10IMUSequenceConsentArgument,
+                AtriaBLEManager.MotionHandshakeDiagnosticConfiguration.addHRDelayArgument,
+                "15"
+            ]
+        )
+        XCTAssertEqual(configuration?.runID, "profile-test")
+        XCTAssertEqual(configuration?.addHRDelay, 15)
+        XCTAssertEqual(configuration?.useResponseEventDataProfile, true)
+        XCTAssertEqual(configuration?.sendR10IMUSequence, true)
+        XCTAssertEqual(configuration?.sendSingleR10Activation, false)
+    }
+
+    func testMotionDiagnosticProfileSubscribesResponseEventThenData() {
+        XCTAssertEqual(
+            AtriaBLEManager.motionHandshakeNotifyOrder(
+                useResponseEventDataProfile: true
+            ),
+            [AtriaBLEManager.UUIDs.strapRX,
+             AtriaBLEManager.UUIDs.strapStream4,
+             AtriaBLEManager.UUIDs.strapStream5]
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.motionHandshakeNotifyOrder(
+                useResponseEventDataProfile: false
+            ),
+            [AtriaBLEManager.UUIDs.strapStream5]
+        )
+    }
+
+    func testProtectedV9UsesPhysicallyProvenProfileAndTiming() {
+        XCTAssertEqual(
+            AtriaBLEManager.protectedR10ResponseEventDataNotifyOrder,
+            [AtriaBLEManager.UUIDs.strapRX,
+             AtriaBLEManager.UUIDs.strapStream4,
+             AtriaBLEManager.UUIDs.strapStream5]
+        )
+        XCTAssertEqual(AtriaBLEManager.protectedR10CommandPacingDelay,
+                       0.120,
+                       accuracy: 0.000_1)
+        XCTAssertEqual(AtriaBLEManager.protectedR10StandardDiscoveryDelay, 15)
+        XCTAssertEqual(
+            AtriaBLEManager.protectedStandardHRStrapCharacteristics(
+                streamSuppressed: false,
+                cleanOwner: .protectedV9
+            ),
+            [AtriaBLEManager.UUIDs.strapRX,
+             AtriaBLEManager.UUIDs.strapStream4,
+             AtriaBLEManager.UUIDs.strapStream5,
+             AtriaBLEManager.UUIDs.strapTX]
+        )
+    }
+
     func testAlwaysOnLongWearMigrationRepairsOrphanedDisabledCapture() throws {
         let suite = "AtriaBLERecoveryCadenceTests.alwaysOn.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -122,7 +194,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                        "the one-time launch migration must not erase later proof failures")
     }
 
-    func testCleanOwnerV7RetriesThePrematureV6PureHRFallbackOnAFreshOwner() throws {
+    func testPhysicallyProvenV9MigratesSuppressedPureHRV8ExactlyOnce() throws {
         let suite = "AtriaBLERecoveryCadenceTests.cleanOwnerV7Retry.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -134,13 +206,19 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         defaults.set(true, forKey: "atria.protectedR10.streamSuppressed")
 
         XCTAssertEqual(AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(defaults: defaults),
-                       .migratedToProtectedV7)
+                       .migratedPureHRV8ToProtectedV9)
         XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwner"),
-                       "protected_v7")
+                       "protected_redp_v9")
         XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwnerState"),
                        "protected_launch_pending")
         XCTAssertFalse(defaults.bool(forKey: "atria.protectedR10.streamSuppressed"))
-        XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.cleanOwnerMigrationV7"))
+        XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.responseEventDataMigrationV9"))
+        XCTAssertFalse(defaults.bool(forKey: "atria.protectedR10.responseEventDataConnectionCutoverV9"))
+        XCTAssertFalse(defaults.bool(forKey: "atria.protectedR10.responseEventDataSequenceSentV9"))
+
+        XCTAssertEqual(AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(defaults: defaults),
+                       .none,
+                       "the physically-proven owner migration must be one-shot")
     }
 
     func testCleanOwnerMigrationLeavesUnsuppressedLegacyOwnerUnchanged() throws {
@@ -170,6 +248,43 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                        "fallback_active")
         XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.streamSuppressed"))
         XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.rollback"))
+    }
+
+    func testV10FallbackActivatesOnlyAtNextProcessLaunch() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.cleanOwnerV10Fallback.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "atria.protectedR10.responseEventDataMigrationV9")
+        defaults.set("pure_hr_v10", forKey: "atria.protectedR10.cleanOwner")
+        defaults.set("fallback_pending", forKey: "atria.protectedR10.cleanOwnerState")
+
+        XCTAssertEqual(AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(defaults: defaults),
+                       .activatedPureHRV10Fallback)
+        XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwnerState"),
+                       "fallback_active")
+        XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.streamSuppressed"))
+        XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.rollback"))
+    }
+
+    func testInterruptedV9ProofSelectsFreshPureHRV10WithoutReplayingCommands() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.interruptedV9.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "atria.protectedR10.responseEventDataMigrationV9")
+        defaults.set(true, forKey: "atria.protectedR10.responseEventDataSequenceSentV9")
+        defaults.set("protected_redp_v9", forKey: "atria.protectedR10.cleanOwner")
+        defaults.set("proving", forKey: "atria.protectedR10.cleanOwnerState")
+
+        XCTAssertEqual(AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(defaults: defaults),
+                       .activatedPureHRV10Fallback)
+        XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwner"),
+                       "pure_hr_v10")
+        XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwnerState"),
+                       "fallback_active")
+        XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.streamSuppressed"))
+        XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.rollback"))
+        XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.responseEventDataSequenceSentV9"),
+                      "the persisted command lease remains consumed")
     }
 
     func testInterruptedV7ProofRestartsPassiveEpochWithoutBreakingCommandLease() throws {
@@ -209,13 +324,24 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), "com.adidshaft.atria.ble-central-v8-pure-hr")
         XCTAssertEqual(AtriaBLEManager.protectedR10CentralRestoreIdentifier(
             diagnosticRestoreIdentifier: nil,
+            cleanOwner: .protectedV9,
+            streamSuppressed: false
+        ), "com.adidshaft.atria.ble-central-v9-response-event-data")
+        XCTAssertEqual(AtriaBLEManager.protectedR10CentralRestoreIdentifier(
+            diagnosticRestoreIdentifier: nil,
+            cleanOwner: .pureHRV10,
+            streamSuppressed: true
+        ), "com.adidshaft.atria.ble-central-v10-pure-hr")
+        XCTAssertEqual(AtriaBLEManager.protectedR10CentralRestoreIdentifier(
+            diagnosticRestoreIdentifier: nil,
             cleanOwner: .legacy,
             streamSuppressed: true
         ), "com.adidshaft.atria.ble-central-v6-pure-hr")
     }
 
     func testCleanOwnerFencesAutomaticHistoryAcrossDisconnectAndFallback() {
-        for owner in [AtriaBLEManager.ProtectedR10CleanOwner.protectedV7, .pureHRV8] {
+        for owner in [AtriaBLEManager.ProtectedR10CleanOwner.protectedV7,
+                      .pureHRV8, .protectedV9, .pureHRV10] {
             for state in [AtriaBLEManager.ProtectedR10CleanOwnerState.protectedLaunchPending,
                           .proving, .qualified, .fallbackPending, .fallbackActive] {
                 XCTAssertTrue(AtriaBLEManager.shouldDeferAutomaticHistoryForCleanOwner(
@@ -288,7 +414,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(source.contains("sendSingleLeasedActivation"))
         XCTAssertFalse(source.contains("beginProtectedR10PassiveReprobeIfEligible"))
         XCTAssertFalse(source.contains("resuppressProtectedR10Recovery"))
-        XCTAssertTrue(source.contains("action=keep_current_link_untouched_select_v8_next_process_no_history"))
+        XCTAssertTrue(source.contains("action=keep_current_link_untouched_select_fresh_pure_hr_next_process_no_history"))
         XCTAssertTrue(body.contains("protectedR10CleanOwnerState == .protectedLaunchPending"))
         XCTAssertTrue(body.contains("strapStream5NotifyConfirmed"))
         XCTAssertTrue(body.contains("forKey: Self.protectedR10CleanOwnerProofStartedAtKey"))
@@ -349,6 +475,43 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ])
         XCTAssertTrue(restoredStreamBody.contains("requestProtectedR10InitialProfileNotificationIfAllowed"))
         XCTAssertFalse(restoredStreamBody.contains("setNotifyValue"))
+    }
+
+    func testProtectedV9SequenceAndV10CutoverAreSingleBoundedOperations() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift"), encoding: .utf8)
+
+        let sequenceStart = try XCTUnwrap(source.range(
+            of: "private func sendProtectedR10ResponseEventDataSequenceIfReady"
+        ))
+        let sequenceEnd = try XCTUnwrap(source.range(
+            of: "private func scheduleProtectedR10StandardDiscovery",
+            range: sequenceStart.upperBound..<source.endIndex
+        ))
+        let sequenceBody = String(source[sequenceStart.lowerBound..<sequenceEnd.lowerBound])
+        XCTAssertEqual(sequenceBody.components(separatedBy: "Cmd.sendR10R11Realtime").count - 1, 1)
+        XCTAssertEqual(sequenceBody.components(separatedBy: "Cmd.toggleIMUMode").count - 1, 1)
+        XCTAssertTrue(sequenceBody.contains("protectedR10CommandPacingDelay"))
+        XCTAssertFalse(sequenceBody.contains("cancelPeripheralConnection"))
+        XCTAssertFalse(sequenceBody.contains("startOfflineHistoricalSync"))
+
+        let cutoverStart = try XCTUnwrap(source.range(
+            of: "private func beginProtectedR10PureHRV10InProcessCutoverIfNeeded"
+        ))
+        let cutoverEnd = try XCTUnwrap(source.range(
+            of: "/// A diagnostic restoration identifier",
+            range: cutoverStart.upperBound..<source.endIndex
+        ))
+        let cutoverBody = String(source[cutoverStart.lowerBound..<cutoverEnd.lowerBound])
+        XCTAssertEqual(cutoverBody.components(separatedBy: "CBCentralManager(").count - 1, 1)
+        XCTAssertTrue(cutoverBody.contains("protectedR10PureHRV10InProcessCutoverKey"))
+        XCTAssertTrue(cutoverBody.contains("fallbackActive.rawValue"))
+        XCTAssertFalse(cutoverBody.contains("central.connect"))
+        XCTAssertFalse(cutoverBody.contains("cancelPeripheralConnection"))
+        XCTAssertFalse(cutoverBody.contains("writeValue"))
+        XCTAssertFalse(cutoverBody.contains("startOfflineHistoricalSync"))
     }
 
     func testProtectedR10RecoveryDecisionIsPassiveFirstAndLeaseBounded() {

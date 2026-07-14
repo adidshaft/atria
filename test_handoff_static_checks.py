@@ -4591,7 +4591,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private func adjustSleepCandidate(night: SleepHistorySnapshot.Night,",
             'source: "vitals_sleep_history_adjust"',
             "source: \"vitals_sleep_history\"",
-            "if let night = vitals.sleepHistorySnapshot.latestMainSleep",
+            "private func confirmSleepCandidate(_ night: SleepHistorySnapshot.Night)",
             "store.confirmSleepHistoryNightForUI(night,",
             "private var shouldShowConfirmSleep: Bool",
             "guard snapshot.candidateCount > 0 else { return false }",
@@ -4601,7 +4601,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "@State private var adjustmentNight: SleepHistorySnapshot.Night?",
             "Label(reviewSleepLabel, systemImage: \"slider.horizontal.3\")",
             ".accessibilityHint(\"Review the detected window before saving it.\")",
-            "Button(action: onConfirmSleep)",
+            "onConfirmSleep(latest)",
             "Label(\"Confirm\", systemImage: \"checkmark.circle\")",
             ".accessibilityHint(\"Saves the shown sleep or nap candidate locally.\")",
             ".sheet(item: $adjustmentNight) { night in",
@@ -6602,7 +6602,7 @@ class HandoffStaticChecks(unittest.TestCase):
             'static let deepLinkNotification = Notification.Name("atria.notification.deepLink")',
             'let deepLink = request.content.userInfo["deepLink"] as? String',
             'ATRIADBG notification_deeplink status=posted kind=%@ url=%@',
-            'NotificationCenter.default.post(name: Self.deepLinkNotification, object: url)',
+            'notificationCenter.post(name: Self.didEnqueueNotification, object: url)',
             "static func scheduleFastLaunchMorningSummaryDebugFixtureIfRequested",
             'arguments.contains("--atria-test-morning-summary-notification")',
             'arguments.contains("--atria-test-morning-summary-toggle-off")',
@@ -7499,13 +7499,18 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertGreater(first_write_index, guard_index)
         assert_contains(self, body, "standard_hr_only_no_strap_writes")
         assert_contains(self, body, "standard_hr_only_write_blocked")
-        # Four tightly-scoped writes intentionally exist outside generic
-        # sendCommand: the explicit diagnostic, the production-protected
-        # single 3F/01 R10 activation, the full-protocol liveness repair (whose
+        # Eight tightly-scoped writes intentionally exist outside generic
+        # sendCommand: the original explicit diagnostic, the two-write isolated
+        # response/event/data R10+IMU diagnostic, the production-protected
+        # single 3F/01 R10 activation, the physically-proven production
+        # response/event/data 3F/01 -> 6A/01 pair, the full-protocol liveness repair (whose
         # standard-HR branch returns through the protected path), and the
         # guarded one-shot battery query. All ordinary strap writes remain
         # behind the standard-HR guard above.
-        self.assertEqual(text.count("writeValue("), body.count("writeValue(") + 4)
+        self.assertEqual(text.count("writeValue("), body.count("writeValue(") + 8)
+        assert_contains(self, text, "--atria-confirm-response-event-data-profile")
+        assert_contains(self, text, "--atria-confirm-r10-imu-command-sequence")
+        assert_contains(self, text, "Cmd.toggleIMUMode, 0x01")
         assert_contains(self, text, "sendProtectedR10ActivationIfReady()")
         assert_contains(self, text, "Cmd.sendR10R11Realtime, 0x01")
         assert_contains(self, text, "if standardHROnlyMode {")
@@ -10033,7 +10038,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "requestOfflineHistoricalSyncIfNeeded(reason: \"pull_to_refresh\", force: true)",
             "showConnectivityPill = true",
             "let battery = live.batteryLevel >= 0 ? \" · \\(live.batteryText)\" : \"\"",
-            "return \"Strap · \\(status)\\(battery) · updated \\(live.lastReadingAgeText)\"",
+            "return \"Strap · \\(status)\\(battery) · \\(live.connectivityFreshnessText)\"",
             "Self.debugLaunchFixtureValue(arguments: arguments) == \"refresh-connectivity-pill\"",
             "await handleConnectivityRefresh()",
         ]:
@@ -14426,7 +14431,9 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, manager, "case UUIDs.batteryService:")
         assert_contains(self, manager, "return [UUIDs.batteryLevel]")
         assert_contains(self, manager, "protectedStandardHRStrapCharacteristics(")
-        assert_contains(self, manager, "streamSuppressed ? nil : [UUIDs.strapStream5, UUIDs.strapTX]")
+        assert_contains(self, manager, "guard !streamSuppressed else { return nil }")
+        assert_contains(self, manager, "protectedR10ResponseEventDataNotifyOrder + [UUIDs.strapTX]")
+        assert_contains(self, manager, "return [UUIDs.strapStream5, UUIDs.strapTX]")
         assert_contains(self, manager, "[Packet.command, sequence, Cmd.sendR10R11Realtime, 0x01]")
         assert_contains(self, manager, 'protected_r10 status=activation_sent cmd=3f data=01 mode=wwr')
         assert_contains(self, manager, "explicitReadResearchEnabled: Bool = false")

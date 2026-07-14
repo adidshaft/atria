@@ -253,13 +253,21 @@ final class AtriaLiveActivityCoordinator {
         var elapsedDuration: TimeInterval
     }
 
+    struct QueuedActivityUpdate: Equatable {
+        var snapshot: Snapshot
+        var protectsBackgroundWrite: Bool
+    }
+
     private var activity: Activity<AtriaLiveActivityAttributes>?
     private var startedAt: Date?
     private var lastSnapshot: Snapshot?
     private var lastActivitySnapshot: Snapshot?
     private var lastActivityUpdateAt: Date?
     private var pendingActivityUpdateTask: Task<Void, Never>?
-    private var activityUpdateChain: Task<Void, Never>?
+    private var activityWriteTask: Task<Void, Never>?
+    private var activityEndTask: Task<Void, Never>?
+    private var queuedActivityUpdate: QueuedActivityUpdate?
+    private var queuedActivityBackgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var hasReconciledExistingActivity = false
     private var isEndingActivity = false
     /// Keep workout metrics close to the strap without attempting one
@@ -269,6 +277,21 @@ final class AtriaLiveActivityCoordinator {
     func update(_ snapshot: Snapshot, forceActivityWrite: Bool = false) {
         let now = Date()
         if !hasReconciledExistingActivity {
+            // A publisher can reach Home before its durable pending workout has
+            // been rehydrated into SwiftUI state. Ending every existing Live
+            // Activity on that transient idle snapshot removes the Lock Screen
+            // workout that the next runloop is about to adopt. Wait only while
+            // a current, non-terminal pending intent proves restoration work is
+            // still outstanding; genuinely orphaned activities are still ended.
+            let pendingWorkoutIsActive = !snapshot.isRecording
+                && AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
+            if Self.shouldDeferExistingActivityReconciliation(
+                snapshotIsRecording: snapshot.isRecording,
+                pendingWorkoutIsActive: pendingWorkoutIsActive
+            ) {
+                lastSnapshot = snapshot
+                return
+            }
             let existingActivities = Activity<AtriaLiveActivityAttributes>.activities
             if snapshot.isRecording,
                let matching = existingActivities.first(where: {
@@ -301,10 +324,12 @@ final class AtriaLiveActivityCoordinator {
             }
             pendingActivityUpdateTask?.cancel()
             pendingActivityUpdateTask = nil
+            queuedActivityUpdate = nil
+            endQueuedActivityBackgroundTaskIfNeeded()
             let finalSnapshot = lastSnapshot ?? snapshot
             isEndingActivity = true
-            let predecessor = activityUpdateChain
-            activityUpdateChain = Task { @MainActor in
+            let predecessor = activityWriteTask
+            activityEndTask = Task { @MainActor in
                 if let predecessor { await predecessor.value }
                 await endActivity(with: finalSnapshot)
             }
@@ -347,6 +372,29 @@ final class AtriaLiveActivityCoordinator {
                                                      workoutStartedAt: Date) -> Bool {
         abs(activityStartedAt.timeIntervalSince(workoutStartedAt))
             <= AtriaLiveWorkoutActionStore.sessionMatchTolerance
+    }
+
+    nonisolated static func shouldDeferExistingActivityReconciliation(
+        snapshotIsRecording: Bool,
+        pendingWorkoutIsActive: Bool
+    ) -> Bool {
+        !snapshotIsRecording && pendingWorkoutIsActive
+    }
+
+    /// ActivityKit may take longer than one sensor cadence to accept an update.
+    /// Keep at most one successor and always replace it with the newest complete
+    /// metric snapshot. A background-boundary request is sticky so coalescing
+    /// cannot accidentally discard its execution assertion.
+    nonisolated static func coalescedActivityUpdate(
+        existing: QueuedActivityUpdate?,
+        incoming: Snapshot,
+        protectsBackgroundWrite: Bool
+    ) -> QueuedActivityUpdate {
+        QueuedActivityUpdate(
+            snapshot: incoming,
+            protectsBackgroundWrite: protectsBackgroundWrite
+                || existing?.protectsBackgroundWrite == true
+        )
     }
 
     private func start(with snapshot: Snapshot) {
@@ -392,7 +440,10 @@ final class AtriaLiveActivityCoordinator {
         lastActivityUpdateAt = nil
         pendingActivityUpdateTask?.cancel()
         pendingActivityUpdateTask = nil
-        activityUpdateChain = nil
+        activityWriteTask = nil
+        activityEndTask = nil
+        queuedActivityUpdate = nil
+        endQueuedActivityBackgroundTaskIfNeeded()
         AtriaDebugLog("ATRIADBG live_activity status=ended bpm=%d strain=%.1f readings=%d local_only=1",
                       snapshot.heartRate,
                       snapshot.strain,
@@ -458,25 +509,72 @@ final class AtriaLiveActivityCoordinator {
     }
 
     private func enqueueSerializedActivityWrite(_ snapshot: Snapshot,
-                                                 protectsBackgroundWrite: Bool = false) {
+                                                 protectsBackgroundWrite: Bool = false,
+                                                 preacquiredBackgroundTask: UIBackgroundTaskIdentifier = .invalid) {
+        // Do not build an unbounded chain when ActivityKit is slow or the HR
+        // zone chatters around a boundary. One in-flight write plus the newest
+        // complete successor preserves truth while bounding MainActor work.
+        if activityWriteTask != nil {
+            queuedActivityUpdate = Self.coalescedActivityUpdate(
+                existing: queuedActivityUpdate,
+                incoming: snapshot,
+                protectsBackgroundWrite: protectsBackgroundWrite
+            )
+            if protectsBackgroundWrite,
+               queuedActivityBackgroundTask == .invalid {
+                // Acquire at the lifecycle edge, not after the in-flight write
+                // finishes; suspension may otherwise prevent the forced latest
+                // snapshot from ever reaching ActivityKit.
+                queuedActivityBackgroundTask = UIApplication.shared.beginBackgroundTask(
+                    withName: "Atria live workout snapshot"
+                )
+            }
+            return
+        }
+
         // The scene can be suspended almost immediately after entering the
         // background. Keep the process alive only for a forced boundary write,
         // and always return the assertion after ActivityKit has accepted it.
         // Normal five-second updates do not consume background execution time.
-        let backgroundTask: UIBackgroundTaskIdentifier = protectsBackgroundWrite
-            ? UIApplication.shared.beginBackgroundTask(withName: "Atria live workout snapshot")
-            : .invalid
-        let predecessor = activityUpdateChain
-        activityUpdateChain = Task { @MainActor in
+        let backgroundTask: UIBackgroundTaskIdentifier
+        if preacquiredBackgroundTask != .invalid {
+            backgroundTask = preacquiredBackgroundTask
+        } else {
+            backgroundTask = protectsBackgroundWrite
+                ? UIApplication.shared.beginBackgroundTask(withName: "Atria live workout snapshot")
+                : .invalid
+        }
+        activityWriteTask = Task { @MainActor in
             defer {
                 if backgroundTask != .invalid {
                     UIApplication.shared.endBackgroundTask(backgroundTask)
                 }
             }
-            if let predecessor { await predecessor.value }
-            guard snapshot.isRecording, !isEndingActivity else { return }
-            await updateActivity(with: snapshot)
+            if snapshot.isRecording, !isEndingActivity {
+                await updateActivity(with: snapshot)
+            }
+
+            activityWriteTask = nil
+            guard !isEndingActivity, let queued = queuedActivityUpdate else {
+                queuedActivityUpdate = nil
+                endQueuedActivityBackgroundTaskIfNeeded()
+                return
+            }
+            let queuedBackgroundTask = queuedActivityBackgroundTask
+            queuedActivityUpdate = nil
+            queuedActivityBackgroundTask = .invalid
+            enqueueSerializedActivityWrite(
+                queued.snapshot,
+                protectsBackgroundWrite: queued.protectsBackgroundWrite,
+                preacquiredBackgroundTask: queuedBackgroundTask
+            )
         }
+    }
+
+    private func endQueuedActivityBackgroundTaskIfNeeded() {
+        guard queuedActivityBackgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(queuedActivityBackgroundTask)
+        queuedActivityBackgroundTask = .invalid
     }
 
     private func staleDate(for snapshot: Snapshot) -> Date {
