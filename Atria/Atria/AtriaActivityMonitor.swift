@@ -2165,7 +2165,9 @@ struct AtriaAddWorkoutSheet: View {
     private let onDismissCandidate: (() -> Bool)?
     @Environment(\.dismiss) private var dismiss
 
+    @State private var activityLabel = AtriaWorkoutActivityType.walking.rawValue
     @State private var activityType = AtriaWorkoutActivityType.walking.rawValue
+    @State private var activitySubtype: String?
     @State private var startTime: Date
     @State private var endTime: Date
     @State private var failed = false
@@ -2205,10 +2207,23 @@ struct AtriaAddWorkoutSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     VStack(alignment: .leading, spacing: 12) {
+                        TextField("Activity name", text: $activityLabel)
+                            .textInputAutocapitalization(.words)
+                            .submitLabel(.done)
+
+                        Divider()
+
                         Menu {
                             ForEach(AtriaActivityWorkoutDetailSheet.activityTypes, id: \.self) { type in
                                 Button {
+                                    let previousType = activityType
                                     activityType = type
+                                    activitySubtype = AtriaWorkoutActivityType(rawValue: type)?
+                                        .normalizedSubtype(activitySubtype)
+                                    if activityLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+                                        .localizedCaseInsensitiveCompare(previousType) == .orderedSame {
+                                        activityLabel = type
+                                    }
                                 } label: {
                                     Label(type,
                                           systemImage: AtriaWorkoutActivityType(rawValue: type)?.icon
@@ -2232,6 +2247,43 @@ struct AtriaAddWorkoutSheet: View {
                             .font(.subheadline.weight(.semibold))
                             .frame(minHeight: 44)
                             .contentShape(Rectangle())
+                        }
+
+                        if let selectedType = AtriaWorkoutActivityType(rawValue: activityType),
+                           !selectedType.subtypeOptions.isEmpty {
+                            Divider()
+
+                            Menu {
+                                ForEach(selectedType.subtypeOptions, id: \.self) { subtype in
+                                    Button {
+                                        activitySubtype = subtype
+                                    } label: {
+                                        if activitySubtype == subtype {
+                                            Label(subtype, systemImage: "checkmark")
+                                        } else {
+                                            Text(subtype)
+                                        }
+                                    }
+                                }
+                                if activitySubtype != nil {
+                                    Button("Clear style", role: .destructive) {
+                                        activitySubtype = nil
+                                    }
+                                }
+                            } label: {
+                                HStack {
+                                    Text("Style")
+                                    Spacer()
+                                    Text(activitySubtype ?? "Choose")
+                                        .foregroundStyle(.secondary)
+                                    Image(systemName: "chevron.up.chevron.down")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .font(.subheadline.weight(.semibold))
+                                .frame(minHeight: 44)
+                                .contentShape(Rectangle())
+                            }
                         }
 
                         Divider()
@@ -2260,7 +2312,8 @@ struct AtriaAddWorkoutSheet: View {
                     }
                     .buttonStyle(.glassProminent)
                     .tint(Metrics.electricStrain)
-                    .disabled(endTime <= startTime)
+                    .disabled(endTime <= startTime
+                              || activityLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 .padding(16)
             }
@@ -2315,7 +2368,9 @@ struct AtriaAddWorkoutSheet: View {
                                                      maxHR: store.profile.maxHR,
                                                      source: "manual_activity_add",
                                                      preserveUserDeclaredActivityWithoutHeartRate: true,
+                                                     activityLabel: activityLabel,
                                                      activityType: activityType,
+                                                     activitySubtype: activitySubtype,
                                                      settlingCandidateWindow: settlingCandidateWindow)
         if result != nil {
             // Candidate settlement is part of the canonical store operation

@@ -332,6 +332,7 @@ enum WidgetSnapshotPublisher {
             rollups: store.dailyRollupHistory,
             metrics: store.dailyMetricHistory,
             physiologicalCycle: physiologicalCycle,
+            anchorSleep: latestSleep,
             calendar: calendar
         )
         let frozenTodayRollup = store.dailyRollupHistory.first {

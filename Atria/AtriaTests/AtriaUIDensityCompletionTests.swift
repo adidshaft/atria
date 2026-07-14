@@ -33,4 +33,11 @@ final class AtriaUIDensityCompletionTests: XCTestCase {
         XCTAssertFalse(fields.contains(".fixedSize()"),
                        "Numeric fields must be allowed to adapt rather than preserve a narrow fixed width")
     }
+
+    func testAlertSettingsGridStacksOnlyAtAccessibilitySizes() {
+        XCTAssertEqual(AtriaAlertSettingsGrid.columnCount(for: .large), 2)
+        XCTAssertEqual(AtriaAlertSettingsGrid.columnCount(for: .xxxLarge), 2)
+        XCTAssertEqual(AtriaAlertSettingsGrid.columnCount(for: .accessibility1), 1)
+        XCTAssertEqual(AtriaAlertSettingsGrid.columnCount(for: .accessibility5), 1)
+    }
 }

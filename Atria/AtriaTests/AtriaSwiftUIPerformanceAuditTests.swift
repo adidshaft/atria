@@ -439,6 +439,7 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
             source: "test",
             allowManualSave: true,
             preserveUserDeclaredActivityWithoutHeartRate: true,
+            activityLabel: nil,
             activityType: AtriaWorkoutActivityType.walking.rawValue,
             activitySubtype: nil,
             exerciseNames: [],

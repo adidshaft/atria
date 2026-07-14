@@ -272,6 +272,7 @@ enum DailyRecoveryResolver {
     static func summary(rollups: [DailyRollupStoreEntry],
                         metrics: [SavedDailyMetric],
                         physiologicalCycle: AtriaPhysiologicalCycle,
+                        anchorSleep: SleepHistorySnapshot.Night? = nil,
                         calendar: Calendar = .current) -> FrozenRecoverySummary? {
         guard physiologicalCycle.boundaryKind == .mainSleep else { return nil }
         guard let rollup = rollups.first(where: {
@@ -281,6 +282,21 @@ enum DailyRecoveryResolver {
         let metric = metrics.first {
             calendar.isDate($0.day, inSameDayAs: rollup.day)
                 && $0.recoveryPercent == rollup.recovery
+        }
+        // Confirming or adjusting sleep moves the physiological-day anchor
+        // immediately, while the durable daily metric is refreshed on a utility
+        // task. During that short handoff an older recovery from the same civil
+        // day must not masquerade as the newly confirmed sleep's frozen result.
+        // Requiring the persisted overnight inputs to match lets consumers show
+        // a freshly evaluated provisional result until the new freeze lands.
+        if let anchorSleep {
+            guard anchorSleep.id == physiologicalCycle.anchorSleepID,
+                  anchorSleep.confirmed,
+                  !anchorSleep.isNapEvidence,
+                  let metric,
+                  metricMatchesConfirmedNight(metric, night: anchorSleep) else {
+                return nil
+            }
         }
         return rollup.resolvedRecoverySummary(matching: metric, calendar: calendar)
     }
@@ -293,6 +309,7 @@ enum DailyRecoveryResolver {
                                 rollups: [DailyRollupStoreEntry],
                                 metrics: [SavedDailyMetric],
                                 physiologicalCycle: AtriaPhysiologicalCycle,
+                                anchorSleep: SleepHistorySnapshot.Night? = nil,
                                 calendar: Calendar = .current) -> Metrics.RecoveryEstimate {
         if physiologicalCycle.boundaryKind == .noSleepFallback {
             return noSleepEstimate
@@ -300,8 +317,27 @@ enum DailyRecoveryResolver {
         return summary(rollups: rollups,
                        metrics: metrics,
                        physiologicalCycle: physiologicalCycle,
+                       anchorSleep: anchorSleep,
                        calendar: calendar)?.recoveryEstimate
             ?? liveEstimate
+    }
+
+    /// Exact overnight-input identity used both while preserving a morning
+    /// freeze and while resolving it. A tolerance would hide a genuinely edited
+    /// sleep window or a newly decoded vital, so persisted values intentionally
+    /// compare exactly to the confirmed snapshot that minted them.
+    static func metricMatchesConfirmedNight(_ metric: SavedDailyMetric,
+                                            night: SleepHistorySnapshot.Night) -> Bool {
+        guard night.confirmed, !night.isNapEvidence else { return false }
+        let span = night.start.flatMap { start in
+            night.end.flatMap { end in end > start ? end.timeIntervalSince(start) : nil }
+        }
+        return metric.sleepEnd == night.end
+            && metric.sleepDuration == night.duration
+            && metric.sleepSpan == span
+            && metric.hrv == night.hrv
+            && metric.restingHR == night.restingHR
+            && metric.respiratoryRate == night.respiratoryRate
     }
 
     static var noSleepEstimate: Metrics.RecoveryEstimate {

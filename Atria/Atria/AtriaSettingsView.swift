@@ -711,8 +711,6 @@ struct AtriaSettingsView: View {
             AtriaNotificationSettingsCard()
         } header: {
             Text("Alerts")
-        } footer: {
-            Text("Phone-side alerts and on-device notifications only. Nothing leaves your phone.")
         }
     }
 
@@ -1136,6 +1134,7 @@ struct AtriaSettingsView: View {
                     .submitLabel(.done)
                     .onSubmit { onRenameStrap(nameDraft) }
                     .foregroundStyle(.primary)
+                    .accessibilityHint("Saved on this iPhone. Atria reconnects automatically.")
             }
             LabeledContent("Model") {
                 Text(strapModel.isEmpty ? "Strap" : strapModel)
@@ -1176,8 +1175,6 @@ struct AtriaSettingsView: View {
             }
         } header: {
             Text("Device")
-        } footer: {
-            Text("Name is local. Atria reconnects automatically.")
         }
     }
 
@@ -1186,6 +1183,7 @@ struct AtriaSettingsView: View {
             Toggle(isOn: $batterySaver) {
                 Label("Stable sensor mode", systemImage: "antenna.radiowaves.left.and.right")
             }
+            .accessibilityHint("Changing mode reconnects the strap.")
             settingsInfoRow(icon: batterySaver ? "waveform.path.ecg" : "wrench.and.screwdriver.fill",
                             tint: batterySaver ? .green : .orange,
                             title: batterySaver ? "Heart rate + strap motion" : "Diagnostic full protocol",
@@ -1196,8 +1194,6 @@ struct AtriaSettingsView: View {
             // Keeps richer strap streams available for beat-to-beat, HRV, Recovery and sleep research.
         } header: {
             Text("Strap connection")
-        } footer: {
-            Text("Atria reconnects the strap when the radio mode changes.")
         }
     }
 
@@ -1206,6 +1202,7 @@ struct AtriaSettingsView: View {
             Toggle(isOn: $heartRateBroadcast) {
                 Label("Broadcast heart rate", systemImage: "antenna.radiowaves.left.and.right")
             }
+            .accessibilityHint("Uses live strap heart rate and slightly more battery.")
             settingsInfoRow(icon: "dot.radiowaves.left.and.right",
                             tint: .cyan,
                             title: heartRateBroadcast ? "Atria HR visible" : "Gym pairing ready",
@@ -1214,8 +1211,6 @@ struct AtriaSettingsView: View {
                                 : "Turn on during a workout, or keep it available from Settings.")
         } header: {
             Text("Heart rate broadcast")
-        } footer: {
-            Text("Uses live strap HR and a little extra battery.")
         }
     }
 
@@ -1241,8 +1236,6 @@ struct AtriaSettingsView: View {
                             detail: "Skin-temp deviation only; no absolute body temperature or Health export.")
         } header: {
             Text("Sensors")
-        } footer: {
-            Text("Atria shows only hardware-backed readings.")
         }
     }
 

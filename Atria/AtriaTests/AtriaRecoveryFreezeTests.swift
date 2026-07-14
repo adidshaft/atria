@@ -235,6 +235,99 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
         XCTAssertEqual(resolved.detail, frozen.detail)
     }
 
+    func testPhysiologicalRecoveryResolverRejectsStaleSameDayFreezeAfterSleepSave() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2032,
+                                                                   month: 1,
+                                                                   day: 2)))
+        let sleepStart = day.addingTimeInterval(60 * 60)
+        let wake = day.addingTimeInterval(9 * 60 * 60)
+        let anchor = confirmedNight(id: "new-anchor",
+                                    day: day,
+                                    start: sleepStart,
+                                    end: wake,
+                                    restingHR: 51,
+                                    hrv: 66,
+                                    respiratoryRate: 14.2)
+        let cycle = AtriaPhysiologicalCycle(start: wake,
+                                            boundaryKind: .mainSleep,
+                                            anchorSleepID: anchor.id,
+                                            expectedInterval: 24 * 3_600)
+        let frozen = FrozenRecoverySummary(estimate: recoveryEstimate(percent: 79),
+                                           scoredDay: day)
+        let rollup = DailyRollupStoreEntry(day: day,
+                                           recoverySummary: frozen,
+                                           calendar: calendar)
+        // This row belongs to an older sleep that happened to end on the same
+        // civil day. It is the exact persistence race that occurs while a newly
+        // confirmed sleep is awaiting its background daily-metric refresh.
+        let staleMetric = dailyMetric(day: day,
+                                      recovery: 79,
+                                      sleepStart: sleepStart.addingTimeInterval(-2 * 3_600),
+                                      sleepEnd: wake.addingTimeInterval(-2 * 3_600),
+                                      restingHR: 55,
+                                      hrv: 48,
+                                      respiratoryRate: 15.1)
+
+        let resolved = DailyRecoveryResolver.summary(rollups: [rollup],
+                                                     metrics: [staleMetric],
+                                                     physiologicalCycle: cycle,
+                                                     anchorSleep: anchor,
+                                                     calendar: calendar)
+
+        XCTAssertNil(resolved)
+        XCTAssertEqual(DailyRecoveryResolver.currentEstimate(
+            liveEstimate: recoveryEstimate(percent: 44),
+            rollups: [rollup],
+            metrics: [staleMetric],
+            physiologicalCycle: cycle,
+            anchorSleep: anchor,
+            calendar: calendar
+        ).percent, 44)
+    }
+
+    func testPhysiologicalRecoveryResolverAcceptsFreezeForCurrentConfirmedSleep() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2032,
+                                                                   month: 1,
+                                                                   day: 2)))
+        let sleepStart = day.addingTimeInterval(60 * 60)
+        let wake = day.addingTimeInterval(9 * 60 * 60)
+        let anchor = confirmedNight(id: "current-anchor",
+                                    day: day,
+                                    start: sleepStart,
+                                    end: wake,
+                                    restingHR: 51,
+                                    hrv: 66,
+                                    respiratoryRate: 14.2)
+        let cycle = AtriaPhysiologicalCycle(start: wake,
+                                            boundaryKind: .mainSleep,
+                                            anchorSleepID: anchor.id,
+                                            expectedInterval: 24 * 3_600)
+        let frozen = FrozenRecoverySummary(estimate: recoveryEstimate(percent: 79),
+                                           scoredDay: day)
+        let rollup = DailyRollupStoreEntry(day: day,
+                                           recoverySummary: frozen,
+                                           calendar: calendar)
+        let matchingMetric = dailyMetric(day: day,
+                                         recovery: 79,
+                                         sleepStart: sleepStart,
+                                         sleepEnd: wake,
+                                         restingHR: 51,
+                                         hrv: 66,
+                                         respiratoryRate: 14.2)
+
+        let resolved = DailyRecoveryResolver.summary(rollups: [rollup],
+                                                     metrics: [matchingMetric],
+                                                     physiologicalCycle: cycle,
+                                                     anchorSleep: anchor,
+                                                     calendar: calendar)
+
+        XCTAssertEqual(resolved?.score, 79)
+    }
+
     func testAllNighterRecoveryFailsClosedInsteadOfReusingPriorHRV() {
         let cycle = AtriaPhysiologicalCycle(start: at(24),
                                             boundaryKind: .noSleepFallback,
@@ -274,6 +367,52 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
                                  usesHRV: true,
                                  detail: "test",
                                  contributors: [])
+    }
+
+    private func confirmedNight(id: String,
+                                day: Date,
+                                start: Date,
+                                end: Date,
+                                restingHR: Int,
+                                hrv: Int,
+                                respiratoryRate: Double) -> SleepHistorySnapshot.Night {
+        SleepHistorySnapshot.Night(id: id,
+                                   day: day,
+                                   start: start,
+                                   end: end,
+                                   duration: end.timeIntervalSince(start),
+                                   restingHR: restingHR,
+                                   hrv: hrv,
+                                   respiratoryRate: respiratoryRate,
+                                   sleepEfficiency: 0.9,
+                                   confidence: "confirmed",
+                                   source: "sleep_window",
+                                   confirmed: true,
+                                   stageSegments: [])
+    }
+
+    private func dailyMetric(day: Date,
+                             recovery: Int,
+                             sleepStart: Date,
+                             sleepEnd: Date,
+                             restingHR: Int,
+                             hrv: Int,
+                             respiratoryRate: Double) -> SavedDailyMetric {
+        let duration = sleepEnd.timeIntervalSince(sleepStart)
+        return SavedDailyMetric(day: day,
+                                recoveryPercent: recovery,
+                                recoveryConfidence: Metrics.RecoveryEstimate.Confidence.personalBaseline.rawValue,
+                                hrv: hrv,
+                                restingHR: restingHR,
+                                respiratoryRate: respiratoryRate,
+                                sleepDuration: duration,
+                                sleepSpan: duration,
+                                sleepStart: sleepStart,
+                                sleepEnd: sleepEnd,
+                                sleepSource: "sleep_window",
+                                sleepStageSegments: [],
+                                sleepConsistencyPercent: nil,
+                                strain: nil)
     }
 
     // MARK: - Period selector reduced to D/W/M (2026-07-08)

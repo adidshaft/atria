@@ -260,6 +260,7 @@ final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
 struct AtriaHapticAlertSettingsCard: View, Equatable {
     let settings: AtriaHapticAlertSettings
     let onUpdate: (AtriaHapticAlertSettings) -> Void
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     static func == (lhs: AtriaHapticAlertSettingsCard, rhs: AtriaHapticAlertSettingsCard) -> Bool {
         lhs.settings == rhs.settings
@@ -274,17 +275,13 @@ struct AtriaHapticAlertSettingsCard: View, Equatable {
                     .frame(width: 38, height: 38)
                     .background(AtriaIconTileBackground(cornerRadius: 12, tint: .purple))
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Phone haptics")
-                        .font(.subheadline.weight(.semibold))
-                    Text("Incoming calls, zones, targets, and low strap battery.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Text("Phone haptics")
+                    .font(.subheadline.weight(.semibold))
             }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Phone haptics. Incoming calls, zones, targets, and low strap battery.")
 
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+            LazyVGrid(columns: AtriaAlertSettingsGrid.columns(for: dynamicTypeSize), spacing: 8) {
                 hapticToggle("Calls", keyPath: \.incomingCalls)
                 hapticToggle("Zones", keyPath: \.heartRateZones)
                 hapticToggle("Recovery", keyPath: \.recoveryReady)
@@ -319,6 +316,7 @@ struct AtriaHapticAlertSettingsCard: View, Equatable {
 /// (the scheduler reads the same store at schedule time), so it needs no app-model wiring.
 struct AtriaNotificationSettingsCard: View {
     @State private var settings = AtriaNotificationSettings.load()
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -329,20 +327,16 @@ struct AtriaNotificationSettingsCard: View {
                     .frame(width: 38, height: 38)
                     .background(AtriaIconTileBackground(cornerRadius: 12, tint: .blue))
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Notifications")
-                        .font(.subheadline.weight(.semibold))
-                    Text("Choose the coaching nudges Atria can send on this phone. Nothing leaves your device.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Text("Notifications")
+                    .font(.subheadline.weight(.semibold))
             }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Notifications. Choose coaching nudges Atria can send on this phone. Nothing leaves your device.")
 
             notificationToggle("Allow coach notifications", keyPath: \.allowNotifications, prominent: true)
 
             if settings.allowNotifications {
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                LazyVGrid(columns: AtriaAlertSettingsGrid.columns(for: dynamicTypeSize), spacing: 8) {
                     notificationToggle("Recovery check-ins", keyPath: \.recoveryReady)
                     notificationToggle("Strain milestones", keyPath: \.strainTarget)
                     notificationToggle("Sleep review", keyPath: \.sleepReview)
@@ -378,5 +372,16 @@ struct AtriaNotificationSettingsCard: View {
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
         .atriaInsetCard(cornerRadius: 14, tint: .blue)
+    }
+}
+
+enum AtriaAlertSettingsGrid {
+    static func columnCount(for dynamicTypeSize: DynamicTypeSize) -> Int {
+        dynamicTypeSize.isAccessibilitySize ? 1 : 2
+    }
+
+    static func columns(for dynamicTypeSize: DynamicTypeSize) -> [GridItem] {
+        Array(repeating: GridItem(.flexible()),
+              count: columnCount(for: dynamicTypeSize))
     }
 }

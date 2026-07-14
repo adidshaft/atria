@@ -58,6 +58,23 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertFalse(source.contains("Text(\"Pulls data your strap stored while disconnected"))
     }
 
+    func testSettingsAlertCardsRemoveVisibleExplanationsAndAdaptTheirGrid() throws {
+        let alerts = try source("AtriaHapticAlerts.swift")
+        let settings = try source("AtriaSettingsView.swift")
+
+        XCTAssertFalse(alerts.contains("Text(\"Incoming calls, zones, targets, and low strap battery.\")"))
+        XCTAssertFalse(alerts.contains("Text(\"Choose the coaching nudges Atria can send on this phone. Nothing leaves your device.\")"))
+        XCTAssertTrue(alerts.contains(".accessibilityLabel(\"Phone haptics. Incoming calls, zones, targets, and low strap battery.\")"))
+        XCTAssertTrue(alerts.contains(".accessibilityLabel(\"Notifications. Choose coaching nudges Atria can send on this phone. Nothing leaves your device.\")"))
+        XCTAssertTrue(alerts.contains("AtriaAlertSettingsGrid.columns(for: dynamicTypeSize)"))
+
+        XCTAssertFalse(settings.contains("Text(\"Phone-side alerts and on-device notifications only. Nothing leaves your phone.\")"))
+        XCTAssertFalse(settings.contains("Text(\"Atria reconnects the strap when the radio mode changes.\")"))
+        XCTAssertFalse(settings.contains("Text(\"Uses live strap HR and a little extra battery.\")"))
+        XCTAssertTrue(settings.contains(".accessibilityHint(\"Changing mode reconnects the strap.\")"))
+        XCTAssertTrue(settings.contains(".accessibilityHint(\"Uses live strap heart rate and slightly more battery.\")"))
+    }
+
     func testActivityUsesOneCompactDayToolbarAndCompactTimeAxis() throws {
         let source = try source("AtriaActivityMonitor.swift")
         let toolbarStart = try XCTUnwrap(source.range(of: "private var activityToolbar"))
