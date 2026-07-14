@@ -40,6 +40,24 @@ struct AtriaWorkoutRoute: Codable, Identifiable, Equatable, Sendable {
         guard distanceMeters >= 100 else { return nil }
         return movingDuration / (distanceMeters / 1_000)
     }
+
+    /// MapKit needs one polyline per uninterrupted recording segment. A flat
+    /// coordinate array visually bridges pauses, app-switch recovery gaps and
+    /// explicit route restarts with a line the user never travelled. Preserve
+    /// the recorder's durable segment markers when projecting a saved route.
+    static func presentationSegments(
+        from points: [Point]
+    ) -> [[CLLocationCoordinate2D]] {
+        points.reduce(into: [[CLLocationCoordinate2D]]()) { segments, point in
+            let coordinate = CLLocationCoordinate2D(latitude: point.latitude,
+                                                     longitude: point.longitude)
+            if segments.isEmpty || point.startsNewSegment == true {
+                segments.append([coordinate])
+            } else {
+                segments[segments.count - 1].append(coordinate)
+            }
+        }
+    }
 }
 
 struct AtriaActiveWorkoutRouteCheckpoint: Codable, Equatable, Sendable {

@@ -143,6 +143,8 @@ final class AtriaSceneResumePolicyTests: XCTestCase {
             XCTAssertNil(proposal.wakeBoundary.candidate)
             completed.fulfill()
         }
-        wait(for: [completed], timeout: 2)
+        // The full test plan launches several simulator clones concurrently;
+        // allow utility work to survive that harness-only scheduling pressure.
+        wait(for: [completed], timeout: 5)
     }
 }

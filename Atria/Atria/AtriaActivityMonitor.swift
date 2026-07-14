@@ -1329,7 +1329,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     @State private var saveError: String?
     @State private var showShareSheet = false
     @State private var route: AtriaWorkoutRoute?
-    @State private var routeCoordinates: [CLLocationCoordinate2D] = []
+    @State private var routeSegments: [[CLLocationCoordinate2D]] = []
     @State private var sharePresentationGate = AtriaWorkoutSharePresentationGate()
     @State private var showsHeartRateAndRecovery = false
 
@@ -1353,15 +1353,15 @@ private struct AtriaActivityWorkoutDetailSheet: View {
 
     private struct PreparedRoute: @unchecked Sendable {
         let route: AtriaWorkoutRoute?
-        let coordinates: [CLLocationCoordinate2D]
+        let segments: [[CLLocationCoordinate2D]]
     }
 
     private nonisolated static func prepareRoute(workoutID: String) -> PreparedRoute {
         let savedRoute = AtriaWorkoutRouteStore.load(workoutID: workoutID)
-        let coordinates = savedRoute?.points.map {
-            CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)
+        let segments = savedRoute.map {
+            AtriaWorkoutRoute.presentationSegments(from: $0.points)
         } ?? []
-        return PreparedRoute(route: savedRoute, coordinates: coordinates)
+        return PreparedRoute(route: savedRoute, segments: segments)
     }
 
     /// The workout window's real recorded HR samples from the saved sessions
@@ -1757,7 +1757,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 }
                 guard !Task.isCancelled else { return }
                 route = prepared.route
-                routeCoordinates = prepared.coordinates
+                routeSegments = prepared.segments
                 if sharePresentationGate.completeRoutePreparation() {
                     showShareSheet = true
                 }
@@ -1964,7 +1964,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
         if let route, route.points.count >= 2 {
             VStack(alignment: .leading, spacing: 10) {
                 AtriaSavedWorkoutRouteMap(routeID: route.id,
-                                          coordinates: routeCoordinates)
+                                          segments: routeSegments)
                     .equatable()
                 .frame(height: 190)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -2073,7 +2073,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
 /// map hierarchy or its polyline.
 private struct AtriaSavedWorkoutRouteMap: View, Equatable {
     let routeID: String
-    let coordinates: [CLLocationCoordinate2D]
+    let segments: [[CLLocationCoordinate2D]]
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.routeID == rhs.routeID
@@ -2081,11 +2081,21 @@ private struct AtriaSavedWorkoutRouteMap: View, Equatable {
 
     var body: some View {
         Map {
-            MapPolyline(coordinates: coordinates)
-                .stroke(.cyan,
-                        style: StrokeStyle(lineWidth: 5,
-                                           lineCap: .round,
-                                           lineJoin: .round))
+            ForEach(Array(segments.enumerated()), id: \.offset) { _, coordinates in
+                MapPolyline(coordinates: coordinates)
+                    .stroke(.cyan,
+                            style: StrokeStyle(lineWidth: 5,
+                                               lineCap: .round,
+                                               lineJoin: .round))
+            }
+            if let start = segments.first?.first {
+                Marker("Start", systemImage: "flag.fill", coordinate: start)
+                    .tint(.green)
+            }
+            if let finish = segments.last?.last {
+                Marker("Finish", systemImage: "flag.checkered", coordinate: finish)
+                    .tint(.red)
+            }
         }
         .mapStyle(.standard(pointsOfInterest: .excludingAll))
     }

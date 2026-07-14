@@ -36,6 +36,18 @@ enum AtriaR10MotionDecoder {
         return decode(payload: payload)
     }
 
+    /// Validates framing and both CRCs, then reads only the embedded device
+    /// second. Calibration tools use this fast path to discard unrelated rows
+    /// before allocating 600 decoded vector components for each retained R10
+    /// frame. A matching row is still fully decoded before it is scored.
+    static func validatedDeviceTimestamp(frame: Data) -> UInt32? {
+        guard let payload = validatedPayload(from: frame),
+              payload.count >= minimumPayloadBytes,
+              payload[0] == packetType,
+              payload[1] == recordType else { return nil }
+        return u32LE(payload, timestampOffset)
+    }
+
     static func decode(payload: [UInt8]) -> AtriaR10MotionFrame? {
         guard payload.count >= minimumPayloadBytes,
               payload[0] == packetType,

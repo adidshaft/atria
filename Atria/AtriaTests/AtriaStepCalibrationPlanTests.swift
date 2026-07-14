@@ -251,8 +251,11 @@ final class AtriaStepCalibrationPlanTests: XCTestCase {
                 contentsOf: projectRoot.appendingPathComponent("tools/\(name)"),
                 encoding: .utf8
             )
-            XCTAssertTrue(source.contains("Int64(decoded.deviceTimestamp) * 1_000"), name)
+            XCTAssertTrue(source.contains("validatedDeviceTimestamp(frame: frame)"), name)
+            XCTAssertTrue(source.contains("Int64(deviceTimestamp) * 1_000"), name)
             XCTAssertTrue(source.contains("sampleAtMS >="), name)
+            XCTAssertTrue(source.contains("FileHandle(forReadingFrom: file)"), name)
+            XCTAssertFalse(source.contains("String(contentsOf: file"), name)
             XCTAssertFalse(source.contains("minuteSamples"), name)
             XCTAssertFalse(source.contains("rawStepCountByProductionMinute"), name)
         }

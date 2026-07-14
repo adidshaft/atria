@@ -2151,6 +2151,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let protectedR10StreamSuppressedKey = "atria.protectedR10.streamSuppressed"
     nonisolated private static let protectedR10DisconnectStormAtKey = "atria.protectedR10.disconnectStormAt"
     nonisolated private static let protectedR10DisconnectStormReasonKey = "atria.protectedR10.disconnectStormReason"
+    nonisolated private static let protectedR10DisconnectStormCounterMigrationKey = "atria.protectedR10.disconnectStormCounterMigrationV1"
     nonisolated private static let protectedR10PassiveReprobePendingKey = "atria.protectedR10.passiveReprobePending"
     nonisolated private static let protectedR10PassiveReprobeAttemptAtKey = "atria.protectedR10.passiveReprobeAttemptAt"
     nonisolated private static let protectedR10PassiveReprobeFailureCountKey = "atria.protectedR10.passiveReprobeFailureCount"
@@ -2317,6 +2318,82 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         activationSent && framesAfterActivation == 0
     }
 
+    /// The lifetime disconnect diagnostic is intentionally monotonic and can
+    /// never identify a current storm. Isolation requires the consecutive
+    /// early-disconnect counter maintained by `didDisconnect`; that counter is
+    /// cleared after a stable qualified epoch and ignores user/app-owned edges.
+    nonisolated static func shouldIsolateRecentProtectedR10DisconnectStorm(
+        alreadySuppressed: Bool,
+        consecutiveEarlyDisconnects: Int,
+        lastDisconnectAge: TimeInterval,
+        connectedDuration: TimeInterval,
+        lastR10Age: TimeInterval
+    ) -> Bool {
+        !alreadySuppressed
+            && consecutiveEarlyDisconnects >= protectedR10EarlyDisconnectLimit
+            && lastDisconnectAge >= 0
+            && lastDisconnectAge <= 5 * 60
+            && connectedDuration > 0
+            && connectedDuration <= 30
+            && lastR10Age >= 0
+            && lastR10Age <= 5 * 60
+    }
+
+    /// The first disconnect-storm fuse used the lifetime disconnect diagnostic,
+    /// so one ordinary install/relaunch edge could suppress an otherwise
+    /// qualified transport. Repair only that exact persisted state. A genuine
+    /// current storm (two consecutive early failures), an unqualified owner,
+    /// or any other suppression reason remains untouched.
+    nonisolated static func shouldClearLegacyFalseR10StormSuppression(
+        streamSuppressed: Bool,
+        disconnectStormReason: String?,
+        consecutiveEarlyDisconnects: Int,
+        stableTransport: Bool,
+        cleanOwner: ProtectedR10CleanOwner,
+        cleanOwnerState: ProtectedR10CleanOwnerState
+    ) -> Bool {
+        streamSuppressed
+            && disconnectStormReason == "short_links_with_fresh_r10"
+            && consecutiveEarlyDisconnects < protectedR10EarlyDisconnectLimit
+            && stableTransport
+            && cleanOwner == .protectedV9
+            && cleanOwnerState == .qualified
+    }
+
+    @discardableResult
+    nonisolated static func migrateLegacyFalseR10StormSuppressionIfNeeded(
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        guard !defaults.bool(forKey: protectedR10DisconnectStormCounterMigrationKey) else {
+            return false
+        }
+        defaults.set(true, forKey: protectedR10DisconnectStormCounterMigrationKey)
+        let owner = ProtectedR10CleanOwner(
+            rawValue: defaults.string(forKey: protectedR10CleanOwnerKey) ?? ""
+        ) ?? .legacy
+        let ownerState = ProtectedR10CleanOwnerState(
+            rawValue: defaults.string(forKey: protectedR10CleanOwnerStateKey) ?? ""
+        ) ?? .none
+        guard shouldClearLegacyFalseR10StormSuppression(
+            streamSuppressed: defaults.bool(forKey: protectedR10StreamSuppressedKey),
+            disconnectStormReason: defaults.string(
+                forKey: protectedR10DisconnectStormReasonKey
+            ),
+            consecutiveEarlyDisconnects: defaults.integer(
+                forKey: protectedR10EarlyDisconnectsKey
+            ),
+            stableTransport: defaults.bool(forKey: protectedR10StableTransportKey),
+            cleanOwner: owner,
+            cleanOwnerState: ownerState
+        ) else { return false }
+
+        defaults.set(false, forKey: protectedR10StreamSuppressedKey)
+        defaults.removeObject(forKey: protectedR10DisconnectStormAtKey)
+        defaults.removeObject(forKey: protectedR10DisconnectStormReasonKey)
+        defaults.set("qualified_migration_resume", forKey: RadioDefaults.passiveR10Status)
+        return true
+    }
+
     nonisolated static func protectedR10FrameBelongsToCurrentConnection(
         lastFrameAt: Date?,
         connectedAt: Date?
@@ -2354,6 +2431,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated static func prepareProtectedR10CleanOwnerAtLaunch(
         defaults: UserDefaults = .standard
     ) -> ProtectedR10LaunchPreparation {
+        migrateLegacyFalseR10StormSuppressionIfNeeded(defaults: defaults)
         let owner = ProtectedR10CleanOwner(
             rawValue: defaults.string(forKey: protectedR10CleanOwnerKey) ?? ""
         ) ?? .legacy
@@ -2919,6 +2997,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                                  ))
     }
 
+    /// A value callback that arrives after `didConnect` belongs to the current
+    /// physical link even when CoreBluetooth delivers the characteristic's
+    /// initial value just before `isNotifying` flips to true. Boundary values
+    /// still pass through the independent 0/10/100 quarantine above.
+    nonisolated static func batteryValueBelongsToCurrentConnection(
+        peripheralConnected: Bool,
+        connectionStartedAt: Date?,
+        receivedAt: Date
+    ) -> Bool {
+        guard peripheralConnected,
+              let connectionStartedAt else { return false }
+        return receivedAt >= connectionStartedAt
+    }
+
     /// The autonomous event is stronger evidence than a bare 2A19 percentage:
     /// it arrives in a CRC-validated proprietary frame and independently carries
     /// SOC, plausible cell voltage, and a charging bit. Trust the first ordinary
@@ -3123,9 +3215,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     /// Some WHOOP 4-class firmware exposes a reliable percentage but no usable
-    /// powered bit on the protected production transport. Three accepted
-    /// mid-range increases spanning real time establish a candidate plus two
-    /// subsequent rises; one correction/jump is deliberately insufficient.
+    /// powered bit on the protected production transport. Preserve the prior
+    /// accepted endpoint so firmware that coalesces several one-point changes
+    /// into a single notification can still prove a bounded charge trajectory.
     nonisolated static func updatedBatteryRiseCandidate(
         current: BatteryRiseCandidate?,
         previousLevel: Int,
@@ -3150,13 +3242,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                         confirmations: current.confirmations + 1)
         }
         guard newLevel > previousLevel else { return nil }
-        // The first changed callback establishes a candidate baseline; it does
-        // not itself count as trajectory proof. That first change may be a gauge
-        // correction, so charging needs two additional accepted rises after it.
-        // Proof begins at this sample even though callers also supply the prior
-        // acceptance time to reject out-of-order callbacks above.
-        return BatteryRiseCandidate(startLevel: newLevel,
-                                    startAt: receivedAt,
+        // The first changed callback remains only one confirmation. Its prior
+        // accepted endpoint is retained so the proof gate can distinguish a
+        // sustained 11→17% charge from an instantaneous correction.
+        return BatteryRiseCandidate(startLevel: previousLevel,
+                                    startAt: previousAcceptedAt ?? receivedAt,
                                     lastLevel: newLevel,
                                     lastAt: receivedAt,
                                     confirmations: 1)
@@ -3169,8 +3259,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         maximumSpan: TimeInterval = activeBatteryChargeEvidenceMaxAge
     ) -> Bool {
         let span = candidate.lastAt.timeIntervalSince(candidate.startAt)
-        return candidate.confirmations >= 3
-            && candidate.lastLevel - candidate.startLevel >= minimumRise
+        let rise = candidate.lastLevel - candidate.startLevel
+        let repeatedRise = candidate.confirmations >= 3 && rise >= minimumRise
+        // R10-era straps can coalesce multiple 2A19 percentage changes. A
+        // bounded 4...10 point rise across at least 30 seconds is stronger than
+        // a gauge tick but excludes the large reconnect corrections and the
+        // 0/100 sentinels observed physically. A decline revokes it immediately.
+        let coalescedRise = candidate.confirmations == 1 && (4...10).contains(rise)
+        return (repeatedRise || coalescedRise)
             && span >= minimumSpan
             && span <= maximumSpan
     }
@@ -4339,19 +4435,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// armed calibration run clears it so the transport can be tested again.
     private func isolateRecentProtectedR10DisconnectStormIfNeeded(now: Date = Date()) {
         let defaults = UserDefaults.standard
-        guard !defaults.bool(forKey: Self.protectedR10StreamSuppressedKey),
-              defaults.integer(forKey: LinkDefaults.disconnects) >= 3 else { return }
         let lastDisconnectAt = defaults.double(forKey: "atria.ble.lastDisconnectDiagnosticAt")
         let connectedDuration = defaults.double(forKey: "atria.ble.lastConnectedDuration")
         let lastR10At = defaults.double(forKey: RadioDefaults.passiveR10LastValidAt)
         guard lastDisconnectAt > 0,
               lastR10At > 0,
-              now.timeIntervalSince1970 >= lastDisconnectAt,
-              now.timeIntervalSince1970 - lastDisconnectAt <= 5 * 60,
-              connectedDuration > 0,
-              connectedDuration <= 30,
-              now.timeIntervalSince1970 >= lastR10At,
-              now.timeIntervalSince1970 - lastR10At <= 5 * 60 else { return }
+              Self.shouldIsolateRecentProtectedR10DisconnectStorm(
+                alreadySuppressed: defaults.bool(forKey: Self.protectedR10StreamSuppressedKey),
+                consecutiveEarlyDisconnects: defaults.integer(
+                    forKey: Self.protectedR10EarlyDisconnectsKey
+                ),
+                lastDisconnectAge: now.timeIntervalSince1970 - lastDisconnectAt,
+                connectedDuration: connectedDuration,
+                lastR10Age: now.timeIntervalSince1970 - lastR10At
+              ) else { return }
         if strapStepCalibrationCaptureUntil != nil {
             AtriaStrapCalibrationArchive.shared.flush()
             defaults.removeObject(
@@ -18684,8 +18781,11 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     requiresFreshConfirmation: UserDefaults.standard.bool(
                         forKey: BatteryDefaults.requiresFreshConfirmation
                     ),
-                    trustedCurrentConnectionNotification: characteristic.isNotifying
-                        && peripheral.state == .connected
+                    trustedCurrentConnectionNotification: Self.batteryValueBelongsToCurrentConnection(
+                        peripheralConnected: peripheral.state == .connected,
+                        connectionStartedAt: self.connectedAt,
+                        receivedAt: receivedAt
+                    )
                 ) {
                 case .quarantine(let candidate):
                     self.pendingBatteryDropCandidate = candidate

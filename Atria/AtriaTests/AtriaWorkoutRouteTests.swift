@@ -3,6 +3,59 @@ import CoreLocation
 @testable import Atria
 
 final class AtriaWorkoutRouteTests: XCTestCase {
+    func testSavedRoutePresentationPreservesPauseSegmentsWithoutInventingBridges() {
+        let start = Date(timeIntervalSinceReferenceDate: 900_000_000)
+        let points = [
+            AtriaWorkoutRoute.Point(latitude: 28.6100,
+                                    longitude: 77.2000,
+                                    altitude: 200,
+                                    timestamp: start,
+                                    horizontalAccuracy: 3,
+                                    startsNewSegment: true),
+            AtriaWorkoutRoute.Point(latitude: 28.6110,
+                                    longitude: 77.2010,
+                                    altitude: 201,
+                                    timestamp: start.addingTimeInterval(10),
+                                    horizontalAccuracy: 3,
+                                    startsNewSegment: false),
+            AtriaWorkoutRoute.Point(latitude: 28.6200,
+                                    longitude: 77.2200,
+                                    altitude: 202,
+                                    timestamp: start.addingTimeInterval(90),
+                                    horizontalAccuracy: 3,
+                                    startsNewSegment: true),
+            AtriaWorkoutRoute.Point(latitude: 28.6210,
+                                    longitude: 77.2210,
+                                    altitude: 203,
+                                    timestamp: start.addingTimeInterval(100),
+                                    horizontalAccuracy: 3,
+                                    startsNewSegment: false)
+        ]
+
+        let segments = AtriaWorkoutRoute.presentationSegments(from: points)
+
+        XCTAssertEqual(segments.count, 2)
+        XCTAssertEqual(segments.map(\.count), [2, 2])
+        XCTAssertEqual(segments[0].first?.latitude, points[0].latitude)
+        XCTAssertEqual(segments[0].last?.latitude, points[1].latitude)
+        XCTAssertEqual(segments[1].first?.latitude, points[2].latitude)
+        XCTAssertEqual(segments[1].last?.latitude, points[3].latitude)
+    }
+
+    func testActivityRouteMapRendersEveryRecordedSegmentWithStartAndFinish() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaActivityMonitor.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private struct AtriaSavedWorkoutRouteMap"))
+        let map = String(source[start.lowerBound...])
+
+        XCTAssertTrue(source.contains("AtriaWorkoutRoute.presentationSegments(from: $0.points)"))
+        XCTAssertTrue(map.contains("ForEach(Array(segments.enumerated()), id: \\.offset)"))
+        XCTAssertTrue(map.contains("Marker(\"Start\", systemImage: \"flag.fill\""))
+        XCTAssertTrue(map.contains("Marker(\"Finish\", systemImage: \"flag.checkered\""))
+        XCTAssertFalse(map.contains("MapPolyline(coordinates: routeCoordinates)"))
+    }
+
     func testRouteWorkoutIsMapFirstWithPinnedGlanceableMetricsAndActions() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
