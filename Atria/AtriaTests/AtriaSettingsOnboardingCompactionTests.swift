@@ -24,10 +24,36 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
                       "The sixth destination remains developer-only")
         XCTAssertTrue(source.contains(".navigationDestination(for: Destination.self)"),
                       "The first Settings frame must not construct every destination")
+        XCTAssertTrue(source.contains("destinationPage(for: destination)"))
+        XCTAssertTrue(source.contains("private func destinationPage(for destination: Destination) -> AnyView"),
+                      "The large destination Forms need one shallow metadata boundary")
         XCTAssertFalse(hub.contains("DisclosureGroup"))
         XCTAssertFalse(source.contains("atria.settings.v3.expanded."))
         XCTAssertTrue(source.contains("Button(\"Close\") { dismiss() }"),
                       "Settings auto-save, so the dismissal action should say Close")
+    }
+
+    func testSettingsDestinationMetadataIsErasedWithoutEagerlyBuildingPages() throws {
+        let source = try source("AtriaSettingsView.swift")
+        let bodyStart = try XCTUnwrap(source.range(of: "var body: some View"))
+        let hubStart = try XCTUnwrap(source.range(of: "// MARK: Settings hub",
+                                                  range: bodyStart.upperBound..<source.endIndex))
+        let rootBody = String(source[bodyStart.lowerBound..<hubStart.lowerBound])
+        let factoryStart = try XCTUnwrap(source.range(of: "private func destinationPage(for destination: Destination) -> AnyView"))
+        let personalStart = try XCTUnwrap(source.range(of: "private var personalSettingsPage",
+                                                       range: factoryStart.upperBound..<source.endIndex))
+        let factory = String(source[factoryStart.lowerBound..<personalStart.lowerBound])
+
+        XCTAssertTrue(rootBody.contains("destinationPage(for: destination)"))
+        XCTAssertFalse(rootBody.contains("switch destination"),
+                       "The first-frame navigation closure must keep a shallow concrete return type")
+        for page in [
+            "personalSettingsPage", "strapSettingsPage", "alertsSettingsPage",
+            "dataSettingsPage", "privacySettingsPage", "developerSettingsPage"
+        ] {
+            XCTAssertTrue(factory.contains("AnyView(\(page))"), "Missing lazy erased page: \(page)")
+        }
+        XCTAssertEqual(factory.components(separatedBy: "AnyView(").count - 1, 6)
     }
 
     func testSettingsDestinationsPreserveEveryFunctionalSection() throws {

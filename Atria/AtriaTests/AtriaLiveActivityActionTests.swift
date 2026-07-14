@@ -321,6 +321,47 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         ))
     }
 
+    func testPendingWorkoutDefersTransientIdleActivityReconciliation() {
+        XCTAssertTrue(AtriaLiveActivityCoordinator.shouldDeferExistingActivityReconciliation(
+            snapshotIsRecording: false,
+            pendingWorkoutIsActive: true
+        ))
+        XCTAssertFalse(AtriaLiveActivityCoordinator.shouldDeferExistingActivityReconciliation(
+            snapshotIsRecording: true,
+            pendingWorkoutIsActive: true
+        ))
+        XCTAssertFalse(AtriaLiveActivityCoordinator.shouldDeferExistingActivityReconciliation(
+            snapshotIsRecording: false,
+            pendingWorkoutIsActive: false
+        ))
+    }
+
+    func testSlowActivityKitWriterKeepsOnlyNewestSuccessorAndBackgroundProtection() {
+        let first = liveSnapshot(elapsed: 100, heartRate: 120)
+        var newer = first
+        newer.heartRate = 126
+        newer.elapsedDuration = 104
+        var newest = newer
+        newest.heartRate = 131
+        newest.heartRateZoneIndex = 4
+        newest.heartRateZoneName = "Anaerobic"
+
+        let queued = AtriaLiveActivityCoordinator.coalescedActivityUpdate(
+            existing: nil,
+            incoming: newer,
+            protectsBackgroundWrite: true
+        )
+        let replaced = AtriaLiveActivityCoordinator.coalescedActivityUpdate(
+            existing: queued,
+            incoming: newest,
+            protectsBackgroundWrite: false
+        )
+
+        XCTAssertEqual(replaced.snapshot, newest)
+        XCTAssertTrue(replaced.protectsBackgroundWrite,
+                      "replacing a queued metric pulse must retain the background-boundary assertion")
+    }
+
     func testSensorFreshnessChangesScheduleLiveActivityUpdate() {
         let live = liveSnapshot(elapsed: 100, heartRate: 122)
         var disconnected = live
@@ -582,6 +623,31 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             .appendingPathComponent("Atria/AtriaLiveActivityCoordinator.swift"), encoding: .utf8)
         XCTAssertTrue(coordinator.contains("beginBackgroundTask(withName: \"Atria live workout snapshot\")"))
         XCTAssertTrue(coordinator.contains("endBackgroundTask(backgroundTask)"))
+    }
+
+    func testForegroundResumeRefreshesWorkoutMetricsAfterFirstFrame() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let home = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        let activeStart = try XCTUnwrap(home.range(
+            of: "foregroundResumeTask = Task { @MainActor in"
+        ))
+        let activeEnd = try XCTUnwrap(home.range(
+            of: "foregroundResumeTask = nil",
+            range: activeStart.upperBound..<home.endIndex
+        ))
+        let resume = String(home[activeStart.lowerBound..<activeEnd.lowerBound])
+
+        let firstFrameYield = try XCTUnwrap(resume.range(of: "await Task.yield()"))
+        let liveRefresh = try XCTUnwrap(resume.range(
+            of: "updateLiveActivity(forceActivityWrite: true)"
+        ))
+        let sleepSettlement = try XCTUnwrap(resume.range(
+            of: "store.autoConfirmSleepOnForegroundIfUseful"
+        ))
+        XCTAssertLessThan(firstFrameYield.lowerBound, liveRefresh.lowerBound)
+        XCTAssertLessThan(liveRefresh.lowerBound, sleepSettlement.lowerBound)
     }
 
     func testLockScreenActionPreservesIndependentSensorFreshness() throws {

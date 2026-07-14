@@ -2292,13 +2292,11 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
         ) != nil
     }
 
-    private func confirmSleepCandidate() {
+    private func confirmSleepCandidate(_ night: SleepHistorySnapshot.Night) {
         let vitals = vitalsStore.state
-        if let night = vitals.sleepHistorySnapshot.latestMainSleep {
-            _ = store.confirmSleepHistoryNightForUI(night,
-                                                    rest: vitals.baseline.restingInt ?? 60,
-                                                    source: "vitals_sleep_history")
-        }
+        _ = store.confirmSleepHistoryNightForUI(night,
+                                                rest: vitals.baseline.restingInt ?? 60,
+                                                source: "vitals_sleep_history")
     }
 
     #if DEBUG
@@ -5064,7 +5062,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     let sleepEfficiencyYellowLower: Double
     let onAddManualSleep: (Date, Date, Bool) -> Void
     let onAdjustSleep: (SleepHistorySnapshot.Night, Date, Date, Bool) -> Bool
-    let onConfirmSleep: () -> Void
+    let onConfirmSleep: (SleepHistorySnapshot.Night) -> Void
 
     static func == (lhs: AtriaRecoveryStrainCard, rhs: AtriaRecoveryStrainCard) -> Bool {
         lhs.hero == rhs.hero
@@ -5244,7 +5242,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     let sleepEfficiencyYellowLower: Double
     let onAddManualSleep: (Date, Date, Bool) -> Void
     let onAdjustSleep: (SleepHistorySnapshot.Night, Date, Date, Bool) -> Bool
-    let onConfirmSleep: () -> Void
+    let onConfirmSleep: (SleepHistorySnapshot.Night) -> Void
     @State private var showManualSleepSheet = false
     @State private var showNightDetails = false
     @State private var adjustmentNight: SleepHistorySnapshot.Night?
@@ -5373,7 +5371,11 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                     .atriaCardAction(tint: .cyan)
                     .accessibilityHint("Review the detected window before saving it.")
 
-                    Button(action: onConfirmSleep) {
+                    Button {
+                        guard let latest = snapshot.latestReviewable,
+                              latest.confirmed == false else { return }
+                        onConfirmSleep(latest)
+                    } label: {
                         Label("Confirm", systemImage: "checkmark.circle")
                             .font(.caption.weight(.semibold))
                             .frame(maxWidth: .infinity)

@@ -39,6 +39,29 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         XCTAssertTrue(widget.contains("if context.state.batteryLevel >= 0"))
     }
 
+    func testConnectivityPillUsesBatteryPacketAgeWhenShowingPercentage() {
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        XCTAssertEqual(
+            AtriaHomeModel.CoreLiveState.connectivityFreshnessText(
+                batteryLevel: 81,
+                batteryVerifiedAt: now.addingTimeInterval(-(32 * 60)),
+                heartRateReadingAt: now,
+                now: now
+            ),
+            "32m ago",
+            "fresh HR must not relabel a 32-minute-old battery packet as just updated"
+        )
+        XCTAssertEqual(
+            AtriaHomeModel.CoreLiveState.connectivityFreshnessText(
+                batteryLevel: -1,
+                batteryVerifiedAt: nil,
+                heartRateReadingAt: now.addingTimeInterval(-1),
+                now: now
+            ),
+            "just now"
+        )
+    }
+
     func testTopStatusPresentationEqualityExcludesRawPulsePayloads() {
         let presentation = AtriaTopStatusPresentation(label: "Live",
                                                       symbol: "bolt.heart.fill",
