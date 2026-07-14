@@ -523,7 +523,7 @@ final class AtriaStrainConsistencyTests: XCTestCase {
                                                         startingCount: 100,
                                                         hasStepEvidence: true,
                                                         isValidated: true,
-                                                        capturedAt: now.addingTimeInterval(-91),
+                                                        capturedAt: now.addingTimeInterval(-16),
                                                         isReconnecting: false,
                                                         now: now)
         XCTAssertEqual(stale.availability, .stale)
@@ -535,12 +535,152 @@ final class AtriaStrainConsistencyTests: XCTestCase {
                                                                startingCount: 100,
                                                                hasStepEvidence: true,
                                                                isValidated: true,
-                                                               capturedAt: now.addingTimeInterval(-91),
+                                                               capturedAt: now.addingTimeInterval(-16),
                                                                isReconnecting: true,
                                                                now: now)
         XCTAssertEqual(reconnecting.availability, .reconnecting)
         XCTAssertNil(reconnecting.liveCount)
         XCTAssertEqual(reconnecting.hudText, "reconnecting")
+    }
+
+    func testWorkoutStepProjectionFreezesDuringPauseAndExcludesPausedStepsAfterResume() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let whilePaused = AtriaLiveWorkoutStepProjection.make(
+            totalCount: 175,
+            startingCount: 100,
+            pausedCount: 20,
+            pauseStartedCount: 150,
+            hasStepEvidence: true,
+            isValidated: true,
+            capturedAt: now,
+            isReconnecting: false,
+            now: now
+        )
+        XCTAssertEqual(whilePaused.count, 30,
+                       "Steps after the pause anchor must not enter workout steps")
+
+        let afterResume = AtriaLiveWorkoutStepProjection.make(
+            totalCount: 190,
+            startingCount: 100,
+            pausedCount: 45,
+            hasStepEvidence: true,
+            isValidated: true,
+            capturedAt: now,
+            isReconnecting: false,
+            now: now
+        )
+        XCTAssertEqual(afterResume.count, 45,
+                       "Completed paused steps remain excluded after workout steps resume")
+    }
+
+    func testWorkoutMovingDurationMatchesClosedAndOpenPauseProjection() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let now = start.addingTimeInterval(30 * 60)
+        let closedPause = ExcludedInterval(start: start.addingTimeInterval(5 * 60),
+                                           end: start.addingTimeInterval(8 * 60))
+        let openPause = start.addingTimeInterval(25 * 60)
+
+        XCTAssertEqual(AtriaWorkoutMovingDuration.project(
+            startedAt: start,
+            excludedIntervals: [closedPause],
+            pauseStartedAt: openPause,
+            now: now
+        ), 22 * 60, accuracy: 0.001)
+    }
+
+    func testWorkoutLoadNeedsAContinuousHeartRateIntervalBeforePublishingMetrics() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let profile = AthleteProfile(age: 30,
+                                     measuredMaxHR: 190,
+                                     maxHRSource: .measured,
+                                     biologicalSex: .male,
+                                     weightKg: 75,
+                                     heightCm: 178,
+                                     updated: nil,
+                                     hasCompletedOnboarding: true)
+        var accumulator = AtriaLiveWorkoutTRIMPAccumulator()
+
+        let loneSample = accumulator.metrics(
+            samples: [HRSample(t: start, bpm: 145)],
+            startedAt: start,
+            rest: 60,
+            maxHR: 190,
+            profile: profile,
+            excludedIntervals: []
+        )
+        XCTAssertFalse(loneSample.hasEvidence)
+
+        let brokenPair = accumulator.metrics(
+            samples: [
+                HRSample(t: start, bpm: 145),
+                HRSample(t: start.addingTimeInterval(
+                    AtriaAnalytics.Strain.maximumLoadEvidenceGap + 1
+                ), bpm: 150),
+            ],
+            startedAt: start,
+            rest: 60,
+            maxHR: 190,
+            profile: profile,
+            excludedIntervals: []
+        )
+        XCTAssertFalse(brokenPair.hasEvidence,
+                       "A transport hole must not become load evidence")
+
+        let continuousPair = accumulator.metrics(
+            samples: [
+                HRSample(t: start, bpm: 145),
+                HRSample(t: start.addingTimeInterval(10), bpm: 150),
+            ],
+            startedAt: start,
+            rest: 60,
+            maxHR: 190,
+            profile: profile,
+            excludedIntervals: []
+        )
+        XCTAssertTrue(continuousPair.hasEvidence)
+    }
+
+    func testWorkoutProjectionLabelsFrozenTotalsAndSuspendsCoaching() {
+        let capturedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let live = AtriaLiveWorkoutMetricProjection(
+            strain: 4.2,
+            activeCalories: 121,
+            sensorAvailability: .live,
+            sensorCapturedAt: capturedAt,
+            hasSensorEvidence: true
+        )
+        XCTAssertTrue(live.coachingIsLive)
+        XCTAssertEqual(live.strainHUDTitle, "Strain")
+        XCTAssertEqual(live.activeCaloriesHUDText, "≈ 121 kcal")
+        XCTAssertNil(live.sensorStatusTitle)
+
+        let reconnecting = AtriaLiveWorkoutMetricProjection(
+            strain: 4.2,
+            activeCalories: 121,
+            sensorAvailability: .reconnecting,
+            sensorCapturedAt: capturedAt,
+            hasSensorEvidence: true
+        )
+        XCTAssertFalse(reconnecting.coachingIsLive)
+        XCTAssertEqual(reconnecting.strainHUDTitle, "Last strain")
+        XCTAssertEqual(reconnecting.activeCaloriesHUDTitle, "Last active")
+        XCTAssertEqual(reconnecting.sensorStatusTitle, "Reconnecting")
+        XCTAssertEqual(reconnecting.strainHUDText, "4.2")
+    }
+
+    func testWorkoutProjectionDoesNotPresentZeroAsMeasuredBeforeEvidence() {
+        let waiting = AtriaLiveWorkoutMetricProjection(
+            strain: 0,
+            activeCalories: 0,
+            sensorAvailability: .live,
+            sensorCapturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            hasSensorEvidence: false
+        )
+
+        XCTAssertFalse(waiting.coachingIsLive)
+        XCTAssertEqual(waiting.strainHUDText, "--")
+        XCTAssertEqual(waiting.activeCaloriesHUDText, "--")
+        XCTAssertEqual(waiting.sensorStatusTitle, "Waiting for strap")
     }
 
     func testHistorySessionTRIMPUsesPersonalRestAnchor() throws {

@@ -1,6 +1,23 @@
 import XCTest
 @testable import Atria
 
+private final class AtriaR10SnapshotBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: AtriaR10MotionPipeline.Snapshot?
+
+    func store(_ snapshot: AtriaR10MotionPipeline.Snapshot) {
+        lock.lock()
+        storage = snapshot
+        lock.unlock()
+    }
+
+    func load() -> AtriaR10MotionPipeline.Snapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+}
+
 final class AtriaR10MotionTests: XCTestCase {
     func testDecoderUsesFixedR10SixAxisLayout() throws {
         let payload = makeR10Payload(timestamp: 1_750_000_123,
@@ -233,7 +250,12 @@ final class AtriaR10MotionTests: XCTestCase {
 
         let withHoles = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1)
         var holeSnapshot: AtriaR10MotionPipeline.Snapshot?
-        for second in 0..<40 where second != 12 && second != 27 {
+        // After eight clean seconds establish gait, remove one frame every
+        // three seconds. Each hole remains isolated, but the two-second valid
+        // runs between them are too short to re-earn a six-step confirmation
+        // under the old hard-reset-on-every-gap behavior.
+        let missingSeconds = Set(stride(from: 8, through: 35, by: 3))
+        for second in 0..<40 where !missingSeconds.contains(second) {
             holeSnapshot = try XCTUnwrap(withHoles.ingestSynchronouslyForTesting(
                 gaitFrame(timestamp: UInt32(10_000 + second), sampleOffset: second * 100)
             ))
@@ -244,8 +266,8 @@ final class AtriaR10MotionTests: XCTestCase {
         XCTAssertGreaterThan(referenceSteps, 70)
         XCTAssertLessThanOrEqual(recoveredSteps, referenceSteps,
                                  "missing samples must never create steps")
-        XCTAssertGreaterThanOrEqual(recoveredSteps, referenceSteps - 8,
-                                    "two isolated holes should lose their actual motion, not two additional six-step confirmations")
+        XCTAssertGreaterThanOrEqual(recoveredSteps, referenceSteps - 38,
+                                    "isolated holes should lose unavailable motion/filter warm-up, not repeatedly lose six-step confirmations")
     }
 
     func testPipelineDoesNotJoinUnconfirmedBurstsAcrossOneMissingSecond() throws {
@@ -293,6 +315,33 @@ final class AtriaR10MotionTests: XCTestCase {
 
         XCTAssertEqual(snapshot?.rawSteps, confirmedPrefix,
                        "a discontinuity boundary must not manufacture an extremum pair")
+    }
+
+    func testPipelineIsolatedGapCarryExpiresDuringPostGapStillness() throws {
+        let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1)
+        var snapshot: AtriaR10MotionPipeline.Snapshot?
+        for second in 0..<10 {
+            snapshot = try XCTUnwrap(pipeline.ingestSynchronouslyForTesting(
+                gaitFrame(timestamp: UInt32(35_000 + second), sampleOffset: second * 100)
+            ))
+        }
+        let confirmedPrefix = try XCTUnwrap(snapshot?.rawSteps)
+        XCTAssertGreaterThan(confirmedPrefix, 0)
+
+        // The isolated hole is followed by a full valid second of stillness,
+        // which must consume the bounded carry. A later two-second handling/
+        // gait fragment is too short to pass a fresh six-step confirmation.
+        snapshot = try XCTUnwrap(pipeline.ingestSynchronouslyForTesting(
+            constantFrame(timestamp: 35_011, magnitude: 1)
+        ))
+        for second in 12..<14 {
+            snapshot = try XCTUnwrap(pipeline.ingestSynchronouslyForTesting(
+                gaitFrame(timestamp: UInt32(35_000 + second), sampleOffset: second * 100)
+            ))
+        }
+
+        XCTAssertEqual(snapshot?.rawSteps, confirmedPrefix,
+                       "confirmed gait must not survive beyond the bounded post-gap resume window")
     }
 
     func testPipelineLongGapStillRequiresFreshGaitConfirmation() throws {
@@ -383,6 +432,34 @@ final class AtriaR10MotionTests: XCTestCase {
         ))
     }
 
+    func testLivePipelineTrailingSnapshotPublishesLatestCountFromBatchedFrames() {
+        let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100,
+                                              gain: 1,
+                                              snapshotMinimumInterval: 0.02)
+        let anchor = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let latestPublished = expectation(description: "latest batched step count published")
+        let finalSnapshot = AtriaR10SnapshotBox()
+
+        // A reassembled BLE notification can contain several device-seconds
+        // with the same host receipt time. The first frame publishes
+        // immediately; the trailing flush must expose the final detector state
+        // even if no later notification arrives to reopen the cadence gate.
+        for second in 0..<10 {
+            pipeline.ingest(gaitFrame(timestamp: UInt32(60_000 + second),
+                                      sampleOffset: second * 100),
+                            receivedAt: anchor) { snapshot in
+                guard snapshot.frames == 10 else { return }
+                finalSnapshot.store(snapshot)
+                latestPublished.fulfill()
+            }
+        }
+
+        wait(for: [latestPublished], timeout: 1)
+        let snapshot = finalSnapshot.load()
+        XCTAssertEqual(snapshot?.frames, 10)
+        XCTAssertGreaterThan(snapshot?.steps ?? 0, 0)
+    }
+
     func testPipelineRestoreSeedKeepsPublishedStepsMonotonic() throws {
         let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1.11)
         let seeded = pipeline.seedSynchronously(committedRawSteps: 90)
@@ -430,6 +507,144 @@ final class AtriaR10MotionTests: XCTestCase {
                      "restore must retain timestamp deduplication for already-arrived frames")
     }
 
+    func testGaitQualityChallengerRetroactivelyReleasesRegularStrapGait() throws {
+        var gate = AtriaStrapGaitQualityChallenger()
+        let motion = challengerMotion(sampleCount: 1_000, cadenceHz: { _ in 2 })
+        let candidates = Array(stride(from: 0, to: 1_000, by: 50))
+        let update = gate.ingest(acceleration: motion.acceleration,
+                                 rotationRate: motion.rotation,
+                                 candidateStepOffsets: candidates)
+
+        let assessment = try XCTUnwrap(update.assessment)
+        XCTAssertEqual(assessment.verdict, .accepted)
+        XCTAssertGreaterThan(assessment.periodicity, 0.8)
+        XCTAssertGreaterThan(assessment.walkingBandEnergyRatio, 0.8)
+        XCTAssertGreaterThan(assessment.cadenceConsistency, 0.85)
+        XCTAssertGreaterThan(update.releasedCandidateSteps, 0)
+        XCTAssertEqual(update.releasedCandidateSteps + update.pendingCandidateSteps,
+                       candidates.count)
+        XCTAssertEqual(update.rejectedCandidateSteps, 0)
+    }
+
+    func testGaitQualityChallengerRejectsStillnessAndImpulseHandling() throws {
+        var stillGate = AtriaStrapGaitQualityChallenger()
+        let still = [AtriaR10MotionFrame.Vector3](
+            repeating: .init(x: 1, y: 0, z: 0),
+            count: 700
+        )
+        let stillUpdate = stillGate.ingest(acceleration: still,
+                                           candidateStepOffsets: [0, 50, 100, 150, 200])
+        XCTAssertEqual(try XCTUnwrap(stillUpdate.assessment).verdict, .rejected)
+        XCTAssertGreaterThan(stillUpdate.rejectedCandidateSteps, 0)
+        XCTAssertEqual(stillUpdate.releasedCandidateSteps, 0)
+
+        var handlingGate = AtriaStrapGaitQualityChallenger()
+        let handling = (0..<700).map { sample in
+            AtriaR10MotionFrame.Vector3(
+                x: sample.isMultiple(of: 73) ? 2.2 : (sample.isMultiple(of: 41) ? 0.35 : 1),
+                y: 0,
+                z: 0
+            )
+        }
+        let handlingUpdate = handlingGate.ingest(acceleration: handling,
+                                                 candidateStepOffsets: Array(stride(from: 0,
+                                                                                   to: 300,
+                                                                                   by: 40)))
+        XCTAssertEqual(try XCTUnwrap(handlingUpdate.assessment).verdict, .rejected)
+        XCTAssertEqual(handlingUpdate.releasedCandidateSteps, 0)
+    }
+
+    func testGaitQualityChallengerUsesGyroscopeToRejectRhythmicHandling() throws {
+        let motion = challengerMotion(sampleCount: 800,
+                                      cadenceHz: { _ in 2 },
+                                      gyroscopeCadenceHz: 1)
+        var gate = AtriaStrapGaitQualityChallenger()
+        let update = gate.ingest(acceleration: motion.acceleration,
+                                 rotationRate: motion.rotation,
+                                 candidateStepOffsets: Array(stride(from: 0, to: 400, by: 50)))
+        let assessment = try XCTUnwrap(update.assessment)
+        XCTAssertEqual(assessment.verdict, .rejected)
+        XCTAssertLessThan(try XCTUnwrap(assessment.gyroscopeAgreement), 0.72)
+        XCTAssertEqual(update.releasedCandidateSteps, 0)
+        XCTAssertGreaterThan(update.rejectedCandidateSteps, 0)
+    }
+
+    func testGaitQualityChallengerRejectsAbruptCadenceChange() throws {
+        var gate = AtriaStrapGaitQualityChallenger()
+        let motion = challengerMotion(sampleCount: 600, cadenceHz: { sample in
+            sample < 300 ? 1.0 : 2.0
+        })
+        let update = gate.ingest(acceleration: motion.acceleration,
+                                 rotationRate: nil,
+                                 candidateStepOffsets: [0, 75, 150])
+        let assessment = try XCTUnwrap(update.assessment)
+        XCTAssertEqual(assessment.verdict, .rejected)
+        XCTAssertLessThan(assessment.cadenceConsistency, 0.78)
+    }
+
+    func testGaitQualityChallengerGapRejectsPendingAndRequiresFreshWindow() throws {
+        let prefix = challengerMotion(sampleCount: 350, cadenceHz: { _ in 2 })
+        var gate = AtriaStrapGaitQualityChallenger()
+        let prefixUpdate = gate.ingest(acceleration: prefix.acceleration,
+                                       rotationRate: prefix.rotation,
+                                       candidateStepOffsets: [0, 50, 100, 150, 200, 250, 300])
+        XCTAssertNil(prefixUpdate.assessment)
+
+        let isolatedGap = gate.resetForGap()
+        XCTAssertEqual(isolatedGap.rejectedCandidateSteps, 7)
+        let shortResume = challengerMotion(sampleCount: 400, cadenceHz: { _ in 2 })
+        XCTAssertNil(gate.ingest(acceleration: shortResume.acceleration,
+                                 rotationRate: shortResume.rotation,
+                                 candidateStepOffsets: [0, 50, 100]).assessment)
+
+        let longGap = gate.resetForGap()
+        XCTAssertEqual(longGap.rejectedCandidateSteps, 3)
+        let fullResume = challengerMotion(sampleCount: 500, cadenceHz: { _ in 2 })
+        let resumed = gate.ingest(acceleration: fullResume.acceleration,
+                                  rotationRate: fullResume.rotation)
+        XCTAssertEqual(try XCTUnwrap(resumed.assessment).verdict, .accepted)
+    }
+
+    func testGaitQualityChallengerLiveAndReplayChunkingMatch() {
+        let motion = challengerMotion(sampleCount: 1_200,
+                                      cadenceHz: { sample in 1.85 + 0.15 * Double(sample) / 1_200 })
+        let allCandidates = Array(stride(from: 0, to: 1_200, by: 52))
+        var replay = AtriaStrapGaitQualityChallenger()
+        let replayUpdate = replay.ingest(acceleration: motion.acceleration,
+                                         rotationRate: motion.rotation,
+                                         candidateStepOffsets: allCandidates)
+
+        var live = AtriaStrapGaitQualityChallenger()
+        var released = 0
+        var rejected = 0
+        var pending = 0
+        var assessment: AtriaStrapGaitQualityChallenger.Assessment?
+        for start in stride(from: 0, to: 1_200, by: 100) {
+            let end = min(1_200, start + 100)
+            let offsets = allCandidates.filter { start..<end ~= $0 }.map { $0 - start }
+            let update = live.ingest(acceleration: Array(motion.acceleration[start..<end]),
+                                     rotationRate: Array(motion.rotation[start..<end]),
+                                     candidateStepOffsets: offsets)
+            released += update.releasedCandidateSteps
+            rejected += update.rejectedCandidateSteps
+            pending = update.pendingCandidateSteps
+            assessment = update.assessment ?? assessment
+        }
+        XCTAssertEqual(released, replayUpdate.releasedCandidateSteps)
+        XCTAssertEqual(rejected, replayUpdate.rejectedCandidateSteps)
+        XCTAssertEqual(pending, replayUpdate.pendingCandidateSteps)
+        XCTAssertEqual(assessment, replayUpdate.assessment)
+    }
+
+    func testGaitQualityChallengerHundredHertzCost() {
+        let motion = challengerMotion(sampleCount: 6_000, cadenceHz: { _ in 2 })
+        measure {
+            var gate = AtriaStrapGaitQualityChallenger()
+            _ = gate.ingest(acceleration: motion.acceleration,
+                            rotationRate: motion.rotation)
+        }
+    }
+
     private func makeR10Payload(timestamp: UInt32 = 1_750_000_000,
                                 heartRate: UInt8 = 70,
                                 acceleration: (Int16, Int16, Int16) = (0, 0, 4_096),
@@ -455,6 +670,28 @@ final class AtriaR10MotionTests: XCTestCase {
             let phase = 2 * Double.pi * 2 * Double(sample) / 100
             return 1 + 0.16 * sin(phase)
         }
+    }
+
+    private func challengerMotion(
+        sampleCount: Int,
+        cadenceHz: (Int) -> Double,
+        gyroscopeCadenceHz: Double? = nil
+    ) -> (acceleration: [AtriaR10MotionFrame.Vector3],
+          rotation: [AtriaR10MotionFrame.Vector3]) {
+        var phase = 0.0
+        var acceleration: [AtriaR10MotionFrame.Vector3] = []
+        var rotation: [AtriaR10MotionFrame.Vector3] = []
+        acceleration.reserveCapacity(sampleCount)
+        rotation.reserveCapacity(sampleCount)
+        for sample in 0..<sampleCount {
+            let frequency = cadenceHz(sample)
+            phase += 2 * Double.pi * frequency / 100
+            acceleration.append(.init(x: 1 + 0.16 * sin(phase), y: 0, z: 0))
+            let gyroFrequency = gyroscopeCadenceHz ?? frequency
+            let gyroPhase = 2 * Double.pi * gyroFrequency * Double(sample) / 100
+            rotation.append(.init(x: 18 * sin(gyroPhase), y: 0, z: 0))
+        }
+        return (acceleration, rotation)
     }
 
     private func gaitFrame(timestamp: UInt32, sampleOffset: Int) -> AtriaR10MotionFrame {

@@ -75,15 +75,14 @@ final class AtriaTodaySessionProjectionStore: ObservableObject {
     private let store: SessionStore
     private var cancellables = Set<AnyCancellable>()
     private var refreshScheduled = false
+    private var pendingFullRefresh = false
 
     init(store: SessionStore) {
         self.store = store
         state = AtriaTodaySessionState(store: store)
 
         Publishers.MergeMany([
-            store.$dashboardRevision.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$dailyRollupHistory.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            store.$dailyMetricHistory.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$sleepHistorySnapshot.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$behaviorImpactSummariesCache.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$baseline.dropFirst().map { _ in () }.eraseToAnyPublisher(),
@@ -94,8 +93,18 @@ final class AtriaTodaySessionProjectionStore: ObservableObject {
                 .map { _ in () }
                 .eraseToAnyPublisher(),
         ])
-        .sink { [weak self] in self?.scheduleRefresh() }
+        .sink { [weak self] in self?.scheduleRefresh(full: true) }
         .store(in: &cancellables)
+
+        // Confirmed workouts and journal entries have no dedicated publisher,
+        // so they still arrive through SessionStore's broad dashboard signal.
+        // Most dashboard bumps are unrelated to Today (backup state, dismissed
+        // candidates, diagnostics). Compare the two authoritative revisions
+        // before rebuilding/copying the full projection snapshot.
+        store.$dashboardRevision
+            .dropFirst()
+            .sink { [weak self] _ in self?.scheduleRefresh(full: false) }
+            .store(in: &cancellables)
     }
 
     @discardableResult
@@ -106,13 +115,29 @@ final class AtriaTodaySessionProjectionStore: ObservableObject {
         return true
     }
 
-    private func scheduleRefresh() {
+    @discardableResult
+    func refreshForDashboardRevision() -> Bool {
+        guard store.confirmedWorkoutsRevision != state.confirmedWorkoutsRevision
+                || store.behaviorJournalRevision != state.behaviorJournalRevision else {
+            return false
+        }
+        return refresh()
+    }
+
+    private func scheduleRefresh(full: Bool) {
+        pendingFullRefresh = pendingFullRefresh || full
         guard !refreshScheduled else { return }
         refreshScheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            let shouldRefreshFully = self.pendingFullRefresh
+            self.pendingFullRefresh = false
             self.refreshScheduled = false
-            self.refresh()
+            if shouldRefreshFully {
+                self.refresh()
+            } else {
+                self.refreshForDashboardRevision()
+            }
         }
     }
 }
@@ -195,10 +220,7 @@ struct AtriaTodayScreen: View {
                 AtriaAICoachCard(context: coachContext,
                                  preparedPayload: coachPayload,
                                  settings: effectiveAICoachSettings,
-                                 hasAPIKey: aiCoachHasAPIKey,
-                                 onSettingsChange: onAICoachSettingsChange,
-                                 onSaveAPIKey: onSaveAICoachAPIKey,
-                                 onDeleteAPIKey: onDeleteAICoachAPIKey)
+                                 hasAPIKey: aiCoachHasAPIKey)
             } else if AtriaOverviewBehaviorJournalSection.debugShowsImpactOnlyFixture {
                 AtriaOverviewBehaviorJournalSection(store: store)
             } else {
@@ -494,10 +516,7 @@ struct AtriaTodayScreen: View {
                 AtriaAICoachCard(context: coachContext,
                                  preparedPayload: coachPayload,
                                  settings: effectiveAICoachSettings,
-                                 hasAPIKey: aiCoachHasAPIKey,
-                                 onSettingsChange: onAICoachSettingsChange,
-                                 onSaveAPIKey: onSaveAICoachAPIKey,
-                                 onDeleteAPIKey: onDeleteAICoachAPIKey)
+                                 hasAPIKey: aiCoachHasAPIKey)
             }
         }
     }
@@ -1177,11 +1196,11 @@ struct AtriaTodayScreen: View {
                                   targetFraction: sleepNeedHoursValue != nil ? 1.0 : nil)
     }
 
-    /// WHOOP-like DISPLAY carry: between midnight and today's first stored
-    /// morning reading (and during reconnect learning flickers) the hero keeps
-    /// showing the last stored daily recovery, labeled "yesterday", instead of
-    /// a live provisional recompute that jumps around pre-sleep. Once today's
-    /// rollup carries a recovery value, that morning score stays pinned for the day.
+    /// Recovery is owned by the physiological-cycle resolver in `SessionStore`.
+    /// Every surface must display that exact estimate: carrying the newest civil-
+    /// day rollup here made Overview show yesterday's green score while Vitals
+    /// correctly showed the current no-sleep fallback. The canonical hero already
+    /// freezes a scored morning and remains stable through reconnects.
     /// Rollups in day-descending order, memoized behind
     /// `store.dailyRollupHistoryRevision` (measured-perf pass, 2026-07-05;
     /// tightened 2026-07-09): `store.dailyRollupHistory` is already newest-
@@ -1201,31 +1220,9 @@ struct AtriaTodayScreen: View {
 
     private var displayRecovery: (value: String, detail: String, percent: Int?) {
         let estimate = displayHero.recoveryEstimate
-        let newestStored = dayDescendingRollups
-            .first(where: { $0.recovery != nil })
-        let todayHasReading = newestStored.map {
-            Calendar.current.isDateInToday($0.day)
-        } ?? false
-        // Post-midnight before the new morning reading: yesterday's score.
-        if !todayHasReading, let carried = newestStored?.recovery {
-            let detail = displayHero.recoveryIsProvisional ? "yesterday · provisional" : "yesterday"
-            return ("\(carried)%", detail, carried)
-        }
-        // Once today's morning rollup exists, Recovery is frozen for the day like
-        // WHOOP. Keep live recovery only for the pre-rollup/calibrating window.
-        if todayHasReading, let stored = newestStored?.recovery {
-            let detail = displayHero.recoveryIsProvisional ? "this morning · provisional" : "this morning"
-            return ("\(stored)%", detail, stored)
-        }
         if let percent = estimate.percent {
             let detail = displayHero.recoveryLiftedAfterNap ? "↑ after nap" : displayHero.recoveryDetail
             return ("\(percent)%", detail, percent)
-        }
-        // Live estimate momentarily unavailable (reconnect warm-up): the
-        // stored morning reading is still today's truth — never flash
-        // "Learning" over a number the user already has.
-        if let stored = newestStored?.recovery {
-            return ("\(stored)%", todayHasReading ? "this morning" : "yesterday", stored)
         }
         // Time-to-detect (2026-07-05): recovery calibrates over ~4 nights. Instead
         // of a bare "Learning", show how far into that window the user is (matches
@@ -2041,6 +2038,7 @@ private struct AtriaTodayBreathworkSessionHost: View {
     var body: some View {
         AtriaBreathworkSession(currentHeartRate: pulseStore.state.heartRate,
                                currentRRSamples: pulseStore.state.recentRRSamples,
+                               currentStress: nil,
                                onSave: onSave,
                                onClose: onClose)
     }
@@ -2138,8 +2136,8 @@ struct AtriaTodayCompactRingRail: View {
             VStack(alignment: .trailing, spacing: 5) {
                 ForEach(slots, id: \.metric.title) { slot in
                     HStack(spacing: 5) {
-                        Image(systemName: slot.metric.systemImage)
-                            .foregroundStyle(slot.metric.tint)
+                        Text(slot.slot.compactEmoji)
+                            .accessibilityHidden(true)
                         Text(slot.metric.value)
                             .foregroundStyle(.primary)
                             .monospacedDigit()

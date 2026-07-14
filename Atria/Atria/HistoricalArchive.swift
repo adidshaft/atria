@@ -7,6 +7,9 @@ enum HistoricalArchive {
     // Empty until a generation-specific fixed layout passes an independent
     // HR/RR reference validation. Diagnostic layouts must never feed metrics.
     static let validatedMetricLayoutVersions: Set<String> = []
+    static var hasValidatedMetricLayout: Bool {
+        !validatedMetricLayoutVersions.isEmpty
+    }
     static let relativePath = "Documents/atria-historical/historical-archive.jsonl"
     private static let diagnosticsIndexFilename = "historical-archive.diagnostics.json"
     private static let rotationManifestFilename = "historical-archive.manifest.json"

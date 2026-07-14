@@ -110,9 +110,15 @@ final class AtriaStrainTelemetryGapTests: XCTestCase {
             let flattened = points
                 .filter { $0.t < pauseStart || $0.t > pauseEnd }
                 .map { (t: $0.t, bpm: $0.bpm) }
-            XCTAssertGreaterThan(Metrics.trimp(flattened, rest: 60, max: 190), expectedTRIMP)
-            XCTAssertGreaterThan(AtriaAnalytics.Strain.maxHeartRateZoneSeconds(flattened, maxHR: 190)
-                .storage.values.reduce(0, +), expectedZoneSeconds)
+            // The global 15-second evidence-gap policy independently prevents
+            // an already-filtered series from bridging either pause duration.
+            XCTAssertEqual(Metrics.trimp(flattened, rest: 60, max: 190),
+                           expectedTRIMP,
+                           accuracy: 0.000_001)
+            XCTAssertEqual(AtriaAnalytics.Strain.maxHeartRateZoneSeconds(flattened, maxHR: 190)
+                .storage.values.reduce(0, +),
+                           expectedZoneSeconds,
+                           accuracy: 0.000_001)
         }
     }
 

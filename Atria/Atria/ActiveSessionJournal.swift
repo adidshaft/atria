@@ -504,6 +504,34 @@ enum ActiveSessionJournal {
         drainStrengthMirrorWrites()
         ioLock.lock()
         defer { ioLock.unlock() }
+        clearLocked()
+    }
+
+    /// Deletes a restore candidate only if no newer checkpoint replaced it.
+    /// The comparison and deletion share the journal lock, so moving cleanup
+    /// off the MainActor cannot race a live incremental save and erase it.
+    @discardableResult
+    static func clearIfUnchanged(id: UUID,
+                                 updatedAt: Date,
+                                 schema: Int,
+                                 sampleCount: Int,
+                                 rrSampleCount: Int) -> Bool {
+        drainStrengthMirrorWrites()
+        ioLock.lock()
+        defer { ioLock.unlock() }
+        guard let current = loadLocked(),
+              current.id == id,
+              current.updatedAt == updatedAt,
+              current.schema == schema,
+              current.samples.count == sampleCount,
+              (current.rrSamples?.count ?? 0) == rrSampleCount else {
+            return false
+        }
+        clearLocked()
+        return true
+    }
+
+    private static func clearLocked() {
         loadCache = nil
         segmentedLoadCache = nil
         mirroredStrengthCache = nil

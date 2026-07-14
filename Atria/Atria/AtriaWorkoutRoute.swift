@@ -750,6 +750,51 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
 }
 
 enum AtriaWorkoutRouteStore {
+    enum ReconciliationError: Error, Equatable {
+        case writeFailed
+        case deleteFailed
+    }
+
+    /// Minimal canonical metadata needed to decide whether a route edit's
+    /// metadata half committed before the process was terminated. Keeping this
+    /// type independent from `SessionStore` also makes recovery deterministic:
+    /// the caller supplies the already-loaded authoritative workout snapshot.
+    struct CanonicalWorkoutState: Equatable, Sendable {
+        let id: String
+        let activityType: String
+        let start: Date
+        let end: Date
+    }
+
+    enum TransactionRecoveryResult: Equatable {
+        case noTransaction
+        case completed
+        case deferred
+        case failed
+    }
+
+    private struct PendingTransaction: Codable, Equatable {
+        enum Operation: String, Codable {
+            case edit
+            case delete
+        }
+
+        static let schema = 1
+
+        let schema: Int
+        let operation: Operation
+        let oldWorkoutID: String
+        let oldActivityType: String?
+        let oldStart: Date?
+        let oldEnd: Date?
+        let newWorkoutID: String?
+        let activityType: String?
+        let start: Date?
+        let end: Date?
+        let originalRoute: AtriaWorkoutRoute?
+        let createdAt: Date
+    }
+
     private static let persistenceQueue = DispatchQueue(
         label: "com.adidshaft.atria.workout-route-store",
         qos: .utility
@@ -759,6 +804,214 @@ enum AtriaWorkoutRouteStore {
         let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         return root.appendingPathComponent("atria-workout-routes", isDirectory: true)
+    }
+
+    private static var transactionURL: URL {
+        let root = FileManager.default.urls(for: .applicationSupportDirectory,
+                                            in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return root
+            .appendingPathComponent("Atria", isDirectory: true)
+            .appendingPathComponent("pending-workout-route-transaction.json")
+    }
+
+    /// Writes the intent before canonical workout metadata changes. The marker
+    /// contains the original route, so recovery can replay either outcome even
+    /// if termination happens while the old route is being replaced/deleted.
+    @discardableResult
+    static func beginEditTransaction(from originalWorkout: CanonicalWorkoutState,
+                                     to newWorkoutID: String,
+                                     activityType: AtriaWorkoutActivityType,
+                                     start: Date,
+                                     end: Date) -> Bool {
+        guard !pendingTransactionFileExists else { return false }
+        return savePendingTransaction(PendingTransaction(
+            schema: PendingTransaction.schema,
+            operation: .edit,
+            oldWorkoutID: originalWorkout.id,
+            oldActivityType: originalWorkout.activityType,
+            oldStart: originalWorkout.start,
+            oldEnd: originalWorkout.end,
+            newWorkoutID: newWorkoutID,
+            activityType: activityType.rawValue,
+            start: start,
+            end: end,
+            originalRoute: load(workoutID: originalWorkout.id),
+            createdAt: Date()
+        ))
+    }
+
+    @discardableResult
+    static func beginDeleteTransaction(workoutID: String) -> Bool {
+        guard !pendingTransactionFileExists else { return false }
+        return savePendingTransaction(PendingTransaction(
+            schema: PendingTransaction.schema,
+            operation: .delete,
+            oldWorkoutID: workoutID,
+            oldActivityType: nil,
+            oldStart: nil,
+            oldEnd: nil,
+            newWorkoutID: nil,
+            activityType: nil,
+            start: nil,
+            end: nil,
+            originalRoute: load(workoutID: workoutID),
+            createdAt: Date()
+        ))
+    }
+
+    /// Replays the pending transaction against authoritative metadata. Edits
+    /// commit forward when the requested metadata is present; otherwise the
+    /// exact original route is restored. Deletes finish only after metadata is
+    /// absent. The marker is retained on any ambiguous or failed recovery so a
+    /// later launch can retry without guessing or destroying route evidence.
+    @discardableResult
+    static func recoverPendingTransaction(
+        canonicalWorkouts: [CanonicalWorkoutState]
+    ) -> TransactionRecoveryResult {
+        guard pendingTransactionFileExists else { return .noTransaction }
+        guard let transaction = loadPendingTransaction(),
+              transaction.schema == PendingTransaction.schema else {
+            AtriaDebugLog("ATRIADBG workout_route_transaction status=decode_failed")
+            return .failed
+        }
+
+        switch transaction.operation {
+        case .delete:
+            if canonicalWorkouts.contains(where: { $0.id == transaction.oldWorkoutID }) {
+                guard restoreOriginalRoute(for: transaction,
+                                           as: transaction.oldWorkoutID) else { return .failed }
+                return clearPendingTransaction() ? .completed : .failed
+            }
+            guard delete(workoutID: transaction.oldWorkoutID) else { return .failed }
+            return clearPendingTransaction() ? .completed : .failed
+
+        case .edit:
+            guard let newWorkoutID = transaction.newWorkoutID,
+                  let activityTypeRaw = transaction.activityType,
+                  let activityType = AtriaWorkoutActivityType(rawValue: activityTypeRaw),
+                  let start = transaction.start,
+                  let end = transaction.end else {
+                return .failed
+            }
+            let targetCommitted = canonicalWorkouts.contains { workout in
+                workout.id == newWorkoutID
+                    && workout.activityType == activityType.rawValue
+                    && abs(workout.start.timeIntervalSince(start)) < 0.5
+                    && abs(workout.end.timeIntervalSince(end)) < 0.5
+            }
+            if targetCommitted {
+                guard restoreOriginalRoute(for: transaction,
+                                           as: transaction.oldWorkoutID) else { return .failed }
+                switch reconcile(from: transaction.oldWorkoutID,
+                                 to: newWorkoutID,
+                                 activityType: activityType,
+                                 start: start,
+                                 end: end) {
+                case .success:
+                    return clearPendingTransaction() ? .completed : .failed
+                case .failure:
+                    return .failed
+                }
+            }
+
+            // The original metadata still being present proves the metadata
+            // write did not commit (or the synchronous rollback succeeded).
+            // Restore its exact route and remove a staged destination.
+            let originalMetadata = canonicalWorkouts.first { workout in
+                if workout.id == transaction.oldWorkoutID { return true }
+                guard let oldActivityType = transaction.oldActivityType,
+                      let oldStart = transaction.oldStart,
+                      let oldEnd = transaction.oldEnd else { return false }
+                return workout.activityType == oldActivityType
+                    && abs(workout.start.timeIntervalSince(oldStart)) < 0.5
+                    && abs(workout.end.timeIntervalSince(oldEnd)) < 0.5
+            }
+            if let originalMetadata {
+                guard restoreOriginalRoute(for: transaction,
+                                           as: originalMetadata.id) else { return .failed }
+                if newWorkoutID != transaction.oldWorkoutID,
+                   newWorkoutID != originalMetadata.id,
+                   !delete(workoutID: newWorkoutID) {
+                    return .failed
+                }
+                return clearPendingTransaction() ? .completed : .failed
+            }
+
+            AtriaDebugLog("ATRIADBG workout_route_transaction status=deferred old_id=%@ new_id=%@",
+                          transaction.oldWorkoutID,
+                          newWorkoutID)
+            return .deferred
+        }
+    }
+
+    @discardableResult
+    static func clearPendingTransaction() -> Bool {
+        guard pendingTransactionFileExists else { return true }
+        do {
+            try FileManager.default.removeItem(at: transactionURL)
+            return true
+        } catch {
+            AtriaDebugLog("ATRIADBG workout_route_transaction status=clear_failed error=%@",
+                          String(describing: error))
+            return false
+        }
+    }
+
+    static var hasPendingTransaction: Bool {
+        pendingTransactionFileExists
+    }
+
+    private static var pendingTransactionFileExists: Bool {
+        FileManager.default.fileExists(atPath: transactionURL.path)
+    }
+
+    private static func savePendingTransaction(_ transaction: PendingTransaction) -> Bool {
+        do {
+            try FileManager.default.createDirectory(
+                at: transactionURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try JSONEncoder.atriaRoute.encode(transaction)
+                .write(to: transactionURL, options: .atomic)
+            AtriaDebugLog("ATRIADBG workout_route_transaction status=prepared operation=%@ old_id=%@",
+                          transaction.operation.rawValue,
+                          transaction.oldWorkoutID)
+            return true
+        } catch {
+            AtriaDebugLog("ATRIADBG workout_route_transaction status=prepare_failed error=%@",
+                          String(describing: error))
+            return false
+        }
+    }
+
+    private static func loadPendingTransaction() -> PendingTransaction? {
+        guard let data = try? Data(contentsOf: transactionURL) else { return nil }
+        return try? JSONDecoder.atriaRoute.decode(PendingTransaction.self, from: data)
+    }
+
+    private static func restoreOriginalRoute(for transaction: PendingTransaction,
+                                             as workoutID: String) -> Bool {
+        if let route = transaction.originalRoute {
+            let restored = AtriaWorkoutRoute(id: workoutID,
+                                             workoutID: workoutID,
+                                             activityType: route.activityType,
+                                             startedAt: route.startedAt,
+                                             endedAt: route.endedAt,
+                                             coverageStartedAt: route.coverageStartedAt,
+                                             points: route.points,
+                                             distanceMeters: route.distanceMeters,
+                                             elevationGainMeters: route.elevationGainMeters,
+                                             pausedDuration: route.pausedDuration)
+            guard persist(restored) else { return false }
+            if workoutID != transaction.oldWorkoutID,
+               !delete(workoutID: transaction.oldWorkoutID) {
+                return false
+            }
+            return true
+        }
+        guard delete(workoutID: transaction.oldWorkoutID) else { return false }
+        return workoutID == transaction.oldWorkoutID || delete(workoutID: workoutID)
     }
 
     static func save(_ draft: AtriaWorkoutRouteRecorder.Draft, workoutID: String) -> AtriaWorkoutRoute? {
@@ -782,6 +1035,20 @@ enum AtriaWorkoutRouteStore {
                           workoutID,
                           String(describing: error))
             return nil
+        }
+    }
+
+    private static func persist(_ route: AtriaWorkoutRoute) -> Bool {
+        do {
+            try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+            try JSONEncoder.atriaRoute.encode(route)
+                .write(to: fileURL(workoutID: route.workoutID), options: .atomic)
+            return true
+        } catch {
+            AtriaDebugLog("ATRIADBG workout_route status=restore_failed workout_id=%@ error=%@",
+                          route.workoutID,
+                          String(describing: error))
+            return false
         }
     }
 
@@ -832,18 +1099,32 @@ enum AtriaWorkoutRouteStore {
                           to newWorkoutID: String,
                           activityType: AtriaWorkoutActivityType,
                           start: Date,
-                          end: Date) {
+                          end: Date) -> Result<Void, ReconciliationError> {
         guard activityType.supportsRouteRecording else {
-            delete(workoutID: oldWorkoutID)
-            if newWorkoutID != oldWorkoutID { delete(workoutID: newWorkoutID) }
-            return
+            // The metadata edit has already committed by the time this method
+            // is called. Remove a possible destination first so a failure can
+            // never destroy the original route before the caller rolls the
+            // metadata back to `oldWorkoutID`.
+            if newWorkoutID != oldWorkoutID,
+               !delete(workoutID: newWorkoutID) {
+                return .failure(.deleteFailed)
+            }
+            return delete(workoutID: oldWorkoutID)
+                ? .success(())
+                : .failure(.deleteFailed)
         }
-        guard let old = load(workoutID: oldWorkoutID) ?? load(workoutID: newWorkoutID) else { return }
+        guard let old = load(workoutID: oldWorkoutID) ?? load(workoutID: newWorkoutID) else {
+            return .success(())
+        }
         let source = old.points.filter { $0.timestamp >= start && $0.timestamp <= end }
         guard source.count >= 2 else {
-            delete(workoutID: oldWorkoutID)
-            if newWorkoutID != oldWorkoutID { delete(workoutID: newWorkoutID) }
-            return
+            if newWorkoutID != oldWorkoutID,
+               !delete(workoutID: newWorkoutID) {
+                return .failure(.deleteFailed)
+            }
+            return delete(workoutID: oldWorkoutID)
+                ? .success(())
+                : .failure(.deleteFailed)
         }
 
         var clipped: [AtriaWorkoutRoute.Point] = []
@@ -899,19 +1180,46 @@ enum AtriaWorkoutRouteStore {
             try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
             try JSONEncoder.atriaRoute.encode(updated)
                 .write(to: fileURL(workoutID: newWorkoutID), options: .atomic)
-            if oldWorkoutID != newWorkoutID {
-                try? FileManager.default.removeItem(at: fileURL(workoutID: oldWorkoutID))
+            let oldURL = fileURL(workoutID: oldWorkoutID)
+            if oldWorkoutID != newWorkoutID,
+               FileManager.default.fileExists(atPath: oldURL.path) {
+                do {
+                    try FileManager.default.removeItem(at: oldURL)
+                } catch {
+                    // Preserve the original association for the caller's
+                    // metadata rollback. The staged destination must not make
+                    // a failed Save look successful on a later reopen.
+                    _ = delete(workoutID: newWorkoutID)
+                    AtriaDebugLog("ATRIADBG workout_route status=reconcile_old_delete_failed old_id=%@ new_id=%@ error=%@",
+                                  oldWorkoutID,
+                                  newWorkoutID,
+                                  String(describing: error))
+                    return .failure(.deleteFailed)
+                }
             }
+            return .success(())
         } catch {
             AtriaDebugLog("ATRIADBG workout_route status=reconcile_failed old_id=%@ new_id=%@ error=%@",
                           oldWorkoutID,
                           newWorkoutID,
                           String(describing: error))
+            return .failure(.writeFailed)
         }
     }
 
-    static func delete(workoutID: String) {
-        try? FileManager.default.removeItem(at: fileURL(workoutID: workoutID))
+    @discardableResult
+    static func delete(workoutID: String) -> Bool {
+        let url = fileURL(workoutID: workoutID)
+        guard FileManager.default.fileExists(atPath: url.path) else { return true }
+        do {
+            try FileManager.default.removeItem(at: url)
+            return true
+        } catch {
+            AtriaDebugLog("ATRIADBG workout_route status=delete_failed workout_id=%@ error=%@",
+                          workoutID,
+                          String(describing: error))
+            return false
+        }
     }
 
     static func gpxURL(for route: AtriaWorkoutRoute) -> URL? {

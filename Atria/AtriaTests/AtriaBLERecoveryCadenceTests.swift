@@ -2,6 +2,219 @@ import XCTest
 @testable import Atria
 
 final class AtriaBLERecoveryCadenceTests: XCTestCase {
+    func testStrapStepCheckpointIsBoundedByCountAndTime() {
+        let now = Date(timeIntervalSince1970: 10_000)
+
+        XCTAssertFalse(AtriaBLEManager.shouldCheckpointStrapSteps(
+            currentSteps: 111,
+            persistedSteps: 100,
+            lastCheckpointAt: now.addingTimeInterval(-14.9),
+            now: now
+        ), "Eleven fresh steps inside fifteen seconds stay in the bounded in-memory window")
+        XCTAssertTrue(AtriaBLEManager.shouldCheckpointStrapSteps(
+            currentSteps: 112,
+            persistedSteps: 100,
+            lastCheckpointAt: now.addingTimeInterval(-1),
+            now: now
+        ), "The twelfth confirmed step must force a durable checkpoint")
+        XCTAssertTrue(AtriaBLEManager.shouldCheckpointStrapSteps(
+            currentSteps: 101,
+            persistedSteps: 100,
+            lastCheckpointAt: now.addingTimeInterval(-15),
+            now: now
+        ), "A small trailing remainder must not wait indefinitely for twelve steps")
+    }
+
+    func testStrapStepCheckpointNeverInventsProgressAndFailsSafeOnClockEdges() {
+        let now = Date(timeIntervalSince1970: 20_000)
+
+        XCTAssertFalse(AtriaBLEManager.shouldCheckpointStrapSteps(
+            currentSteps: 100,
+            persistedSteps: 100,
+            lastCheckpointAt: now.addingTimeInterval(-1_000),
+            now: now
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldCheckpointStrapSteps(
+            currentSteps: 99,
+            persistedSteps: 100,
+            lastCheckpointAt: nil,
+            now: now
+        ), "A regressed/stale snapshot is not new step evidence")
+        XCTAssertTrue(AtriaBLEManager.shouldCheckpointStrapSteps(
+            currentSteps: 101,
+            persistedSteps: 100,
+            lastCheckpointAt: nil,
+            now: now
+        ), "The first confirmed step after an absent checkpoint establishes durability")
+        XCTAssertTrue(AtriaBLEManager.shouldCheckpointStrapSteps(
+            currentSteps: 101,
+            persistedSteps: 100,
+            lastCheckpointAt: now.addingTimeInterval(60),
+            now: now
+        ), "A future checkpoint clock must not suppress writes indefinitely")
+    }
+
+    func testDisconnectStormSuppressionRecoversOnlyAfterStableFreshHRAndCooldown() {
+        XCTAssertTrue(AtriaBLEManager.shouldBeginProtectedR10PassiveReprobe(
+            streamSuppressed: true,
+            reprobePending: false,
+            connected: true,
+            stableHRDuration: 120,
+            latestHRAge: 1,
+            disconnectStormAge: 1_800,
+            lastAttemptAge: nil,
+            failureCount: 0
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldBeginProtectedR10PassiveReprobe(
+            streamSuppressed: true,
+            reprobePending: false,
+            connected: true,
+            stableHRDuration: 119.9,
+            latestHRAge: 1,
+            disconnectStormAge: 1_800,
+            lastAttemptAge: nil,
+            failureCount: 0
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldBeginProtectedR10PassiveReprobe(
+            streamSuppressed: true,
+            reprobePending: false,
+            connected: true,
+            stableHRDuration: 500,
+            latestHRAge: 10.1,
+            disconnectStormAge: 5_000,
+            lastAttemptAge: nil,
+            failureCount: 0
+        ), "cached UI state must not reopen stream 5 without current 2A37 truth")
+        XCTAssertFalse(AtriaBLEManager.shouldBeginProtectedR10PassiveReprobe(
+            streamSuppressed: true,
+            reprobePending: true,
+            connected: true,
+            stableHRDuration: 500,
+            latestHRAge: 0,
+            disconnectStormAge: 5_000,
+            lastAttemptAge: nil,
+            failureCount: 0
+        ), "only one passive probe may own the link")
+    }
+
+    func testFailedPassiveReprobeStaysSuppressedUntilExplicitCalibration() {
+        XCTAssertFalse(AtriaBLEManager.shouldBeginProtectedR10PassiveReprobe(
+            streamSuppressed: true,
+            reprobePending: false,
+            connected: true,
+            stableHRDuration: 500,
+            latestHRAge: 0,
+            disconnectStormAge: 20_000,
+            lastAttemptAge: 100_000,
+            failureCount: 1
+        ), "a physically failed passive probe must never become a recurring disconnect timer")
+        XCTAssertTrue(AtriaBLEManager.shouldBeginProtectedR10PassiveReprobe(
+            streamSuppressed: true,
+            reprobePending: false,
+            connected: true,
+            stableHRDuration: 500,
+            latestHRAge: 0,
+            disconnectStormAge: 20_000,
+            lastAttemptAge: nil,
+            failureCount: 0
+        ))
+    }
+
+    func testPassiveReprobeShortDisconnectImmediatelyRestoresFuse() {
+        XCTAssertTrue(AtriaBLEManager.shouldAbortProtectedR10PassiveReprobeForDisconnect(
+            reprobePending: true,
+            userRequestedDisconnect: false,
+            atriaOwnedOfflineSyncDisconnect: false,
+            reprobeDuration: 5
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldAbortProtectedR10PassiveReprobeForDisconnect(
+            reprobePending: true,
+            userRequestedDisconnect: true,
+            atriaOwnedOfflineSyncDisconnect: false,
+            reprobeDuration: 5
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldAbortProtectedR10PassiveReprobeForDisconnect(
+            reprobePending: true,
+            userRequestedDisconnect: false,
+            atriaOwnedOfflineSyncDisconnect: true,
+            reprobeDuration: 5
+        ))
+        XCTAssertTrue(AtriaBLEManager.shouldAbortProtectedR10PassiveReprobeForDisconnect(
+            reprobePending: true,
+            userRequestedDisconnect: false,
+            atriaOwnedOfflineSyncDisconnect: false,
+            reprobeDuration: 91
+        ), "every disconnect before passive qualification must restore the fuse")
+        XCTAssertTrue(AtriaBLEManager.shouldAbortProtectedR10PassiveReprobeForDisconnect(
+            reprobePending: true,
+            userRequestedDisconnect: false,
+            atriaOwnedOfflineSyncDisconnect: false,
+            reprobeDuration: 100
+        ))
+        XCTAssertTrue(AtriaBLEManager.shouldAbortProtectedR10PassiveReprobeForDisconnect(
+            reprobePending: true,
+            userRequestedDisconnect: false,
+            atriaOwnedOfflineSyncDisconnect: false,
+            reprobeDuration: nil
+        ), "a restored pending probe without an attempt epoch must fail safe")
+    }
+
+    func testPassiveReprobeNoFrameWindowExpiresBoundedly() {
+        XCTAssertFalse(AtriaBLEManager.protectedR10PassiveReprobeHasExpired(
+            reprobePending: false,
+            attemptAge: 10_000
+        ))
+        XCTAssertFalse(AtriaBLEManager.protectedR10PassiveReprobeHasExpired(
+            reprobePending: true,
+            attemptAge: 119.9
+        ))
+        XCTAssertTrue(AtriaBLEManager.protectedR10PassiveReprobeHasExpired(
+            reprobePending: true,
+            attemptAge: 120
+        ))
+        XCTAssertTrue(AtriaBLEManager.protectedR10PassiveReprobeHasExpired(
+            reprobePending: true,
+            attemptAge: nil
+        ), "persisted pending state without its epoch must be re-isolated at launch")
+        XCTAssertTrue(AtriaBLEManager.protectedR10PassiveReprobeHasExpired(
+            reprobePending: true,
+            attemptAge: -1
+        ), "a future/corrupt attempt epoch must fail closed")
+    }
+
+    func testPassiveReprobeKeepsCommandRollbackLatchedAndUsesExistingLink() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(source.range(
+            of: "private func beginProtectedR10PassiveReprobeIfEligible"
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "/// CoreBluetooth restoration",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(body.contains("forKey: Self.protectedR10RollbackKey"))
+        XCTAssertTrue(body.contains("peripheral.discoverServices([Self.UUIDs.strapService])"))
+        XCTAssertFalse(body.contains("central.cancelPeripheralConnection"))
+        XCTAssertFalse(body.contains("sendProtectedR10Activation"))
+        XCTAssertFalse(body.contains("sendR10R11Realtime"))
+
+        let timeoutStart = try XCTUnwrap(source.range(
+            of: "private func expireProtectedR10PassiveReprobeIfNeeded"
+        ))
+        let timeoutEnd = try XCTUnwrap(source.range(
+            of: "/// CoreBluetooth restoration",
+            range: timeoutStart.upperBound..<source.endIndex
+        ))
+        let timeoutBody = String(source[timeoutStart.lowerBound..<timeoutEnd.lowerBound])
+        XCTAssertTrue(timeoutBody.contains("peripheral.setNotifyValue(false, for: stream5)"))
+        XCTAssertFalse(timeoutBody.contains("central.cancelPeripheralConnection"))
+        XCTAssertFalse(timeoutBody.contains("sendR10R11Realtime"))
+    }
+
     func testProductionBatteryProbeRemainsDisabledUntilItPreservesR10() {
         XCTAssertFalse(AtriaBLEManager.proprietaryBatteryRefreshEnabled)
     }
@@ -115,6 +328,181 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             [0x24, 0x23, 0x1A, 0x0A, 0x01, 0xE9, 0x03],
             expectedSequence: 0x23
         ), "100.1% is outside the protocol range")
+    }
+
+    func testAutonomousBatteryEventParsesCorroboratedFieldsAndRejectsMalformedFrames() throws {
+        var frame = [UInt8](repeating: 0, count: 27)
+        frame[0] = 0xAA
+        frame[4] = 0x30
+        frame[6] = 0x03
+        frame[17] = 0xAE // 43.0% == 430 tenths
+        frame[18] = 0x01
+        frame[21] = 0x74 // 3700 mV
+        frame[22] = 0x0E
+        frame[26] = 1
+        XCTAssertEqual(AtriaBLEManager.parseBatteryLevelEventFrame(frame),
+                       AtriaBLEManager.BatteryEventReading(level: 43,
+                                                           millivolts: 3_700,
+                                                           isCharging: true))
+
+        var wrongEvent = frame
+        wrongEvent[6] = 0x04
+        XCTAssertNil(AtriaBLEManager.parseBatteryLevelEventFrame(wrongEvent))
+        var badSOC = frame
+        badSOC[17] = 0xE9
+        badSOC[18] = 0x03 // 100.1%
+        XCTAssertNil(AtriaBLEManager.parseBatteryLevelEventFrame(badSOC))
+        var badVoltage = frame
+        badVoltage[21] = 0xB7
+        badVoltage[22] = 0x0B // 2999 mV
+        XCTAssertNil(AtriaBLEManager.parseBatteryLevelEventFrame(badVoltage))
+        var badCharge = frame
+        badCharge[26] = 2
+        XCTAssertNil(AtriaBLEManager.parseBatteryLevelEventFrame(badCharge))
+    }
+
+    func testAutonomousMidrangeBatteryEventIsImmediatelyTrustedButContradictoryBoundaryIsNot() {
+        let now = Date(timeIntervalSince1970: 50_000)
+        XCTAssertEqual(AtriaBLEManager.batteryEventAcceptanceDecision(
+            previousLevel: 65,
+            previousAcceptedAt: now.addingTimeInterval(-86_400),
+            reading: .init(level: 43, millivolts: 3_700, isCharging: false),
+            receivedAt: now,
+            pending: nil,
+            previousIsCached: true,
+            requiresFreshConfirmation: true
+        ), .accept)
+
+        guard case .quarantine = AtriaBLEManager.batteryEventAcceptanceDecision(
+            previousLevel: 43,
+            previousAcceptedAt: now.addingTimeInterval(-60),
+            reading: .init(level: 100, millivolts: 4_100, isCharging: true),
+            receivedAt: now,
+            pending: nil,
+            previousIsCached: true,
+            requiresFreshConfirmation: true
+        ) else {
+            return XCTFail("a 100% event at only 4.1 V without a near-full trajectory must remain quarantined")
+        }
+    }
+
+    func testAutonomousBatteryEventAcceptsTrueFullAfterChargeEvidence() {
+        let now = Date(timeIntervalSince1970: 50_000)
+        XCTAssertEqual(AtriaBLEManager.batteryEventAcceptanceDecision(
+            previousLevel: 97,
+            previousAcceptedAt: now.addingTimeInterval(-8 * 60),
+            reading: .init(level: 100, millivolts: 4_110, isCharging: true),
+            receivedAt: now,
+            pending: nil,
+            previousIsCached: false,
+            requiresFreshConfirmation: false,
+            previousChargeStatus: .charging
+        ), .accept, "CRC-backed SOC, high voltage, active charging and a near-full trajectory prove full")
+
+        XCTAssertEqual(AtriaBLEManager.batteryEventAcceptanceDecision(
+            previousLevel: 43,
+            previousAcceptedAt: now.addingTimeInterval(-8 * 60),
+            reading: .init(level: 100, millivolts: 4_220, isCharging: true),
+            receivedAt: now,
+            pending: nil,
+            previousIsCached: true,
+            requiresFreshConfirmation: true
+        ), .accept, "an unmistakable near-4.2 V charging event can prove full after an app-off charge")
+
+        XCTAssertEqual(AtriaBLEManager.batteryEventAcceptanceDecision(
+            previousLevel: 99,
+            previousAcceptedAt: now.addingTimeInterval(-8 * 60),
+            reading: .init(level: 100, millivolts: 4_190, isCharging: false),
+            receivedAt: now,
+            pending: nil,
+            previousIsCached: false,
+            requiresFreshConfirmation: false,
+            previousChargeStatus: .charging
+        ), .accept, "full remains provable immediately after the charger clears its charging bit")
+    }
+
+    func testAutonomousBatteryEventAcceptsGradualLowAndEmptyOnlyWithElectricalProof() {
+        let now = Date(timeIntervalSince1970: 50_000)
+        XCTAssertEqual(AtriaBLEManager.batteryEventAcceptanceDecision(
+            previousLevel: 14,
+            previousAcceptedAt: now.addingTimeInterval(-10 * 60),
+            reading: .init(level: 10, millivolts: 3_480, isCharging: false),
+            receivedAt: now,
+            pending: nil
+        ), .accept)
+        XCTAssertEqual(AtriaBLEManager.batteryEventAcceptanceDecision(
+            previousLevel: 4,
+            previousAcceptedAt: now.addingTimeInterval(-10 * 60),
+            reading: .init(level: 0, millivolts: 3_180, isCharging: false),
+            receivedAt: now,
+            pending: nil
+        ), .accept)
+
+        for reading in [
+            AtriaBLEManager.BatteryEventReading(level: 10, millivolts: 3_800, isCharging: false),
+            AtriaBLEManager.BatteryEventReading(level: 10, millivolts: 3_480, isCharging: true),
+            AtriaBLEManager.BatteryEventReading(level: 0, millivolts: 3_600, isCharging: false),
+        ] {
+            guard case .quarantine = AtriaBLEManager.batteryEventAcceptanceDecision(
+                previousLevel: reading.level == 0 ? 4 : 14,
+                previousAcceptedAt: now.addingTimeInterval(-10 * 60),
+                reading: reading,
+                receivedAt: now,
+                pending: nil
+            ) else {
+                return XCTFail("electrically contradictory low/empty events must remain quarantined: \(reading)")
+            }
+        }
+    }
+
+    func testAutonomousBoundaryEventRejectsStaleOrImplausibleTrajectory() {
+        let now = Date(timeIntervalSince1970: 50_000)
+        let candidates: [(Int, Date?, AtriaBLEManager.BatteryEventReading)] = [
+            (89, now.addingTimeInterval(-60), .init(level: 10, millivolts: 3_450, isCharging: false)),
+            (14, now.addingTimeInterval(-(7 * 60 * 60)), .init(level: 10, millivolts: 3_450, isCharging: false)),
+            (43, now.addingTimeInterval(-60), .init(level: 0, millivolts: 3_150, isCharging: false)),
+            (43, now.addingTimeInterval(-60), .init(level: 100, millivolts: 4_220, isCharging: false)),
+        ]
+        for (previous, previousAt, reading) in candidates {
+            guard case .quarantine = AtriaBLEManager.batteryEventAcceptanceDecision(
+                previousLevel: previous,
+                previousAcceptedAt: previousAt,
+                reading: reading,
+                receivedAt: now,
+                pending: nil,
+                previousIsCached: true,
+                requiresFreshConfirmation: true
+            ) else {
+                return XCTFail("restoration-like boundary event must remain quarantined: \(reading)")
+            }
+        }
+    }
+
+    func testRelaunchNotificationCannotPromoteBoundaryButStrongEventCan() {
+        let now = Date(timeIntervalSince1970: 50_000)
+        guard case .quarantine = AtriaBLEManager.batteryLevelAcceptanceDecision(
+            previousLevel: 96,
+            previousAcceptedAt: now.addingTimeInterval(-5 * 60),
+            incomingLevel: 100,
+            receivedAt: now,
+            pending: nil,
+            previousIsCached: true,
+            requiresFreshConfirmation: true,
+            trustedCurrentConnectionNotification: true
+        ) else {
+            return XCTFail("a current 2A19 notification is transport proof, not electrical boundary proof")
+        }
+
+        XCTAssertEqual(AtriaBLEManager.batteryEventAcceptanceDecision(
+            previousLevel: 96,
+            previousAcceptedAt: now.addingTimeInterval(-5 * 60),
+            reading: .init(level: 100, millivolts: 4_100, isCharging: true),
+            receivedAt: now,
+            pending: nil,
+            previousIsCached: true,
+            requiresFreshConfirmation: true,
+            previousChargeStatus: .charging
+        ), .accept, "the same relaunch may accept independently corroborated autonomous boundary truth")
     }
 
     func testProtectedR10OwnsTransportAcrossQualificationForAutomaticRecovery() {
@@ -285,29 +673,21 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(type.parse(arguments: arguments)).addHRDelay, 60)
     }
 
-    func testProtectedStandardHRKeepsPhysicallyUnstablePassiveR10Disabled() {
-        XCTAssertFalse(AtriaBLEManager.shouldObservePassiveR10InProtectedStandardHR(
+    func testProtectedStandardHRObservesOnlyProductionR10Stream() {
+        XCTAssertTrue(AtriaBLEManager.shouldObservePassiveR10InProtectedStandardHR(
             characteristicUUID: AtriaBLEManager.UUIDs.strapStream5
         ))
-        XCTAssertTrue(AtriaBLEManager.shouldObservePassiveR10InProtectedStandardHR(
-            characteristicUUID: AtriaBLEManager.UUIDs.strapStream5,
-            researchEnabled: true
+        XCTAssertFalse(AtriaBLEManager.shouldObservePassiveR10InProtectedStandardHR(
+            characteristicUUID: AtriaBLEManager.UUIDs.strapRX
         ))
         XCTAssertFalse(AtriaBLEManager.shouldObservePassiveR10InProtectedStandardHR(
-            characteristicUUID: AtriaBLEManager.UUIDs.strapRX,
-            researchEnabled: true
+            characteristicUUID: AtriaBLEManager.UUIDs.strapStream4
         ))
         XCTAssertFalse(AtriaBLEManager.shouldObservePassiveR10InProtectedStandardHR(
-            characteristicUUID: AtriaBLEManager.UUIDs.strapStream4,
-            researchEnabled: true
+            characteristicUUID: AtriaBLEManager.UUIDs.strapStream7
         ))
         XCTAssertFalse(AtriaBLEManager.shouldObservePassiveR10InProtectedStandardHR(
-            characteristicUUID: AtriaBLEManager.UUIDs.strapStream7,
-            researchEnabled: true
-        ))
-        XCTAssertFalse(AtriaBLEManager.shouldObservePassiveR10InProtectedStandardHR(
-            characteristicUUID: AtriaBLEManager.UUIDs.strapTX,
-            researchEnabled: true
+            characteristicUUID: AtriaBLEManager.UUIDs.strapTX
         ))
     }
 
@@ -393,14 +773,51 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
     }
 
     func testProtectedHistoryRecoveryOwnsOnlyAnAlreadyDisconnectedGapReconnect() {
-        XCTAssertTrue(AtriaBLEManager.shouldAllowProtectedHistoricalRecovery(
+        let now = Date(timeIntervalSince1970: 20_000)
+        XCTAssertTrue(AtriaBLEManager.hasValidRangeLossBackfillRequest(
+            pending: true,
+            requestedAt: now.timeIntervalSince1970 - 30,
+            now: now
+        ))
+        XCTAssertFalse(AtriaBLEManager.hasValidRangeLossBackfillRequest(
+            pending: true,
+            requestedAt: nil,
+            now: now
+        ), "a stranded pending bit is not enough to seize the history transport")
+        XCTAssertFalse(AtriaBLEManager.hasValidRangeLossBackfillRequest(
+            pending: true,
+            requestedAt: now.timeIntervalSince1970 + 60,
+            now: now
+        ), "a corrupt future request must fail closed")
+
+        let disconnectedGapAllowed = AtriaBLEManager.shouldAllowProtectedHistoricalRecovery(
             linkConnected: false,
             exactGapPending: true,
             verifiedHistoryCapability: true,
             activeExplicitWorkout: false,
             syncInProgress: false,
             explicitUserRequest: false
-        ))
+        )
+        XCTAssertTrue(disconnectedGapAllowed)
+        let continuityDeferred = !disconnectedGapAllowed
+            && AtriaBLEManager.shouldDeferAutomaticOfflineSyncForProtectedR10Continuity(
+                standardHROnlyMode: true,
+                explicitUserRequest: false
+            )
+        let qualificationDeferred = !disconnectedGapAllowed
+            && AtriaBLEManager.shouldDeferOfflineSyncForProtectedR10Qualification(
+                standardHROnlyMode: true,
+                stableTransportProven: true,
+                explicitUserRequest: false
+            )
+        XCTAssertFalse(continuityDeferred)
+        XCTAssertFalse(qualificationDeferred,
+                       "the protected guards must not make the admitted history-first reconnect unreachable")
+        XCTAssertTrue(AtriaBLEManager.shouldDeferOfflineSyncForProtectedR10Qualification(
+            standardHROnlyMode: true,
+            stableTransportProven: true,
+            explicitUserRequest: false
+        ), "without the narrow admission, protected realtime remains authoritative")
         XCTAssertFalse(AtriaBLEManager.shouldAllowProtectedHistoricalRecovery(
             linkConnected: true,
             exactGapPending: true,
@@ -444,6 +861,61 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             syncInProgress: true,
             explicitUserRequest: false
         ))
+    }
+
+    func testRawHistoryTransportIsNotMisrepresentedAsMetricRecovery() {
+        XCTAssertTrue(AtriaBLEManager.supportsVerifiedHistoricalRecovery(
+            model: .strap4Class,
+            previouslyVerified: false
+        ))
+        XCTAssertFalse(AtriaBLEManager.supportsVerifiedHistoricalMetricRecovery(
+            model: .strap4Class,
+            previouslyVerified: false,
+            hasValidatedMetricLayout: false
+        ), "raw archive support cannot repair HR or steps without a validated layout")
+        XCTAssertTrue(AtriaBLEManager.supportsVerifiedHistoricalMetricRecovery(
+            model: .strap4Class,
+            previouslyVerified: false,
+            hasValidatedMetricLayout: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.supportsVerifiedHistoricalMetricRecovery(
+            model: .unknown,
+            previouslyVerified: false,
+            hasValidatedMetricLayout: true
+        ), "a decoder alone cannot assert an unverified hardware transport")
+    }
+
+    func testHistoryCompletionStatusReportsRawOnlyAndExactCoverageTruthfully() {
+        XCTAssertEqual(AtriaBLEManager.historicalSyncCompletionStatus(
+            newRows: 0,
+            requestedWindowMetricProgress: false,
+            ledgerCoverageResolved: false,
+            hasValidatedMetricLayout: false
+        ), "no_rows")
+        XCTAssertEqual(AtriaBLEManager.historicalSyncCompletionStatus(
+            newRows: 20,
+            requestedWindowMetricProgress: false,
+            ledgerCoverageResolved: false,
+            hasValidatedMetricLayout: false
+        ), "raw_archived_metric_unverified")
+        XCTAssertEqual(AtriaBLEManager.historicalSyncCompletionStatus(
+            newRows: 20,
+            requestedWindowMetricProgress: false,
+            ledgerCoverageResolved: false,
+            hasValidatedMetricLayout: true
+        ), "archived_gap_unresolved")
+        XCTAssertEqual(AtriaBLEManager.historicalSyncCompletionStatus(
+            newRows: 20,
+            requestedWindowMetricProgress: true,
+            ledgerCoverageResolved: false,
+            hasValidatedMetricLayout: true
+        ), "metric_progress")
+        XCTAssertEqual(AtriaBLEManager.historicalSyncCompletionStatus(
+            newRows: 20,
+            requestedWindowMetricProgress: true,
+            ledgerCoverageResolved: true,
+            hasValidatedMetricLayout: true
+        ), "gap_recovered")
     }
 
     func testExplicitProtectedHistoryRequestStillHonorsSafetyGates() {
@@ -545,32 +1017,24 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), "An explicit Battery Saver mode must also survive recovery")
     }
 
-    func testLegacyAutomaticHeartRateOnlyModeIsRepairedForStrapSteps() {
-        XCTAssertTrue(AtriaBLEManager.shouldRepairLegacyAutomaticStandardHROnly(
-            migrationWasRecorded: true,
-            userSelectedBatterySaver: false,
-            persistedStandardHROnly: true
-        ), "an old automatic sync downgrade must not permanently disable R10 steps")
-        XCTAssertTrue(AtriaBLEManager.shouldRepairLegacyAutomaticStandardHROnly(
+    func testAutomaticRadioModeMigratesOnceToStableHRPlusR10() {
+        XCTAssertTrue(AtriaBLEManager.shouldMigrateAutomaticModeToProtectedR10(
             migrationWasRecorded: false,
-            userSelectedBatterySaver: false,
-            persistedStandardHROnly: false
+            userSelectedRadioMode: false
         ))
-        XCTAssertFalse(AtriaBLEManager.shouldRepairLegacyAutomaticStandardHROnly(
+        XCTAssertFalse(AtriaBLEManager.shouldMigrateAutomaticModeToProtectedR10(
             migrationWasRecorded: true,
-            userSelectedBatterySaver: true,
-            persistedStandardHROnly: true
-        ), "an explicit Battery Saver choice remains authoritative")
-        XCTAssertFalse(AtriaBLEManager.shouldRepairLegacyAutomaticStandardHROnly(
-            migrationWasRecorded: true,
-            userSelectedBatterySaver: false,
-            persistedStandardHROnly: false
+            userSelectedRadioMode: false
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldMigrateAutomaticModeToProtectedR10(
+            migrationWasRecorded: false,
+            userSelectedRadioMode: true
         ))
 
-        XCTAssertFalse(AtriaBLEManager.standardHROnlyModeAfterFullProtocolOverride(
+        XCTAssertTrue(AtriaBLEManager.standardHROnlyModeAfterFullProtocolOverride(
             modeBeforeOverride: true,
             userSelectedBatterySaver: false
-        ), "calibration expiry must not restore an obsolete automatic downgrade")
+        ), "diagnostic expiry must restore the stable automatic HR + R10 profile")
         XCTAssertTrue(AtriaBLEManager.standardHROnlyModeAfterFullProtocolOverride(
             modeBeforeOverride: true,
             userSelectedBatterySaver: true
@@ -605,18 +1069,27 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
-    func testRangeLossBackfillNeedsRowsFromCurrentAttemptBeforeClearing() {
+    func testRangeLossBackfillNeedsExactLedgerCoverageBeforeClearing() {
         XCTAssertFalse(AtriaBLEManager.rangeLossBackfillCanClear(newRows: 0))
-        XCTAssertTrue(AtriaBLEManager.rangeLossBackfillCanClear(newRows: 1))
+        XCTAssertFalse(AtriaBLEManager.rangeLossBackfillCanClear(newRows: 1),
+                       "row count alone is never recovery evidence")
+        XCTAssertTrue(AtriaBLEManager.rangeLossBackfillCanClear(
+            newRows: 1,
+            hasRequestedWindow: false,
+            requestedWindowMetricProgress: false,
+            ledgerCoverageResolved: true
+        ))
         XCTAssertFalse(AtriaBLEManager.rangeLossBackfillCanClear(
             newRows: 20,
             hasRequestedWindow: true,
-            requestedWindowMetricProgress: false
+            requestedWindowMetricProgress: false,
+            ledgerCoverageResolved: true
         ))
         XCTAssertFalse(AtriaBLEManager.rangeLossBackfillCanClear(
             newRows: 1,
             hasRequestedWindow: true,
-            requestedWindowMetricProgress: true
+            requestedWindowMetricProgress: true,
+            ledgerCoverageResolved: true
         ), "Exact workout recovery must wait for coverage-aware rehydration")
     }
 
@@ -1221,22 +1694,26 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
-    func testPlausibleFinalPercentCanStillBeAccepted() {
+    func testBareStandardBatteryBoundaryRemainsQuarantinedDespiteNearbyPrior() {
         let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
-        XCTAssertEqual(AtriaBLEManager.batteryLevelAcceptanceDecision(
+        guard case .quarantine = AtriaBLEManager.batteryLevelAcceptanceDecision(
             previousLevel: 99,
             previousAcceptedAt: now.addingTimeInterval(-120),
             incomingLevel: 100,
             receivedAt: now,
             pending: nil
-        ), .accept)
-        XCTAssertEqual(AtriaBLEManager.batteryLevelAcceptanceDecision(
+        ) else {
+            return XCTFail("a nearby prior does not independently prove a bare restoration 100% value")
+        }
+        guard case .quarantine = AtriaBLEManager.batteryLevelAcceptanceDecision(
             previousLevel: 4,
             previousAcceptedAt: now.addingTimeInterval(-120),
             incomingLevel: 0,
             receivedAt: now,
             pending: nil
-        ), .accept)
+        ) else {
+            return XCTFail("a bare 0% BAS value must wait for CRC-backed voltage and trajectory proof")
+        }
     }
 
     func testPoweredChargeStatusCannotOriginateFromRawStatusPacket() {
@@ -1258,6 +1735,15 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertEqual(AtriaBLEManager.acceptedBatteryChargeStatus(
             .notCharging, batteryLevel: 82, hasPlausibleRiseEvidence: false
         ), .notCharging)
+        XCTAssertNil(AtriaBLEManager.chargeEvidenceFromBatteryLevelChange(
+            previousLevel: 82, newLevel: 83
+        ), "one percentage-point rise cannot claim the strap is charging")
+        XCTAssertEqual(AtriaBLEManager.chargeEvidenceFromBatteryLevelChange(
+            previousLevel: 82, newLevel: 81
+        ), .notCharging)
+        XCTAssertEqual(AtriaBLEManager.chargeEvidenceFromBatteryLevelChange(
+            previousLevel: 99, newLevel: 100
+        ), .full)
     }
 
     func testPersistedBoundaryIsInvalidatedWithoutDeletingLastCredibleLevel() throws {
@@ -1359,12 +1845,29 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
 
         defaults.set(now.addingTimeInterval(-599).timeIntervalSince1970,
                      forKey: AtriaBLEManager.BatteryDefaults.at)
-        XCTAssertTrue(LocalNotificationScheduler.batterySnapshot(
+        XCTAssertFalse(LocalNotificationScheduler.batterySnapshot(
             liveLevel: 10,
             liveChargeStatus: .notCharging,
             defaults: defaults,
             now: now
+        ).usable, "a cached boundary value cannot retain live trajectory proof")
+
+        defaults.set(43, forKey: AtriaBLEManager.BatteryDefaults.level)
+        XCTAssertTrue(LocalNotificationScheduler.batterySnapshot(
+            liveLevel: 43,
+            liveChargeStatus: .notCharging,
+            defaults: defaults,
+            now: now
         ).usable)
+
+        defaults.set(true, forKey: AtriaBLEManager.BatteryDefaults.requiresFreshConfirmation)
+        XCTAssertFalse(LocalNotificationScheduler.batterySnapshot(
+            liveLevel: 43,
+            liveChargeStatus: .notCharging,
+            defaults: defaults,
+            now: now
+        ).usable, "a reconnect cache is comparison evidence, not display truth")
+        defaults.removeObject(forKey: AtriaBLEManager.BatteryDefaults.requiresFreshConfirmation)
 
         defaults.removeObject(forKey: AtriaBLEManager.BatteryDefaults.at)
         XCTAssertFalse(LocalNotificationScheduler.batterySnapshot(
@@ -1373,6 +1876,44 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             defaults: defaults,
             now: now
         ).usable)
+    }
+
+    @MainActor
+    func testCachedBatteryAcceptsOnlyVerifiedLivePercentageSources() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.batterySource.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        defaults.set(43, forKey: AtriaBLEManager.BatteryDefaults.level)
+        defaults.set(now.timeIntervalSince1970, forKey: AtriaBLEManager.BatteryDefaults.at)
+
+        for source in ["live_2A19", "live_battery_event", "live_proprietary_1a"] {
+            defaults.set(source, forKey: AtriaBLEManager.BatteryDefaults.source)
+            XCTAssertTrue(AtriaBLEManager.cachedBattery(defaults: defaults, now: now).usable,
+                          source)
+        }
+
+        for source in ["cached_2A19", "disputed_boundary_sentinel", "unknown"] {
+            defaults.set(source, forKey: AtriaBLEManager.BatteryDefaults.source)
+            XCTAssertFalse(AtriaBLEManager.cachedBattery(defaults: defaults, now: now).usable,
+                           source)
+        }
+    }
+
+    @MainActor
+    func testCachedBoundaryBatteryNeverLeaksToWidgetsOrNotifications() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.batteryBoundary.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        defaults.set("live_2A19", forKey: AtriaBLEManager.BatteryDefaults.source)
+        defaults.set(now.timeIntervalSince1970, forKey: AtriaBLEManager.BatteryDefaults.at)
+
+        for level in [0, 10, 100] {
+            defaults.set(level, forKey: AtriaBLEManager.BatteryDefaults.level)
+            XCTAssertFalse(AtriaBLEManager.cachedBattery(defaults: defaults, now: now).usable,
+                           "\(level)% is a physically observed replay sentinel")
+        }
     }
 
     func testProductionBatteryRefreshNeverUsesPhysicallyUnstableExplicitRead() {
@@ -1393,6 +1934,179 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             isNotifying: false,
             explicitReadResearchEnabled: true
         ), .read)
+    }
+
+    func testFirstTrustedMidrangeNotificationResolvesPendingButSentinelsDoNot() {
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        XCTAssertEqual(AtriaBLEManager.batteryLevelAcceptanceDecision(
+            previousLevel: -1,
+            previousAcceptedAt: nil,
+            incomingLevel: 43,
+            receivedAt: now,
+            pending: nil,
+            requiresFreshConfirmation: true,
+            trustedCurrentConnectionNotification: true
+        ), .accept)
+
+        for level in [0, 10, 100] {
+            guard case .quarantine = AtriaBLEManager.batteryLevelAcceptanceDecision(
+                previousLevel: -1,
+                previousAcceptedAt: nil,
+                incomingLevel: level,
+                receivedAt: now,
+                pending: nil,
+                requiresFreshConfirmation: true,
+                trustedCurrentConnectionNotification: true
+            ) else {
+                return XCTFail("A restoration sentinel must remain hidden: \(level)")
+            }
+        }
+    }
+
+    @MainActor
+    func testActiveBatteryNotificationLeaseDoesNotRewriteLevelSampleAge() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.battery-notification-lease"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        defaults.set(43, forKey: AtriaBLEManager.BatteryDefaults.level)
+        defaults.set("live_2A19", forKey: AtriaBLEManager.BatteryDefaults.source)
+        defaults.set(now.addingTimeInterval(-3_600).timeIntervalSince1970,
+                     forKey: AtriaBLEManager.BatteryDefaults.at)
+        defaults.set(now.addingTimeInterval(-30).timeIntervalSince1970,
+                     forKey: AtriaBLEManager.BatteryDefaults.notificationLeaseAt)
+        defaults.set(false,
+                     forKey: AtriaBLEManager.BatteryDefaults.requiresFreshConfirmation)
+
+        let cached = AtriaBLEManager.cachedBattery(maxAge: 10 * 60,
+                                                   defaults: defaults,
+                                                   now: now)
+        XCTAssertFalse(cached.usable,
+                       "a transport lease must not make a one-hour-old percentage fresh")
+        XCTAssertEqual(cached.age, 3_600, accuracy: 0.001)
+        defaults.set(true,
+                     forKey: AtriaBLEManager.BatteryDefaults.requiresFreshConfirmation)
+        XCTAssertFalse(AtriaBLEManager.cachedBattery(maxAge: 10 * 60,
+                                                      defaults: defaults,
+                                                      now: now).usable)
+    }
+
+    func testNotificationLeaseBridgesOnlyAConnectedMidrangeLive2A19Restoration() {
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let leaseAt = now.addingTimeInterval(-30)
+        XCTAssertTrue(AtriaBLEManager.notificationLeaseSupportsBatteryDisplay(
+            level: 43,
+            source: "live_2A19",
+            requiresFreshConfirmation: false,
+            linkConnected: true,
+            notificationLeaseAt: leaseAt,
+            now: now
+        ))
+        for level in [0, 10, 100] {
+            XCTAssertFalse(AtriaBLEManager.notificationLeaseSupportsBatteryDisplay(
+                level: level,
+                source: "live_2A19",
+                requiresFreshConfirmation: false,
+                linkConnected: true,
+                notificationLeaseAt: leaseAt,
+                now: now
+            ))
+        }
+        XCTAssertFalse(AtriaBLEManager.notificationLeaseSupportsBatteryDisplay(
+            level: 43,
+            source: "live_battery_event",
+            requiresFreshConfirmation: false,
+            linkConnected: true,
+            notificationLeaseAt: leaseAt,
+            now: now
+        ))
+        XCTAssertFalse(AtriaBLEManager.notificationLeaseSupportsBatteryDisplay(
+            level: 43,
+            source: "live_2A19",
+            requiresFreshConfirmation: true,
+            linkConnected: true,
+            notificationLeaseAt: leaseAt,
+            now: now
+        ))
+        XCTAssertFalse(AtriaBLEManager.notificationLeaseSupportsBatteryDisplay(
+            level: 43,
+            source: "live_2A19",
+            requiresFreshConfirmation: false,
+            linkConnected: false,
+            notificationLeaseAt: leaseAt,
+            now: now
+        ))
+        XCTAssertFalse(AtriaBLEManager.notificationLeaseSupportsBatteryDisplay(
+            level: 43,
+            source: "live_2A19",
+            requiresFreshConfirmation: false,
+            linkConnected: true,
+            notificationLeaseAt: now.addingTimeInterval(-601),
+            now: now
+        ))
+    }
+
+    func testBatteryHydrationRevokesOldLeaseAndNotifyActivationRetriesPromotion() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift"), encoding: .utf8)
+        let hydrateStart = try XCTUnwrap(source.range(of: "private func hydrateCachedBatteryStateIfFresh"))
+        let hydrateEnd = try XCTUnwrap(source.range(
+            of: "private func promoteReconnectBatteryBaselineIfSafe",
+            range: hydrateStart.upperBound..<source.endIndex
+        ))
+        let hydrateBody = String(source[hydrateStart.lowerBound..<hydrateEnd.lowerBound])
+        XCTAssertTrue(hydrateBody.contains("defaults.removeObject(forKey: BatteryDefaults.notificationLeaseAt)"))
+        XCTAssertTrue(hydrateBody.contains("defaults.set(true, forKey: BatteryDefaults.requiresFreshConfirmation)"))
+        XCTAssertTrue(hydrateBody.contains("permitPendingReconnectBaseline: true"))
+
+        XCTAssertTrue(source.contains("reason: \"2A19_notify_became_active\""))
+        XCTAssertTrue(source.contains("reason: \"2A19_restored_cache_notify_active\""))
+        XCTAssertTrue(source.contains("reason: \"2A19_existing_notify_active\""))
+    }
+
+    @MainActor
+    func testHydrationMayRetainOnlyTrustedMidrangeWhileFreshConfirmationIsPending() {
+        let suite = "AtriaBLERecoveryCadenceTests.pendingHydration.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now = Date(timeIntervalSince1970: 50_000)
+
+        defaults.set(18, forKey: AtriaBLEManager.BatteryDefaults.level)
+        defaults.set(now.addingTimeInterval(-25 * 60).timeIntervalSince1970,
+                     forKey: AtriaBLEManager.BatteryDefaults.at)
+        defaults.set("live_battery_event", forKey: AtriaBLEManager.BatteryDefaults.source)
+        defaults.set(true, forKey: AtriaBLEManager.BatteryDefaults.requiresFreshConfirmation)
+
+        XCTAssertFalse(AtriaBLEManager.cachedBattery(
+            maxAge: 36 * 60 * 60,
+            defaults: defaults,
+            now: now
+        ).usable, "ordinary consumers must still fail closed while confirmation is pending")
+        XCTAssertTrue(AtriaBLEManager.cachedBattery(
+            maxAge: 36 * 60 * 60,
+            defaults: defaults,
+            now: now,
+            permitPendingReconnectBaseline: true
+        ).usable, "launch hydration must retain accepted 18% as an aged reconnect baseline")
+
+        defaults.set(100, forKey: AtriaBLEManager.BatteryDefaults.level)
+        XCTAssertFalse(AtriaBLEManager.cachedBattery(
+            maxAge: 36 * 60 * 60,
+            defaults: defaults,
+            now: now,
+            permitPendingReconnectBaseline: true
+        ).usable, "restored boundary sentinels remain ineligible")
+
+        defaults.set(18, forKey: AtriaBLEManager.BatteryDefaults.level)
+        defaults.set("disputed_rapid_transition", forKey: AtriaBLEManager.BatteryDefaults.source)
+        XCTAssertFalse(AtriaBLEManager.cachedBattery(
+            maxAge: 36 * 60 * 60,
+            defaults: defaults,
+            now: now,
+            permitPendingReconnectBaseline: true
+        ).usable, "disputed sources remain ineligible")
     }
 
     func testNonReadableBatteryRefreshOnlyStartsANewSubscriptionOnce() {
@@ -1418,15 +2132,548 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertEqual(AtriaBLEManager.reconnectBatteryDisplayLevel(
             currentLevel: 0,
             credibleLevel: 43,
-            credibleAt: now.addingTimeInterval(-601),
-            now: now
+            credibleAt: now.addingTimeInterval(-6 * 60 * 60 - 1),
+            now: now,
+            maxAge: AtriaBLEManager.reconnectBatteryBaselineMaximumAge
         ), -1)
+        XCTAssertEqual(AtriaBLEManager.reconnectBatteryDisplayLevel(
+            currentLevel: 0,
+            credibleLevel: 43,
+            credibleAt: now.addingTimeInterval(-20 * 60),
+            now: now,
+            maxAge: AtriaBLEManager.reconnectBatteryBaselineMaximumAge
+        ), 43, "cold launch must retain the same bounded baseline promotion can safely lease")
         XCTAssertEqual(AtriaBLEManager.reconnectBatteryDisplayLevel(
             currentLevel: 43,
             credibleLevel: 70,
             credibleAt: now,
             now: now
         ), 43)
+    }
+
+    func testStableNotificationReconnectPromotesRecentValidatedMidrangeBaseline() {
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let acceptedAt = now.addingTimeInterval(-20 * 60)
+        XCTAssertTrue(AtriaBLEManager.shouldPromoteReconnectBatteryBaseline(
+            level: 30,
+            acceptedAt: acceptedAt,
+            source: "live_2A19",
+            displayedIsCached: true,
+            requiresFreshConfirmation: true,
+            notificationActive: true,
+            linkConnected: true,
+            currentConnectionHasHeartRate: true,
+            hasPendingDisputedReading: false,
+            currentNotificationEpochHadRejectedCallback: false,
+            now: now
+        ), "change-driven 2A19 must not leave a recent trusted value Pending forever")
+
+        for sentinel in [0, 10, 100] {
+            XCTAssertFalse(AtriaBLEManager.shouldPromoteReconnectBatteryBaseline(
+                level: sentinel,
+                acceptedAt: acceptedAt,
+                source: "live_2A19",
+                displayedIsCached: true,
+                requiresFreshConfirmation: true,
+                notificationActive: true,
+                linkConnected: true,
+                currentConnectionHasHeartRate: true,
+                hasPendingDisputedReading: false,
+                currentNotificationEpochHadRejectedCallback: false,
+                now: now
+            ), "restoration sentinel \(sentinel) must remain quarantined")
+        }
+
+        let common = (
+            level: 30,
+            acceptedAt: Optional(acceptedAt),
+            source: "live_2A19",
+            displayedIsCached: true,
+            requiresFreshConfirmation: true,
+            notificationActive: true,
+            linkConnected: true,
+            currentConnectionHasHeartRate: true
+        )
+        XCTAssertTrue(AtriaBLEManager.shouldPromoteReconnectBatteryBaseline(
+            level: common.level,
+            acceptedAt: now.addingTimeInterval(-6 * 60 * 60 - 1),
+            source: common.source,
+            displayedIsCached: common.displayedIsCached,
+            requiresFreshConfirmation: common.requiresFreshConfirmation,
+            notificationActive: common.notificationActive,
+            linkConnected: common.linkConnected,
+            currentConnectionHasHeartRate: common.currentConnectionHasHeartRate,
+            hasPendingDisputedReading: false,
+            currentNotificationEpochHadRejectedCallback: false,
+            now: now
+        ), "a proven current 2A19 subscription must not turn a valid mid-range level Pending after six hours")
+        XCTAssertFalse(AtriaBLEManager.shouldPromoteReconnectBatteryBaseline(
+            level: common.level,
+            acceptedAt: now.addingTimeInterval(-36 * 60 * 60 - 1),
+            source: common.source,
+            displayedIsCached: common.displayedIsCached,
+            requiresFreshConfirmation: common.requiresFreshConfirmation,
+            notificationActive: common.notificationActive,
+            linkConnected: common.linkConnected,
+            currentConnectionHasHeartRate: common.currentConnectionHasHeartRate,
+            hasPendingDisputedReading: false,
+            currentNotificationEpochHadRejectedCallback: false,
+            now: now
+        ), "a transport lease cannot make a percentage older than the overnight bridge current")
+        XCTAssertFalse(AtriaBLEManager.shouldPromoteReconnectBatteryBaseline(
+            level: common.level,
+            acceptedAt: now.addingTimeInterval(
+                -AtriaBLEManager.activeBatterySubscriptionBaselineMaximumAge - 1
+            ),
+            source: common.source,
+            displayedIsCached: common.displayedIsCached,
+            requiresFreshConfirmation: common.requiresFreshConfirmation,
+            notificationActive: common.notificationActive,
+            linkConnected: common.linkConnected,
+            currentConnectionHasHeartRate: common.currentConnectionHasHeartRate,
+            hasPendingDisputedReading: false,
+            currentNotificationEpochHadRejectedCallback: false,
+            now: now
+        ), "even a proven subscription must not carry a percentage beyond the bounded overnight bridge")
+        XCTAssertFalse(AtriaBLEManager.shouldPromoteReconnectBatteryBaseline(
+            level: common.level,
+            acceptedAt: common.acceptedAt,
+            source: "unknown",
+            displayedIsCached: common.displayedIsCached,
+            requiresFreshConfirmation: common.requiresFreshConfirmation,
+            notificationActive: common.notificationActive,
+            linkConnected: common.linkConnected,
+            currentConnectionHasHeartRate: common.currentConnectionHasHeartRate,
+            hasPendingDisputedReading: false,
+            currentNotificationEpochHadRejectedCallback: false,
+            now: now
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldPromoteReconnectBatteryBaseline(
+            level: common.level,
+            acceptedAt: common.acceptedAt,
+            source: common.source,
+            displayedIsCached: common.displayedIsCached,
+            requiresFreshConfirmation: common.requiresFreshConfirmation,
+            notificationActive: false,
+            linkConnected: common.linkConnected,
+            currentConnectionHasHeartRate: common.currentConnectionHasHeartRate,
+            hasPendingDisputedReading: false,
+            currentNotificationEpochHadRejectedCallback: false,
+            now: now
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldPromoteReconnectBatteryBaseline(
+            level: common.level,
+            acceptedAt: common.acceptedAt,
+            source: common.source,
+            displayedIsCached: common.displayedIsCached,
+            requiresFreshConfirmation: common.requiresFreshConfirmation,
+            notificationActive: common.notificationActive,
+            linkConnected: common.linkConnected,
+            currentConnectionHasHeartRate: false,
+            hasPendingDisputedReading: false,
+            currentNotificationEpochHadRejectedCallback: false,
+            now: now
+        ))
+
+        XCTAssertTrue(AtriaBLEManager.shouldPromoteReconnectBatteryBaseline(
+            level: common.level,
+            acceptedAt: common.acceptedAt,
+            source: "live_battery_event",
+            displayedIsCached: common.displayedIsCached,
+            requiresFreshConfirmation: common.requiresFreshConfirmation,
+            notificationActive: common.notificationActive,
+            linkConnected: common.linkConnected,
+            currentConnectionHasHeartRate: common.currentConnectionHasHeartRate,
+            hasPendingDisputedReading: false,
+            currentNotificationEpochHadRejectedCallback: false,
+            now: now
+        ), "a recent CRC + voltage validated battery event is safe recent baseline truth")
+
+        for rejectedSource in ["live_proprietary_1a", "cached_2A19", "unknown"] {
+            XCTAssertFalse(AtriaBLEManager.shouldPromoteReconnectBatteryBaseline(
+                level: common.level,
+                acceptedAt: common.acceptedAt,
+                source: rejectedSource,
+                displayedIsCached: common.displayedIsCached,
+                requiresFreshConfirmation: common.requiresFreshConfirmation,
+                notificationActive: common.notificationActive,
+                linkConnected: common.linkConnected,
+                currentConnectionHasHeartRate: common.currentConnectionHasHeartRate,
+                hasPendingDisputedReading: false,
+                currentNotificationEpochHadRejectedCallback: false,
+                now: now
+            ), "an unqualified source must never inherit the standard notification lease")
+        }
+
+        for (pending, rejectedEpochCallback) in [(true, false), (false, true)] {
+            XCTAssertFalse(AtriaBLEManager.shouldPromoteReconnectBatteryBaseline(
+                level: common.level,
+                acceptedAt: common.acceptedAt,
+                source: common.source,
+                displayedIsCached: common.displayedIsCached,
+                requiresFreshConfirmation: common.requiresFreshConfirmation,
+                notificationActive: common.notificationActive,
+                linkConnected: common.linkConnected,
+                currentConnectionHasHeartRate: common.currentConnectionHasHeartRate,
+                hasPendingDisputedReading: pending,
+                currentNotificationEpochHadRejectedCallback: rejectedEpochCallback,
+                now: now
+            ), "a disputed or unadjudicated current-link callback must remain Pending")
+        }
+    }
+
+    func testTrustedCurrentConnectionBatteryNotificationIsRadioProfileIndependent() throws {
+        XCTAssertTrue(AtriaBLEManager.batteryReconnectBaselineSourceIsLeaseEligible("live_2A19"))
+        XCTAssertTrue(AtriaBLEManager.batteryReconnectBaselineSourceIsLeaseEligible("live_battery_event"))
+        XCTAssertFalse(AtriaBLEManager.batteryReconnectBaselineSourceIsLeaseEligible("live_proprietary_1a"))
+        XCTAssertFalse(AtriaBLEManager.batteryReconnectBaselineSourceIsLeaseEligible("disputed_boundary_sentinel"))
+
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift"), encoding: .utf8)
+        let callbackStart = try XCTUnwrap(source.range(of: "if uuid == UUIDs.batteryLevel"))
+        let callbackEnd = try XCTUnwrap(source.range(
+            of: "if uuid == UUIDs.batteryLevelStatus",
+            range: callbackStart.upperBound..<source.endIndex
+        ))
+        let callback = String(source[callbackStart.lowerBound..<callbackEnd.lowerBound])
+        XCTAssertTrue(callback.contains("trustedCurrentConnectionNotification: characteristic.isNotifying"))
+        XCTAssertFalse(callback.contains("&& self.standardHROnlyMode"),
+                       "standard 2A19 validity must not depend on the unrelated R10 radio profile")
+    }
+
+    func testRelaunchChainKeepsConfirmedNotificationLeaseWhenCoreBluetoothReplacesCharacteristic() {
+        let acceptedAt = Date(timeIntervalSince1970: 10_000)
+        let relaunchedAt = acceptedAt.addingTimeInterval(12 * 60)
+        let confirmedAt = relaunchedAt.addingTimeInterval(1)
+        let liveHRAt = confirmedAt.addingTimeInterval(1)
+
+        XCTAssertTrue(AtriaBLEManager.batteryNotificationConfirmationSupportsCurrentConnection(
+            confirmedAt: confirmedAt,
+            lastError: nil,
+            connectionStartedAt: relaunchedAt,
+            linkConnected: true,
+            now: liveHRAt
+        ), "a current-epoch CCCD confirmation survives replacement of the restored characteristic object")
+        XCTAssertTrue(AtriaBLEManager.shouldPromoteReconnectBatteryBaseline(
+            level: 26,
+            acceptedAt: acceptedAt,
+            source: "live_2A19",
+            displayedIsCached: true,
+            requiresFreshConfirmation: true,
+            notificationActive: true,
+            linkConnected: true,
+            currentConnectionHasHeartRate: true,
+            now: liveHRAt
+        ))
+
+        XCTAssertFalse(AtriaBLEManager.batteryNotificationConfirmationSupportsCurrentConnection(
+            confirmedAt: confirmedAt,
+            lastError: "inactive",
+            connectionStartedAt: relaunchedAt,
+            linkConnected: true,
+            now: liveHRAt
+        ))
+        XCTAssertFalse(AtriaBLEManager.batteryNotificationConfirmationSupportsCurrentConnection(
+            confirmedAt: relaunchedAt.addingTimeInterval(-1),
+            lastError: nil,
+            connectionStartedAt: relaunchedAt,
+            linkConnected: true,
+            now: liveHRAt
+        ), "a confirmation from the previous process/connection cannot cross the launch boundary")
+        XCTAssertFalse(AtriaBLEManager.batteryNotificationConfirmationSupportsCurrentConnection(
+            confirmedAt: confirmedAt,
+            lastError: nil,
+            connectionStartedAt: relaunchedAt,
+            linkConnected: false,
+            now: liveHRAt
+        ))
+
+        let restoredProcessAt = confirmedAt.addingTimeInterval(20 * 60)
+        let savedID = UUID()
+        XCTAssertTrue(AtriaBLEManager.batteryRestorationPreservesNotificationEpoch(
+            restoredPeripheralIdentifier: savedID,
+            savedPeripheralIdentifier: savedID,
+            restoredPeripheralIsConnected: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.batteryRestorationPreservesNotificationEpoch(
+            restoredPeripheralIdentifier: UUID(),
+            savedPeripheralIdentifier: savedID,
+            restoredPeripheralIsConnected: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.batteryRestorationPreservesNotificationEpoch(
+            restoredPeripheralIdentifier: savedID,
+            savedPeripheralIdentifier: savedID,
+            restoredPeripheralIsConnected: false
+        ))
+        XCTAssertTrue(AtriaBLEManager.batteryNotificationConfirmationSupportsCurrentConnection(
+            confirmedAt: confirmedAt,
+            lastError: nil,
+            connectionStartedAt: nil,
+            linkConnected: true,
+            now: restoredProcessAt
+        ), "CoreBluetooth restoration may resume the same subscribed link without didConnect")
+        XCTAssertFalse(AtriaBLEManager.batteryNotificationConfirmationSupportsCurrentConnection(
+            confirmedAt: confirmedAt,
+            lastError: nil,
+            connectionStartedAt: nil,
+            linkConnected: true,
+            now: confirmedAt.addingTimeInterval(61 * 60)
+        ), "a persisted restoration proof remains bounded")
+
+        XCTAssertFalse(AtriaBLEManager.batteryNotificationConfirmationSupportsCurrentConnection(
+            confirmedAt: confirmedAt,
+            lastError: nil,
+            connectionStartedAt: restoredProcessAt,
+            linkConnected: true,
+            now: restoredProcessAt.addingTimeInterval(1)
+        ), "the same timestamps must fail for a genuine didConnect epoch")
+    }
+
+    func testRestoredSamePeripheralExplicitlyBypassesSyntheticConnectedAtForBatteryProof() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains(
+            "connectionStartedAt: batteryConnectionRestoredSamePeripheral ? nil : connectedAt"
+        ))
+        XCTAssertTrue(source.contains("self.batteryConnectionRestoredSamePeripheral ="))
+        XCTAssertTrue(source.contains("restoredPeripheralIdentifier: restoredPeripheral.identifier"))
+        XCTAssertTrue(source.contains("self.batteryConnectionRestoredSamePeripheral = false"))
+        XCTAssertTrue(source.contains("defaults.removeObject(forKey: BatteryDefaults.notificationConfirmedAt)"))
+        XCTAssertTrue(source.contains("forKey: BatteryDefaults.notificationLastError"))
+    }
+
+    func testRecentValidatedMidrangeBaselineRemainsVisibleAcrossGenuineReconnectWithoutBecomingLive() {
+        let acceptedAt = Date(timeIntervalSince1970: 10_000)
+        let now = acceptedAt.addingTimeInterval(10 * 60 + 35)
+        XCTAssertTrue(AtriaBLEManager.recentReconnectBatteryBaselineIsDisplayEligible(
+            level: 25,
+            acceptedAt: acceptedAt,
+            source: "live_2A19",
+            displayedIsCached: true,
+            requiresFreshConfirmation: true,
+            linkConnected: true,
+            sameSavedPeripheral: true,
+            currentConnectionHasHeartRate: true,
+            hasPendingDisputedReading: false,
+            currentNotificationEpochHadRejectedCallback: false,
+            now: now
+        ))
+
+        for sentinel in [0, 10, 100] {
+            XCTAssertFalse(AtriaBLEManager.recentReconnectBatteryBaselineIsDisplayEligible(
+                level: sentinel,
+                acceptedAt: acceptedAt,
+                source: "live_2A19",
+                displayedIsCached: true,
+                requiresFreshConfirmation: true,
+                linkConnected: true,
+                sameSavedPeripheral: true,
+                currentConnectionHasHeartRate: true,
+                hasPendingDisputedReading: false,
+                currentNotificationEpochHadRejectedCallback: false,
+                now: now
+            ))
+        }
+
+        for (sameSaved, liveHR) in [
+            (false, true),
+            (true, false)
+        ] {
+            XCTAssertFalse(AtriaBLEManager.recentReconnectBatteryBaselineIsDisplayEligible(
+                level: 25,
+                acceptedAt: acceptedAt,
+                source: "live_2A19",
+                displayedIsCached: true,
+                requiresFreshConfirmation: true,
+                linkConnected: true,
+                sameSavedPeripheral: sameSaved,
+                currentConnectionHasHeartRate: liveHR,
+                hasPendingDisputedReading: false,
+                currentNotificationEpochHadRejectedCallback: false,
+                now: now
+            ))
+        }
+        for (pending, rejected) in [(true, false), (false, true), (true, true)] {
+            XCTAssertTrue(AtriaBLEManager.recentReconnectBatteryBaselineIsDisplayEligible(
+                level: 25,
+                acceptedAt: acceptedAt,
+                source: "live_2A19",
+                displayedIsCached: true,
+                requiresFreshConfirmation: true,
+                linkConnected: true,
+                sameSavedPeripheral: true,
+                currentConnectionHasHeartRate: true,
+                hasPendingDisputedReading: pending,
+                currentNotificationEpochHadRejectedCallback: rejected,
+                now: now
+            ), "current-epoch disputes must block promotion, not the explicitly Recent baseline")
+        }
+        XCTAssertFalse(AtriaBLEManager.recentReconnectBatteryBaselineIsDisplayEligible(
+            level: 25,
+            acceptedAt: acceptedAt,
+            source: "live_2A19",
+            displayedIsCached: true,
+            requiresFreshConfirmation: true,
+            linkConnected: true,
+            sameSavedPeripheral: true,
+            currentConnectionHasHeartRate: true,
+            hasPendingDisputedReading: false,
+            currentNotificationEpochHadRejectedCallback: false,
+            now: acceptedAt.addingTimeInterval(6 * 60 * 60 + 1)
+        ))
+        XCTAssertFalse(AtriaBLEManager.recentReconnectBatteryBaselineIsDisplayEligible(
+            level: 25,
+            acceptedAt: acceptedAt,
+            source: "cached_2A19",
+            displayedIsCached: true,
+            requiresFreshConfirmation: true,
+            linkConnected: true,
+            sameSavedPeripheral: true,
+            currentConnectionHasHeartRate: true,
+            hasPendingDisputedReading: false,
+            currentNotificationEpochHadRejectedCallback: false,
+            now: now
+        ))
+    }
+
+    func testRecentReconnectBaselineIsDisplayOnlyAndSurvivesKeepaliveStalenessGate() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift"), encoding: .utf8)
+        let displayStart = try XCTUnwrap(source.range(of: "func displayableBatteryLevel"))
+        let displayEnd = try XCTUnwrap(source.range(
+            of: "nonisolated static func reconnectBatteryDisplayLevel",
+            range: displayStart.upperBound..<source.endIndex
+        ))
+        let displayBody = String(source[displayStart.lowerBound..<displayEnd.lowerBound])
+        XCTAssertTrue(displayBody.contains("if recentReconnectBaseline { return batteryLevel }"))
+        XCTAssertFalse(displayBody.contains("removeObject(forKey: BatteryDefaults.requiresFreshConfirmation)"))
+
+        let keepaliveStart = try XCTUnwrap(source.range(of: "private func runForegroundKeepaliveTick"))
+        let keepaliveEnd = try XCTUnwrap(source.range(
+            of: "private func stopForegroundKeepaliveWatchdog",
+            range: keepaliveStart.upperBound..<source.endIndex
+        ))
+        let keepaliveBody = String(source[keepaliveStart.lowerBound..<keepaliveEnd.lowerBound])
+        XCTAssertTrue(keepaliveBody.contains("!recentReconnectBatteryBaselineDisplayable"))
+    }
+
+    func testFreshConnectedCachedBatteryBaselineDisplaysDuringSilentLiveRefresh() {
+        let now = Date(timeIntervalSince1970: 1_800_200_000)
+
+        XCTAssertTrue(AtriaBLEManager.freshConnectedCachedBatteryBaselineIsDisplayEligible(
+            level: 14,
+            acceptedAt: now.addingTimeInterval(-30),
+            source: "live_2A19",
+            displayedIsCached: true,
+            requiresFreshConfirmation: true,
+            linkConnected: true,
+            sameSavedPeripheral: true,
+            now: now
+        ))
+
+        for invalidLevel in [0, 10, 100] {
+            XCTAssertFalse(AtriaBLEManager.freshConnectedCachedBatteryBaselineIsDisplayEligible(
+                level: invalidLevel,
+                acceptedAt: now.addingTimeInterval(-30),
+                source: "live_2A19",
+                displayedIsCached: true,
+                requiresFreshConfirmation: true,
+                linkConnected: true,
+                sameSavedPeripheral: true,
+                now: now
+            ))
+        }
+        XCTAssertFalse(AtriaBLEManager.freshConnectedCachedBatteryBaselineIsDisplayEligible(
+            level: 14,
+            acceptedAt: now.addingTimeInterval(-AtriaBLEManager.batteryDisplayFreshnessLimit - 1),
+            source: "live_2A19",
+            displayedIsCached: true,
+            requiresFreshConfirmation: true,
+            linkConnected: true,
+            sameSavedPeripheral: true,
+            now: now
+        ))
+        XCTAssertFalse(AtriaBLEManager.freshConnectedCachedBatteryBaselineIsDisplayEligible(
+            level: 14,
+            acceptedAt: now.addingTimeInterval(-30),
+            source: "cached_2A19",
+            displayedIsCached: true,
+            requiresFreshConfirmation: true,
+            linkConnected: true,
+            sameSavedPeripheral: true,
+            now: now
+        ))
+        XCTAssertFalse(AtriaBLEManager.freshConnectedCachedBatteryBaselineIsDisplayEligible(
+            level: 14,
+            acceptedAt: now.addingTimeInterval(-30),
+            source: "live_2A19",
+            displayedIsCached: true,
+            requiresFreshConfirmation: true,
+            linkConnected: false,
+            sameSavedPeripheral: true,
+            now: now
+        ))
+    }
+
+    func testFirstAcceptedHRPublishesRecentBatteryBaselineProjectionOnce() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift"), encoding: .utf8)
+        let methodStart = try XCTUnwrap(source.range(
+            of: "private func publishRecentReconnectBatteryBaselineIfNeeded"
+        ))
+        let methodEnd = try XCTUnwrap(source.range(
+            of: "private func revokeBatteryNotificationLease",
+            range: methodStart.upperBound..<source.endIndex
+        ))
+        let method = String(source[methodStart.lowerBound..<methodEnd.lowerBound])
+        XCTAssertTrue(method.contains("!recentReconnectBatteryBaselineProjectionPublished"))
+        XCTAssertTrue(method.contains("recentReconnectBatteryBaselineIsDisplayable(now: now)"))
+        XCTAssertTrue(method.contains("recentReconnectBatteryBaselineProjectionPublished = true"))
+        XCTAssertTrue(method.contains("batteryProjectionRevision &+= 1"))
+
+        let acceptedStart = try XCTUnwrap(source.range(of: "private func recordAcceptedHRSample"))
+        let acceptedEnd = try XCTUnwrap(source.range(
+            of: "fileprivate func record(_ rate:",
+            range: acceptedStart.upperBound..<source.endIndex
+        ))
+        let accepted = String(source[acceptedStart.lowerBound..<acceptedEnd.lowerBound])
+        XCTAssertTrue(accepted.contains("publishRecentReconnectBatteryBaselineIfNeeded(now: sampleTime)"))
+    }
+
+    func testKeepaliveUsesDurableBatteryNotificationTransportProof() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private func runForegroundKeepaliveTick"))
+        let end = try XCTUnwrap(source.range(
+            of: "private func stopForegroundKeepaliveWatchdog",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("let batteryNotificationTransportActive = batteryNotificationTransportIsActive"))
+        XCTAssertTrue(body.contains("!(batteryNotificationTransportActive"))
+        XCTAssertTrue(body.contains("batteryNotificationTransportActive,"))
+        XCTAssertFalse(body.contains("batteryLevelCharacteristic?.isNotifying == true"),
+                       "the stale-value watchdog must not revoke a confirmed lease because CoreBluetooth replaced its object")
+    }
+
+    func testRestoredConnectionUsesProcessBatteryValidationEpochWhenDidConnectIsAbsent() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("let connectionStartedAt = connectedAt ?? batteryBaselineValidationStartedAt"))
+        XCTAssertTrue(source.contains("let currentConnectionHasHeartRate = heartRateReceivedAt >= connectionStartedAt"))
+        XCTAssertTrue(source.contains("batteryBaselineValidationStartedAt = Date()"))
     }
 
     func testChargeStatusPacketDoesNotRefreshPersistedBatteryLevelEvidence() throws {
@@ -1805,11 +3052,12 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
-    func testLearningHRVRetriesEveryFiveMinutesWithoutConsumingFourHourReadyGate() {
+    func testLearningHRVFailureRetriesOnlyAfterFourHours() {
         let attempt = Date(timeIntervalSince1970: 50_000)
+        let fourHours: TimeInterval = 4 * 60 * 60
 
         XCTAssertFalse(AtriaBLEManager.shouldAttemptHRVAnalysis(
-            now: attempt.addingTimeInterval(5 * 60 - 0.001),
+            now: attempt.addingTimeInterval(fourHours - 0.001),
             lastReadyAnalysisAt: nil,
             lastAttemptAt: attempt,
             isRecording: false,
@@ -1818,13 +3066,89 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             foregroundInteractive: false
         ))
         XCTAssertTrue(AtriaBLEManager.shouldAttemptHRVAnalysis(
-            now: attempt.addingTimeInterval(5 * 60),
+            now: attempt.addingTimeInterval(fourHours),
             lastReadyAnalysisAt: nil,
             lastAttemptAt: attempt,
             isRecording: false,
             hasReadySnapshot: false,
             cleanWindowSeconds: 300,
             foregroundInteractive: false
+        ))
+    }
+
+    func testFailedAutomaticRefreshWithOlderReadySnapshotStillWaitsFourHours() {
+        let ready = Date(timeIntervalSince1970: 50_000)
+        let failedAttempt = ready.addingTimeInterval(4 * 60 * 60)
+
+        XCTAssertFalse(AtriaBLEManager.shouldAttemptHRVAnalysis(
+            now: failedAttempt.addingTimeInterval(4 * 60 * 60 - 0.001),
+            lastReadyAnalysisAt: ready,
+            lastAttemptAt: failedAttempt,
+            isRecording: false,
+            hasReadySnapshot: true,
+            cleanWindowSeconds: 300,
+            foregroundInteractive: true
+        ))
+        XCTAssertTrue(AtriaBLEManager.shouldAttemptHRVAnalysis(
+            now: failedAttempt.addingTimeInterval(4 * 60 * 60),
+            lastReadyAnalysisAt: ready,
+            lastAttemptAt: failedAttempt,
+            isRecording: false,
+            hasReadySnapshot: true,
+            cleanWindowSeconds: 300,
+            foregroundInteractive: true
+        ))
+    }
+
+    func testNormalWearAttemptMarkerPersistsAcrossRelaunch() throws {
+        let suiteName = "AtriaBLERecoveryCadenceTests.hrv.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let attempt = Date(timeIntervalSince1970: 55_000)
+
+        XCTAssertNil(AtriaBLEManager.readNormalWearHRVAnalysisAttemptDate(
+            userDefaults: defaults
+        ))
+        AtriaBLEManager.persistNormalWearHRVAnalysisAttemptDate(
+            attempt,
+            userDefaults: defaults
+        )
+        XCTAssertEqual(AtriaBLEManager.readNormalWearHRVAnalysisAttemptDate(
+            userDefaults: defaults
+        ), attempt)
+        XCTAssertFalse(AtriaBLEManager.shouldAttemptHRVAnalysis(
+            now: attempt.addingTimeInterval(60),
+            lastReadyAnalysisAt: nil,
+            lastAttemptAt: AtriaBLEManager.readNormalWearHRVAnalysisAttemptDate(
+                userDefaults: defaults
+            ),
+            isRecording: false,
+            hasReadySnapshot: false,
+            cleanWindowSeconds: 300,
+            foregroundInteractive: false
+        ))
+    }
+
+    func testExplicitCaptureCadenceIgnoresPersistedNormalWearAttempt() {
+        let captureAttempt = Date(timeIntervalSince1970: 58_000)
+
+        XCTAssertFalse(AtriaBLEManager.shouldAttemptHRVAnalysis(
+            now: captureAttempt.addingTimeInterval(1.499),
+            lastReadyAnalysisAt: nil,
+            lastAttemptAt: captureAttempt,
+            isRecording: true,
+            hasReadySnapshot: false,
+            cleanWindowSeconds: 0,
+            foregroundInteractive: true
+        ))
+        XCTAssertTrue(AtriaBLEManager.shouldAttemptHRVAnalysis(
+            now: captureAttempt.addingTimeInterval(1.5),
+            lastReadyAnalysisAt: nil,
+            lastAttemptAt: captureAttempt,
+            isRecording: true,
+            hasReadySnapshot: false,
+            cleanWindowSeconds: 0,
+            foregroundInteractive: true
         ))
     }
 
@@ -1874,6 +3198,42 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testNormalWearHRVCadenceRecoversFromClockRollback() {
+        let now = Date(timeIntervalSince1970: 80_000)
+        let futureMarker = now.addingTimeInterval(60 * 60)
+
+        XCTAssertTrue(AtriaBLEManager.shouldRefreshHRVAnalysis(
+            now: now,
+            lastAnalysisAt: futureMarker,
+            isRecording: false,
+            foregroundInteractive: false
+        ))
+        XCTAssertTrue(AtriaBLEManager.shouldAttemptHRVAnalysis(
+            now: now,
+            lastReadyAnalysisAt: futureMarker,
+            lastAttemptAt: futureMarker,
+            isRecording: false,
+            hasReadySnapshot: true,
+            cleanWindowSeconds: 300,
+            foregroundInteractive: false
+        ))
+    }
+
+    func testLearningHRVRetryRecoversFromClockRollback() {
+        let now = Date(timeIntervalSince1970: 90_000)
+        let futureAttempt = now.addingTimeInterval(60 * 60)
+
+        XCTAssertTrue(AtriaBLEManager.shouldAttemptHRVAnalysis(
+            now: now,
+            lastReadyAnalysisAt: nil,
+            lastAttemptAt: futureAttempt,
+            isRecording: false,
+            hasReadySnapshot: false,
+            cleanWindowSeconds: 300,
+            foregroundInteractive: true
+        ))
+    }
+
     func testProductionBatteryCallSiteKeepsExplicitReadResearchDisabled() throws {
         let managerURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -1884,7 +3244,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(source.contains("explicitReadResearchEnabled: Bool = false"))
         XCTAssertFalse(source.contains("explicitReadResearchEnabled: true"))
         XCTAssertFalse(source.contains("readValue(for: batteryStatusCharacteristic)"))
-        XCTAssertTrue(source.contains("detail=protected_r10_minimal_no_battery_gatt"))
+        XCTAssertTrue(source.contains("return [UUIDs.batteryLevel]"))
+        XCTAssertFalse(source.contains("detail=protected_r10_minimal_no_battery_gatt"))
         XCTAssertTrue(source.contains("source=2A19_existing_subscription"))
     }
 

@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import BackgroundTasks
+import AppIntents
 
 enum AtriaSceneResumePolicy {
     static let inactiveCheckpointDelay: TimeInterval = 1.5
@@ -22,6 +23,15 @@ final class AtriaAppDelegate: NSObject, UIApplicationDelegate {
     static var supportedOrientations: UIInterfaceOrientationMask = .portrait
 
     func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        // Must happen before UIKit delivers a cold-launch notification
+        // response. Scheduling-time registration is too late and can leave the
+        // app open on its launch surface without applying the requested route.
+        LocalNotificationScheduler.configureForApplicationLaunch()
+        return true
+    }
+
+    func application(_ application: UIApplication,
                      supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
         Self.supportedOrientations
     }
@@ -36,14 +46,31 @@ final class AtriaAppDelegate: NSObject, UIApplicationDelegate {
 private final class AtriaAppDependencies {
     let ble: AtriaBLEManager
     let store: SessionStore
+    let workoutRouteRecorder: AtriaWorkoutRouteRecorder
+    let workoutRuntime: AtriaWorkoutRuntime
 
     init() {
         let ble = AtriaBLEManager()
         let store = SessionStore()
+        let workoutRouteRecorder = AtriaWorkoutRouteRecorder()
+        let workoutRuntime = AtriaWorkoutRuntime(ble: ble,
+                                                 store: store,
+                                                 routeRecorder: workoutRouteRecorder)
         ble.onSessionEnd = { [store] saved in store.add(saved) }
         ble.onSessionCheckpoint = { [store] saved in store.checkpoint(saved) }
         self.ble = ble
         self.store = store
+        self.workoutRouteRecorder = workoutRouteRecorder
+        self.workoutRuntime = workoutRuntime
+        AppDependencyManager.shared.add(
+            dependency: AtriaLiveWorkoutCommandHandler { [workoutRuntime] action, startedAt, issuedAt in
+                await workoutRuntime.handleLiveActivityCommand(
+                    action,
+                    workoutStartedAt: startedAt,
+                    issuedAt: issuedAt
+                )
+            }
+        )
     }
 }
 
@@ -100,10 +127,13 @@ struct AtriaApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(ble: ble, store: store)
+            ContentView(ble: ble,
+                        store: store,
+                        workoutRouteRecorder: dependencies.workoutRouteRecorder)
                 .onAppear {
                     guard !didScheduleLaunchWork else { return }
                     didScheduleLaunchWork = true
+                    dependencies.workoutRuntime.schedulePendingActionReplay()
                     recordScenePhase("appear", reason: "content_on_appear")
                     let launchArguments = ProcessInfo.processInfo.arguments
                     let hasRequestedDeferredLaunchWork = hasRequestedDeferredLaunchWork(arguments: launchArguments)
@@ -163,6 +193,7 @@ struct AtriaApp: App {
                         }
                     case .active:
                         recordScenePhase("active", reason: "scene_active")
+                        dependencies.workoutRuntime.schedulePendingActionReplay()
                         inactiveFlushTask?.cancel()
                         inactiveFlushTask = nil
                         foregroundBLETransitionTask?.cancel()
@@ -236,7 +267,11 @@ struct AtriaApp: App {
             // Settlement and durable state come first. BGAppRefresh may receive
             // only a short execution window, so it must never wait on backfill
             // before finalizing already-collected overnight evidence.
-            store.performBackgroundMaintenance(reason: reason)
+            let backupSucceeded = await withCheckedContinuation { continuation in
+                store.performBackgroundMaintenance(reason: reason) { succeeded in
+                    continuation.resume(returning: succeeded)
+                }
+            }
             guard !Task.isCancelled else {
                 completion.complete(task, success: false)
                 return
@@ -255,7 +290,7 @@ struct AtriaApp: App {
                 completion.complete(task, success: false)
                 return
             }
-            completion.complete(task, success: true)
+            completion.complete(task, success: backupSucceeded)
         }
         task.expirationHandler = {
             work.cancel()

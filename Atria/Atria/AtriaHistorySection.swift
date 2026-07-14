@@ -678,13 +678,14 @@ struct AtriaDetectionsListSheet: View {
                                           evidenceNight: night,
                                           evidencePerformancePercent: store.sleepHistorySnapshot.sleepPerformancePercent(for: night,
                                                                                                                          baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
-                        let saved = store.adjustSleepNight(originalStart: night.start,
-                                                           originalEnd: night.end,
-                                                           newStart: start,
-                                                           newEnd: end,
-                                                           isNap: isNap,
-                                                           rest: store.baseline.restingInt ?? 60,
-                                                           source: "detections_inbox_adjust") != nil
+                        let saved = store.saveSleepReviewNightForUI(
+                            night,
+                            start: start,
+                            end: end,
+                            isNap: isNap,
+                            rest: store.baseline.restingInt ?? 60,
+                            source: "detections_inbox_adjust"
+                        ) != nil
                         if saved { adjustmentNight = nil }
                         return saved
                     }

@@ -68,6 +68,8 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         let timeline = String(source[timelineStart.lowerBound..<timelineEnd.lowerBound])
 
         XCTAssertTrue(toolbar.contains("addActivityMenu"))
+        XCTAssertEqual(source.components(separatedBy: "addActivityMenu").count - 1, 2,
+                       "Activity should declare one Add menu and render it only in the day toolbar")
         XCTAssertTrue(toolbar.contains("frame(width: 44, height: 44)"))
         XCTAssertFalse(source.contains("private var activityHeader"))
         XCTAssertTrue(timeline.contains("AxisMarks(values: axisTicks.map(\\.date))"))
@@ -135,7 +137,7 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
                       "Orb motion should interpolate compositor-friendly scale and opacity endpoints")
         XCTAssertTrue(orb.contains("Task.sleep(for: .seconds"),
                       "Phase state should change only at the 45/10/45 boundaries")
-        XCTAssertTrue(orb.contains(".frame(width: 250, height: 250)"))
+        XCTAssertTrue(orb.contains(".frame(width: 260, height: 260)"))
         XCTAssertTrue(orb.contains("reduceMotion ? 1"))
         XCTAssertTrue(orb.contains(".accessibilityLabel("))
     }
@@ -184,6 +186,21 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
                       "The live grid needs a visible compact path into drag-and-drop ordering")
     }
 
+    func testCustomizeCanResetPersistedGlanceOrderToDefaults() throws {
+        let source = try source("AtriaCustomizeSheet.swift")
+        let start = try XCTUnwrap(source.range(of: "private var resetSection"))
+        let end = try XCTUnwrap(source.range(of: "private func metricBinding",
+                                              range: start.upperBound..<source.endIndex))
+        let reset = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(reset.contains("Label(\"Reset to defaults\""))
+        XCTAssertTrue(source.contains(".confirmationDialog(\"Reset Today layout?\""))
+        XCTAssertTrue(source.contains("draft = .default"),
+                      "Reset must restore the canonical At a glance order, visibility, and sizes")
+        XCTAssertTrue(source.contains("onCommit(draft.validated())"),
+                      "The reset draft must still use the sheet's single Save commit")
+    }
+
     func testTodayRingCollapsesIntoPinnedIconValueRail() throws {
         let todaySource = try source("AtriaTodayScreen.swift")
         let start = try XCTUnwrap(todaySource.range(of: "private struct AtriaTodayHeroShrink"))
@@ -196,28 +213,46 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertTrue(home.contains(".overlayPreferenceValue(AtriaTodayCompactRingPreferenceKey.self)"))
         XCTAssertTrue(collapse.contains("AtriaTodayCompactRingRail"))
         XCTAssertTrue(home.contains("private struct AtriaDashboardScrollSurface"))
-        XCTAssertTrue(home.contains("scrollOffset >= 112"))
+        XCTAssertTrue(home.contains("onScrollGeometryChange(for: Bool.self)"),
+                      "Scrolling should invalidate the surface only when the compact-header threshold changes")
+        XCTAssertTrue(home.contains("showsCompactHeader"))
+        XCTAssertFalse(home.contains("@State private var scrollOffset"),
+                       "A continuously changing offset would rebuild the dashboard throughout every swipe")
+        XCTAssertFalse(home.contains("let quantized ="))
         XCTAssertTrue(home.contains("viewport-"))
         XCTAssertTrue(collapse.contains("ForEach(slots, id: \\.metric.title)"), "Configured ring metrics need stable identity")
-        XCTAssertTrue(collapse.contains("Image(systemName: slot.metric.systemImage)"))
+        XCTAssertTrue(collapse.contains("Text(slot.slot.compactEmoji)"))
         XCTAssertTrue(collapse.contains("Text(slot.metric.value)"))
         XCTAssertFalse(collapse.contains("Text(slot.metric.title)"), "Collapsed rail should contain only icons and values")
         XCTAssertTrue(collapse.contains(".glassEffect(.regular"))
     }
 
-    func testSettingsStartsAsFiveCompactPlainLanguageGroups() throws {
+    func testCompactRingUsesRequestedEmojiAndNumberVocabulary() throws {
+        let ring = try source("AtriaTriRing.swift")
+
+        for emoji in ["🌙", "❤️", "🔥", "📈", "💓"] {
+            XCTAssertTrue(ring.contains("return \"\(emoji)\""))
+        }
+    }
+
+    func testSettingsStartsAsFiveCompactPlainLanguageDestinations() throws {
         let source = try source("AtriaSettingsView.swift")
-        let labelsStart = try XCTUnwrap(source.range(of: "private func settingsGroupLabel"))
-        let labelsEnd = try XCTUnwrap(source.range(of: "private var recoveryTargetSignature",
+        let labelsStart = try XCTUnwrap(source.range(of: "private var settingsHub"))
+        let labelsEnd = try XCTUnwrap(source.range(of: "private var personalSettingsPage",
                                                    range: labelsStart.upperBound..<source.endIndex))
         let groups = String(source[labelsStart.lowerBound..<labelsEnd.lowerBound])
 
         for title in ["Personal", "Strap", "Alerts", "Data", "Privacy & About"] {
-            XCTAssertTrue(groups.contains("settingsGroupLabel(\"\(title)\""))
+            XCTAssertTrue(source.contains("\"\(title)\""))
         }
+        XCTAssertTrue(groups.contains("ForEach(visibleDestinations)"),
+                      "The root hub should reuse one concrete row type to avoid Swift metadata recursion")
+        XCTAssertEqual(groups.components(separatedBy: "NavigationLink(value:").count - 1, 1,
+                       "Separate generic NavigationLink expressions can overflow the stack during sheet presentation")
         XCTAssertFalse(groups.contains("subtitle:"), "Top-level Settings rows should not stack explanatory subtitles")
-        XCTAssertTrue(source.contains("atria.settings.v3.expanded.profile"))
-        XCTAssertTrue(source.contains(".frame(minHeight: 36)"))
+        XCTAssertFalse(groups.contains("DisclosureGroup"), "Destinations should not expand into one long settings wall")
+        XCTAssertFalse(source.contains("atria.settings.v3.expanded."))
+        XCTAssertTrue(source.contains(".frame(minHeight: 44)"))
         XCTAssertTrue(source.contains("Label(\"Advanced targets\", systemImage: \"scope\")"),
                       "Dense target controls belong behind one explicit destination")
         XCTAssertFalse(source.contains("title: \"On this iPhone\""))
@@ -242,19 +277,22 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         let previewEnd = try XCTUnwrap(share.range(of: "struct AtriaWorkoutShareSheet: View",
                                                    range: previewStart.upperBound..<share.endIndex))
         let preview = String(share[previewStart.lowerBound..<previewEnd.lowerBound])
-        XCTAssertTrue(preview.contains("ToolbarItem(placement: .topBarLeading)"))
+        XCTAssertTrue(preview.contains("private var topControls"))
+        XCTAssertTrue(preview.contains("GlassEffectContainer(spacing: 12)"))
         XCTAssertTrue(preview.contains("Button { dismiss() } label:"))
         XCTAssertTrue(preview.contains("shareCornerButton(systemImage: \"xmark\")"))
         XCTAssertFalse(preview.contains("saveShareCardToPhotos"))
-        XCTAssertTrue(preview.contains("ToolbarItem(placement: .topBarTrailing)"))
         XCTAssertTrue(preview.contains("shareCornerButton(systemImage: \"square.and.arrow.up\")"))
-        XCTAssertFalse(preview.contains("ToolbarItem(placement: .bottomBar)"),
-                       "The story composer should expose only cancel and share in its chrome")
+        XCTAssertFalse(preview.contains("ToolbarItem"),
+                       "Toolbar context plus a custom glass label creates the nested double-circle chrome")
+        XCTAssertTrue(preview.contains("AtriaGlassIconButtonStyle(tint: .white, size: 38)"))
         XCTAssertTrue(preview.contains("PhotosPicker(selection: $selectedPhotoItem"))
         XCTAssertTrue(preview.contains("canvasButtonLabel(title: \"Camera\""))
         XCTAssertTrue(preview.contains("ForEach(AtriaShareCanvasStyle.allCases)"))
-        XCTAssertTrue(preview.contains("let width = min(availableWidth, widthFromHeight)"),
+        XCTAssertTrue(preview.contains("AtriaShareComposerLayout.fittedStorySize(in: size)"),
                       "The preview must fit the complete 9:16 canvas instead of cropping it")
+        XCTAssertTrue(preview.contains("controlDock\n                .frame(height: AtriaShareComposerLayout.styleRailHeight)"),
+                      "The style rail must be a sibling below the card, not an overlay covering it")
         XCTAssertTrue(share.contains("case .story: return CGSize(width: 1080, height: 1920)"))
     }
 

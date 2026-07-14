@@ -226,11 +226,11 @@ struct AtriaManualSleepSheet: View {
     private var itemName: String { isNap ? "nap" : "sleep" }
 
     private var removeButtonTitle: String {
-        mode == .edit ? "Delete \(itemName)" : "Not \(itemName)"
+        mode == .edit ? "Delete \(itemName)" : "Dismiss suggestion"
     }
 
     private var removeConfirmationTitle: String {
-        mode == .edit ? "Delete this \(itemName)?" : "Dismiss this \(itemName)?"
+        mode == .edit ? "Delete this \(itemName)?" : "Dismiss this \(itemName) suggestion?"
     }
 
     private var removeConfirmationMessage: String {
@@ -345,24 +345,34 @@ struct AtriaManualSleepSheet: View {
             }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel", action: cancelEditing)
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 12) {
-                        if onRemove != nil {
-                            Button {
+                if onRemove != nil {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Menu {
+                            Button(removeButtonTitle,
+                                   systemImage: "trash",
+                                   role: .destructive) {
                                 showsRemoveConfirmation = true
-                            } label: {
-                                Image(systemName: "trash")
                             }
-                            .accessibilityLabel(removeButtonTitle)
+                        } label: {
+                            Image(systemName: "ellipsis")
                         }
-
-                        Button("Save") {
-                            saveFailed = !onSave(start, end, isNap)
-                        }
-                        .disabled(!canSave)
+                        .accessibilityLabel("Sleep actions")
                     }
+
+                    // Keep the destructive menu and commit action in separate
+                    // Liquid Glass groups. An HStack inside one ToolbarItem is
+                    // rendered as a nested/merged trailing control on iOS 26.
+                    ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Save") {
+                        saveFailed = !onSave(start, end, isNap)
+                    }
+                    .fontWeight(.bold)
+                    .disabled(!canSave)
                 }
             }
             .confirmationDialog(removeConfirmationTitle,
@@ -386,6 +396,13 @@ struct AtriaManualSleepSheet: View {
                 Text("Nothing was removed. Please try again.")
             }
         }
+    }
+
+    /// Cancel is deliberately presentation-only. Detector dismissal belongs
+    /// exclusively to the confirmed destructive action below; merely opening
+    /// a sleep/nap review and backing out must leave the candidate untouched.
+    private func cancelEditing() {
+        dismiss()
     }
 
     /// Sensor-evidence header for a detected night (design handoff): stage

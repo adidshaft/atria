@@ -137,6 +137,7 @@ enum AtriaStrapPedometer {
         private var dynamicThreshold: Double?
         private var possibleSteps = 0
         private var regularGait = false
+        private var isolatedGapCarrySamplesRemaining = 0
         private var seekingMaximum = true
         private var currentMaximum = 0.0
         private var currentMaximumIndex = -1
@@ -176,6 +177,7 @@ enum AtriaStrapPedometer {
             dynamicThreshold = nil
             possibleSteps = 0
             regularGait = false
+            isolatedGapCarrySamplesRemaining = 0
             seekingMaximum = true
             currentMaximum = 0
             currentMaximumIndex = -1
@@ -195,9 +197,20 @@ enum AtriaStrapPedometer {
             let hadConfirmedRegularGait = regularGait
             reset()
             regularGait = hadConfirmedRegularGait
+            isolatedGapCarrySamplesRemaining = hadConfirmedRegularGait
+                ? AtriaStrapPedometer.sampleRateHz
+                : 0
         }
 
         private mutating func ingest(_ magnitude: Double) {
+            defer {
+                if isolatedGapCarrySamplesRemaining > 0 {
+                    isolatedGapCarrySamplesRemaining -= 1
+                    if isolatedGapCarrySamplesRemaining == 0 {
+                        regularGait = false
+                    }
+                }
+            }
             sampleCount += 1
             magnitudeMean += (magnitude - magnitudeMean) / Double(sampleCount)
 
@@ -247,6 +260,7 @@ enum AtriaStrapPedometer {
                 seekingMaximum = true
                 possibleSteps = 0
                 regularGait = false
+                isolatedGapCarrySamplesRemaining = 0
                 return
             }
 
@@ -265,6 +279,7 @@ enum AtriaStrapPedometer {
                 possibleSteps += 1
                 if regularGait {
                     rawSteps += 1
+                    isolatedGapCarrySamplesRemaining = 0
                 } else if possibleSteps >= safeConfirmationSteps {
                     rawSteps += possibleSteps
                     regularGait = true
@@ -272,6 +287,7 @@ enum AtriaStrapPedometer {
             } else {
                 possibleSteps = 0
                 regularGait = false
+                isolatedGapCarrySamplesRemaining = 0
             }
             seekingMaximum = true
         }
@@ -291,8 +307,295 @@ enum AtriaStrapPedometer {
     }
 }
 
+/// A strap-only gait classifier that can shadow the production pedometer
+/// without changing its published count. The challenger deliberately waits
+/// for four seconds of evidence after each candidate step, then releases or
+/// rejects it against a five-second contiguous R10 motion window.
+///
+/// This is not connected to `AtriaR10MotionPipeline` yet. The retained field
+/// captures do not include enough charger-free, manually labelled walking and
+/// handling windows to choose a safe operating point, and the production
+/// detector does not currently expose candidate sample timestamps. Keeping the
+/// classifier as a challenger lets replay tooling measure both before it can
+/// affect a user's count.
+struct AtriaStrapGaitQualityChallenger: Sendable {
+    static let sampleRateHz = AtriaStrapPedometer.sampleRateHz
+    static let windowSeconds = 5
+    static let windowSamples = sampleRateHz * windowSeconds
+    static let evaluationStrideSamples = sampleRateHz
+    static let evidenceAfterCandidateSamples = 4 * sampleRateHz
+
+    enum Verdict: Equatable, Sendable {
+        case accepted
+        case rejected
+    }
+
+    struct Assessment: Equatable, Sendable {
+        let verdict: Verdict
+        let cadenceStepsPerMinute: Double
+        let periodicity: Double
+        let walkingBandEnergyRatio: Double
+        let cadenceConsistency: Double
+        let gyroscopeAgreement: Double?
+    }
+
+    struct Update: Equatable, Sendable {
+        let releasedCandidateSteps: Int
+        let rejectedCandidateSteps: Int
+        let pendingCandidateSteps: Int
+        let assessment: Assessment?
+    }
+
+    private var accelerationMagnitudes = [Double](
+        repeating: 0,
+        count: AtriaStrapGaitQualityChallenger.windowSamples
+    )
+    private var rotationRates = [AtriaR10MotionFrame.Vector3](
+        repeating: .init(x: 0, y: 0, z: 0),
+        count: AtriaStrapGaitQualityChallenger.windowSamples
+    )
+    private var gyroscopeAvailable = [Bool](
+        repeating: false,
+        count: AtriaStrapGaitQualityChallenger.windowSamples
+    )
+    private var writeIndex = 0
+    private var validSampleCount = 0
+    private var samplesSinceEvaluation = 0
+    private var nextSampleIndex: Int64 = 0
+    private var pendingCandidateIndices: [Int64] = []
+
+    /// Candidate offsets are relative to this chunk. Chunking is otherwise
+    /// invisible, so a live stream and replay of the same samples resolve the
+    /// same candidates.
+    mutating func ingest(acceleration: [AtriaR10MotionFrame.Vector3],
+                         rotationRate: [AtriaR10MotionFrame.Vector3]? = nil,
+                         candidateStepOffsets: [Int] = []) -> Update {
+        let candidateOffsets = Set(candidateStepOffsets.filter {
+            acceleration.indices.contains($0)
+        })
+        let hasAlignedGyroscope = rotationRate?.count == acceleration.count
+        var released = 0
+        var rejected = 0
+        var latestAssessment: Assessment?
+
+        for offset in acceleration.indices {
+            if candidateOffsets.contains(offset) {
+                pendingCandidateIndices.append(nextSampleIndex)
+            }
+            accelerationMagnitudes[writeIndex] = acceleration[offset].magnitude
+            if hasAlignedGyroscope, let rotationRate {
+                rotationRates[writeIndex] = rotationRate[offset]
+                gyroscopeAvailable[writeIndex] = true
+            } else {
+                rotationRates[writeIndex] = .init(x: 0, y: 0, z: 0)
+                gyroscopeAvailable[writeIndex] = false
+            }
+            writeIndex = (writeIndex + 1) % Self.windowSamples
+            validSampleCount = min(Self.windowSamples, validSampleCount + 1)
+            samplesSinceEvaluation += 1
+            nextSampleIndex += 1
+
+            guard validSampleCount == Self.windowSamples,
+                  samplesSinceEvaluation >= Self.evaluationStrideSamples else { continue }
+            samplesSinceEvaluation = 0
+            let assessment = assessCurrentWindow()
+            latestAssessment = assessment
+            let lastEligibleIndex = nextSampleIndex
+                - Int64(Self.evidenceAfterCandidateSamples)
+                - 1
+            var unresolved: [Int64] = []
+            unresolved.reserveCapacity(pendingCandidateIndices.count)
+            for candidateIndex in pendingCandidateIndices {
+                guard candidateIndex <= lastEligibleIndex else {
+                    unresolved.append(candidateIndex)
+                    continue
+                }
+                if assessment.verdict == .accepted {
+                    released += 1
+                } else {
+                    rejected += 1
+                }
+            }
+            pendingCandidateIndices = unresolved
+        }
+
+        return Update(releasedCandidateSteps: released,
+                      rejectedCandidateSteps: rejected,
+                      pendingCandidateSteps: pendingCandidateIndices.count,
+                      assessment: latestAssessment)
+    }
+
+    /// No classifier state crosses missing motion. Both an isolated R10 hole
+    /// and a reconnect therefore reject unresolved challenger candidates and
+    /// require a new contiguous five-second window. Production detector gap
+    /// behavior remains untouched.
+    mutating func resetForGap() -> Update {
+        let rejected = pendingCandidateIndices.count
+        pendingCandidateIndices.removeAll(keepingCapacity: true)
+        writeIndex = 0
+        validSampleCount = 0
+        samplesSinceEvaluation = 0
+        return Update(releasedCandidateSteps: 0,
+                      rejectedCandidateSteps: rejected,
+                      pendingCandidateSteps: 0,
+                      assessment: nil)
+    }
+
+    private func assessCurrentWindow() -> Assessment {
+        let magnitudes = chronologicalAccelerationMagnitudes()
+        let centered = Self.centered(magnitudes)
+        let standardDeviation = Self.rootMeanSquare(centered)
+        let full = Self.periodicity(of: centered)
+        let halfCount = centered.count / 2
+        let firstHalf = Self.periodicity(of: Array(centered[..<halfCount]))
+        let secondHalf = Self.periodicity(of: Array(centered[halfCount...]))
+        let consistency = Self.cadenceConsistency(firstLag: firstHalf.lag,
+                                                  secondLag: secondHalf.lag)
+        let bandRatio = Self.walkingBandEnergyRatio(centered)
+        let crestFactor = centered.map(abs).max() ?? 0
+        let normalizedCrest = crestFactor / max(0.000_001, standardDeviation)
+        let gyroAgreement = gyroscopeCadenceAgreement(accelerationLag: full.lag)
+
+        let hasWalkingAmplitude = standardDeviation >= 0.025 && standardDeviation <= 0.40
+        let isPeriodic = full.correlation >= 0.55
+        let isWalkingBandDominant = bandRatio >= 0.58
+        let isCadenceConsistent = consistency >= 0.78
+        let isNotImpulseDominated = normalizedCrest <= 5.5
+        let gyroDoesNotContradict = gyroAgreement.map { $0 >= 0.72 } ?? true
+        let accepted = hasWalkingAmplitude
+            && isPeriodic
+            && isWalkingBandDominant
+            && isCadenceConsistent
+            && isNotImpulseDominated
+            && gyroDoesNotContradict
+
+        return Assessment(
+            verdict: accepted ? .accepted : .rejected,
+            cadenceStepsPerMinute: full.lag > 0
+                ? 60 * Double(Self.sampleRateHz) / Double(full.lag)
+                : 0,
+            periodicity: full.correlation,
+            walkingBandEnergyRatio: bandRatio,
+            cadenceConsistency: consistency,
+            gyroscopeAgreement: gyroAgreement
+        )
+    }
+
+    private func chronologicalAccelerationMagnitudes() -> [Double] {
+        Array(accelerationMagnitudes[writeIndex...])
+            + Array(accelerationMagnitudes[..<writeIndex])
+    }
+
+    private func chronologicalRotationRates() -> ([AtriaR10MotionFrame.Vector3], [Bool]) {
+        (Array(rotationRates[writeIndex...]) + Array(rotationRates[..<writeIndex]),
+         Array(gyroscopeAvailable[writeIndex...]) + Array(gyroscopeAvailable[..<writeIndex]))
+    }
+
+    private func gyroscopeCadenceAgreement(accelerationLag: Int) -> Double? {
+        guard accelerationLag > 0 else { return nil }
+        let (rotation, availability) = chronologicalRotationRates()
+        guard availability.filter({ $0 }).count >= Int(Double(Self.windowSamples) * 0.9) else {
+            return nil
+        }
+        let axes = [rotation.map(\.x), rotation.map(\.y), rotation.map(\.z)]
+        let centeredAxes = axes.map(Self.centered)
+        guard let dominantAxis = centeredAxes.max(by: {
+            Self.rootMeanSquare($0) < Self.rootMeanSquare($1)
+        }), Self.rootMeanSquare(dominantAxis) >= 0.5 else { return nil }
+        let gyro = Self.periodicity(of: dominantAxis)
+        guard gyro.lag > 0, gyro.correlation >= 0.30 else { return 0 }
+        let lagAgreement = 1 - min(1, abs(Double(gyro.lag - accelerationLag))
+            / Double(max(gyro.lag, accelerationLag)))
+        return min(1, 0.65 * lagAgreement + 0.35 * gyro.correlation)
+    }
+
+    private static func centered(_ signal: [Double]) -> [Double] {
+        guard !signal.isEmpty else { return [] }
+        let mean = signal.reduce(0, +) / Double(signal.count)
+        return signal.map { $0 - mean }
+    }
+
+    private static func rootMeanSquare(_ signal: [Double]) -> Double {
+        guard !signal.isEmpty else { return 0 }
+        return sqrt(signal.reduce(0) { $0 + $1 * $1 } / Double(signal.count))
+    }
+
+    private static func periodicity(of signal: [Double]) -> (lag: Int, correlation: Double) {
+        guard signal.count >= 100 else { return (0, 0) }
+        let minimumLag = sampleRateHz * 60 / 200
+        let maximumLag = min(sampleRateHz * 60 / 48, signal.count / 2)
+        guard minimumLag < maximumLag else { return (0, 0) }
+        var correlations: [(lag: Int, value: Double)] = []
+        correlations.reserveCapacity(maximumLag - minimumLag + 1)
+        for lag in minimumLag...maximumLag {
+            var cross = 0.0
+            var leadingEnergy = 0.0
+            var trailingEnergy = 0.0
+            for index in lag..<signal.count {
+                let leading = signal[index]
+                let trailing = signal[index - lag]
+                cross += leading * trailing
+                leadingEnergy += leading * leading
+                trailingEnergy += trailing * trailing
+            }
+            let denominator = sqrt(leadingEnergy * trailingEnergy)
+            let correlation = denominator > 0 ? cross / denominator : 0
+            correlations.append((lag, correlation))
+        }
+        guard let strongest = correlations.max(by: { $0.value < $1.value }) else {
+            return (0, 0)
+        }
+        // Periodic signals commonly have equally strong peaks at the
+        // fundamental and its multiples. Prefer the earliest near-maximum
+        // local peak so acceleration and gyroscope agree on cadence instead
+        // of arbitrarily selecting different harmonics due to rounding noise.
+        let nearMaximum = max(0.45, strongest.value * 0.95)
+        let fundamental = correlations.enumerated().first { offset, candidate in
+            guard candidate.value >= nearMaximum else { return false }
+            let previous = offset > 0 ? correlations[offset - 1].value : -1
+            let next = offset + 1 < correlations.count
+                ? correlations[offset + 1].value
+                : -1
+            return candidate.value >= previous && candidate.value >= next
+        }?.element ?? strongest
+        return (fundamental.lag, max(0, min(1, fundamental.value)))
+    }
+
+    private static func cadenceConsistency(firstLag: Int, secondLag: Int) -> Double {
+        guard firstLag > 0, secondLag > 0 else { return 0 }
+        return 1 - min(1, abs(Double(firstLag - secondLag))
+            / Double(max(firstLag, secondLag)))
+    }
+
+    /// Small fixed-bin DFT. It runs once per second, not for every 100 Hz
+    /// sample, and confines the score to the 48–195 steps/min walking band.
+    private static func walkingBandEnergyRatio(_ signal: [Double]) -> Double {
+        guard !signal.isEmpty else { return 0 }
+        var walkingEnergy = 0.0
+        var consideredEnergy = 0.0
+        for bin in 2...20 { // 0.5 ... 5 Hz in 0.25 Hz bins
+            let frequency = Double(bin) * 0.25
+            var real = 0.0
+            var imaginary = 0.0
+            for (index, value) in signal.enumerated() {
+                let angle = 2 * Double.pi * frequency * Double(index) / Double(sampleRateHz)
+                real += value * cos(angle)
+                imaginary -= value * sin(angle)
+            }
+            let energy = real * real + imaginary * imaginary
+            consideredEnergy += energy
+            if frequency >= 0.8, frequency <= 3.25 {
+                walkingEnergy += energy
+            }
+        }
+        return consideredEnergy > 0 ? walkingEnergy / consideredEnergy : 0
+    }
+}
+
 /// Keeps R10 decoding and step analysis off the BLE and main queues. Atria only
-/// publishes when the displayed count changes, at most once per second.
+/// publishes when the displayed count changes, at most once per second. A
+/// trailing evaluation guarantees that a final/batched frame cannot leave a
+/// newer internal count stranded behind the cadence gate.
 final class AtriaR10MotionPipeline: @unchecked Sendable {
     struct Snapshot: Equatable, Sendable {
         let steps: Int
@@ -309,6 +612,7 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "com.adidshaft.atria.r10-motion", qos: .utility)
     private let gain: Double
+    private let snapshotMinimumInterval: TimeInterval
     private var detector = AtriaStrapPedometer.StreamingDetector()
     private var committedRawSteps = 0
     private var totalFrames = 0
@@ -324,13 +628,18 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
     private var lastObservedRawSteps = 0
     private var lastPublishedSteps = -1
     private var lastSnapshotEvaluationAt: Date?
+    private var pendingSnapshotWorkItem: DispatchWorkItem?
+    private var pendingSnapshotDeviceTimestamp: UInt32?
+    private var pendingSnapshotUpdate: (@Sendable (Snapshot) -> Void)?
 
     init(sampleRateHz: Int = AtriaStrapPedometer.sampleRateHz,
-         gain: Double = AtriaStrapPedometer.referenceGain) {
+         gain: Double = AtriaStrapPedometer.referenceGain,
+         snapshotMinimumInterval: TimeInterval = 1) {
         // R10 framing fixes production input at 100 Hz. Retain this argument
         // for source compatibility with existing callers and test tooling.
         _ = sampleRateHz
         self.gain = max(0.5, min(gain, 2.0))
+        self.snapshotMinimumInterval = max(0.01, snapshotMinimumInterval)
     }
 
     func ingest(_ frame: AtriaR10MotionFrame,
@@ -341,21 +650,28 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
             let firstFrame = totalFrames == 1
             guard Self.shouldEvaluateSnapshot(firstFrame: firstFrame,
                                               lastEvaluatedAt: lastSnapshotEvaluationAt,
-                                              receivedAt: receivedAt) else { return }
-            lastSnapshotEvaluationAt = receivedAt
-            let snapshot = makeSnapshot(deviceTimestamp: frame.deviceTimestamp)
-            guard firstFrame || snapshot.steps != lastPublishedSteps else { return }
-            lastPublishedSteps = snapshot.steps
-            onUpdate(snapshot)
+                                              receivedAt: receivedAt,
+                                              minimumInterval: snapshotMinimumInterval) else {
+                scheduleTrailingSnapshot(deviceTimestamp: frame.deviceTimestamp,
+                                         receivedAt: receivedAt,
+                                         onUpdate: onUpdate)
+                return
+            }
+            cancelTrailingSnapshot()
+            publishSnapshot(deviceTimestamp: frame.deviceTimestamp,
+                            evaluatedAt: receivedAt,
+                            firstFrame: firstFrame,
+                            onUpdate: onUpdate)
         }
     }
 
     static func shouldEvaluateSnapshot(firstFrame: Bool,
                                        lastEvaluatedAt: Date?,
-                                       receivedAt: Date) -> Bool {
+                                       receivedAt: Date,
+                                       minimumInterval: TimeInterval = 1) -> Bool {
         if firstFrame { return true }
         guard let lastEvaluatedAt else { return true }
-        return receivedAt.timeIntervalSince(lastEvaluatedAt) >= 1
+        return receivedAt.timeIntervalSince(lastEvaluatedAt) >= max(0.01, minimumInterval)
     }
 
     /// RFC-1982-style ordering for the strap's UInt32 seconds clock. A delta
@@ -370,6 +686,7 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
 
     func resetSynchronously() {
         queue.sync { [self] in
+            cancelTrailingSnapshot()
             detector.reset()
             committedRawSteps = 0
             totalFrames = 0
@@ -500,6 +817,50 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
             gravityValidatedFrames += 1
         }
         return true
+    }
+
+    private func scheduleTrailingSnapshot(deviceTimestamp: UInt32,
+                                          receivedAt: Date,
+                                          onUpdate: @escaping @Sendable (Snapshot) -> Void) {
+        pendingSnapshotDeviceTimestamp = deviceTimestamp
+        pendingSnapshotUpdate = onUpdate
+        guard pendingSnapshotWorkItem == nil else { return }
+        let elapsed = lastSnapshotEvaluationAt.map { receivedAt.timeIntervalSince($0) } ?? 0
+        let delay = max(0.001, snapshotMinimumInterval - max(0, elapsed))
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingSnapshotWorkItem = nil
+            guard let onUpdate = self.pendingSnapshotUpdate else { return }
+            let deviceTimestamp = self.pendingSnapshotDeviceTimestamp
+                ?? self.lastAcceptedDeviceTimestamp
+                ?? 0
+            self.pendingSnapshotUpdate = nil
+            self.pendingSnapshotDeviceTimestamp = nil
+            self.publishSnapshot(deviceTimestamp: deviceTimestamp,
+                                 evaluatedAt: Date(),
+                                 firstFrame: false,
+                                 onUpdate: onUpdate)
+        }
+        pendingSnapshotWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func cancelTrailingSnapshot() {
+        pendingSnapshotWorkItem?.cancel()
+        pendingSnapshotWorkItem = nil
+        pendingSnapshotDeviceTimestamp = nil
+        pendingSnapshotUpdate = nil
+    }
+
+    private func publishSnapshot(deviceTimestamp: UInt32,
+                                 evaluatedAt: Date,
+                                 firstFrame: Bool,
+                                 onUpdate: @escaping @Sendable (Snapshot) -> Void) {
+        lastSnapshotEvaluationAt = evaluatedAt
+        let snapshot = makeSnapshot(deviceTimestamp: deviceTimestamp)
+        guard firstFrame || snapshot.steps != lastPublishedSteps else { return }
+        lastPublishedSteps = snapshot.steps
+        onUpdate(snapshot)
     }
 
     private func finalizeCurrentMotionSegment(preservingConfirmedGait: Bool = false) {

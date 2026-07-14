@@ -1,5 +1,91 @@
 import SwiftUI
 
+/// A timestamped value emitted by Atria's existing live stress engine.
+/// Breathwork never derives stress from heart rate on its own: callers pass a
+/// reading only when `AtriaStressMonitorStore` produced a scored state.
+struct AtriaBreathworkStressReading: Equatable {
+    static let freshnessInterval: TimeInterval = 90
+    static let futureTolerance: TimeInterval = 5
+
+    let score: Double
+    let measuredAt: Date
+
+    init?(score: Double, measuredAt: Date) {
+        guard score.isFinite else { return nil }
+        self.score = min(max(score, 0), 3)
+        self.measuredAt = measuredAt
+    }
+
+    init?(state: AtriaStressState, measuredAt: Date?) {
+        guard state.kind == .scored,
+              state.level != nil,
+              state.rawActivation.isFinite,
+              let measuredAt else { return nil }
+        self.score = min(max(state.rawActivation * 3, 0), 3)
+        self.measuredAt = measuredAt
+    }
+
+    func fresh(at now: Date,
+               maximumAge: TimeInterval = freshnessInterval) -> AtriaBreathworkStressReading? {
+        let age = now.timeIntervalSince(measuredAt)
+        guard age >= -Self.futureTolerance, age <= maximumAge else { return nil }
+        return self
+    }
+}
+
+/// Pure presentation model for the active session's measured stress feedback.
+/// A missing baseline still permits a current score, but never a delta. A stale
+/// current value fails closed so the UI cannot present an old score as live.
+struct AtriaBreathworkStressFeedback: Equatable {
+    enum Direction: Equatable {
+        case down
+        case steady
+        case up
+    }
+
+    let currentScore: Double
+    let baselineScore: Double?
+    let delta: Double?
+    let direction: Direction?
+
+    static func make(current: AtriaBreathworkStressReading?,
+                     baseline: AtriaBreathworkStressReading?,
+                     now: Date) -> AtriaBreathworkStressFeedback? {
+        guard let current = current?.fresh(at: now) else { return nil }
+        guard let baseline else {
+            return AtriaBreathworkStressFeedback(currentScore: current.score,
+                                                 baselineScore: nil,
+                                                 delta: nil,
+                                                 direction: nil)
+        }
+        let delta = current.score - baseline.score
+        let direction: Direction
+        if abs(delta) < 0.05 {
+            direction = .steady
+        } else {
+            direction = delta < 0 ? .down : .up
+        }
+        return AtriaBreathworkStressFeedback(currentScore: current.score,
+                                             baselineScore: baseline.score,
+                                             delta: delta,
+                                             direction: direction)
+    }
+
+    var valueText: String { String(format: "%.1f", currentScore) }
+
+    var changeText: String? {
+        guard let baselineScore, let delta, let direction else { return nil }
+        switch direction {
+        case .down:
+            return "down \(String(format: "%.1f", abs(delta))) from \(String(format: "%.1f", baselineScore))"
+        case .steady:
+            return "unchanged from \(String(format: "%.1f", baselineScore))"
+        case .up:
+            return "up \(String(format: "%.1f", abs(delta))) from \(String(format: "%.1f", baselineScore))"
+        }
+    }
+}
+
 struct AtriaBreathworkSession: View {
     struct HeartSample: Equatable {
         let date: Date
@@ -62,6 +148,7 @@ struct AtriaBreathworkSession: View {
 
     let currentHeartRate: Int
     let currentRRSamples: [RRSample]
+    let currentStress: AtriaBreathworkStressReading?
     let onSave: (SavedSession) -> Void
     let onClose: () -> Void
 
@@ -74,6 +161,7 @@ struct AtriaBreathworkSession: View {
     @State private var pausedAt: Date?
     @State private var accumulatedPause: TimeInterval = 0
     @State private var breathVisualProgress = 0.0
+    @State private var startingStress: AtriaBreathworkStressReading?
 
     private let breathCycle: TimeInterval = 10.9
 
@@ -183,6 +271,7 @@ struct AtriaBreathworkSession: View {
                 startedAt = Date()
                 pausedAt = nil
                 accumulatedPause = 0
+                startingStress = currentStress?.fresh(at: Date())
                 samples.removeAll(keepingCapacity: true)
                 rrSamples.removeAll(keepingCapacity: true)
                 if currentHeartRate > 0 {
@@ -207,22 +296,26 @@ struct AtriaBreathworkSession: View {
 
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 let elapsed = activeElapsed(at: context.date, startedAt: startedAt)
-                HStack(spacing: 12) {
-                    HStack(spacing: 8) {
-                        ForEach(0..<4, id: \.self) { index in
-                            Capsule(style: .continuous)
-                                .fill(progressFill(index: index, elapsed: elapsed))
-                                .frame(width: 24, height: 5)
+                VStack(spacing: 14) {
+                    stressFeedback(at: context.date)
+
+                    HStack(spacing: 12) {
+                        HStack(spacing: 8) {
+                            ForEach(0..<4, id: \.self) { index in
+                                Capsule(style: .continuous)
+                                    .fill(progressFill(index: index, elapsed: elapsed))
+                                    .frame(width: 24, height: 5)
+                            }
                         }
+                        .accessibilityHidden(true)
+
+                        Spacer(minLength: 4)
+
+                        Label(currentHeartRate > 0 ? "\(currentHeartRate) bpm" : "HR learning",
+                              systemImage: "heart.fill")
+                            .font(.subheadline.weight(.bold).monospacedDigit())
+                            .foregroundStyle(.white.opacity(0.72))
                     }
-                    .accessibilityHidden(true)
-
-                    Spacer(minLength: 4)
-
-                    Label(currentHeartRate > 0 ? "\(currentHeartRate) bpm" : "HR learning",
-                          systemImage: "heart.fill")
-                        .font(.subheadline.weight(.bold).monospacedDigit())
-                        .foregroundStyle(.white.opacity(0.72))
                 }
                 .onChange(of: Int(elapsed)) { _, _ in
                     if elapsed >= selectedDuration, result == nil {
@@ -242,6 +335,72 @@ struct AtriaBreathworkSession: View {
             .controlSize(.large)
             .accessibilityHint(pausedAt == nil ? "Freezes the breathing clock" : "Continues the breathing session")
         }
+    }
+
+    @ViewBuilder
+    private func stressFeedback(at now: Date) -> some View {
+        let feedback = AtriaBreathworkStressFeedback.make(current: currentStress,
+                                                          baseline: startingStress,
+                                                          now: now)
+        VStack(spacing: 3) {
+            Text("Live stress")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.58))
+
+            if let feedback {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(feedback.valueText)
+                        .font(.system(size: 38, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                    if let direction = feedback.direction {
+                        Image(systemName: stressDirectionSymbol(direction))
+                            .font(.headline.weight(.black))
+                            .foregroundStyle(stressDirectionTint(direction))
+                            .accessibilityHidden(true)
+                    }
+                }
+                .foregroundStyle(.white)
+                .contentTransition(reduceMotion ? .identity : .numericText())
+
+                Text(feedback.changeText ?? "Start reading unavailable")
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(feedback.direction.map(stressDirectionTint) ?? .white.opacity(0.52))
+            } else {
+                Text("—")
+                    .font(.system(size: 38, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.56))
+                Text("Measured stress unavailable")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.52))
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 78)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(stressAccessibilityLabel(feedback))
+    }
+
+    private func stressDirectionSymbol(_ direction: AtriaBreathworkStressFeedback.Direction) -> String {
+        switch direction {
+        case .down: return "arrow.down"
+        case .steady: return "minus"
+        case .up: return "arrow.up"
+        }
+    }
+
+    private func stressDirectionTint(_ direction: AtriaBreathworkStressFeedback.Direction) -> Color {
+        switch direction {
+        case .down: return Metrics.electricGreen
+        case .steady: return .white.opacity(0.64)
+        case .up: return Metrics.electricStress
+        }
+    }
+
+    private func stressAccessibilityLabel(_ feedback: AtriaBreathworkStressFeedback?) -> String {
+        guard let feedback else { return "Live stress unavailable" }
+        guard let changeText = feedback.changeText else {
+            return "Live stress \(feedback.valueText), start reading unavailable"
+        }
+        return "Live stress \(feedback.valueText), \(changeText)"
     }
 
     /// Copy changes at one-second cadence. Smooth motion comes from infrequent
@@ -268,7 +427,7 @@ struct AtriaBreathworkSession: View {
                 .accessibilityLabel("\(cue.instruction), \(cue.secondsRemaining) seconds")
             }
         }
-        .frame(width: 250, height: 250)
+        .frame(width: 260, height: 260)
         .task(id: BreathAnimationKey(startedAt: startedAt,
                                      pausedAt: pausedAt,
                                      accumulatedPause: accumulatedPause,
@@ -313,15 +472,21 @@ struct AtriaBreathworkSession: View {
 
         return ZStack {
             Circle()
-                .stroke(Metrics.electricStrain.opacity(0.18), lineWidth: 1)
-                .frame(width: 236, height: 236)
-                .scaleEffect(reduceMotion ? 1 : 0.86 + 0.22 * clampedProgress)
-                .opacity(reduceMotion ? 0.62 : 0.38 + 0.42 * clampedProgress)
+                .fill(
+                    RadialGradient(colors: [
+                        Metrics.electricStrain.opacity(0.25),
+                        .clear
+                    ], center: .center, startRadius: 0, endRadius: 130)
+                )
+                .frame(width: 260, height: 260)
+                .scaleEffect(reduceMotion ? 1 : 0.8 + 0.35 * clampedProgress)
+                .opacity(reduceMotion ? 0.6 : 0.35 + 0.5 * clampedProgress)
 
             Circle()
-                .fill(Metrics.electricStrain.opacity(0.16))
-                .frame(width: 218, height: 218)
-                .scaleEffect(reduceMotion ? 1 : 0.8 + 0.35 * clampedProgress)
+                .stroke(Metrics.electricStrain.opacity(0.30), lineWidth: 1.5)
+                .frame(width: 210, height: 210)
+                .scaleEffect(reduceMotion ? 1 : 0.86 + 0.22 * clampedProgress)
+                .opacity(reduceMotion ? 0.72 : 0.5 + 0.5 * clampedProgress)
 
             Circle()
                 .fill(
@@ -332,13 +497,13 @@ struct AtriaBreathworkSession: View {
                 )
                 .overlay {
                     Circle()
-                        .stroke(.white.opacity(0.42), lineWidth: 2)
+                        .stroke(.white.opacity(0.40), lineWidth: 1)
                 }
-                .frame(width: 206, height: 206)
+                .frame(width: 170, height: 170)
                 .scaleEffect(scale)
                 .glassEffect(.regular.tint(Metrics.electricStrain.opacity(0.20)), in: Circle())
         }
-        .frame(width: 250, height: 250)
+        .frame(width: 260, height: 260)
         .accessibilityHidden(true)
     }
 
@@ -359,7 +524,7 @@ struct AtriaBreathworkSession: View {
             if cyclePosition < 0.45 {
                 duration = (0.45 - cyclePosition) * breathCycle
                 target = 1
-                animation = .linear(duration: duration)
+                animation = .easeInOut(duration: duration)
             } else if cyclePosition < 0.55 {
                 duration = (0.55 - cyclePosition) * breathCycle
                 target = 1
@@ -367,7 +532,7 @@ struct AtriaBreathworkSession: View {
             } else {
                 duration = (1 - cyclePosition) * breathCycle
                 target = 0
-                animation = .linear(duration: duration)
+                animation = .easeInOut(duration: duration)
             }
 
             if let animation {

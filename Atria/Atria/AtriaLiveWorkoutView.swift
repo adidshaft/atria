@@ -6,20 +6,20 @@ import MapKit
 struct AtriaWorkoutSession: Identifiable {
     let id = UUID()
     let start: Date
-    /// User-picked pre-workout target (gap spec c, workout intensity picker,
-    /// 2026-07-05). Additive and optional so existing call sites
-    /// (`AtriaWorkoutSession(start:)`) keep compiling unchanged. The screens
-    /// that present this session (AtriaHomeView/AtriaTodayScreen) are outside
-    /// this feature's file ownership, so these fields are the forward-
-    /// compatible persistence surface the spec calls for; the live view
-    /// itself resolves its own in-session override via `userTargetChoice`
-    /// below, independent of whether a caller ever threads these through.
+    /// User-picked workout target. These optional fields keep older call sites
+    /// source-compatible while making the session—not a presented SwiftUI
+    /// surface—the canonical owner across minimize, restoration and ActivityKit.
     var targetStrain: Double? = nil
     var targetZone: Int? = nil
     var lowerTargetZone: Int? = nil
     var upperTargetZone: Int? = nil
     var activityType: AtriaWorkoutActivityType = .other
     var startingStepCount: Int = 0
+    /// Strap steps accumulated during completed pause windows. These are
+    /// removed from workout-only steps while the day total remains monotonic.
+    var pausedStepCount: Int = 0
+    /// Day-total anchor captured exactly when the current pause began.
+    var pauseStartedStepCount: Int? = nil
     var startingDayStrain: Double = 0
 
     /// The user's target choice re-derived from the persisted fields, if any.
@@ -28,17 +28,40 @@ struct AtriaWorkoutSession: Identifiable {
         if let targetZone { return .zone(targetZone) }
         return nil
     }
+
+    /// Commits the mutually-exclusive target override into the session that
+    /// owns the workout. Keeping this state here (instead of in the presented
+    /// HUD) means minimizing or rebuilding that view cannot reset the choice.
+    mutating func setTargetChoice(_ choice: AtriaWorkoutTargetChoice?) {
+        switch choice {
+        case .strain(let value):
+            targetStrain = value
+            targetZone = nil
+        case .zone(let rawZone):
+            targetStrain = nil
+            targetZone = rawZone
+        case nil:
+            targetStrain = nil
+            targetZone = nil
+        }
+    }
 }
 
 struct AtriaLiveWorkoutSensorMetrics: Equatable {
     var trimp: Double = 0
     var activeCalories: Double?
+    /// True only after at least one bounded, non-paused HR interval was
+    /// integrated. A lone sample is not enough evidence for load or energy.
+    var hasEvidence = false
 }
 
 struct AtriaLiveWorkoutStepProjection: Equatable {
     typealias Availability = AtriaLiveSensorAvailability
 
-    static let freshnessInterval: TimeInterval = 90
+    /// Keep the in-workout HUD on the same source clock as the Lock Screen and
+    /// widgets. R10 motion normally publishes about once per second; after 15
+    /// seconds without a valid frame the last count is context, not live data.
+    static let freshnessInterval: TimeInterval = 15
     static let futureTolerance: TimeInterval = 5
 
     let count: Int?
@@ -53,12 +76,17 @@ struct AtriaLiveWorkoutStepProjection: Equatable {
 
     static func make(totalCount: Int,
                      startingCount: Int,
+                     pausedCount: Int = 0,
+                     pauseStartedCount: Int? = nil,
                      hasStepEvidence: Bool,
                      isValidated: Bool,
                      capturedAt: Date?,
                      isReconnecting: Bool,
                      now: Date = Date()) -> Self {
-        let count = hasStepEvidence ? max(0, totalCount - startingCount) : nil
+        let openPauseCount = pauseStartedCount.map { max(0, totalCount - $0) } ?? 0
+        let count = hasStepEvidence
+            ? max(0, totalCount - startingCount - max(0, pausedCount) - openPauseCount)
+            : nil
         let fresh = capturedAt.map {
             $0 <= now.addingTimeInterval(futureTolerance)
                 && now.timeIntervalSince($0) <= freshnessInterval
@@ -103,12 +131,76 @@ struct AtriaLiveWorkoutStepProjection: Equatable {
     }
 }
 
+/// One pause-aware elapsed-time definition shared by the foreground workout
+/// clock and ActivityKit. Keeping this pure also makes relaunch projections
+/// deterministic from the durable pending intent.
+enum AtriaWorkoutMovingDuration {
+    static func project(startedAt: Date,
+                        excludedIntervals: [ExcludedInterval],
+                        pauseStartedAt: Date?,
+                        now: Date) -> TimeInterval {
+        guard now > startedAt else { return 0 }
+        let completed = excludedIntervals.reduce(0.0) { total, interval in
+            let clampedStart = max(interval.start, startedAt)
+            let clampedEnd = min(interval.end, now)
+            return total + max(0, clampedEnd.timeIntervalSince(clampedStart))
+        }
+        let openPause = pauseStartedAt.map {
+            max(0, now.timeIntervalSince(max($0, startedAt)))
+        } ?? 0
+        return max(0, now.timeIntervalSince(startedAt) - completed - openPause)
+    }
+}
+
 struct AtriaLiveWorkoutMetricProjection: Equatable {
     var strain: Double = 0
     var activeCalories: Double?
     var steps: AtriaLiveWorkoutStepProjection = .unavailable
+    var sensorAvailability: AtriaLiveSensorAvailability = .unavailable
+    var sensorCapturedAt: Date?
+    var hasSensorEvidence = false
 
     static let empty = AtriaLiveWorkoutMetricProjection()
+
+    var coachingIsLive: Bool {
+        hasSensorEvidence && sensorAvailability == .live
+    }
+
+    var strainHUDText: String {
+        hasSensorEvidence ? String(format: "%.1f", strain) : "--"
+    }
+
+    var activeCaloriesHUDText: String {
+        guard hasSensorEvidence, let activeCalories else { return "--" }
+        return "≈ \(Int(activeCalories.rounded())) kcal"
+    }
+
+    var strainHUDTitle: String {
+        hasSensorEvidence && sensorAvailability != .live ? "Last strain" : "Strain"
+    }
+
+    var activeCaloriesHUDTitle: String {
+        hasSensorEvidence && sensorAvailability != .live ? "Last active" : "Active"
+    }
+
+    var sensorStatusTitle: String? {
+        guard hasSensorEvidence else { return "Waiting for strap" }
+        switch sensorAvailability {
+        case .live: return nil
+        case .reconnecting: return "Reconnecting"
+        case .stale: return "Signal paused"
+        case .unavailable: return "Signal unavailable"
+        }
+    }
+
+    var sensorStatusDetail: String? {
+        guard hasSensorEvidence else { return "Strain and calories begin with continuous heart rate." }
+        switch sensorAvailability {
+        case .live: return nil
+        case .reconnecting: return "Holding the last recorded totals."
+        case .stale, .unavailable: return "Showing the last recorded totals."
+        }
+    }
 }
 
 /// Incremental, pause-aware Banister load and active energy owned by one
@@ -125,6 +217,7 @@ struct AtriaLiveWorkoutTRIMPAccumulator {
     private var excludedIntervals: [ExcludedInterval] = []
     private var value = 0.0
     private var activeCalories: Double?
+    private var hasEvidence = false
 
     mutating func trimp(samples: [HRSample],
                         startedAt: Date,
@@ -171,7 +264,8 @@ struct AtriaLiveWorkoutTRIMPAccumulator {
                   sex: sex,
                   profile: profile,
                   excludedIntervals: excludedIntervals)
-            return AtriaLiveWorkoutSensorMetrics(activeCalories: profile?.hasEnergyProfile == true ? 0 : nil)
+            return AtriaLiveWorkoutSensorMetrics(activeCalories: profile?.hasEnergyProfile == true ? 0 : nil,
+                                                  hasEvidence: false)
         }
         let normalized = Self.normalized(excludedIntervals)
         let canExtend = self.startedAt == startedAt
@@ -185,7 +279,15 @@ struct AtriaLiveWorkoutTRIMPAccumulator {
             && lastTimestamp == samples[sampleCount - 1].t
         var total = canExtend ? value : 0
         var calories = canExtend ? (activeCalories ?? 0) : 0
-        var index = canExtend ? sampleCount : 1
+        var integratedEvidence = canExtend ? hasEvidence : false
+        // The BLE session is an all-day, bounded continuity buffer. A workout
+        // can begin near its tail, so replaying from index 1 after a target,
+        // profile or pause change needlessly walks hours of pre-workout HR on
+        // the main actor. Binary-search directly to the first pair fully inside
+        // this workout; subsequent updates remain append-only via `sampleCount`.
+        var index = canExtend
+            ? sampleCount
+            : Self.firstIntegrationIndex(samples: samples, startedAt: startedAt)
         let reserve = Double(maxHR - rest)
         let coefficient = AtriaAnalytics.Strain.banisterCoefficient(for: sex)
         while index < samples.count {
@@ -200,6 +302,7 @@ struct AtriaLiveWorkoutTRIMPAccumulator {
                dt > 0,
                dt <= AtriaAnalytics.Strain.maximumLoadEvidenceGap,
                !excluded {
+                integratedEvidence = true
                 let meanBPM = (Double(previous.bpm) + Double(current.bpm)) / 2
                 let hrr = min(max((meanBPM - Double(rest)) / reserve, 0), 1)
                 total += (dt / 60) * hrr * 0.64 * exp(coefficient * hrr)
@@ -222,7 +325,10 @@ struct AtriaLiveWorkoutTRIMPAccumulator {
         self.excludedIntervals = normalized
         value = total
         activeCalories = profile?.hasEnergyProfile == true ? calories : nil
-        return AtriaLiveWorkoutSensorMetrics(trimp: total, activeCalories: activeCalories)
+        hasEvidence = integratedEvidence
+        return AtriaLiveWorkoutSensorMetrics(trimp: total,
+                                              activeCalories: activeCalories,
+                                              hasEvidence: integratedEvidence)
     }
 
     mutating func clear() {
@@ -231,6 +337,7 @@ struct AtriaLiveWorkoutTRIMPAccumulator {
         lastTimestamp = nil
         value = 0
         activeCalories = nil
+        hasEvidence = false
         profile = nil
         excludedIntervals = []
     }
@@ -252,12 +359,47 @@ struct AtriaLiveWorkoutTRIMPAccumulator {
         self.excludedIntervals = Self.normalized(excludedIntervals)
         value = 0
         activeCalories = profile?.hasEnergyProfile == true ? 0 : nil
+        hasEvidence = false
     }
 
     private static func normalized(_ intervals: [ExcludedInterval]) -> [ExcludedInterval] {
         intervals.filter { $0.end > $0.start }.sorted { lhs, rhs in
             lhs.start == rhs.start ? lhs.end < rhs.end : lhs.start < rhs.start
         }
+    }
+
+    /// Returns the first current-sample index whose previous/current pair can
+    /// both belong to this workout. Samples are chronologically ordered by the
+    /// BLE pipeline, allowing a logarithmic prefix skip instead of an O(day)
+    /// scan whenever the incremental cache must be rebuilt.
+    nonisolated static func firstIntegrationIndex(samples: [HRSample],
+                                                  startedAt: Date) -> Int {
+        var lowerBound = 0
+        var upperBound = samples.count
+        while lowerBound < upperBound {
+            let middle = lowerBound + (upperBound - lowerBound) / 2
+            if samples[middle].t < startedAt {
+                lowerBound = middle + 1
+            } else {
+                upperBound = middle
+            }
+        }
+        guard lowerBound < samples.count else { return samples.count }
+        return min(samples.count, max(1, lowerBound + 1))
+    }
+
+    /// A live pause is semantically open-ended until Resume. Representing it
+    /// with `Date()` made its value different on every 750 ms UI publication,
+    /// which invalidated this accumulator and replayed the workout repeatedly.
+    /// A stable distant-future end excludes the same live samples without
+    /// changing identity; Resume replaces it with one real closed interval.
+    nonisolated static func effectiveExcludedIntervals(
+        closedIntervals: [ExcludedInterval],
+        openPauseStartedAt: Date?
+    ) -> [ExcludedInterval] {
+        guard let openPauseStartedAt else { return closedIntervals }
+        return closedIntervals + [ExcludedInterval(start: openPauseStartedAt,
+                                                    end: .distantFuture)]
     }
 }
 
@@ -280,9 +422,16 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
     var strengthSets: [LoggedSet]
     var excludedIntervals: [ExcludedInterval]
     var pauseStartedAt: Date? = nil
+    var targetStrain: Double? = nil
+    var targetZone: Int? = nil
     var lowerTargetZone: Int? = nil
     var upperTargetZone: Int? = nil
     let startingStepCount: Int
+    var pausedStepCount: Int = 0
+    var pauseStartedStepCount: Int? = nil
+    var completedStepCount: Int? = nil
+    var completedStepsAreEstimated: Bool? = nil
+    var completedStepsCapturedAt: Date? = nil
     let startingDayStrain: Double
 
     private enum CodingKeys: String, CodingKey {
@@ -292,9 +441,16 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
         case strengthSets
         case excludedIntervals
         case pauseStartedAt
+        case targetStrain
+        case targetZone
         case lowerTargetZone
         case upperTargetZone
         case startingStepCount
+        case pausedStepCount
+        case pauseStartedStepCount
+        case completedStepCount
+        case completedStepsAreEstimated
+        case completedStepsCapturedAt
         case startingDayStrain
     }
 
@@ -311,9 +467,19 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
         excludedIntervals = try values.decodeIfPresent([ExcludedInterval].self,
                                                         forKey: .excludedIntervals) ?? []
         pauseStartedAt = try values.decodeIfPresent(Date.self, forKey: .pauseStartedAt)
+        targetStrain = try values.decodeIfPresent(Double.self, forKey: .targetStrain)
+        targetZone = try values.decodeIfPresent(Int.self, forKey: .targetZone)
         lowerTargetZone = try values.decodeIfPresent(Int.self, forKey: .lowerTargetZone)
         upperTargetZone = try values.decodeIfPresent(Int.self, forKey: .upperTargetZone)
         startingStepCount = try values.decodeIfPresent(Int.self, forKey: .startingStepCount) ?? 0
+        pausedStepCount = try values.decodeIfPresent(Int.self, forKey: .pausedStepCount) ?? 0
+        pauseStartedStepCount = try values.decodeIfPresent(Int.self,
+                                                            forKey: .pauseStartedStepCount)
+        completedStepCount = try values.decodeIfPresent(Int.self, forKey: .completedStepCount)
+        completedStepsAreEstimated = try values.decodeIfPresent(Bool.self,
+                                                                 forKey: .completedStepsAreEstimated)
+        completedStepsCapturedAt = try values.decodeIfPresent(Date.self,
+                                                               forKey: .completedStepsCapturedAt)
         startingDayStrain = try values.decodeIfPresent(Double.self, forKey: .startingDayStrain) ?? 0
     }
 
@@ -323,9 +489,16 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
          strengthSets: [LoggedSet],
          excludedIntervals: [ExcludedInterval],
          pauseStartedAt: Date? = nil,
+         targetStrain: Double? = nil,
+         targetZone: Int? = nil,
          lowerTargetZone: Int? = nil,
          upperTargetZone: Int? = nil,
          startingStepCount: Int,
+         pausedStepCount: Int = 0,
+         pauseStartedStepCount: Int? = nil,
+         completedStepCount: Int? = nil,
+         completedStepsAreEstimated: Bool? = nil,
+         completedStepsCapturedAt: Date? = nil,
          startingDayStrain: Double) {
         self.startedAt = startedAt
         self.endedAt = endedAt
@@ -333,14 +506,27 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
         self.strengthSets = strengthSets
         self.excludedIntervals = excludedIntervals
         self.pauseStartedAt = pauseStartedAt
+        self.targetStrain = targetStrain
+        self.targetZone = targetZone
         self.lowerTargetZone = lowerTargetZone
         self.upperTargetZone = upperTargetZone
         self.startingStepCount = startingStepCount
+        self.pausedStepCount = max(0, pausedStepCount)
+        self.pauseStartedStepCount = pauseStartedStepCount
+        self.completedStepCount = completedStepCount.map { max(0, $0) }
+        self.completedStepsAreEstimated = completedStepCount == nil ? nil : completedStepsAreEstimated
+        self.completedStepsCapturedAt = completedStepCount == nil ? nil : completedStepsCapturedAt
         self.startingDayStrain = startingDayStrain
     }
 
     var resolvedActivityType: AtriaWorkoutActivityType {
         AtriaWorkoutActivityType(rawValue: activityType) ?? .other
+    }
+
+    var targetChoice: AtriaWorkoutTargetChoice? {
+        if let targetStrain { return .strain(targetStrain) }
+        if let targetZone { return .zone(targetZone) }
+        return nil
     }
 
     static func load(defaults: UserDefaults = .standard) -> Self? {
@@ -359,12 +545,34 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
         defaults.removeObject(forKey: defaultsKey)
     }
 
+    /// Completion work is asynchronous. Never let an older route/session
+    /// callback clear a newer workout that replaced the singleton intent while
+    /// evidence was being prepared or persisted.
+    @discardableResult
+    static func clearIfUnchanged(_ expected: Self,
+                                 defaults: UserDefaults = .standard) -> Bool {
+        guard load(defaults: defaults) == expected else { return false }
+        clear(defaults: defaults)
+        return true
+    }
+
     static func isActiveForBLEContinuity(defaults: UserDefaults = .standard,
                                          now: Date = Date(),
                                          maxAge: TimeInterval = bleContinuityMaxAge) -> Bool {
         guard let intent = load(defaults: defaults), intent.endedAt == nil else { return false }
         let age = now.timeIntervalSince(intent.startedAt)
         return age >= -bleContinuityFutureTolerance && age <= maxAge
+    }
+
+    /// Produces the pause exclusions that belong to a completed workout. The
+    /// visible End button normally resumes first, but Lock Screen actions,
+    /// process recovery and suspension can all finalize without that view
+    /// callback. Completion must therefore close an open pause itself.
+    func finalizedExcludedIntervals() -> [ExcludedInterval] {
+        guard let endedAt, let pauseStartedAt else { return excludedIntervals }
+        let start = max(startedAt, pauseStartedAt)
+        guard endedAt > start else { return excludedIntervals }
+        return excludedIntervals + [ExcludedInterval(start: start, end: endedAt)]
     }
 }
 
@@ -413,6 +621,88 @@ struct AtriaWorkoutZoneHapticTransition: Equatable {
     }
 }
 
+/// Owns zone-boundary state for the lifetime of an explicit workout, rather
+/// than for the lifetime of whichever SwiftUI workout surface is visible.
+/// `AtriaBLEManager` feeds this only accepted strap samples, so minimizing the
+/// workout, locking the phone, or rebuilding its full-screen view cannot stop
+/// coaching or create a second observer with a duplicate pulse.
+struct AtriaWorkoutZoneHapticLifecycle: Equatable {
+    struct Configuration: Equatable {
+        let workoutStartedAt: Date
+        let lowerZone: HRZone
+        let upperZone: HRZone
+        let maxHR: Int
+
+        init?(workoutStartedAt: Date,
+              lowerTargetZone: Int,
+              upperTargetZone: Int,
+              maxHR: Int) {
+            guard maxHR > 0 else { return nil }
+            let lowerRaw = min(lowerTargetZone, upperTargetZone)
+            let upperRaw = max(lowerTargetZone, upperTargetZone)
+            guard let lowerZone = HRZone(rawValue: lowerRaw),
+                  let upperZone = HRZone(rawValue: upperRaw) else { return nil }
+            self.workoutStartedAt = workoutStartedAt
+            self.lowerZone = lowerZone
+            self.upperZone = upperZone
+            self.maxHR = maxHR
+        }
+
+        var lowerBPM: Int {
+            Int((Double(maxHR) * lowerZone.lowerFraction).rounded(.up))
+        }
+
+        var upperBPM: Int {
+            guard let nextZone = HRZone(rawValue: upperZone.rawValue + 1) else {
+                return maxHR
+            }
+            return Int((Double(maxHR) * nextZone.lowerFraction).rounded(.up)) - 1
+        }
+    }
+
+    private(set) var configuration: Configuration?
+    private(set) var isPaused = false
+    private var transition = AtriaWorkoutZoneHapticTransition()
+
+    mutating func configure(workoutStartedAt: Date?,
+                            lowerTargetZone: Int?,
+                            upperTargetZone: Int?,
+                            maxHR: Int,
+                            isPaused: Bool) {
+        guard let workoutStartedAt,
+              let lowerTargetZone,
+              let upperTargetZone,
+              let next = Configuration(workoutStartedAt: workoutStartedAt,
+                                       lowerTargetZone: lowerTargetZone,
+                                       upperTargetZone: upperTargetZone,
+                                       maxHR: maxHR) else {
+            reset()
+            return
+        }
+        if configuration != next || self.isPaused != isPaused {
+            // A new workout/target or pause boundary establishes a fresh,
+            // silent baseline. It must never vibrate merely because a view was
+            // restored or because coaching resumed after an intentional pause.
+            transition = AtriaWorkoutZoneHapticTransition()
+        }
+        configuration = next
+        self.isPaused = isPaused
+    }
+
+    mutating func accept(bpm: Int) -> Int? {
+        guard !isPaused, let configuration else { return nil }
+        return transition.accept(bpm: bpm,
+                                 lowerBPM: configuration.lowerBPM,
+                                 upperBPM: configuration.upperBPM)
+    }
+
+    mutating func reset() {
+        configuration = nil
+        isPaused = false
+        transition = AtriaWorkoutZoneHapticTransition()
+    }
+}
+
 struct AtriaWorkoutStartSheet: View {
     let initial: AtriaWorkoutStartConfiguration
     let onStart: (AtriaWorkoutStartConfiguration) -> Void
@@ -423,9 +713,17 @@ struct AtriaWorkoutStartSheet: View {
 
     init(initial: AtriaWorkoutStartConfiguration = .init(),
          onStart: @escaping (AtriaWorkoutStartConfiguration) -> Void) {
-        self.initial = initial
+        var resolvedInitial = initial
+        if resolvedInitial.activityType == .other {
+            let recent = UserDefaults.standard
+                .stringArray(forKey: "atria.workout.recentActivityTypes")?
+                .compactMap(AtriaWorkoutActivityType.init(rawValue:))
+                .first
+            resolvedInitial.activityType = recent ?? .walking
+        }
+        self.initial = resolvedInitial
         self.onStart = onStart
-        _configuration = State(initialValue: initial)
+        _configuration = State(initialValue: resolvedInitial)
     }
 
     var body: some View {
@@ -454,8 +752,19 @@ struct AtriaWorkoutStartSheet: View {
                         }
                     }
 
-                    Text("Heart-rate range")
-                        .font(.title2.weight(.bold))
+                    HStack(spacing: 10) {
+                        Text("Heart-rate target")
+                            .font(.title2.weight(.bold))
+                        Spacer(minLength: 8)
+                        Label(selectedZoneRangeText, systemImage: "scope")
+                            .font(.caption.weight(.black).monospacedDigit())
+                            .foregroundStyle(.cyan)
+                            .lineLimit(1)
+                            .padding(.horizontal, 10)
+                            .frame(minHeight: 32)
+                            .background(.cyan.opacity(0.12), in: Capsule())
+                            .accessibilityLabel("Target heart rate \(selectedZoneRangeText)")
+                    }
                     GlassEffectContainer(spacing: 10) {
                         VStack(spacing: 12) {
                             zoneSelector(title: "Target lower zone", selection: $configuration.lowerTargetZone)
@@ -512,7 +821,7 @@ struct AtriaWorkoutStartSheet: View {
                     onStart(value)
                     dismiss()
                 } label: {
-                    Label("Start workout", systemImage: "play.fill")
+                    Label("Start \(configuration.activityType.rawValue)", systemImage: "play.fill")
                         .font(.headline)
                         .frame(maxWidth: .infinity, minHeight: 52)
                 }
@@ -521,7 +830,27 @@ struct AtriaWorkoutStartSheet: View {
                 .padding(.horizontal, 20)
                 .padding(.bottom, 8)
             }
+            .onChange(of: configuration.lowerTargetZone) { _, lower in
+                // Keep the visible range valid as it is edited. Normalizing only
+                // after Start made a temporary Z5–Z2 target look accepted even
+                // though the persisted workout would silently reverse it.
+                if configuration.upperTargetZone < lower {
+                    configuration.upperTargetZone = lower
+                }
+            }
+            .onChange(of: configuration.upperTargetZone) { _, upper in
+                if configuration.lowerTargetZone > upper {
+                    configuration.lowerTargetZone = upper
+                }
+            }
         }
+    }
+
+    private var selectedZoneRangeText: String {
+        let range = configuration.normalizedZoneRange
+        return range.lowerBound == range.upperBound
+            ? "Z\(range.lowerBound)"
+            : "Z\(range.lowerBound)–Z\(range.upperBound)"
     }
 
     private var compactActivityTypes: [AtriaWorkoutActivityType] {
@@ -529,7 +858,10 @@ struct AtriaWorkoutStartSheet: View {
         let recent = stored.compactMap(AtriaWorkoutActivityType.init(rawValue:))
         let preferred: [AtriaWorkoutActivityType] = [configuration.activityType, .strength, .walking, .running, .cycling, .cardio]
         var seen = Set<AtriaWorkoutActivityType>()
-        return (recent + preferred).filter { seen.insert($0).inserted }.prefix(6).map { $0 }
+        return ([configuration.activityType] + recent + preferred)
+            .filter { seen.insert($0).inserted }
+            .prefix(6)
+            .map { $0 }
     }
 
     private var filteredActivityTypes: [AtriaWorkoutActivityType] {
@@ -670,52 +1002,59 @@ private struct AtriaLiveWorkoutRouteMap: View, Equatable {
     }
 }
 
-/// The sole observer of route snapshots. GPS updates redraw this compact leaf
-/// without re-evaluating the full live-workout hierarchy.
+/// The sole observer of route snapshots. GPS updates redraw this map-first
+/// leaf without re-evaluating the full live-workout hierarchy.
 private struct AtriaLiveWorkoutRouteCard: View {
     @ObservedObject var routeRecorder: AtriaWorkoutRouteRecorder
 
     var body: some View {
         let route = routeRecorder.snapshot
-        ZStack(alignment: .bottomLeading) {
+        ZStack(alignment: .topLeading) {
             AtriaLiveWorkoutRouteMap(coordinates: route.previewCoordinates)
                 .equatable()
-            if route.pointCount >= 2 {
-                    HStack(spacing: 12) {
-                        Label(distanceText(route.distanceMeters), systemImage: "location.fill")
-                        Label(paceText(distance: route.distanceMeters,
-                                       movingDuration: routeRecorder.movingDuration()),
-                              systemImage: "speedometer")
-                    }
-                    .font(.caption.weight(.black).monospacedDigit())
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(.black.opacity(0.62), in: Capsule())
-                    .padding(10)
-            } else if let error = route.lastError {
-                Label(error, systemImage: "location.slash.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .atriaWorkoutContentSurface(cornerRadius: 18, tint: .orange)
-            } else {
-                Label(route.isPaused ? "Route paused" : (route.isRecording ? "Finding your route…" : "Starting route…"),
-                      systemImage: route.isPaused ? "pause.circle.fill" : "location.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.72))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .atriaWorkoutContentSurface(cornerRadius: 18, tint: .cyan)
-            }
+
+            routeStatus(route)
+                .padding(.horizontal, 16)
+                .padding(.top, 70)
+                .safeAreaPadding(.top)
         }
-        .frame(height: 170)
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(route.pointCount >= 2
                             ? "Workout route, \(distanceText(route.distanceMeters)), pace \(paceText(distance: route.distanceMeters, movingDuration: routeRecorder.movingDuration()))."
                             : (route.lastError ?? "Finding your current route"))
+    }
+
+    @ViewBuilder
+    private func routeStatus(_ route: AtriaWorkoutRouteRecorder.Snapshot) -> some View {
+        if route.pointCount >= 2 {
+            HStack(spacing: 12) {
+                Label(distanceText(route.distanceMeters), systemImage: "location.fill")
+                Label(paceText(distance: route.distanceMeters,
+                               movingDuration: routeRecorder.movingDuration()),
+                      systemImage: "speedometer")
+            }
+            .font(.caption.weight(.black).monospacedDigit())
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 38)
+            .atriaWorkoutGlassSurface(cornerRadius: 19, tint: .cyan)
+        } else if route.lastError != nil {
+            Label("Location unavailable", systemImage: "location.slash.fill")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 12)
+                .frame(minHeight: 38)
+                .atriaWorkoutGlassSurface(cornerRadius: 19, tint: .orange)
+        } else {
+            Label(route.isPaused ? "Route paused" : "Locating…",
+                  systemImage: route.isPaused ? "pause.circle.fill" : "location.fill")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white.opacity(0.86))
+                .padding(.horizontal, 12)
+                .frame(minHeight: 38)
+                .atriaWorkoutGlassSurface(cornerRadius: 19, tint: .cyan)
+        }
     }
 
     private func distanceText(_ meters: Double) -> String {
@@ -746,6 +1085,7 @@ struct AtriaLiveWorkoutView: View {
     let lowerTargetZone: Int?
     let upperTargetZone: Int?
     @Binding var activityType: AtriaWorkoutActivityType
+    @Binding var targetChoice: AtriaWorkoutTargetChoice?
     let strengthHistory: StrengthHistoryProjection
     @Binding var loggedSets: [LoggedSet]
     @Binding var excludedIntervals: [ExcludedInterval]
@@ -754,14 +1094,12 @@ struct AtriaLiveWorkoutView: View {
     let broadcastPersistsAfterWorkout: Bool
     let onMinimize: () -> Void
     let onTogglePause: () -> Void
-    let onZoneHaptic: (Int) -> Void
     let onStop: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showSetLogger = false
     @State private var showTargetPicker = false
-    @State private var userTargetChoice: AtriaWorkoutTargetChoice?
     @State private var selectedExercise = "Barbell bench press"
     @State private var loggerWeightKg = 60.0
     @State private var loggerReps = 8
@@ -771,6 +1109,74 @@ struct AtriaLiveWorkoutView: View {
     @State private var latestPRSetID: UUID?
 
     var body: some View {
+        Group {
+            if activityType.supportsRouteRecording {
+                routeWorkoutContent
+            } else {
+                standardWorkoutContent
+            }
+        }
+        .preferredColorScheme(.dark)
+        .sheet(isPresented: $showSetLogger) {
+            setLoggerSheet
+                .presentationDetents([.height(390), .large])
+                .presentationDragIndicator(.visible)
+                .preferredColorScheme(.dark)
+        }
+        .sheet(isPresented: $showTargetPicker) {
+            AtriaWorkoutTargetPicker(currentZone: HRZone.zone(for: pulseStore.state.heartRate, maxHR: maxHR),
+                                     guidanceTarget: strainTarget,
+                                     choice: $targetChoice)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .preferredColorScheme(.dark)
+        }
+        .onAppear {
+            #if DEBUG
+            applyDebugWorkoutFixtureIfNeeded(arguments: ProcessInfo.processInfo.arguments)
+            if ProcessInfo.processInfo.arguments.contains("--atria-open-set-logger") {
+                primeLoggerFromLastSet()
+                showSetLogger = true
+            }
+            #endif
+        }
+    }
+
+    /// Walking, running, hiking and cycling use the map as the primary live
+    /// surface. The frequently changing metrics stay in one compact leaf and
+    /// the two safety-critical controls remain pinned above the bottom inset.
+    private var routeWorkoutContent: some View {
+        ZStack {
+            AtriaLiveWorkoutRouteCard(routeRecorder: routeRecorder)
+                .ignoresSafeArea()
+
+            LinearGradient(colors: [.black.opacity(0.52), .clear, .black.opacity(0.78)],
+                           startPoint: .top,
+                           endPoint: .bottom)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+
+            VStack(spacing: 10) {
+                header
+                Spacer(minLength: 24)
+                AtriaLiveWorkoutRouteMetricsHUD(pulseStore: pulseStore,
+                                                metricProjection: metricProjection,
+                                                maxHR: maxHR,
+                                                lowerTargetZone: lowerTargetZone,
+                                                upperTargetZone: upperTargetZone,
+                                                onEditTarget: { showTargetPicker = true })
+                routeWorkoutActions
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .safeAreaPadding(.top)
+            .safeAreaPadding(.bottom)
+        }
+    }
+
+    /// Strength and stationary activities retain their full logging and
+    /// coaching flow; the map-first composition is intentionally route-only.
+    private var standardWorkoutContent: some View {
         ZStack {
             AtriaLiveWorkoutBackdrop(pulseStore: pulseStore, maxHR: maxHR)
 
@@ -778,9 +1184,6 @@ struct AtriaLiveWorkoutView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 10) {
                         header
-                        // Two glanceable performance surfaces replace the old
-                        // HR + stats + target + zone stack. Pulse owns the zone
-                        // bar; performance owns strain, target, cue and calories.
                         AtriaLiveWorkoutHeartBlock(pulseStore: pulseStore,
                                                    maxHR: maxHR,
                                                    lowerTargetZone: lowerTargetZone,
@@ -788,11 +1191,8 @@ struct AtriaLiveWorkoutView: View {
                             .padding(.top, 2)
                         AtriaLiveWorkoutStrainGuidance(metricProjection: metricProjection,
                                                        guidanceTarget: strainTarget,
-                                                       userTargetChoice: $userTargetChoice,
+                                                       targetChoice: $targetChoice,
                                                        showTargetPicker: $showTargetPicker)
-                        if activityType.supportsRouteRecording {
-                            AtriaLiveWorkoutRouteCard(routeRecorder: routeRecorder)
-                        }
                         workoutActionsCard
                     }
                     .padding(22)
@@ -808,43 +1208,31 @@ struct AtriaLiveWorkoutView: View {
         }
         .safeAreaPadding(.top)
         .safeAreaPadding(.bottom)
-        .preferredColorScheme(.dark)
-        .sheet(isPresented: $showSetLogger) {
-            setLoggerSheet
-                .presentationDetents([.height(390), .large])
-                .presentationDragIndicator(.visible)
-                .preferredColorScheme(.dark)
-        }
-        .sheet(isPresented: $showTargetPicker) {
-            AtriaWorkoutTargetPicker(currentZone: HRZone.zone(for: pulseStore.state.heartRate, maxHR: maxHR),
-                                     guidanceTarget: strainTarget,
-                                     choice: $userTargetChoice)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-                .preferredColorScheme(.dark)
-        }
-        .onAppear {
-            #if DEBUG
-            applyDebugWorkoutFixtureIfNeeded(arguments: ProcessInfo.processInfo.arguments)
-            if ProcessInfo.processInfo.arguments.contains("--atria-open-set-logger") {
-                primeLoggerFromLastSet()
-                showSetLogger = true
-            }
-            #endif
-        }
-        .background {
-            if let lowerTargetZone,
-               let upperTargetZone,
-               let lower = HRZone(rawValue: lowerTargetZone),
-               let upper = HRZone(rawValue: upperTargetZone) {
-                AtriaWorkoutZoneHapticObserver(pulseStore: pulseStore,
-                                               maxHR: maxHR,
-                                               lowerZone: lower,
-                                               upperZone: upper,
-                                               isPaused: pauseStartedAt != nil,
-                                               onHaptic: onZoneHaptic)
+    }
+
+    private var routeWorkoutActions: some View {
+        GlassEffectContainer(spacing: 10) {
+            HStack(spacing: 10) {
+                Button(action: toggleWorkoutPause) {
+                    Label(isPaused ? "Resume" : "Pause",
+                          systemImage: isPaused ? "play.fill" : "pause.fill")
+                        .font(.headline.weight(.black))
+                        .frame(maxWidth: .infinity, minHeight: 54)
+                }
+                .buttonStyle(.glassProminent)
+                .tint(isPaused ? .green : .orange)
+
+                Button(role: .destructive, action: endWorkout) {
+                    Label("End", systemImage: "stop.fill")
+                        .font(.headline.weight(.black))
+                        .frame(maxWidth: .infinity, minHeight: 54)
+                }
+                .buttonStyle(.glassProminent)
+                .tint(.red)
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Workout controls. \(isPaused ? "Paused" : "Recording").")
     }
 
     private var header: some View {
@@ -855,11 +1243,10 @@ struct AtriaLiveWorkoutView: View {
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.headline.weight(.black))
-                    .foregroundStyle(.white)
                     .frame(width: 44, height: 44)
-                    .background(.white.opacity(0.10), in: Circle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
             .accessibilityLabel("Minimize workout")
 
             Menu {
@@ -1310,11 +1697,7 @@ struct AtriaLiveWorkoutView: View {
     }
 
     private var stopButton: some View {
-        Button(role: .destructive) {
-            finalizePauseIfNeeded()
-            onStop()
-            dismiss()
-        } label: {
+        Button(role: .destructive, action: endWorkout) {
             Label("End workout", systemImage: "stop.fill")
                 .font(.headline.weight(.bold))
                 .frame(maxWidth: .infinity)
@@ -1323,8 +1706,19 @@ struct AtriaLiveWorkoutView: View {
         .atriaCardAction(tint: .red)
     }
 
+    private func endWorkout() {
+        finalizePauseIfNeeded()
+        onStop()
+        dismiss()
+    }
+
     private func elapsedText(_ date: Date) -> String {
-        let total = max(0, Int(date.timeIntervalSince(startDate)))
+        let total = max(0, Int(AtriaWorkoutMovingDuration.project(
+            startedAt: startDate,
+            excludedIntervals: excludedIntervals,
+            pauseStartedAt: pauseStartedAt,
+            now: date
+        )))
         let h = total / 3600, m = (total % 3600) / 60, s = total % 60
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, s)
                      : String(format: "%02d:%02d", m, s)
@@ -1349,6 +1743,142 @@ private struct AtriaLiveWorkoutBackdrop: View {
                        startPoint: .top, endPoint: .bottom)
             .ignoresSafeArea()
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.6), value: zone)
+    }
+}
+
+/// One compact, pulse-driven overlay for outdoor workouts. Keeping HR here
+/// isolates rapid strap publications from the map and pinned action controls.
+private struct AtriaLiveWorkoutRouteMetricsHUD: View {
+    @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
+    let metricProjection: AtriaLiveWorkoutMetricProjection
+    let maxHR: Int
+    let lowerTargetZone: Int?
+    let upperTargetZone: Int?
+    let onEditTarget: () -> Void
+
+    private var heartRate: Int { pulseStore.state.heartRate }
+    private var zone: HRZone { HRZone.zone(for: heartRate, maxHR: maxHR) }
+    private var zoneText: String {
+        zone.rawValue == 0 ? "Below Z1" : "Z\(zone.rawValue) \(zone.name)"
+    }
+    private var targetRangeText: String? {
+        guard let lowerTargetZone, let upperTargetZone else { return nil }
+        return "Z\(lowerTargetZone)–Z\(upperTargetZone)"
+    }
+    private var caloriesValue: String {
+        guard metricProjection.hasSensorEvidence,
+              let calories = metricProjection.activeCalories else { return "--" }
+        return "≈\(Int(calories.rounded()))"
+    }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "heart.fill")
+                    .font(.headline.weight(.black))
+                    .foregroundStyle(.red)
+
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(heartRate > 0 ? "\(heartRate)" : "--")
+                        .font(.system(size: 42, weight: .heavy, design: .rounded))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.58)
+                        .allowsTightening(true)
+                        .layoutPriority(3)
+                        .contentTransition(.numericText())
+                    Text("BPM")
+                        .font(.caption2.weight(.black))
+                        .foregroundStyle(.white.opacity(0.62))
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Heart rate \(heartRate) beats per minute")
+
+                Spacer(minLength: 4)
+
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(zoneText)
+                        .font(.caption.weight(.black))
+                        .foregroundStyle(zone.color)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.74)
+                    if let targetRangeText {
+                        Text(targetRangeText)
+                            .font(.caption2.weight(.bold).monospacedDigit())
+                            .foregroundStyle(.white.opacity(0.62))
+                            .lineLimit(1)
+                    }
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(targetRangeText.map { "Heart rate zone \(zone.rawValue), target \($0)" }
+                                    ?? "Heart rate zone \(zone.rawValue)")
+
+                Button(action: onEditTarget) {
+                    Image(systemName: "scope")
+                        .font(.subheadline.weight(.black))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Change heart rate target")
+            }
+
+            HStack(spacing: 0) {
+                metric(title: "Steps",
+                       value: metricProjection.steps.hudText,
+                       systemImage: "figure.walk",
+                       tint: metricProjection.steps.availability == .live ? .mint : .orange,
+                       accessibilityText: metricProjection.steps.accessibilityText)
+                metricDivider
+                metric(title: metricProjection.strainHUDTitle,
+                       value: metricProjection.strainHUDText,
+                       systemImage: "bolt.heart.fill",
+                       tint: metricProjection.coachingIsLive ? Metrics.electricStrain : .orange)
+                metricDivider
+                metric(title: "Calories",
+                       value: caloriesValue,
+                       systemImage: "flame.fill",
+                       tint: metricProjection.coachingIsLive ? .pink : .orange,
+                       accessibilityText: "Active calories \(caloriesValue)")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .atriaWorkoutGlassSurface(cornerRadius: 24, tint: zone.color)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func metric(title: String,
+                        value: String,
+                        systemImage: String,
+                        tint: Color,
+                        accessibilityText: String? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Label(title, systemImage: systemImage)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(tint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+            Text(value)
+                .font(.headline.weight(.black).monospacedDigit())
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.58)
+        }
+        .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
+        .padding(.horizontal, 8)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityText ?? "\(title), \(value)")
+    }
+
+    private var metricDivider: some View {
+        Rectangle()
+            .fill(.white.opacity(0.14))
+            .frame(width: 1, height: 34)
+            .accessibilityHidden(true)
     }
 }
 
@@ -1447,46 +1977,15 @@ private struct AtriaLiveWorkoutHeartBlock: View {
 
 }
 
-private struct AtriaWorkoutZoneHapticObserver: View {
-    @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
-    let maxHR: Int
-    let lowerZone: HRZone
-    let upperZone: HRZone
-    let isPaused: Bool
-    let onHaptic: (Int) -> Void
-    @State private var transition = AtriaWorkoutZoneHapticTransition()
-
-    var body: some View {
-        Color.clear
-            .frame(width: 0, height: 0)
-            .onChange(of: pulseStore.state.heartRate, initial: true) { _, bpm in
-                guard !isPaused, pulseStore.state.hasPulseSignal else { return }
-                let lowerBPM = Int((Double(maxHR) * lowerZone.lowerFraction).rounded(.up))
-                let nextZone = HRZone(rawValue: upperZone.rawValue + 1)
-                let upperBPM = nextZone.map {
-                    Int((Double(maxHR) * $0.lowerFraction).rounded(.up)) - 1
-                } ?? maxHR
-                if let pulses = transition.accept(bpm: bpm,
-                                                  lowerBPM: lowerBPM,
-                                                  upperBPM: upperBPM) {
-                    onHaptic(pulses)
-                }
-            }
-            .onChange(of: isPaused) { _, paused in
-                if paused { transition = AtriaWorkoutZoneHapticTransition() }
-            }
-    }
-}
-
 private struct AtriaLiveWorkoutStrainGuidance: View {
     let metricProjection: AtriaLiveWorkoutMetricProjection
     let guidanceTarget: Double?
-    @Binding var userTargetChoice: AtriaWorkoutTargetChoice?
+    @Binding var targetChoice: AtriaWorkoutTargetChoice?
     @Binding var showTargetPicker: Bool
 
     private var strain: Double { metricProjection.strain }
     private var target: Double? {
-        AtriaWorkoutTargetMath.effectiveTarget(choice: userTargetChoice,
+        AtriaWorkoutTargetMath.effectiveTarget(choice: targetChoice,
                                                guidanceTarget: guidanceTarget)
     }
     private var cue: String { AtriaWorkoutTargetMath.cue(strain: strain, target: target) }
@@ -1494,15 +1993,16 @@ private struct AtriaLiveWorkoutStrainGuidance: View {
         guard let target, target > 0 else { return min(max(strain / 21, 0), 1) }
         return min(max(strain / target, 0), 1)
     }
-    private var targetText: String { target.map { String(format: "%.1f", $0) } ?? "Learning" }
+    private var targetText: String? { target.map { String(format: "%.1f", $0) } }
     private var sourceText: String {
-        switch userTargetChoice {
+        switch targetChoice {
         case .zone(let rawZone): return "Z\(rawZone) goal"
         case .strain: return "Your goal"
         case nil: return "Auto"
         }
     }
     private var cueTitle: String {
+        if let status = metricProjection.sensorStatusTitle { return status }
         switch cue {
         case "ease": return "Ease down"
         case "hold": return "Hold here"
@@ -1510,6 +2010,7 @@ private struct AtriaLiveWorkoutStrainGuidance: View {
         }
     }
     private var cueDetail: String {
+        if let status = metricProjection.sensorStatusDetail { return status }
         switch cue {
         case "ease": return "Above target. Let HR settle."
         case "hold": return "Target matched. Keep this effort."
@@ -1517,6 +2018,8 @@ private struct AtriaLiveWorkoutStrainGuidance: View {
         }
     }
     private var cueSymbol: String {
+        if !metricProjection.hasSensorEvidence { return "waveform.slash" }
+        if metricProjection.sensorAvailability != .live { return "antenna.radiowaves.left.and.right.slash" }
         switch cue {
         case "ease": return "arrow.down.heart.fill"
         case "hold": return "equal.circle.fill"
@@ -1524,6 +2027,7 @@ private struct AtriaLiveWorkoutStrainGuidance: View {
         }
     }
     private var cueTint: Color {
+        if !metricProjection.coachingIsLive { return .orange }
         switch cue {
         case "ease": return .orange
         case "hold": return .green
@@ -1532,10 +2036,11 @@ private struct AtriaLiveWorkoutStrainGuidance: View {
     }
 
     private var caloriesText: String {
-        metricProjection.activeCalories.map { "\(Int($0.rounded()))" } ?? "--"
+        guard metricProjection.hasSensorEvidence else { return "--" }
+        return metricProjection.activeCalories.map { "\(Int($0.rounded()))" } ?? "--"
     }
-    private var caloriesLabel: String {
-        caloriesText == "--" ? "-- kcal" : "≈ \(caloriesText) kcal"
+    private var accessibilityTargetClause: String {
+        targetText.map { ", target \($0)" } ?? ""
     }
 
     var body: some View {
@@ -1550,44 +2055,51 @@ private struct AtriaLiveWorkoutStrainGuidance: View {
                     Text(cueTitle)
                         .font(.subheadline.weight(.black))
                         .foregroundStyle(.white)
-                    Text("\(String(format: "%.1f", strain)) strain · target \(targetText)")
+                    Text(metricProjection.coachingIsLive
+                         ? targetText.map { "\(metricProjection.strainHUDText) strain · target \($0)" }
+                            ?? "\(metricProjection.strainHUDText) strain"
+                         : cueDetail)
                         .font(.caption.weight(.semibold).monospacedDigit())
                         .foregroundStyle(.white.opacity(0.66))
                 }
                 Spacer(minLength: 6)
-
-                Label(caloriesLabel, systemImage: "flame.fill")
-                    .font(.caption.weight(.black).monospacedDigit())
-                    .foregroundStyle(.pink)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-
-                Label(metricProjection.steps.hudText, systemImage: "figure.walk")
-                    .font(.caption.weight(.black).monospacedDigit())
-                    .foregroundStyle(metricProjection.steps.availability == .live ? .mint : .orange)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-                    .accessibilityLabel(metricProjection.steps.accessibilityText)
 
                 Button {
                     showTargetPicker = true
                 } label: {
                     Image(systemName: "slider.horizontal.3")
                         .font(.subheadline.weight(.bold))
-                        .foregroundStyle(.white.opacity(0.82))
                         .frame(width: 44, height: 44)
-                        .background(.white.opacity(0.12), in: Circle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
                 .accessibilityLabel("Set workout target. Currently \(sourceText).")
+            }
+
+            HStack(spacing: 8) {
+                compactMetric(title: metricProjection.strainHUDTitle,
+                              value: metricProjection.strainHUDText,
+                              systemImage: "bolt.heart.fill",
+                              tint: metricProjection.coachingIsLive ? Metrics.electricStrain : .orange)
+                compactMetric(title: metricProjection.activeCaloriesHUDTitle,
+                              value: metricProjection.activeCaloriesHUDText,
+                              systemImage: "flame.fill",
+                              tint: metricProjection.coachingIsLive ? .pink : .orange)
+                compactMetric(title: "Steps",
+                              value: metricProjection.steps.hudText,
+                              systemImage: "figure.walk",
+                              tint: metricProjection.steps.availability == .live ? .mint : .orange,
+                              accessibilityText: metricProjection.steps.accessibilityText)
             }
 
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
                     Capsule().fill(.white.opacity(0.10))
-                    Capsule()
-                        .fill(Metrics.electricStrain.opacity(0.78))
-                        .frame(width: max(10, max(proxy.size.width, 1) * progress))
+                    if metricProjection.hasSensorEvidence {
+                        Capsule()
+                            .fill((metricProjection.coachingIsLive ? Metrics.electricStrain : Color.orange).opacity(0.78))
+                            .frame(width: max(10, max(proxy.size.width, 1) * progress))
+                    }
                 }
             }
             .frame(height: 12)
@@ -1596,14 +2108,37 @@ private struct AtriaLiveWorkoutStrainGuidance: View {
         .padding(12)
         .atriaWorkoutContentSurface(cornerRadius: 20, tint: cueTint)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Workout cue. \(cueTitle). \(cueDetail). Current strain \(String(format: "%.1f", strain)), target \(targetText), \(caloriesText) active calories.")
+        .accessibilityLabel("Workout cue. \(cueTitle). \(cueDetail). Strain \(metricProjection.strainHUDText)\(accessibilityTargetClause), \(caloriesText) active calories.")
+    }
+
+    private func compactMetric(title: String,
+                               value: String,
+                               systemImage: String,
+                               tint: Color,
+                               accessibilityText: String? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Label(title, systemImage: systemImage)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(tint)
+                .lineLimit(1)
+            Text(value)
+                .font(.subheadline.weight(.black).monospacedDigit())
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.64)
+        }
+        .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
+        .padding(.horizontal, 9)
+        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityText ?? "\(title), \(value)")
     }
 }
 
 /// Pre-workout (or mid-workout) target picker: zone focus or a direct strain
 /// goal, styled to match the live HUD's dark glass surfaces (gap spec c).
-/// Presented from the target lane's edit affordance; commits into
-/// `userTargetChoice` on Save, or clears it back to "Auto" (the existing
+/// Presented from the target lane's edit affordance; commits through the
+/// session-owned binding on Save, or clears it back to "Auto" (the existing
 /// guidance default) -- never changes anything until the user confirms.
 private struct AtriaWorkoutTargetPicker: View {
     let currentZone: HRZone
@@ -1706,9 +2241,11 @@ private struct AtriaWorkoutTargetPicker: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white.opacity(0.85))
             Spacer(minLength: 8)
-            Text(guidanceTarget.map { String(format: "%.1f", $0) } ?? "Learning")
-                .font(.subheadline.weight(.bold).monospacedDigit())
-                .foregroundStyle(.white.opacity(0.68))
+            if let guidanceTarget {
+                Text(String(format: "%.1f", guidanceTarget))
+                    .font(.subheadline.weight(.bold).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.68))
+            }
         }
         .padding(14)
         .atriaWorkoutContentSurface(cornerRadius: 18, tint: .white)

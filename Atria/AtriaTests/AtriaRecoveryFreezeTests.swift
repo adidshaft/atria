@@ -206,6 +206,68 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
         XCTAssertEqual(estimate.contributors.count, 1)
     }
 
+    func testPhysiologicalRecoveryResolverKeepsWakeDayScoreAcrossCivilMidnight() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let wakeDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2032,
+                                                                       month: 1,
+                                                                       day: 2)))
+        let wake = wakeDay.addingTimeInterval(19 * 3_600)
+        let cycle = AtriaPhysiologicalCycle(start: wake,
+                                            boundaryKind: .mainSleep,
+                                            anchorSleepID: "shift-sleep",
+                                            expectedInterval: 24 * 3_600)
+        let frozen = FrozenRecoverySummary(estimate: recoveryEstimate(percent: 72),
+                                           scoredDay: wakeDay)
+        let rollup = DailyRollupStoreEntry(day: wakeDay,
+                                           recoverySummary: frozen,
+                                           calendar: calendar)
+
+        let resolved = DailyRecoveryResolver.currentEstimate(
+            liveEstimate: recoveryEstimate(percent: 41),
+            rollups: [rollup],
+            metrics: [],
+            physiologicalCycle: cycle,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(resolved.percent, 72)
+        XCTAssertEqual(resolved.detail, frozen.detail)
+    }
+
+    func testAllNighterRecoveryFailsClosedInsteadOfReusingPriorHRV() {
+        let cycle = AtriaPhysiologicalCycle(start: at(24),
+                                            boundaryKind: .noSleepFallback,
+                                            anchorSleepID: "prior-night",
+                                            expectedInterval: 24 * 3_600)
+
+        let resolved = DailyRecoveryResolver.currentEstimate(
+            liveEstimate: recoveryEstimate(percent: 88),
+            rollups: [],
+            metrics: [],
+            physiologicalCycle: cycle
+        )
+
+        XCTAssertEqual(resolved.percent, 1)
+        XCTAssertEqual(resolved.confidence, .unverified)
+        XCTAssertFalse(resolved.usesHRV)
+        XCTAssertEqual(resolved.contributors.first?.kind, .sleep)
+    }
+
+    func testInitialWearFallbackCanUseCurrentLiveEstimate() {
+        let live = recoveryEstimate(percent: 63)
+        let cycle = AtriaPhysiologicalCycle(start: at(0),
+                                            boundaryKind: .initialFallback,
+                                            anchorSleepID: nil,
+                                            expectedInterval: 24 * 3_600)
+
+        XCTAssertEqual(DailyRecoveryResolver.currentEstimate(liveEstimate: live,
+                                                              rollups: [],
+                                                              metrics: [],
+                                                              physiologicalCycle: cycle),
+                       live)
+    }
+
     private func recoveryEstimate(percent: Int) -> Metrics.RecoveryEstimate {
         Metrics.RecoveryEstimate(percent: percent,
                                  confidence: .personalBaseline,

@@ -26,9 +26,18 @@ struct WidgetSnapshot: Codable {
     /// `steps`. Independent from `createdAt`, which can advance for battery,
     /// recovery, or layout changes without making the step stream fresh.
     let stepsCapturedAt: Date?
+    /// Optional so schema-4 snapshots written before goals were added still
+    /// decode. This is the user's all-day strap-step goal, never a workout
+    /// session delta.
+    var dailyStepGoal: Int? = nil
     let heartRate: Int?
     /// Timestamp of the accepted strap HR sample supporting `heartRate`.
     let heartRateCapturedAt: Date?
+    /// Canonical zone computed by the app's shared HRZone model. Keeping the
+    /// result in the snapshot prevents the widget extension from reimplementing
+    /// thresholds and drifting from the in-app workout UI.
+    var heartRateZoneIndex: Int? = nil
+    var heartRateZoneName: String? = nil
     let batteryLevel: Int?
     let batteryChargeStatus: String?
     let batteryChargeText: String?
@@ -60,6 +69,20 @@ enum WidgetSnapshotPublisher {
     // cache (MainActor-isolated, so the cache write is race-free).
     private static var cachedDiagnostics: Diagnostics?
     private static var scheduledPublishTask: Task<Void, Never>?
+#if canImport(WidgetKit)
+    /// WidgetKit is not a 1 Hz surface, but dropping every change below the old
+    /// 100-step bucket made short walks invisible. Keep one independent,
+    /// trailing delivery lane for sensor changes: writes remain immediate in
+    /// the shared container, while visible timeline reloads are coalesced to a
+    /// bounded cadence. The trailing task is important when a short walk ends
+    /// before the cadence window opens -- its final count still reaches the
+    /// widget without waiting for an unrelated dashboard update.
+    private static var lastTimelineReloadSnapshot: WidgetSnapshot?
+    private static var lastTimelineReloadDate: Date?
+    private static var pendingTimelineReloadSnapshot: WidgetSnapshot?
+    private static var pendingTimelineReloadTask: Task<Void, Never>?
+    private static var pendingTimelineReloadDeadline: Date?
+#endif
 
     /// During an active workout the stable daily fields (recovery, HRV, sleep,
     /// layout) do not need to be rebuilt from SessionStore for every pulse.
@@ -114,8 +137,8 @@ enum WidgetSnapshotPublisher {
             }
             defaults.set(patchedData, forKey: key)
             #if canImport(WidgetKit)
-            if widgetDiagnostics.appGroupEnabled, shouldReloadTimelines(for: patched) {
-                WidgetCenter.shared.reloadAllTimelines()
+            if widgetDiagnostics.appGroupEnabled {
+                scheduleTimelineReload(for: patched)
             }
             #endif
             AtriaDebugLog("ATRIADBG widget_snapshot status=live_workout_patch reason=%@ bytes=%d",
@@ -138,7 +161,8 @@ enum WidgetSnapshotPublisher {
         batteryChargeStatus: String,
         batteryChargeText: String
     ) -> WidgetSnapshot {
-        WidgetSnapshot(
+        let heartRateZone = heartRate.map { HRZone.zone(for: $0, maxHR: current.maxHR) }
+        return WidgetSnapshot(
             schema: current.schema,
             createdAt: createdAt,
             recoveryPercent: current.recoveryPercent,
@@ -153,8 +177,11 @@ enum WidgetSnapshotPublisher {
             steps: steps,
             stepsAreEstimated: steps == nil ? nil : stepsAreEstimated,
             stepsCapturedAt: steps == nil ? nil : stepsCapturedAt,
+            dailyStepGoal: current.dailyStepGoal,
             heartRate: heartRate,
             heartRateCapturedAt: heartRate == nil ? nil : heartRateCapturedAt,
+            heartRateZoneIndex: heartRate == nil ? nil : heartRateZone?.rawValue,
+            heartRateZoneName: heartRate == nil ? nil : heartRateZone?.name,
             batteryLevel: batteryLevel,
             batteryChargeStatus: batteryChargeStatus,
             batteryChargeText: batteryChargeText,
@@ -212,11 +239,14 @@ enum WidgetSnapshotPublisher {
                                        steps: snapshot.steps,
                                        stepsAreEstimated: snapshot.stepsAreEstimated,
                                        stepsCapturedAt: snapshot.stepsCapturedAt,
+                                       dailyStepGoal: snapshot.dailyStepGoal,
                                        heartRate: snapshot.heartRate,
                                        heartRateCapturedAt: snapshot.heartRateCapturedAt,
+                                       heartRateZoneIndex: snapshot.heartRateZoneIndex,
+                                       heartRateZoneName: snapshot.heartRateZoneName,
                                        batteryLevel: nil,
                                        batteryChargeStatus: AtriaBLEManager.BatteryChargeStatus.levelOnly.rawValue,
-                                       batteryChargeText: "Pending",
+                                       batteryChargeText: "Unavailable",
                                        layoutGlanceMetrics: snapshot.layoutGlanceMetrics,
                                        layoutRingCenterMetric: snapshot.layoutRingCenterMetric,
                                        layoutLegendStatStyle: snapshot.layoutLegendStatStyle,
@@ -283,49 +313,32 @@ enum WidgetSnapshotPublisher {
         let validatedHRV = store.latestReferenceValidatedRecoveryHRV(on: now)
         let fallbackHRV = validatedHRV ?? store.latestLocalRecoveryHRV(on: now)
         let latestSleep = store.sleepHistorySnapshot.latestMainSleep
-        let recovery = Metrics.recoveryV2(hrvSnapshot: ble.recoveryHRVSnapshot,
-                                          fallbackRMSSD: fallbackHRV,
-                                          restingNow: rest,
-                                          baseline: store.baseline,
-                                          hrvReferenceValidated: validatedHRV != nil,
-                                          sleepEfficiency: latestSleep?.sleepEfficiency,
-                                          sleepDurationHours: latestSleep?.durationHours,
-                                          respiratoryRate: latestSleep?.respiratoryRate,
-                                          respiratoryBaseline: store.sleepHistorySnapshot.respiratoryBaselineStats)
-        // Recovery stability (Scope 2, 2026-07-09): the widget recomputed recovery
-        // live on every publish, so its % drifted through the morning HRV window and
-        // jumped at noon when the window closed -- diverging from the Today ring,
-        // which shows the frozen once-a-morning value. Prefer today's frozen daily
-        // recovery (the SAME scalar the ring reads via displayRecovery), falling back
-        // to the live estimate only before this morning's value has been minted.
-        // Resolve the complete frozen summary atomically. Mixing its score with a
-        // later live confidence/detail/HRV would describe a different recovery.
+            .flatMap { _ in store.currentPhysiologicalMainSleep(on: now) }
         let calendar = Calendar.current
         let physiologicalCycle = AtriaPhysiologicalCycle.current(now: now,
                                                                  confirmedSleeps: store.confirmedSleeps,
                                                                  calendar: calendar)
+        // One SessionStore projection keeps Home, widgets and notifications on
+        // the same wake-to-wake value and prevents frequent widget publications
+        // from repeatedly evaluating Recovery v2.
+        let displayedRecovery = store.recoveryProjection(
+            now: now,
+            calendar: calendar,
+            initialFallbackHRVSnapshot: ble.recoveryHRVSnapshot,
+            liveRestingHeartRate: ble.restingHR
+        )
+        let recoveryPercent = displayedRecovery.percent
+        let frozenRecovery = DailyRecoveryResolver.summary(
+            rollups: store.dailyRollupHistory,
+            metrics: store.dailyMetricHistory,
+            physiologicalCycle: physiologicalCycle,
+            calendar: calendar
+        )
         let frozenTodayRollup = store.dailyRollupHistory.first {
             physiologicalCycle.boundaryKind == .mainSleep
                 && calendar.isDate($0.day, inSameDayAs: physiologicalCycle.start)
                 && $0.recovery != nil
         }
-        let frozenRecovery = frozenTodayRollup?.resolvedRecoverySummary()
-        let noSleepRecovery = physiologicalCycle.boundaryKind == .noSleepFallback
-            ? Metrics.RecoveryEstimate(percent: 1,
-                                       confidence: .unverified,
-                                       usesHRV: false,
-                                       detail: "No main sleep recorded for this physiological cycle.",
-                                       contributors: [
-                                           Metrics.RecoveryEstimate.Contributor(kind: .sleep,
-                                                                                zScore: -3,
-                                                                                weight: 1,
-                                                                                detail: "No main sleep recorded",
-                                                                                displayValue: "0h",
-                                                                                direction: -1)
-                                       ])
-            : nil
-        let displayedRecovery = noSleepRecovery ?? frozenRecovery?.recoveryEstimate ?? recovery
-        let recoveryPercent = noSleepRecovery?.percent ?? frozenRecovery?.score ?? recovery.percent
         let strain = dayStrain(store: store, ble: ble, rest: rest ?? 60)
         let savedAggregate = store.homeSavedAggregate(rest: rest ?? 60,
                                                        maxHR: store.profile.maxHR,
@@ -344,6 +357,9 @@ enum WidgetSnapshotPublisher {
             latestSampleAt: ble.session.last?.t
         )
         let liveHeartRateCapturedAt = liveHeartRate > 0 ? ble.session.last?.t : nil
+        let liveHeartRateZone = liveHeartRate > 0
+            ? HRZone.zone(for: liveHeartRate, maxHR: store.profile.maxHR)
+            : nil
         let stepsAreValidated = strapStepsAreValidated(state: ble.liveStrapStepResearchState)
         let publishedSteps = strapStepsToday > 0
             && strapStepsArePublishable(state: ble.liveStrapStepResearchState)
@@ -351,13 +367,16 @@ enum WidgetSnapshotPublisher {
             : nil
         let stepsCapturedAt = publishedSteps == nil
             ? nil
-            : AtriaStrapStepLiveStatus.persistedMotionDate()
+            : ble.liveStrapMotionCapturedAt
+                ?? AtriaStrapStepLiveStatus.persistedMotionDate()
+        let storedDailyStepGoal = UserDefaults.standard.integer(forKey: "atria.target.steps.goal")
+        let dailyStepGoal = storedDailyStepGoal > 0 ? storedDailyStepGoal : 8_000
         let hrvRMSSD: Int?
         if let frozenRecovery {
             hrvRMSSD = frozenRecovery.usesHRV
                 ? frozenTodayRollup?.lnRMSSD.map { Int(exp($0).rounded()) }
                 : nil
-        } else if recovery.usesHRV {
+        } else if displayedRecovery.usesHRV {
             if let snapshot = ble.hrvSnapshot, snapshot.isDisplayEligible(on: now) {
                 hrvRMSSD = Int(snapshot.rmssd.rounded())
             } else {
@@ -374,7 +393,13 @@ enum WidgetSnapshotPublisher {
         }
         let layout = currentHomeLayoutConfig()
         let widgetDiagnostics = Self.diagnostics
-        let displayableBatteryLevel = ble.displayableBatteryLevel()
+        // Widgets have no room to carry the app's explicit "N h ago" qualifier.
+        // Never flatten an aged reconnect baseline into an apparently current
+        // percentage on the Lock/Home Screen; the in-app status pill can show
+        // the same value honestly together with its original verification age.
+        let displayableBatteryLevel = ble.batteryReadingIsRecentBaseline
+            ? nil
+            : ble.displayableBatteryLevel()
         let displayableChargeStatus = displayableBatteryLevel == nil
             ? AtriaBLEManager.BatteryChargeStatus.levelOnly
             : ble.batteryChargeStatus
@@ -392,8 +417,11 @@ enum WidgetSnapshotPublisher {
                                       steps: publishedSteps,
                                       stepsAreEstimated: publishedSteps == nil ? nil : !stepsAreValidated,
                                       stepsCapturedAt: stepsCapturedAt,
+                                      dailyStepGoal: dailyStepGoal,
                                       heartRate: liveHeartRate > 0 ? liveHeartRate : nil,
                                       heartRateCapturedAt: liveHeartRateCapturedAt,
+                                      heartRateZoneIndex: liveHeartRateZone?.rawValue,
+                                      heartRateZoneName: liveHeartRateZone?.name,
                                       batteryLevel: displayableBatteryLevel,
                                       batteryChargeStatus: displayableChargeStatus.rawValue,
                                       batteryChargeText: displayableChargeStatus.label,
@@ -447,8 +475,8 @@ enum WidgetSnapshotPublisher {
                           snapshot.complicationTargetPresent ? 1 : 0,
                           readinessAction)
 #if canImport(WidgetKit)
-            if widgetDiagnostics.appGroupEnabled, shouldReloadTimelines(for: snapshot) {
-                WidgetCenter.shared.reloadAllTimelines()
+            if widgetDiagnostics.appGroupEnabled {
+                scheduleTimelineReload(for: snapshot)
             }
 #endif
         } else {
@@ -467,13 +495,42 @@ enum WidgetSnapshotPublisher {
             || state == "r10_live_preliminary"
     }
 
-    // WidgetKit throttles reloads (~40-70/day); reloading on every publish burns
-    // that budget and leaves the widget stale when it matters. Reload only when a
-    // user-visible field changed, or 15+ minutes passed since the last reload.
-    private static var lastReloadFingerprint: String?
-    private static var lastReloadDate: Date?
+    /// Live writes can arrive every five seconds. WidgetKit cannot sustainably
+    /// reload at that frequency, so exact step/HR progress and their independent
+    /// capture clocks share a one-minute delivery cadence. Non-sensor changes
+    /// (recovery, strain, battery, layout, source availability, HR zone, step
+    /// goal) remain immediate.
+    nonisolated static let liveSensorTimelineReloadMinimumInterval: TimeInterval = 60
+    nonisolated static let timelineReloadMaximumInterval: TimeInterval = 15 * 60
 
-    private static func shouldReloadTimelines(for snapshot: WidgetSnapshot, now: Date = Date()) -> Bool {
+    /// `0` means reload now, a positive value means preserve a trailing reload
+    /// after that delay, and `nil` means there is no new visible state to send.
+    /// Kept pure for regression coverage of short walks and same-value capture
+    /// clock renewals.
+    nonisolated static func timelineReloadDelay(previous: WidgetSnapshot?,
+                                                lastReloadAt: Date?,
+                                                snapshot: WidgetSnapshot,
+                                                now: Date) -> TimeInterval? {
+        guard let previous, let lastReloadAt else { return 0 }
+        if timelineTransitionFingerprint(for: previous)
+            != timelineTransitionFingerprint(for: snapshot) {
+            return 0
+        }
+
+        let sensorProjectionChanged = previous.steps != snapshot.steps
+            || previous.stepsCapturedAt != snapshot.stepsCapturedAt
+            || previous.heartRate != snapshot.heartRate
+            || previous.heartRateCapturedAt != snapshot.heartRateCapturedAt
+        let elapsed = max(0, now.timeIntervalSince(lastReloadAt))
+        if sensorProjectionChanged {
+            return elapsed >= liveSensorTimelineReloadMinimumInterval
+                ? 0
+                : liveSensorTimelineReloadMinimumInterval - elapsed
+        }
+        return elapsed >= timelineReloadMaximumInterval ? 0 : nil
+    }
+
+    private nonisolated static func timelineTransitionFingerprint(for snapshot: WidgetSnapshot) -> String {
         var parts: [String] = []
         parts.append(snapshot.recoveryPercent.map(String.init) ?? "learning")
         parts.append(snapshot.recoveryConfidence)
@@ -481,11 +538,20 @@ enum WidgetSnapshotPublisher {
         parts.append(snapshot.restingHR.map(String.init) ?? "-")
         parts.append(snapshot.hrvRMSSD.map(String.init) ?? "-")
         parts.append(snapshot.sleepHours.map { String(format: "%.1f", $0) } ?? "-")
-        // Steps and heart rate are bucketed like battery: they tick continuously,
-        // and an unbucketed value would defeat this throttle while walking.
-        parts.append(snapshot.steps.map { String(($0 / 100) * 100) } ?? "-")
+        // Exact step/HR values and capture clocks are handled by the bounded
+        // sensor lane above. Presence and semantic transitions stay immediate.
+        parts.append(snapshot.steps == nil ? "steps_absent" : "steps_present")
+        parts.append(snapshot.stepsCapturedAt == nil ? "motion_clock_absent" : "motion_clock_present")
         parts.append(snapshot.stepsAreEstimated == true ? "estimated" : "validated")
-        parts.append(snapshot.heartRate.map { String(($0 / 5) * 5) } ?? "-")
+        parts.append(snapshot.dailyStepGoal.map(String.init) ?? "-")
+        let exactDailyStepGoalReached = snapshot.stepsAreEstimated != true
+            && snapshot.dailyStepGoal.map { goal in
+                goal > 0 && (snapshot.steps ?? 0) >= goal
+            } == true
+        parts.append(exactDailyStepGoalReached ? "step_goal_reached" : "step_goal_pending")
+        parts.append(snapshot.heartRate == nil ? "hr_absent" : "hr_present")
+        parts.append(snapshot.heartRateCapturedAt == nil ? "hr_clock_absent" : "hr_clock_present")
+        parts.append(snapshot.heartRateZoneIndex.map(String.init) ?? "-")
         let batteryBucket: String = snapshot.batteryLevel.map { String(($0 / 10) * 10) } ?? "-"
         parts.append(batteryBucket)
         parts.append(snapshot.batteryChargeStatus ?? "-")
@@ -493,13 +559,56 @@ enum WidgetSnapshotPublisher {
         parts.append(snapshot.layoutRingCenterMetric ?? "-")
         parts.append(snapshot.layoutLegendStatStyle ?? "-")
         parts.append(snapshot.layoutAccent ?? "-")
-        let fingerprint = parts.joined(separator: "|")
-        let staleEnough = lastReloadDate.map { now.timeIntervalSince($0) >= 15 * 60 } ?? true
-        guard fingerprint != lastReloadFingerprint || staleEnough else { return false }
-        lastReloadFingerprint = fingerprint
-        lastReloadDate = now
-        return true
+        return parts.joined(separator: "|")
     }
+
+#if canImport(WidgetKit)
+    private static func scheduleTimelineReload(for snapshot: WidgetSnapshot,
+                                               now: Date = Date()) {
+        let delay = timelineReloadDelay(previous: lastTimelineReloadSnapshot,
+                                        lastReloadAt: lastTimelineReloadDate,
+                                        snapshot: snapshot,
+                                        now: now)
+        guard let delay else { return }
+        if delay <= 0 {
+            pendingTimelineReloadTask?.cancel()
+            pendingTimelineReloadTask = nil
+            pendingTimelineReloadSnapshot = nil
+            pendingTimelineReloadDeadline = nil
+            deliverTimelineReload(snapshot, now: now)
+            return
+        }
+
+        pendingTimelineReloadSnapshot = snapshot
+        let deadline = now.addingTimeInterval(delay)
+        if let currentDeadline = pendingTimelineReloadDeadline,
+           currentDeadline <= deadline,
+           pendingTimelineReloadTask != nil {
+            return
+        }
+        pendingTimelineReloadTask?.cancel()
+        pendingTimelineReloadDeadline = deadline
+        pendingTimelineReloadTask = Task { @MainActor in
+            let sleep = max(0, deadline.timeIntervalSinceNow)
+            if sleep > 0 {
+                try? await Task.sleep(for: .seconds(sleep))
+            }
+            guard !Task.isCancelled else { return }
+            let latest = pendingTimelineReloadSnapshot ?? snapshot
+            pendingTimelineReloadTask = nil
+            pendingTimelineReloadSnapshot = nil
+            pendingTimelineReloadDeadline = nil
+            deliverTimelineReload(latest, now: Date())
+        }
+    }
+
+    private static func deliverTimelineReload(_ snapshot: WidgetSnapshot,
+                                              now: Date) {
+        lastTimelineReloadSnapshot = snapshot
+        lastTimelineReloadDate = now
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+#endif
 
     // Perf (overnight-hang fix): dayStrain previously recomputed live-session
     // TRIMP over the ENTIRE in-memory `ble.session` array on every publish (~3s

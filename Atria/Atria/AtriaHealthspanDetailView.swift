@@ -108,6 +108,7 @@ struct AtriaHealthspanDetailView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
     @State private var orbExpanded = false
     @ScaledMetric(relativeTo: .largeTitle) private var orbSize: CGFloat = 190
 
@@ -159,6 +160,9 @@ struct AtriaHealthspanDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: startOrbAnimation)
         .onChange(of: reduceMotion) { _, _ in
+            startOrbAnimation()
+        }
+        .onChange(of: scenePhase) { _, _ in
             startOrbAnimation()
         }
     }
@@ -239,56 +243,67 @@ struct AtriaHealthspanDetailView: View {
                     ], center: UnitPoint(x: 0.42, y: 0.38), startRadius: 0, endRadius: orbSize * 0.62)
                 )
                 .frame(width: orbSize * 1.12, height: orbSize * 1.12)
-                .scaleEffect(reduceMotion ? 1 : (orbExpanded ? 1.06 : 0.96))
-                .opacity(reduceMotion ? 0.82 : (orbExpanded ? 1 : 0.55))
-                .animation(reduceMotion ? nil : .easeInOut(duration: 3).repeatForever(autoreverses: true),
+                .scaleEffect(reduceMotion ? 1 :
+                    (orbMotionEnabled ? (orbExpanded ? 1.06 : 0.96) : 1))
+                .opacity(orbMotionEnabled ? (orbExpanded ? 1 : 0.55) : 0.82)
+                .animation(orbMotionEnabled ? .easeInOut(duration: 3).repeatForever(autoreverses: true) : nil,
                            value: orbExpanded)
 
-            Circle()
-                .fill(
-                    RadialGradient(colors: [
-                        Metrics.electricStrain.opacity(colorScheme == .dark ? 0.48 : 0.28),
-                        Metrics.electricStrain.opacity(colorScheme == .dark ? 0.16 : 0.10),
-                        .clear
-                    ], center: .center, startRadius: 0, endRadius: orbSize / 2)
-                )
-                .frame(width: orbSize * 0.82, height: orbSize * 0.82)
-                .shadow(color: Metrics.electricStrain.opacity(0.38), radius: 30)
+            ZStack {
+                Circle()
+                    .fill(
+                        RadialGradient(colors: [
+                            Metrics.electricStrain.opacity(colorScheme == .dark ? 0.48 : 0.28),
+                            Metrics.electricStrain.opacity(colorScheme == .dark ? 0.16 : 0.10),
+                            .clear
+                        ], center: .center, startRadius: 0, endRadius: orbSize / 2)
+                    )
+                    .frame(width: orbSize * 0.82, height: orbSize * 0.82)
+                    .shadow(color: Metrics.electricStrain.opacity(0.38), radius: 30)
 
-            Circle()
-                .stroke(Metrics.electricStrain.opacity(0.22), lineWidth: 1)
-                .frame(width: orbSize * 0.72, height: orbSize * 0.72)
+                Circle()
+                    .stroke(Metrics.electricStrain.opacity(0.22), lineWidth: 1)
+                    .frame(width: orbSize * 0.72, height: orbSize * 0.72)
+            }
+            // Archive: translateY(4px) scale(.98) -> translateY(-6px)
+            // scale(1.03), returning over one six-second cycle.
+            .scaleEffect(orbMotionEnabled ? (orbExpanded ? 1.03 : 0.98) : 1)
+            .offset(y: orbMotionEnabled ? (orbExpanded ? -6 : 4) : 0)
+            .animation(orbMotionEnabled ? .easeInOut(duration: 3).repeatForever(autoreverses: true) : nil,
+                       value: orbExpanded)
 
             healthspanParticle(size: 4,
                                restingOffset: CGSize(width: -orbSize * 0.28, height: -orbSize * 0.22),
-                               duration: 2.5)
+                               cycleDuration: 5,
+                               delay: 0)
             healthspanParticle(size: 3,
                                restingOffset: CGSize(width: orbSize * 0.30, height: -orbSize * 0.08),
-                               duration: 3.25)
+                               cycleDuration: 6.5,
+                               delay: 0.6)
             healthspanParticle(size: 3,
                                restingOffset: CGSize(width: orbSize * 0.10, height: orbSize * 0.28),
-                               duration: 2.9)
+                               cycleDuration: 5.8,
+                               delay: 1.2)
         }
         // Only compositor-friendly properties animate. The gradient and shape
         // remain static, avoiding a per-frame Chart/Canvas redraw.
-        .scaleEffect(reduceMotion ? 1 : (orbExpanded ? 1.03 : 0.98))
-        .offset(y: reduceMotion ? 0 : (orbExpanded ? -6 : 4))
-        .animation(reduceMotion ? nil : .easeInOut(duration: 3).repeatForever(autoreverses: true),
-                   value: orbExpanded)
         .compositingGroup()
         .accessibilityHidden(true)
     }
 
     private func healthspanParticle(size: CGFloat,
                                     restingOffset: CGSize,
-                                    duration: TimeInterval) -> some View {
+                                    cycleDuration: TimeInterval,
+                                    delay: TimeInterval) -> some View {
         Circle()
             .fill(.white.opacity(0.78))
             .frame(width: size, height: size)
-            .offset(x: restingOffset.width + (reduceMotion || !orbExpanded ? 0 : 6),
-                    y: restingOffset.height + (reduceMotion || !orbExpanded ? 0 : -8))
-            .opacity(reduceMotion ? 0.55 : (orbExpanded ? 1 : 0.4))
-            .animation(reduceMotion ? nil : .easeInOut(duration: duration).repeatForever(autoreverses: true),
+            .offset(x: restingOffset.width + (!orbMotionEnabled || !orbExpanded ? 0 : 6),
+                    y: restingOffset.height + (!orbMotionEnabled || !orbExpanded ? 0 : -8))
+            .opacity(orbMotionEnabled ? (orbExpanded ? 1 : 0.4) : 0.55)
+            .animation(orbMotionEnabled ? .easeInOut(duration: cycleDuration / 2)
+                .repeatForever(autoreverses: true)
+                .delay(delay) : nil,
                        value: orbExpanded)
     }
 
@@ -503,7 +518,11 @@ struct AtriaHealthspanDetailView: View {
 
     private func startOrbAnimation() {
         orbExpanded = false
-        guard !reduceMotion else { return }
+        guard orbMotionEnabled else { return }
         orbExpanded = true
+    }
+
+    private var orbMotionEnabled: Bool {
+        !reduceMotion && scenePhase == .active
     }
 }

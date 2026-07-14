@@ -227,7 +227,9 @@ final class AtriaStepCalibrationPlanTests: XCTestCase {
         }
         XCTAssertTrue(armBody.contains("stepCalibrationCaptureArmedAt = now"))
         XCTAssertTrue(armBody.contains("stepCalibrationMotionStreamReady = false"))
-        XCTAssertTrue(armBody.contains("transport=existing_protected_r10"))
+        XCTAssertTrue(armBody.contains("transport=minimal_protected_r10"))
+        XCTAssertTrue(armBody.contains("protectedR10StreamSuppressed"))
+        XCTAssertTrue(armBody.contains("explicit_calibration_reprobe"))
 
         let finishEnd = try XCTUnwrap(bleSource.range(
             of: "func setLongWearModeEnabled(",

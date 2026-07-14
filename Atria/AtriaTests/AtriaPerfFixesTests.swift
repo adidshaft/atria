@@ -73,6 +73,79 @@ final class AtriaPerfFixesTests: XCTestCase {
             minimumInterval: 900
         ))
     }
+
+    func testWorkoutAccumulatorSkipsTheAllDayPrefixOnRebuild() {
+        let workoutStart = Date(timeIntervalSince1970: 1_800_100_000)
+        let prefixStart = workoutStart.addingTimeInterval(-100_000)
+        var samples = (0..<100_000).map {
+            HRSample(t: prefixStart.addingTimeInterval(TimeInterval($0)), bpm: 62)
+        }
+        samples.append(contentsOf: (0...60).map {
+            HRSample(t: workoutStart.addingTimeInterval(TimeInterval($0)), bpm: 130)
+        })
+
+        XCTAssertEqual(AtriaLiveWorkoutTRIMPAccumulator.firstIntegrationIndex(
+            samples: samples,
+            startedAt: workoutStart
+        ), 100_001)
+        XCTAssertEqual(AtriaLiveWorkoutTRIMPAccumulator.firstIntegrationIndex(
+            samples: samples,
+            startedAt: prefixStart
+        ), 1)
+        XCTAssertEqual(AtriaLiveWorkoutTRIMPAccumulator.firstIntegrationIndex(
+            samples: samples,
+            startedAt: workoutStart.addingTimeInterval(120)
+        ), samples.count)
+    }
+
+    func testOpenWorkoutPauseHasStableAccumulatorIdentityAcrossLiveTicks() {
+        let pauseStart = Date(timeIntervalSince1970: 1_800_000_000)
+        let closed = [ExcludedInterval(start: pauseStart.addingTimeInterval(-120),
+                                       end: pauseStart.addingTimeInterval(-60))]
+
+        let first = AtriaLiveWorkoutTRIMPAccumulator.effectiveExcludedIntervals(
+            closedIntervals: closed,
+            openPauseStartedAt: pauseStart
+        )
+        let later = AtriaLiveWorkoutTRIMPAccumulator.effectiveExcludedIntervals(
+            closedIntervals: closed,
+            openPauseStartedAt: pauseStart
+        )
+
+        XCTAssertEqual(first, later)
+        XCTAssertEqual(first.dropLast(), closed[...])
+        XCTAssertEqual(first.last?.start, pauseStart)
+        XCTAssertEqual(first.last?.end, .distantFuture)
+    }
+
+    func testLiveActivityProjectionDoesNotRecreateOpenPauseEveryTick() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private func updateLiveActivity("))
+        let end = try XCTUnwrap(source.range(of: "private func liveWorkoutHeartRateAvailability(",
+                                             range: start.upperBound..<source.endIndex))
+        let update = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(update.contains("AtriaLiveWorkoutTRIMPAccumulator.effectiveExcludedIntervals("))
+        XCTAssertTrue(update.contains("openPauseStartedAt: liveWorkoutPauseStartedAt"))
+        XCTAssertFalse(update.contains("ExcludedInterval(start: pauseStartedAt, end: now)"))
+    }
+
+    func testOverviewLiveSampleProgressUsesTwentyDisplayBuckets() {
+        XCTAssertEqual(AtriaOverviewLiveProjectionState.sessionProgressBucket(0), 0)
+        XCTAssertEqual(AtriaOverviewLiveProjectionState.sessionProgressBucket(1), 1)
+        XCTAssertEqual(AtriaOverviewLiveProjectionState.sessionProgressBucket(36), 1)
+        XCTAssertEqual(AtriaOverviewLiveProjectionState.sessionProgressBucket(37), 2)
+        XCTAssertEqual(AtriaOverviewLiveProjectionState.sessionProgressBucket(720), 20)
+        XCTAssertEqual(AtriaOverviewLiveProjectionState.sessionProgressBucket(50_000), 20)
+
+        let visibleBuckets = Set((0...720).map {
+            AtriaOverviewLiveProjectionState.sessionProgressBucket($0)
+        })
+        XCTAssertEqual(visibleBuckets, Set(0...20))
+    }
+
     func testHeartRatePlausibilityRejectsCorruptPacketsAndHoldsPostGapJumps() {
         XCTAssertEqual(AtriaBLEManager.heartRateHardUpperBound(profileMaxHR: 190), 220)
         XCTAssertEqual(AtriaBLEManager.heartRateHardUpperBound(profileMaxHR: 220), 240)
@@ -218,6 +291,34 @@ final class AtriaPerfFixesTests: XCTestCase {
                                                                          lastPublishedAt: now,
                                                                          now: now,
                                                                          force: true))
+
+        XCTAssertEqual(AtriaBLEManager.liveStrapStepResearchTrailingDelay(
+            lastPublishedAt: now,
+            now: now.addingTimeInterval(0.25)
+        ), 0.75, accuracy: 0.000_001)
+        XCTAssertEqual(AtriaBLEManager.liveStrapStepResearchTrailingDelay(
+            lastPublishedAt: now,
+            now: now.addingTimeInterval(2)
+        ), 0, accuracy: 0.000_001)
+    }
+
+
+    func testLiveStepWidgetPublisherIsIndependentFromHeartRateChanges() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private var liveStepWidgetUpdates"))
+        let end = try XCTUnwrap(source.range(of: "private var workoutDetectionUpdates",
+                                             range: start.upperBound..<source.endIndex))
+        let publisher = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(publisher.contains("model.coreLiveStore.$state"))
+        XCTAssertTrue(publisher.contains("state.strapStepResearchCount"))
+        XCTAssertTrue(publisher.contains("state.strapStepResearchState"))
+        XCTAssertFalse(publisher.contains("pulseLiveStore"))
+        XCTAssertTrue(source.contains("scheduleLiveSensorWidgetPatch(reason: \"live_steps\")"))
     }
 
     func testUnvalidatedStrapMotionPeaksNeverBecomeUserFacingSteps() {
@@ -441,6 +542,53 @@ final class AtriaPerfFixesTests: XCTestCase {
                                                                latestSavedResting: savedFallback),
                        63)
         XCTAssertEqual(fallbackEvaluations, 1)
+    }
+
+    func testRestingMetricContextPreservesMathDisplayAndRecoverySemantics() {
+        let baselineWins = AtriaHomeModel.restingMetricContext(baselineResting: 55,
+                                                               liveResting: 61,
+                                                               latestSavedResting: 63)
+        XCTAssertEqual(baselineWins.resolved, 55)
+        XCTAssertEqual(baselineWins.displayText, "55")
+        XCTAssertEqual(baselineWins.currentForRecovery, 61)
+        XCTAssertTrue(baselineWins.hasEvidence)
+
+        let savedFallback = AtriaHomeModel.restingMetricContext(baselineResting: nil,
+                                                                liveResting: nil,
+                                                                latestSavedResting: 63)
+        XCTAssertEqual(savedFallback.resolved, 63)
+        XCTAssertEqual(savedFallback.currentForRecovery, 63)
+        XCTAssertEqual(savedFallback.displayText, "63")
+
+        let baselineOnly = AtriaHomeModel.restingMetricContext(baselineResting: 55,
+                                                               liveResting: nil,
+                                                               latestSavedResting: nil)
+        XCTAssertNil(baselineOnly.currentForRecovery)
+        XCTAssertTrue(baselineOnly.hasEvidence)
+
+        let learning = AtriaHomeModel.restingMetricContext(baselineResting: nil,
+                                                           liveResting: nil,
+                                                           latestSavedResting: nil)
+        XCTAssertEqual(learning.resolved, 60)
+        XCTAssertEqual(learning.displayText, "Learning")
+        XCTAssertNil(learning.currentForRecovery)
+        XCTAssertFalse(learning.hasEvidence)
+    }
+
+    func testHealthMonitorUsesTheCurrentPhysiologicalCycleRecoveryEstimate() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaVitalsCollectionSections.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private var healthMonitorRecoveryEstimate"))
+        let end = try XCTUnwrap(source.range(of: "private var healthMonitorGuidance",
+                                             range: start.upperBound..<source.endIndex))
+        let property = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(property.contains("heroStore.state.recoveryEstimate"))
+        XCTAssertFalse(property.contains("dailyRollupHistory"))
+        XCTAssertFalse(property.contains("confidence: .validated"))
     }
 
     func testCheckpointDiagnosticsDoNotEvaluateWhenLoggingIsDisabled() {

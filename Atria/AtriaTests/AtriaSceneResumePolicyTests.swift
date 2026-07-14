@@ -86,4 +86,63 @@ final class AtriaSceneResumePolicyTests: XCTestCase {
         })
         XCTAssertEqual(bounded.map(\.start), bounded.map(\.start).sorted(by: >))
     }
+
+    func testForegroundSleepSettlementCommitRequiresCurrentGenerationAndFingerprint() {
+        let prepared = SessionStore.ForegroundSleepSettlementFingerprint(
+            canonicalSessionsRevision: 9,
+            confirmedSleepsRevision: 4,
+            restingHR: 58,
+            maxHR: 190
+        )
+
+        XCTAssertTrue(SessionStore.shouldCommitForegroundSleepSettlement(
+            completedGeneration: 3,
+            currentGeneration: 3,
+            preparedFingerprint: prepared,
+            currentFingerprint: prepared
+        ))
+        XCTAssertFalse(SessionStore.shouldCommitForegroundSleepSettlement(
+            completedGeneration: 2,
+            currentGeneration: 3,
+            preparedFingerprint: prepared,
+            currentFingerprint: prepared
+        ))
+        XCTAssertFalse(SessionStore.shouldCommitForegroundSleepSettlement(
+            completedGeneration: 3,
+            currentGeneration: 3,
+            preparedFingerprint: prepared,
+            currentFingerprint: .init(canonicalSessionsRevision: 10,
+                                      confirmedSleepsRevision: 4,
+                                      restingHR: 58,
+                                      maxHR: 190)
+        ))
+    }
+
+    func testForegroundSleepSettlementProposalCanBuildAwayFromMainThread() {
+        let completed = expectation(description: "utility proposal")
+        DispatchQueue.global(qos: .utility).async {
+            XCTAssertFalse(Thread.isMainThread)
+            let fingerprint = SessionStore.ForegroundSleepSettlementFingerprint(
+                canonicalSessionsRevision: 1,
+                confirmedSleepsRevision: 2,
+                restingHR: 60,
+                maxHR: 190
+            )
+            let proposal = SessionStore.makeForegroundSleepSettlementProposal(
+                fingerprint: fingerprint,
+                canonicalSessions: [],
+                activeJournalSession: nil,
+                now: Date(timeIntervalSince1970: 1_800_000_000),
+                rest: 60,
+                maxHR: 190,
+                learnedWindow: nil
+            )
+
+            XCTAssertEqual(proposal.fingerprint, fingerprint)
+            XCTAssertTrue(proposal.strongCandidates.isEmpty)
+            XCTAssertNil(proposal.wakeBoundary.candidate)
+            completed.fulfill()
+        }
+        wait(for: [completed], timeout: 2)
+    }
 }

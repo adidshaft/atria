@@ -18,8 +18,7 @@ final class AtriaAssistantAnswerTests: XCTestCase {
         store.debugResetForEmptyAssistantAnswers()
         return AtriaAssistantScreen(
             store: store, context: context, coachPayload: nil,
-            aiCoachSettings: AtriaAICoachSettings(), aiCoachHasAPIKey: false,
-            onAICoachSettingsChange: { _ in }, onSaveAICoachAPIKey: { _ in }, onDeleteAICoachAPIKey: {})
+            aiCoachSettings: AtriaAICoachSettings(), aiCoachHasAPIKey: false)
     }
 
     func testEmptyStoreFailsClosedNeverFabricates() {
@@ -59,5 +58,26 @@ final class AtriaAssistantAnswerTests: XCTestCase {
         XCTAssertTrue(source.contains("let store: SessionStore"))
         XCTAssertFalse(source.contains("@ObservedObject var store: SessionStore"))
         XCTAssertTrue(source.contains("exchanges.append(answer(for: prompt))"))
+    }
+
+    func testAssistantKeepsConfigurationOutOfTheConversation() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
+        let assistant = try String(contentsOf: appDirectory.appendingPathComponent("AtriaAssistantScreen.swift"),
+                                   encoding: .utf8)
+        let card = try String(contentsOf: appDirectory.appendingPathComponent("AtriaAICoachCard.swift"),
+                              encoding: .utf8)
+        let settings = try String(contentsOf: appDirectory.appendingPathComponent("AtriaSettingsView.swift"),
+                                  encoding: .utf8)
+
+        XCTAssertFalse(assistant.contains("onSaveAICoachAPIKey"))
+        XCTAssertFalse(card.contains("SecureField"))
+        XCTAssertFalse(card.contains("Picker(\"Coach mode\""))
+        XCTAssertTrue(card.contains("Label(\"Sources\", systemImage: \"checkmark.shield\")"))
+
+        XCTAssertTrue(settings.contains("private var coachSettingsPage"))
+        XCTAssertTrue(settings.contains("SecureField(coachHasAPIKey ? \"Replace saved API key\" : \"API key\""))
+        XCTAssertTrue(settings.contains("Picker(\"Mode\", selection: coachModeBinding)"))
+        XCTAssertTrue(settings.contains("Picker(\"Service\", selection: coachProviderBinding)"))
     }
 }

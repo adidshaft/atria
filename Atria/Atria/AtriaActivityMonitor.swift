@@ -254,6 +254,113 @@ enum AtriaActivitySelectedDayWorkouts {
     }
 }
 
+/// One canonical sleep/nap projection for the Activity row list and timeline.
+/// A pending detector window that substantially overlaps an already-saved
+/// night is not a second activity, and a cross-midnight sleep must remain
+/// selectable on every day where its timeline marker is visible.
+enum AtriaActivitySelectedDaySleeps {
+    static func canonical(snapshot: SleepHistorySnapshot,
+                          pendingReview: SleepHistorySnapshot.Night?) -> [SleepHistorySnapshot.Night] {
+        var byID = (snapshot.nights + snapshot.additionalMainNights + snapshot.napNights)
+            .reduce(into: [String: SleepHistorySnapshot.Night]()) { result, night in
+                result[night.id] = night
+            }
+        if let pendingReview,
+           !pendingReview.confirmed,
+           !byID.values.contains(where: { substantiallyOverlaps($0, pendingReview) }) {
+            byID[pendingReview.id] = pendingReview
+        }
+        return byID.values.sorted {
+            let lhs = $0.start ?? $0.day
+            let rhs = $1.start ?? $1.day
+            if lhs != rhs { return lhs < rhs }
+            return $0.id < $1.id
+        }
+    }
+
+    static func overlapping(snapshot: SleepHistorySnapshot,
+                            pendingReview: SleepHistorySnapshot.Night?,
+                            selectedDay: Date,
+                            calendar: Calendar) -> [SleepHistorySnapshot.Night] {
+        let dayStart = calendar.startOfDay(for: selectedDay)
+        guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else { return [] }
+        return canonical(snapshot: snapshot, pendingReview: pendingReview).filter { night in
+            if let start = night.start, let end = night.end, end > start {
+                return end > dayStart && start < dayEnd
+            }
+            // Legacy summaries may not carry exact bounds. Their attributed
+            // civil day remains the only truthful placement available.
+            return calendar.isDate(night.day, inSameDayAs: dayStart)
+        }
+    }
+
+    private static func substantiallyOverlaps(_ lhs: SleepHistorySnapshot.Night,
+                                               _ rhs: SleepHistorySnapshot.Night) -> Bool {
+        guard let lhsStart = lhs.start, let lhsEnd = lhs.end,
+              let rhsStart = rhs.start, let rhsEnd = rhs.end,
+              lhsEnd > lhsStart, rhsEnd > rhsStart else {
+            return lhs.id == rhs.id
+        }
+        let overlap = min(lhsEnd, rhsEnd).timeIntervalSince(max(lhsStart, rhsStart))
+        let shortest = min(lhsEnd.timeIntervalSince(lhsStart), rhsEnd.timeIntervalSince(rhsStart))
+        return overlap > 0 && overlap / shortest >= 0.70
+    }
+}
+
+enum AtriaActivitySleepStatusPresentation {
+    static func badge(confirmed: Bool, confidence: String) -> String {
+        guard !confirmed else { return "Confirmed" }
+        let normalized = confidence
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .split(whereSeparator: { $0.isWhitespace })
+            .map { $0.lowercased().capitalized }
+            .joined(separator: " ")
+        switch normalized.lowercased() {
+        case "", "candidate", "detected", "pending", "review needed":
+            return "Review"
+        default:
+            return normalized
+        }
+    }
+}
+
+/// Resolves the symbol that actually describes the saved activity, including
+/// older broad-container records such as `Sport · Basketball`,
+/// `Cardio · Stair climber`, or `Other` with a meaningful user label. The
+/// general catalog resolver intentionally preserves an exact persisted type;
+/// Activity needs the more specific subtype for its row and timeline marker.
+enum AtriaActivityDisplayIcon {
+    static func icon(activityType: String?, subtype: String?, label: String) -> String {
+        let base = AtriaWorkoutActivityType.resolved(activityType: activityType,
+                                                     subtype: subtype,
+                                                     label: label)
+        let inferred = AtriaWorkoutActivityType.resolved(activityType: nil,
+                                                         subtype: subtype,
+                                                         label: label)
+        switch base {
+        case .other:
+            return inferred.icon
+        case .sport:
+            let sportSpecific: Set<AtriaWorkoutActivityType> = [
+                .basketball, .football, .cricket, .tennis, .badminton,
+                .volleyball, .golf, .martialArts, .boxing, .climbing, .hiking
+            ]
+            return sportSpecific.contains(inferred) ? inferred.icon : base.icon
+        case .cardio:
+            let cardioSpecific: Set<AtriaWorkoutActivityType> = [
+                .walking, .running, .cycling, .swimming, .rowing,
+                .elliptical, .stairClimber, .jumpRope
+            ]
+            return cardioSpecific.contains(inferred) ? inferred.icon : base.icon
+        case .hiit:
+            return inferred == .jumpRope ? inferred.icon : base.icon
+        default:
+            return base.icon
+        }
+    }
+}
+
 enum AtriaActivityTimelineBuilder {
     static func workoutSpans(workouts: [UserConfirmedWorkout],
                              selectedDay: Date,
@@ -266,18 +373,15 @@ enum AtriaActivityTimelineBuilder {
         let projected = AtriaActivitySelectedDayWorkouts.overlapping(workouts,
                                                                      selectedDay: selectedDay,
                                                                      calendar: calendar).map { workout in
-            let resolved = AtriaWorkoutActivityType.resolved(
-                activityType: workout.activityType,
-                subtype: workout.activitySubtype,
-                label: workout.label
-            )
             return AtriaActivityTimelineWorkoutSpan(
                 id: "workout-\(workout.id)",
                 lane: "",
                 start: max(workout.start, dayStart),
                 end: min(workout.end, dayEnd),
                 label: workout.activitySubtype ?? workout.activityType ?? workout.label,
-                icon: resolved.icon
+                icon: AtriaActivityDisplayIcon.icon(activityType: workout.activityType,
+                                                    subtype: workout.activitySubtype,
+                                                    label: workout.label)
             )
         }
         .sorted {
@@ -295,6 +399,54 @@ enum AtriaActivityTimelineBuilder {
                                              label: $0.label,
                                              icon: $0.icon)
         }
+    }
+}
+
+/// Prevents a fast Share tap from racing the asynchronous route read. The tap
+/// is retained while the saved route is prepared, then consumed exactly once
+/// so a routed workout never opens a map-less social card merely because disk
+/// I/O lost a race with the user.
+struct AtriaWorkoutSharePresentationGate: Equatable {
+    private(set) var routeIsPrepared = false
+    private(set) var requestIsPending = false
+
+    /// Returns `true` when the sheet can present immediately. Otherwise the
+    /// request remains pending until `completeRoutePreparation()`.
+    mutating func requestPresentation() -> Bool {
+        guard routeIsPrepared else {
+            requestIsPending = true
+            return false
+        }
+        return true
+    }
+
+    /// Marks route context authoritative and returns whether a retained tap
+    /// should now present. A second completion cannot replay the same request.
+    mutating func completeRoutePreparation() -> Bool {
+        routeIsPrepared = true
+        let shouldPresent = requestIsPending
+        requestIsPending = false
+        return shouldPresent
+    }
+}
+
+@MainActor
+private enum AtriaWorkoutRouteTransactionRecovery {
+    static func recover(workouts: [UserConfirmedWorkout]) -> AtriaWorkoutRouteStore.TransactionRecoveryResult {
+        let canonical = workouts.map { workout in
+            let resolved = AtriaWorkoutActivityType.resolved(
+                activityType: workout.activityType,
+                subtype: workout.activitySubtype,
+                label: workout.label
+            )
+            return AtriaWorkoutRouteStore.CanonicalWorkoutState(
+                id: workout.id,
+                activityType: resolved.rawValue,
+                start: workout.start,
+                end: workout.end
+            )
+        }
+        return AtriaWorkoutRouteStore.recoverPendingTransaction(canonicalWorkouts: canonical)
     }
 }
 
@@ -421,11 +573,18 @@ struct AtriaActivityMonitorTab: View {
         .sheet(item: $reviewWorkoutWindow) { window in
             AtriaAddWorkoutSheet(store: store,
                                  initialStart: window.start,
-                                 initialEnd: window.end)
+                                 initialEnd: window.end,
+                                 settlingCandidateWindow: (start: window.start,
+                                                           end: window.end),
+                                 onDismissCandidate: {
+                                     store.dismissWorkoutCandidate(start: window.start,
+                                                                   end: window.end)
+                                 })
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
         .task(id: requestKey) {
+            _ = AtriaWorkoutRouteTransactionRecovery.recover(workouts: activity.confirmedWorkouts)
             await refreshDaySections(for: requestKey,
                                      activity: activity,
                                      calendar: calendar)
@@ -502,11 +661,11 @@ struct AtriaActivityMonitorTab: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 8)
-            addActivityMenu
         }
         .padding(10)
         .atriaCard(emphasis: .soft)
-        .accessibilityElement(children: .contain)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Use Add in the day toolbar to log an activity.")
     }
 
     private func refreshDaySections(for key: AtriaActivitySectionsRequestKey,
@@ -553,22 +712,12 @@ struct AtriaActivityMonitorTab: View {
     nonisolated private static func makeDaySections(
         from source: DaySectionsSourceSnapshot
     ) -> DaySectionsResult {
-        let allSleepsByID = (source.sleepSnapshot.nights + source.sleepSnapshot.napNights)
-            .reduce(into: [String: SleepHistorySnapshot.Night]()) { $0[$1.id] = $1 }
-        var sleepsByID = allSleepsByID
-        if let pending = source.pendingSleepReview,
-           !pending.confirmed,
-           !sleepsByID.values.contains(where: {
-               guard let lhsStart = $0.start, let lhsEnd = $0.end,
-                     let rhsStart = pending.start, let rhsEnd = pending.end else { return false }
-               let overlap = min(lhsEnd, rhsEnd).timeIntervalSince(max(lhsStart, rhsStart))
-               let shortest = min(lhsEnd.timeIntervalSince(lhsStart), rhsEnd.timeIntervalSince(rhsStart))
-               return overlap > 0 && shortest > 0 && overlap / shortest >= 0.70
-           }) {
-            sleepsByID[pending.id] = pending
-        }
-        let sleeps = sleepsByID.values
-            .filter { source.calendar.isDate($0.day, inSameDayAs: source.selectedDayStart) }
+        let sleeps = AtriaActivitySelectedDaySleeps.overlapping(
+            snapshot: source.sleepSnapshot,
+            pendingReview: source.pendingSleepReview,
+            selectedDay: source.selectedDayStart,
+            calendar: source.calendar
+        )
             .map(Entry.sleep)
         let selectedWorkouts = AtriaActivitySelectedDayWorkouts.overlapping(
             source.workouts,
@@ -804,7 +953,10 @@ struct AtriaActivityMonitorTab: View {
                            title: isNap ? "Nap" : "Sleep",
                            subtitle: Self.timeRange(start: night.start, end: night.end),
                            value: night.durationText,
-                           badge: night.confirmed ? "Confirmed" : night.confidence.capitalized,
+                           badge: AtriaActivitySleepStatusPresentation.badge(
+                            confirmed: night.confirmed,
+                            confidence: night.confidence
+                           ),
                            context: nil,
                            contextTint: .secondary)
             .accessibilityLabel("\(isNap ? "Nap" : "Sleep"), \(night.durationText), \(Self.timeRange(start: night.start, end: night.end)). Tap to adjust.")
@@ -855,9 +1007,9 @@ struct AtriaActivityMonitorTab: View {
     }
 
     private static func activityIcon(for workout: UserConfirmedWorkout) -> String {
-        AtriaWorkoutActivityType.resolved(activityType: workout.activityType,
-                                          subtype: workout.activitySubtype,
-                                          label: workout.label).icon
+        AtriaActivityDisplayIcon.icon(activityType: workout.activityType,
+                                      subtype: workout.activitySubtype,
+                                      label: workout.label)
     }
 
     private static func activityTint(for workout: UserConfirmedWorkout) -> Color {
@@ -1029,12 +1181,12 @@ struct AtriaActivityMonitorTab: View {
             }
 
             var spans: [TimelineSpan] = []
-            var allSleepsByID = (sleepSnapshot.nights + sleepSnapshot.napNights)
-                .reduce(into: [String: SleepHistorySnapshot.Night]()) { $0[$1.id] = $1 }
-            if let pendingSleepReview, !pendingSleepReview.confirmed {
-                allSleepsByID[pendingSleepReview.id] = pendingSleepReview
-            }
-            let visibleSleeps = allSleepsByID.values.compactMap { night -> (SleepHistorySnapshot.Night, Date, Date)? in
+            let visibleSleeps = AtriaActivitySelectedDaySleeps.overlapping(
+                snapshot: sleepSnapshot,
+                pendingReview: pendingSleepReview,
+                selectedDay: timelineDay,
+                calendar: calendar
+            ).compactMap { night -> (SleepHistorySnapshot.Night, Date, Date)? in
                 guard let start = night.start, let end = night.end,
                       end > dayStart, start < dayEnd else { return nil }
                 return (night, max(start, dayStart), min(end, dayEnd))
@@ -1171,7 +1323,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     @State private var showShareSheet = false
     @State private var route: AtriaWorkoutRoute?
     @State private var routeCoordinates: [CLLocationCoordinate2D] = []
-    @State private var hasPreparedRoute = false
+    @State private var sharePresentationGate = AtriaWorkoutSharePresentationGate()
     @State private var showsHeartRateAndRecovery = false
 
     /// Common activity types offered in the type picker (real workout kinds, not
@@ -1460,6 +1612,11 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                                      tint: Metrics.electricStrain)
                         }
                         statTile("Duration", durationText(workout.duration), tint: Metrics.electricStrain)
+                        if let steps = workout.workoutSteps {
+                            statTile("Steps",
+                                     workout.workoutStepsAreEstimated == true ? "~\(steps)" : "\(steps)",
+                                     tint: .mint)
+                        }
                         if workout.samples > 0 {
                             statTile("Avg HR",
                                      AtriaWorkoutMetricPresentation.averageHeartRateText(workout),
@@ -1514,17 +1671,27 @@ private struct AtriaActivityWorkoutDetailSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
-                        showShareSheet = true
+                        if sharePresentationGate.requestPresentation() {
+                            showShareSheet = true
+                        }
                     } label: {
-                        Image(systemName: "square.and.arrow.up")
+                        if sharePresentationGate.requestIsPending {
+                            ProgressView()
+                                .controlSize(.small)
+                                .accessibilityHidden(true)
+                        } else {
+                            Image(systemName: "square.and.arrow.up")
+                        }
                     }
-                    .disabled(hasUnsavedChanges)
+                    .disabled(hasUnsavedChanges || sharePresentationGate.requestIsPending)
                     .accessibilityLabel("Share workout")
                     .accessibilityHint(hasUnsavedChanges
                                        ? "Save your changes before sharing."
-                                       : "Share the saved workout summary.")
+                                       : (sharePresentationGate.requestIsPending
+                                          ? "Preparing the saved route."
+                                          : "Share the saved workout summary."))
                 }
-                ToolbarItemGroup(placement: .topBarTrailing) {
+                ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Delete workout", systemImage: "trash", role: .destructive) {
                             showDeleteConfirm = true
@@ -1533,7 +1700,14 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                         Image(systemName: "ellipsis")
                     }
                     .accessibilityLabel("Workout actions")
+                }
 
+                // Keep destructive actions and the commit action visually
+                // independent. Without a fixed toolbar spacer iOS 26 merges
+                // adjacent trailing items into one nested Liquid Glass pill.
+                ToolbarSpacer(.fixed, placement: .topBarTrailing)
+
+                ToolbarItem(placement: .topBarTrailing) {
                     Button("Save", action: saveAll)
                         .fontWeight(.bold)
                         .disabled(!canSave)
@@ -1543,13 +1717,20 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                                 isPresented: $showDeleteConfirm,
                                 titleVisibility: .visible) {
                 Button("Delete workout", role: .destructive) {
-                    store.deleteConfirmedWorkout(id: workout.id)
-                    AtriaWorkoutRouteStore.delete(workoutID: workout.id)
-                    dismiss()
+                    deleteWorkout()
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Removes it from Activity history. Recorded strap data and day strain remain.")
+            }
+            .alert("Couldn’t update workout",
+                   isPresented: Binding(
+                    get: { saveError != nil },
+                    set: { if !$0 { saveError = nil } }
+                   )) {
+                Button("OK", role: .cancel) { saveError = nil }
+            } message: {
+                Text(saveError ?? "Try again.")
             }
             .sheet(isPresented: $showShareSheet) {
                 AtriaWorkoutShareSheet(snapshot: shareSnapshot)
@@ -1557,7 +1738,8 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                     .presentationDragIndicator(.visible)
             }
             .task(id: workout.id) {
-                guard !hasPreparedRoute else { return }
+                guard !sharePresentationGate.routeIsPrepared else { return }
+                _ = AtriaWorkoutRouteTransactionRecovery.recover(workouts: store.confirmedWorkouts)
                 let preparation = Task.detached(priority: .userInitiated) {
                     Self.prepareRoute(workoutID: workout.id)
                 }
@@ -1569,7 +1751,9 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 guard !Task.isCancelled else { return }
                 route = prepared.route
                 routeCoordinates = prepared.coordinates
-                hasPreparedRoute = true
+                if sharePresentationGate.completeRoutePreparation() {
+                    showShareSheet = true
+                }
             }
             // The editor opens on the controls and route without touching the
             // potentially large saved-session archive. Prepare the trace only
@@ -1622,6 +1806,41 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     }
 
     private func saveAll() {
+        saveError = nil
+        let pendingRecovery = AtriaWorkoutRouteTransactionRecovery.recover(
+            workouts: store.confirmedWorkouts
+        )
+        guard pendingRecovery != .failed, pendingRecovery != .deferred else {
+            saveError = "Atria is still recovering an earlier route update. Close and reopen Activity, then try Save again."
+            return
+        }
+        let requestedType = AtriaWorkoutActivityType.resolved(
+            activityType: activityType,
+            subtype: activitySubtype,
+            label: label
+        )
+        let originalType = AtriaWorkoutActivityType.resolved(
+            activityType: workout.activityType,
+            subtype: workout.activitySubtype,
+            label: workout.label
+        )
+        let expectedWorkoutID = expectedEditedWorkoutID(start: startTime, end: endTime)
+        let originalState = AtriaWorkoutRouteStore.CanonicalWorkoutState(
+            id: workout.id,
+            activityType: originalType.rawValue,
+            start: workout.start,
+            end: workout.end
+        )
+        guard AtriaWorkoutRouteStore.beginEditTransaction(
+            from: originalState,
+            to: expectedWorkoutID,
+            activityType: requestedType,
+            start: startTime,
+            end: endTime
+        ) else {
+            saveError = "Atria couldn’t prepare this route update safely. Nothing was changed; try Save again."
+            return
+        }
         let result = store.editConfirmedWorkout(id: workout.id,
                                                 label: label,
                                                 activityType: activityType,
@@ -1632,21 +1851,105 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                                                 maxHR: store.profile.maxHR)
         switch result {
         case .success(let savedWorkout):
+            guard savedWorkout.id == expectedWorkoutID else {
+                // This should be unreachable because the canonical ID is a
+                // pure function of the edited window. Retain the marker and
+                // fail closed rather than associating a route by guesswork.
+                saveError = "Atria saved an unexpected workout identity. Close and reopen Activity so it can recover safely."
+                return
+            }
             let resolvedType = AtriaWorkoutActivityType.resolved(
                 activityType: savedWorkout.activityType,
                 subtype: savedWorkout.activitySubtype,
                 label: savedWorkout.label
             )
-            AtriaWorkoutRouteStore.reconcile(from: workout.id,
-                                             to: savedWorkout.id,
-                                             activityType: resolvedType,
-                                             start: savedWorkout.start,
-                                             end: savedWorkout.end)
-            saveError = nil
-            dismiss()
+            switch AtriaWorkoutRouteStore.reconcile(from: workout.id,
+                                                     to: savedWorkout.id,
+                                                     activityType: resolvedType,
+                                                     start: savedWorkout.start,
+                                                     end: savedWorkout.end) {
+            case .success:
+                _ = AtriaWorkoutRouteStore.clearPendingTransaction()
+                dismiss()
+            case .failure:
+                // Route persistence is a separate file from the canonical
+                // workout list. Restore the original metadata before reporting
+                // failure so Save cannot silently leave the visible workout at
+                // a new ID while its route remains attached to the old one.
+                let rollback = store.editConfirmedWorkout(
+                    id: savedWorkout.id,
+                    label: workout.label,
+                    activityType: workout.activityType ?? "",
+                    activitySubtype: workout.activitySubtype,
+                    start: workout.start,
+                    end: workout.end,
+                    rest: store.baseline.restingInt ?? 60,
+                    maxHR: store.profile.maxHR
+                )
+                switch rollback {
+                case .success(let rolledBackWorkout):
+                    let restoredType = AtriaWorkoutActivityType.resolved(
+                        activityType: rolledBackWorkout.activityType,
+                        subtype: rolledBackWorkout.activitySubtype,
+                        label: rolledBackWorkout.label
+                    )
+                    // Recovery recognizes the rolled-back canonical metadata,
+                    // including the rare legacy case where rebuilding the old
+                    // window gives it a different deterministic ID.
+                    let recovery = AtriaWorkoutRouteStore.recoverPendingTransaction(
+                        canonicalWorkouts: [
+                            .init(id: rolledBackWorkout.id,
+                                  activityType: restoredType.rawValue,
+                                  start: rolledBackWorkout.start,
+                                  end: rolledBackWorkout.end)
+                        ]
+                    )
+                    if recovery == .completed || recovery == .noTransaction {
+                        saveError = "Atria couldn’t update the saved route, so your original workout was kept unchanged. Try Save again."
+                    } else {
+                        saveError = "Atria restored the workout details and will finish restoring its route when Activity reopens."
+                    }
+                case .failure:
+                    saveError = "The workout details saved, but its route could not be updated. Close and reopen Activity before trying again."
+                }
+            }
         case .failure(let error):
+            _ = AtriaWorkoutRouteStore.clearPendingTransaction()
             saveError = error.userMessage
         }
+    }
+
+    private func expectedEditedWorkoutID(start: Date, end: Date) -> String {
+        let windowChanged = abs(start.timeIntervalSince(workout.start)) >= 0.5
+            || abs(end.timeIntervalSince(workout.end)) >= 0.5
+        guard windowChanged else { return workout.id }
+        return "\(Int(start.timeIntervalSince1970.rounded()))-\(Int(end.timeIntervalSince1970.rounded()))-live_workout_window"
+    }
+
+    private func deleteWorkout() {
+        saveError = nil
+        let pendingRecovery = AtriaWorkoutRouteTransactionRecovery.recover(
+            workouts: store.confirmedWorkouts
+        )
+        guard pendingRecovery != .failed, pendingRecovery != .deferred else {
+            saveError = "Atria is still recovering an earlier route update. Close and reopen Activity, then try Delete again."
+            return
+        }
+        guard AtriaWorkoutRouteStore.beginDeleteTransaction(workoutID: workout.id) else {
+            saveError = "Atria couldn’t prepare this deletion safely. Nothing was deleted; try again."
+            return
+        }
+        guard store.deleteConfirmedWorkout(id: workout.id) else {
+            _ = AtriaWorkoutRouteStore.clearPendingTransaction()
+            saveError = "Atria couldn’t remove this workout. Nothing was deleted; try again."
+            return
+        }
+        // Metadata is authoritative and must be durably removed first. A route
+        // is never discarded while its Activity record may still be present.
+        if AtriaWorkoutRouteStore.delete(workoutID: workout.id) {
+            _ = AtriaWorkoutRouteStore.clearPendingTransaction()
+        }
+        dismiss()
     }
 
     @ViewBuilder
@@ -1699,6 +2002,14 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 tintHex: zoneTints[offset]
             )
         }) : []
+        let resolvedActivity = AtriaWorkoutActivityType.resolved(activityType: activityType,
+                                                                  subtype: workout.activitySubtype,
+                                                                  label: workout.label)
+        let steps = [.walking, .running, .hiking].contains(resolvedActivity)
+            ? workout.workoutSteps.map {
+                workout.workoutStepsAreEstimated == true ? "~\($0)" : "\($0)"
+            }
+            : nil
         return AtriaWorkoutShareSnapshot(
             date: workout.end,
             activity: workout.activitySubtype ?? workout.activityType ?? workout.label,
@@ -1709,9 +2020,8 @@ private struct AtriaActivityWorkoutDetailSheet: View {
             averageHeartRate: shareMetrics.averageHeartRate,
             distance: route.map { routeDistanceText($0.distanceMeters) },
             pace: route?.averagePaceSecondsPerKilometer.map(routePaceText),
-            activitySystemImage: AtriaWorkoutActivityType.resolved(activityType: activityType,
-                                                                   subtype: workout.activitySubtype,
-                                                                   label: workout.label).icon,
+            steps: steps,
+            activitySystemImage: resolvedActivity.icon,
             routeFileURL: route.flatMap { AtriaWorkoutRouteStore.gpxURL(for: $0) },
             routePoints: route.map { AtriaWorkoutShareSnapshot.routePreviewPoints(from: $0) } ?? []
         )
@@ -1844,18 +2154,40 @@ struct AtriaActivityRecoveryEffect: Equatable {
 /// be saved, because Atria never invents heart rate or strain.
 struct AtriaAddWorkoutSheet: View {
     let store: SessionStore
+    private let settlingCandidateWindow: (start: Date, end: Date)?
+    private let onDismissCandidate: (() -> Bool)?
     @Environment(\.dismiss) private var dismiss
 
     @State private var activityType = AtriaWorkoutActivityType.walking.rawValue
     @State private var startTime: Date
     @State private var endTime: Date
     @State private var failed = false
+    @State private var showDismissConfirmation = false
+    @State private var dismissFailed = false
+
+    /// A detector-backed sheet is editing an existing suggestion, while the
+    /// plain flow creates a new item. Keep the commit verb aligned with the
+    /// sleep/nap review lifecycle instead of presenting the same operation as
+    /// “Add” in one Activity surface and “Save” in another.
+    private var commitTitle: String {
+        settlingCandidateWindow == nil ? "Add workout" : "Save"
+    }
+
+    private var navigationTitle: String {
+        settlingCandidateWindow == nil ? "Add workout" : "Review activity"
+    }
 
     /// Seedable window (2026-07-07): the detections inbox opens this sheet
     /// pre-filled with a detected-but-unsaved window. Internal (not private)
     /// for that same reason.
-    init(store: SessionStore, initialStart: Date? = nil, initialEnd: Date? = nil) {
+    init(store: SessionStore,
+         initialStart: Date? = nil,
+         initialEnd: Date? = nil,
+         settlingCandidateWindow: (start: Date, end: Date)? = nil,
+         onDismissCandidate: (() -> Bool)? = nil) {
         self.store = store
+        self.settlingCandidateWindow = settlingCandidateWindow
+        self.onDismissCandidate = onDismissCandidate
         let now = Date()
         _endTime = State(initialValue: initialEnd ?? now)
         _startTime = State(initialValue: initialStart ?? (initialEnd ?? now).addingTimeInterval(-45 * 60))
@@ -1914,7 +2246,7 @@ struct AtriaAddWorkoutSheet: View {
                     }
 
                     Button(action: add) {
-                        Text("Add workout")
+                        Text(commitTitle)
                             .font(.subheadline.weight(.bold))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 4)
@@ -1925,12 +2257,44 @@ struct AtriaAddWorkoutSheet: View {
                 }
                 .padding(16)
             }
-            .navigationTitle("Add workout")
+            .navigationTitle(navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") { dismiss() }
                 }
+                if onDismissCandidate != nil {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Menu {
+                            Button("Dismiss suggestion", systemImage: "trash", role: .destructive) {
+                                showDismissConfirmation = true
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                        }
+                        .accessibilityLabel("Suggestion actions")
+                    }
+                }
+            }
+            .confirmationDialog("Dismiss this activity suggestion?",
+                                isPresented: $showDismissConfirmation,
+                                titleVisibility: .visible) {
+                Button("Dismiss suggestion", role: .destructive) {
+                    guard let onDismissCandidate else { return }
+                    if onDismissCandidate() {
+                        dismiss()
+                    } else {
+                        dismissFailed = true
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Removes this suggestion from Activity without deleting recorded strap data or day strain.")
+            }
+            .alert("Couldn't dismiss activity", isPresented: $dismissFailed) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("The suggestion is still available. Please try again.")
             }
         }
     }
@@ -1944,8 +2308,14 @@ struct AtriaAddWorkoutSheet: View {
                                                      maxHR: store.profile.maxHR,
                                                      source: "manual_activity_add",
                                                      preserveUserDeclaredActivityWithoutHeartRate: true,
-                                                     activityType: activityType)
+                                                     activityType: activityType,
+                                                     settlingCandidateWindow: settlingCandidateWindow)
         if result != nil {
+            // Candidate settlement is part of the canonical store operation
+            // above. Keep `onDismissCandidate` exclusively for the explicit
+            // destructive action so Save can never become a second UI-owned
+            // persistence sequence. A plain manual Add passes no candidate
+            // window and retains its existing re-add semantics.
             dismiss()
         } else {
             failed = true

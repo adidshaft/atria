@@ -6,7 +6,7 @@ final class AtriaExperimentalSensorCopyTests: XCTestCase {
         XCTAssertEqual(AtriaExperimentalSensorCopy.bloodOxygenStatus(
             strapModel: .strap4,
             decoderAvailable: false),
-            "Decoder unavailable")
+            "Not available yet")
         XCTAssertEqual(AtriaExperimentalSensorCopy.bloodOxygenStatus(
             strapModel: .strap3,
             decoderAvailable: false),
@@ -17,7 +17,7 @@ final class AtriaExperimentalSensorCopyTests: XCTestCase {
         XCTAssertEqual(AtriaExperimentalSensorCopy.bloodOxygenStatus(
             strapModel: .unknown,
             decoderAvailable: false),
-            "Decoder unavailable")
+            "Not available yet")
     }
 
     func testAvailableBloodOxygenDecoderDoesNotUseLabValidationLanguage() {
@@ -45,7 +45,7 @@ final class AtriaExperimentalSensorCopyTests: XCTestCase {
         XCTAssertEqual(AtriaExperimentalSensorCopy.skinTemperatureStatus(
             summary: summary,
             decoderAvailable: false),
-            "Decoder unavailable")
+            "Not available yet")
         XCTAssertEqual(AtriaExperimentalSensorCopy.skinTemperatureDetail(
             summary: summary,
             decoderAvailable: false),

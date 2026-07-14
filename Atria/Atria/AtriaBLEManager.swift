@@ -113,7 +113,7 @@ private final class PowerThermalGovernor {
 /// proprietary stream for later protocol decoding.
 @MainActor
 final class AtriaBLEManager: NSObject, ObservableObject {
-    struct ResearchAggregates: Equatable {
+    struct ResearchAggregates: Equatable, Sendable {
         let sensorProbeFrames: Int
         let spo2CandidateFrames: Int
         let skinTempCandidateFrames: Int
@@ -184,6 +184,67 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                   strapSteps: strap.steps,
                                   strapRawSteps: strap.raw,
                                   strapStepState: strap.state)
+    }
+
+    /// Fully prepared restore output produced away from the MainActor. The
+    /// carrier is immutable; `@unchecked` is limited to legacy value types
+    /// (`HRSample`, `RRInterval`, and `SavedSession`) that predate Sendable
+    /// annotations but contain no shared mutable reference state here.
+    struct ActiveSessionRestorePreparation: @unchecked Sendable {
+        struct JournalIdentity: Equatable, Sendable {
+            let id: UUID
+            let updatedAt: Date
+            let schema: Int
+            let sampleCount: Int
+            let rrSampleCount: Int
+        }
+
+        enum TerminalDisposition: Equatable, Sendable {
+            case absent
+            case schemaMismatch(identity: JournalIdentity)
+            case stale(age: TimeInterval, identity: JournalIdentity)
+            case insufficientSamples(identity: JournalIdentity)
+        }
+
+        struct HeartRateStats: Equatable, Sendable {
+            let minimum: Int?
+            let maximum: Int?
+            let total: Int
+            let count: Int
+            let mean: Double
+            let m2: Double
+        }
+
+        struct LivePayload: @unchecked Sendable {
+            let record: ActiveSessionJournalRecord
+            let now: Date
+            let age: TimeInterval
+            let session: [HRSample]
+            let sessionPoints: [SavedSession.Point]
+            let stats: HeartRateStats
+            let lastHeartRates: [Int]
+            let recentValid: [Int]
+            let displayHeartRate: Int
+            let rrArchive: [RRInterval]
+            let rrPoints: [SavedSession.RRPoint]
+            let recentRRBeatTimes: [Date]
+            let researchAggregates: ResearchAggregates?
+        }
+
+        struct StaleSegmentPayload: @unchecked Sendable {
+            let savedSession: SavedSession
+            let now: Date
+            let age: TimeInterval
+            let researchAggregatesWereMalformed: Bool
+        }
+
+        enum Payload: @unchecked Sendable {
+            case terminal(TerminalDisposition)
+            case staleSegment(StaleSegmentPayload)
+            case live(LivePayload)
+        }
+
+        let payload: Payload
     }
 
     private let debugForceUnknownStrapGeneration: Bool
@@ -326,7 +387,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                                      isRecording: Bool,
                                                      foregroundInteractive: Bool) -> Bool {
         guard let lastAnalysisAt else { return true }
-        return now.timeIntervalSince(lastAnalysisAt) >= hrvRefreshMinimumInterval(
+        let age = now.timeIntervalSince(lastAnalysisAt)
+        // Wall-clock changes must not strand the persisted cadence marker in
+        // the future. Fail open once, then the successful analysis persists a
+        // new marker in the current clock domain. This mirrors the live-session
+        // checkpoint gate and keeps both normal wear and explicit captures
+        // recoverable after travel/manual clock correction.
+        guard age >= 0 else { return true }
+        return age >= hrvRefreshMinimumInterval(
             isRecording: isRecording,
             foregroundInteractive: foregroundInteractive
         )
@@ -354,13 +422,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         if hasReadySnapshot {
             return shouldRefreshHRVAnalysis(now: now,
-                                            lastAnalysisAt: lastReadyAnalysisAt,
+                                            lastAnalysisAt: lastAttemptAt,
                                             isRecording: false,
                                             foregroundInteractive: foregroundInteractive)
         }
         guard cleanWindowSeconds >= 300 else { return false }
         guard let lastAttemptAt else { return true }
-        return now.timeIntervalSince(lastAttemptAt) >= normalWearHRVLearningRetryInterval
+        let attemptAge = now.timeIntervalSince(lastAttemptAt)
+        // A failed automatic attempt is persisted across reconnects and
+        // relaunches. Treat a
+        // future marker as invalid instead of waiting for the wall clock to
+        // catch up before trying another qualified window.
+        return attemptAge < 0 || attemptAge >= normalWearHRVAnalysisAttemptInterval
     }
 
     nonisolated static func encodedReadyHRVSnapshot(_ snapshot: HRVSnapshot) -> Data? {
@@ -645,6 +718,34 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         previouslyVerified || model == .strap4 || model == .strap4Class
     }
 
+    /// Raw WHOOP 4-class history transport and metric recovery are deliberately
+    /// separate capabilities. A successful offload proves only that raw frames
+    /// can be archived. It must not be advertised or scheduled as HR/step gap
+    /// repair until a fixed historical layout has passed reference validation.
+    nonisolated static func supportsVerifiedHistoricalMetricRecovery(
+        model: AtriaStrapModel,
+        previouslyVerified: Bool,
+        hasValidatedMetricLayout: Bool = HistoricalArchive.hasValidatedMetricLayout
+    ) -> Bool {
+        supportsVerifiedHistoricalRecovery(model: model,
+                                           previouslyVerified: previouslyVerified)
+            && hasValidatedMetricLayout
+    }
+
+    nonisolated static func historicalSyncCompletionStatus(
+        newRows: Int,
+        requestedWindowMetricProgress: Bool,
+        ledgerCoverageResolved: Bool,
+        hasValidatedMetricLayout: Bool = HistoricalArchive.hasValidatedMetricLayout
+    ) -> String {
+        guard newRows > 0 else { return "no_rows" }
+        if ledgerCoverageResolved { return "gap_recovered" }
+        if requestedWindowMetricProgress { return "metric_progress" }
+        return hasValidatedMetricLayout
+            ? "archived_gap_unresolved"
+            : "raw_archived_metric_unverified"
+    }
+
     /// The displayed connection status. NEVER written ad-hoc — it is recomputed as a
     /// pure function of CoreBluetooth ground truth via `recomputeConnectionStatus`.
     @Published private(set) var status: Status = .disconnected
@@ -663,6 +764,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     @Published var batteryIsCharging: Bool = false
     @Published var batteryChargeStatus: BatteryChargeStatus = .levelOnly
     @Published private(set) var batteryRecentlyDropping: Bool = false
+    @Published private(set) var batteryReadingIsRecentBaseline = false
+    @Published private(set) var batteryProjectionRevision: UInt64 = 0
+    /// The recent-baseline display gate becomes true only after the first
+    /// accepted HR packet from this process' connection epoch. That transition
+    /// does not otherwise mutate a battery property, so publish it exactly once
+    /// to keep the age-labelled in-app status from remaining on "Battery
+    /// pending" until the next integer 2A19 change. Widgets fail closed because
+    /// they cannot display the baseline's original verification age.
+    private var recentReconnectBatteryBaselineProjectionPublished = false
+    /// Sensor-lifecycle owner for explicit workout zone coaching. This remains
+    /// alive while the workout UI is minimized or the app is backgrounded.
+    private var workoutZoneHapticLifecycle = AtriaWorkoutZoneHapticLifecycle()
+    /// Scoped to the current 2A19 notification subscription, not the whole BLE
+    /// link. A failed subscription can be replaced without poisoning the next
+    /// change-driven notification lease for the rest of the connection.
+    private var batteryNotificationEpochHadRejectedCallback = false
+    /// True only when CoreBluetooth restores the already-connected saved strap
+    /// without issuing didConnect in this process. That exact path may retain a
+    /// bounded persisted CCCD confirmation from the same link epoch.
+    private var batteryConnectionRestoredSamePeripheral = false
+    /// CoreBluetooth state restoration can resume an already-connected
+    /// peripheral without calling didConnect in this process. This process-local
+    /// epoch still lets a post-launch accepted HR packet prove the restored link.
+    private var batteryBaselineValidationStartedAt = Date()
     @Published private(set) var strapStreamState: StrapStreamState = .unknown
     private(set) var manufacturer: String = "—"
     // Device Information (0x180A) identity, read on connect. Raw strings as the
@@ -868,7 +993,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var rrArchiveRevision: UInt64 = 0
     private var recentBreathworkRRSampleCache: RecentBreathworkRRSampleCache?
     private var recentRRBeatTimes: [Date] = []
-    private static let recentRRBeatWindowSeconds: TimeInterval = 10 * 60
+    nonisolated private static let recentRRBeatWindowSeconds: TimeInterval = 10 * 60
     private static let recentBreathworkRRCacheBucketSeconds: TimeInterval = 1
     private var lastRecentRRBeatPruneAt: Date?
     private static let recentRRBeatPruneMinimumInterval: TimeInterval = 2
@@ -884,7 +1009,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private nonisolated static let foregroundLiveHRVRefreshMinimumInterval: TimeInterval = 4 * 60 * 60
     private nonisolated static let backgroundLiveHRVRefreshMinimumInterval: TimeInterval = 4 * 60 * 60
     private nonisolated static let captureHRVRefreshMinimumInterval: TimeInterval = 1.5
-    private nonisolated static let normalWearHRVLearningRetryInterval: TimeInterval = 5 * 60
+    private nonisolated static let normalWearHRVAnalysisAttemptInterval: TimeInterval = 4 * 60 * 60
     nonisolated static let maxPersistedReadyHRVAge: TimeInterval = 36 * 60 * 60
     private static let liveRRContinuityPublishMinimumInterval: TimeInterval = 1.25
     private static let backgroundRRContinuityPublishMinimumInterval: TimeInterval = 10
@@ -1042,6 +1167,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         static let dropAt = "atria.battery.dropAt"
         static let dropDelta = "atria.battery.dropDelta"
         static let requiresFreshConfirmation = "atria.battery.requiresFreshConfirmation"
+        /// Renewed only while an error-free 2A19 value from this connection has
+        /// already been accepted and its notification subscription remains
+        /// active. BAS notifications are change-driven, so silence while the
+        /// CCCD is active means the integer percentage has not changed.
+        static let notificationLeaseAt = "atria.battery.notificationLeaseAt"
+        static let notificationRequestedAt = "atria.battery.notificationRequestedAt"
+        static let notificationConfirmedAt = "atria.battery.notificationConfirmedAt"
+        static let notificationLastError = "atria.battery.notificationLastError"
+        static let notificationLastCallbackAt = "atria.battery.notificationLastCallbackAt"
         static let proprietaryRefreshLastAttemptAt = "atria.battery.proprietaryRefresh.lastAttemptAt"
         static let proprietaryRefreshLastSuccessAt = "atria.battery.proprietaryRefresh.lastSuccessAt"
         static let proprietaryRefreshCircuitOpenUntil = "atria.battery.proprietaryRefresh.circuitOpenUntil"
@@ -1073,6 +1207,27 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private nonisolated static let freshBoundaryBatteryConfirmationMinimumSpan: TimeInterval = 15 * 60
     nonisolated static let batteryRefreshInterval: TimeInterval = 2 * 60
     nonisolated static let batteryDisplayFreshnessLimit: TimeInterval = 10 * 60
+    /// A 2A19 subscription is change-driven: after relaunch the strap may not
+    /// emit another packet until the integer percentage changes. Retain the
+    /// last verified mid-range value long enough to bridge an ordinary sleep or
+    /// workout gap, but expose it only as an explicitly aged `Recent` baseline
+    /// after this same saved strap supplies live HR. It never becomes charging
+    /// evidence, and the restoration sentinels 0/10/100 remain ineligible.
+    nonisolated static let reconnectBatteryBaselineMaximumAge: TimeInterval = 6 * 60 * 60
+
+    /// A standard Battery Service notification is change-driven: once the same
+    /// strap, the current HR link and the current 2A19 subscription are all
+    /// proven, silence means the last validated percentage has not changed.
+    /// Keep that explicitly age-labelled baseline available across an overnight
+    /// gap instead of reverting to `Pending` after six hours. Do not extend this
+    /// to a full strap charge cycle: a notification lease proves the current
+    /// transport, but it cannot prove what happened while the app was not
+    /// connected. Boundary sentinels remain ineligible regardless of age.
+    nonisolated static let activeBatterySubscriptionBaselineMaximumAge: TimeInterval = 36 * 60 * 60
+    /// A persisted CCCD confirmation is transport evidence, not a percentage
+    /// sample. Keep its restoration lifetime tighter than the explicitly aged
+    /// last-verified percentage shown by the UI.
+    nonisolated static let batteryRestoredNotificationConfirmationMaximumAge: TimeInterval = 60 * 60
     nonisolated static let proprietaryBatteryRefreshCooldown: TimeInterval = 30 * 60
     nonisolated static let proprietaryBatteryRefreshFailureCircuit: TimeInterval = 24 * 60 * 60
     nonisolated static let proprietaryBatteryPostQualificationGrace: TimeInterval = 2 * 60
@@ -1089,6 +1244,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let firstSeenAt: Date
         let lastSeenAt: Date
         let confirmations: Int
+    }
+    struct BatteryEventReading: Equatable {
+        let level: Int
+        let millivolts: Int
+        let isCharging: Bool
     }
     enum BatteryLevelAcceptanceDecision: Equatable {
         case accept
@@ -1118,6 +1278,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         static let configured = "atria.capture.defaultsConfigured"
         static let protectedLongWearMigrated = "atria.capture.protectedLongWearMigrated"
         static let strapStepFullProtocolMigrated = "atria.capture.strapStepFullProtocolMigrated"
+        /// V2 replaces the unstable broad proprietary profile with the
+        /// physically verified minimal 2A37 + stream-5 R10 transport. Keep a
+        /// separate key because every existing install already consumed the
+        /// older full-protocol migration.
+        static let stableR10TransportMigrated = "atria.capture.stableR10TransportMigratedV2"
     }
     enum LongWearDefaults {
         static let enabled = "atria.longWear.enabled"
@@ -1146,7 +1311,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
     private enum HRVCadenceDefaults {
         static let lastReadyAnalysisAt = "atria.hrv.lastReadyAnalysisAt"
+        static let lastNormalWearAnalysisAttemptAt = "atria.hrv.lastNormalWearAnalysisAttemptAt"
         static let readySnapshot = "atria.hrv.readySnapshot.v1"
+    }
+
+    nonisolated static func readNormalWearHRVAnalysisAttemptDate(
+        userDefaults: UserDefaults = .standard
+    ) -> Date? {
+        userDefaults.object(forKey: HRVCadenceDefaults.lastNormalWearAnalysisAttemptAt) as? Date
+    }
+
+    nonisolated static func persistNormalWearHRVAnalysisAttemptDate(
+        _ date: Date,
+        userDefaults: UserDefaults = .standard
+    ) {
+        userDefaults.set(date, forKey: HRVCadenceDefaults.lastNormalWearAnalysisAttemptAt)
     }
     enum KeepaliveDefaults {
         static let armed = "atria.keepalive.armed"
@@ -1337,8 +1516,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var offlineHistoricalSyncGeneration: UInt64 = 0
     /// Historical replay temporarily owns the proprietary command pipeline, but
     /// it must not change the user's radio choice when that replay finishes.
-    /// In particular, forcing Battery Saver here silently disables R10 motion
-    /// frames (and therefore strap steps) after every recovery attempt.
+    /// In particular, changing profiles here tears down the live R10 transport
+    /// and can strand step publication after every recovery attempt.
     private var offlineHistoricalSyncPreviousStandardHROnlyMode = false
     private var pendingOfflineHistoricalSyncReason: String?
     private let offlineHistoricalSyncMinimumInterval: TimeInterval = 6 * 60 * 60
@@ -1355,6 +1534,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// SessionStore owns completion after it rebuilds the matching workout and
     /// proves the merged stream reached the coverage floor.
     private var offlineHistoricalSyncMadeRequestedMetricProgress = false
+    /// True only when metric-usable timestamps from this replay retired at
+    /// least one durable missing-range ledger window.
+    private var offlineHistoricalSyncResolvedGapCoverage = false
     @Published private(set) var standardHROnlyEnabled = UserDefaults.standard.bool(forKey: RadioDefaults.standardHROnly)
     @Published private(set) var longWearModeEnabled = UserDefaults.standard.bool(forKey: LongWearDefaults.enabled)
     @Published private(set) var collectionProfile = CollectionProfile.load()
@@ -1384,6 +1566,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var imuInferredEndian: String?
     private var r10MotionFrameCount = 0
     private var lastR10MotionFrameAt: Date?
+    /// Most recent CRC-valid, fixed-layout R10 motion frame. This is published
+    /// independently from the step count: a stationary user still needs Home,
+    /// widgets and Live Activity to know the strap motion stream is alive.
+    @Published private(set) var liveStrapMotionCapturedAt: Date?
     private var passiveR10FirstFrameTask: Task<Void, Never>?
     @Published private(set) var stepCalibrationCaptureArmedAt: Date?
     @Published private(set) var stepCalibrationMotionStreamReady = false
@@ -1394,10 +1580,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     @Published private(set) var liveStrapStepResearchState = "research_unvalidated"
     private var strapStepResearchState = "research_unvalidated"
     private var lastLiveStrapStepResearchPublishedAt: Date?
+    private var pendingLiveStrapStepResearchPublishTask: Task<Void, Never>?
     private var strapStepResearchDay = Calendar.current.startOfDay(for: Date())
     private var strapStepResearchDayBaseline = 0
-    static let liveStrapStepResearchPublishMinimumInterval: TimeInterval = 1
-    static let liveStrapStepResearchPublishMinimumDelta = 5
+    nonisolated static let liveStrapStepResearchPublishMinimumInterval: TimeInterval = 1
+    nonisolated static let liveStrapStepResearchPublishMinimumDelta = 5
     private var researchProbeFrameCount = 0
     private var researchProbeOxygenCandidateFrames = 0
     private var researchProbeTemperatureCandidateFrames = 0
@@ -1446,12 +1633,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var lastRealtimeHR: (bpm: Int, t: Date)?
     private var lastHRVAnalysisAt: Date?
     private var lastHRVAnalysisAttemptAt: Date?
+    private var lastNormalWearHRVAnalysisAttemptAt: Date?
     private var lastRawHRNotificationAt: Date?
     /// Timestamp of the most recent inbound GATT value of ANY kind (battery, HR,
-    /// device-info…). Battery (0x2A19) reads recur every few seconds on a live
-    /// link, so this proves the link is alive even when the HR stream (0x2A37) is
-    /// briefly silent in low-radio mode — used so the no-data watchdog can't tear
-    /// down a genuinely connected peripheral.
+    /// device-info…). It proves the link is alive even when the HR stream
+    /// (0x2A37) is briefly silent in low-radio mode, so the no-data watchdog
+    /// cannot tear down a genuinely connected peripheral.
     private var lastGattActivityAt: Date?
     private var sessionRawHRNotifications = 0
     private var sessionAcceptedHRSamples = 0
@@ -1817,8 +2004,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var protectedR10ActivationGraceTask: Task<Void, Never>?
     private var protectedR10MissingFrameTask: Task<Void, Never>?
     private var protectedR10StabilityTask: Task<Void, Never>?
+    private var protectedR10PassiveReprobeTimeoutTask: Task<Void, Never>?
     nonisolated private static let protectedR10RollbackKey = "atria.protectedR10.rollback"
     nonisolated private static let protectedR10StreamSuppressedKey = "atria.protectedR10.streamSuppressed"
+    nonisolated private static let protectedR10DisconnectStormAtKey = "atria.protectedR10.disconnectStormAt"
+    nonisolated private static let protectedR10DisconnectStormReasonKey = "atria.protectedR10.disconnectStormReason"
+    nonisolated private static let protectedR10PassiveReprobePendingKey = "atria.protectedR10.passiveReprobePending"
+    nonisolated private static let protectedR10PassiveReprobeAttemptAtKey = "atria.protectedR10.passiveReprobeAttemptAt"
+    nonisolated private static let protectedR10PassiveReprobeFailureCountKey = "atria.protectedR10.passiveReprobeFailureCount"
     nonisolated private static let protectedR10EarlyDisconnectsKey = "atria.protectedR10.earlyDisconnects"
     nonisolated private static let protectedR10ActivationSentAtKey = "atria.protectedR10.activationSentAt"
     nonisolated private static let protectedR10ActivationCountKey = "atria.protectedR10.activationCount"
@@ -1836,6 +2029,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let protectedR10RollbackRetryBaseDelay: TimeInterval = 10 * 60
     nonisolated private static let protectedR10RollbackRetryMaximumDelay: TimeInterval = 6 * 60 * 60
     nonisolated private static let protectedR10RollbackRetryStableHRDuration: TimeInterval = 60
+    nonisolated private static let protectedR10PassiveReprobeStableHRDuration: TimeInterval = 2 * 60
+    nonisolated private static let protectedR10PassiveReprobeInitialCooldown: TimeInterval = 30 * 60
+    nonisolated private static let protectedR10PassiveReprobeTimeout: TimeInterval = 2 * 60
 
     nonisolated static func shouldLatchProtectedR10RollbackForEarlyDisconnect(
         activationSent: Bool,
@@ -1872,6 +2068,61 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                                              minimumInterval: TimeInterval = protectedR10RollbackRetryBaseDelay) -> TimeInterval {
         guard let lastActivationAt else { return 0 }
         return max(0, minimumInterval - now.timeIntervalSince(lastActivationAt))
+    }
+
+    /// A disconnect-storm fuse must protect HR immediately, but it must not
+    /// turn a transient field failure into permanently frozen strap steps. The
+    /// recovery probe is deliberately passive: after a long, healthy 2A37
+    /// window it only rediscovers/subscribes stream 5 on the existing link.
+    /// It does not reconnect and it keeps the command rollback latched until a
+    /// dense CRC-valid R10 window independently proves the transport.
+    nonisolated static func shouldBeginProtectedR10PassiveReprobe(
+        streamSuppressed: Bool,
+        reprobePending: Bool,
+        connected: Bool,
+        stableHRDuration: TimeInterval,
+        latestHRAge: TimeInterval?,
+        disconnectStormAge: TimeInterval?,
+        lastAttemptAge: TimeInterval?,
+        failureCount: Int,
+        stableHRMinimum: TimeInterval = protectedR10PassiveReprobeStableHRDuration,
+        initialCooldown: TimeInterval = protectedR10PassiveReprobeInitialCooldown
+    ) -> Bool {
+        _ = lastAttemptAge // retained for persisted-state compatibility and diagnostics
+        guard streamSuppressed,
+              !reprobePending,
+              failureCount == 0,
+              connected,
+              stableHRDuration >= stableHRMinimum,
+              let latestHRAge,
+              latestHRAge >= 0,
+              latestHRAge <= 10,
+              let disconnectStormAge,
+              disconnectStormAge >= initialCooldown else { return false }
+
+        return true
+    }
+
+    nonisolated static func shouldAbortProtectedR10PassiveReprobeForDisconnect(
+        reprobePending: Bool,
+        userRequestedDisconnect: Bool,
+        atriaOwnedOfflineSyncDisconnect: Bool,
+        reprobeDuration: TimeInterval?
+    ) -> Bool {
+        _ = reprobeDuration // retained for deterministic diagnostics/callers
+        return reprobePending
+            && !userRequestedDisconnect
+            && !atriaOwnedOfflineSyncDisconnect
+    }
+
+    nonisolated static func protectedR10PassiveReprobeHasExpired(
+        reprobePending: Bool,
+        attemptAge: TimeInterval?,
+        timeout: TimeInterval = protectedR10PassiveReprobeTimeout
+    ) -> Bool {
+        guard reprobePending else { return false }
+        guard let attemptAge, attemptAge >= 0 else { return true }
+        return attemptAge >= timeout
     }
 
     /// Historical offload and protected R10 share the proprietary service. A
@@ -1922,7 +2173,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private var centralRestoreIdentifier: String {
-        motionHandshakeDiagnostic?.restoreIdentifier ?? "com.adidshaft.atria.ble-central-v4"
+        // v4 briefly subscribed the proprietary stream-4 battery-event
+        // characteristic during a physical experiment. CoreBluetooth can
+        // restore that CCCD state even after the source subscription is rolled
+        // back, which leaves the strap reconnecting about every ten seconds.
+        // A fresh production namespace guarantees the stable HR + R10 profile
+        // starts from a clean connection instead of inheriting that experiment.
+        motionHandshakeDiagnostic?.restoreIdentifier
+            ?? (protectedR10StreamSuppressed
+                ? "com.adidshaft.atria.ble-central-v6-pure-hr"
+                : "com.adidshaft.atria.ble-central-v5")
     }
 
     nonisolated private var protectedR10RollbackEnabled: Bool {
@@ -1935,12 +2195,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         UserDefaults.standard.bool(forKey: Self.protectedR10StreamSuppressedKey)
     }
 
+    nonisolated private var protectedR10PassiveReprobePending: Bool {
+        UserDefaults.standard.bool(forKey: Self.protectedR10PassiveReprobePendingKey)
+    }
+
     private var discoveryServicesForCurrentMode: [CBUUID] {
         if motionHandshakeDiagnostic != nil { return [Self.UUIDs.strapService] }
         if standardHROnlyMode, !historyOnlyProbeMode {
-            return protectedR10StreamSuppressed
-                ? [Self.UUIDs.heartRateService]
-                : [Self.UUIDs.heartRateService, Self.UUIDs.strapService]
+            return Self.protectedStandardHRServices(
+                streamSuppressed: protectedR10StreamSuppressed
+            )
         }
         return Self.UUIDs.discoveryServices
     }
@@ -2026,7 +2290,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private let activeJournalInteractiveFlushMinimumInterval: TimeInterval = 60
     private let activeJournalUnattendedFlushMinimumInterval: TimeInterval = 60
     private let activeJournalFreshnessFlushCeiling: TimeInterval = 75
-    private let activeJournalStepCheckpointDelta = 25
+    // Confirmed strap steps are cumulative evidence. Bound their crash-loss
+    // window by both count and wall time without turning every detected step
+    // into a disk write. At normal/brisk cadence the count limit wins; at slow
+    // cadence or during a short final walk the time limit guarantees a trailing
+    // checkpoint. Scene lifecycle edges still force an immediate flush below.
+    nonisolated static let strapStepCheckpointMaximumUnpersistedSteps = 12
+    nonisolated static let strapStepCheckpointMaximumAge: TimeInterval = 15
     private let activeJournalMaxAge: TimeInterval = 18 * 60 * 60
     private let activeJournalMaxSamples = 90_000
     // At reduced-detail low-battery cadence, accepted-HR gaps can legitimately
@@ -2039,6 +2309,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var activeJournalSaveInFlight = false
     private var activeJournalPendingSave = false
     private var activeJournalPendingTimestampRefresh = false
+    private var activeJournalStepCheckpointTask: Task<Void, Never>?
     private var lastActiveJournalSaveAt: Date?
     private var lastActiveJournalSavedSessionSampleCount = 0
     private var lastActiveJournalSavedRRArchiveCount = 0
@@ -2082,15 +2353,75 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         })
     }
 
-    /// Standard 2A37 remains the only HR transport in protected long-wear mode.
-    /// Physical A/B evidence on 2026-07-13 showed that even a read-only stream-5
-    /// subscription caused repeated link disconnects, so passive R10 is kept
-    /// behind an explicit research gate and is OFF in production.
+    /// Protected long wear intentionally combines standard 2A37 heart rate with
+    /// the single proprietary stream-5 R10 motion subscription. This is the
+    /// production strap-only step transport; the rollback/suppression gate is
+    /// evaluated before discovery and ingestion, so this helper must not add a
+    /// second, contradictory research-only gate after stream 5 is already live.
     nonisolated static func shouldObservePassiveR10InProtectedStandardHR(
-        characteristicUUID: CBUUID,
-        researchEnabled: Bool = false
+        characteristicUUID: CBUUID
     ) -> Bool {
-        researchEnabled && characteristicUUID == UUIDs.strapStream5
+        characteristicUUID == UUIDs.strapStream5
+    }
+
+    /// The complete proprietary characteristic set for protected production is
+    /// deliberately small: stream 5 supplies R10 motion and TX is retained for
+    /// the single leased activation command. Physical testing rejected adding
+    /// the otherwise useful stream-4 battery event channel because it caused
+    /// rapid reconnect churn. A latched rollback suppresses both without
+    /// changing the standard 2A37 heart-rate subscription.
+    nonisolated static func protectedStandardHRStrapCharacteristics(
+        streamSuppressed: Bool
+    ) -> [CBUUID]? {
+        streamSuppressed ? nil : [UUIDs.strapStream5, UUIDs.strapTX]
+    }
+
+    /// Protected production keeps standard HR and the standard battery-level
+    /// service available independently of the proprietary R10 rollback. The
+    /// battery service is notification-only at the characteristic boundary;
+    /// adding it here does not authorize a 2A19 read or any custom command.
+    nonisolated static func protectedStandardHRServices(
+        streamSuppressed: Bool
+    ) -> [CBUUID] {
+        var services = [UUIDs.heartRateService, UUIDs.batteryService]
+        if !streamSuppressed {
+            services.append(UUIDs.strapService)
+        }
+        return services
+    }
+
+    /// Discover only the standard percentage characteristic in protected
+    /// production. Charging-state 2A1B and proprietary battery paths remain
+    /// outside the stable HR + R10 transport profile.
+    nonisolated static func protectedStandardHRCharacteristics(
+        for service: CBUUID,
+        streamSuppressed: Bool
+    ) -> [CBUUID]? {
+        switch service {
+        case UUIDs.heartRateService:
+            return [UUIDs.heartRateMeasure]
+        case UUIDs.batteryService:
+            return [UUIDs.batteryLevel]
+        case UUIDs.strapService:
+            return protectedStandardHRStrapCharacteristics(
+                streamSuppressed: streamSuppressed
+            )
+        default:
+            return nil
+        }
+    }
+
+    /// Mirrors the protected discovery contract at the ingest boundary. A
+    /// restored legacy proprietary notification is ignored; only production
+    /// R10, or the explicitly pending one-shot battery response, can enter the
+    /// decoder while standard-HR protection is active.
+    nonisolated static func shouldAcceptProtectedProprietaryNotification(
+        characteristicUUID: CBUUID,
+        streamSuppressed: Bool,
+        pendingOneShotBatteryResponse: Bool
+    ) -> Bool {
+        (characteristicUUID == UUIDs.strapStream5 && !streamSuppressed)
+            || pendingOneShotBatteryResponse
     }
 
     nonisolated static func shouldQuarantineBatteryLevel(previousLevel: Int,
@@ -2112,21 +2443,35 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         receivedAt: Date,
         pending: BatteryDropCandidate?,
         previousIsCached: Bool = false,
-        requiresFreshConfirmation: Bool = false
+        requiresFreshConfirmation: Bool = false,
+        trustedCurrentConnectionNotification: Bool = false
     ) -> BatteryLevelAcceptanceDecision {
-        // Physical WHOOP traces have disproven stable repetition as sufficient
-        // evidence for 0/10/100: the same false value can replay for longer than
-        // the old fifteen-minute gate. A sentinel is displayable only when the
-        // last accepted level is already close enough to make the transition a
-        // normal one. This preserves the last credible mid-range value instead
-        // of eventually replacing it with a persistent restoration artefact.
-        if isBatterySentinel(incomingLevel),
-           !isPlausibleBatterySentinelTransition(previousLevel: previousLevel,
-                                                  incomingLevel: incomingLevel) {
+        // Physical WHOOP traces have disproven both stable repetition and a
+        // nearby prior percentage as sufficient proof for a bare 0/10/100
+        // 2A19 value: restoration can replay the same boundary after first
+        // replaying a nearby value. Boundary truth is therefore promoted only
+        // by `batteryEventAcceptanceDecision`, where SOC is independently
+        // corroborated by the CRC-validated event's voltage, power state and a
+        // credible trajectory. This path deliberately never ages a bare BAS
+        // sentinel into truth.
+        if isBatterySentinel(incomingLevel) {
             return corroboratedBatteryLevelDecision(incomingLevel: incomingLevel,
                                                      receivedAt: receivedAt,
                                                      pending: pending,
                                                      minimumSpan: .infinity)
+        }
+
+        // Production 2A19 is notification-only because explicit reads caused
+        // physical disconnects. BAS notifications are change-driven, not a
+        // repeated sample stream, so waiting for three identical mid-range
+        // callbacks creates a permanent Pending state. One error-free callback
+        // on the active current-connection subscription is sufficient for an
+        // ordinary 11...99 value. Restoration sentinels remain quarantined by
+        // the boundary gate above.
+        if requiresFreshConfirmation,
+           trustedCurrentConnectionNotification,
+           !isBatterySentinel(incomingLevel) {
+            return .accept
         }
 
         if requiresFreshConfirmation {
@@ -2172,6 +2517,124 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                                  ))
     }
 
+    /// The autonomous event is stronger evidence than a bare 2A19 percentage:
+    /// it arrives in a CRC-validated proprietary frame and independently carries
+    /// SOC, plausible cell voltage, and a charging bit. Trust the first ordinary
+    /// mid-range event after reconnect so Battery does not remain Pending for
+    /// multiple eight-minute event periods. A boundary can cross the quarantine
+    /// only when those independent electrical fields also agree with either an
+    /// unmistakable full-cell condition or a recent gradual trajectory.
+    nonisolated static func batteryEventAcceptanceDecision(
+        previousLevel: Int,
+        previousAcceptedAt: Date?,
+        reading: BatteryEventReading,
+        receivedAt: Date,
+        pending: BatteryDropCandidate?,
+        previousIsCached: Bool = false,
+        requiresFreshConfirmation: Bool = false,
+        previousChargeStatus: BatteryChargeStatus = .levelOnly
+    ) -> BatteryLevelAcceptanceDecision {
+        guard isBatterySentinel(reading.level) else { return .accept }
+        if batteryBoundaryEventIsIndependentlyCorroborated(
+            previousLevel: previousLevel,
+            previousAcceptedAt: previousAcceptedAt,
+            previousChargeStatus: previousChargeStatus,
+            reading: reading,
+            receivedAt: receivedAt
+        ) {
+            return .accept
+        }
+        return batteryLevelAcceptanceDecision(
+            previousLevel: previousLevel,
+            previousAcceptedAt: previousAcceptedAt,
+            incomingLevel: reading.level,
+            receivedAt: receivedAt,
+            pending: pending,
+            previousIsCached: previousIsCached,
+            requiresFreshConfirmation: requiresFreshConfirmation
+        )
+    }
+
+    /// Decides whether the autonomous CRC-validated event contains enough
+    /// evidence to promote an otherwise quarantined 0/10/100 percentage.
+    ///
+    /// The voltage thresholds are intentionally asymmetric:
+    /// - 100% needs either active charging plus a near-4.2 V cell/trajectory,
+    ///   or an even tighter high-voltage + recent-near-full combination after
+    ///   the charger has just been removed.
+    /// - 10%/0% need external power absent, low cell voltage, and a recent
+    ///   accepted percentage already within five points of that boundary.
+    ///
+    /// Thus a restoration frame containing a syntactically valid but
+    /// electrically contradictory sentinel remains quarantined forever, while
+    /// the real hardware can still report its actual boundary state.
+    nonisolated static func batteryBoundaryEventIsIndependentlyCorroborated(
+        previousLevel: Int,
+        previousAcceptedAt: Date?,
+        previousChargeStatus: BatteryChargeStatus = .levelOnly,
+        reading: BatteryEventReading,
+        receivedAt: Date
+    ) -> Bool {
+        guard isBatterySentinel(reading.level),
+              (3_000...4_300).contains(reading.millivolts) else { return false }
+
+        let hasRecentPrior = previousAcceptedAt.map {
+            receivedAt >= $0 &&
+                receivedAt.timeIntervalSince($0) <= reconnectBatteryBaselineMaximumAge
+        } ?? false
+
+        switch reading.level {
+        case 100:
+            let unmistakablyFullCell = reading.millivolts >= 4_200
+            let recentNearFullTrajectory = hasRecentPrior &&
+                (95...100).contains(previousLevel) &&
+                reading.millivolts >= 4_050
+            let recentPoweredTrajectory = hasRecentPrior &&
+                (previousChargeStatus == .charging || previousChargeStatus == .full) &&
+                previousLevel >= 90 &&
+                reading.millivolts >= 4_050
+            if reading.isCharging {
+                return unmistakablyFullCell || recentNearFullTrajectory || recentPoweredTrajectory
+            }
+            // A completed charge may clear the event's charging bit before its
+            // next autonomous report. Without that bit require both a very high
+            // cell voltage and an already-near-full recent trajectory; neither
+            // signal alone is allowed to turn a restoration 100 into truth.
+            return reading.millivolts >= 4_180 && recentNearFullTrajectory
+        case 10:
+            return !reading.isCharging &&
+                reading.millivolts <= 3_550 &&
+                hasRecentPrior &&
+                (11...15).contains(previousLevel)
+        case 0:
+            return !reading.isCharging &&
+                reading.millivolts <= 3_250 &&
+                hasRecentPrior &&
+                (1...5).contains(previousLevel)
+        default:
+            return false
+        }
+    }
+
+    /// Parses a BATTERY_LEVEL event after the outer frame has passed the shared
+    /// length + CRC gates in `handleProprietary`. Keeping the structural checks
+    /// pure makes the production offsets independently regression-testable.
+    nonisolated static func parseBatteryLevelEventFrame(_ frame: [UInt8]) -> BatteryEventReading? {
+        guard frame.count > 26,
+              frame[0] == 0xAA,
+              frame[4] == Packet.event,
+              frame[6] == 0x03 else { return nil }
+        let rawSOC = Int(frame[17]) | (Int(frame[18]) << 8)
+        let millivolts = Int(frame[21]) | (Int(frame[22]) << 8)
+        let chargeByte = frame[26]
+        guard rawSOC <= 1_000,
+              (3_000...4_300).contains(millivolts),
+              chargeByte <= 1 else { return nil }
+        return BatteryEventReading(level: Int((Double(rawSOC) / 10).rounded()),
+                                   millivolts: millivolts,
+                                   isCharging: chargeByte == 1)
+    }
+
     nonisolated static func isBatterySentinel(_ level: Int) -> Bool {
         level <= 10 || level >= 100
     }
@@ -2200,6 +2663,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case .full:
             return batteryLevel == 100 && hasPlausibleRiseEvidence ? .full : nil
         }
+    }
+
+    /// Percentage-only 2A19 changes cannot originate powered state. A decline
+    /// proves discharge, while a small rise may be quantization or correction;
+    /// Charging requires the independent CRC-validated power event.
+    nonisolated static func chargeEvidenceFromBatteryLevelChange(previousLevel: Int,
+                                                                  newLevel: Int) -> BatteryChargeStatus? {
+        guard previousLevel >= 0 else { return newLevel >= 100 ? .full : nil }
+        if newLevel >= 100 { return .full }
+        return newLevel < previousLevel ? .notCharging : nil
     }
 
     private nonisolated static func corroboratedBatteryLevelDecision(
@@ -2357,14 +2830,250 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return now.timeIntervalSince(lastAcceptedAt) <= maxAge
     }
 
+    /// CoreBluetooth may briefly restore the connected peripheral before its
+    /// cached 2A19 characteristic is reattached to this manager. Preserve a
+    /// previously accepted mid-range value only for the bounded lifetime of a
+    /// lease created in this same process/connection epoch. Launch hydration
+    /// clears old leases before setting `requiresFreshConfirmation`.
+    nonisolated static func notificationLeaseSupportsBatteryDisplay(
+        level: Int,
+        source: String,
+        requiresFreshConfirmation: Bool,
+        linkConnected: Bool,
+        notificationLeaseAt: Date?,
+        now: Date,
+        maximumAge: TimeInterval = batteryDisplayFreshnessLimit
+    ) -> Bool {
+        guard (11...99).contains(level),
+              source == "live_2A19",
+              !requiresFreshConfirmation,
+              linkConnected,
+              let notificationLeaseAt,
+              now >= notificationLeaseAt else { return false }
+        return now.timeIntervalSince(notificationLeaseAt) <= maximumAge
+    }
+
+    /// CoreBluetooth can replace the restored `CBCharacteristic` instance even
+    /// after it has reported a successful CCCD subscription. Treat that object
+    /// flag as a convenience, not the sole durable proof: a confirmation from
+    /// this connection epoch remains authoritative until an inactive/error
+    /// callback removes it and records an error.
+    nonisolated static func batteryNotificationConfirmationSupportsCurrentConnection(
+        confirmedAt: Date?,
+        lastError: String?,
+        connectionStartedAt: Date?,
+        linkConnected: Bool,
+        now: Date,
+        restoredConfirmationMaximumAge: TimeInterval = batteryRestoredNotificationConfirmationMaximumAge
+    ) -> Bool {
+        guard linkConnected,
+              lastError == nil,
+              let confirmedAt,
+              confirmedAt <= now else { return false }
+        if let connectionStartedAt {
+            // `didConnect` proves a genuinely new link epoch. Its subscription
+            // must be confirmed again; never inherit the old link's CCCD proof.
+            return confirmedAt >= connectionStartedAt
+        }
+        // State restoration can resume the exact connected peripheral without
+        // calling didConnect in this process. Keep the bounded persisted CCCD
+        // confirmation for that path; current HR + connected link are required
+        // separately by the promotion gate.
+        return now.timeIntervalSince(confirmedAt) <= restoredConfirmationMaximumAge
+    }
+
+    nonisolated static func batteryRestorationPreservesNotificationEpoch(
+        restoredPeripheralIdentifier: UUID,
+        savedPeripheralIdentifier: UUID?,
+        restoredPeripheralIsConnected: Bool
+    ) -> Bool {
+        restoredPeripheralIsConnected
+            && savedPeripheralIdentifier == restoredPeripheralIdentifier
+    }
+
+    private func batteryNotificationTransportIsActive(
+        now: Date,
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        let linkConnected = peripheral?.state == .connected && status == .connected
+        guard linkConnected else { return false }
+        if batteryLevelCharacteristic?.isNotifying == true { return true }
+        return Self.batteryNotificationConfirmationSupportsCurrentConnection(
+            confirmedAt: (defaults.object(forKey: BatteryDefaults.notificationConfirmedAt) as? Double)
+                .map(Date.init(timeIntervalSince1970:)),
+            lastError: defaults.string(forKey: BatteryDefaults.notificationLastError),
+            connectionStartedAt: batteryConnectionRestoredSamePeripheral ? nil : connectedAt,
+            linkConnected: linkConnected,
+            now: now
+        )
+    }
+
+    /// A genuine reconnect may not receive a 2A19 callback until the integer
+    /// percentage changes. Keep a recent, already-validated mid-range baseline
+    /// visible as *Recent* when live HR proves the same saved strap is currently
+    /// connected. This is display-only evidence: callers must not clear
+    /// `requiresFreshConfirmation`, renew a live lease, or schedule battery
+    /// alerts from it. A disputed/rejected callback belongs to the *new*
+    /// notification epoch; it must block promotion, but it must not erase the
+    /// separately accepted baseline. Keeping that baseline visible as Recent
+    /// avoids a permanent Pending UI while a false restoration sentinel is
+    /// quarantined.
+    nonisolated static func recentReconnectBatteryBaselineIsDisplayEligible(
+        level: Int,
+        acceptedAt: Date?,
+        source: String,
+        displayedIsCached: Bool,
+        requiresFreshConfirmation: Bool,
+        linkConnected: Bool,
+        sameSavedPeripheral: Bool,
+        currentConnectionHasHeartRate: Bool,
+        hasPendingDisputedReading: Bool,
+        currentNotificationEpochHadRejectedCallback: Bool,
+        now: Date,
+        maximumAge: TimeInterval = reconnectBatteryBaselineMaximumAge
+    ) -> Bool {
+        guard displayedIsCached,
+              requiresFreshConfirmation,
+              linkConnected,
+              sameSavedPeripheral,
+              currentConnectionHasHeartRate,
+              (11...99).contains(level),
+              batteryReconnectBaselineSourceIsLeaseEligible(source),
+              let acceptedAt,
+              acceptedAt <= now else { return false }
+        _ = hasPendingDisputedReading
+        _ = currentNotificationEpochHadRejectedCallback
+        return now.timeIntervalSince(acceptedAt) <= maximumAge
+    }
+
+    /// Launch hydration must not turn a fresh, already-validated percentage
+    /// into an indefinite Pending state merely because the change-driven 2A19
+    /// characteristic has not emitted the same integer again. This narrower
+    /// gate is only for the first minutes after acceptance: it requires the
+    /// same connected strap, a non-boundary value, and provenance from a live
+    /// level-bearing packet. It is display-only and never clears the fresh-
+    /// confirmation flag or renews a notification lease.
+    nonisolated static func freshConnectedCachedBatteryBaselineIsDisplayEligible(
+        level: Int,
+        acceptedAt: Date?,
+        source: String,
+        displayedIsCached: Bool,
+        requiresFreshConfirmation: Bool,
+        linkConnected: Bool,
+        sameSavedPeripheral: Bool,
+        now: Date,
+        maximumAge: TimeInterval = batteryDisplayFreshnessLimit
+    ) -> Bool {
+        guard displayedIsCached,
+              requiresFreshConfirmation,
+              linkConnected,
+              sameSavedPeripheral,
+              (11...99).contains(level),
+              batteryReconnectBaselineSourceIsLeaseEligible(source),
+              let acceptedAt,
+              acceptedAt <= now else { return false }
+        return now.timeIntervalSince(acceptedAt) <= maximumAge
+    }
+
+    private func freshConnectedCachedBatteryBaselineIsDisplayable(
+        now: Date,
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        let linkConnected = peripheral?.state == .connected && status == .connected
+        let savedPeripheralIdentifier = defaults
+            .string(forKey: LinkDefaults.savedPeripheralUUID)
+            .flatMap(UUID.init(uuidString:))
+        return Self.freshConnectedCachedBatteryBaselineIsDisplayEligible(
+            level: batteryLevel,
+            acceptedAt: lastAcceptedBatteryLevelAt,
+            source: defaults.string(forKey: BatteryDefaults.source) ?? "none",
+            displayedIsCached: displayedBatteryLevelIsCached,
+            requiresFreshConfirmation: defaults.bool(
+                forKey: BatteryDefaults.requiresFreshConfirmation
+            ),
+            linkConnected: linkConnected,
+            sameSavedPeripheral: peripheral?.identifier == savedPeripheralIdentifier,
+            now: now
+        )
+    }
+
+    private func recentReconnectBatteryBaselineIsDisplayable(
+        now: Date,
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        let linkConnected = peripheral?.state == .connected && status == .connected
+        let savedPeripheralIdentifier = defaults
+            .string(forKey: LinkDefaults.savedPeripheralUUID)
+            .flatMap(UUID.init(uuidString:))
+        let sameSavedPeripheral = peripheral?.identifier == savedPeripheralIdentifier
+        let connectionStartedAt = connectedAt ?? batteryBaselineValidationStartedAt
+        let currentConnectionHasHeartRate = lastRawHRNotificationAt.map {
+            $0 >= connectionStartedAt
+        } ?? false
+        return Self.recentReconnectBatteryBaselineIsDisplayEligible(
+            level: batteryLevel,
+            acceptedAt: lastAcceptedBatteryLevelAt,
+            source: defaults.string(forKey: BatteryDefaults.source) ?? "none",
+            displayedIsCached: displayedBatteryLevelIsCached,
+            requiresFreshConfirmation: defaults.bool(
+                forKey: BatteryDefaults.requiresFreshConfirmation
+            ),
+            linkConnected: linkConnected,
+            sameSavedPeripheral: sameSavedPeripheral,
+            currentConnectionHasHeartRate: currentConnectionHasHeartRate,
+            hasPendingDisputedReading: pendingBatteryDropCandidate != nil,
+            currentNotificationEpochHadRejectedCallback:
+                batteryNotificationEpochHadRejectedCallback,
+            now: now
+        )
+    }
+
     /// Single projection gate for every UI/notification consumer. A raw
     /// in-memory percentage is not display truth after its independent 2A19
     /// evidence expires, even if HR continues on another characteristic.
     func displayableBatteryLevel(now: Date = Date()) -> Int? {
-        guard (0...100).contains(batteryLevel),
-              Self.batteryLevelIsFresh(lastAcceptedAt: lastAcceptedBatteryLevelAt,
-                                       now: now) else { return nil }
+        let defaults = UserDefaults.standard
+        let requiresFreshConfirmation = defaults.bool(
+            forKey: BatteryDefaults.requiresFreshConfirmation
+        )
+        let activeAcceptedNotification = batteryNotificationTransportIsActive(
+            now: now,
+            defaults: defaults
+        )
+            && !displayedBatteryLevelIsCached
+        let restoredNotificationLease = Self.notificationLeaseSupportsBatteryDisplay(
+            level: batteryLevel,
+            source: defaults.string(forKey: BatteryDefaults.source) ?? "none",
+            requiresFreshConfirmation: requiresFreshConfirmation,
+            linkConnected: peripheral?.state == .connected && status == .connected,
+            notificationLeaseAt: (defaults.object(forKey: BatteryDefaults.notificationLeaseAt) as? Double)
+                .map(Date.init(timeIntervalSince1970:)),
+            now: now
+        )
+        let recentReconnectBaseline = recentReconnectBatteryBaselineIsDisplayable(
+            now: now,
+            defaults: defaults
+        )
+        let freshConnectedCachedBaseline = freshConnectedCachedBatteryBaselineIsDisplayable(
+            now: now,
+            defaults: defaults
+        )
+        guard (0...100).contains(batteryLevel) else { return nil }
+        if recentReconnectBaseline { return batteryLevel }
+        if freshConnectedCachedBaseline { return batteryLevel }
+        guard !requiresFreshConfirmation,
+              (Self.batteryLevelIsFresh(lastAcceptedAt: lastAcceptedBatteryLevelAt,
+                                        now: now)
+                || activeAcceptedNotification
+                || restoredNotificationLease) else { return nil }
         return batteryLevel
+    }
+
+    /// Timestamp for the level-bearing packet behind the current display
+    /// projection. UI callers use this only to age an explicitly Recent value;
+    /// it is not a substitute for current charge-state evidence.
+    var lastVerifiedBatteryLevelAt: Date? {
+        lastAcceptedBatteryLevelAt
     }
 
     nonisolated static func reconnectBatteryDisplayLevel(currentLevel: Int,
@@ -2380,6 +3089,54 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return -1
         }
         return credibleLevel
+    }
+
+    /// Standard Battery Service notifications are change-driven. Requiring a
+    /// second value packet after every reconnect can therefore leave a correct
+    /// mid-range percentage stuck on Pending forever when the level has not
+    /// changed. Promote the recent credible baseline only after this exact
+    /// connection has delivered live HR and CoreBluetooth confirms the 2A19
+    /// notification remains active. Restoration sentinels and unknown sources
+    /// can never cross this boundary.
+    nonisolated static func shouldPromoteReconnectBatteryBaseline(
+        level: Int,
+        acceptedAt: Date?,
+        source: String,
+        displayedIsCached: Bool,
+        requiresFreshConfirmation: Bool,
+        notificationActive: Bool,
+        linkConnected: Bool,
+        currentConnectionHasHeartRate: Bool,
+        hasPendingDisputedReading: Bool = false,
+        currentNotificationEpochHadRejectedCallback: Bool = false,
+        now: Date,
+        maximumAge: TimeInterval = activeBatterySubscriptionBaselineMaximumAge
+    ) -> Bool {
+        guard displayedIsCached,
+              requiresFreshConfirmation,
+              notificationActive,
+              linkConnected,
+              currentConnectionHasHeartRate,
+              !hasPendingDisputedReading,
+              !currentNotificationEpochHadRejectedCallback,
+              (11...99).contains(level),
+              batteryReconnectBaselineSourceIsLeaseEligible(source),
+              let acceptedAt,
+              now >= acceptedAt else { return false }
+        return now.timeIntervalSince(acceptedAt) <= maximumAge
+    }
+
+    /// A current standard Battery Service subscription may carry forward only
+    /// a recent percentage that already came from a level-bearing, validated
+    /// live source. The autonomous battery event is stronger than bare 2A19
+    /// (CRC + SOC + cell voltage), so excluding it left an otherwise truthful
+    /// mid-range value stuck on Pending after reconnect until the next event.
+    /// The retired one-shot proprietary command remains excluded because its
+    /// transport can interrupt R10 and is disabled in production.
+    nonisolated static func batteryReconnectBaselineSourceIsLeaseEligible(
+        _ source: String
+    ) -> Bool {
+        source == "live_2A19" || source == "live_battery_event"
     }
 
     nonisolated static func batteryConfirmationRetryDelay(incomingLevel: Int) -> TimeInterval {
@@ -2451,6 +3208,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         lastHRVAnalysisAt = defaults.object(
             forKey: HRVCadenceDefaults.lastReadyAnalysisAt
         ) as? Date
+        lastNormalWearHRVAnalysisAttemptAt = Self.readNormalWearHRVAnalysisAttemptDate(
+            userDefaults: defaults
+        )
         if let cachedSnapshot = Self.decodedReadyHRVSnapshot(
             defaults.data(forKey: HRVCadenceDefaults.readySnapshot),
             now: Date()
@@ -2484,10 +3244,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         } else {
             bootstrapProductionCaptureDefaultsIfNeeded(arguments: arguments)
             migrateAutomaticLongWearDefaultIfNeeded(arguments: arguments)
-            migrateStrapStepFullProtocolDefaultIfNeeded(arguments: arguments)
+            migrateStableR10TransportDefaultIfNeeded(arguments: arguments)
             migrateOfflineSyncDefaultIfNeeded(arguments: arguments)
             migrateProtectedR10HistoryInterlockIfNeeded()
             migrateFailedProprietaryBatteryRefreshIfNeeded()
+            isolateRecentProtectedR10DisconnectStormIfNeeded()
+            _ = expireProtectedR10PassiveReprobeIfNeeded(
+                now: Date(),
+                reason: "launch_stale_pending"
+            )
             if arguments.contains("--atria-long-wear-mode") {
                 UserDefaults.standard.set(true, forKey: CaptureDefaults.configured)
                 UserDefaults.standard.set(true, forKey: LongWearDefaults.userSelected)
@@ -2502,20 +3267,33 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             standardHROnlyEnabled = true
             forceFreshScanOnRestore = true
         }
-        if !arguments.contains("--atria-full-protocol-mode") {
-            // Standard 2A37 HR is the production-safe long-wear transport.
-            // Proprietary motion remains opt-in until its firmware handshake
-            // can pass a sustained physical soak without link timeouts.
-            defaults.set(true, forKey: RadioDefaults.standardHROnly)
-            defaults.set(true, forKey: LongWearDefaults.enabled)
-            defaults.set("standard_hr_only", forKey: RadioDefaults.mode)
-            defaults.set("production_safe_2a37", forKey: RadioDefaults.lastReason)
-            defaults.set("disabled_physical_instability",
-                         forKey: RadioDefaults.passiveR10Status)
-            standardHROnlyMode = true
-            standardHROnlyEnabled = true
-            longWearModeEnabled = true
-            forceFreshScanOnRestore = true
+        if !arguments.contains("--atria-full-protocol-mode"),
+           !arguments.contains("--atria-standard-hr-only"),
+           !arguments.contains("--atria-long-wear-mode"),
+           strapStepCalibrationCaptureUntil == nil {
+            // The protected mode is not HR-only: it keeps 2A37 plus the
+            // stream-5 R10 motion transport used by strap-native steps while
+            // omitting the broader proprietary profile that failed physical
+            // stability A/B testing.
+            let storedMode = standardHROnlyMode
+            let resolvedMode = Self.shouldUseStandardHROnlyAtNormalLaunch(
+                userSelectedBatterySaver: defaults.bool(
+                    forKey: RadioDefaults.standardHROnlyUserSelected
+                ),
+                persistedStandardHROnly: defaults.bool(
+                    forKey: RadioDefaults.standardHROnly
+                )
+            )
+            defaults.set(resolvedMode, forKey: RadioDefaults.standardHROnly)
+            standardHROnlyMode = resolvedMode
+            standardHROnlyEnabled = resolvedMode
+            if storedMode != resolvedMode {
+                forceFreshScanOnRestore = true
+            }
+            recordRadioMode(resolvedMode ? "protected_r10_minimal" : "full_protocol",
+                            reason: resolvedMode
+                                ? "stable_hr_r10_launch"
+                                : "explicit_full_protocol_launch")
         }
         if let diagnostic = motionHandshakeDiagnostic {
             // This is an isolated transport experiment, not a persisted radio
@@ -2570,6 +3348,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                        CBCentralManagerOptionRestoreIdentifierKey: centralRestoreIdentifier,
                                        CBCentralManagerOptionShowPowerAlertKey: true
         ])
+        scheduleProtectedR10PassiveReprobeTimeout()
     }
 
     private func applyEarlyHistoricalLaunchConfiguration(arguments: [String]) {
@@ -2631,7 +3410,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
 
-    private func hydrateCachedBatteryStateIfFresh(maxAge: TimeInterval = 10 * 60) {
+    private func hydrateCachedBatteryStateIfFresh(
+        maxAge: TimeInterval = activeBatterySubscriptionBaselineMaximumAge
+    ) {
+        recentReconnectBatteryBaselineProjectionPublished = false
+        batteryBaselineValidationStartedAt = Date()
         let invalidated = Self.invalidateImplausibleCachedBatteryTransitionIfNeeded() ||
             Self.invalidateUnverifiedCachedBatterySentinelIfNeeded()
         if invalidated {
@@ -2641,13 +3424,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
         }
         let defaults = UserDefaults.standard
-        let cached = Self.cachedBattery(maxAge: maxAge)
+        // `requiresFreshConfirmation` survives a relaunch by design. It must
+        // block the persisted percentage from becoming fresh/live truth, but
+        // it must not prevent hydration from retaining a previously accepted
+        // mid-range value as an explicitly aged reconnect baseline. Otherwise
+        // every launch turns a truthful 18% into "Battery pending" until the
+        // change-driven 2A19 characteristic happens to emit a new integer.
+        let cached = Self.cachedBattery(
+            maxAge: maxAge,
+            permitPendingReconnectBaseline: true
+        )
+        // A notification lease belongs to the process/connection epoch that
+        // created it. It may help select a comparison baseline above, but it
+        // must be revoked before this launch marks that baseline pending.
+        defaults.removeObject(forKey: BatteryDefaults.notificationLeaseAt)
+        defaults.set(true, forKey: BatteryDefaults.requiresFreshConfirmation)
         if cached.usable, !Self.isBatterySentinel(cached.level) {
             // Preserve a recent credible mid-range value while fresh live reads
             // are being corroborated. It is explicitly marked cached and never
             // refreshes its timestamp, so normal freshness rules still expire it.
             batteryLevel = cached.level
             displayedBatteryLevelIsCached = true
+            batteryReadingIsRecentBaseline = true
             let acceptedAt = defaults.object(forKey: BatteryDefaults.at) as? Double
             lastAcceptedBatteryLevelAt = acceptedAt.map(Date.init(timeIntervalSince1970:))
             defaults.set(cached.level, forKey: BatteryDefaults.credibleLevel)
@@ -2659,16 +3457,104 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                   Date().timeIntervalSince1970 - credibleAt <= maxAge {
             batteryLevel = credible
             displayedBatteryLevelIsCached = true
+            batteryReadingIsRecentBaseline = true
             lastAcceptedBatteryLevelAt = Date(timeIntervalSince1970: credibleAt)
         } else {
             batteryLevel = -1
             displayedBatteryLevelIsCached = false
+            batteryReadingIsRecentBaseline = false
             lastAcceptedBatteryLevelAt = nil
         }
-        UserDefaults.standard.set(true, forKey: BatteryDefaults.requiresFreshConfirmation)
+        // A persisted percentage is useful only as a comparison baseline. It
+        // must not remain visible in widgets while the new connection is still
+        // proving a fresh level-bearing packet series.
+        WidgetSnapshotPublisher.invalidateBatteryProjection()
         batteryChargeStatus = .levelOnly
         batteryIsCharging = false
         batteryRecentlyDropping = false
+    }
+
+    private func promoteReconnectBatteryBaselineIfSafe(
+        now: Date,
+        heartRateReceivedAt: Date,
+        reason: String
+    ) {
+        let defaults = UserDefaults.standard
+        let connectionStartedAt = connectedAt ?? batteryBaselineValidationStartedAt
+        let currentConnectionHasHeartRate = heartRateReceivedAt >= connectionStartedAt
+        let notificationTransportActive = batteryNotificationTransportIsActive(
+            now: now,
+            defaults: defaults
+        )
+        guard Self.shouldPromoteReconnectBatteryBaseline(
+            level: batteryLevel,
+            acceptedAt: lastAcceptedBatteryLevelAt,
+            source: defaults.string(forKey: BatteryDefaults.source) ?? "none",
+            displayedIsCached: displayedBatteryLevelIsCached,
+            requiresFreshConfirmation: defaults.bool(forKey: BatteryDefaults.requiresFreshConfirmation),
+            notificationActive: notificationTransportActive,
+            linkConnected: peripheral?.state == .connected && status == .connected,
+            currentConnectionHasHeartRate: currentConnectionHasHeartRate,
+            hasPendingDisputedReading: pendingBatteryDropCandidate != nil,
+            currentNotificationEpochHadRejectedCallback: batteryNotificationEpochHadRejectedCallback,
+            now: now
+        ) else { return }
+
+        displayedBatteryLevelIsCached = false
+        batteryReadingIsRecentBaseline = true
+        defaults.removeObject(forKey: BatteryDefaults.requiresFreshConfirmation)
+        defaults.set(now.timeIntervalSince1970,
+                     forKey: BatteryDefaults.notificationLeaseAt)
+        // The percentage is now displayable only as an explicitly aged recent
+        // baseline under the active change-driven lease. Charge state remains
+        // level-only until an independent rise/event proves Charging or a
+        // decline proves Not Charging.
+        assignIfChanged(\.batteryIsCharging, false)
+        assignIfChanged(\.batteryChargeStatus, .levelOnly)
+        assignIfChanged(\.batteryRecentlyDropping, false)
+        Self.persistBatteryChargeStatusProjection(.levelOnly,
+                                                  source: "reconnect_2A19_baseline",
+                                                  defaults: defaults,
+                                                  now: now)
+        batteryProjectionRevision &+= 1
+        AtriaDebugLog("ATRIADBG battery level=%d source=%@ status=accepted reason=%@ detail=recent_midrange_active_2a19_and_current_connection_hr accepted_age_s=%.1f",
+                      batteryLevel,
+                      defaults.string(forKey: BatteryDefaults.source) ?? "none",
+                      reason,
+                      lastAcceptedBatteryLevelAt.map { now.timeIntervalSince($0) } ?? -1)
+    }
+
+    /// A validated mid-range baseline is allowed to become displayable as
+    /// "Recent" once live HR proves that the same saved strap is connected.
+    /// Because that proof arrives on the HR channel, it needs a one-shot battery
+    /// projection invalidation even though the percentage itself did not change.
+    private func publishRecentReconnectBatteryBaselineIfNeeded(now: Date) {
+        guard !recentReconnectBatteryBaselineProjectionPublished,
+              recentReconnectBatteryBaselineIsDisplayable(now: now) else { return }
+        recentReconnectBatteryBaselineProjectionPublished = true
+        batteryProjectionRevision &+= 1
+        AtriaDebugLog("ATRIADBG battery status=recent_baseline_published level=%d reason=accepted_hr_current_connection",
+                      batteryLevel)
+    }
+
+    private func revokeBatteryNotificationLease(reason: String, now: Date = Date()) {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: BatteryDefaults.notificationLeaseAt)
+        defaults.set(true, forKey: BatteryDefaults.requiresFreshConfirmation)
+        displayedBatteryLevelIsCached = (11...99).contains(batteryLevel)
+        recentReconnectBatteryBaselineProjectionPublished = false
+        batteryReadingIsRecentBaseline = displayedBatteryLevelIsCached
+        assignIfChanged(\.batteryIsCharging, false)
+        assignIfChanged(\.batteryChargeStatus, .levelOnly)
+        assignIfChanged(\.batteryRecentlyDropping, false)
+        Self.persistBatteryChargeStatusProjection(.levelOnly,
+                                                  source: "notification_lease_revoked",
+                                                  defaults: defaults,
+                                                  now: now)
+        batteryProjectionRevision &+= 1
+        AtriaDebugLog("ATRIADBG battery status=pending reason=%@ detail=notification_lease_revoked level=%d",
+                      reason,
+                      batteryLevel)
     }
 
     private func recordBatteryChargeEvidence(_ status: BatteryChargeStatus,
@@ -2714,6 +3600,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: CaptureDefaults.configured)
         defaults.removeObject(forKey: CaptureDefaults.strapStepFullProtocolMigrated)
+        defaults.removeObject(forKey: CaptureDefaults.stableR10TransportMigrated)
         defaults.removeObject(forKey: LongWearDefaults.enabled)
         defaults.removeObject(forKey: LongWearDefaults.userSelected)
         defaults.removeObject(forKey: RadioDefaults.standardHROnly)
@@ -2742,8 +3629,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set(true, forKey: CaptureDefaults.configured)
         defaults.set(true, forKey: CaptureDefaults.protectedLongWearMigrated)
         defaults.set(true, forKey: CaptureDefaults.strapStepFullProtocolMigrated)
+        defaults.set(true, forKey: CaptureDefaults.stableR10TransportMigrated)
         defaults.set(true, forKey: LongWearDefaults.enabled)
-        defaults.set(false, forKey: RadioDefaults.standardHROnly)
+        defaults.set(true, forKey: RadioDefaults.standardHROnly)
         defaults.set(true, forKey: OfflineSyncDefaults.enabled)
         if defaults.object(forKey: LongWearDefaults.checkpointInterval) == nil {
             defaults.set(60.0, forKey: LongWearDefaults.checkpointInterval)
@@ -2772,11 +3660,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         collectionProfile = CollectionProfile.load(defaults: defaults)
         longWearModeEnabled = true
         updateSessionPointCacheMode()
-        standardHROnlyMode = false
-        standardHROnlyEnabled = false
+        standardHROnlyMode = true
+        standardHROnlyEnabled = true
         let explicitMode = arguments.contains("--atria-standard-hr-only") || arguments.contains("--atria-long-wear-mode") ? 1 : 0
-        recordRadioMode("full_protocol", reason: "strap_steps_protected_default")
-        AtriaDebugLog("ATRIADBG capture_defaults status=enabled mode=protected_long_wear_default long_wear_default=1 standard_hr_only_default=0 strap_steps_background=1 offline_sync_default=1 reason=first_normal_launch explicit_mode_arg=%d checkpoint_interval_s=60 live_workout_interval_s=15 workout_autosave_interval_s=15 no_data_timeout_s=75 accepted_hr_timeout_s=45 hr_continuity_timeout_s=6 recovery_policy=staged_read_reassert_then_fresh_scan",
+        recordRadioMode("protected_r10_minimal", reason: "stable_hr_r10_default")
+        AtriaDebugLog("ATRIADBG capture_defaults status=enabled mode=protected_r10_minimal long_wear_default=1 strap_steps_background=1 offline_sync_default=1 reason=first_normal_launch explicit_mode_arg=%d checkpoint_interval_s=60 live_workout_interval_s=15 workout_autosave_interval_s=15 no_data_timeout_s=75 accepted_hr_timeout_s=45 hr_continuity_timeout_s=6 recovery_policy=staged_read_reassert_then_fresh_scan",
               explicitMode)
     }
 
@@ -2795,7 +3683,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         standardHROnlyMode = true
         standardHROnlyEnabled = true
         forceFreshScanOnRestore = true
-        recordRadioMode("standard_hr_only", reason: "protected_default_migration")
+        recordRadioMode("protected_r10_minimal", reason: "protected_default_migration")
         AtriaDebugLog("ATRIADBG long_wear_mode status=migrated_default action=enabled reason=protected_background_collection_default")
     }
 
@@ -2825,6 +3713,49 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set("history_interlock_migration", forKey: "atria.protectedR10.rollbackReason")
         defaults.set("qualification_pending", forKey: RadioDefaults.passiveR10Status)
         AtriaDebugLog("ATRIADBG protected_r10 status=migrated_history_interlock action=clear_contaminated_rollback_preserve_user_data")
+    }
+
+    /// A stream can deliver valid R10 records yet still destabilize the physical
+    /// BLE link. If the latest connection repeatedly ended within seconds and a
+    /// motion frame was present immediately before that edge, isolate the next
+    /// launch onto a fresh HR + standard-battery CoreBluetooth owner. This is a
+    /// continuity fuse, not a permanent capability decision: an explicitly
+    /// armed calibration run clears it so the transport can be tested again.
+    private func isolateRecentProtectedR10DisconnectStormIfNeeded(now: Date = Date()) {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: Self.protectedR10StreamSuppressedKey),
+              defaults.integer(forKey: LinkDefaults.disconnects) >= 3 else { return }
+        let lastDisconnectAt = defaults.double(forKey: "atria.ble.lastDisconnectDiagnosticAt")
+        let connectedDuration = defaults.double(forKey: "atria.ble.lastConnectedDuration")
+        let lastR10At = defaults.double(forKey: RadioDefaults.passiveR10LastValidAt)
+        guard lastDisconnectAt > 0,
+              lastR10At > 0,
+              now.timeIntervalSince1970 >= lastDisconnectAt,
+              now.timeIntervalSince1970 - lastDisconnectAt <= 5 * 60,
+              connectedDuration > 0,
+              connectedDuration <= 30,
+              now.timeIntervalSince1970 >= lastR10At,
+              now.timeIntervalSince1970 - lastR10At <= 5 * 60 else { return }
+        if strapStepCalibrationCaptureUntil != nil {
+            AtriaStrapCalibrationArchive.shared.flush()
+            defaults.removeObject(
+                forKey: AtriaStrapCalibrationArchive.captureUntilDefaultsKey
+            )
+            strapStepCalibrationCaptureUntil = nil
+            stepCalibrationCaptureArmedAt = nil
+            stepCalibrationMotionStreamReady = false
+        }
+        defaults.set(true, forKey: Self.protectedR10StreamSuppressedKey)
+        defaults.set(false, forKey: Self.protectedR10PassiveReprobePendingKey)
+        defaults.set(now.timeIntervalSince1970,
+                     forKey: Self.protectedR10DisconnectStormAtKey)
+        defaults.set("short_links_with_fresh_r10",
+                     forKey: Self.protectedR10DisconnectStormReasonKey)
+        defaults.set("isolated_hr_battery_after_disconnect_storm",
+                     forKey: RadioDefaults.passiveR10Status)
+        AtriaDebugLog("ATRIADBG protected_r10 status=stream_isolated reason=disconnect_storm connected_s=%.1f r10_before_disconnect_s=%.1f action=fresh_pure_hr_owner_next_launch",
+                      connectedDuration,
+                      abs(lastDisconnectAt - lastR10At))
     }
 
     /// The retired 0x1A experiment could leave 2A37 alive while R10 stayed
@@ -2864,49 +3795,53 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return true
     }
 
-    private func migrateStrapStepFullProtocolDefaultIfNeeded(arguments: [String]) {
+    private func migrateStableR10TransportDefaultIfNeeded(arguments: [String]) {
         let defaults = UserDefaults.standard
         guard !arguments.contains("--atria-full-protocol-mode") else { return }
         guard defaults.bool(forKey: CaptureDefaults.configured) else { return }
-        let migrationWasRecorded = defaults.bool(forKey: CaptureDefaults.strapStepFullProtocolMigrated)
-        let userSelectedBatterySaver = defaults.bool(forKey: RadioDefaults.standardHROnlyUserSelected)
-        let persistedStandardOnly = defaults.bool(forKey: RadioDefaults.standardHROnly)
-        guard Self.shouldRepairLegacyAutomaticStandardHROnly(
+        let migrationWasRecorded = defaults.bool(forKey: CaptureDefaults.stableR10TransportMigrated)
+        let userSelectedRadioMode = defaults.bool(forKey: RadioDefaults.standardHROnlyUserSelected)
+        guard Self.shouldMigrateAutomaticModeToProtectedR10(
             migrationWasRecorded: migrationWasRecorded,
-            userSelectedBatterySaver: userSelectedBatterySaver,
-            persistedStandardHROnly: persistedStandardOnly
+            userSelectedRadioMode: userSelectedRadioMode
         ) else { return }
-        defaults.set(true, forKey: CaptureDefaults.strapStepFullProtocolMigrated)
-        defaults.set(false, forKey: RadioDefaults.standardHROnly)
-        standardHROnlyMode = false
-        standardHROnlyEnabled = false
+        defaults.set(true, forKey: CaptureDefaults.stableR10TransportMigrated)
+        defaults.set(true, forKey: RadioDefaults.standardHROnly)
+        standardHROnlyMode = true
+        standardHROnlyEnabled = true
         forceFreshScanOnRestore = true
-        recordRadioMode("full_protocol", reason: "strap_steps_background_migration")
-        AtriaDebugLog("ATRIADBG radio_mode status=migrated mode=full_protocol reason=strap_steps_background_required battery_tradeoff=more_radio_activity phone_step_fallback=0")
+        recordRadioMode("protected_r10_minimal", reason: "stable_hr_r10_migration")
+        AtriaDebugLog("ATRIADBG radio_mode status=migrated mode=protected_r10_minimal reason=physical_ab_stability strap_steps_background=1 phone_step_fallback=0")
     }
 
-    /// Older history completion and protected-background paths could persist
-    /// Heart-rate-only mode without a user action. That disables the R10 motion
-    /// stream required for strap steps. An explicit Settings choice always owns
-    /// `standardHROnlyUserSelected`; in its absence, repair either a first-time
-    /// migration or a stale persisted automatic value back to full protocol.
-    nonisolated static func shouldRepairLegacyAutomaticStandardHROnly(
+    /// Migrate only automatic/default radio state. A user who explicitly chose
+    /// the diagnostic full profile or the stable minimal profile keeps it.
+    nonisolated static func shouldMigrateAutomaticModeToProtectedR10(
         migrationWasRecorded: Bool,
+        userSelectedRadioMode: Bool
+    ) -> Bool {
+        !migrationWasRecorded && !userSelectedRadioMode
+    }
+
+    /// Normal wear defaults to the physically verified minimal HR + R10 path.
+    /// Despite the legacy storage name, this mode retains strap-native motion;
+    /// only an explicit user selection may persist the broader profile.
+    nonisolated static func shouldUseStandardHROnlyAtNormalLaunch(
         userSelectedBatterySaver: Bool,
         persistedStandardHROnly: Bool
     ) -> Bool {
-        guard !userSelectedBatterySaver else { return false }
-        return !migrationWasRecorded || persistedStandardHROnly
+        userSelectedBatterySaver ? persistedStandardHROnly : true
     }
 
-    /// A temporary full-protocol override may restore Battery Saver only when
-    /// the user explicitly owned that choice. Legacy automatic values are not
-    /// preferences and must not disable R10 again when calibration ends.
+    /// A temporary diagnostic full-protocol override must restore the exact
+    /// prior profile. The automatic prior is now the stable R10-capable mode,
+    /// so user ownership no longer changes the restoration result.
     nonisolated static func standardHROnlyModeAfterFullProtocolOverride(
         modeBeforeOverride: Bool,
         userSelectedBatterySaver: Bool
     ) -> Bool {
-        modeBeforeOverride && userSelectedBatterySaver
+        _ = userSelectedBatterySaver
+        return modeBeforeOverride
     }
 
     func setStandardHROnlyEnabled(_ enabled: Bool) {
@@ -2916,10 +3851,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     /// Enables the bounded raw-motion archive immediately for an in-app step
-    /// calibration run. The production protected connection already carries
-    /// R10 on stream 5. Arming is deliberately an archive-only state change:
-    /// it must not change radio mode, reconnect, mutate CCCDs, read battery,
-    /// start offline sync, or send another activation command.
+    /// calibration run. Normally the production protected connection already
+    /// carries R10 on stream 5. If the disconnect-storm fuse isolated motion,
+    /// explicit calibration clears that fuse and rediscovers only the minimal
+    /// R10 service; it still never reads battery or starts offline history.
     func armStepCalibrationCapture(until requestedUntil: Date = Date().addingTimeInterval(
         AtriaStrapCalibrationArchive.defaultCaptureDuration
     )) {
@@ -2932,9 +3867,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         strapStepCalibrationCaptureUntil = captureUntil
         stepCalibrationCaptureArmedAt = now
         stepCalibrationMotionStreamReady = false
+        if protectedR10StreamSuppressed {
+            UserDefaults.standard.set(false,
+                                      forKey: Self.protectedR10StreamSuppressedKey)
+            UserDefaults.standard.set("explicit_calibration_reprobe",
+                                      forKey: RadioDefaults.passiveR10Status)
+            if let peripheral, peripheral.state == .connected {
+                peripheral.discoverServices([Self.UUIDs.strapService])
+            }
+        }
 
         AtriaDebugLog(
-            "ATRIADBG strap_step_calibration status=armed_runtime until_utc=%@ source=developer_sequence transport=existing_protected_r10 mode_change=0 reconnect=0 cccd_changes=0 battery_reads=0 offline_sync=0 commands=0",
+            "ATRIADBG strap_step_calibration status=armed_runtime until_utc=%@ source=developer_sequence transport=minimal_protected_r10 battery_reads=0 offline_sync=0 commands=0",
             ISO8601DateFormatter().string(from: captureUntil)
         )
     }
@@ -3137,6 +4081,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             // restore, supervisor replacement, or service rediscovery.
             ensureForegroundKeepaliveWatchdog(reason: "scene_active_coalesced")
             reassertHeartRateNotificationsIfConnected(reason: "scene_active_coalesced")
+            reassertR10NotificationIfConnected(reason: "scene_active_coalesced")
             return
         }
         lastInteractiveForegroundHandlingAt = now
@@ -3149,6 +4094,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             foregroundInteractiveMode = true
             ensureForegroundKeepaliveWatchdog(reason: "scene_active_workout_fast")
             reassertHeartRateNotificationsIfConnected(reason: "scene_active_workout_fast")
+            reassertR10NotificationIfConnected(reason: "scene_active_workout_fast")
             updateDutyCycleState(reason: "scene_active_workout_fast", now: now)
             AtriaDebugLog("ATRIADBG foreground_resume path=workout_fast samples=%d connected=1 action=preserve_live_pipeline",
                           session.count)
@@ -3166,6 +4112,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             startLongWearMode(rest: rest, maxHR: maxHR, reason: "scene_active_foreground")
         }
         reassertHeartRateNotificationsIfConnected(reason: "scene_active")
+        reassertR10NotificationIfConnected(reason: "scene_active")
         elevateLongWearRadioForInteractiveForegroundIfNeeded(reason: "scene_active_interactive")
         if foregroundInteractiveMode {
             return
@@ -3228,6 +4175,60 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard peripheral.state == .connected else { return }
         peripheral.discoverServices([UUIDs.heartRateService])
         AtriaDebugLog("ATRIADBG ble_notify_reassert status=discover_services reason=%@ source=foreground_return action=keep_connection",
+                      reason)
+    }
+
+    /// R10 can stop while 2A37 HR remains healthy. Preserve an active stream5
+    /// subscription, but repair a genuinely inactive CCCD without reconnecting
+    /// or toggling the healthy HR notification.
+    private func reassertR10NotificationIfConnected(reason: String,
+                                                     now: Date = Date()) {
+        guard motionHandshakeDiagnostic == nil,
+              r10TransportIsExpected,
+              status == .connected,
+              let peripheral,
+              peripheral.state == .connected else { return }
+
+        guard let strapService = peripheral.services?.first(where: {
+            $0.uuid == Self.UUIDs.strapService
+        }) else {
+            peripheral.discoverServices([Self.UUIDs.strapService])
+            AtriaDebugLog("ATRIADBG r10_notify_repair status=discover_service reason=%@ action=no_reconnect",
+                          reason)
+            return
+        }
+        guard let characteristics = strapService.characteristics else {
+            peripheral.discoverCharacteristics([Self.UUIDs.strapStream5, Self.UUIDs.strapTX],
+                                               for: strapService)
+            AtriaDebugLog("ATRIADBG r10_notify_repair status=discover_characteristics reason=%@ action=no_reconnect",
+                          reason)
+            return
+        }
+        guard let stream5 = characteristics.first(where: {
+            $0.uuid == Self.UUIDs.strapStream5
+        }), stream5.properties.contains(.notify) else {
+            peripheral.discoverCharacteristics([Self.UUIDs.strapStream5, Self.UUIDs.strapTX],
+                                               for: strapService)
+            return
+        }
+        if stream5.isNotifying {
+            strapStream5NotifyConfirmed = true
+            ensureR10LivenessWatchdog(reason: "\(reason)_stream5_active")
+            AtriaDebugLog("ATRIADBG r10_notify_repair status=preserved reason=%@ action=keep_active_cccd",
+                          reason)
+            return
+        }
+        guard Self.shouldRepairR10Notification(
+            expected: r10TransportIsExpected,
+            connected: true,
+            isNotifying: stream5.isNotifying,
+            lastRepairAt: lastR10NotifyRepairAt,
+            now: now
+        ) else { return }
+        lastR10NotifyRepairAt = now
+        strapStream5NotifyConfirmed = false
+        peripheral.setNotifyValue(true, for: stream5)
+        AtriaDebugLog("ATRIADBG r10_notify_repair status=requested reason=%@ action=enable_stream5_no_reconnect",
                       reason)
     }
 
@@ -3413,9 +4414,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       dutyCycleRestHR)
         switch desired {
         case .sparseSentinel:
-            // Notify OFF on the live link. Protected production does not
-            // discover battery GATT after physical A/B showed link instability;
-            // no other characteristic is claimed as a wake anchor.
+            // Notify OFF on the live HR link. The protected battery percentage
+            // subscription is independent and may emit only when the strap has
+            // a new standard 2A19 value.
             if status == .connected, let peripheral, peripheral.state == .connected,
                let characteristic = heartRateCharacteristic,
                characteristic.properties.contains(.notify) {
@@ -3430,11 +4431,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     func requestStrapStatusRead(reason: String) {
         guard motionHandshakeDiagnostic == nil else {
             recordMotionHandshakeEvidence(event: "battery_read_blocked", detail: reason)
-            return
-        }
-        guard !standardHROnlyMode || historyOnlyProbeMode else {
-            AtriaDebugLog("ATRIADBG strap_status_refresh status=skipped reason=%@ detail=protected_r10_minimal_no_battery_gatt",
-                          reason)
             return
         }
         guard status == .connected, let peripheral, peripheral.state == .connected else {
@@ -3456,6 +4452,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                               reason)
             case .subscribe:
                 lastBatteryReadRequestedAt = Date()
+                UserDefaults.standard.set(Date().timeIntervalSince1970,
+                                          forKey: BatteryDefaults.notificationRequestedAt)
                 peripheral.setNotifyValue(true, for: batteryLevelCharacteristic)
                 AtriaDebugLog("ATRIADBG strap_status_refresh status=requested reason=%@ source=2A19_new_subscription",
                               reason)
@@ -3463,6 +4461,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 // This timestamp only throttles refresh attempts; it is never
                 // used as battery-value freshness evidence.
                 lastBatteryReadRequestedAt = Date()
+                if let heartRateReceivedAt = lastRawHRNotificationAt {
+                    promoteReconnectBatteryBaselineIfSafe(
+                        now: Date(),
+                        heartRateReceivedAt: heartRateReceivedAt,
+                        reason: "2A19_existing_notify_active"
+                    )
+                }
                 AtriaDebugLog("ATRIADBG strap_status_refresh status=awaiting reason=%@ source=2A19_existing_subscription",
                               reason)
             case .unavailable:
@@ -3645,8 +4650,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if Self.shouldRequestBatteryRefresh(lastRequestedAt: lastBatteryReadRequestedAt, now: now) {
             requestStrapStatusRead(reason: "keepalive_freshness")
         }
+        let batteryNotificationTransportActive = batteryNotificationTransportIsActive(
+            now: now,
+            defaults: defaults
+        )
+        let recentReconnectBatteryBaselineDisplayable =
+            recentReconnectBatteryBaselineIsDisplayable(
+                now: now,
+                defaults: defaults
+            )
         if batteryLevel >= 0,
-           !Self.batteryLevelIsFresh(lastAcceptedAt: lastAcceptedBatteryLevelAt, now: now) {
+           !Self.batteryLevelIsFresh(lastAcceptedAt: lastAcceptedBatteryLevelAt, now: now),
+           !recentReconnectBatteryBaselineDisplayable,
+           !(batteryNotificationTransportActive
+                && !displayedBatteryLevelIsCached
+                && !UserDefaults.standard.bool(forKey: BatteryDefaults.requiresFreshConfirmation)) {
             // A connected HR stream is not evidence that the independent 2A19
             // value is current. Fail closed instead of keeping a stale low/full
             // percentage on every screen and notification surface.
@@ -3654,10 +4672,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             assignIfChanged(\.batteryIsCharging, false)
             assignIfChanged(\.batteryChargeStatus, .levelOnly)
             assignIfChanged(\.batteryRecentlyDropping, false)
+            batteryReadingIsRecentBaseline = false
             UserDefaults.standard.set(true, forKey: BatteryDefaults.requiresFreshConfirmation)
+            UserDefaults.standard.removeObject(forKey: BatteryDefaults.notificationLeaseAt)
             pendingBatteryDropCandidate = nil
+            batteryProjectionRevision &+= 1
             AtriaDebugLog("ATRIADBG battery status=hidden reason=stale_live_value max_age_s=%.0f",
                           Self.batteryDisplayFreshnessLimit)
+        }
+        if batteryLevel >= 0,
+           batteryNotificationTransportActive,
+           !displayedBatteryLevelIsCached,
+           !UserDefaults.standard.bool(forKey: BatteryDefaults.requiresFreshConfirmation) {
+            // Keep the persisted/widget projection current without pretending a
+            // new level packet arrived. The raw packet timestamp remains in
+            // BatteryDefaults.at; only this subscription lease advances.
+            UserDefaults.standard.set(now.timeIntervalSince1970,
+                                      forKey: BatteryDefaults.notificationLeaseAt)
         }
         // While the notify stream is silent but the link is up, poll 2A37 by
         // read every tick. Low-battery evidence so far only proves coarse HR
@@ -3848,6 +4879,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             ensureForegroundKeepaliveWatchdog(reason: reason)
         }
         reassertHeartRateNotificationsIfConnected(reason: reason)
+        reassertR10NotificationIfConnected(reason: reason)
         AtriaDebugLog("ATRIADBG long_wear_mode foreground_interactive=0 action=background_keep_link reason=%@ connected=%d",
               reason,
               status == .connected ? 1 : 0)
@@ -3863,7 +4895,47 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let activeExplicitWorkout = AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
         let connectedLink = peripheral?.state == .connected
         let explicitUserRequest = Self.isExplicitUserOfflineSyncReason(reason)
-        if Self.shouldDeferAutomaticOfflineSyncForProtectedR10Continuity(
+        let verifiedPeripheralID = defaults.string(forKey: OfflineSyncDefaults.verifiedHistoryPeripheralID)
+        let currentPeripheralID = peripheral?.identifier.uuidString
+        let previouslyVerified = currentPeripheralID != nil && currentPeripheralID == verifiedPeripheralID
+        let verifiedHistoryCapability = Self.supportsVerifiedHistoricalRecovery(
+            model: strapModel,
+            previouslyVerified: previouslyVerified
+        )
+        let verifiedMetricHistoryCapability = Self.supportsVerifiedHistoricalMetricRecovery(
+            model: strapModel,
+            previouslyVerified: previouslyVerified
+        )
+        let recoverableGapPending = Self.hasValidRangeLossBackfillRequest(
+            pending: defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending),
+            requestedAt: defaults.object(forKey: OfflineSyncDefaults.rangeLossBackfillRequestedAt) as? Double,
+            now: Date()
+        )
+        if recoverableGapPending,
+           verifiedHistoryCapability,
+           !verifiedMetricHistoryCapability,
+           !explicitUserRequest {
+            pendingOfflineHistoricalSyncReason = reason
+            defaults.set("gap_retained_metric_history_unverified",
+                         forKey: OfflineSyncDefaults.lastStatus)
+            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            AtriaDebugLog("ATRIADBG offline_sync status=gap_retained_metric_history_unverified reason=%@ detail=raw_transport_only action=preserve_realtime_and_gap explicit=0",
+                          reason)
+            return false
+        }
+        // Evaluate the narrow history-first reconnect admission before the
+        // protected-R10 deferrals. Otherwise the automatic guards below return
+        // before a disconnected, verified exact gap can ever be recovered.
+        let protectedHistoryHandoffAllowed = Self.shouldAllowProtectedHistoricalRecovery(
+            linkConnected: connectedLink,
+            exactGapPending: recoverableGapPending,
+            verifiedHistoryCapability: verifiedHistoryCapability,
+            activeExplicitWorkout: activeExplicitWorkout,
+            syncInProgress: offlineHistoricalSyncInProgress,
+            explicitUserRequest: explicitUserRequest
+        )
+        if !protectedHistoryHandoffAllowed,
+           Self.shouldDeferAutomaticOfflineSyncForProtectedR10Continuity(
             standardHROnlyMode: standardHROnlyMode,
             explicitUserRequest: explicitUserRequest
         ) {
@@ -3876,7 +4948,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           force ? 1 : 0)
             return false
         }
-        if Self.shouldDeferOfflineSyncForProtectedR10Qualification(
+        if !protectedHistoryHandoffAllowed,
+           Self.shouldDeferOfflineSyncForProtectedR10Qualification(
             standardHROnlyMode: standardHROnlyMode,
             stableTransportProven: defaults.bool(forKey: Self.protectedR10StableTransportKey),
             explicitUserRequest: explicitUserRequest
@@ -3891,21 +4964,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           explicitUserRequest ? 1 : 0)
             return false
         }
-        let verifiedPeripheralID = defaults.string(forKey: OfflineSyncDefaults.verifiedHistoryPeripheralID)
-        let currentPeripheralID = peripheral?.identifier.uuidString
-        let previouslyVerified = currentPeripheralID != nil && currentPeripheralID == verifiedPeripheralID
-        let verifiedHistoryCapability = Self.supportsVerifiedHistoricalRecovery(
-            model: strapModel,
-            previouslyVerified: previouslyVerified
-        )
-        let protectedHistoryHandoffAllowed = Self.shouldAllowProtectedHistoricalRecovery(
-            linkConnected: connectedLink,
-            exactGapPending: defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending),
-            verifiedHistoryCapability: verifiedHistoryCapability,
-            activeExplicitWorkout: activeExplicitWorkout,
-            syncInProgress: offlineHistoricalSyncInProgress,
-            explicitUserRequest: explicitUserRequest
-        )
         if standardHROnlyMode,
            !historyOnlyProbeMode,
            !protectedHistoryHandoffAllowed {
@@ -4093,6 +5151,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               standardHROnlyMode,
               !historyOnlyProbeMode,
               !protectedR10RollbackEnabled,
+              !protectedR10PassiveReprobePending,
               !protectedR10ActivationSent,
               protectedR10ActivationGraceTask == nil,
               strapStream5NotifyConfirmed,
@@ -4126,6 +5185,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               standardHROnlyMode,
               !historyOnlyProbeMode,
               !protectedR10RollbackEnabled,
+              !protectedR10PassiveReprobePending,
               !protectedR10ActivationSent,
               strapStream5NotifyConfirmed,
               heartRateCharacteristic?.isNotifying == true,
@@ -4199,10 +5259,27 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               !offlineHistoricalSyncInProgress,
               !historyOnlyProbeEnabled,
               !historyOnlyProbeMode,
-              defaults.bool(forKey: Self.protectedR10RollbackKey),
               peripheral?.state == .connected,
               let connectedAt,
               now.timeIntervalSince(connectedAt) >= Self.protectedR10RollbackRetryStableHRDuration else { return }
+
+        if protectedR10PassiveReprobePending,
+           expireProtectedR10PassiveReprobeIfNeeded(now: now,
+                                                    reason: "accepted_hr_timeout_check") {
+            return
+        }
+
+        if protectedR10StreamSuppressed {
+            beginProtectedR10PassiveReprobeIfEligible(now: now,
+                                                      connectedAt: connectedAt)
+            return
+        }
+
+        // The disconnect-storm recovery owns a passive-only observation
+        // window. Do not let the older rollback retry clear its command fuse;
+        // only dense, current-connection CRC-valid R10 evidence may do that.
+        guard !protectedR10PassiveReprobePending,
+              defaults.bool(forKey: Self.protectedR10RollbackKey) else { return }
         let retryCount = max(0, defaults.integer(forKey: Self.protectedR10RetryCountKey))
         let multiplier = pow(2.0, Double(min(retryCount, 5)))
         let delay = min(Self.protectedR10RollbackRetryBaseDelay * multiplier,
@@ -4234,6 +5311,118 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
 
+    private func beginProtectedR10PassiveReprobeIfEligible(now: Date,
+                                                           connectedAt: Date) {
+        let defaults = UserDefaults.standard
+        let stormAt = (defaults.object(forKey: Self.protectedR10DisconnectStormAtKey) as? Double)
+            .map(Date.init(timeIntervalSince1970:))
+        let lastAttemptAt = (defaults.object(forKey: Self.protectedR10PassiveReprobeAttemptAtKey) as? Double)
+            .map(Date.init(timeIntervalSince1970:))
+        let latestHRAge = lastRawHRNotificationAt.map { now.timeIntervalSince($0) }
+        guard Self.shouldBeginProtectedR10PassiveReprobe(
+            streamSuppressed: protectedR10StreamSuppressed,
+            reprobePending: protectedR10PassiveReprobePending,
+            connected: status == .connected && peripheral?.state == .connected,
+            stableHRDuration: now.timeIntervalSince(connectedAt),
+            latestHRAge: latestHRAge,
+            disconnectStormAge: stormAt.map { now.timeIntervalSince($0) },
+            lastAttemptAge: lastAttemptAt.map { now.timeIntervalSince($0) },
+            failureCount: defaults.integer(forKey: Self.protectedR10PassiveReprobeFailureCountKey)
+        ), let peripheral else { return }
+
+        defaults.set(now.timeIntervalSince1970,
+                     forKey: Self.protectedR10PassiveReprobeAttemptAtKey)
+        defaults.set(true, forKey: Self.protectedR10PassiveReprobePendingKey)
+        defaults.set(false, forKey: Self.protectedR10StreamSuppressedKey)
+        // Keep every command path fail-closed. recordProtectedR10EvidenceIfNeeded
+        // clears this only after the existing 85 s / 75-frame passive proof.
+        defaults.set(true, forKey: Self.protectedR10RollbackKey)
+        defaults.set(false, forKey: Self.protectedR10StableTransportKey)
+        defaults.removeObject(forKey: Self.protectedR10StableTransportQualifiedAtKey)
+        defaults.set("passive_reprobe_after_stable_hr",
+                     forKey: "atria.protectedR10.rollbackReason")
+        defaults.set("passive_reprobe_discovering_stream5",
+                     forKey: RadioDefaults.passiveR10Status)
+        protectedR10ActivationGraceTask?.cancel()
+        protectedR10ActivationGraceTask = nil
+        protectedR10ActivationSent = false
+        protectedR10ActivationAt = nil
+        protectedR10FramesAfterActivation = 0
+        peripheral.discoverServices([Self.UUIDs.strapService])
+        scheduleProtectedR10PassiveReprobeTimeout(now: now)
+        AtriaDebugLog("ATRIADBG protected_r10 status=passive_reprobe_started stable_hr_s=%.0f storm_age_s=%.0f failures=%d action=discover_stream5_existing_link_no_reconnect_no_command",
+                      now.timeIntervalSince(connectedAt),
+                      stormAt.map { now.timeIntervalSince($0) } ?? -1,
+                      defaults.integer(forKey: Self.protectedR10PassiveReprobeFailureCountKey))
+    }
+
+    private func scheduleProtectedR10PassiveReprobeTimeout(now: Date = Date()) {
+        protectedR10PassiveReprobeTimeoutTask?.cancel()
+        protectedR10PassiveReprobeTimeoutTask = nil
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: Self.protectedR10PassiveReprobePendingKey) else { return }
+        let attemptAt = (defaults.object(forKey: Self.protectedR10PassiveReprobeAttemptAtKey) as? Double)
+            .map(Date.init(timeIntervalSince1970:))
+        let age = attemptAt.map { now.timeIntervalSince($0) }
+        if Self.protectedR10PassiveReprobeHasExpired(reprobePending: true,
+                                                     attemptAge: age) {
+            _ = expireProtectedR10PassiveReprobeIfNeeded(now: now,
+                                                         reason: "restored_stale_pending")
+            return
+        }
+        let remaining = max(0, Self.protectedR10PassiveReprobeTimeout - (age ?? 0))
+        protectedR10PassiveReprobeTimeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(remaining))
+            guard let self, !Task.isCancelled else { return }
+            self.protectedR10PassiveReprobeTimeoutTask = nil
+            _ = self.expireProtectedR10PassiveReprobeIfNeeded(
+                now: Date(),
+                reason: "no_crc_valid_r10_timeout"
+            )
+        }
+    }
+
+    @discardableResult
+    private func expireProtectedR10PassiveReprobeIfNeeded(now: Date,
+                                                          reason: String) -> Bool {
+        let defaults = UserDefaults.standard
+        let attemptAt = (defaults.object(forKey: Self.protectedR10PassiveReprobeAttemptAtKey) as? Double)
+            .map(Date.init(timeIntervalSince1970:))
+        guard Self.protectedR10PassiveReprobeHasExpired(
+            reprobePending: defaults.bool(forKey: Self.protectedR10PassiveReprobePendingKey),
+            attemptAge: attemptAt.map { now.timeIntervalSince($0) }
+        ) else { return false }
+        let failures = defaults.integer(forKey: Self.protectedR10PassiveReprobeFailureCountKey) + 1
+        defaults.set(failures, forKey: Self.protectedR10PassiveReprobeFailureCountKey)
+        defaults.set(false, forKey: Self.protectedR10PassiveReprobePendingKey)
+        defaults.set(true, forKey: Self.protectedR10StreamSuppressedKey)
+        defaults.set("passive_reprobe_no_valid_r10",
+                     forKey: Self.protectedR10DisconnectStormReasonKey)
+        defaults.set("passive_reprobe_timed_out_hr_preserved",
+                     forKey: RadioDefaults.passiveR10Status)
+        protectedR10PassiveReprobeTimeoutTask?.cancel()
+        protectedR10PassiveReprobeTimeoutTask = nil
+        if let peripheral,
+           peripheral.state == .connected,
+           let stream5 = peripheral.services?
+            .first(where: { $0.uuid == Self.UUIDs.strapService })?
+            .characteristics?
+            .first(where: { $0.uuid == Self.UUIDs.strapStream5 }),
+           stream5.isNotifying {
+            // The probe timed out without transport proof. Stop the attempted
+            // radio source itself; merely ignoring callbacks would leave the
+            // strap transmitting the stream that may have caused the storm.
+            peripheral.setNotifyValue(false, for: stream5)
+        }
+        strapStream5NotifyConfirmed = false
+        activeProprietaryNotifyUUIDs.remove(Self.UUIDs.strapStream5)
+        stopR10LivenessWatchdog(reason: "passive_reprobe_timeout")
+        AtriaDebugLog("ATRIADBG protected_r10 status=passive_reprobe_timeout reason=%@ failures=%d action=resuppress_stream5_keep_existing_hr_link_no_command",
+                      reason,
+                      failures)
+        return true
+    }
+
     /// CoreBluetooth restoration can hand back a connected peripheral whose
     /// services/characteristics are already cached without replaying every
     /// discovery callback. Rehydrate the protected R10 prerequisites directly
@@ -4248,6 +5437,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         var cachedHR: CBCharacteristic?
         var cachedStream5: CBCharacteristic?
         var cachedTX: CBCharacteristic?
+        var cachedBattery: CBCharacteristic?
         for service in peripheral.services ?? [] {
             if service.uuid == Self.UUIDs.heartRateService {
                 guard let characteristics = service.characteristics else {
@@ -4262,6 +5452,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 }
                 cachedStream5 = characteristics.first { $0.uuid == Self.UUIDs.strapStream5 }
                 cachedTX = characteristics.first { $0.uuid == Self.UUIDs.strapTX }
+            } else if service.uuid == Self.UUIDs.batteryService {
+                guard let characteristics = service.characteristics else {
+                    peripheral.discoverCharacteristics([Self.UUIDs.batteryLevel], for: service)
+                    continue
+                }
+                cachedBattery = characteristics.first { $0.uuid == Self.UUIDs.batteryLevel }
             }
         }
 
@@ -4282,6 +5478,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 markPassiveR10SubscriptionConfirmed()
             } else {
                 peripheral.setNotifyValue(true, for: cachedStream5)
+            }
+        }
+        if let cachedBattery {
+            batteryLevelCharacteristic = cachedBattery
+            if cachedBattery.properties.contains(.notify) || cachedBattery.properties.contains(.indicate) {
+                if cachedBattery.isNotifying {
+                    let now = Date().timeIntervalSince1970
+                    UserDefaults.standard.set(now,
+                                              forKey: BatteryDefaults.notificationConfirmedAt)
+                    UserDefaults.standard.removeObject(forKey: BatteryDefaults.notificationLastError)
+                    if let heartRateReceivedAt = lastRawHRNotificationAt {
+                        promoteReconnectBatteryBaselineIfSafe(
+                            now: Date(timeIntervalSince1970: now),
+                            heartRateReceivedAt: heartRateReceivedAt,
+                            reason: "2A19_restored_cache_notify_active"
+                        )
+                    }
+                } else {
+                    UserDefaults.standard.set(Date().timeIntervalSince1970,
+                                              forKey: BatteryDefaults.notificationRequestedAt)
+                    peripheral.setNotifyValue(true, for: cachedBattery)
+                }
             }
         }
         AtriaDebugLog("ATRIADBG protected_r10 status=restored_cache_rehydrated services=%d hr=%d stream5=%d tx=%d stream5_notifying=%d action=resume_minimal_transport",
@@ -4333,6 +5551,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         offlineHistoricalSyncPreviousStandardHROnlyMode = standardHROnlyMode
         offlineHistoricalSyncStartRows = historicalArchiveRows
         offlineHistoricalSyncMadeRequestedMetricProgress = false
+        offlineHistoricalSyncResolvedGapCoverage = false
         offlineHistoricalSyncInProgress = true
         offlineHistoricalSyncGeneration &+= 1
         let syncGeneration = offlineHistoricalSyncGeneration
@@ -4448,10 +5667,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         offlineHistoricalSyncTimeoutTask?.cancel()
         offlineHistoricalSyncTimeoutTask = nil
         offlineHistoricalSyncStartRows = rows
-        UserDefaults.standard.set(rows > 0 ? "archived" : "no_rows", forKey: OfflineSyncDefaults.lastStatus)
+        let completionStatus = Self.historicalSyncCompletionStatus(
+            newRows: newRows,
+            requestedWindowMetricProgress: offlineHistoricalSyncMadeRequestedMetricProgress,
+            ledgerCoverageResolved: offlineHistoricalSyncResolvedGapCoverage
+        )
+        UserDefaults.standard.set(completionStatus, forKey: OfflineSyncDefaults.lastStatus)
         UserDefaults.standard.set(reason, forKey: OfflineSyncDefaults.lastReason)
         AtriaDebugLog("ATRIADBG offline_sync status=%@ reason=%@ rows=%d new_rows=%d failures=%d action=return_standard_hr metrics_fail_closed=0",
-              rows > 0 ? "archived" : "no_rows",
+              completionStatus,
               reason,
               rows,
               newRows,
@@ -4464,7 +5688,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if !reconcileRangeLossBackfillPendingWithArchive(
             reason: reason,
             newRows: newRows,
-            requestedWindowMetricProgress: offlineHistoricalSyncMadeRequestedMetricProgress
+            requestedWindowMetricProgress: offlineHistoricalSyncMadeRequestedMetricProgress,
+            ledgerCoverageResolved: offlineHistoricalSyncResolvedGapCoverage
         ) {
             scheduleRangeLossBackfillRetry(reason: reason)
         }
@@ -4491,7 +5716,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     @discardableResult
     private func reconcileRangeLossBackfillPendingWithArchive(reason: String,
                                                              newRows: Int = 0,
-                                                             requestedWindowMetricProgress: Bool = false) -> Bool {
+                                                             requestedWindowMetricProgress: Bool = false,
+                                                             ledgerCoverageResolved: Bool = false) -> Bool {
         let defaults = UserDefaults.standard
         guard defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) else { return true }
         // A successful offload is not proof that it covered every live outage.
@@ -4515,7 +5741,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             && defaults.object(forKey: OfflineSyncDefaults.recoveryWindowEnd) != nil
         guard Self.rangeLossBackfillCanClear(newRows: newRows,
                                              hasRequestedWindow: hasRequestedWindow,
-                                             requestedWindowMetricProgress: requestedWindowMetricProgress) else { return false }
+                                             requestedWindowMetricProgress: requestedWindowMetricProgress,
+                                             ledgerCoverageResolved: ledgerCoverageResolved) else { return false }
         defaults.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)
         defaults.removeObject(forKey: OfflineSyncDefaults.recoveryWindowStart)
         defaults.removeObject(forKey: OfflineSyncDefaults.recoveryWindowEnd)
@@ -4567,6 +5794,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                                     ? "explicit_workout_disconnect"
                                                     : reason)
         }
+        guard activeExplicitWorkout
+                || hasContact
+                || AtriaHistoricalGapLedger.hasPendingWindows() else {
+            AtriaDebugLog("ATRIADBG offline_sync status=range_loss_skipped reason=%@ detail=off_wrist_no_recoverable_gap action=preserve_realtime_only",
+                          reason)
+            return
+        }
         guard !offlineHistoricalSyncInProgress else {
             // A disconnect inside an opportunistic sync is still a missing range.
             // Mark it now; finishOfflineHistoricalSync will clear it only when
@@ -4596,6 +5830,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         scheduleStaleArmedRangeLossBackfillReconciliation(reason: reason)
         guard defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) else { return }
         guard !offlineHistoricalSyncInProgress else { return }
+        let verifiedPeripheralID = defaults.string(forKey: OfflineSyncDefaults.verifiedHistoryPeripheralID)
+        let currentPeripheralID = peripheral?.identifier.uuidString
+        let previouslyVerified = currentPeripheralID != nil
+            && currentPeripheralID == verifiedPeripheralID
+        let rawHistoryVerified = Self.supportsVerifiedHistoricalRecovery(
+            model: strapModel,
+            previouslyVerified: previouslyVerified
+        )
+        if rawHistoryVerified,
+           !Self.supportsVerifiedHistoricalMetricRecovery(
+                model: strapModel,
+                previouslyVerified: previouslyVerified
+           ) {
+            rangeLossBackfillTask?.cancel()
+            rangeLossBackfillTask = nil
+            defaults.set("gap_retained_metric_history_unverified",
+                         forKey: OfflineSyncDefaults.lastStatus)
+            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            AtriaDebugLog("ATRIADBG offline_sync status=gap_retained_metric_history_unverified reason=%@ detail=automatic_retry_suppressed_raw_transport_only action=keep_gap_and_realtime",
+                          reason)
+            return
+        }
         rangeLossBackfillTask?.cancel()
         rangeLossBackfillTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(8))
@@ -4708,6 +5964,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             || reason == "home_missed_data_banner"
     }
 
+    /// A durable pending bit without its request record may be a legacy or
+    /// partially-written value. Do not trade protected realtime transport for
+    /// history unless the gap request has a plausible persisted timestamp.
+    nonisolated static func hasValidRangeLossBackfillRequest(
+        pending: Bool,
+        requestedAt: Double?,
+        now: Date
+    ) -> Bool {
+        guard pending,
+              let requestedAt,
+              requestedAt.isFinite,
+              requestedAt > 0 else { return false }
+        return requestedAt <= now.timeIntervalSince1970 + 5
+    }
+
     /// Protected production mode may enter history transport automatically
     /// only while the radio is already down. This turns a natural reconnect
     /// into a one-shot history-first handoff without ever taking the command
@@ -4815,22 +6086,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     nonisolated static func rangeLossBackfillCanClear(newRows: Int) -> Bool {
-        newRows > 0
+        _ = newRows
+        return false
     }
 
     nonisolated static func rangeLossBackfillCanClear(newRows: Int,
                                                       hasRequestedWindow: Bool,
-                                                      requestedWindowMetricProgress: Bool) -> Bool {
-        guard newRows > 0 else { return false }
-        // Ordinary disconnect recovery has no exact workout window, so fresh
-        // rows from this attempt remain sufficient. An exact workout request
-        // can only be resolved after SessionStore merges the real HR and proves
-        // the matching saved workout reached the coverage floor.
-        guard !hasRequestedWindow else {
-            _ = requestedWindowMetricProgress
-            return false
-        }
-        return true
+                                                      requestedWindowMetricProgress: Bool,
+                                                      ledgerCoverageResolved: Bool = false) -> Bool {
+        _ = newRows
+        _ = requestedWindowMetricProgress
+        // Row count is never completion evidence. Ordinary disconnect recovery
+        // clears only when metric-usable timestamps retired the exact durable
+        // gap ledger. Exact workout recovery remains owned by SessionStore,
+        // which rebuilds that workout and proves its coverage floor.
+        return ledgerCoverageResolved && !hasRequestedWindow
     }
 
     nonisolated static func requestedRecoveryRowProvidesMetricProgress(
@@ -4964,17 +6234,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             historicalAckDisabled = false
         }
         AtriaDebugLog("ATRIADBG radio_mode mode=%@ persist=%d reconnect=%d reason=%@",
-              enabled ? "standard_hr_only" : "full_protocol",
+              enabled ? "protected_r10_minimal" : "full_protocol",
               persist ? 1 : 0,
               reconnect ? 1 : 0,
               reason)
-        recordRadioMode(enabled ? "standard_hr_only" : "full_protocol", reason: reason)
+        recordRadioMode(enabled ? "protected_r10_minimal" : "full_protocol", reason: reason)
         guard reconnect, previous != enabled, let peripheral else { return }
         txCharacteristic = nil
         heartRateCharacteristic = nil
         dbgTxReady = false
         realtimeArmed = false
-        dbgLast = enabled ? "standard hr only pending reconnect" : "full protocol pending reconnect"
+        dbgLast = enabled ? "stable HR + R10 pending reconnect" : "full protocol pending reconnect"
         cancelPeripheralConnection(peripheral, reason: "radio_mode_\(reason)")
     }
 
@@ -5044,7 +6314,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let startedAt = defaults.object(forKey: OfflineSyncDefaults.rangeLossBackfillStartedAt) as? Double
         let requestedAge = requestedAt.map { max(0, Date().timeIntervalSince1970 - $0) } ?? -1
         let startedAge = startedAt.map { max(0, Date().timeIntervalSince1970 - $0) } ?? -1
-        return String(format: "offline_sync_enabled=%d; offline_sync_attempts=%d; offline_sync_last_status=%@; offline_sync_last_reason=%@; offline_range_loss_backfill_pending=%d; offline_range_loss_backfill_reason=%@; offline_range_loss_backfill_requested_age_s=%.1f; offline_range_loss_backfill_started_age_s=%.1f",
+        let missingWindows = AtriaHistoricalGapLedger.windows(defaults: defaults)
+        let oldestCoverage = missingWindows.first.map {
+            AtriaHistoricalGapLedger.coveragePercent(for: $0)
+        } ?? 0
+        return String(format: "offline_sync_enabled=%d; offline_sync_attempts=%d; offline_sync_last_status=%@; offline_sync_last_reason=%@; offline_range_loss_backfill_pending=%d; offline_range_loss_backfill_reason=%@; offline_range_loss_backfill_requested_age_s=%.1f; offline_range_loss_backfill_started_age_s=%.1f; offline_missing_windows=%d; offline_oldest_gap_coverage_percent=%d; offline_metric_layout_verified=%d",
                       defaults.bool(forKey: OfflineSyncDefaults.enabled) ? 1 : 0,
                       defaults.integer(forKey: OfflineSyncDefaults.attempts),
                       status,
@@ -5052,7 +6326,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) ? 1 : 0,
                       rangeReason,
                       requestedAge,
-                      startedAge)
+                      startedAge,
+                      missingWindows.count,
+                      oldestCoverage,
+                      HistoricalArchive.hasValidatedMetricLayout ? 1 : 0)
     }
 
     static func watchdogRecoveryEvidence() -> String {
@@ -5096,9 +6373,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     static func cachedBattery(maxAge: TimeInterval = 86_400,
                               chargeMaxAge: TimeInterval = AtriaBLEManager.activeBatteryChargeEvidenceMaxAge,
                               defaults: UserDefaults = .standard,
-                              now: Date = Date()) -> (level: Int, source: String, age: TimeInterval, chargeStatus: BatteryChargeStatus, chargeAge: TimeInterval, usable: Bool) {
+                              now: Date = Date(),
+                              permitPendingReconnectBaseline: Bool = false) -> (level: Int, source: String, age: TimeInterval, chargeStatus: BatteryChargeStatus, chargeAge: TimeInterval, usable: Bool) {
         let level = defaults.object(forKey: BatteryDefaults.level) as? Int ?? -1
         let at = defaults.object(forKey: BatteryDefaults.at) as? Double
+        let requiresFreshConfirmation = defaults.bool(forKey: BatteryDefaults.requiresFreshConfirmation)
+        // A CCCD lease is transport evidence, not a level-bearing sample. Keep
+        // the original percentage timestamp authoritative so diagnostics,
+        // notifications and widget freshness cannot silently turn an aged
+        // baseline into a just-now reading merely because the subscription is
+        // still active.
         let age = at.map { max(0, now.timeIntervalSince1970 - $0) } ?? -1
         let source = evidenceToken(defaults.string(forKey: BatteryDefaults.source) ?? (level >= 0 ? "cached_2A19" : "none"))
         let rawCharge = defaults.string(forKey: BatteryDefaults.chargeStatus) ?? BatteryChargeStatus.levelOnly.rawValue
@@ -5107,7 +6391,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let chargeAge = chargeAt.map { max(0, now.timeIntervalSince1970 - $0) } ?? -1
         let chargeFresh = storedChargeStatus == .levelOnly || (chargeAge >= 0 && chargeAge <= chargeMaxAge)
         let effectiveChargeStatus = chargeFresh ? storedChargeStatus : .levelOnly
-        return (level, source, age, effectiveChargeStatus, chargeAge, level >= 0 && age >= 0 && age <= maxAge)
+        let sourceIsEligible = batteryCacheSourceIsDisplayEligible(source)
+        // Persisted 0/10/100 values cannot carry their live trajectory proof
+        // across process boundaries. These are exactly the values the physical
+        // strap has replayed incorrectly, so cached consumers fail closed even
+        // when an older build stamped them as recent.
+        let usable = (11...99).contains(level)
+            && age >= 0
+            && age <= maxAge
+            && sourceIsEligible
+            && (!requiresFreshConfirmation || permitPendingReconnectBaseline)
+        return (level, source, age, effectiveChargeStatus, chargeAge, usable)
+    }
+
+    nonisolated static func batteryCacheSourceIsDisplayEligible(_ source: String) -> Bool {
+        switch source {
+        case "live_2A19", "live_battery_event", "live_proprietary_1a":
+            return true
+        default:
+            return false
+        }
     }
 
     /// Invalidates state written by the old two-read confirmation rule. A rapid
@@ -5133,6 +6436,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.removeObject(forKey: BatteryDefaults.dropAt)
         defaults.removeObject(forKey: BatteryDefaults.chargeStatus)
         defaults.removeObject(forKey: BatteryDefaults.chargeAt)
+        defaults.removeObject(forKey: BatteryDefaults.notificationLeaseAt)
         defaults.set("disputed_rapid_transition", forKey: BatteryDefaults.source)
         defaults.set(true, forKey: BatteryDefaults.requiresFreshConfirmation)
         defaults.set(StrapStreamState.unknown.rawValue, forKey: StrapStreamDefaults.state)
@@ -5163,6 +6467,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.removeObject(forKey: BatteryDefaults.at)
         defaults.removeObject(forKey: BatteryDefaults.chargeStatus)
         defaults.removeObject(forKey: BatteryDefaults.chargeAt)
+        defaults.removeObject(forKey: BatteryDefaults.notificationLeaseAt)
         defaults.removeObject(forKey: BatteryDefaults.dropDelta)
         defaults.removeObject(forKey: BatteryDefaults.dropAt)
         defaults.set("disputed_boundary_sentinel", forKey: BatteryDefaults.source)
@@ -5424,7 +6729,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             RadioDefaults.realtimeStartSkipped,
             RadioDefaults.lastReason
         ].forEach { defaults.removeObject(forKey: $0) }
-        recordRadioMode(standardHROnlyMode ? "standard_hr_only" : "full_protocol", reason: "launch")
+        recordRadioMode(standardHROnlyMode ? "protected_r10_minimal" : "full_protocol", reason: "launch")
     }
 
     private func resetProtocolDiagnosticsForDebugLaunch(arguments: [String]) {
@@ -5543,11 +6848,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         activeSessionRestoreGeneration &+= 1
         let generation = activeSessionRestoreGeneration
         activeSessionRestoreInFlightGeneration = generation
+        let maxAge = activeJournalMaxAge
+        let maxSamples = activeJournalMaxSamples
+        let segmentGapLimit = activeJournalSegmentGapLimit
+        let biologicalSex = AthleteProfile.load().biologicalSex
         Task.detached(priority: .userInitiated) { [weak self] in
             let record = ActiveSessionJournal.load()
-            await self?.applyLoadedActiveSessionJournal(record,
-                                                        generation: generation,
-                                                        reason: reason)
+            let prepared = Self.prepareActiveSessionJournalRestore(
+                record,
+                now: Date(),
+                maxAge: maxAge,
+                maxSamples: maxSamples,
+                segmentGapLimit: segmentGapLimit,
+                biologicalSex: biologicalSex
+            )
+            await self?.applyPreparedActiveSessionJournalRestore(
+                prepared,
+                generation: generation,
+                reason: reason
+            )
         }
     }
 
@@ -5562,9 +6881,190 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             && !hasLiveSession
     }
 
-    private func applyLoadedActiveSessionJournal(_ record: ActiveSessionJournalRecord?,
-                                                 generation: UInt64,
-                                                 reason: String) {
+    nonisolated static func prepareActiveSessionJournalRestore(
+        _ record: ActiveSessionJournalRecord?,
+        now: Date,
+        maxAge: TimeInterval,
+        maxSamples: Int,
+        segmentGapLimit: TimeInterval,
+        biologicalSex: AthleteProfile.BiologicalSex
+    ) -> ActiveSessionRestorePreparation {
+        guard let record else {
+            return ActiveSessionRestorePreparation(payload: .terminal(.absent))
+        }
+        let identity = ActiveSessionRestorePreparation.JournalIdentity(
+            id: record.id,
+            updatedAt: record.updatedAt,
+            schema: record.schema,
+            sampleCount: record.samples.count,
+            rrSampleCount: record.rrSamples?.count ?? 0
+        )
+        guard record.schema == ActiveSessionJournal.schema else {
+            return ActiveSessionRestorePreparation(
+                payload: .terminal(.schemaMismatch(identity: identity))
+            )
+        }
+
+        let age = now.timeIntervalSince(record.updatedAt)
+        guard age <= maxAge else {
+            return ActiveSessionRestorePreparation(
+                payload: .terminal(.stale(age: age, identity: identity))
+            )
+        }
+
+        let retainedSamples = Array(
+            record.samples
+                .filter { now.timeIntervalSince($0.t) <= maxAge }
+                .suffix(max(0, maxSamples))
+        )
+        let retainedRRSamples = (record.rrSamples ?? [])
+            .filter { now.timeIntervalSince($0.t) <= maxAge }
+        guard let first = retainedSamples.first,
+              let last = retainedSamples.last,
+              retainedSamples.count > 1 else {
+            return ActiveSessionRestorePreparation(
+                payload: .terminal(.insufficientSamples(identity: identity))
+            )
+        }
+
+        let researchAggregates = validatedResearchAggregates(from: record)
+        let label = record.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "All-day wear"
+            : record.label
+        let scopedRRSamples = retainedRRSamples.filter {
+            $0.t >= first.t && $0.t <= last.t.addingTimeInterval(1)
+        }
+
+        if age >= segmentGapLimit {
+            let saved = SavedSession(
+                id: record.id,
+                start: first.t,
+                end: last.t,
+                label: label,
+                points: retainedSamples.map {
+                    SavedSession.Point(t: $0.t.timeIntervalSince(first.t), bpm: $0.bpm)
+                },
+                hrv: nil,
+                rrPoints: scopedRRSamples.isEmpty ? nil : scopedRRSamples.map {
+                    SavedSession.RRPoint(t: $0.t.timeIntervalSince(first.t), ms: $0.ms)
+                },
+                hrvReferenceValidated: false,
+                motionHintCount: nil,
+                motionHintKinds: nil,
+                motionEvidenceSource: "unavailable",
+                motionEvidenceValidated: false,
+                motionShortCount: nil,
+                motionShortMean: nil,
+                motionShortMin: nil,
+                motionShortMax: nil,
+                motionShortOverOneCount: nil,
+                strapStepResearchCount: researchAggregates.map(\.strapSteps).flatMap { $0 > 0 ? $0 : nil },
+                strapStepResearchAgreement: nil,
+                strapStepResearchState: researchAggregates?.strapStepState,
+                sensorResearchProbeFrames: researchAggregates?.sensorProbeFrames,
+                spo2ResearchCandidateFrames: researchAggregates?.spo2CandidateFrames,
+                skinTempResearchCandidateFrames: researchAggregates?.skinTempCandidateFrames,
+                skinTempResearchCandidateValueSum: researchAggregates?.skinTempCandidateValueSum,
+                skinTempResearchCandidateValueCount: researchAggregates?.skinTempCandidateValueCount,
+                biologicalSex: biologicalSex,
+                hrRaw2A37: record.rawHRNotifications,
+                hrAccepted: record.acceptedHRSamples,
+                hrZero: record.zeroHRSamples,
+                hrArtifactHeld: record.heldArtifacts,
+                hrArtifactDropped: record.droppedArtifacts,
+                hrRawGaps: record.rawHRGaps,
+                hrAcceptedGaps: record.acceptedHRGaps,
+                hrMaxRawGap: record.maxRawHRGap,
+                hrMaxAcceptedGap: record.maxAcceptedHRGap,
+                strengthSets: record.strengthSets,
+                excludedIntervals: record.excludedIntervals,
+                eventTimeZoneIdentifier: record.eventTimeZoneIdentifier
+            )
+            return ActiveSessionRestorePreparation(payload: .staleSegment(
+                ActiveSessionRestorePreparation.StaleSegmentPayload(
+                    savedSession: saved,
+                    now: now,
+                    age: age,
+                    researchAggregatesWereMalformed: researchAggregates == nil
+                )
+            ))
+        }
+
+        let session = retainedSamples.map { HRSample(t: $0.t, bpm: $0.bpm) }
+        let rrArchive = scopedRRSamples.map {
+            RRInterval(t: $0.t, ms: Double($0.ms), expectedHR: nil)
+        }
+        let recentValid = Array(session.suffix(5).map(\.bpm))
+        let live = ActiveSessionRestorePreparation.LivePayload(
+            record: record,
+            now: now,
+            age: age,
+            session: session,
+            sessionPoints: retainedSamples.map {
+                SavedSession.Point(t: $0.t.timeIntervalSince(first.t), bpm: $0.bpm)
+            },
+            stats: preparedHeartRateStats(for: retainedSamples),
+            lastHeartRates: Array(session.suffix(60).map(\.bpm)),
+            recentValid: recentValid,
+            displayHeartRate: preparedMedian(recentValid) ?? last.bpm,
+            rrArchive: rrArchive,
+            rrPoints: scopedRRSamples.map {
+                SavedSession.RRPoint(t: $0.t.timeIntervalSince(first.t), ms: $0.ms)
+            },
+            recentRRBeatTimes: rrArchive.compactMap {
+                now.timeIntervalSince($0.t) <= recentRRBeatWindowSeconds ? $0.t : nil
+            },
+            researchAggregates: researchAggregates
+        )
+        return ActiveSessionRestorePreparation(payload: .live(live))
+    }
+
+    private nonisolated static func preparedHeartRateStats(
+        for samples: [ActiveSessionJournalRecord.Sample]
+    ) -> ActiveSessionRestorePreparation.HeartRateStats {
+        guard !samples.isEmpty else {
+            return .init(minimum: nil, maximum: nil, total: 0, count: 0, mean: 0, m2: 0)
+        }
+        var minimum = Int.max
+        var maximum = Int.min
+        var total = 0
+        var count = 0
+        var mean = 0.0
+        var m2 = 0.0
+        for sample in samples {
+            minimum = min(minimum, sample.bpm)
+            maximum = max(maximum, sample.bpm)
+            total += sample.bpm
+            count += 1
+            let value = Double(sample.bpm)
+            let delta = value - mean
+            mean += delta / Double(count)
+            m2 += delta * (value - mean)
+        }
+        return .init(
+            minimum: minimum == Int.max ? nil : minimum,
+            maximum: maximum == Int.min ? nil : maximum,
+            total: total,
+            count: count,
+            mean: mean,
+            m2: m2
+        )
+    }
+
+    private nonisolated static func preparedMedian(_ values: [Int]) -> Int? {
+        guard !values.isEmpty else { return nil }
+        let sorted = values.sorted()
+        let middle = sorted.count / 2
+        return sorted.count.isMultiple(of: 2)
+            ? (sorted[middle - 1] + sorted[middle]) / 2
+            : sorted[middle]
+    }
+
+    private func applyPreparedActiveSessionJournalRestore(
+        _ prepared: ActiveSessionRestorePreparation,
+        generation: UInt64,
+        reason: String
+    ) {
         if activeSessionRestoreInFlightGeneration == generation {
             activeSessionRestoreInFlightGeneration = nil
         }
@@ -5585,126 +7085,99 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           session.count)
             return
         }
-        guard let record else {
+
+        switch prepared.payload {
+        case .terminal(.absent):
             AtriaDebugLog("ATRIADBG active_session_journal status=absent reason=%@", reason)
             return
-        }
-        guard record.schema == ActiveSessionJournal.schema else {
-            ActiveSessionJournal.clear()
-            AtriaDebugLog("ATRIADBG active_session_journal status=cleared reason=schema_mismatch schema=%d", record.schema)
+        case let .terminal(.schemaMismatch(identity)):
+            clearPreparedActiveSessionJournalIfUnchanged(identity, reason: "schema_mismatch")
+            AtriaDebugLog("ATRIADBG active_session_journal status=clear_scheduled reason=schema_mismatch schema=%d", identity.schema)
             return
-        }
-        let now = Date()
-        let age = now.timeIntervalSince(record.updatedAt)
-        guard age <= activeJournalMaxAge else {
-            ActiveSessionJournal.clear()
-            AtriaDebugLog("ATRIADBG active_session_journal status=cleared reason=stale age_s=%.0f max_age_s=%.0f samples=%d",
-                  age, activeJournalMaxAge, record.samples.count)
+        case let .terminal(.stale(age, identity)):
+            clearPreparedActiveSessionJournalIfUnchanged(identity, reason: "stale")
+            AtriaDebugLog("ATRIADBG active_session_journal status=clear_scheduled reason=stale age_s=%.0f max_age_s=%.0f samples=%d",
+                  age, activeJournalMaxAge, identity.sampleCount)
             return
-        }
-        let samples = record.samples
-            .filter { now.timeIntervalSince($0.t) <= activeJournalMaxAge }
-            .suffix(activeJournalMaxSamples)
-        let rrSamples = (record.rrSamples ?? [])
-            .filter { now.timeIntervalSince($0.t) <= activeJournalMaxAge }
-        guard let first = samples.first, let last = samples.last, samples.count > 1 else {
-            ActiveSessionJournal.clear()
-            AtriaDebugLog("ATRIADBG active_session_journal status=cleared reason=insufficient_samples samples=%d", record.samples.count)
+        case let .terminal(.insufficientSamples(identity)):
+            clearPreparedActiveSessionJournalIfUnchanged(identity, reason: "insufficient_samples")
+            AtriaDebugLog("ATRIADBG active_session_journal status=clear_scheduled reason=insufficient_samples samples=%d", identity.sampleCount)
             return
-        }
-        let restoredResearchAggregates = Self.validatedResearchAggregates(from: record)
-        if restoredResearchAggregates == nil {
-            AtriaDebugLog("ATRIADBG active_session_journal status=research_aggregates_rejected reason=malformed")
-        }
-
-        if age >= activeJournalSegmentGapLimit {
-            let label = record.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "All-day wear" : record.label
-            let scopedRR = rrSamples.filter { $0.t >= first.t && $0.t <= last.t.addingTimeInterval(1) }
-            let saved = SavedSession(id: record.id,
-                                     start: first.t,
-                                     end: last.t,
-                                     label: label,
-                                     points: samples.map { SavedSession.Point(t: $0.t.timeIntervalSince(first.t), bpm: $0.bpm) },
-                                     hrv: nil,
-                                     rrPoints: scopedRR.isEmpty ? nil : scopedRR.map {
-                                         SavedSession.RRPoint(t: $0.t.timeIntervalSince(first.t), ms: $0.ms)
-                                     },
-                                     hrvReferenceValidated: false,
-                                     motionHintCount: nil,
-                                     motionHintKinds: nil,
-                                     motionEvidenceSource: "unavailable",
-                                     motionEvidenceValidated: false,
-                                     motionShortCount: nil,
-                                     motionShortMean: nil,
-                                     motionShortMin: nil,
-                                     motionShortMax: nil,
-                                     motionShortOverOneCount: nil,
-                                     strapStepResearchCount: restoredResearchAggregates.map(\.strapSteps).flatMap { $0 > 0 ? $0 : nil },
-                                     strapStepResearchAgreement: nil,
-                                     strapStepResearchState: restoredResearchAggregates?.strapStepState,
-                                     sensorResearchProbeFrames: restoredResearchAggregates?.sensorProbeFrames,
-                                     spo2ResearchCandidateFrames: restoredResearchAggregates?.spo2CandidateFrames,
-                                     skinTempResearchCandidateFrames: restoredResearchAggregates?.skinTempCandidateFrames,
-                                     skinTempResearchCandidateValueSum: restoredResearchAggregates?.skinTempCandidateValueSum,
-                                     skinTempResearchCandidateValueCount: restoredResearchAggregates?.skinTempCandidateValueCount,
-                                     biologicalSex: AthleteProfile.load().biologicalSex,
-                                     hrRaw2A37: record.rawHRNotifications,
-                                     hrAccepted: record.acceptedHRSamples,
-                                     hrZero: record.zeroHRSamples,
-                                     hrArtifactHeld: record.heldArtifacts,
-                                     hrArtifactDropped: record.droppedArtifacts,
-                                     hrRawGaps: record.rawHRGaps,
-                                     hrAcceptedGaps: record.acceptedHRGaps,
-                                     hrMaxRawGap: record.maxRawHRGap,
-                                     hrMaxAcceptedGap: record.maxAcceptedHRGap,
-                                     strengthSets: record.strengthSets,
-                                     excludedIntervals: record.excludedIntervals,
-                                     eventTimeZoneIdentifier: record.eventTimeZoneIdentifier)
+        case let .staleSegment(payload):
+            if payload.researchAggregatesWereMalformed {
+                AtriaDebugLog("ATRIADBG active_session_journal status=research_aggregates_rejected reason=malformed")
+            }
+            let saved = payload.savedSession
             let persisted = persistFinishedSession(saved, reason: "stale_journal_restore")
-            resetLiveSessionState(start: now)
+            resetLiveSessionState(start: payload.now)
             AtriaDebugLog("ATRIADBG active_session_journal status=%@ reason=stale_restore age_s=%.0f threshold_s=%.1f samples=%d rr_values=%d duration_s=%.0f action=%@",
                   persisted ? "closed" : "close_failed",
-                  age,
+                  payload.age,
                   activeJournalSegmentGapLimit,
                   saved.points.count,
                   saved.rrSampleCount,
                   saved.duration,
                   persisted ? "start_fresh_before_diagnostics" : "retain_store_for_retry")
             return
+        case let .live(payload):
+            applyPreparedLiveActiveSessionRestore(payload, reason: reason)
         }
+    }
+
+    private func clearPreparedActiveSessionJournalIfUnchanged(
+        _ identity: ActiveSessionRestorePreparation.JournalIdentity,
+        reason: String
+    ) {
+        Task.detached(priority: .utility) {
+            let cleared = ActiveSessionJournal.clearIfUnchanged(
+                id: identity.id,
+                updatedAt: identity.updatedAt,
+                schema: identity.schema,
+                sampleCount: identity.sampleCount,
+                rrSampleCount: identity.rrSampleCount
+            )
+            AtriaDebugLog(
+                "ATRIADBG active_session_journal status=%@ reason=%@ samples=%d",
+                cleared ? "cleared" : "clear_skipped_newer_checkpoint",
+                reason,
+                identity.sampleCount
+            )
+        }
+    }
+
+    private func applyPreparedLiveActiveSessionRestore(
+        _ payload: ActiveSessionRestorePreparation.LivePayload,
+        reason: String
+    ) {
+        let record = payload.record
+        let now = payload.now
+        if payload.researchAggregates == nil {
+            AtriaDebugLog("ATRIADBG active_session_journal status=research_aggregates_rejected reason=malformed")
+        }
+        guard let first = payload.session.first, let last = payload.session.last else { return }
 
         liveSessionID = record.id
         liveSessionEventTimeZoneIdentifier = record.eventTimeZoneIdentifier ?? TimeZone.current.identifier
         sessionStart = first.t
-        session = samples.map { HRSample(t: $0.t, bpm: $0.bpm) }
-        rebuildSessionHeartRateStats()
+        session = payload.session
+        sessionOriginTime = first.t
+        sessionPointsCache = payload.sessionPoints
+        sessionActiveCaloriesCache = nil
+        sessionMinHeartRate = payload.stats.minimum
+        sessionMaxHeartRate = payload.stats.maximum
+        sessionHeartRateTotal = payload.stats.total
+        sessionHeartRateAggregateCount = payload.stats.count
+        sessionHeartRateMean = payload.stats.mean
+        sessionHeartRateM2 = payload.stats.m2
         publishSessionSampleCountIfNeeded(now: now, force: true)
-        var restoredTail: [Int] = []
-        restoredTail.reserveCapacity(min(session.count, 60))
-        for sample in session.suffix(60) {
-            restoredTail.append(sample.bpm)
-        }
-        replaceLastHeartRates(restoredTail)
-
-        var restoredRecentValid: [Int] = []
-        restoredRecentValid.reserveCapacity(min(session.count, 5))
-        for sample in session.suffix(5) {
-            restoredRecentValid.append(sample.bpm)
-        }
-        recentValid = restoredRecentValid
-        assignIfChanged(\.heartRate, median(recentValid) ?? last.bpm)
+        replaceLastHeartRates(payload.lastHeartRates)
+        recentValid = payload.recentValid
+        assignIfChanged(\.heartRate, payload.displayHeartRate)
         assignIfChanged(\.hasContact, true)
-        rrArchive = rrSamples
-            .filter { $0.t >= first.t && $0.t <= last.t.addingTimeInterval(1) }
-            .map { RRInterval(t: $0.t, ms: Double($0.ms), expectedHR: nil) }
+        rrArchive = payload.rrArchive
+        rrPointsCache = payload.rrPoints
         noteRRArchiveDidChange()
-        var restoredRecentBeatTimes: [Date] = []
-        restoredRecentBeatTimes.reserveCapacity(min(rrArchive.count, 720))
-        for beat in rrArchive where now.timeIntervalSince(beat.t) <= Self.recentRRBeatWindowSeconds {
-            restoredRecentBeatTimes.append(beat.t)
-        }
-        recentRRBeatTimes = restoredRecentBeatTimes
-        rebuildSessionCaches()
+        recentRRBeatTimes = payload.recentRRBeatTimes
         lastRRBeatTime = rrArchive.last?.t
         lastAcceptedHRAt = last.t
         lastRawHRNotificationAt = last.t
@@ -5718,7 +7191,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         sessionAcceptedHRGaps = record.acceptedHRGaps
         sessionMaxRawHRGap = record.maxRawHRGap
         sessionMaxAcceptedHRGap = record.maxAcceptedHRGap
-        let researchAggregates = restoredResearchAggregates ?? .zero
+        let researchAggregates = payload.researchAggregates ?? .zero
         researchProbeFrameCount = researchAggregates.sensorProbeFrames
         researchProbeOxygenCandidateFrames = researchAggregates.spo2CandidateFrames
         researchProbeTemperatureCandidateFrames = researchAggregates.skinTempCandidateFrames
@@ -5743,7 +7216,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         let duration = last.t.timeIntervalSince(first.t)
         AtriaDebugLog("ATRIADBG active_session_journal status=restored reason=%@ samples=%d rr_values=%d duration_s=%.0f age_s=%.0f label=%@",
-              reason, session.count, rrArchive.count, duration, age, captureLabel)
+              reason, session.count, rrArchive.count, duration, payload.age, captureLabel)
     }
 
     private func invalidateActiveSessionJournalRestoreForLiveData() {
@@ -6328,7 +7801,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             || verboseBLEFrameLogging
         if arguments.contains("--atria-standard-hr-only") {
             applyStandardHROnly(enabled: true, persist: false, reconnect: false, reason: "launch_arg")
-            AtriaDebugLog("ATRIADBG standard_hr_only enabled=1 realtime_start=skipped custom_notify=skipped history_ack=disabled")
+            AtriaDebugLog("ATRIADBG protected_r10_minimal enabled=1 full_realtime_start=skipped stream5_r10=enabled history_ack=disabled")
         }
         if arguments.contains("--atria-log-hr-artifact-policy") {
             logHRArtifactPolicySelfTest()
@@ -6840,9 +8313,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 guard status == .connected else { continue }
                 let now = Date()
                 let cadenceMultiplier = effectiveThermalCadenceMultiplier
-                // Full-protocol/research modes may refresh an already discovered
-                // battery characteristic. Protected production fails closed and
-                // requestStrapStatusRead records a no-battery-GATT skip.
+                // Refresh means subscribe once or keep awaiting the existing
+                // standard notification. Production never performs an explicit
+                // 2A19 read here.
                 if Self.shouldRequestBatteryRefresh(lastRequestedAt: lastBatteryReadRequestedAt,
                                                     now: now) {
                     requestStrapStatusRead(reason: "long_wear_battery_freshness")
@@ -9259,7 +10732,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         hrvLiveRefreshGeneration &+= 1
         hrvLiveRefreshTask?.cancel()
         hrvLiveRefreshTask = nil
-        lastHRVAnalysisAttemptAt = now
+        recordHRVAnalysisAttempt(at: now)
         pruneRRBuffer(now: now)
         let bufferWindow = currentRRBufferWindow()
         rrSamples = bufferWindow.count
@@ -9297,7 +10770,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func startLiveHRVSnapshotRefresh(now: Date,
                                              logKind: String,
                                              shouldLogConsole: Bool) {
-        lastHRVAnalysisAttemptAt = now
+        recordHRVAnalysisAttempt(at: now)
         let bufferWindow = currentRRBufferWindow()
         let includeTachogram = shouldMaintainLiveTachogram
         hrvLiveRefreshGeneration &+= 1
@@ -9326,6 +10799,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                                  logKind: pending.logKind,
                                                  shouldLogConsole: pending.shouldLogConsole)
             }
+        }
+    }
+
+    private func recordHRVAnalysisAttempt(at date: Date) {
+        if isRecording {
+            lastHRVAnalysisAttemptAt = date
+        } else {
+            lastNormalWearHRVAnalysisAttemptAt = date
+            Self.persistNormalWearHRVAnalysisAttemptDate(date)
         }
     }
 
@@ -9822,15 +11304,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         sessionAcceptedHRSamples += 1
         recordWorkoutPromptQualityEvent(.accepted, at: sampleTime)
         sampleDiagnostics.acceptedSamples += 1
+        promoteReconnectBatteryBaselineIfSafe(
+            now: sampleTime,
+            heartRateReceivedAt: sampleTime,
+            reason: "accepted_hr_current_connection"
+        )
+        publishRecentReconnectBatteryBaselineIfNeeded(now: sampleTime)
         let acceptedCount = sampleDiagnostics.acceptedSamples
         let continuityRelevant = Self.isBLEContinuityRelevant(
             longWearEnabled: longWearModeEnabled,
             activeExplicitWorkout: AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
         )
         let hadOpenMissingWindow = continuityRelevant && AtriaHistoricalGapLedger.hasOpenWindow()
-        let closedMissingWindow = hadOpenMissingWindow
-            && AtriaHistoricalGapLedger.closeOpenGap(at: sampleTime,
-                                                     minimumDuration: SavedSession.workoutContinuityGapLimit)
+        let closeMissingWindowResult = hadOpenMissingWindow
+            ? AtriaHistoricalGapLedger.closeOpenGapWithResult(
+                at: sampleTime,
+                minimumDuration: SavedSession.workoutContinuityGapLimit
+            )
+            : nil
+        let closedMissingWindow = closeMissingWindowResult?.closedWindow == true
+        if closeMissingWindowResult?.resolvedWindows ?? 0 > 0 {
+            _ = reconcileRangeLossBackfillPendingWithArchive(
+                reason: "accepted_hr_closed_covered_gap",
+                ledgerCoverageResolved: true
+            )
+        }
         if let lastAcceptedHRAt {
             let gap = sampleTime.timeIntervalSince(lastAcceptedHRAt)
             if gap > SavedSession.workoutContinuityGapLimit {
@@ -9867,7 +11365,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                   Int(sampleTime.timeIntervalSince1970))
                 }
             }
+        } else if continuityRelevant,
+                  !hadOpenMissingWindow,
+                  AtriaHistoricalGapLedger.recordRestorationGapIfNeeded(
+                    firstAcceptedAt: sampleTime,
+                    reason: AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
+                        ? "explicit_workout_process_restore_gap"
+                        : "long_wear_process_restore_gap",
+                    minimumDuration: SavedSession.workoutContinuityGapLimit
+                  ) {
+            // CoreBluetooth can deliver this pulse before the asynchronous
+            // active-journal restore completes. Preserve the exact timestamp
+            // outage for verified strap history rather than silently treating
+            // the new process as the beginning of collection.
+            markRangeLossBackfillRequired(reason: AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
+                                          ? "explicit_workout_range_loss"
+                                          : "long_wear_range_loss")
+            scheduleRangeLossBackfillIfNeeded(reason: "process_restore_accepted_hr_gap")
         }
+        _ = AtriaHistoricalGapLedger.advanceLiveContinuityAnchor(to: sampleTime)
         if sampleDiagnostics.lastReason == "accepted_gap" {
             sampleDiagnostics.lastStatus = "accepted"
             sampleDiagnostics.lastReason = "sample"
@@ -9887,6 +11403,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             contactStableSince = nil
             pendingHRJump = nil
             recentValid.removeAll(keepingCapacity: true)
+            // A real zero-contact reading proves the strap was off wrist. Do
+            // not carry a pre-contact timestamp across that known-unwearable
+            // interval and later request history that cannot contain pulse data.
+            AtriaHistoricalGapLedger.clearLiveContinuityAnchor()
             resetHRVWindow(reason: "contact lost")
             logRow(kind: "hr", source: "0x2A37", opcode: "", len: "", value: "0", at: sampleTime)
             return
@@ -9960,6 +11480,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if recentValid.count > 5 { recentValid.removeFirst() }
         appendLastHeartRate(rate)
         let displayRate = median(recentValid) ?? rate
+        // Evaluate the same artifact-filtered, short-median signal shown to the
+        // user, not a single raw accepted beat. The lifecycle itself is owned
+        // here so background/minimized delivery still produces transitions.
+        if let pulses = workoutZoneHapticLifecycle.accept(bpm: displayRate) {
+            triggerWorkoutZoneHaptic(pulses: pulses)
+        }
         if acceptedHeartRateBatchDepth > 0 {
             acceptedHeartRateBatchPendingDisplayRate = displayRate
             acceptedHeartRateBatchPendingDisplayAt = sampleTime
@@ -10774,7 +12300,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return Self.shouldAttemptHRVAnalysis(
             now: now,
             lastReadyAnalysisAt: lastHRVAnalysisAt,
-            lastAttemptAt: lastHRVAnalysisAttemptAt,
+            lastAttemptAt: isRecording
+                ? lastHRVAnalysisAttemptAt
+                : lastNormalWearHRVAnalysisAttemptAt,
             isRecording: isRecording,
             hasReadySnapshot: latestReadyHRVSnapshot?.isReady == true || hrvSnapshot?.isReady == true,
             cleanWindowSeconds: cleanWindowSeconds,
@@ -10794,10 +12322,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var r10LivenessTask: Task<Void, Never>?
     private var lastR10RecoveryRearmAt: Date?
     private var lastR10RecoveryRediscoveryAt: Date?
+    private var lastR10NotifyRepairAt: Date?
     nonisolated static let r10RecoveryRediscoveryMinimumInterval: TimeInterval = 60
     nonisolated static let r10LivenessStaleInterval: TimeInterval = 60
     nonisolated static let r10LivenessRearmGraceInterval: TimeInterval = 60
     nonisolated static let r10LivenessRearmMinimumInterval: TimeInterval = 10 * 60
+    nonisolated static let r10NotifyRepairMinimumInterval: TimeInterval = 30
     private var lastRRBearingRealtimeFrameAt: Date?
     private var lastRealtimeRestartAt: Date?
     private var ackedHistoryAckKeys = Set<String>()
@@ -10881,6 +12411,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return .rediscover
     }
 
+    nonisolated static func shouldRepairR10Notification(
+        expected: Bool,
+        connected: Bool,
+        isNotifying: Bool,
+        lastRepairAt: Date?,
+        now: Date,
+        minimumInterval: TimeInterval = r10NotifyRepairMinimumInterval
+    ) -> Bool {
+        guard expected, connected, !isNotifying else { return false }
+        guard let lastRepairAt else { return true }
+        return now.timeIntervalSince(lastRepairAt) >= minimumInterval
+    }
+
     /// Send a COMMAND packet on CMD_TO_STRAP: [0x23, seq, cmd, data...].
     private func sendCommand(_ cmd: UInt8, _ data: [UInt8], mode: CommandWriteMode) {
         guard motionHandshakeDiagnostic == nil else {
@@ -10939,6 +12482,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     [0x02, UInt8(pulses), 0x00, 0x00, 0x00],
                     mode: .withoutResponse)
         AtriaDebugLog("ATRIADBG workout_zone_haptic status=sent pattern=2 pulses=%d", pulses)
+    }
+
+    /// Installs or updates the persisted target owned by the current explicit
+    /// workout. Repeating an identical configuration preserves detector state;
+    /// only a session/target/pause transition establishes a new baseline.
+    func configureWorkoutZoneHaptics(workoutStartedAt: Date?,
+                                     lowerTargetZone: Int?,
+                                     upperTargetZone: Int?,
+                                     maxHR: Int,
+                                     isPaused: Bool) {
+        workoutZoneHapticLifecycle.configure(
+            workoutStartedAt: workoutStartedAt,
+            lowerTargetZone: lowerTargetZone,
+            upperTargetZone: upperTargetZone,
+            maxHR: maxHR,
+            isPaused: isPaused
+        )
     }
 
     private func stopProtocolHeartbeat() {
@@ -11013,6 +12573,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
     }
 
+    private var protectedR10MotionIsEligible: Bool {
+        let motionBattery = motionEligibilityBatteryLevel()
+        return standardHROnlyMode
+            && !historyOnlyProbeEnabled
+            && !historyOnlyProbeMode
+            && !offlineHistoricalSyncInProgress
+            && !protectedR10StreamSuppressed
+            && !protectedR10RollbackEnabled
+            && Self.shouldArmHighFrequencyMotion(
+                batteryLevel: motionBattery,
+                isCharging: batteryIsCharging,
+                calibrationActive: stepCalibrationCaptureIsActive
+            )
+    }
+
+    private var r10TransportIsExpected: Bool {
+        r10MotionIsEligible || protectedR10MotionIsEligible
+    }
+
     func motionEligibilityBatteryLevel(now: Date = Date()) -> Int {
         let defaults = UserDefaults.standard
         let cachedLevel = defaults.object(forKey: BatteryDefaults.level) as? Int
@@ -11064,15 +12643,86 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         r10LivenessTask?.cancel()
         r10LivenessTask = nil
         lastR10RecoveryRearmAt = nil
+        lastR10NotifyRepairAt = nil
         AtriaDebugLog("ATRIADBG r10_watchdog status=stopped reason=%@", reason)
+    }
+
+    private func requestBoundedR10ActivationForSilentStream(now: Date,
+                                                             reason: String) {
+        guard r10TransportIsExpected,
+              strapStream5NotifyConfirmed,
+              let peripheral,
+              peripheral.state == .connected,
+              let stream5 = peripheral.services?
+                .first(where: { $0.uuid == Self.UUIDs.strapService })?
+                .characteristics?
+                .first(where: { $0.uuid == Self.UUIDs.strapStream5 }),
+              stream5.isNotifying else {
+            reassertR10NotificationIfConnected(reason: "\(reason)_inactive_cccd", now: now)
+            return
+        }
+
+        if standardHROnlyMode {
+            // Reuse the physically bounded protected path: passive grace,
+            // persisted command lease, missing-frame rollback and the early-
+            // disconnect circuit breaker all remain authoritative.
+            protectedR10ActivationGraceTask?.cancel()
+            protectedR10ActivationGraceTask = nil
+            protectedR10MissingFrameTask?.cancel()
+            protectedR10MissingFrameTask = nil
+            protectedR10StabilityTask?.cancel()
+            protectedR10StabilityTask = nil
+            protectedR10ActivationSent = false
+            protectedR10ActivationAt = nil
+            protectedR10FramesAfterActivation = 0
+            sendProtectedR10ActivationIfReady()
+            AtriaDebugLog("ATRIADBG r10_watchdog status=repair_scheduled mode=protected reason=%@ action=passive_grace_then_leased_3f01",
+                          reason)
+            return
+        }
+
+        guard let txCharacteristic,
+              txCharacteristic.properties.contains(.writeWithoutResponse),
+              heartRateCharacteristic?.isNotifying == true else { return }
+        let defaults = UserDefaults.standard
+        let lastActivationAt = (defaults.object(
+            forKey: Self.protectedR10ActivationSentAtKey
+        ) as? Double).map(Date.init(timeIntervalSince1970:))
+        let leaseDelay = Self.protectedR10ActivationLeaseDelay(
+            lastActivationAt: lastActivationAt,
+            now: now
+        )
+        guard leaseDelay <= 0 else {
+            AtriaDebugLog("ATRIADBG r10_watchdog status=repair_deferred mode=full_protocol reason=%@ lease_remaining_s=%.0f action=preserve_hr_link",
+                          reason,
+                          leaseDelay)
+            return
+        }
+        let sequence = cmdSeq
+        cmdSeq &+= 1
+        let frame = encodeFrame([Packet.command, sequence, Cmd.sendR10R11Realtime, 0x01])
+        defaults.set(now.timeIntervalSince1970,
+                     forKey: Self.protectedR10ActivationSentAtKey)
+        defaults.set(defaults.integer(forKey: Self.protectedR10ActivationCountKey) + 1,
+                     forKey: Self.protectedR10ActivationCountKey)
+        peripheral.writeValue(frame, for: txCharacteristic, type: .withoutResponse)
+        AtriaDebugLog("ATRIADBG r10_watchdog status=repair_sent mode=full_protocol reason=%@ cmd=3f data=01 seq=%d action=single_leased_write_no_reconnect",
+                      reason,
+                      Int(sequence))
     }
 
     private func evaluateR10Liveness(now: Date = Date(), reason: String) {
         let connected = status == .connected && peripheral?.state == .connected
+        let eligible = r10TransportIsExpected
+        if eligible, connected, !strapStream5NotifyConfirmed {
+            reassertR10NotificationIfConnected(reason: "\(reason)_stream5_unconfirmed", now: now)
+            return
+        }
         let action = Self.r10LivenessAction(
-            eligible: r10MotionIsEligible,
+            eligible: eligible,
             connected: connected,
-            realtimeArmed: realtimeArmed,
+            realtimeArmed: strapStream5NotifyConfirmed
+                && (realtimeArmed || protectedR10MotionIsEligible),
             lastFrameAt: lastR10MotionFrameAt,
             lastRearmAt: lastR10RecoveryRearmAt,
             lastRediscoveryAt: lastR10RecoveryRediscoveryAt,
@@ -11083,18 +12733,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             break
         case .rearm:
             lastR10RecoveryRearmAt = now
-            AtriaDebugLog("ATRIADBG r10_watchdog status=stale action=observe_only reason=%@", reason)
+            requestBoundedR10ActivationForSilentStream(now: now, reason: reason)
         case .rediscover:
             lastR10RecoveryRediscoveryAt = now
-            // Subscription-only R10 observation is intentionally passive.
-            // Rediscovery while 2A37 HR is healthy confounds protocol trials
-            // and has previously destabilized an otherwise usable strap link.
-            AtriaDebugLog("ATRIADBG r10_watchdog status=stale action=preserve_hr_link reason=%@", reason)
+            // Inspect and repair only a truly inactive CCCD. Never reconnect or
+            // toggle a healthy HR/R10 subscription for a missing frame.
+            reassertR10NotificationIfConnected(reason: "\(reason)_stale_followup", now: now)
         }
     }
 
     /// Observe the proprietary stream only after 61080005 notification is
-    /// confirmed. Production does not write unvalidated motion commands.
+    /// confirmed. Production may send the validated 3F/01 activation only
+    /// after passive grace and under the persisted ten-minute lease.
     func armRealtime() {
         proprietaryNotifyFallbackTask?.cancel()
         proprietaryNotifyFallbackTask = nil
@@ -11139,10 +12789,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 return
             }
             ensureR10LivenessWatchdog(reason: "full_protocol_arm")
-            AtriaDebugLog("ATRIADBG r10_stream status=observe_subscribed_stream commands=none source=standard_hr_stability")
-            // Do not schedule proprietary writes or service rediscovery:
-            // physical WHOOP 4 testing showed repeated intervention can
-            // destabilize a healthy HR link.
+            AtriaDebugLog("ATRIADBG r10_stream status=observe_subscribed_stream command=deferred_until_passive_grace source=standard_hr_stability")
+            // Never rediscover or repeatedly write while HR is healthy.
+            // Physical WHOOP 4 testing showed repeated intervention can
+            // destabilize the link; the fallback below is one persisted,
+            // ten-minute-leased 3F/01 only after passive observation fails.
             r10ArmRetryTask = Task { @MainActor [weak self] in
                 guard let self else { return }
                 for attempt in 1...2 {
@@ -11160,7 +12811,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 }
                 if !Self.r10FrameProvesCurrentArm(lastFrameAt: self.lastR10MotionFrameAt,
                                                   evidenceEpoch: r10EvidenceEpoch) {
-                    AtriaDebugLog("ATRIADBG r10_stream status=unavailable action=preserve_stable_hr_link")
+                    let recoveryAt = Date()
+                    self.lastR10RecoveryRearmAt = recoveryAt
+                    AtriaDebugLog("ATRIADBG r10_stream status=unavailable action=request_single_leased_activation")
+                    self.requestBoundedR10ActivationForSilentStream(
+                        now: recoveryAt,
+                        reason: "initial_full_protocol_arm"
+                    )
                     return
                 }
             }
@@ -11577,7 +13234,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     /// Decode a proprietary frame; if it's REALTIME_DATA, pull RR intervals (HRV).
-    private func handleProprietary(_ data: Data) {
+    private func handleProprietary(_ data: Data, sourceUUID: CBUUID) {
         let b = [UInt8](data)
         guard b.count >= 8, b[0] == 0xAA else { return }
         let len = Int(b[1]) | (Int(b[2]) << 8)
@@ -11596,7 +13253,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         switch payload.first {
         case 0x24:
             handleCommandResponsePayload(payload)
-            handleUnknownProtocolPayload(payload, fullFrame: b)
+            handleUnknownProtocolPayload(payload, fullFrame: b, sourceUUID: sourceUUID)
             return
         case Packet.metadata:
             handleHistoryMetadata(payload)
@@ -11608,7 +13265,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             break
         }
         guard payload.first == Packet.realtime, payload.count >= 10 else {
-            handleUnknownProtocolPayload(payload, fullFrame: b)
+            handleUnknownProtocolPayload(payload, fullFrame: b, sourceUUID: sourceUUID)
             return
         }
         // payload: [type, seq, cmd, 5-byte header, HR, rrnum, RR(u16le)...]
@@ -11716,31 +13373,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               ready ? 1 : 0)
     }
 
-    private func handleUnknownProtocolPayload(_ payload: [UInt8], fullFrame: [UInt8]) {
+    private func handleUnknownProtocolPayload(_ payload: [UInt8],
+                                              fullFrame: [UInt8],
+                                              sourceUUID: CBUUID? = nil) {
         guard let type = payload.first else { return }
         let body = Array(payload.dropFirst())
         recordProtocolPacket(type: type, length: payload.count)
         if type == Packet.event,
-           fullFrame.count > 26,
-           fullFrame[6] == 0x03 {
-            let rawSOC = Int(fullFrame[17]) | (Int(fullFrame[18]) << 8)
-            let millivolts = Int(fullFrame[21]) | (Int(fullFrame[22]) << 8)
-            let chargeByte = fullFrame[26]
-            if rawSOC <= 1_000,
-               (3_000...4_300).contains(millivolts),
-               chargeByte <= 1 {
-                let level = Int((Double(rawSOC) / 10).rounded())
-                let charging = chargeByte == 1
-                switch Self.batteryLevelAcceptanceDecision(
+           let reading = Self.parseBatteryLevelEventFrame(fullFrame) {
+                let level = reading.level
+                let millivolts = reading.millivolts
+                let charging = reading.isCharging
+                let eventReceivedAt = Date()
+                switch Self.batteryEventAcceptanceDecision(
                     previousLevel: batteryLevel,
                     previousAcceptedAt: lastAcceptedBatteryLevelAt,
-                    incomingLevel: level,
-                    receivedAt: Date(),
+                    reading: reading,
+                    receivedAt: eventReceivedAt,
                     pending: pendingBatteryDropCandidate,
                     previousIsCached: displayedBatteryLevelIsCached,
                     requiresFreshConfirmation: UserDefaults.standard.bool(
                         forKey: BatteryDefaults.requiresFreshConfirmation
-                    )
+                    ),
+                    previousChargeStatus: batteryChargeStatus
                 ) {
                 case .quarantine(let candidate):
                     pendingBatteryDropCandidate = candidate
@@ -11761,20 +13416,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 batteryConfirmationReadLevel = nil
                 pendingBatteryDropCandidate = nil
                 displayedBatteryLevelIsCached = false
+                batteryReadingIsRecentBaseline = false
+                batteryProjectionRevision &+= 1
                 UserDefaults.standard.removeObject(forKey: BatteryDefaults.requiresFreshConfirmation)
-                lastAcceptedBatteryLevelAt = Date()
-                let previousLevel = batteryLevel
-                let plausibleRise = previousLevel >= 0
-                    && level > previousLevel
-                    && level - previousLevel <= 5
+                lastAcceptedBatteryLevelAt = eventReceivedAt
                 let proposedChargeStatus: BatteryChargeStatus = charging
                     ? (level == 100 ? .full : .charging)
                     : .notCharging
-                let acceptedChargeStatus = Self.acceptedBatteryChargeStatus(
-                    proposedChargeStatus,
-                    batteryLevel: level,
-                    hasPlausibleRiseEvidence: plausibleRise
-                ) ?? .levelOnly
+                // Unlike 2A1B, this flag is part of the same CRC-validated event
+                // as SOC and plausible cell voltage, so it can originate charge
+                // truth without waiting for a second percentage sample.
+                let acceptedChargeStatus = proposedChargeStatus
                 assignIfChanged(\.batteryLevel, level)
                 assignIfChanged(\.batteryIsCharging, acceptedChargeStatus == .charging)
                 assignIfChanged(\.batteryChargeStatus, acceptedChargeStatus)
@@ -11788,14 +13440,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                               millivolts,
                               charging ? 1 : 0,
                               acceptedChargeStatus.rawValue)
-            }
             return
         }
         if type == Packet.realtimeRaw {
             if payload.count > 1, payload[1] == AtriaR10MotionDecoder.recordType {
                 r10MotionFrameCount += 1
                 let receivedAt = Date()
-                lastR10MotionFrameAt = receivedAt
+                recordValidR10MotionEvidence(receivedAt: receivedAt)
+                if let sourceUUID {
+                    recordProtectedR10EvidenceMetadataIfNeeded(receivedAt: receivedAt,
+                                                               sourceUUID: sourceUUID)
+                }
                 recordMotionHandshakeR10EvidenceIfNeeded(receivedAt: receivedAt,
                                                          payloadLength: payload.count)
                 recordProtectedR10EvidenceIfNeeded(receivedAt: receivedAt)
@@ -11836,24 +13491,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         recordProtocolPacket(type: type, length: payloadLength)
         r10MotionFrameCount += 1
-        lastR10MotionFrameAt = receivedAt
+        recordValidR10MotionEvidence(receivedAt: receivedAt)
         recordMotionHandshakeR10EvidenceIfNeeded(receivedAt: receivedAt,
                                                  payloadLength: payloadLength)
         recordProtectedR10EvidenceIfNeeded(receivedAt: receivedAt)
-        if standardHROnlyMode, sourceUUID == UUIDs.strapStream5 {
-            let defaults = UserDefaults.standard
-            passiveR10FirstFrameTask?.cancel()
-            passiveR10FirstFrameTask = nil
-            if defaults.object(forKey: RadioDefaults.passiveR10FirstValidAt) == nil {
-                defaults.set(receivedAt.timeIntervalSince1970,
-                             forKey: RadioDefaults.passiveR10FirstValidAt)
-            }
-            defaults.set(receivedAt.timeIntervalSince1970,
-                         forKey: RadioDefaults.passiveR10LastValidAt)
-            defaults.set(defaults.integer(forKey: RadioDefaults.passiveR10ValidFrames) + 1,
-                         forKey: RadioDefaults.passiveR10ValidFrames)
-            defaults.set("receiving_crc_valid", forKey: RadioDefaults.passiveR10Status)
-        }
+        recordProtectedR10EvidenceMetadataIfNeeded(receivedAt: receivedAt,
+                                                   sourceUUID: sourceUUID)
         markStepCalibrationMotionStreamReady(receivedAt: receivedAt)
         if verboseBLEFrameLogging {
             AtriaDebugLog("ATRIADBG r10_frame record_type=%02x len=%d decoded=1 total=%d path=fast_metadata",
@@ -11861,6 +13504,32 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           payloadLength,
                           r10MotionFrameCount)
         }
+    }
+
+    /// A decoded R10 frame has already passed framing, CRC and fixed-layout
+    /// validation. Record that source truth for every radio profile; the old
+    /// implementation updated freshness only in the protected-mode branch,
+    /// leaving full-protocol counts falsely stale in Home/system surfaces.
+    private func recordValidR10MotionEvidence(receivedAt: Date) {
+        lastR10MotionFrameAt = receivedAt
+        UserDefaults.standard.set(receivedAt.timeIntervalSince1970,
+                                  forKey: RadioDefaults.passiveR10LastValidAt)
+        assignIfChanged(\.liveStrapMotionCapturedAt, receivedAt)
+    }
+
+    private func recordProtectedR10EvidenceMetadataIfNeeded(receivedAt: Date,
+                                                            sourceUUID: CBUUID) {
+        guard standardHROnlyMode, sourceUUID == UUIDs.strapStream5 else { return }
+        let defaults = UserDefaults.standard
+        passiveR10FirstFrameTask?.cancel()
+        passiveR10FirstFrameTask = nil
+        if defaults.object(forKey: RadioDefaults.passiveR10FirstValidAt) == nil {
+            defaults.set(receivedAt.timeIntervalSince1970,
+                         forKey: RadioDefaults.passiveR10FirstValidAt)
+        }
+        defaults.set(defaults.integer(forKey: RadioDefaults.passiveR10ValidFrames) + 1,
+                     forKey: RadioDefaults.passiveR10ValidFrames)
+        defaults.set("receiving_crc_valid", forKey: RadioDefaults.passiveR10Status)
     }
 
     private func recordMotionHandshakeR10EvidenceIfNeeded(receivedAt: Date,
@@ -11907,6 +13576,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 UserDefaults.standard.set(0, forKey: Self.protectedR10EarlyDisconnectsKey)
                 UserDefaults.standard.set(0, forKey: Self.protectedR10RetryCountKey)
                 UserDefaults.standard.set(false, forKey: Self.protectedR10RollbackKey)
+                UserDefaults.standard.set(false, forKey: Self.protectedR10PassiveReprobePendingKey)
+                UserDefaults.standard.set(0, forKey: Self.protectedR10PassiveReprobeFailureCountKey)
+                protectedR10PassiveReprobeTimeoutTask?.cancel()
+                protectedR10PassiveReprobeTimeoutTask = nil
                 AtriaDebugLog("ATRIADBG protected_r10 status=stable_window_complete path=passive duration_s=%.0f frames=%d action=qualify_transport",
                               receivedAt.timeIntervalSince(passiveEpoch),
                               protectedR10FramesAfterActivation)
@@ -12082,6 +13755,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case .accept:
             pendingBatteryDropCandidate = nil
             displayedBatteryLevelIsCached = false
+            batteryReadingIsRecentBaseline = false
+            batteryProjectionRevision &+= 1
             UserDefaults.standard.removeObject(forKey: BatteryDefaults.requiresFreshConfirmation)
             lastAcceptedBatteryLevelAt = receivedAt
             assignIfChanged(\.batteryLevel, level)
@@ -12140,6 +13815,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func markPassiveR10SubscriptionConfirmed() {
         let subscribedAt = Date()
+        ensureR10LivenessWatchdog(reason: "protected_stream5_subscribed")
         let defaults = UserDefaults.standard
         defaults.set("subscribed_waiting_for_crc_valid_frame",
                      forKey: RadioDefaults.passiveR10Status)
@@ -12546,6 +14222,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                   gapResult.matchedWindows,
                                   gapResult.resolvedWindows,
                                   gapResult.remainingWindows)
+                }
+                if gapResult.resolvedWindows > 0 {
+                    offlineHistoricalSyncResolvedGapCoverage = true
                 }
             }
             if offlineHistoricalSyncInProgress {
@@ -14057,11 +15736,101 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         assignIfChanged(\.liveStrapStepResearchState, snapshot.state)
         imuValidationState = "r10_fixed_layout_calibrating"
         if reconciledTotals.steps != previousSteps {
-            let checkpointDue = reconciledTotals.steps - lastActiveJournalSavedResearchAggregates.strapSteps
-                >= activeJournalStepCheckpointDelta
+            let checkpointDue = Self.shouldCheckpointStrapSteps(
+                currentSteps: reconciledTotals.steps,
+                persistedSteps: lastActiveJournalSavedResearchAggregates.strapSteps,
+                lastCheckpointAt: lastActiveJournalSaveAt,
+                now: now
+            )
             persistActiveSessionJournalIfNeeded(reason: "r10_step_update",
                                                 force: checkpointDue)
+            scheduleTrailingStrapStepCheckpoint(now: now,
+                                                forceJustRequested: checkpointDue)
         }
+    }
+
+    /// Schedules the time half of the time+count checkpoint contract. The task
+    /// is anchored to the earliest unsaved step and never postponed by later
+    /// steps, so a short walk that ends below the count limit is still durable.
+    /// If an incremental save is already in flight, retrying waits without doing
+    /// I/O until that save settles.
+    private func scheduleTrailingStrapStepCheckpoint(
+        now: Date,
+        forceJustRequested: Bool,
+        retryAfterInFlightSave: Bool = false
+    ) {
+        guard strapStepResearchCount > lastActiveJournalSavedResearchAggregates.strapSteps else {
+            activeJournalStepCheckpointTask?.cancel()
+            activeJournalStepCheckpointTask = nil
+            return
+        }
+        guard activeJournalStepCheckpointTask == nil else { return }
+
+        let delay: TimeInterval
+        if retryAfterInFlightSave {
+            delay = 0.5
+        } else if forceJustRequested {
+            // The write started with the latest count. Recheck one complete
+            // policy interval later only in case more steps arrived mid-save.
+            delay = Self.strapStepCheckpointMaximumAge
+        } else if let lastActiveJournalSaveAt {
+            delay = max(0.05, Self.strapStepCheckpointMaximumAge
+                - max(0, now.timeIntervalSince(lastActiveJournalSaveAt)))
+        } else {
+            delay = 0.05
+        }
+
+        activeJournalStepCheckpointTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled else { return }
+            self.activeJournalStepCheckpointTask = nil
+            let firedAt = Date()
+            guard self.strapStepResearchCount
+                    > self.lastActiveJournalSavedResearchAggregates.strapSteps else { return }
+            if self.activeJournalSaveInFlight {
+                self.scheduleTrailingStrapStepCheckpoint(
+                    now: firedAt,
+                    forceJustRequested: false,
+                    retryAfterInFlightSave: true
+                )
+                return
+            }
+            let due = Self.shouldCheckpointStrapSteps(
+                currentSteps: self.strapStepResearchCount,
+                persistedSteps: self.lastActiveJournalSavedResearchAggregates.strapSteps,
+                lastCheckpointAt: self.lastActiveJournalSaveAt,
+                now: firedAt
+            )
+            if due {
+                self.persistActiveSessionJournalIfNeeded(
+                    reason: "r10_step_trailing_checkpoint",
+                    force: true
+                )
+            }
+            self.scheduleTrailingStrapStepCheckpoint(now: firedAt,
+                                                     forceJustRequested: due)
+        }
+    }
+
+    /// Returns true only for newly confirmed cumulative steps. A count limit
+    /// bounds loss during brisk movement, while a time limit captures a small
+    /// trailing remainder during slow movement. Future/corrupt checkpoint
+    /// clocks fail safe by requesting one write; neither branch creates or
+    /// extrapolates a step.
+    nonisolated static func shouldCheckpointStrapSteps(
+        currentSteps: Int,
+        persistedSteps: Int,
+        lastCheckpointAt: Date?,
+        now: Date,
+        maximumUnpersistedSteps: Int = strapStepCheckpointMaximumUnpersistedSteps,
+        maximumCheckpointAge: TimeInterval = strapStepCheckpointMaximumAge
+    ) -> Bool {
+        let delta = currentSteps - max(0, persistedSteps)
+        guard delta > 0 else { return false }
+        if delta >= max(1, maximumUnpersistedSteps) { return true }
+        guard let lastCheckpointAt else { return true }
+        let age = now.timeIntervalSince(lastCheckpointAt)
+        return age < 0 || age >= max(1, maximumCheckpointAge)
     }
 
     struct StrapStepTotals: Equatable {
@@ -14101,6 +15870,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return now.timeIntervalSince(lastPublishedAt) >= liveStrapStepResearchPublishMinimumInterval
     }
 
+    nonisolated static func liveStrapStepResearchTrailingDelay(lastPublishedAt: Date?,
+                                                               now: Date) -> TimeInterval {
+        guard let lastPublishedAt else { return 0 }
+        return max(0, liveStrapStepResearchPublishMinimumInterval
+            - max(0, now.timeIntervalSince(lastPublishedAt)))
+    }
+
     private func publishLiveStrapStepResearchIfNeeded(now: Date = Date(),
                                                       force: Bool = false) {
         rollStrapStepResearchDayIfNeeded(now: now, currentSessionCount: strapStepResearchCount)
@@ -14109,13 +15885,39 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                                       lastPublishedAt: lastLiveStrapStepResearchPublishedAt,
                                                       now: now,
                                                       force: force) else {
+            scheduleTrailingLiveStrapStepResearchPublish(now: now)
             return
         }
+        pendingLiveStrapStepResearchPublishTask?.cancel()
+        pendingLiveStrapStepResearchPublishTask = nil
         lastLiveStrapStepResearchPublishedAt = now
         assignIfChanged(\.liveStrapStepResearchCount, strapStepResearchCount)
         assignIfChanged(\.liveStrapStepResearchTodayCount,
                         Self.dayScopedStrapStepCount(sessionCount: strapStepResearchCount,
                                                      dayBaseline: strapStepResearchDayBaseline))
+    }
+
+    private func scheduleTrailingLiveStrapStepResearchPublish(now: Date) {
+        guard strapStepResearchCount != liveStrapStepResearchCount else {
+            pendingLiveStrapStepResearchPublishTask?.cancel()
+            pendingLiveStrapStepResearchPublishTask = nil
+            return
+        }
+        guard pendingLiveStrapStepResearchPublishTask == nil else { return }
+        let delay = Self.liveStrapStepResearchTrailingDelay(
+            lastPublishedAt: lastLiveStrapStepResearchPublishedAt,
+            now: now
+        )
+        pendingLiveStrapStepResearchPublishTask = Task { @MainActor [weak self] in
+            if delay > 0 {
+                try? await Task.sleep(for: .seconds(delay))
+            } else {
+                await Task.yield()
+            }
+            guard !Task.isCancelled, let self else { return }
+            self.pendingLiveStrapStepResearchPublishTask = nil
+            self.publishLiveStrapStepResearchIfNeeded()
+        }
     }
 
     nonisolated static func dayScopedStrapStepCount(sessionCount: Int, dayBaseline: Int) -> Int {
@@ -14140,6 +15942,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func resetIMUFeatureStats(resetResearchAggregates: Bool = true) {
+        pendingLiveStrapStepResearchPublishTask?.cancel()
+        pendingLiveStrapStepResearchPublishTask = nil
         r10MotionPipeline.resetSynchronously()
         decodedIMUSampleCount = 0
         imuGravityValidatedFrameCount = 0
@@ -14154,6 +15958,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         imuInferredEndian = nil
         r10MotionFrameCount = 0
         lastR10MotionFrameAt = nil
+        assignIfChanged(\.liveStrapMotionCapturedAt, nil)
         strapStepResearchCount = 0
         strapStepResearchDay = Calendar.current.startOfDay(for: Date())
         strapStepResearchDayBaseline = 0
@@ -14322,6 +16127,15 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             self.assignIfChanged(\.deviceName, restoredPeripheral.name ?? self.deviceName)
             switch restoredPeripheral.state {
             case .connected:
+                let savedPeripheralIdentifier = UserDefaults.standard
+                    .string(forKey: LinkDefaults.savedPeripheralUUID)
+                    .flatMap(UUID.init(uuidString:))
+                self.batteryConnectionRestoredSamePeripheral =
+                    Self.batteryRestorationPreservesNotificationEpoch(
+                        restoredPeripheralIdentifier: restoredPeripheral.identifier,
+                        savedPeripheralIdentifier: savedPeripheralIdentifier,
+                        restoredPeripheralIsConnected: true
+                    )
                 self.clearPendingKnownReconnect(reason: "state_restore_connected")
                 self.recomputeConnectionStatus(reason: "event")
                 self.reconnectWatchdogTask?.cancel()
@@ -14349,11 +16163,13 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 }
                 AtriaDebugLog("ATRIADBG ble_restore status=connected name=%@", self.deviceName)
             case .connecting:
+                self.batteryConnectionRestoredSamePeripheral = false
                 self.recomputeConnectionStatus(reason: "event")
                 self.markPendingKnownReconnect(reason: "state_restore_connecting")
                 self.startReconnectWatchdog(reason: "state_restore_connecting", peripheral: restoredPeripheral)
                 AtriaDebugLog("ATRIADBG ble_restore status=connecting name=%@", self.deviceName)
             default:
+                self.batteryConnectionRestoredSamePeripheral = false
                 self.recomputeConnectionStatus(reason: "event")
                 self.recordLinkAttempt(reason: "state_restore", peripheral: restoredPeripheral)
                 self.markPendingKnownReconnect(reason: "state_restore")
@@ -14390,6 +16206,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
         proprietaryFrameReassembler.reset()
         let mtu = peripheral.maximumWriteValueLength(for: .withoutResponse) + 3
         Task { @MainActor in
+            self.batteryConnectionRestoredSamePeripheral = false
+            self.recentReconnectBatteryBaselineProjectionPublished = false
             if UserDefaults.standard.bool(forKey: BatteryDefaults.proprietaryRefreshPending) {
                 failProprietaryBatteryRefresh(reason: "stale_pending_request_after_connect")
             }
@@ -14404,7 +16222,11 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             // visibly cached baseline, but never carry a boundary sentinel into
             // the new connection without a fresh stable series.
             let now = Date()
+            self.batteryBaselineValidationStartedAt = now
             let defaults = UserDefaults.standard
+            defaults.removeObject(forKey: BatteryDefaults.notificationConfirmedAt)
+            defaults.set("new_link_unconfirmed",
+                         forKey: BatteryDefaults.notificationLastError)
             let credibleLevel = defaults.object(forKey: BatteryDefaults.credibleLevel) as? Int
             let credibleAt = (defaults.object(forKey: BatteryDefaults.credibleAt) as? Double)
                 .map(Date.init(timeIntervalSince1970:))
@@ -14412,14 +16234,18 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 currentLevel: self.batteryLevel,
                 credibleLevel: credibleLevel,
                 credibleAt: credibleAt,
-                now: now
+                now: now,
+                maxAge: Self.activeBatterySubscriptionBaselineMaximumAge
             )
             if reconnectLevel != self.batteryLevel {
                 self.assignIfChanged(\.batteryLevel, reconnectLevel)
                 self.lastAcceptedBatteryLevelAt = reconnectLevel >= 0 ? credibleAt : nil
             }
             self.pendingBatteryDropCandidate = nil
+            self.batteryNotificationEpochHadRejectedCallback = false
             self.displayedBatteryLevelIsCached = reconnectLevel >= 0
+            self.batteryReadingIsRecentBaseline = reconnectLevel >= 0
+            defaults.removeObject(forKey: BatteryDefaults.notificationLeaseAt)
             defaults.set(true, forKey: BatteryDefaults.requiresFreshConfirmation)
             assignIfChanged(\.batteryIsCharging, false)
             assignIfChanged(\.batteryChargeStatus, .levelOnly)
@@ -14453,6 +16279,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                         didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         proprietaryFrameReassembler.reset()
         Task { @MainActor in
+            self.batteryConnectionRestoredSamePeripheral = false
+            self.recentReconnectBatteryBaselineProjectionPublished = false
             if proprietaryBatteryRefreshPhase != .idle
                 || UserDefaults.standard.bool(forKey: BatteryDefaults.proprietaryRefreshPending) {
                 failProprietaryBatteryRefresh(reason: "link_disconnected_during_request")
@@ -14467,6 +16295,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             protectedR10MissingFrameTask = nil
             protectedR10StabilityTask?.cancel()
             protectedR10StabilityTask = nil
+            protectedR10PassiveReprobeTimeoutTask?.cancel()
+            protectedR10PassiveReprobeTimeoutTask = nil
             recomputeConnectionStatus(reason: "event")
             freshScanFallbackTask?.cancel()
             freshScanFallbackTask = nil
@@ -14485,6 +16315,10 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             activeProprietaryNotifyUUIDs.removeAll()
             strapStream5NotifyConfirmed = false
             let defaults = UserDefaults.standard
+            defaults.removeObject(forKey: BatteryDefaults.notificationLeaseAt)
+            defaults.removeObject(forKey: BatteryDefaults.notificationConfirmedAt)
+            defaults.set("link_disconnected",
+                         forKey: BatteryDefaults.notificationLastError)
             let disconnects = defaults.integer(forKey: LinkDefaults.disconnects) + 1
             let errorText = error?.localizedDescription ?? "nil"
             defaults.set(disconnects, forKey: LinkDefaults.disconnects)
@@ -14497,6 +16331,36 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             let atriaOwnedOfflineSyncDisconnect = offlineHistoricalSyncInProgress
                 || historyOnlyProbeEnabled
                 || historyOnlyProbeMode
+            let passiveReprobeAttemptAt = (defaults.object(
+                forKey: Self.protectedR10PassiveReprobeAttemptAtKey
+            ) as? Double).map(Date.init(timeIntervalSince1970:))
+            let passiveReprobeDuration = passiveReprobeAttemptAt.map {
+                disconnectNow.timeIntervalSince($0)
+            }
+            if Self.shouldAbortProtectedR10PassiveReprobeForDisconnect(
+                reprobePending: defaults.bool(forKey: Self.protectedR10PassiveReprobePendingKey),
+                userRequestedDisconnect: wasUserRequestedDisconnect,
+                atriaOwnedOfflineSyncDisconnect: atriaOwnedOfflineSyncDisconnect,
+                reprobeDuration: passiveReprobeDuration
+            ) {
+                let failures = defaults.integer(
+                    forKey: Self.protectedR10PassiveReprobeFailureCountKey
+                ) + 1
+                defaults.set(failures,
+                             forKey: Self.protectedR10PassiveReprobeFailureCountKey)
+                defaults.set(false,
+                             forKey: Self.protectedR10PassiveReprobePendingKey)
+                defaults.set(true,
+                             forKey: Self.protectedR10StreamSuppressedKey)
+                defaults.set("passive_reprobe_short_disconnect",
+                             forKey: Self.protectedR10DisconnectStormReasonKey)
+                defaults.set("passive_reprobe_failed_hr_preserved",
+                             forKey: RadioDefaults.passiveR10Status)
+                AtriaDebugLog("ATRIADBG protected_r10 status=passive_reprobe_failed reprobe_s=%.1f connected_s=%.1f failures=%d action=resuppress_stream5_before_reconnect_backoff_no_command",
+                              passiveReprobeDuration ?? -1,
+                              connectedDuration,
+                              failures)
+            }
             let previousProtectedEarlyDisconnects = defaults.integer(
                 forKey: Self.protectedR10EarlyDisconnectsKey
             )
@@ -14712,14 +16576,10 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     characteristics = nil
                 }
             } else if standardHROnlyMode, !historyOnlyProbeMode {
-                switch service.uuid {
-                case Self.UUIDs.heartRateService:
-                    characteristics = [Self.UUIDs.heartRateMeasure]
-                case Self.UUIDs.strapService where !protectedR10StreamSuppressed:
-                    characteristics = [Self.UUIDs.strapStream5, Self.UUIDs.strapTX]
-                default:
-                    characteristics = nil
-                }
+                characteristics = Self.protectedStandardHRCharacteristics(
+                    for: service.uuid,
+                    streamSuppressed: protectedR10StreamSuppressed
+                )
             } else {
                 characteristics = Self.discoveryCharacteristics(for: service.uuid)
             }
@@ -14816,7 +16676,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 if ch.properties.contains(.notify) || ch.properties.contains(.indicate) {
                     if ch.uuid == UUIDs.heartRateMeasure {
                         // Sparse duty cycle keeps HR notify OFF across reconnects.
-                        // Protected production does not claim a battery wake anchor.
+                        // The independent 2A19 subscription remains safe to keep.
                         Task { @MainActor in
                             if self.dutyCycleState != .sparseSentinel {
                                 if !ch.isNotifying {
@@ -14826,7 +16686,10 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                                 AtriaDebugLog("ATRIADBG duty_cycle action=skip_hr_notify_subscribe reason=reconnect_sparse")
                             }
                         }
-                    } else {
+                    } else if ch.uuid == UUIDs.batteryLevelStatus {
+                        // Full-protocol diagnostics may observe 2A1B directly.
+                        // Standard 2A19 is subscribed exactly once below through
+                        // requestStrapStatusRead, which owns the no-read policy.
                         if !ch.isNotifying {
                             peripheral.setNotifyValue(true, for: ch)
                         }
@@ -14979,6 +16842,35 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         let isData = characteristic.uuid == UUIDs.strapStream5
         AtriaDebugLog("ATRIADBG notifyState ch=%@ notifying=%d err=%@", characteristic.uuid.uuidString, notifying ? 1 : 0, error?.localizedDescription ?? "nil")
         Task { @MainActor in
+            if characteristic.uuid == Self.UUIDs.batteryLevel {
+                let defaults = UserDefaults.standard
+                if let err {
+                    self.batteryNotificationEpochHadRejectedCallback = true
+                    defaults.set(err, forKey: BatteryDefaults.notificationLastError)
+                    defaults.removeObject(forKey: BatteryDefaults.notificationConfirmedAt)
+                    self.revokeBatteryNotificationLease(reason: "2A19_notify_error")
+                } else if notifying {
+                    // A successful subscribe/reactivation starts a clean battery
+                    // notification epoch. Rejected callbacks from a prior failed
+                    // epoch cannot strand this active change-driven lease.
+                    self.batteryNotificationEpochHadRejectedCallback = false
+                    defaults.set(Date().timeIntervalSince1970,
+                                 forKey: BatteryDefaults.notificationConfirmedAt)
+                    defaults.removeObject(forKey: BatteryDefaults.notificationLastError)
+                    if let heartRateReceivedAt = self.lastRawHRNotificationAt {
+                        self.promoteReconnectBatteryBaselineIfSafe(
+                            now: Date(),
+                            heartRateReceivedAt: heartRateReceivedAt,
+                            reason: "2A19_notify_became_active"
+                        )
+                    }
+                } else {
+                    self.batteryNotificationEpochHadRejectedCallback = true
+                    defaults.set("inactive", forKey: BatteryDefaults.notificationLastError)
+                    defaults.removeObject(forKey: BatteryDefaults.notificationConfirmedAt)
+                    self.revokeBatteryNotificationLease(reason: "2A19_notify_inactive")
+                }
+            }
             if self.motionHandshakeDiagnostic != nil {
                 if let err {
                     self.recordMotionHandshakeEvidence(event: "notify_error",
@@ -15006,6 +16898,10 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             if let err {
                 self.pendingNotifyReenableUUIDs.remove(characteristic.uuid)
                 self.dbgLast = "suberr \(short):\(err.prefix(14))"
+                if isData {
+                    self.strapStream5NotifyConfirmed = false
+                    self.reassertR10NotificationIfConnected(reason: "stream5_notify_error")
+                }
             } else if !notifying,
                       self.pendingNotifyReenableUUIDs.remove(characteristic.uuid) != nil {
                 if Self.shouldEnableNotifications(isNotifying: characteristic.isNotifying) {
@@ -15025,6 +16921,9 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     self.activeProprietaryNotifyUUIDs.insert(characteristic.uuid)
                     if isData {
                         self.strapStream5NotifyConfirmed = true
+                        if self.r10TransportIsExpected {
+                            self.ensureR10LivenessWatchdog(reason: "stream5_notify_active")
+                        }
                         if self.standardHROnlyMode,
                            !self.historyOnlyProbeEnabled,
                            Self.shouldObservePassiveR10InProtectedStandardHR(
@@ -15044,6 +16943,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 self.activeProprietaryNotifyUUIDs.remove(characteristic.uuid)
                 if isData {
                     self.strapStream5NotifyConfirmed = false
+                    self.reassertR10NotificationIfConnected(reason: "stream5_notify_inactive")
                 }
             }
         }
@@ -15051,6 +16951,22 @@ extension AtriaBLEManager: CBPeripheralDelegate {
 
     nonisolated func peripheral(_ peripheral: CBPeripheral,
                     didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        if let error {
+            if characteristic.uuid == Self.UUIDs.batteryLevel {
+                let defaults = UserDefaults.standard
+                defaults.set(Date().timeIntervalSince1970,
+                             forKey: BatteryDefaults.notificationLastCallbackAt)
+                defaults.set(error.localizedDescription,
+                             forKey: BatteryDefaults.notificationLastError)
+                Task { @MainActor in
+                    self.batteryNotificationEpochHadRejectedCallback = true
+                }
+            }
+            AtriaDebugLog("ATRIADBG value_update ch=%@ status=rejected error=%@",
+                          characteristic.uuid.uuidString,
+                          error.localizedDescription)
+            return
+        }
         guard let data = characteristic.value else { return }
         let uuid = characteristic.uuid
         let receivedAt = Date()
@@ -15059,8 +16975,11 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             && UserDefaults.standard.bool(forKey: BatteryDefaults.proprietaryRefreshPending)
         if isProprietaryNotification,
            standardHROnlyMode,
-           !(uuid == Self.UUIDs.strapStream5 && !protectedR10StreamSuppressed),
-           !isPendingOneShotBatteryResponse {
+           !Self.shouldAcceptProtectedProprietaryNotification(
+            characteristicUUID: uuid,
+            streamSuppressed: protectedR10StreamSuppressed,
+            pendingOneShotBatteryResponse: isPendingOneShotBatteryResponse
+           ) {
             // A restored legacy subscription may briefly deliver after an app
             // update. Ignore it completely; never decode it into steps or let
             // it influence the protected standard-HR connection.
@@ -15086,7 +17005,12 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             return
         }
         if uuid == UUIDs.batteryLevel {
+            UserDefaults.standard.set(receivedAt.timeIntervalSince1970,
+                                      forKey: BatteryDefaults.notificationLastCallbackAt)
             guard let newLevel = Self.parseBatteryLevel(data) else {
+                Task { @MainActor in
+                    self.batteryNotificationEpochHadRejectedCallback = true
+                }
                 AtriaDebugLog("ATRIADBG battery source=2A19 status=rejected reason=malformed bytes=%@",
                               Self.hex([UInt8](data)))
                 return
@@ -15109,7 +17033,9 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     previousIsCached: self.displayedBatteryLevelIsCached,
                     requiresFreshConfirmation: UserDefaults.standard.bool(
                         forKey: BatteryDefaults.requiresFreshConfirmation
-                    )
+                    ),
+                    trustedCurrentConnectionNotification: characteristic.isNotifying
+                        && peripheral.state == .connected
                 ) {
                 case .quarantine(let candidate):
                     self.pendingBatteryDropCandidate = candidate
@@ -15127,45 +17053,50 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     self.batteryConfirmationReadLevel = nil
                     self.pendingBatteryDropCandidate = nil
                     self.displayedBatteryLevelIsCached = false
+                    self.batteryReadingIsRecentBaseline = false
+                    self.batteryProjectionRevision &+= 1
                     UserDefaults.standard.removeObject(
                         forKey: BatteryDefaults.requiresFreshConfirmation
                     )
+                    UserDefaults.standard.set(receivedAt.timeIntervalSince1970,
+                                              forKey: BatteryDefaults.notificationLeaseAt)
                 }
                 self.lastAcceptedBatteryLevelAt = receivedAt
-                // Infer charging from the in-session battery trend. WHOOP exposes
-                // 2A19 level only, not a direct charge flag, so the first/flat read
-                // remains "level only". A rise is charging evidence; a drop is
-                // not-charging evidence. 100% is surfaced as full.
+                // 2A19 exposes percentage, not external-power state. A single
+                // small rise can be quantization/correction and must never claim
+                // Charging. A decline is still strong not-charging evidence; 100%
+                // may be surfaced as Full after its separate truth gate accepts it.
                 let previous = batteryLevel
-                var chargeEvidenceFromThisRead: BatteryChargeStatus?
+                let chargeEvidenceFromThisRead = Self.chargeEvidenceFromBatteryLevelChange(
+                    previousLevel: previous,
+                    newLevel: newLevel
+                )
                 if previous >= 0 {
                     let delta = newLevel - previous
-                    if newLevel >= 100 {
+                    if chargeEvidenceFromThisRead == .full {
                         assignIfChanged(\.batteryIsCharging, false)
                         assignIfChanged(\.batteryChargeStatus, .full)
                         assignIfChanged(\.batteryRecentlyDropping, false)
                         clearBatteryDropMarker()
-                        chargeEvidenceFromThisRead = .full
-                    } else if delta > 0 && delta <= 5 {
-                        assignIfChanged(\.batteryIsCharging, true)
-                        assignIfChanged(\.batteryChargeStatus, .charging)
+                    } else if delta > 0 {
+                        if batteryChargeStatus != .charging {
+                            assignIfChanged(\.batteryIsCharging, false)
+                            assignIfChanged(\.batteryChargeStatus, .levelOnly)
+                        }
                         assignIfChanged(\.batteryRecentlyDropping, false)
                         clearBatteryDropMarker()
-                        chargeEvidenceFromThisRead = .charging
                     } else if delta < 0 {
                         assignIfChanged(\.batteryIsCharging, false)
                         assignIfChanged(\.batteryChargeStatus, .notCharging)
                         assignIfChanged(\.batteryRecentlyDropping, true)
-                        chargeEvidenceFromThisRead = .notCharging
                     } else if batteryChargeStatus == .charging {
                         assignIfChanged(\.batteryIsCharging, false)
                         assignIfChanged(\.batteryChargeStatus, .levelOnly)
                     }
-                } else if newLevel >= 100 {
+                } else if chargeEvidenceFromThisRead == .full {
                     assignIfChanged(\.batteryChargeStatus, .full)
                     assignIfChanged(\.batteryRecentlyDropping, false)
                     clearBatteryDropMarker()
-                    chargeEvidenceFromThisRead = .full
                 }
                 assignIfChanged(\.batteryLevel, newLevel)
                 if self.r10MotionIsEligible, self.realtimeArmed {
@@ -15350,7 +17281,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     if storeProprietaryFrames, let parsedStoredFrame {
                         record(frame: parsedStoredFrame)
                     }
-                    handleProprietary(completeFrame)
+                    handleProprietary(completeFrame, sourceUUID: uuid)
                 }
             }
         }

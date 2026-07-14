@@ -49,6 +49,27 @@ final class AtriaStrapStepLiveStatusTests: XCTestCase {
         XCTAssertEqual(status.savedCountText, "842")
     }
 
+    func testMotionStreamFailsClosedImmediatelyAfterFifteenSeconds() {
+        let boundary = AtriaStrapStepLiveStatus.make(
+            count: 842,
+            validationState: "r10_live_preliminary",
+            capturedAt: now.addingTimeInterval(-15),
+            now: now
+        )
+        let expired = AtriaStrapStepLiveStatus.make(
+            count: 842,
+            validationState: "r10_live_preliminary",
+            capturedAt: now.addingTimeInterval(-15.001),
+            now: now
+        )
+
+        XCTAssertTrue(boundary.isLive)
+        XCTAssertEqual(boundary.tileValue, "~842")
+        XCTAssertEqual(expired.freshness, .stale)
+        XCTAssertEqual(expired.tileValue, "--")
+        XCTAssertEqual(expired.savedCountText, "~842")
+    }
+
     func testMissingMotionIsUnavailableWhenNoSavedCountExists() {
         let status = AtriaStrapStepLiveStatus.make(
             count: 0,

@@ -3,6 +3,62 @@ import XCTest
 
 @MainActor
 final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
+    func testCandidateBackedSaveSettlesOriginalWindowWhileManualAddKeepsReAddSemantics() throws {
+        let originalDismissals = AtriaDismissedWorkoutCandidateStore.load()
+        let store = SessionStore()
+        var createdWorkoutIDs: [String] = []
+        defer {
+            for id in createdWorkoutIDs {
+                _ = store.deleteConfirmedWorkout(id: id)
+            }
+            AtriaDismissedWorkoutCandidateStore.save(originalDismissals)
+        }
+
+        let seed = Date().addingTimeInterval(400 * 24 * 60 * 60 + Double.random(in: 0..<10_000))
+        let candidateStart = seed
+        let candidateEnd = candidateStart.addingTimeInterval(30 * 60)
+        let adjustedStart = candidateEnd.addingTimeInterval(2 * 60 * 60)
+        let adjustedEnd = adjustedStart.addingTimeInterval(45 * 60)
+
+        let candidateBacked = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+            start: adjustedStart,
+            end: adjustedEnd,
+            rest: 60,
+            maxHR: 190,
+            source: "candidate_atomic_save_test",
+            preserveUserDeclaredActivityWithoutHeartRate: true,
+            activityType: AtriaWorkoutActivityType.walking.rawValue,
+            settlingCandidateWindow: (start: candidateStart, end: candidateEnd)
+        ))
+        createdWorkoutIDs.append(candidateBacked.id)
+
+        XCTAssertTrue(AtriaDismissedWorkoutCandidateStore.load().contains {
+            $0.overlaps(start: candidateStart, end: candidateEnd)
+        }, "A successful canonical save must durably settle the original detector window even after the user adjusts it")
+
+        let manualStart = adjustedEnd.addingTimeInterval(2 * 60 * 60)
+        let manualEnd = manualStart.addingTimeInterval(40 * 60)
+        XCTAssertTrue(store.dismissWorkoutCandidate(start: manualStart, end: manualEnd))
+        XCTAssertTrue(AtriaDismissedWorkoutCandidateStore.load().contains {
+            $0.overlaps(start: manualStart, end: manualEnd)
+        })
+
+        let manual = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+            start: manualStart,
+            end: manualEnd,
+            rest: 60,
+            maxHR: 190,
+            source: "manual_readd_semantics_test",
+            preserveUserDeclaredActivityWithoutHeartRate: true,
+            activityType: AtriaWorkoutActivityType.walking.rawValue
+        ))
+        createdWorkoutIDs.append(manual.id)
+
+        XCTAssertFalse(AtriaDismissedWorkoutCandidateStore.load().contains {
+            $0.overlaps(start: manualStart, end: manualEnd)
+        }, "A plain manual Add must continue clearing a prior overlapping dismissal rather than treating itself as a candidate review")
+    }
+
     func testLegacyPendingWorkoutIntentDecodesWithoutNewerAnchors() throws {
         struct LegacyIntent: Encodable {
             let startedAt: Date
@@ -24,9 +80,125 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertEqual(decoded.startedAt, start)
         XCTAssertEqual(decoded.resolvedActivityType, .walking)
         XCTAssertEqual(decoded.startingStepCount, 0)
+        XCTAssertEqual(decoded.pausedStepCount, 0)
+        XCTAssertNil(decoded.pauseStartedStepCount)
         XCTAssertEqual(decoded.startingDayStrain, 0)
+        XCTAssertNil(decoded.targetStrain)
+        XCTAssertNil(decoded.targetZone)
         XCTAssertNil(decoded.lowerTargetZone)
         XCTAssertNil(decoded.upperTargetZone)
+        XCTAssertNil(decoded.completedStepCount)
+        XCTAssertNil(decoded.completedStepsAreEstimated)
+        XCTAssertNil(decoded.completedStepsCapturedAt)
+    }
+
+    func testLegacyConfirmedWorkoutDecodesWithoutWorkoutStepEvidence() throws {
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        let workout = UserConfirmedWorkout(id: "legacy-steps",
+                                           createdAt: start,
+                                           start: start,
+                                           end: start.addingTimeInterval(600),
+                                           label: "Walking",
+                                           source: "live_workout_window",
+                                           confidence: "live_window_user_confirmed",
+                                           sessions: 1,
+                                           samples: 60,
+                                           avgHR: 110,
+                                           peakHR: 130,
+                                           p95HR: 126,
+                                           p99HR: 129,
+                                           thresholdHR: 100,
+                                           streamCoveragePercent: 90,
+                                           observedDuration: 540,
+                                           reason: "legacy")
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(workout)
+        ) as? [String: Any])
+        object.removeValue(forKey: "workoutSteps")
+        object.removeValue(forKey: "workoutStepsAreEstimated")
+        object.removeValue(forKey: "workoutStepsCapturedAt")
+
+        let decoded = try JSONDecoder().decode(
+            UserConfirmedWorkout.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+
+        XCTAssertNil(decoded.workoutSteps)
+        XCTAssertNil(decoded.workoutStepsAreEstimated)
+        XCTAssertNil(decoded.workoutStepsCapturedAt)
+    }
+
+    func testPendingRecoveryEnrichesExistingWorkoutWithExactStepEvidence() throws {
+        let store = SessionStore()
+        let marker = "step-recovery-\(UUID().uuidString)"
+        let start = Date(timeIntervalSince1970: 2_050_000_000)
+        let end = start.addingTimeInterval(10 * 60)
+        let capturedAt = end.addingTimeInterval(-1)
+        let original = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+            start: start,
+            end: end,
+            rest: 60,
+            maxHR: 190,
+            source: marker,
+            preserveUserDeclaredActivityWithoutHeartRate: true,
+            activityType: AtriaWorkoutActivityType.walking.rawValue,
+            reviewSource: marker
+        ))
+        defer {
+            for workout in store.confirmedWorkouts where workout.reviewSource == marker {
+                _ = store.deleteConfirmedWorkout(id: workout.id)
+            }
+        }
+
+        let recovered = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+            start: start,
+            end: end,
+            rest: 60,
+            maxHR: 190,
+            source: marker,
+            preserveUserDeclaredActivityWithoutHeartRate: true,
+            activityType: AtriaWorkoutActivityType.walking.rawValue,
+            reviewSource: marker,
+            workoutSteps: 842,
+            workoutStepsAreEstimated: false,
+            workoutStepsCapturedAt: capturedAt
+        ))
+
+        XCTAssertEqual(recovered.id, original.id)
+        XCTAssertEqual(recovered.workoutSteps, 842)
+        XCTAssertEqual(recovered.workoutStepsAreEstimated, false)
+        XCTAssertEqual(recovered.workoutStepsCapturedAt, capturedAt)
+        XCTAssertEqual(store.confirmedWorkouts.filter { $0.id == original.id }.count, 1)
+
+        XCTAssertTrue(store.renameConfirmedWorkout(id: recovered.id, label: "Morning walk"))
+        let renamed = try XCTUnwrap(store.confirmedWorkouts.first { $0.id == recovered.id })
+        XCTAssertEqual(renamed.workoutSteps, 842)
+        XCTAssertEqual(renamed.workoutStepsAreEstimated, false)
+        XCTAssertEqual(renamed.workoutStepsCapturedAt, capturedAt)
+
+        let metadataEdited = try store.editConfirmedWorkout(
+            id: renamed.id,
+            label: "Outdoor walk",
+            activityType: AtriaWorkoutActivityType.walking.rawValue,
+            start: renamed.start,
+            end: renamed.end,
+            rest: 60,
+            maxHR: 190
+        ).get()
+        XCTAssertEqual(metadataEdited.workoutSteps, 842)
+
+        let windowEdited = try store.editConfirmedWorkout(
+            id: metadataEdited.id,
+            label: metadataEdited.label,
+            activityType: AtriaWorkoutActivityType.walking.rawValue,
+            start: metadataEdited.start.addingTimeInterval(30),
+            end: metadataEdited.end.addingTimeInterval(30),
+            rest: 60,
+            maxHR: 190
+        ).get()
+        XCTAssertEqual(windowEdited.workoutSteps, 842)
+        XCTAssertEqual(windowEdited.workoutStepsAreEstimated, false)
+        XCTAssertEqual(windowEdited.workoutStepsCapturedAt, capturedAt)
     }
 
     func testInitiallySelectedOutdoorWorkoutStartsRouteRecorder() throws {
@@ -65,7 +237,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                                                     end: entries.last!.end) })
     }
 
-    func testEveryExplicitWorkoutCompletionPathOffersTruthfulSharing() throws {
+    func testEveryExplicitWorkoutCompletionPathSharesOnlyAfterCanonicalPersistence() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let source = try String(
             contentsOf: testsDirectory.deletingLastPathComponent()
@@ -77,14 +249,23 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                                              range: start.upperBound..<source.endIndex))
         let completion = String(source[start.lowerBound..<end.lowerBound])
 
-        XCTAssertEqual(completion.components(separatedBy: "title: \"Workout safely retained\"").count - 1, 3,
-                       "Sparse evidence and a failed route attachment must all remain explicit retention states")
-        XCTAssertEqual(completion.components(separatedBy: "shareSnapshot: retainedWorkoutShareSnapshot(").count - 1, 2,
-                       "Both sparse-save fallbacks must offer the same completion share experience")
-        XCTAssertTrue(source.contains("strain: \"--\""))
-        XCTAssertTrue(source.contains("peakHeartRate: \"--\""))
-        XCTAssertTrue(source.contains("routeFileURL: nil"),
-                      "A pending workout recap must not expose a non-durable exact route file")
+        XCTAssertEqual(completion.components(separatedBy: "title: \"Workout safely retained\"").count - 1, 2,
+                       "Sparse save failures must remain explicit retrying states")
+        XCTAssertEqual(completion.components(separatedBy: "workoutEndNotice = .retained(").count - 1, 2)
+        XCTAssertFalse(source.contains("retainedWorkoutShareSnapshot"),
+                       "A retained intent must never look like a final shareable workout")
+        XCTAssertTrue(source.contains("case persisted("))
+        XCTAssertTrue(source.contains("workout: UserConfirmedWorkout"),
+                      "The shareable completion state must carry canonical persistence proof")
+        XCTAssertTrue(source.contains("snapshot.routeFileURL = nil"),
+                      "A canonical workout whose route is attaching must not expose a non-durable GPX file")
+        XCTAssertTrue(completion.contains("message: workoutCompletionMessage(confirmed)"))
+        XCTAssertFalse(completion.contains("queued it for Health export"),
+                       "Completion copy cannot claim an optional export happened")
+        XCTAssertFalse(completion.contains("stream coverage and queued"),
+                       "A saved workout should not present internal transport diagnostics as its recap")
+        XCTAssertTrue(source.contains("Heart-rate details will update if more strap data arrives."))
+        XCTAssertTrue(source.contains("saved and ready to share."))
     }
 
     func testExplicitWorkoutKeepsRRJournalDurableWithoutAllDayMode() {
@@ -117,10 +298,23 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertTrue(branch.contains("mirrorLiveWorkoutStateToJournal()"))
         XCTAssertTrue(branch.contains("persistPendingWorkoutProgress()"))
         XCTAssertTrue(branch.contains("flushActiveSessionJournal(reason: \"explicit_workout_scene_background\")"))
+        XCTAssertTrue(branch.contains("scheduleLiveSensorWidgetPatch("))
+        XCTAssertTrue(branch.contains("reason: \"scene_background_live_workout\""))
+        XCTAssertTrue(branch.contains("delay: .zero"))
+        XCTAssertTrue(branch.contains("WidgetSnapshotPublisher.schedulePublish(store: store,"))
+        XCTAssertTrue(branch.contains("reason: \"scene_background\""))
         XCTAssertTrue(branch.contains("flushWorkoutRouteAtBackgroundBoundary()"))
         XCTAssertTrue(source.contains("beginBackgroundTask("))
         XCTAssertTrue(source.contains("workoutRouteRecorder.flushCheckpoint(reason: \"scene_background\")"))
         XCTAssertTrue(source.contains("endWorkoutRouteBackgroundTaskIfNeeded()"))
+
+        let activeWorkoutStart = try XCTUnwrap(branch.range(of: "if workoutSession != nil"))
+        let idleStart = try XCTUnwrap(
+            branch.range(of: "} else {", range: activeWorkoutStart.upperBound..<branch.endIndex)
+        )
+        let activeWorkoutBranch = branch[activeWorkoutStart.lowerBound..<idleStart.lowerBound]
+        XCTAssertFalse(activeWorkoutBranch.contains("WidgetSnapshotPublisher.schedulePublish"),
+                       "An active workout background edge must not rebuild the full daily widget projection")
     }
 
     func testPendingWorkoutBLEContinuityIsBoundedAndRequiresOpenIntent() throws {
@@ -443,6 +637,34 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                        "A time edit must not reintroduce paused high-HR samples into workout metrics")
     }
 
+    func testPauseAwareWorkoutProjectionDeduplicatesOverlappingJournalTimestamps() {
+        let start = Date(timeIntervalSince1970: 2_141_000_000)
+        let pause = ExcludedInterval(start: start.addingTimeInterval(20),
+                                     end: start.addingTimeInterval(30))
+        let points = [
+            SavedSession.Point(t: 0, bpm: 80),
+            SavedSession.Point(t: 10, bpm: 81),
+            // Persisted session + final journal flush can contain this same
+            // absolute observation. Canonical-source order makes 82 win.
+            SavedSession.Point(t: 40, bpm: 82),
+            SavedSession.Point(t: 40, bpm: 180),
+            SavedSession.Point(t: 25, bpm: 190),
+            SavedSession.Point(t: 50, bpm: 83)
+        ]
+
+        let projected = SessionStore.activeWorkoutPointProjection(
+            points: points,
+            windowStart: start,
+            windowEnd: start.addingTimeInterval(60),
+            excludedIntervals: [pause]
+        )
+
+        XCTAssertEqual(projected.activeDuration, 50, accuracy: 0.001)
+        XCTAssertEqual(projected.points.count, 4)
+        XCTAssertEqual(projected.points.map(\.bpm), [80, 81, 82, 83])
+        XCTAssertEqual(projected.points.map(\.t), [0, 10, 30, 40])
+    }
+
     func testPendingWorkoutIntentRoundTripsAndClears() throws {
         let suite = "AtriaWorkoutSaveDurabilityTests.intent.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -456,13 +678,54 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                                                strengthSets: [],
                                                excludedIntervals: [],
                                                pauseStartedAt: pause,
+                                               targetStrain: 13.5,
                                                startingStepCount: 120,
+                                               pausedStepCount: 34,
+                                               pauseStartedStepCount: 612,
+                                               completedStepCount: 458,
+                                               completedStepsAreEstimated: false,
+                                               completedStepsCapturedAt: end.addingTimeInterval(-1),
                                                startingDayStrain: 4.2)
 
         XCTAssertTrue(intent.save(defaults: defaults))
         XCTAssertEqual(AtriaPendingWorkoutIntent.load(defaults: defaults), intent)
         AtriaPendingWorkoutIntent.clear(defaults: defaults)
         XCTAssertNil(AtriaPendingWorkoutIntent.load(defaults: defaults))
+    }
+
+    func testCompletionClosesPauseWithoutDependingOnVisibleWorkoutView() {
+        let start = Date(timeIntervalSince1970: 1_783_767_620)
+        let endedAt = start.addingTimeInterval(50 * 60)
+        let completedPause = ExcludedInterval(start: start.addingTimeInterval(10 * 60),
+                                              end: start.addingTimeInterval(12 * 60))
+        let openPause = start.addingTimeInterval(40 * 60)
+        let intent = AtriaPendingWorkoutIntent(startedAt: start,
+                                               endedAt: endedAt,
+                                               activityType: AtriaWorkoutActivityType.strength.rawValue,
+                                               strengthSets: [],
+                                               excludedIntervals: [completedPause],
+                                               pauseStartedAt: openPause,
+                                               startingStepCount: 120,
+                                               startingDayStrain: 4.2)
+
+        XCTAssertEqual(intent.finalizedExcludedIntervals(), [
+            completedPause,
+            ExcludedInterval(start: openPause, end: endedAt)
+        ])
+    }
+
+    func testRouteRetryStillOffersImmediateRouteAwareShareImage() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "guard let savedRoute else"))
+        let tail = source[start.lowerBound...]
+        let end = try XCTUnwrap(tail.range(of: "return"))
+        let routeFailure = String(tail[..<end.upperBound])
+
+        XCTAssertTrue(routeFailure.contains("routeDraft: routeDraft"))
+        XCTAssertTrue(source.contains("snapshot.routeFileURL = nil"),
+                      "An in-memory route preview must never imply the exact GPX write succeeded")
     }
 
     func testPendingWorkoutIntentDecodesPrePauseSchema() throws {
@@ -477,10 +740,24 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         let encoded = try JSONEncoder().encode(intent)
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         object.removeValue(forKey: "pauseStartedAt")
+        object.removeValue(forKey: "targetStrain")
+        object.removeValue(forKey: "targetZone")
+        object.removeValue(forKey: "pausedStepCount")
+        object.removeValue(forKey: "pauseStartedStepCount")
+        object.removeValue(forKey: "completedStepCount")
+        object.removeValue(forKey: "completedStepsAreEstimated")
+        object.removeValue(forKey: "completedStepsCapturedAt")
         let legacyData = try JSONSerialization.data(withJSONObject: object)
 
         let decoded = try JSONDecoder().decode(AtriaPendingWorkoutIntent.self, from: legacyData)
         XCTAssertNil(decoded.pauseStartedAt)
+        XCTAssertNil(decoded.targetStrain)
+        XCTAssertNil(decoded.targetZone)
+        XCTAssertEqual(decoded.pausedStepCount, 0)
+        XCTAssertNil(decoded.pauseStartedStepCount)
+        XCTAssertNil(decoded.completedStepCount)
+        XCTAssertNil(decoded.completedStepsAreEstimated)
+        XCTAssertNil(decoded.completedStepsCapturedAt)
         XCTAssertEqual(decoded.startedAt, start)
     }
 
@@ -566,12 +843,15 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                             reps: 8,
                             rpe: 8,
                             t: start.addingTimeInterval(15 * 60))
-        let old = sparseConfirmedWorkout(start: start,
+        var old = sparseConfirmedWorkout(start: start,
                                          end: end,
                                          samples: 2,
                                          coverage: 3,
                                          strengthSets: [set],
                                          excludedIntervals: [pause])
+        old.workoutSteps = 1_204
+        old.workoutStepsAreEstimated = false
+        old.workoutStepsCapturedAt = end.addingTimeInterval(-1)
         let archive = stride(from: 0.0, through: 50 * 60, by: 10).map {
             HistoricalArchive.HeartRatePoint(t: start.addingTimeInterval($0),
                                              bpm: 105 + (Int($0) / 10) % 20)
@@ -607,6 +887,9 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertEqual(result.excludedIntervals, old.excludedIntervals)
         XCTAssertEqual(result.reviewSource, old.reviewSource)
         XCTAssertEqual(result.eventTimeZoneIdentifier, old.eventTimeZoneIdentifier)
+        XCTAssertEqual(result.workoutSteps, old.workoutSteps)
+        XCTAssertEqual(result.workoutStepsAreEstimated, old.workoutStepsAreEstimated)
+        XCTAssertEqual(result.workoutStepsCapturedAt, old.workoutStepsCapturedAt)
         XCTAssertEqual(result.reason, "historical_archive_real_hr")
         XCTAssertGreaterThan(result.avgHR, 0)
         XCTAssertNotNil(result.strain)
@@ -781,7 +1064,116 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                                              range: start.upperBound..<source.endIndex))
         let saveFlow = String(source[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(saveFlow.contains("shareSnapshot: workoutShareSnapshot(for: confirmed)"))
+        XCTAssertTrue(saveFlow.contains("-> UserConfirmedWorkout?"),
+                      "The review save callback must return the exact canonical workout accepted by the store")
+        XCTAssertTrue(saveFlow.contains("return confirmed"))
+        XCTAssertTrue(saveFlow.contains("let workoutID = confirmed.id"),
+                      "Route lookup must capture only the canonical persisted ID before leaving the main actor")
+        XCTAssertTrue(saveFlow.contains("Task.detached(priority: .userInitiated)"))
+        XCTAssertTrue(saveFlow.contains("AtriaWorkoutRouteStore.load(workoutID: workoutID)"),
+                      "Post-save sharing must resolve route data by the persisted workout ID")
+        XCTAssertTrue(saveFlow.contains("await Task.yield()"),
+                      "The saved receipt must wait for the review save callback and dismissal turn")
+        XCTAssertTrue(saveFlow.contains("snapshot: workoutShareSnapshot(for: confirmed, route: savedRoute)"),
+                      "The share composer must receive canonical saved metrics and route data")
+        XCTAssertTrue(source.contains("settlingCandidateWindow: (draft.suggestedStart, draft.suggestedEnd)"),
+                      "A guided review must preserve the detector's original window through an adjusted Save")
+        XCTAssertTrue(saveFlow.contains("settlingCandidateWindow: settlingCandidateWindow"),
+                      "The original detector window must be settled by the same canonical store transaction")
+    }
+
+    func testGuidedAdjustedWorkoutSettlesNonOverlappingCandidateOnlyAfterCanonicalSave() throws {
+        let marker = "guided-candidate-settlement-\(UUID().uuidString)"
+        let originalStart = Date(timeIntervalSince1970: 2_320_000_000 + Double.random(in: 0..<100_000))
+        let originalEnd = originalStart.addingTimeInterval(35 * 60)
+        let adjustedStart = originalEnd.addingTimeInterval(3 * 60 * 60)
+        let adjustedEnd = adjustedStart.addingTimeInterval(30 * 60)
+
+        AtriaDismissedWorkoutCandidateStore.save(
+            AtriaDismissedWorkoutCandidateStore.load().filter {
+                !$0.overlaps(start: originalStart, end: originalEnd)
+                    && !$0.overlaps(start: adjustedStart, end: adjustedEnd)
+            }
+        )
+        let store = SessionStore()
+        defer {
+            for workout in store.confirmedWorkouts where workout.reviewSource == marker {
+                _ = store.deleteConfirmedWorkout(id: workout.id)
+            }
+            AtriaDismissedWorkoutCandidateStore.save(
+                AtriaDismissedWorkoutCandidateStore.load().filter {
+                    !$0.overlaps(start: originalStart, end: originalEnd)
+                        && !$0.overlaps(start: adjustedStart, end: adjustedEnd)
+                }
+            )
+        }
+
+        let rejected = store.confirmWorkoutWindowForUI(
+            start: adjustedStart,
+            end: adjustedStart.addingTimeInterval(30),
+            rest: 60,
+            maxHR: 190,
+            source: marker,
+            preserveUserDeclaredActivityWithoutHeartRate: true,
+            activityType: AtriaWorkoutActivityType.walking.rawValue,
+            reviewSource: marker,
+            settlingCandidateWindow: (originalStart, originalEnd)
+        )
+        XCTAssertNil(rejected)
+        XCTAssertFalse(AtriaDismissedWorkoutCandidateStore.load().contains {
+            $0.overlaps(start: originalStart, end: originalEnd)
+        }, "A failed canonical Save must leave the detector candidate actionable")
+
+        let saved = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+            start: adjustedStart,
+            end: adjustedEnd,
+            rest: 60,
+            maxHR: 190,
+            source: marker,
+            preserveUserDeclaredActivityWithoutHeartRate: true,
+            activityType: AtriaWorkoutActivityType.walking.rawValue,
+            reviewSource: marker,
+            settlingCandidateWindow: (originalStart, originalEnd)
+        ))
+        XCTAssertGreaterThan(saved.start, originalEnd)
+        XCTAssertTrue(AtriaDismissedWorkoutCandidateStore.load().contains {
+            $0.overlaps(start: originalStart, end: originalEnd)
+        }, "The original detector window must stay settled even when the saved edit no longer overlaps it")
+
+        let originalDetection = ActivityDetection(id: UUID(),
+                                                  kind: .activityCandidate,
+                                                  confidence: .medium,
+                                                  start: originalStart,
+                                                  end: originalEnd,
+                                                  duration: originalEnd.timeIntervalSince(originalStart),
+                                                  avgHR: 112,
+                                                  peakHR: 138,
+                                                  reason: marker)
+        XCTAssertTrue(SessionStore.activityDetectionsForUI(
+            [originalDetection],
+            dismissedCandidates: AtriaDismissedWorkoutCandidateStore.load()
+        ).isEmpty)
+    }
+
+    func testGuidedWorkoutReviewCannotShareAnUnsavedDetectorDraft() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(
+            contentsOf: testsDirectory.deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaHomeView.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(of: "private struct AtriaWorkoutReviewFlow: View"))
+        let end = try XCTUnwrap(source.range(of: "private struct AtriaWorkoutSummaryExerciseHistory:",
+                                             range: start.upperBound..<source.endIndex))
+        let reviewFlow = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertFalse(reviewFlow.contains("AtriaWorkoutShareSheet"),
+                       "The detector review must not own or present a share composer before save")
+        XCTAssertFalse(reviewFlow.contains("Share workout"),
+                       "Sharing is offered only by the canonical post-save receipt")
+        XCTAssertFalse(reviewFlow.contains("makeWorkoutShareSnapshot"))
+        XCTAssertFalse(reviewFlow.contains("averageHeartRate: draft.prompt.heartRate"),
+                       "A current/peak detector reading must never be fabricated as average HR")
     }
 
     private var testAthleteProfile: AthleteProfile {

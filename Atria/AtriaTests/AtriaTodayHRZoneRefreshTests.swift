@@ -46,7 +46,7 @@ final class AtriaTodayHRZoneRefreshTests: XCTestCase {
         let crossMidnight = session(
             start: crossMidnightStart,
             duration: 40 * 60,
-            points: stride(from: 0, through: 40 * 60, by: 60).map {
+            points: stride(from: 0, through: 40 * 60, by: 10).map {
                 SavedSession.Point(t: Double($0), bpm: 140)
             }
         )

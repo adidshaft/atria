@@ -76,6 +76,8 @@
 	<string>Atria can save the share card image to Photos only when you tap Save.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>

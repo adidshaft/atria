@@ -55,6 +55,20 @@ enum AtriaTriRingSlot: String, CaseIterable, Equatable {
         case .rhr: return "RHR"
         }
     }
+
+    /// Compact, language-independent glance mark used only in the pinned
+    /// Today summary. The full ring and VoiceOver continue to carry the
+    /// metric name, so this can stay as the tiny emoji + number treatment the
+    /// user requested without squeezing another label into the top-right rail.
+    var compactEmoji: String {
+        switch self {
+        case .sleep: return "🌙"
+        case .recovery: return "❤️"
+        case .strain: return "🔥"
+        case .hrv: return "📈"
+        case .rhr: return "💓"
+        }
+    }
 }
 
 /// One ring position's fully-resolved content: which metric fills it. This
@@ -99,9 +113,7 @@ struct AtriaTriRing: View, Equatable {
     let actions: [AtriaTriRingSlot: () -> Void]
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.scenePhase) private var scenePhase
     @State private var animatedFills: [AtriaTriRingSlot: Double] = [:]
-    @State private var ambientPulseExpanded = false
 
     init(slots: [AtriaTriRingSlotContent],
          centerValue: String,
@@ -241,10 +253,11 @@ struct AtriaTriRing: View, Equatable {
                     Circle()
                         .stroke(recovery.tint.opacity(0.22), lineWidth: 1.5)
                         .frame(width: Self.outerDiameter + 12, height: Self.outerDiameter + 12)
-                        .scaleEffect(reduceMotion ? 1 : (ambientPulseExpanded ? 1.055 : 0.985))
-                        .opacity(reduceMotion ? 0.30 : (ambientPulseExpanded ? 0.12 : 0.42))
-                        .animation(reduceMotion ? nil : .easeInOut(duration: 2.8).repeatForever(autoreverses: true),
-                                   value: ambientPulseExpanded)
+                        // Keep the overview quiescent after its one-time value
+                        // reveal. A SwiftUI repeatForever halo kept the display
+                        // link and async renderer awake indefinitely on the
+                        // app's most common idle screen for decoration alone.
+                        .opacity(0.28)
                         .allowsHitTesting(false)
                         .accessibilityHidden(true)
                 }
@@ -288,13 +301,6 @@ struct AtriaTriRing: View, Equatable {
         .frame(maxWidth: .infinity)
         .onAppear {
             animateToFinalValues()
-            ambientPulseExpanded = !reduceMotion && scenePhase == .active
-        }
-        .onChange(of: reduceMotion) { _, _ in
-            ambientPulseExpanded = !reduceMotion && scenePhase == .active
-        }
-        .onChange(of: scenePhase) { _, phase in
-            ambientPulseExpanded = !reduceMotion && phase == .active
         }
         .onChange(of: fillSignature) { _, _ in animateToFinalValues() }
     }

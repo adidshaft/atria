@@ -42,6 +42,10 @@ struct AtriaLiveActivityAttributes: ActivityAttributes {
         var dailyStepGoal: Int? = nil
         var workoutStrain: Double? = nil
         var targetWorkoutStrain: Double? = nil
+        // Active energy is an optional, cumulative workout estimate. Keeping
+        // it optional avoids inventing calories when the athlete profile is
+        // incomplete and preserves decoding for activities from older builds.
+        var activeEnergyKilocalories: Double? = nil
         // Optional for activities created before workout target zones were
         // surfaced on the Lock Screen and Dynamic Island.
         var targetLowerHeartRateZone: Int? = nil

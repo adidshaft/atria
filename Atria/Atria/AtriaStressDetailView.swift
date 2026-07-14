@@ -29,6 +29,7 @@ struct AtriaStressDetailReading: Identifiable, Equatable {
 struct AtriaStressDetailInput: Equatable {
     let state: AtriaStressState
     let readings: [AtriaStressDetailReading]
+    let elevatedEvidence: AtriaStressElevatedEvidence
     /// Time the current state was actually evaluated. Nil is rendered honestly
     /// as an untimed state rather than being replaced with `Date()`.
     let updatedAt: Date?
@@ -44,7 +45,9 @@ struct AtriaStressDetailInput: Equatable {
          distributionComparison: AtriaStressDistributionComparison? = nil,
          loggedContext: [AtriaStressLoggedContext] = []) {
         self.state = state
-        self.readings = readings.sorted { $0.date < $1.date }
+        let sortedReadings = readings.sorted { $0.date < $1.date }
+        self.readings = sortedReadings
+        self.elevatedEvidence = AtriaStressElevatedEvidence.analyze(sortedReadings)
         self.updatedAt = updatedAt
         self.distributionComparison = distributionComparison
         self.loggedContext = loggedContext
@@ -84,6 +87,137 @@ struct AtriaStressLoggedContext: Identifiable, Equatable {
         label = tag.label
         systemImage = tag.symbolName
     }
+}
+
+struct AtriaStressElevatedWindow: Identifiable, Equatable {
+    let start: Date
+    let end: Date
+    let readingCount: Int
+
+    var id: TimeInterval { start.timeIntervalSinceReferenceDate }
+    var duration: TimeInterval { max(0, end.timeIntervalSince(start)) }
+}
+
+/// Measured-only elevated-stress evidence for the visible timeline. Atria
+/// integrates only adjacent readings with a plausible 30-second history
+/// cadence; gaps, isolated peaks, and short sparse runs never become windows.
+struct AtriaStressElevatedEvidence: Equatable {
+    static let elevatedThresholdScore = AtriaStressMonitor.lowUpperBound * 3
+    static let maximumReadingGap: TimeInterval = 90
+    static let minimumWindowDuration: TimeInterval = 3 * 60
+    static let minimumWindowReadings = 5
+    static let minimumObservedDuration: TimeInterval = 10 * 60
+    static let minimumTotalReadings = 12
+
+    let windows: [AtriaStressElevatedWindow]
+    let observedDuration: TimeInterval
+    let readingCount: Int
+    let isSupported: Bool
+    let latestReadingAt: Date?
+
+    static func analyze(_ readings: [AtriaStressDetailReading]) -> Self {
+        let sorted = readings.sorted { $0.date < $1.date }
+        var observedDuration: TimeInterval = 0
+        if sorted.count > 1 {
+            for index in 1..<sorted.count {
+                let gap = sorted[index].date.timeIntervalSince(sorted[index - 1].date)
+                if gap > 0, gap <= maximumReadingGap {
+                    observedDuration += gap
+                }
+            }
+        }
+
+        let supported = sorted.count >= minimumTotalReadings
+            && observedDuration >= minimumObservedDuration
+        guard supported else {
+            return Self(windows: [],
+                        observedDuration: observedDuration,
+                        readingCount: sorted.count,
+                        isSupported: false,
+                        latestReadingAt: sorted.last?.date)
+        }
+
+        var windows: [AtriaStressElevatedWindow] = []
+        var windowStart: Date?
+        var windowEnd: Date?
+        var windowReadings = 0
+        var previous: AtriaStressDetailReading?
+
+        func appendWindow() {
+            guard let start = windowStart,
+                  let end = windowEnd,
+                  windowReadings >= minimumWindowReadings,
+                  end.timeIntervalSince(start) >= minimumWindowDuration else { return }
+            windows.append(AtriaStressElevatedWindow(start: start,
+                                                     end: end,
+                                                     readingCount: windowReadings))
+        }
+
+        for reading in sorted {
+            let elevated = reading.score >= elevatedThresholdScore
+            let continuesWindow = previous.map {
+                let gap = reading.date.timeIntervalSince($0.date)
+                return $0.score >= elevatedThresholdScore
+                    && elevated
+                    && gap > 0
+                    && gap <= maximumReadingGap
+            } ?? false
+
+            if elevated {
+                if continuesWindow {
+                    windowEnd = reading.date
+                    windowReadings += 1
+                } else {
+                    appendWindow()
+                    windowStart = reading.date
+                    windowEnd = reading.date
+                    windowReadings = 1
+                }
+            } else {
+                appendWindow()
+                windowStart = nil
+                windowEnd = nil
+                windowReadings = 0
+            }
+            previous = reading
+        }
+        appendWindow()
+
+        return Self(windows: windows,
+                    observedDuration: observedDuration,
+                    readingCount: sorted.count,
+                    isSupported: true,
+                    latestReadingAt: sorted.last?.date)
+    }
+
+    var countText: String? {
+        guard isSupported else { return nil }
+        switch windows.count {
+        case 0: return "No elevated windows"
+        case 1: return "1 elevated window"
+        default: return "\(windows.count) elevated windows"
+        }
+    }
+
+    func interventionDetail(state: AtriaStressState,
+                            updatedAt: Date?) -> String? {
+        guard isSupported,
+              state.kind == .scored,
+              let level = state.level,
+              level.rawValue >= AtriaStressLevel.medium.rawValue,
+              let updatedAt,
+              let latestReadingAt,
+              abs(updatedAt.timeIntervalSince(latestReadingAt)) <= Self.maximumReadingGap,
+              let active = windows.last,
+              active.end == latestReadingAt,
+              !state.detail.isEmpty else { return nil }
+        let minutes = max(1, Int((active.duration / 60).rounded(.down)))
+        return "\(minutes) min elevated · \(state.detail)"
+    }
+}
+
+enum AtriaStressDetailCopy {
+    static let relaxButtonTitle = "Relax · 3 min"
 }
 
 /// Full-screen, native Stress experience inspired by the supplied design.
@@ -223,8 +357,8 @@ struct AtriaStressDetailView: View {
 
                 Spacer()
 
-                if let rangeText {
-                    Text(rangeText)
+                if let timelineStatusText {
+                    Text(timelineStatusText)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.tertiary)
                 }
@@ -232,11 +366,12 @@ struct AtriaStressDetailView: View {
 
             if points.count >= 2 {
                 AtriaStressTimelineChart(points: points,
+                                         elevatedWindows: input.elevatedEvidence.windows,
                                          tint: input.tint,
                                          tintKey: input.state.level?.rawValue ?? -1)
                     .equatable()
                     .frame(height: 142)
-                    .accessibilityLabel("Stress timeline with \(points.count) measured readings")
+                    .accessibilityLabel(timelineAccessibilityLabel(points: points))
             } else {
                 HStack(spacing: 10) {
                     Image(systemName: "waveform.path.ecg")
@@ -259,9 +394,16 @@ struct AtriaStressDetailView: View {
             Text(interventionTitle)
                 .font(.headline.weight(.bold))
 
+            if let interventionEvidenceText {
+                Text(interventionEvidenceText)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             HStack(spacing: 10) {
                 Button(action: onRelax) {
-                    Label("Relax", systemImage: "wind")
+                    Label(AtriaStressDetailCopy.relaxButtonTitle, systemImage: "wind")
                         .font(.subheadline.weight(.bold))
                         .frame(maxWidth: .infinity)
                 }
@@ -331,6 +473,21 @@ struct AtriaStressDetailView: View {
             return "\(first.formatted(date: .omitted, time: .shortened))–\(last.formatted(date: .omitted, time: .shortened))"
         }
         return "Session"
+    }
+
+    private var timelineStatusText: String? {
+        input.elevatedEvidence.countText ?? rangeText
+    }
+
+    private var interventionEvidenceText: String? {
+        input.elevatedEvidence.interventionDetail(state: input.state,
+                                                   updatedAt: input.updatedAt)
+    }
+
+    private func timelineAccessibilityLabel(points: [AtriaStressTimelinePoint]) -> String {
+        let base = "Stress timeline with \(points.count) measured readings"
+        guard let countText = input.elevatedEvidence.countText else { return base }
+        return "\(base), \(countText.lowercased())"
     }
 
     private var interventionTitle: String {
@@ -518,27 +675,40 @@ struct AtriaStressTimelinePoint: Identifiable, Equatable {
 
 private struct AtriaStressTimelineChart: View, Equatable {
     let points: [AtriaStressTimelinePoint]
+    let elevatedWindows: [AtriaStressElevatedWindow]
     let tint: Color
     let tintKey: Int
 
     static func == (lhs: AtriaStressTimelineChart, rhs: AtriaStressTimelineChart) -> Bool {
-        lhs.points == rhs.points && lhs.tintKey == rhs.tintKey
+        lhs.points == rhs.points
+            && lhs.elevatedWindows == rhs.elevatedWindows
+            && lhs.tintKey == rhs.tintKey
     }
 
     var body: some View {
-        Chart(points) { point in
-            AreaMark(x: .value("Time", point.reading.date),
-                     y: .value("Stress", point.reading.score),
-                     series: .value("Segment", point.segment))
-                .interpolationMethod(.monotone)
-                .foregroundStyle(tint.opacity(0.12))
+        Chart {
+            ForEach(elevatedWindows) { window in
+                RectangleMark(xStart: .value("Elevated start", window.start),
+                              xEnd: .value("Elevated end", window.end),
+                              yStart: .value("Stress floor", 0),
+                              yEnd: .value("Stress ceiling", 3))
+                    .foregroundStyle(Color.orange.opacity(0.10))
+            }
 
-            LineMark(x: .value("Time", point.reading.date),
-                     y: .value("Stress", point.reading.score),
-                     series: .value("Segment", point.segment))
-                .interpolationMethod(.monotone)
-                .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                .foregroundStyle(tint)
+            ForEach(points) { point in
+                AreaMark(x: .value("Time", point.reading.date),
+                         y: .value("Stress", point.reading.score),
+                         series: .value("Segment", point.segment))
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(tint.opacity(0.12))
+
+                LineMark(x: .value("Time", point.reading.date),
+                         y: .value("Stress", point.reading.score),
+                         series: .value("Segment", point.segment))
+                    .interpolationMethod(.monotone)
+                    .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                    .foregroundStyle(tint)
+            }
         }
         .chartYScale(domain: 0...3)
         .chartYAxis(.hidden)

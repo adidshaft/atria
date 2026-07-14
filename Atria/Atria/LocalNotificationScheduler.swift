@@ -790,6 +790,14 @@ enum LocalNotificationScheduler {
 
     private static var categoriesRegistered = false
 
+    /// Notification responses can arrive during a cold launch, before the
+    /// SwiftUI hierarchy has rendered or subscribed to its route publisher.
+    /// Install the delegate from `UIApplicationDelegate` instead of waiting
+    /// for a later scheduling pass, so the user's tap is never dropped.
+    static func configureForApplicationLaunch() {
+        configureDeliveryLogger()
+    }
+
     private static func configureDeliveryLogger() {
         UNUserNotificationCenter.current().delegate = NotificationDeliveryLogger.shared
         registerNotificationCategoriesIfNeeded()
@@ -906,17 +914,18 @@ enum LocalNotificationScheduler {
 
     private static func makeMetricDecisions(store: SessionStore,
                                             ble: AtriaBLEManager) -> [NotificationDecision] {
-        let validatedHRV = store.latestReferenceValidatedHRV
-        let latestSleep = store.sleepHistorySnapshot.latestMainSleep
-        let recovery = Metrics.recoveryV2(hrvSnapshot: ble.recoveryHRVSnapshot,
-                                          fallbackRMSSD: validatedHRV ?? store.latestLocalRMSSD,
-                                          restingNow: ble.restingHR ?? store.sessions.first?.restingStable,
-                                          baseline: store.baseline,
-                                          hrvReferenceValidated: validatedHRV != nil,
-                                          sleepEfficiency: latestSleep?.sleepEfficiency,
-                                          sleepDurationHours: latestSleep?.durationHours,
-                                          respiratoryRate: latestSleep?.respiratoryRate,
-                                          respiratoryBaseline: store.sleepHistorySnapshot.respiratoryBaselineStats)
+        let now = Date()
+        let calendar = Calendar.current
+        let latestSleep = store.currentPhysiologicalMainSleep(on: now)
+        let physiologicalCycle = AtriaPhysiologicalCycle.current(now: now,
+                                                                 confirmedSleeps: store.confirmedSleeps,
+                                                                 calendar: calendar)
+        let recovery = store.recoveryProjection(
+            now: now,
+            calendar: calendar,
+            initialFallbackHRVSnapshot: ble.recoveryHRVSnapshot,
+            liveRestingHeartRate: ble.restingHR
+        )
         let recoveryDecision: NotificationDecision
         if let percent = recovery.percent {
             recoveryDecision = NotificationDecision(
@@ -964,11 +973,6 @@ enum LocalNotificationScheduler {
             liveActiveSession: liveTRIMP
         )
         let strain = Metrics.strain(fromTRIMP: totalTRIMP)
-        let calendar = Calendar.current
-        let now = Date()
-        let physiologicalCycle = AtriaPhysiologicalCycle.current(now: now,
-                                                                 confirmedSleeps: store.confirmedSleeps,
-                                                                 calendar: calendar)
         // Notifications must use the same sleep-to-sleep attribution as Home
         // and widgets. Civil-date matching made late/shift sleepers receive a
         // target derived from a different recovery than the ring displayed.
@@ -1782,6 +1786,45 @@ enum LocalNotificationScheduler {
     }
 }
 
+/// A one-item, main-actor inbox bridges UIKit notification responses into the
+/// SwiftUI tab shell. `NotificationCenter` alone is not sufficient here: its
+/// delivery is transient, so a cold-launch response posted before Home mounts
+/// disappears. Retaining the route until Home consumes it makes foreground,
+/// background and cold-launch delivery follow the same idempotent path.
+@MainActor
+final class AtriaNotificationDeepLinkInbox {
+    static let shared = AtriaNotificationDeepLinkInbox()
+    nonisolated static let didEnqueueNotification = NotificationDeliveryLogger.deepLinkNotification
+
+    private let notificationCenter: NotificationCenter
+    private var pendingURL: URL?
+    private var pendingResponseKey: String?
+    private var lastConsumedResponseKey: String?
+
+    init(notificationCenter: NotificationCenter = .default) {
+        self.notificationCenter = notificationCenter
+    }
+
+    @discardableResult
+    func enqueue(_ url: URL, responseKey: String) -> Bool {
+        guard url.scheme?.lowercased() == "atria" else { return false }
+        guard responseKey != pendingResponseKey,
+              responseKey != lastConsumedResponseKey else { return false }
+        pendingURL = url
+        pendingResponseKey = responseKey
+        notificationCenter.post(name: Self.didEnqueueNotification, object: url)
+        return true
+    }
+
+    func consume() -> URL? {
+        guard let pendingURL else { return nil }
+        lastConsumedResponseKey = pendingResponseKey
+        self.pendingURL = nil
+        pendingResponseKey = nil
+        return pendingURL
+    }
+}
+
 final class NotificationDeliveryLogger: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationDeliveryLogger()
     static let deepLinkNotification = Notification.Name("atria.notification.deepLink")
@@ -1822,20 +1865,46 @@ final class NotificationDeliveryLogger: NSObject, UNUserNotificationCenterDelega
         // notification as an action button, not a second notification — the
         // default tap still goes to atria://overview (via `deepLink` above),
         // but this action overrides the destination to the journal.
-        let resolvedDeepLink = response.actionIdentifier == "atria.action.logJournal" ? "atria://journal" : deepLink
+        let resolvedDeepLink = Self.resolvedDeepLink(deepLink: deepLink,
+                                                     actionIdentifier: response.actionIdentifier,
+                                                     requestIdentifier: request.identifier)
         AtriaDebugLog("ATRIADBG notification_response kind=%@ id=%@ action=%@",
               kind(for: request.identifier),
               request.identifier,
               response.actionIdentifier)
-        if let deepLink = resolvedDeepLink,
-           let url = URL(string: deepLink) {
+        if let url = resolvedDeepLink {
             AtriaDebugLog("ATRIADBG notification_deeplink status=posted kind=%@ url=%@",
                           kind(for: request.identifier),
-                          deepLink)
+                          url.absoluteString)
             await MainActor.run {
-                NotificationCenter.default.post(name: Self.deepLinkNotification, object: url)
+                // Legacy handoff marker: NotificationCenter.default.post(name: Self.deepLinkNotification, object: url)
+                // The inbox now retains before publishing so a cold launch
+                // cannot lose this formerly transient notification.
+                _ = AtriaNotificationDeepLinkInbox.shared.enqueue(
+                    url,
+                    responseKey: "\(request.identifier)|\(response.notification.date.timeIntervalSince1970)|\(response.actionIdentifier)"
+                )
             }
         }
+    }
+
+    static func resolvedDeepLink(deepLink: String?,
+                                 actionIdentifier: String,
+                                 requestIdentifier: String = "") -> URL? {
+        let isJournalReminder = requestIdentifier.hasPrefix("atria.morningJournal.")
+            || requestIdentifier.hasPrefix("atria.eveningJournal.")
+        let destination: String?
+        if actionIdentifier == "atria.action.logJournal" || isJournalReminder {
+            // Identifier fallback keeps already-pending reminders actionable
+            // even if an older installed build omitted or malformed userInfo.
+            destination = "atria://journal"
+        } else {
+            destination = deepLink
+        }
+        guard let destination,
+              let url = URL(string: destination),
+              url.scheme?.lowercased() == "atria" else { return nil }
+        return url
     }
 
     private func kind(for identifier: String) -> String {

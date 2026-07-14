@@ -53,4 +53,40 @@ final class AtriaHRVCheckpointCadenceTests: XCTestCase {
             duration: 20 * 60
         ))
     }
+
+    func testFourHourCheckpointMarkerSurvivesRelaunch() throws {
+        let suiteName = "AtriaHRVCheckpointCadenceTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let first = Date(timeIntervalSince1970: 80_000)
+
+        SessionStore.persistLiveHRVCheckpointRefreshDate(first, userDefaults: defaults)
+        let restored = try XCTUnwrap(
+            SessionStore.readLiveHRVCheckpointRefreshDate(userDefaults: defaults)
+        )
+
+        XCTAssertEqual(restored, first)
+        XCTAssertFalse(SessionStore.shouldRefreshHRVOnLiveCheckpoint(
+            lastRefreshAt: restored,
+            now: first.addingTimeInterval((4 * 60 * 60) - 1),
+            rrSampleCount: 10_000,
+            duration: 4 * 60 * 60
+        ))
+        XCTAssertTrue(SessionStore.shouldRefreshHRVOnLiveCheckpoint(
+            lastRefreshAt: restored,
+            now: first.addingTimeInterval(4 * 60 * 60),
+            rrSampleCount: 10_000,
+            duration: 4 * 60 * 60
+        ))
+    }
+
+    func testInvalidPersistedCheckpointMarkerFailsOpen() throws {
+        let suiteName = "AtriaHRVCheckpointCadenceTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set("not-a-date", forKey: SessionStore.liveHRVCheckpointLastRefreshKey)
+
+        XCTAssertNil(SessionStore.readLiveHRVCheckpointRefreshDate(userDefaults: defaults))
+    }
 }
