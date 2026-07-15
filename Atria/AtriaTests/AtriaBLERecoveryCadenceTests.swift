@@ -5135,4 +5135,22 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(source.contains("status=lease_full_bring_up_armed"))
     }
 
+
+    func testCalibrationArmOwnsDenseMotionLikeAWorkout() throws {
+        let source = try leaseManagerSource()
+        let arm = try XCTUnwrap(source.range(of: "func armStepCalibrationCapture"))
+        let armBody = String(source[arm.lowerBound...].prefix(2_400))
+        XCTAssertTrue(armBody.contains("beginWorkoutMotionLease(startedAt: now, reason: \"step_calibration_arm\")"),
+                      "the guided card must never depend on a hand-started parallel workout")
+        XCTAssertTrue(armBody.contains("workoutMotionCalibrationHoldUntil = captureUntil"))
+        let ready = try XCTUnwrap(source.range(of: "private func markStepCalibrationMotionStreamReady"))
+        let readyBody = String(source[ready.lowerBound...].prefix(1_400))
+        XCTAssertTrue(readyBody.contains("workoutMotionDenseFrameCount"),
+                      "a single sparse frame must not mark the calibration stream ready (8% rest-stage capture, 2026-07-16)")
+        let finish = try XCTUnwrap(source.range(of: "func finishStepCalibrationCapture"))
+        let finishBody = String(source[finish.lowerBound...].prefix(1_600))
+        XCTAssertTrue(finishBody.contains("workoutMotionCalibrationHoldUntil = nil"))
+        XCTAssertTrue(finishBody.contains("endWorkoutMotionLease(reason: \"step_calibration_\\(reason)\")"))
+    }
+
 }

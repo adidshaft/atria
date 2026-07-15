@@ -1848,6 +1848,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var workoutMotionStatus = ""
     private var workoutMotionFrameTimestamps: [Date] = []
     private var workoutMotionLeaseProfileArmed = false
+    private var workoutMotionCalibrationHoldUntil: Date?
     @Published private(set) var stepCalibrationCaptureArmedAt: Date?
     @Published private(set) var stepCalibrationMotionStreamReady = false
     private var strapStepResearchCount = 0
@@ -5045,6 +5046,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         strapStepCalibrationCaptureUntil = captureUntil
         stepCalibrationCaptureArmedAt = now
         stepCalibrationMotionStreamReady = false
+        // Guided calibration owns the dense motion stream exactly like an
+        // explicit workout, so the card never depends on a parallel workout
+        // being started by hand (2026-07-16 02:35 IST failure mode).
+        workoutMotionCalibrationHoldUntil = captureUntil
+        beginWorkoutMotionLease(startedAt: now, reason: "step_calibration_arm")
         if protectedR10StreamSuppressed {
             UserDefaults.standard.set(false,
                                       forKey: Self.protectedR10StreamSuppressedKey)
@@ -5099,6 +5105,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         strapStepCalibrationCaptureUntil = nil
         stepCalibrationCaptureArmedAt = nil
         stepCalibrationMotionStreamReady = false
+        workoutMotionCalibrationHoldUntil = nil
+        if !AtriaPendingWorkoutIntent.isActiveForBLEContinuity() {
+            // Only calibration held the lease; a concurrently running explicit
+            // workout keeps its own ownership untouched.
+            endWorkoutMotionLease(reason: "step_calibration_\(reason)")
+        }
 
         AtriaDebugLog(
             "ATRIADBG strap_step_calibration status=disarmed reason=%@ transport_unchanged=1 standard_hr_only=%d long_wear_unchanged=1",
@@ -15344,16 +15356,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// terminal or absent persisted intent may release the lease here; an
     /// indeterminate answer just skips this tick and retries on the next one.
     private func workoutMotionLeaseIntentIsDefinitivelyOver() -> Bool {
+        // An armed guided-calibration session owns the lease exactly like a
+        // workout intent; never release underneath it while its hold is live.
+        if let hold = workoutMotionCalibrationHoldUntil, Date() < hold {
+            return false
+        }
         guard let intent = AtriaPendingWorkoutIntent.load() else { return true }
         return intent.endedAt != nil
     }
 
     func restoreWorkoutMotionLeaseIfNeeded(reason: String) {
+        let calibrationHoldActive = workoutMotionCalibrationHoldUntil.map { Date() < $0 } == true
         if workoutMotionOwnerStartedAt == nil {
             guard let stamp = UserDefaults.standard.object(
                 forKey: WorkoutMotionDefaults.ownerStartedAt
             ) as? Double else { return }
-            if !AtriaPendingWorkoutIntent.isActiveForBLEContinuity() {
+            if !AtriaPendingWorkoutIntent.isActiveForBLEContinuity(), !calibrationHoldActive {
                 if workoutMotionLeaseIntentIsDefinitivelyOver() {
                     endWorkoutMotionLease(reason: "\(reason)_stale_intent")
                 }
@@ -15363,7 +15381,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG workout_motion status=lease_restored reason=%@ started_unix=%d",
                           reason,
                           Int(stamp.rounded()))
-        } else if !AtriaPendingWorkoutIntent.isActiveForBLEContinuity() {
+        } else if !AtriaPendingWorkoutIntent.isActiveForBLEContinuity(), !calibrationHoldActive {
             if workoutMotionLeaseIntentIsDefinitivelyOver() {
                 endWorkoutMotionLease(reason: "\(reason)_stale_intent")
             }
@@ -16756,7 +16774,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               let armedAt = stepCalibrationCaptureArmedAt,
               receivedAt >= armedAt,
               let captureUntil = strapStepCalibrationCaptureUntil,
-              receivedAt < captureUntil else { return }
+              receivedAt < captureUntil,
+              // A single fresh frame is not a usable stream: sparse passive
+              // frames satisfied this gate on 2026-07-16 02:35 IST and the
+              // user's rest stage captured 8%. Calibration may only start on
+              // proven ~1 Hz density, same bar as workout motion.
+              workoutMotionDenseFrameCount(now: receivedAt)
+                >= Self.workoutMotionDenseFrameThreshold else { return }
         stepCalibrationMotionStreamReady = true
         AtriaDebugLog(
             "ATRIADBG strap_step_calibration status=stream_ready fresh_r10_after_arm=1 latency_ms=%.0f",
