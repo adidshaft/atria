@@ -2,6 +2,21 @@ import SwiftUI
 import UIKit
 import MapKit
 
+/// Immutable physiology inputs captured when Start succeeds. A workout is one
+/// calculation epoch: editing age, weight, sex, HR max, or baseline while it is
+/// running must not splice two incompatible TRIMP/calorie models together.
+struct AtriaWorkoutCalculationContext: Codable, Equatable {
+    let restingHeartRate: Int
+    let profile: AthleteProfile
+
+    var maximumHeartRate: Int { profile.maxHR }
+
+    init(restingHeartRate: Int, profile: AthleteProfile) {
+        self.restingHeartRate = max(1, restingHeartRate)
+        self.profile = profile
+    }
+}
+
 /// Identifiable wrapper so a live workout can drive `.fullScreenCover(item:)`.
 struct AtriaWorkoutSession: Identifiable {
     let id = UUID()
@@ -20,7 +35,15 @@ struct AtriaWorkoutSession: Identifiable {
     var pausedStepCount: Int = 0
     /// Day-total anchor captured exactly when the current pause began.
     var pauseStartedStepCount: Int? = nil
+    /// False once a pause/resume boundary could not be paired with a fresh,
+    /// action-time strap coordinate. Time and route state may still be exact,
+    /// but workout-only steps must then remain unavailable instead of folding
+    /// stale/replayed movement into the total.
+    var stepAccountingIsComplete: Bool = true
     var startingDayStrain: Double = 0
+    /// Nil only for legacy in-memory/restored sessions created before this
+    /// field existed; those use a one-time current-profile fallback.
+    var calculationContext: AtriaWorkoutCalculationContext? = nil
 
     /// The user's target choice re-derived from the persisted fields, if any.
     var targetChoice: AtriaWorkoutTargetChoice? {
@@ -53,6 +76,10 @@ struct AtriaLiveWorkoutSensorMetrics: Equatable {
     /// True only after at least one bounded, non-paused HR interval was
     /// integrated. A lone sample is not enough evidence for load or energy.
     var hasEvidence = false
+    /// False when a late pause/exclusion reaches into a journal prefix that has
+    /// already rolled out of memory. The retained number is internal context,
+    /// not a precise total that may be shown or shared.
+    var isComplete = true
 }
 
 struct AtriaLiveWorkoutStepProjection: Equatable {
@@ -159,19 +186,20 @@ struct AtriaLiveWorkoutMetricProjection: Equatable {
     var sensorAvailability: AtriaLiveSensorAvailability = .unavailable
     var sensorCapturedAt: Date?
     var hasSensorEvidence = false
+    var loadIsComplete = true
 
     static let empty = AtriaLiveWorkoutMetricProjection()
 
     var coachingIsLive: Bool {
-        hasSensorEvidence && sensorAvailability == .live
+        hasSensorEvidence && loadIsComplete && sensorAvailability == .live
     }
 
     var strainHUDText: String {
-        hasSensorEvidence ? String(format: "%.1f", strain) : "--"
+        hasSensorEvidence && loadIsComplete ? String(format: "%.1f", strain) : "--"
     }
 
     var activeCaloriesHUDText: String {
-        guard hasSensorEvidence, let activeCalories else { return "--" }
+        guard hasSensorEvidence, loadIsComplete, let activeCalories else { return "--" }
         return "≈ \(Int(activeCalories.rounded())) kcal"
     }
 
@@ -184,6 +212,7 @@ struct AtriaLiveWorkoutMetricProjection: Equatable {
     }
 
     var sensorStatusTitle: String? {
+        if !loadIsComplete { return "Load incomplete" }
         guard hasSensorEvidence else { return "Waiting for strap" }
         switch sensorAvailability {
         case .live: return nil
@@ -194,6 +223,9 @@ struct AtriaLiveWorkoutMetricProjection: Equatable {
     }
 
     var sensorStatusDetail: String? {
+        if !loadIsComplete {
+            return "A late pause overlaps finalized sensor history, so no precise total is shown."
+        }
         guard hasSensorEvidence else { return "Strain and calories begin with continuous heart rate." }
         switch sensorAvailability {
         case .live: return nil
@@ -227,6 +259,14 @@ final class AtriaLiveWorkoutMetricStore: ObservableObject {
 /// two nonlinear 0...21 scores and prevents a visible jump at finalization.
 struct AtriaLiveWorkoutTRIMPAccumulator {
     private var startedAt: Date?
+    /// First timestamp of the currently replayable BLE buffer. Load already
+    /// integrated before this buffer is immutable once the bounded journal
+    /// rolls forward and is retained in the completed-prefix fields below.
+    private var segmentStartTimestamp: Date?
+    /// Earliest previous-sample timestamp whose following pair belongs to the
+    /// current segment rather than the frozen predecessor. This can be later
+    /// than `segmentStartTimestamp` for an overlapping forward replacement.
+    private var segmentIntegrationFloor: Date?
     private var sampleCount = 0
     private var lastTimestamp: Date?
     private var rest = 0
@@ -237,6 +277,11 @@ struct AtriaLiveWorkoutTRIMPAccumulator {
     private var value = 0.0
     private var activeCalories: Double?
     private var hasEvidence = false
+    private var completedPrefixValue = 0.0
+    private var completedPrefixCalories: Double?
+    private var completedPrefixHasEvidence = false
+    private var completedPrefixEndTimestamp: Date?
+    private var loadIsComplete = true
 
     mutating func trimp(samples: [HRSample],
                         startedAt: Date,
@@ -275,7 +320,34 @@ struct AtriaLiveWorkoutTRIMPAccumulator {
                                   sex: AthleteProfile.BiologicalSex,
                                   profile: AthleteProfile?,
                                   excludedIntervals: [ExcludedInterval]) -> AtriaLiveWorkoutSensorMetrics {
-        guard maxHR > rest, samples.count > 1 else {
+        let normalized = Self.normalized(excludedIntervals)
+        if self.startedAt == startedAt,
+           loadIsComplete,
+           completedPrefixHasEvidence,
+           let completedPrefixEndTimestamp,
+           Self.exclusionsAddCoverage(
+                normalized,
+                comparedTo: self.excludedIntervals,
+                from: startedAt,
+                through: completedPrefixEndTimestamp
+           ) {
+            // The discarded prefix cannot be replayed with this newly arrived
+            // exclusion. Retain its internal accumulator only for monotonic
+            // continuity, but permanently fail the user-facing precision gate.
+            loadIsComplete = false
+        }
+        let configurationMatches = self.startedAt == startedAt
+            && self.rest == rest
+            && self.maxHR == maxHR
+            && self.sex == sex
+            && self.profile == profile
+            && self.excludedIntervals == normalized
+        let samplePrefixMatches = sampleCount > 0
+            && sampleCount <= samples.count
+            && lastTimestamp == samples[sampleCount - 1].t
+        let sameReplayableSegment = segmentStartTimestamp != nil
+            && segmentStartTimestamp == samples.first?.t
+        guard maxHR > rest else {
             reset(startedAt: startedAt,
                   samples: samples,
                   rest: rest,
@@ -286,27 +358,115 @@ struct AtriaLiveWorkoutTRIMPAccumulator {
             return AtriaLiveWorkoutSensorMetrics(activeCalories: profile?.hasEnergyProfile == true ? 0 : nil,
                                                   hasEvidence: false)
         }
-        let normalized = Self.normalized(excludedIntervals)
-        let canExtend = self.startedAt == startedAt
-            && self.rest == rest
-            && self.maxHR == maxHR
-            && self.sex == sex
-            && self.profile == profile
-            && self.excludedIntervals == normalized
-            && sampleCount > 0
-            && sampleCount <= samples.count
-            && lastTimestamp == samples[sampleCount - 1].t
-        var total = canExtend ? value : 0
-        var calories = canExtend ? (activeCalories ?? 0) : 0
-        var integratedEvidence = canExtend ? hasEvidence : false
+        // A bounded BLE journal can roll to a new, strictly-forward segment
+        // containing only its first sample. That is not evidence that the
+        // workout's already-integrated load vanished. Preserve the completed
+        // prefix and seed the new segment so its next sample can extend it.
+        if samples.count <= 1, lastTimestamp != nil {
+            if let only = samples.first, only.t > (lastTimestamp ?? .distantFuture) {
+                freezeCompletedPrefix()
+                segmentStartTimestamp = only.t
+                segmentIntegrationFloor = only.t
+                sampleCount = 1
+                lastTimestamp = only.t
+            }
+            self.startedAt = startedAt
+            self.rest = rest
+            self.maxHR = maxHR
+            self.sex = sex
+            self.profile = profile
+            self.excludedIntervals = normalized
+            return AtriaLiveWorkoutSensorMetrics(trimp: value,
+                                                  activeCalories: activeCalories,
+                                                  hasEvidence: hasEvidence,
+                                                  isComplete: loadIsComplete)
+        }
+        guard samples.count > 1 else {
+            reset(startedAt: startedAt,
+                  samples: samples,
+                  rest: rest,
+                  maxHR: maxHR,
+                  sex: sex,
+                  profile: profile,
+                  excludedIntervals: excludedIntervals)
+            return AtriaLiveWorkoutSensorMetrics(activeCalories: profile?.hasEnergyProfile == true ? 0 : nil,
+                                                  hasEvidence: false)
+        }
+        let canExtend = configurationMatches && samplePrefixMatches
+        let continuationIndex: Int? = {
+            guard !samplePrefixMatches,
+                  let lastTimestamp,
+                  let newest = samples.last?.t,
+                  newest > lastTimestamp else { return nil }
+            if let exactBoundary = samples.lastIndex(where: { $0.t == lastTimestamp }),
+               exactBoundary + 1 < samples.count {
+                return exactBoundary + 1
+            }
+            if let first = samples.first?.t, first > lastTimestamp {
+                // A true segment roll has no pair spanning the transport gap.
+                // Start at the first complete pair inside the new segment.
+                return 1
+            }
+            // Overlapping replacement without the exact boundary: skip the
+            // straddling pair rather than double-counting part of the prefix.
+            return samples.indices.dropFirst().first {
+                samples[$0 - 1].t >= lastTimestamp
+            }
+        }()
+        if !samplePrefixMatches,
+           continuationIndex == nil,
+           hasEvidence,
+           let lastTimestamp,
+           let newest = samples.last?.t,
+           newest <= lastTimestamp {
+            // A delayed callback from an older segment cannot roll live strain
+            // or energy backward.
+            return AtriaLiveWorkoutSensorMetrics(trimp: value,
+                                                  activeCalories: activeCalories,
+                                                  hasEvidence: hasEvidence,
+                                                  isComplete: loadIsComplete)
+        }
+        let startsNewReplayableSegment = !samplePrefixMatches
+            && !sameReplayableSegment
+            && continuationIndex != nil
+        if startsNewReplayableSegment {
+            // Once a bounded journal advances, neither a later pause interval
+            // nor a profile edit can replay the discarded samples. Freeze the
+            // exact completed prefix once and recompute only the current
+            // replayable segment when its configuration changes.
+            freezeCompletedPrefix()
+            segmentStartTimestamp = samples.first?.t
+            if let continuationIndex {
+                segmentIntegrationFloor = samples[max(0, continuationIndex - 1)].t
+            }
+        }
+        var total = canExtend ? value : completedPrefixValue
+        var calories: Double? = canExtend ? activeCalories : completedPrefixCalories
+        if calories == nil,
+           !completedPrefixHasEvidence,
+           profile?.hasEnergyProfile == true {
+            calories = 0
+        }
+        var integratedEvidence = canExtend ? hasEvidence : completedPrefixHasEvidence
         // The BLE session is an all-day, bounded continuity buffer. A workout
         // can begin near its tail, so replaying from index 1 after a target,
         // profile or pause change needlessly walks hours of pre-workout HR on
         // the main actor. Binary-search directly to the first pair fully inside
         // this workout; subsequent updates remain append-only via `sampleCount`.
-        var index = canExtend
-            ? sampleCount
-            : Self.firstIntegrationIndex(samples: samples, startedAt: startedAt)
+        var index: Int
+        if canExtend {
+            index = sampleCount
+        } else if startsNewReplayableSegment {
+            index = continuationIndex ?? 1
+        } else if sameReplayableSegment {
+            index = Self.firstIntegrationIndex(
+                samples: samples,
+                startedAt: max(startedAt, segmentIntegrationFloor ?? startedAt)
+            )
+        } else {
+            index = continuationIndex
+                ?? Self.firstIntegrationIndex(samples: samples, startedAt: startedAt)
+        }
         let reserve = Double(maxHR - rest)
         let coefficient = AtriaAnalytics.Strain.banisterCoefficient(for: sex)
         while index < samples.count {
@@ -326,15 +486,22 @@ struct AtriaLiveWorkoutTRIMPAccumulator {
                 let hrr = min(max((meanBPM - Double(rest)) / reserve, 0), 1)
                 total += (dt / 60) * hrr * 0.64 * exp(coefficient * hrr)
                 if let profile, profile.hasEnergyProfile {
-                    calories += Metrics.dayCalories([
+                    let delta = Metrics.dayCalories([
                         Metrics.HeartRateEnergySample(t: previous.t, bpm: previous.bpm),
                         Metrics.HeartRateEnergySample(t: current.t, bpm: current.bpm),
                     ], rest: rest, profile: profile) ?? 0
+                    if calories != nil {
+                        calories = (calories ?? 0) + delta
+                    }
                 }
             }
             index += 1
         }
         self.startedAt = startedAt
+        if segmentStartTimestamp == nil {
+            segmentStartTimestamp = samples.first?.t
+            segmentIntegrationFloor = startedAt
+        }
         sampleCount = samples.count
         lastTimestamp = samples.last?.t
         self.rest = rest
@@ -343,20 +510,28 @@ struct AtriaLiveWorkoutTRIMPAccumulator {
         self.profile = profile
         self.excludedIntervals = normalized
         value = total
-        activeCalories = profile?.hasEnergyProfile == true ? calories : nil
+        activeCalories = calories
         hasEvidence = integratedEvidence
         return AtriaLiveWorkoutSensorMetrics(trimp: total,
                                               activeCalories: activeCalories,
-                                              hasEvidence: integratedEvidence)
+                                              hasEvidence: integratedEvidence,
+                                              isComplete: loadIsComplete)
     }
 
     mutating func clear() {
         startedAt = nil
+        segmentStartTimestamp = nil
+        segmentIntegrationFloor = nil
         sampleCount = 0
         lastTimestamp = nil
         value = 0
         activeCalories = nil
         hasEvidence = false
+        completedPrefixValue = 0
+        completedPrefixCalories = nil
+        completedPrefixHasEvidence = false
+        completedPrefixEndTimestamp = nil
+        loadIsComplete = true
         profile = nil
         excludedIntervals = []
     }
@@ -369,6 +544,8 @@ struct AtriaLiveWorkoutTRIMPAccumulator {
                                 profile: AthleteProfile?,
                                 excludedIntervals: [ExcludedInterval]) {
         self.startedAt = startedAt
+        segmentStartTimestamp = samples.first?.t
+        segmentIntegrationFloor = startedAt
         sampleCount = samples.count
         lastTimestamp = samples.last?.t
         self.rest = rest
@@ -379,6 +556,51 @@ struct AtriaLiveWorkoutTRIMPAccumulator {
         value = 0
         activeCalories = profile?.hasEnergyProfile == true ? 0 : nil
         hasEvidence = false
+        completedPrefixValue = 0
+        completedPrefixCalories = nil
+        completedPrefixHasEvidence = false
+        completedPrefixEndTimestamp = nil
+        loadIsComplete = true
+    }
+
+    /// Commits the current total exactly once as the immutable predecessor of
+    /// the next replayable BLE segment. Assigning rather than adding prevents
+    /// overlapping forward replacements from double-counting an older prefix.
+    private mutating func freezeCompletedPrefix() {
+        completedPrefixValue = value
+        completedPrefixCalories = activeCalories
+        completedPrefixHasEvidence = hasEvidence
+        completedPrefixEndTimestamp = lastTimestamp
+    }
+
+    /// Returns true when the new exclusion union covers any point in the frozen
+    /// prefix that the prior exclusion union did not. Exact boundary contact is
+    /// conservative because the integration rule excludes a pair touching it.
+    private static func exclusionsAddCoverage(_ next: [ExcludedInterval],
+                                              comparedTo previous: [ExcludedInterval],
+                                              from lowerBound: Date,
+                                              through upperBound: Date) -> Bool {
+        guard upperBound >= lowerBound else { return false }
+        let old = normalized(previous)
+        for interval in normalized(next) {
+            let start = max(lowerBound, interval.start)
+            let end = min(upperBound, interval.end)
+            guard end >= start else { continue }
+            if end == start {
+                if !old.contains(where: { $0.start <= start && $0.end >= end }) {
+                    return true
+                }
+                continue
+            }
+            var cursor = start
+            for prior in old where prior.end >= cursor && prior.start <= end {
+                if prior.start > cursor { return true }
+                cursor = max(cursor, prior.end)
+                if cursor >= end { break }
+            }
+            if cursor < end { return true }
+        }
+        return false
     }
 
     private static func normalized(_ intervals: [ExcludedInterval]) -> [ExcludedInterval] {
@@ -448,10 +670,15 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
     let startingStepCount: Int
     var pausedStepCount: Int = 0
     var pauseStartedStepCount: Int? = nil
+    var stepAccountingIsComplete: Bool = true
     var completedStepCount: Int? = nil
     var completedStepsAreEstimated: Bool? = nil
     var completedStepsCapturedAt: Date? = nil
     let startingDayStrain: Double
+    var calculationContext: AtriaWorkoutCalculationContext? = nil
+    /// Monotonic per-workout checkpoint order. It prevents an older detached
+    /// UI checkpoint from reverting newer sets, pauses or targets.
+    var persistenceRevision: UInt64 = 0
 
     private enum CodingKeys: String, CodingKey {
         case startedAt
@@ -467,10 +694,13 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
         case startingStepCount
         case pausedStepCount
         case pauseStartedStepCount
+        case stepAccountingIsComplete
         case completedStepCount
         case completedStepsAreEstimated
         case completedStepsCapturedAt
         case startingDayStrain
+        case calculationContext
+        case persistenceRevision
     }
 
     /// Workout recovery records can outlive the build that created them. New
@@ -494,12 +724,22 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
         pausedStepCount = try values.decodeIfPresent(Int.self, forKey: .pausedStepCount) ?? 0
         pauseStartedStepCount = try values.decodeIfPresent(Int.self,
                                                             forKey: .pauseStartedStepCount)
+        stepAccountingIsComplete = try values.decodeIfPresent(
+            Bool.self,
+            forKey: .stepAccountingIsComplete
+        ) ?? true
         completedStepCount = try values.decodeIfPresent(Int.self, forKey: .completedStepCount)
         completedStepsAreEstimated = try values.decodeIfPresent(Bool.self,
                                                                  forKey: .completedStepsAreEstimated)
         completedStepsCapturedAt = try values.decodeIfPresent(Date.self,
                                                                forKey: .completedStepsCapturedAt)
         startingDayStrain = try values.decodeIfPresent(Double.self, forKey: .startingDayStrain) ?? 0
+        calculationContext = try values.decodeIfPresent(
+            AtriaWorkoutCalculationContext.self,
+            forKey: .calculationContext
+        )
+        persistenceRevision = try values.decodeIfPresent(UInt64.self,
+                                                          forKey: .persistenceRevision) ?? 0
     }
 
     init(startedAt: Date,
@@ -515,10 +755,13 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
          startingStepCount: Int,
          pausedStepCount: Int = 0,
          pauseStartedStepCount: Int? = nil,
+         stepAccountingIsComplete: Bool = true,
          completedStepCount: Int? = nil,
          completedStepsAreEstimated: Bool? = nil,
          completedStepsCapturedAt: Date? = nil,
-         startingDayStrain: Double) {
+         startingDayStrain: Double,
+         calculationContext: AtriaWorkoutCalculationContext? = nil,
+         persistenceRevision: UInt64 = 0) {
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.activityType = activityType
@@ -532,10 +775,13 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
         self.startingStepCount = startingStepCount
         self.pausedStepCount = max(0, pausedStepCount)
         self.pauseStartedStepCount = pauseStartedStepCount
+        self.stepAccountingIsComplete = stepAccountingIsComplete
         self.completedStepCount = completedStepCount.map { max(0, $0) }
         self.completedStepsAreEstimated = completedStepCount == nil ? nil : completedStepsAreEstimated
         self.completedStepsCapturedAt = completedStepCount == nil ? nil : completedStepsCapturedAt
         self.startingDayStrain = startingDayStrain
+        self.calculationContext = calculationContext
+        self.persistenceRevision = persistenceRevision
     }
 
     var resolvedActivityType: AtriaWorkoutActivityType {
@@ -548,19 +794,30 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
         return nil
     }
 
-    static func load(defaults: UserDefaults = .standard) -> Self? {
+    static func load(defaults: UserDefaults) -> Self? {
         guard let data = defaults.data(forKey: defaultsKey) else { return nil }
         return try? JSONDecoder().decode(Self.self, from: data)
     }
 
     @discardableResult
-    func save(defaults: UserDefaults = .standard) -> Bool {
+    func save(defaults: UserDefaults) -> Bool {
         guard let data = try? JSONEncoder().encode(self) else { return false }
         defaults.set(data, forKey: Self.defaultsKey)
+        // Starting or ending a workout must not become visible until its exact
+        // crash-recovery payload is readable from the persistence authority.
+        // `set` has no failure result, so verify both the stored bytes and the
+        // decoded value before allowing the UI transaction to continue.
+        guard defaults.data(forKey: Self.defaultsKey) == data,
+              Self.load(defaults: defaults) == self else { return false }
+        // `synchronize()` is deprecated, can block the main actor during every
+        // workout checkpoint, and its Boolean is not a persistence-authority
+        // result. Exact byte + decode readback is the immediate contract; the
+        // defaults daemon performs the durable flush without stalling workout
+        // controls, background transitions, or Lock Screen actions.
         return true
     }
 
-    static func clear(defaults: UserDefaults = .standard) {
+    static func clear(defaults: UserDefaults) {
         defaults.removeObject(forKey: defaultsKey)
     }
 
@@ -569,13 +826,13 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
     /// evidence was being prepared or persisted.
     @discardableResult
     static func clearIfUnchanged(_ expected: Self,
-                                 defaults: UserDefaults = .standard) -> Bool {
+                                 defaults: UserDefaults) -> Bool {
         guard load(defaults: defaults) == expected else { return false }
         clear(defaults: defaults)
         return true
     }
 
-    static func isActiveForBLEContinuity(defaults: UserDefaults = .standard,
+    static func isActiveForBLEContinuity(defaults: UserDefaults,
                                          now: Date = Date(),
                                          maxAge: TimeInterval = bleContinuityMaxAge) -> Bool {
         guard let intent = load(defaults: defaults), intent.endedAt == nil else { return false }
@@ -593,6 +850,329 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
         guard endedAt > start else { return excludedIntervals }
         return excludedIntervals + [ExcludedInterval(start: start, end: endedAt)]
     }
+
+    // Production persistence is file-backed. The explicit UserDefaults
+    // overloads above remain only for decoding old records and isolated tests.
+    static func load() -> Self? {
+        AtriaPendingWorkoutIntentStore.shared.snapshot
+    }
+
+    static func preparePersistence() async -> Bool {
+        await AtriaPendingWorkoutIntentStore.shared.prepare()
+    }
+
+    func createPersisted() async -> Bool {
+        await AtriaPendingWorkoutIntentStore.shared.createIfAbsent(self)
+    }
+
+    func replacePersisted(expected: Self) async -> Bool {
+        await AtriaPendingWorkoutIntentStore.shared.replace(expected: expected, with: self)
+    }
+
+    func persistProgress() async -> Bool {
+        await AtriaPendingWorkoutIntentStore.shared.persistProgress(self)
+    }
+
+    func persistTerminal() async -> AtriaPendingWorkoutIntent? {
+        await AtriaPendingWorkoutIntentStore.shared.persistTerminal(self)
+    }
+
+    static func clearIfUnchanged(_ expected: Self) async -> Bool {
+        await AtriaPendingWorkoutIntentStore.shared.clearIfUnchanged(expected)
+    }
+
+    static func isActiveForBLEContinuity(now: Date = Date(),
+                                         maxAge: TimeInterval = bleContinuityMaxAge) -> Bool {
+        AtriaPendingWorkoutIntentStore.shared.isActiveForBLEContinuity(now: now,
+                                                                       maxAge: maxAge)
+    }
+}
+
+/// Crash-recovery authority for the one explicit workout that can be active at
+/// a time. All disk access is serialized off-main; hot BLE continuity reads use
+/// only the lock-protected snapshot populated after a verified atomic commit.
+final class AtriaPendingWorkoutIntentStore: @unchecked Sendable {
+    static let shared = AtriaPendingWorkoutIntentStore()
+
+    private enum PreparedState {
+        case unprepared
+        case ready(AtriaPendingWorkoutIntent?)
+        case corrupt
+    }
+
+    private let directoryURL: URL
+    private let fileURL: URL
+    private let legacyDefaults: UserDefaults?
+    private let ioQueue: DispatchQueue
+    private let stateLock = NSLock()
+    private var state: PreparedState = .unprepared
+    private var persistenceWasOnMainThread = false
+
+    var lastPersistenceWasOnMainThread: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return persistenceWasOnMainThread
+    }
+
+    init(directoryURL: URL? = nil,
+         legacyDefaults: UserDefaults? = .standard,
+         queueLabel: String = "com.atria.pending-workout-intent") {
+        let root = directoryURL
+            ?? FileManager.default.urls(for: .applicationSupportDirectory,
+                                        in: .userDomainMask).first!
+                .appendingPathComponent("Atria", isDirectory: true)
+        self.directoryURL = root
+        self.fileURL = root.appendingPathComponent("pending-workout-intent-v1.json")
+        self.legacyDefaults = legacyDefaults
+        self.ioQueue = DispatchQueue(label: queueLabel, qos: .utility)
+    }
+
+    var snapshot: AtriaPendingWorkoutIntent? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard case .ready(let intent) = state else { return nil }
+        return intent
+    }
+
+    var isPrepared: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        if case .unprepared = state { return false }
+        return true
+    }
+
+    /// Cold hydration is a third state, not proof that no workout exists.
+    /// Conservatively retain workout-grade BLE continuity for this very short
+    /// window; once hydration completes, ordinary age/terminal rules apply.
+    func isActiveForBLEContinuity(
+        now: Date = Date(),
+        maxAge: TimeInterval = AtriaPendingWorkoutIntent.bleContinuityMaxAge
+    ) -> Bool {
+        stateLock.lock()
+        let localState = state
+        stateLock.unlock()
+        switch localState {
+        case .unprepared:
+            beginPreparing()
+            return true
+        case .corrupt:
+            // Corruption is fail-closed for mutation but must not downgrade the
+            // radio and destroy evidence that may still recover from the strap.
+            return true
+        case .ready(let intent):
+            guard let intent, intent.endedAt == nil else { return false }
+            let age = now.timeIntervalSince(intent.startedAt)
+            return age >= -AtriaPendingWorkoutIntent.bleContinuityFutureTolerance
+                && age <= maxAge
+        }
+    }
+
+    @discardableResult
+    func prepare() async -> Bool {
+        await performIO { self.prepareLocked() }
+    }
+
+    func createIfAbsent(_ intent: AtriaPendingWorkoutIntent) async -> Bool {
+        await performIO {
+            guard self.prepareLocked(), self.currentLocked() == nil else { return false }
+            return self.commitLocked(intent)
+        }
+    }
+
+    func replace(expected: AtriaPendingWorkoutIntent,
+                 with replacement: AtriaPendingWorkoutIntent) async -> Bool {
+        await performIO {
+            guard self.prepareLocked(), self.currentLocked() == expected else { return false }
+            guard expected.endedAt == nil || replacement == expected else { return false }
+            guard replacement == expected
+                    || replacement.persistenceRevision > expected.persistenceRevision else { return false }
+            return self.commitLocked(replacement)
+        }
+    }
+
+    /// Coalescible UI checkpoints may arrive after End. Match the workout token
+    /// and reject a terminal authority so late sets/pause bindings cannot reopen
+    /// a workout whose exact end has already committed.
+    func persistProgress(_ intent: AtriaPendingWorkoutIntent) async -> Bool {
+        await performIO {
+            self.persistProgressLocked(intent)
+        }
+    }
+
+    /// Queues an intermediate checkpoint in call order without creating an
+    /// unstructured Task whose scheduler order could differ from UI order.
+    func enqueueProgress(
+        _ intent: AtriaPendingWorkoutIntent,
+        completion: @escaping @MainActor @Sendable (Bool) -> Void
+    ) {
+        ioQueue.async {
+            let saved = self.persistProgressLocked(intent)
+            Task { @MainActor in completion(saved) }
+        }
+    }
+
+    func persistTerminal(_ requested: AtriaPendingWorkoutIntent) async -> AtriaPendingWorkoutIntent? {
+        await performIO {
+            guard self.prepareLocked(),
+                  requested.endedAt != nil,
+                  let current = self.currentLocked(),
+                  current.startedAt == requested.startedAt,
+                  current.endedAt == nil else { return nil }
+            // The serial queue may have committed a newer Lock Screen pause or
+            // resume immediately before End. Preserve that canonical metadata
+            // and apply only terminal evidence from the End tap.
+            var terminal = requested
+            let completionUsesCanonicalPauseAndSteps =
+                current.excludedIntervals == requested.excludedIntervals
+                && current.pauseStartedAt == requested.pauseStartedAt
+                && current.startingStepCount == requested.startingStepCount
+                && current.pausedStepCount == requested.pausedStepCount
+                && current.pauseStartedStepCount == requested.pauseStartedStepCount
+                && current.stepAccountingIsComplete == requested.stepAccountingIsComplete
+            // Lock Screen and Home can each close a different pause just before
+            // End. Keep both exact intervals without duplicating either one.
+            for interval in current.excludedIntervals
+                where !terminal.excludedIntervals.contains(interval) {
+                terminal.excludedIntervals.append(interval)
+            }
+            terminal.excludedIntervals.sort { lhs, rhs in
+                lhs.start == rhs.start ? lhs.end < rhs.end : lhs.start < rhs.start
+            }
+            if let currentPause = current.pauseStartedAt {
+                let homeAlreadyClosedCurrentPause = requested.excludedIntervals.contains {
+                    $0.start == currentPause && $0.end >= currentPause
+                }
+                if !homeAlreadyClosedCurrentPause {
+                    terminal.pauseStartedAt = currentPause
+                    terminal.pauseStartedStepCount = current.pauseStartedStepCount
+                }
+            }
+            terminal.pausedStepCount = max(current.pausedStepCount,
+                                           requested.pausedStepCount)
+            terminal.stepAccountingIsComplete = current.stepAccountingIsComplete
+                && requested.stepAccountingIsComplete
+                && completionUsesCanonicalPauseAndSteps
+            if !terminal.stepAccountingIsComplete {
+                terminal.completedStepCount = nil
+                terminal.completedStepsAreEstimated = nil
+                terminal.completedStepsCapturedAt = nil
+            }
+            terminal.persistenceRevision = .max
+            return self.commitLocked(terminal) ? terminal : nil
+        }
+    }
+
+    func clearIfUnchanged(_ expected: AtriaPendingWorkoutIntent) async -> Bool {
+        await performIO {
+            guard self.prepareLocked(), self.currentLocked() == expected else { return false }
+            do {
+                if FileManager.default.fileExists(atPath: self.fileURL.path) {
+                    try FileManager.default.removeItem(at: self.fileURL)
+                }
+                self.publish(.ready(nil))
+                return true
+            } catch {
+                return false
+            }
+        }
+    }
+
+    private func performIO<T: Sendable>(_ operation: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            ioQueue.async { continuation.resume(returning: operation()) }
+        }
+    }
+
+    /// Starts cold hydration before CoreBluetooth can make continuity-policy
+    /// decisions. It never performs file I/O on the caller.
+    func beginPreparing() {
+        ioQueue.async { _ = self.prepareLocked() }
+    }
+
+    private func persistProgressLocked(_ intent: AtriaPendingWorkoutIntent) -> Bool {
+        guard prepareLocked(),
+              intent.endedAt == nil,
+              let current = currentLocked(),
+              current.startedAt == intent.startedAt,
+              current.endedAt == nil,
+              intent.persistenceRevision > current.persistenceRevision else { return false }
+        return commitLocked(intent)
+    }
+
+    /// Must run only on ioQueue.
+    private func prepareLocked() -> Bool {
+        stateLock.lock()
+        let alreadyPrepared: Bool
+        switch state {
+        case .unprepared: alreadyPrepared = false
+        case .ready: alreadyPrepared = true
+        case .corrupt:
+            stateLock.unlock()
+            return false
+        }
+        stateLock.unlock()
+        if alreadyPrepared { return true }
+
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            guard let data = try? Data(contentsOf: fileURL),
+                  let intent = try? JSONDecoder().decode(AtriaPendingWorkoutIntent.self,
+                                                         from: data) else {
+                publish(.corrupt)
+                return false
+            }
+            publish(.ready(intent))
+            legacyDefaults?.removeObject(forKey: AtriaPendingWorkoutIntent.defaultsKey)
+            return true
+        }
+
+        if let legacyDefaults,
+           let data = legacyDefaults.data(forKey: AtriaPendingWorkoutIntent.defaultsKey) {
+            guard let legacy = try? JSONDecoder().decode(AtriaPendingWorkoutIntent.self,
+                                                         from: data) else {
+                publish(.corrupt)
+                return false
+            }
+            guard commitLocked(legacy) else { return false }
+            legacyDefaults.removeObject(forKey: AtriaPendingWorkoutIntent.defaultsKey)
+            return true
+        }
+        publish(.ready(nil))
+        return true
+    }
+
+    private func currentLocked() -> AtriaPendingWorkoutIntent? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard case .ready(let intent) = state else { return nil }
+        return intent
+    }
+
+    private func commitLocked(_ intent: AtriaPendingWorkoutIntent) -> Bool {
+        guard let data = try? JSONEncoder().encode(intent) else { return false }
+        do {
+            stateLock.lock()
+            persistenceWasOnMainThread = Thread.isMainThread
+            stateLock.unlock()
+            try FileManager.default.createDirectory(at: directoryURL,
+                                                    withIntermediateDirectories: true)
+            try data.write(to: fileURL,
+                           options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            let readback = try Data(contentsOf: fileURL)
+            guard readback == data,
+                  try JSONDecoder().decode(AtriaPendingWorkoutIntent.self,
+                                           from: readback) == intent else { return false }
+            publish(.ready(intent))
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func publish(_ newState: PreparedState) {
+        stateLock.lock()
+        state = newState
+        stateLock.unlock()
+    }
 }
 
 struct AtriaWorkoutStartConfiguration: Equatable {
@@ -602,6 +1182,28 @@ struct AtriaWorkoutStartConfiguration: Equatable {
 
     var normalizedZoneRange: ClosedRange<Int> {
         min(lowerTargetZone, upperTargetZone)...max(lowerTargetZone, upperTargetZone)
+    }
+}
+
+enum AtriaWorkoutRecentActivityStore {
+    static let key = "atria.workout.recentActivityTypes"
+    static let maximumCount = 6
+
+    static func activities(defaults: UserDefaults = .standard) -> [AtriaWorkoutActivityType] {
+        (defaults.stringArray(forKey: key) ?? [])
+            .compactMap(AtriaWorkoutActivityType.init(rawValue:))
+    }
+
+    /// A type becomes recent only after the primary Start action has handed the
+    /// normalized configuration to the workout owner. Merely browsing the rail,
+    /// opening More, or cancelling the sheet must not rewrite workout history.
+    static func recordStarted(_ type: AtriaWorkoutActivityType,
+                              defaults: UserDefaults = .standard) {
+        let existing = defaults.stringArray(forKey: key) ?? []
+        defaults.set(([type.rawValue] + existing.filter { $0 != type.rawValue })
+            .prefix(maximumCount)
+            .map { $0 },
+                     forKey: key)
     }
 }
 
@@ -724,21 +1326,21 @@ struct AtriaWorkoutZoneHapticLifecycle: Equatable {
 
 struct AtriaWorkoutStartSheet: View {
     let initial: AtriaWorkoutStartConfiguration
-    let onStart: (AtriaWorkoutStartConfiguration) -> Void
+    let onStart: (AtriaWorkoutStartConfiguration) async -> Bool
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @State private var configuration: AtriaWorkoutStartConfiguration
     @State private var showAllActivityTypes = false
     @State private var activitySearch = ""
+    @State private var isStarting = false
+    @State private var showStartError = false
 
     init(initial: AtriaWorkoutStartConfiguration = .init(),
-         onStart: @escaping (AtriaWorkoutStartConfiguration) -> Void) {
+         onStart: @escaping (AtriaWorkoutStartConfiguration) async -> Bool) {
         var resolvedInitial = initial
         if resolvedInitial.activityType == .other {
-            let recent = UserDefaults.standard
-                .stringArray(forKey: "atria.workout.recentActivityTypes")?
-                .compactMap(AtriaWorkoutActivityType.init(rawValue:))
-                .first
+            let recent = AtriaWorkoutRecentActivityStore.activities().first
             resolvedInitial.activityType = recent ?? .walking
         }
         self.initial = resolvedInitial
@@ -756,19 +1358,29 @@ struct AtriaWorkoutStartSheet: View {
                         HStack(spacing: 10) {
                             ForEach(compactActivityTypes) { type in
                                 activityButton(type)
-                                    .frame(width: 104)
+                                    .frame(width: activityButtonWidth)
                             }
                             Button {
                                 showAllActivityTypes = true
                             } label: {
-                                HStack(spacing: 7) {
+                                HStack(spacing: 6) {
                                     Image(systemName: "magnifyingglass").font(.callout.weight(.bold))
                                     Text("More").font(.caption.weight(.bold)).lineLimit(1)
                                 }
-                                .frame(maxWidth: .infinity, minHeight: 58)
+                                .frame(maxWidth: .infinity, minHeight: activityButtonHeight)
+                                .contentShape(Capsule())
                             }
                             .buttonStyle(.glass)
-                            .frame(width: 92)
+                            .buttonBorderShape(.capsule)
+                            .frame(width: dynamicTypeSize.isAccessibilitySize ? 108 : 82)
+                        }
+                        .padding(.vertical, 8)
+                    }
+                    .contentMargins(.horizontal, 4, for: .scrollContent)
+                    .scrollClipDisabled()
+                    .transaction { transaction in
+                        if accessibilityReduceMotion {
+                            transaction.animation = nil
                         }
                     }
 
@@ -805,7 +1417,8 @@ struct AtriaWorkoutStartSheet: View {
                                         .foregroundStyle(.cyan)
                                 }
                             }
-                            .frame(minHeight: 44)
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
@@ -826,8 +1439,16 @@ struct AtriaWorkoutStartSheet: View {
                     let range = value.normalizedZoneRange
                     value.lowerTargetZone = range.lowerBound
                     value.upperTargetZone = range.upperBound
-                    onStart(value)
-                    dismiss()
+                    isStarting = true
+                    Task { @MainActor in
+                        if await onStart(value) {
+                            AtriaWorkoutRecentActivityStore.recordStarted(value.activityType)
+                            dismiss()
+                        } else {
+                            isStarting = false
+                            showStartError = true
+                        }
+                    }
                 } label: {
                     Label("Start \(configuration.activityType.rawValue)", systemImage: "play.fill")
                         .font(.headline)
@@ -837,6 +1458,12 @@ struct AtriaWorkoutStartSheet: View {
                 .tint(.cyan)
                 .padding(.horizontal, 20)
                 .padding(.bottom, 8)
+                .disabled(isStarting)
+            }
+            .alert("Workout couldn't start", isPresented: $showStartError) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Atria couldn't secure the workout on this iPhone. Nothing was started or lost—try again.")
             }
             .onChange(of: configuration.lowerTargetZone) { _, lower in
                 // Keep the visible range valid as it is edited. Normalizing only
@@ -894,8 +1521,7 @@ struct AtriaWorkoutStartSheet: View {
     }
 
     private var compactActivityTypes: [AtriaWorkoutActivityType] {
-        let stored = UserDefaults.standard.stringArray(forKey: "atria.workout.recentActivityTypes") ?? []
-        let recent = stored.compactMap(AtriaWorkoutActivityType.init(rawValue:))
+        let recent = AtriaWorkoutRecentActivityStore.activities()
         let preferred: [AtriaWorkoutActivityType] = [configuration.activityType, .strength, .walking, .running, .cycling, .cardio]
         var seen = Set<AtriaWorkoutActivityType>()
         return ([configuration.activityType] + recent + preferred)
@@ -912,25 +1538,41 @@ struct AtriaWorkoutStartSheet: View {
         }
     }
 
+    private var activityButtonWidth: CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? 132 : 96
+    }
+
+    private var activityButtonHeight: CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? 52 : 48
+    }
+
     private func activityButton(_ type: AtriaWorkoutActivityType) -> some View {
         Button { selectActivity(type) } label: {
-            HStack(spacing: 7) {
+            HStack(spacing: 6) {
                 Image(systemName: type.icon).font(.callout.weight(.bold))
-                Text(type.rawValue).font(.caption.weight(.bold)).lineLimit(1)
+                Text(type.rawValue)
+                    .font(.caption.weight(.bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+                if configuration.activityType == type {
+                    Image(systemName: "checkmark")
+                        .font(.caption2.weight(.black))
+                        .accessibilityHidden(true)
+                }
             }
             .foregroundStyle(configuration.activityType == type ? Color.white : Color.primary)
-            .frame(maxWidth: .infinity, minHeight: 58)
+            .frame(maxWidth: .infinity, minHeight: activityButtonHeight)
+            .contentShape(Capsule())
         }
         .buttonStyle(.glass)
+        .buttonBorderShape(.capsule)
         .tint(configuration.activityType == type ? .cyan : .primary.opacity(0.08))
+        .accessibilityLabel(type.rawValue)
+        .accessibilityValue(configuration.activityType == type ? "Selected" : "Not selected")
     }
 
     private func selectActivity(_ type: AtriaWorkoutActivityType) {
         configuration.activityType = type
-        let key = "atria.workout.recentActivityTypes"
-        let existing = UserDefaults.standard.stringArray(forKey: key) ?? []
-        UserDefaults.standard.set(([type.rawValue] + existing.filter { $0 != type.rawValue }).prefix(6).map { $0 },
-                                  forKey: key)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
@@ -1155,7 +1797,7 @@ struct AtriaLiveWorkoutView: View {
     let broadcastPersistsAfterWorkout: Bool
     let onMinimize: () -> Void
     let onTogglePause: () -> Void
-    let onStop: () -> Bool
+    let onStop: () async -> Bool
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1169,6 +1811,7 @@ struct AtriaLiveWorkoutView: View {
     @State private var editingSetID: UUID?
     @State private var latestPRSetID: UUID?
     @State private var showEndPersistenceError = false
+    @State private var isEndingWorkout = false
 
     var body: some View {
         Group {
@@ -1776,11 +2419,16 @@ struct AtriaLiveWorkoutView: View {
 
     private func endWorkout() {
         finalizePauseIfNeeded()
-        if onStop() {
-            dismiss()
-        } else {
-            showEndPersistenceError = true
-            UINotificationFeedbackGenerator().notificationOccurred(.error)
+        guard !isEndingWorkout else { return }
+        isEndingWorkout = true
+        Task { @MainActor in
+            if await onStop() {
+                dismiss()
+            } else {
+                isEndingWorkout = false
+                showEndPersistenceError = true
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            }
         }
     }
 
@@ -2199,7 +2847,7 @@ private struct AtriaLiveWorkoutStrainGuidance: View {
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
                     Capsule().fill(.white.opacity(0.10))
-                    if metricProjection.hasSensorEvidence {
+                    if metricProjection.hasSensorEvidence && metricProjection.loadIsComplete {
                         Capsule()
                             .fill((metricProjection.coachingIsLive ? Metrics.electricStrain : Color.orange).opacity(0.78))
                             .frame(width: max(10, max(proxy.size.width, 1) * progress))

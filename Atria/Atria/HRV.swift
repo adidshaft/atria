@@ -13,10 +13,32 @@ struct RRSample: Identifiable {
     var id: Date { t }
 }
 
+/// Explicit origin attached to every newly persisted beat-to-beat interval.
+///
+/// Missing provenance is intentionally represented by `nil` on persistence
+/// models so archives written before this field existed remain decodable. A
+/// missing value is never upgraded to standard Heart Rate Measurement (2A37)
+/// evidence during restore or metric calculation.
+enum AtriaRRSourceProvenance: String, Codable, Equatable, Sendable {
+    case standardHeartRateMeasurement2A37 = "standard_2a37"
+    case validatedProprietaryRealtime = "validated_proprietary_realtime"
+}
+
 struct RRInterval {
     let t: Date
     let ms: Double
     let expectedHR: Int?
+    let source: AtriaRRSourceProvenance?
+
+    init(t: Date,
+         ms: Double,
+         expectedHR: Int?,
+         source: AtriaRRSourceProvenance? = nil) {
+        self.t = t
+        self.ms = ms
+        self.expectedHR = expectedHR
+        self.source = source
+    }
 }
 
 struct HRVSnapshot: Codable, Equatable, Sendable {
@@ -46,6 +68,10 @@ struct HRVSnapshot: Codable, Equatable, Sendable {
     let rejectedDeltaOver20Percent: Int
     let rejectedHRMismatch: Int
     let interpolated: Int
+    /// Count of true neighboring NN differences used by RMSSD/pNN50. Optional so
+    /// previously persisted snapshots still decode; a missing legacy value fails
+    /// readiness closed instead of assuming rejected beats were adjacent.
+    let successiveDifferenceCount: Int?
     let windowSeconds: TimeInterval
     let maxRRGapSeconds: TimeInterval
     let respiratoryRate: Double?
@@ -65,6 +91,7 @@ struct HRVSnapshot: Codable, Equatable, Sendable {
          rejectedDeltaOver20Percent: Int,
          rejectedHRMismatch: Int,
          interpolated: Int,
+         successiveDifferenceCount: Int? = nil,
          windowSeconds: TimeInterval,
          maxRRGapSeconds: TimeInterval,
          respiratoryRate: Double?,
@@ -83,6 +110,7 @@ struct HRVSnapshot: Codable, Equatable, Sendable {
         self.rejectedDeltaOver20Percent = rejectedDeltaOver20Percent
         self.rejectedHRMismatch = rejectedHRMismatch
         self.interpolated = interpolated
+        self.successiveDifferenceCount = successiveDifferenceCount
         self.windowSeconds = windowSeconds
         self.maxRRGapSeconds = maxRRGapSeconds
         self.respiratoryRate = respiratoryRate
@@ -96,12 +124,20 @@ struct HRVSnapshot: Codable, Equatable, Sendable {
         windowSeconds >= 300
         && maxRRGapSeconds <= Self.maxReadyRRGapSeconds
         && kept >= minimumReadyBeatCount
+        && hasSufficientSuccessiveDifferences
         && confidence >= 0.75
     }
     var minimumReadyBeatCount: Int {
         Int(ceil(max(0, windowSeconds) * Self.minimumReadyBeatsPerSecond))
     }
     var confidencePercent: Int { Int((confidence * 100).rounded()) }
+    var minimumReadySuccessiveDifferenceCount: Int {
+        Int(ceil(Double(max(0, kept - 1)) * 0.70))
+    }
+    var hasSufficientSuccessiveDifferences: Bool {
+        guard let successiveDifferenceCount else { return false }
+        return successiveDifferenceCount >= max(1, minimumReadySuccessiveDifferenceCount)
+    }
     func isDisplayEligible(on now: Date = Date(),
                            maximumAge: TimeInterval = 24 * 60 * 60) -> Bool {
         guard isReady else { return false }
@@ -135,6 +171,7 @@ struct HRVSnapshot: Codable, Equatable, Sendable {
         if windowSeconds < 300 { return "window" }
         if maxRRGapSeconds > Self.maxReadyRRGapSeconds { return "gap" }
         if kept < minimumReadyBeatCount { return "beats" }
+        if !hasSufficientSuccessiveDifferences { return "differences" }
         if confidence < 0.75 { return "confidence" }
         return "ready"
     }
@@ -148,6 +185,8 @@ struct HRVSnapshot: Codable, Equatable, Sendable {
             return "learning: beat-to-beat gaps"
         case "beats":
             return "learning: need enough beats for this window"
+        case "differences":
+            return "learning: need continuous neighboring beats"
         case "confidence":
             return "learning: beat-to-beat confidence"
         default:
@@ -171,6 +210,85 @@ enum AtriaHRVSuccessiveDifferences {
     }
 }
 
+enum AtriaShortWindowRMSSD {
+    /// Computes RMSSD only from one continuous, artifact-screened run of
+    /// timestamped standard RR intervals. The longest continuous run is used so
+    /// disconnected islands cannot be stitched together merely because their
+    /// interval values sum to the requested coverage.
+    static func value(samples: [(date: Date, ms: Double)],
+                      minimumCoverageSeconds: TimeInterval,
+                      maximumGapSeconds: TimeInterval = HRVSnapshot.maxReadyRRGapSeconds) -> Double? {
+        guard minimumCoverageSeconds > 0,
+              maximumGapSeconds > 0,
+              samples.count >= 3 else { return nil }
+
+        let ordered = samples
+            .filter { $0.date.timeIntervalSinceReferenceDate.isFinite && $0.ms.isFinite }
+            .sorted { $0.date < $1.date }
+        guard ordered.count >= 3 else { return nil }
+
+        var segments: [[(date: Date, ms: Double)]] = []
+        var current: [(date: Date, ms: Double)] = []
+        for sample in ordered {
+            if let previous = current.last {
+                let gap = sample.date.timeIntervalSince(previous.date)
+                if gap <= 0 || gap > maximumGapSeconds {
+                    if current.count >= 3 { segments.append(current) }
+                    current.removeAll(keepingCapacity: true)
+                }
+            }
+            current.append(sample)
+        }
+        if current.count >= 3 { segments.append(current) }
+
+        guard let segment = segments.max(by: {
+            coveredSeconds($0) < coveredSeconds($1)
+        }), coveredSeconds(segment) >= minimumCoverageSeconds else { return nil }
+
+        var kept: [(ordinal: Int, value: Double)] = []
+        kept.reserveCapacity(segment.count)
+        for index in segment.indices {
+            let sample = segment[index]
+            guard (300...2000).contains(sample.ms) else { continue }
+            let lower = max(segment.startIndex, index - 2)
+            let upper = min(segment.index(before: segment.endIndex), index + 2)
+            let local = segment[lower...upper]
+                .map { $0.ms }
+                .filter { (300...2000).contains($0) }
+                .sorted()
+            if local.count >= 3 {
+                let middle = local.count / 2
+                let median = local.count.isMultiple(of: 2)
+                    ? (local[middle - 1] + local[middle]) / 2
+                    : local[middle]
+                guard median > 0,
+                      abs(sample.ms - median) / median <= 0.20 else { continue }
+            }
+            kept.append((ordinal: index, value: sample.ms))
+        }
+
+        guard Double(kept.count) / Double(segment.count) >= 0.75 else { return nil }
+        let differences = AtriaHRVSuccessiveDifferences.adjacentValues(kept)
+        let minimumDifferenceCount = max(
+            1,
+            Int(ceil(Double(max(0, kept.count - 1)) * 0.70))
+        )
+        guard differences.count >= minimumDifferenceCount else { return nil }
+        let meanSquare = differences.reduce(0) { $0 + ($1 * $1) } / Double(differences.count)
+        let rmssd = sqrt(meanSquare)
+        return rmssd.isFinite && rmssd > 0 ? rmssd : nil
+    }
+
+    private static func coveredSeconds(_ samples: [(date: Date, ms: Double)]) -> TimeInterval {
+        guard let first = samples.first, let last = samples.last else { return 0 }
+        // Standard BLE RR values are intervals ending at their timestamps.
+        // Count the first measured interval, never an interval after the last
+        // timestamp (which would invent future coverage).
+        let firstInterval = (300...2000).contains(first.ms) ? first.ms / 1_000 : 0
+        return max(0, last.date.timeIntervalSince(first.date) + firstInterval)
+    }
+}
+
 enum HRVAnalyzer {
     static func analyze<C: Collection>(_ raw: C,
                         now: Date = Date(),
@@ -184,7 +302,25 @@ enum HRVAnalyzer {
 
         let window = raw[windowStartIndex...]
         guard window.count >= 2, let firstSample = window.first else { return (nil, []) }
-        let coverage = min(300, now.timeIntervalSince(firstSample.t))
+        guard window.allSatisfy({
+            $0.source == .standardHeartRateMeasurement2A37
+        }) else {
+            // Legacy nil and mixed proprietary fallback windows are evidence,
+            // not a standard 2A37 metric stream.
+            return (nil, [])
+        }
+        // RR timestamps mark interval ends. At 30-40 bpm the first beat inside
+        // this slice normally lands after the five-minute boundary even though
+        // its measured interval crosses that boundary. Include only that real
+        // measured portion so low-rate windows are not impossible by design.
+        let firstIntervalSeconds = (300...2000).contains(firstSample.ms)
+            ? firstSample.ms / 1_000
+            : 0
+        let measuredStart = max(
+            minimumWindowDate,
+            firstSample.t.addingTimeInterval(-firstIntervalSeconds)
+        )
+        let coverage = min(300, max(0, now.timeIntervalSince(measuredStart)))
 
         var kept: [RRInterval] = []
         kept.reserveCapacity(window.count)
@@ -256,10 +392,11 @@ enum HRVAnalyzer {
                                        rejectedDeltaOver20Percent: rejectedDeltaOver20Percent,
                                        rejectedHRMismatch: rejectedHRMismatch,
                                        interpolated: 0,
+                                       successiveDifferenceCount: 0,
                                        windowSeconds: coverage,
                                        maxRRGapSeconds: maxRRGapSeconds,
                                        respiratoryRate: nil,
-                                       measurementStart: firstSample.t,
+                                       measurementStart: measuredStart,
                                        measurementEnd: measurementEnd,
                                        analyzedAt: now,
                                        provenance: provenance)
@@ -292,10 +429,11 @@ enum HRVAnalyzer {
                                    rejectedDeltaOver20Percent: rejectedDeltaOver20Percent,
                                    rejectedHRMismatch: rejectedHRMismatch,
                                    interpolated: 0,
+                                   successiveDifferenceCount: diffCount,
                                    windowSeconds: coverage,
                                    maxRRGapSeconds: maxRRGapSeconds,
                                    respiratoryRate: resp,
-                                   measurementStart: firstSample.t,
+                                   measurementStart: measuredStart,
                                    measurementEnd: measurementEnd,
                                    analyzedAt: now,
                                    provenance: provenance)

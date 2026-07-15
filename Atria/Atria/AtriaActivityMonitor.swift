@@ -368,6 +368,21 @@ enum AtriaActivityDisplayIcon {
     }
 }
 
+struct AtriaDetectedActivityPresentation: Equatable {
+    let title: String
+    let icon: String
+
+    static func make(kind: ActivityDetection.Kind,
+                     suggestedActivityType: AtriaWorkoutActivityType?) -> Self {
+        if let suggestedActivityType {
+            return Self(title: "\(suggestedActivityType.rawValue) suggested",
+                        icon: suggestedActivityType.icon)
+        }
+        return Self(title: kind == .workout ? "Workout detected" : "Activity detected",
+                    icon: kind == .workout ? "figure.mixed.cardio" : "waveform.path.ecg")
+    }
+}
+
 enum AtriaActivityTimelineBuilder {
     static func workoutSpans(workouts: [UserConfirmedWorkout],
                              selectedDay: Date,
@@ -439,7 +454,9 @@ struct AtriaWorkoutSharePresentationGate: Equatable {
 
 @MainActor
 private enum AtriaWorkoutRouteTransactionRecovery {
-    static func recover(workouts: [UserConfirmedWorkout]) -> AtriaWorkoutRouteStore.TransactionRecoveryResult {
+    static func recover(
+        workouts: [UserConfirmedWorkout]
+    ) async -> AtriaWorkoutRouteStore.TransactionRecoveryResult {
         let canonical = workouts.map { workout in
             let resolved = AtriaWorkoutActivityType.resolved(
                 activityType: workout.activityType,
@@ -453,7 +470,9 @@ private enum AtriaWorkoutRouteTransactionRecovery {
                 end: workout.end
             )
         }
-        return AtriaWorkoutRouteStore.recoverPendingTransaction(canonicalWorkouts: canonical)
+        return await AtriaWorkoutRouteStore.recoverPendingTransactionAsync(
+            canonicalWorkouts: canonical
+        )
     }
 }
 
@@ -591,7 +610,9 @@ struct AtriaActivityMonitorTab: View {
                 .presentationDragIndicator(.visible)
         }
         .task(id: requestKey) {
-            _ = AtriaWorkoutRouteTransactionRecovery.recover(workouts: activity.confirmedWorkouts)
+            _ = await AtriaWorkoutRouteTransactionRecovery.recover(
+                workouts: activity.confirmedWorkouts
+            )
             await refreshDaySections(for: requestKey,
                                      activity: activity,
                                      calendar: calendar)
@@ -982,9 +1003,13 @@ struct AtriaActivityMonitorTab: View {
     }
 
     private func workoutReviewRow(_ candidate: WorkoutReviewCandidate) -> some View {
-        activityRow(icon: "figure.mixed.cardio",
+        let presentation = AtriaDetectedActivityPresentation.make(
+            kind: candidate.kind,
+            suggestedActivityType: candidate.suggestedActivityType
+        )
+        return activityRow(icon: presentation.icon,
                     tint: .orange,
-                    title: "Activity detected",
+                    title: presentation.title,
                     subtitle: Self.timeRange(start: candidate.start, end: candidate.end),
                     value: Self.durationText(candidate.duration),
                     badge: "Review",
@@ -994,16 +1019,19 @@ struct AtriaActivityMonitorTab: View {
     }
 
     private func detectionRow(_ detection: ActivityDetection) -> some View {
-        let title = detection.kind == .workout ? "Workout detected" : "Activity detected"
-        return activityRow(icon: detection.kind == .workout ? "figure.mixed.cardio" : "waveform.path.ecg",
+        let presentation = AtriaDetectedActivityPresentation.make(
+            kind: detection.kind,
+            suggestedActivityType: detection.suggestedActivityType
+        )
+        return activityRow(icon: presentation.icon,
                            tint: .orange,
-                           title: title,
+                           title: presentation.title,
                            subtitle: Self.timeRange(start: detection.start, end: detection.end),
                            value: Self.durationText(detection.duration),
                            badge: "Review",
                            context: detection.avgHR > 0 ? "\(detection.avgHR) bpm avg" : nil,
                            contextTint: .secondary)
-            .accessibilityLabel("\(title), \(Self.durationText(detection.duration)), \(Self.timeRange(start: detection.start, end: detection.end)). Review activity type.")
+            .accessibilityLabel("\(presentation.title), \(Self.durationText(detection.duration)), \(Self.timeRange(start: detection.start, end: detection.end)). Review activity type.")
     }
 
     private func workoutAccessibilityLabel(_ workout: UserConfirmedWorkout) -> String {
@@ -1242,18 +1270,26 @@ struct AtriaActivityMonitorTab: View {
             )
             var reviewIntervals: [(id: String, start: Date, end: Date, label: String, icon: String)] = []
             if let candidate = visibleReview {
+                let presentation = AtriaDetectedActivityPresentation.make(
+                    kind: candidate.kind,
+                    suggestedActivityType: candidate.suggestedActivityType
+                )
                 reviewIntervals.append(("workout-review-\(candidate.id)",
                                         max(candidate.start, dayStart),
                                         min(candidate.end, dayEnd),
-                                        "Activity detected",
-                                        "figure.mixed.cardio"))
+                                        presentation.title,
+                                        presentation.icon))
             }
             reviewIntervals.append(contentsOf: visibleDetections.map {
-                ("detection-\($0.id.uuidString)",
-                 max($0.start, dayStart),
-                 min($0.end, dayEnd),
-                 $0.kind == .workout ? "Workout detected" : "Activity detected",
-                 $0.kind == .workout ? "figure.mixed.cardio" : "waveform.path.ecg")
+                let presentation = AtriaDetectedActivityPresentation.make(
+                    kind: $0.kind,
+                    suggestedActivityType: $0.suggestedActivityType
+                )
+                return ("detection-\($0.id.uuidString)",
+                        max($0.start, dayStart),
+                        min($0.end, dayEnd),
+                        presentation.title,
+                        presentation.icon)
             })
             let reviewAssignments = AtriaActivityTimelineLanePacker.assignments(for: reviewIntervals.map {
                 AtriaActivityTimelineLaneInterval(id: $0.id, start: $0.start, end: $0.end)
@@ -1330,8 +1366,11 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     @State private var showShareSheet = false
     @State private var route: AtriaWorkoutRoute?
     @State private var routeSegments: [[CLLocationCoordinate2D]] = []
+    @State private var routeFileURL: URL?
+    @State private var routeSharePreviewPoints: [AtriaWorkoutShareSnapshot.RoutePoint] = []
     @State private var sharePresentationGate = AtriaWorkoutSharePresentationGate()
     @State private var showsHeartRateAndRecovery = false
+    @State private var isRouteTransactionInFlight = false
 
     /// Common activity types offered in the type picker (real workout kinds, not
     /// fabricated data — just labels for what the effort was).
@@ -1349,19 +1388,6 @@ private struct AtriaActivityWorkoutDetailSheet: View {
         _activitySubtype = State(initialValue: initialType?.normalizedSubtype(workout.activitySubtype))
         _startTime = State(initialValue: workout.start)
         _endTime = State(initialValue: workout.end)
-    }
-
-    private struct PreparedRoute: @unchecked Sendable {
-        let route: AtriaWorkoutRoute?
-        let segments: [[CLLocationCoordinate2D]]
-    }
-
-    private nonisolated static func prepareRoute(workoutID: String) -> PreparedRoute {
-        let savedRoute = AtriaWorkoutRouteStore.load(workoutID: workoutID)
-        let segments = savedRoute.map {
-            AtriaWorkoutRoute.presentationSegments(from: $0.points)
-        } ?? []
-        return PreparedRoute(route: savedRoute, segments: segments)
     }
 
     /// The workout window's real recorded HR samples from the saved sessions
@@ -1619,10 +1645,8 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                                      tint: Metrics.electricStrain)
                         }
                         statTile("Duration", durationText(workout.duration), tint: Metrics.electricStrain)
-                        if let steps = workout.workoutSteps {
-                            statTile("Steps",
-                                     workout.workoutStepsAreEstimated == true ? "~\(steps)" : "\(steps)",
-                                     tint: .mint)
+                        if let steps = completedWorkoutStepsText {
+                            statTile("Steps", steps, tint: .mint)
                         }
                         if workout.samples > 0 {
                             statTile("Avg HR",
@@ -1690,7 +1714,9 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                             Image(systemName: "square.and.arrow.up")
                         }
                     }
-                    .disabled(hasUnsavedChanges || sharePresentationGate.requestIsPending)
+                    .disabled(hasUnsavedChanges
+                              || sharePresentationGate.requestIsPending
+                              || isRouteTransactionInFlight)
                     .accessibilityLabel("Share workout")
                     .accessibilityHint(hasUnsavedChanges
                                        ? "Save your changes before sharing."
@@ -1703,6 +1729,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                         Button("Delete workout", systemImage: "trash", role: .destructive) {
                             showDeleteConfirm = true
                         }
+                        .disabled(isRouteTransactionInFlight)
                     } label: {
                         Image(systemName: "ellipsis")
                     }
@@ -1717,7 +1744,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Save", action: saveAll)
                         .fontWeight(.bold)
-                        .disabled(!canSave)
+                        .disabled(!canSave || isRouteTransactionInFlight)
                 }
             }
             .confirmationDialog("Delete this workout?",
@@ -1726,6 +1753,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 Button("Delete workout", role: .destructive) {
                     deleteWorkout()
                 }
+                .disabled(isRouteTransactionInFlight)
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Removes it from Activity history. Recorded strap data and day strain remain.")
@@ -1746,18 +1774,17 @@ private struct AtriaActivityWorkoutDetailSheet: View {
             }
             .task(id: workout.id) {
                 guard !sharePresentationGate.routeIsPrepared else { return }
-                _ = AtriaWorkoutRouteTransactionRecovery.recover(workouts: store.confirmedWorkouts)
-                let preparation = Task.detached(priority: .userInitiated) {
-                    Self.prepareRoute(workoutID: workout.id)
-                }
-                let prepared = await withTaskCancellationHandler {
-                    await preparation.value
-                } onCancel: {
-                    preparation.cancel()
-                }
+                _ = await AtriaWorkoutRouteTransactionRecovery.recover(
+                    workouts: store.confirmedWorkouts
+                )
+                let prepared = await AtriaWorkoutRouteStore.loadPreparedPresentationAsync(
+                    workoutID: workout.id
+                )
                 guard !Task.isCancelled else { return }
                 route = prepared.route
                 routeSegments = prepared.segments
+                routeFileURL = prepared.gpxURL
+                routeSharePreviewPoints = prepared.sharePreviewPoints
                 if sharePresentationGate.completeRoutePreparation() {
                     showShareSheet = true
                 }
@@ -1813,8 +1840,17 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     }
 
     private func saveAll() {
+        guard !isRouteTransactionInFlight else { return }
+        isRouteTransactionInFlight = true
+        Task { @MainActor in
+            await saveAllAsync()
+        }
+    }
+
+    private func saveAllAsync() async {
+        defer { isRouteTransactionInFlight = false }
         saveError = nil
-        let pendingRecovery = AtriaWorkoutRouteTransactionRecovery.recover(
+        let pendingRecovery = await AtriaWorkoutRouteTransactionRecovery.recover(
             workouts: store.confirmedWorkouts
         )
         guard pendingRecovery != .failed, pendingRecovery != .deferred else {
@@ -1838,7 +1874,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
             start: workout.start,
             end: workout.end
         )
-        guard AtriaWorkoutRouteStore.beginEditTransaction(
+        guard await AtriaWorkoutRouteStore.beginEditTransactionAsync(
             from: originalState,
             to: expectedWorkoutID,
             activityType: requestedType,
@@ -1870,13 +1906,15 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 subtype: savedWorkout.activitySubtype,
                 label: savedWorkout.label
             )
-            switch AtriaWorkoutRouteStore.reconcile(from: workout.id,
-                                                     to: savedWorkout.id,
-                                                     activityType: resolvedType,
-                                                     start: savedWorkout.start,
-                                                     end: savedWorkout.end) {
+            switch await AtriaWorkoutRouteStore.reconcileAsync(
+                from: workout.id,
+                to: savedWorkout.id,
+                activityType: resolvedType,
+                start: savedWorkout.start,
+                end: savedWorkout.end
+            ) {
             case .success:
-                _ = AtriaWorkoutRouteStore.clearPendingTransaction()
+                _ = await AtriaWorkoutRouteStore.clearPendingTransactionAsync()
                 dismiss()
             case .failure:
                 // Route persistence is a separate file from the canonical
@@ -1903,7 +1941,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                     // Recovery recognizes the rolled-back canonical metadata,
                     // including the rare legacy case where rebuilding the old
                     // window gives it a different deterministic ID.
-                    let recovery = AtriaWorkoutRouteStore.recoverPendingTransaction(
+                    let recovery = await AtriaWorkoutRouteStore.recoverPendingTransactionAsync(
                         canonicalWorkouts: [
                             .init(id: rolledBackWorkout.id,
                                   activityType: restoredType.rawValue,
@@ -1921,7 +1959,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 }
             }
         case .failure(let error):
-            _ = AtriaWorkoutRouteStore.clearPendingTransaction()
+            _ = await AtriaWorkoutRouteStore.clearPendingTransactionAsync()
             saveError = error.userMessage
         }
     }
@@ -1934,27 +1972,38 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     }
 
     private func deleteWorkout() {
+        guard !isRouteTransactionInFlight else { return }
+        isRouteTransactionInFlight = true
+        Task { @MainActor in
+            await deleteWorkoutAsync()
+        }
+    }
+
+    private func deleteWorkoutAsync() async {
+        defer { isRouteTransactionInFlight = false }
         saveError = nil
-        let pendingRecovery = AtriaWorkoutRouteTransactionRecovery.recover(
+        let pendingRecovery = await AtriaWorkoutRouteTransactionRecovery.recover(
             workouts: store.confirmedWorkouts
         )
         guard pendingRecovery != .failed, pendingRecovery != .deferred else {
             saveError = "Atria is still recovering an earlier route update. Close and reopen Activity, then try Delete again."
             return
         }
-        guard AtriaWorkoutRouteStore.beginDeleteTransaction(workoutID: workout.id) else {
+        guard await AtriaWorkoutRouteStore.beginDeleteTransactionAsync(
+            workoutID: workout.id
+        ) else {
             saveError = "Atria couldn’t prepare this deletion safely. Nothing was deleted; try again."
             return
         }
         guard store.deleteConfirmedWorkout(id: workout.id) else {
-            _ = AtriaWorkoutRouteStore.clearPendingTransaction()
+            _ = await AtriaWorkoutRouteStore.clearPendingTransactionAsync()
             saveError = "Atria couldn’t remove this workout. Nothing was deleted; try again."
             return
         }
         // Metadata is authoritative and must be durably removed first. A route
         // is never discarded while its Activity record may still be present.
-        if AtriaWorkoutRouteStore.delete(workoutID: workout.id) {
-            _ = AtriaWorkoutRouteStore.clearPendingTransaction()
+        if await AtriaWorkoutRouteStore.deleteAsync(workoutID: workout.id) {
+            _ = await AtriaWorkoutRouteStore.clearPendingTransactionAsync()
         }
         dismiss()
     }
@@ -1975,8 +2024,8 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                         Label(routePaceText(pace), systemImage: "speedometer")
                     }
                     Spacer(minLength: 0)
-                    if let url = AtriaWorkoutRouteStore.gpxURL(for: route) {
-                        ShareLink(item: url) {
+                    if let routeFileURL {
+                        ShareLink(item: routeFileURL) {
                             Label("GPX", systemImage: "square.and.arrow.up")
                                 .font(.caption.weight(.bold))
                         }
@@ -2012,11 +2061,13 @@ private struct AtriaActivityWorkoutDetailSheet: View {
         let resolvedActivity = AtriaWorkoutActivityType.resolved(activityType: activityType,
                                                                   subtype: workout.activitySubtype,
                                                                   label: workout.label)
-        let steps = [.walking, .running, .hiking].contains(resolvedActivity)
-            ? workout.workoutSteps.map {
-                workout.workoutStepsAreEstimated == true ? "~\($0)" : "\($0)"
-            }
-            : nil
+        let steps = AtriaWorkoutSharePresentation.completedStepsText(
+            count: workout.workoutSteps,
+            isEstimated: workout.workoutStepsAreEstimated,
+            capturedAt: workout.workoutStepsCapturedAt,
+            workoutEndedAt: workout.end,
+            activity: resolvedActivity
+        )
         return AtriaWorkoutShareSnapshot(
             date: workout.end,
             activity: workout.activitySubtype ?? workout.activityType ?? workout.label,
@@ -2028,9 +2079,28 @@ private struct AtriaActivityWorkoutDetailSheet: View {
             distance: route.map { routeDistanceText($0.distanceMeters) },
             pace: route?.averagePaceSecondsPerKilometer.map(routePaceText),
             steps: steps,
-            activitySystemImage: resolvedActivity.icon,
-            routeFileURL: route.flatMap { AtriaWorkoutRouteStore.gpxURL(for: $0) },
-            routePoints: route.map { AtriaWorkoutShareSnapshot.routePreviewPoints(from: $0) } ?? []
+            activitySystemImage: AtriaActivityDisplayIcon.icon(
+                activityType: workout.activityType,
+                subtype: workout.activitySubtype,
+                label: workout.label
+            ),
+            routeFileURL: routeFileURL,
+            routePoints: routeSharePreviewPoints
+        )
+    }
+
+    private var completedWorkoutStepsText: String? {
+        let resolvedActivity = AtriaWorkoutActivityType.resolved(
+            activityType: workout.activityType,
+            subtype: workout.activitySubtype,
+            label: workout.label
+        )
+        return AtriaWorkoutSharePresentation.completedStepsText(
+            count: workout.workoutSteps,
+            isEstimated: workout.workoutStepsAreEstimated,
+            capturedAt: workout.workoutStepsCapturedAt,
+            workoutEndedAt: workout.end,
+            activity: resolvedActivity
         )
     }
 

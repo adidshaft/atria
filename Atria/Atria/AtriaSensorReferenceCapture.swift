@@ -259,27 +259,22 @@ final class AtriaSensorReferenceStore: ObservableObject {
 /// The capture timestamp is assigned when the operator taps Capture now, not
 /// when this form opens, so it can be aligned to the instrument display.
 struct AtriaSensorReferenceCaptureCard: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @StateObject private var store = AtriaSensorReferenceStore()
     @State private var draft: Draft?
     @State private var exportURL: URL?
     @State private var showsClearConfirmation = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Sensor references", subtitle: "Developer research")
-                Spacer(minLength: 0)
-                AtriaStatusChip(text: "\(store.entries.count)",
-                                systemImage: "scope",
-                                tint: store.entries.isEmpty ? .gray : .teal)
-            }
+        VStack(alignment: .leading, spacing: 12) {
+            header
 
-            Text("Enter an independent instrument reading, then tap Record now as that value appears. Entries remain local until you share the CSV.")
-                .font(.caption)
+            Text("Record an external reading when it appears. Data stays on this iPhone until exported.")
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            LazyVGrid(columns: Self.columns, spacing: 10) {
+            VStack(spacing: 8) {
                 referenceButton(.oxygenReference)
                 referenceButton(.skinTemperature)
                 referenceButton(.clockMarker)
@@ -300,43 +295,18 @@ struct AtriaSensorReferenceCaptureCard: View {
                     Text(Self.valueText(latest))
                         .font(.caption.monospacedDigit().weight(.semibold))
                 }
-                .padding(12)
-                .atriaInsetCard(tint: .teal)
+                .padding(.vertical, 2)
+                .accessibilityElement(children: .combine)
             }
 
-            HStack(spacing: 10) {
-                if let exportURL {
-                    ShareLink(item: exportURL) {
-                        Label("Share CSV", systemImage: "square.and.arrow.up")
-                            .frame(maxWidth: .infinity, minHeight: 38)
-                    }
-                    .atriaCardAction(prominent: false, tint: .teal)
-                } else {
-                    Button {
-                        exportURL = try? store.writeCSV()
-                    } label: {
-                        Label("Prepare CSV", systemImage: "doc.badge.gearshape")
-                            .frame(maxWidth: .infinity, minHeight: 38)
-                    }
-                    .atriaCardAction(prominent: false, tint: .teal)
-                    .disabled(store.entries.isEmpty)
-                }
+            exportActions
 
-                Button(role: .destructive) {
-                    showsClearConfirmation = true
-                } label: {
-                    Label("Clear", systemImage: "trash")
-                        .frame(maxWidth: .infinity, minHeight: 38)
-                }
-                .atriaCardAction(prominent: false, tint: .secondary)
-                .disabled(store.entries.isEmpty)
-            }
-
-            Label("Research only · decoder locked · no HealthKit write", systemImage: "lock.shield")
-                .font(.caption2.weight(.semibold))
+            Label("Research only · Decoders locked · No HealthKit writes", systemImage: "lock.shield")
+                .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(18)
+        .padding(16)
         .atriaCard(emphasis: .soft)
         .sheet(item: $draft) { draft in
             AtriaSensorReferenceCaptureSheet(draft: draft) { completed in
@@ -364,6 +334,87 @@ struct AtriaSensorReferenceCaptureCard: View {
         }
     }
 
+    @ViewBuilder
+    private var header: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 6) {
+                AtriaPanelSectionHeader(title: "Sensor references", subtitle: "Developer research")
+                entryCount
+            }
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                AtriaPanelSectionHeader(title: "Sensor references", subtitle: "Developer research")
+                Spacer(minLength: 8)
+                entryCount
+            }
+        }
+    }
+
+    private var entryCount: some View {
+        Text("\(store.entries.count) \(store.entries.count == 1 ? "record" : "records")")
+            .font(.caption.monospacedDigit().weight(.semibold))
+            .foregroundStyle(store.entries.isEmpty ? Color.secondary : Color.teal)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityLabel("\(store.entries.count) sensor reference records")
+    }
+
+    @ViewBuilder
+    private var exportActions: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(spacing: 8) {
+                exportButton
+                clearButton
+            }
+        } else {
+            HStack(spacing: 8) {
+                exportButton
+                clearButton
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var exportButton: some View {
+        if let exportURL {
+            ShareLink(item: exportURL) {
+                compactActionLabel("Share CSV", systemImage: "square.and.arrow.up")
+            }
+            .tint(.teal)
+            .buttonStyle(.glass)
+            .buttonBorderShape(.roundedRectangle(radius: 14))
+        } else {
+            Button {
+                exportURL = try? store.writeCSV()
+            } label: {
+                compactActionLabel("Prepare CSV", systemImage: "doc.badge.gearshape")
+            }
+            .tint(.teal)
+            .buttonStyle(.glass)
+            .buttonBorderShape(.roundedRectangle(radius: 14))
+            .disabled(store.entries.isEmpty)
+        }
+    }
+
+    private var clearButton: some View {
+        Button(role: .destructive) {
+            showsClearConfirmation = true
+        } label: {
+            compactActionLabel("Clear", systemImage: "trash")
+        }
+        .tint(.red)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.roundedRectangle(radius: 14))
+        .disabled(store.entries.isEmpty)
+    }
+
+    private func compactActionLabel(_ title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.subheadline.weight(.semibold))
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, minHeight: 44)
+    }
+
     private func referenceButton(_ kind: AtriaSensorReferenceEntry.Kind) -> some View {
         Button {
             if kind == .clockMarker {
@@ -379,14 +430,31 @@ struct AtriaSensorReferenceCaptureCard: View {
                 draft = Draft(kind: kind)
             }
         } label: {
-            Label(kind == .clockMarker ? "Mark clock" : kind.title,
-                  systemImage: kind.systemImage)
-                .font(.caption.weight(.semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-                .frame(maxWidth: .infinity, minHeight: 38)
+            HStack(spacing: 12) {
+                Image(systemName: kind.systemImage)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.teal)
+                    .frame(width: 24)
+
+                Text(kind == .clockMarker ? "Mark clock" : kind.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(1)
+
+                Spacer(minLength: 8)
+
+                Image(systemName: kind == .clockMarker ? "plus" : "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
         }
-        .atriaCardAction(prominent: false, tint: .teal)
+        .tint(.teal)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.roundedRectangle(radius: 14))
     }
 
     private static func valueText(_ entry: AtriaSensorReferenceEntry) -> String {
@@ -415,8 +483,6 @@ struct AtriaSensorReferenceCaptureCard: View {
             Double(valueText.replacingOccurrences(of: ",", with: "."))
         }
     }
-
-    private static let columns = [GridItem(.adaptive(minimum: 110), spacing: 10)]
 }
 
 private struct AtriaSensorReferenceCaptureSheet: View {

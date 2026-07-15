@@ -141,4 +141,30 @@ final class AtriaSleepEditorRoutingTests: XCTestCase {
         XCTAssertFalse(source.contains(": \"Not \\(itemName)\""),
                        "Sleep and nap candidates should use the same explicit Dismiss action as workout candidates")
     }
+
+    func testHistoryOneTapConfirmReportsPersistenceFailureWithoutDroppingCandidate() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/Sessions.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let ctaStart = try XCTUnwrap(source.range(of: "private struct HistorySleepReviewCTA: View"))
+        let ctaEnd = try XCTUnwrap(source.range(of: "struct HistorySnapshot",
+                                               range: ctaStart.upperBound..<source.endIndex))
+        let cta = String(source[ctaStart.lowerBound..<ctaEnd.lowerBound])
+
+        XCTAssertTrue(source.contains("store.confirmSleepHistoryNightForUI("))
+        XCTAssertTrue(source.contains(") != nil"),
+                      "History must propagate durable confirmation success")
+        XCTAssertTrue(cta.contains("let onConfirm: () -> Bool"))
+        XCTAssertTrue(cta.contains("confirmationFailed = !onConfirm()"))
+        XCTAssertTrue(cta.contains("This suggestion is still available"),
+                      "A failed History save must explain that the candidate was retained")
+        XCTAssertFalse(cta.contains("onConfirm: () -> Void"))
+        XCTAssertTrue(cta.contains(".accessibilityElement(children: .contain)"))
+        XCTAssertFalse(cta.contains(".accessibilityElement(children: .combine)"),
+                       "Interactive sleep review actions must remain individually reachable")
+        XCTAssertTrue(cta.contains(".onChange(of: night.id)"),
+                      "A failure from an older suggestion must not leak onto a new candidate")
+    }
 }

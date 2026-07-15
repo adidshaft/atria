@@ -39,7 +39,7 @@ struct AtriaStepCalibrationStage: Equatable, Identifiable {
         case .rest:
             return "Keep your wrist still until the rest window is complete."
         case .walk:
-            return "Count exactly \(expectedSteps) steps with natural arm swing."
+            return "Keep the strap wrist still for GO, then count exactly \(expectedSteps) steps with natural arm swing."
         }
     }
 
@@ -64,10 +64,12 @@ final class AtriaStepCalibrationPlanStore: ObservableObject {
         var sessionStartedMS: Int64?
         var activeStageIndex: Int?
         var activeStageStartMS: Int64?
+        var activeStageFinishRequestedMS: Int64?
         var windows: [AtriaStepCalibrationManifest.Window] = []
     }
 
     static let defaultsKey = "atria.stepCalibration.sequence.v1"
+    static let boundaryGuardDurationMS: Int64 = 2_000
     static let stages: [AtriaStepCalibrationStage] = [
         AtriaStepCalibrationStage(label: "Rest before", kind: .rest, expectedSteps: 0),
         AtriaStepCalibrationStage(label: "Slow 100", kind: .walk, expectedSteps: 100),
@@ -108,14 +110,30 @@ final class AtriaStepCalibrationPlanStore: ObservableObject {
     var completedStageCount: Int { state.windows.count }
     var totalStageCount: Int { Self.stages.count }
     var isRunning: Bool { state.activeStageStartMS != nil }
+    var isFinishing: Bool { state.activeStageFinishRequestedMS != nil }
     var isComplete: Bool { completedStageCount == totalStageCount }
     var manifest: AtriaStepCalibrationManifest { AtriaStepCalibrationManifest(windows: state.windows) }
 
-    func canStopCurrentStage(at date: Date? = nil) -> Bool {
+    func canBeginCountedMotion(at date: Date? = nil) -> Bool {
+        guard let startMS = state.activeStageStartMS else { return false }
+        return Self.unixMilliseconds(date ?? now()) - startMS >= Self.boundaryGuardDurationMS
+    }
+
+    func canRequestFinish(at date: Date? = nil) -> Bool {
         guard let stage = currentStage,
-              let startMS = state.activeStageStartMS else { return false }
+              let startMS = state.activeStageStartMS,
+              state.activeStageFinishRequestedMS == nil else { return false }
         let endMS = Self.unixMilliseconds(date ?? now())
-        return endMS - startMS >= stage.minimumDurationMS
+        return endMS - startMS >= max(stage.minimumDurationMS, Self.boundaryGuardDurationMS)
+    }
+
+    var fixedCaptureEndMS: Int64? {
+        state.activeStageFinishRequestedMS.map { $0 + Self.boundaryGuardDurationMS }
+    }
+
+    func canValidateCurrentStage(at date: Date? = nil) -> Bool {
+        guard let fixedCaptureEndMS else { return false }
+        return Self.unixMilliseconds(date ?? now()) >= fixedCaptureEndMS
     }
 
     @discardableResult
@@ -127,6 +145,18 @@ final class AtriaStepCalibrationPlanStore: ObservableObject {
         }
         state.activeStageIndex = state.windows.count
         state.activeStageStartMS = timestamp
+        state.activeStageFinishRequestedMS = nil
+        persist()
+        return true
+    }
+
+    /// Freezes the end of counted motion. Validation deliberately uses this
+    /// timestamp plus a two-second still guard, never the time of a later tap
+    /// or foreground resume.
+    @discardableResult
+    func requestFinishCurrentStage() -> Bool {
+        guard canRequestFinish() else { return false }
+        state.activeStageFinishRequestedMS = Self.unixMilliseconds(now())
         persist()
         return true
     }
@@ -137,13 +167,14 @@ final class AtriaStepCalibrationPlanStore: ObservableObject {
     ) -> Bool {
         guard let stage = currentStage,
               state.activeStageIndex == state.windows.count,
-              state.activeStageStartMS != nil,
+              let requestedStartMS = state.activeStageStartMS,
+              let requestedEndMS = fixedCaptureEndMS,
+              canValidateCurrentStage(),
+              validatedQuality.durationMS == requestedEndMS - requestedStartMS,
               validatedQuality.isReady,
               let startMS = validatedQuality.alignedStartMS,
               let endMS = validatedQuality.alignedEndMSExclusive,
               endMS > startMS else { return false }
-        let stoppedAt = now()
-        guard canStopCurrentStage(at: stoppedAt) else { return false }
         state.windows.append(
             AtriaStepCalibrationManifest.Window(
                 label: stage.label,
@@ -155,6 +186,7 @@ final class AtriaStepCalibrationPlanStore: ObservableObject {
         )
         state.activeStageIndex = nil
         state.activeStageStartMS = nil
+        state.activeStageFinishRequestedMS = nil
         persist()
         return true
     }
@@ -162,10 +194,11 @@ final class AtriaStepCalibrationPlanStore: ObservableObject {
     /// A failed window is never spliced with later frames. Keep every earlier
     /// validated stage, but require the current counted/rest segment to start
     /// again from a fresh device-time boundary.
-    func discardCurrentStage() {
+    func retryCurrentStage() {
         guard isRunning else { return }
         state.activeStageIndex = nil
         state.activeStageStartMS = nil
+        state.activeStageFinishRequestedMS = nil
         persist()
     }
 
@@ -209,13 +242,16 @@ final class AtriaStepCalibrationPlanStore: ObservableObject {
                   window.expectedSteps == stage.expectedSteps,
                   window.startMS < window.endMS else { return false }
         }
-        switch (state.activeStageIndex, state.activeStageStartMS) {
-        case (nil, nil):
+        switch (state.activeStageIndex, state.activeStageStartMS, state.activeStageFinishRequestedMS) {
+        case (nil, nil, nil):
             return true
-        case let (index?, startMS?):
-            return index == state.windows.count
-                && index < stages.count
-                && startMS > 0
+        case let (index?, startMS?, finishMS):
+            guard index == state.windows.count,
+                  index < stages.count,
+                  startMS > 0 else { return false }
+            guard let finishMS else { return true }
+            return finishMS - startMS >= max(stages[index].minimumDurationMS,
+                                             boundaryGuardDurationMS)
         default:
             return false
         }
@@ -251,12 +287,19 @@ struct AtriaStepCalibrationSequenceCard: View {
                     .atriaInsetCard(tint: .green)
             }
 
-            if let validationMessage {
-                Label(validationMessage, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityLabel("Calibration stage failed. \(validationMessage)")
+            if let failureText = validationMessage {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label(failureText, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel("Calibration stage failed. \(failureText)")
+                    Button("Retry stage", role: .destructive) {
+                        plan.retryCurrentStage()
+                        validationMessage = nil
+                    }
+                    .font(.caption.weight(.semibold))
+                }
             }
 
             completedStages
@@ -321,10 +364,12 @@ struct AtriaStepCalibrationSequenceCard: View {
                 Spacer(minLength: 0)
             }
 
-            Text(stage.instruction)
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(stageInstruction(stage, referenceDate: context.date))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            }
 
             if plan.isRunning {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -339,43 +384,53 @@ struct AtriaStepCalibrationSequenceCard: View {
     }
 
     private func stageControl(_ stage: AtriaStepCalibrationStage, referenceDate: Date) -> some View {
-        let stopIsReady = plan.canStopCurrentStage(at: referenceDate)
+        let finishIsReady = plan.canRequestFinish(at: referenceDate)
+        let validationIsReady = plan.canValidateCurrentStage(at: referenceDate)
         return Button {
-            if plan.isRunning {
-                guard let startMS = plan.state.activeStageStartMS else { return }
-                let endMS = Int64((referenceDate.timeIntervalSince1970 * 1_000).rounded())
-                let quality = AtriaStrapCalibrationArchive.shared.captureQuality(
-                    startMS: startMS,
-                    endMS: endMS
-                )
-                if plan.stopCurrentStage(validatedQuality: quality) {
-                    validationMessage = nil
-                    AtriaStrapCalibrationArchive.shared.flush()
-                    if plan.isComplete {
-                        exportURL = try? plan.writeManifest()
-                        ble.finishStepCalibrationCapture()
-                    }
-                } else if stopIsReady {
-                    plan.discardCurrentStage()
-                    validationMessage = quality.failureSummary
-                }
-            } else if ble.stepCalibrationCaptureArmedAt == nil {
-                ble.armStepCalibrationCapture()
-            } else if ble.stepCalibrationMotionStreamReady {
-                validationMessage = nil
-                _ = plan.startCurrentStage()
-            }
+            handleStageControl(referenceDate: referenceDate)
         } label: {
             Label(controlTitle(stage: stage, referenceDate: referenceDate), systemImage: controlSystemImage)
                 .font(.subheadline.weight(.semibold))
                 .frame(maxWidth: .infinity, minHeight: 42)
         }
         .atriaCardAction(prominent: true, tint: plan.isRunning ? .red : .indigo)
-        .disabled((plan.isRunning && !stopIsReady)
+        .disabled((plan.isRunning && !(plan.isFinishing ? validationIsReady : finishIsReady))
                   || (!plan.isRunning
                       && ble.stepCalibrationCaptureArmedAt != nil
                       && !ble.stepCalibrationMotionStreamReady))
-        .accessibilityHint(controlAccessibilityHint(stopIsReady: stopIsReady))
+        .accessibilityHint(controlAccessibilityHint(finishIsReady: finishIsReady,
+                                                    validationIsReady: validationIsReady))
+    }
+
+    private func handleStageControl(referenceDate: Date) {
+        if !plan.isRunning {
+            if ble.stepCalibrationCaptureArmedAt == nil {
+                ble.armStepCalibrationCapture()
+            } else if ble.stepCalibrationMotionStreamReady {
+                validationMessage = nil
+                _ = plan.startCurrentStage()
+            }
+            return
+        }
+        if !plan.isFinishing {
+            if plan.requestFinishCurrentStage() { validationMessage = nil }
+            return
+        }
+        guard plan.canValidateCurrentStage(at: referenceDate),
+              let startMS = plan.state.activeStageStartMS,
+              let endMS = plan.fixedCaptureEndMS else { return }
+        let quality = AtriaStrapCalibrationArchive.shared.captureQuality(startMS: startMS,
+                                                                         endMS: endMS)
+        if plan.stopCurrentStage(validatedQuality: quality) {
+            validationMessage = nil
+            AtriaStrapCalibrationArchive.shared.flush()
+            if plan.isComplete {
+                exportURL = try? plan.writeManifest()
+                ble.finishStepCalibrationCapture()
+            }
+        } else {
+            validationMessage = quality.failureSummary
+        }
     }
 
     private func controlTitle(stage: AtriaStepCalibrationStage, referenceDate: Date) -> String {
@@ -383,14 +438,17 @@ struct AtriaStepCalibrationSequenceCard: View {
             if ble.stepCalibrationCaptureArmedAt == nil { return "Prepare motion stream" }
             return ble.stepCalibrationMotionStreamReady ? "Start stage" : "Waiting for fresh motion…"
         }
-        guard
-              stage.minimumDurationMS > 0,
-              let startMS = plan.state.activeStageStartMS else {
-            return "Stop stage"
+        if let fixedEndMS = plan.fixedCaptureEndMS {
+            let nowMS = Int64((referenceDate.timeIntervalSince1970 * 1_000).rounded())
+            let remaining = max(0, Int(ceil(Double(fixedEndMS - nowMS) / 1_000)))
+            return remaining > 0 ? "Hold still · \(remaining)s" : "Validate stage"
         }
+        guard let startMS = plan.state.activeStageStartMS else { return "Start stage" }
         let elapsedMS = Int64(referenceDate.timeIntervalSince1970 * 1_000) - startMS
-        let remainingSeconds = max(0, Int(ceil(Double(stage.minimumDurationMS - elapsedMS) / 1_000)))
-        return remainingSeconds > 0 ? "Rest · \(remainingSeconds)s remaining" : "Stop stage"
+        let requiredMS = max(stage.minimumDurationMS, AtriaStepCalibrationPlanStore.boundaryGuardDurationMS)
+        let remainingSeconds = max(0, Int(ceil(Double(requiredMS - elapsedMS) / 1_000)))
+        if remainingSeconds > 0 { return "Hold still · \(remainingSeconds)s" }
+        return stage.kind == .walk ? "Steps complete" : "Rest complete"
     }
 
     private var controlSystemImage: String {
@@ -399,9 +457,16 @@ struct AtriaStepCalibrationSequenceCard: View {
         return ble.stepCalibrationMotionStreamReady ? "play.fill" : "hourglass"
     }
 
-    private func controlAccessibilityHint(stopIsReady: Bool) -> String {
+    private func controlAccessibilityHint(finishIsReady: Bool, validationIsReady: Bool) -> String {
         if plan.isRunning {
-            return stopIsReady ? "Saves the current timed window" : "Rest windows require sixty seconds"
+            if plan.isFinishing {
+                return validationIsReady
+                    ? "Validates and saves the fixed calibration window"
+                    : "Keep the strap wrist still for the trailing boundary guard"
+            }
+            return finishIsReady
+                ? "Freezes the end of counted motion"
+                : "Keep the strap wrist still until the stage is ready"
         }
         if ble.stepCalibrationCaptureArmedAt == nil {
             return "Prepares high-resolution strap motion for the timed sequence"
@@ -410,6 +475,20 @@ struct AtriaStepCalibrationSequenceCard: View {
             return "Start becomes available after a fresh strap motion frame arrives"
         }
         return "Begins machine timestamping this window"
+    }
+
+    private func stageInstruction(_ stage: AtriaStepCalibrationStage,
+                                  referenceDate: Date) -> String {
+        if plan.isFinishing { return "Keep the strap wrist still until this stage is ready." }
+        if plan.isRunning,
+           stage.kind == .walk,
+           !plan.canBeginCountedMotion(at: referenceDate) {
+            return "Keep the strap wrist still. Begin only when GO appears."
+        }
+        if plan.isRunning, stage.kind == .walk {
+            return "GO · Count exactly \(stage.expectedSteps) steps, then tap Steps complete."
+        }
+        return stage.instruction
     }
 
     @ViewBuilder

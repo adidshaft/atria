@@ -224,6 +224,65 @@ final class AtriaPerfFixesTests: XCTestCase {
                                                              retentionSpan: 10_800))
     }
 
+    func testProductionSessionBoundariesNeverSynchronouslyWaitOnR10Queue() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertFalse(source.contains("r10MotionPipeline.currentSnapshotSynchronously()"))
+        XCTAssertFalse(source.contains("r10MotionPipeline.rollSegmentSynchronously"))
+
+        let start = try XCTUnwrap(source.range(of: "private func completeSessionBoundary("))
+        let end = try XCTUnwrap(source.range(of: "private func waitForSessionInputBatchesToDrain(",
+                                             range: start.upperBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        let prepare = try XCTUnwrap(body.range(of: "await motionPreparation.value()"))
+        let durable = try XCTUnwrap(body.range(of: "await persistFinishedSessionDurably"))
+        let commit = try XCTUnwrap(body.range(of: "await r10MotionPipeline.commitBoundary"))
+        let reset = try XCTUnwrap(body.range(of: "resetLiveSessionStateAfterR10Boundary"))
+        let release = try XCTUnwrap(body.range(of: "await r10MotionPipeline.releaseCommittedBoundaryFrames"))
+        let forceRelease = try XCTUnwrap(body.range(of: "await r10MotionPipeline.forceReleaseCommittedBoundaryFrames"))
+        let clearManagerFence = try XCTUnwrap(body.range(of: "r10SessionBoundaryID = nil"))
+        XCTAssertLessThan(prepare.lowerBound, durable.lowerBound)
+        XCTAssertLessThan(durable.lowerBound, commit.lowerBound)
+        XCTAssertLessThan(commit.lowerBound, reset.lowerBound)
+        XCTAssertLessThan(reset.lowerBound, release.lowerBound)
+        XCTAssertLessThan(release.lowerBound, forceRelease.lowerBound)
+        XCTAssertLessThan(forceRelease.lowerBound, clearManagerFence.lowerBound)
+        XCTAssertTrue(body.contains("guard releasedMotion else"),
+                      "the manager must never clear its boundary or report success with R10 still fenced")
+        XCTAssertTrue(body.contains("abortSessionBoundary"),
+                      "every failed persistence/commit path must retain the old segment")
+        XCTAssertTrue(source.contains("r10MotionPipeline.enqueueBoundaryPreparation()"))
+        XCTAssertTrue(body.contains("beginActiveJournalBoundaryFence"))
+        XCTAssertTrue(body.contains("endActiveJournalBoundaryFence(id: id, committed: true)"))
+        XCTAssertTrue(source.contains("bufferedSessionInputs.append(.heartRate"))
+        XCTAssertTrue(source.contains("bufferedSessionInputs.append(.realtime"))
+        XCTAssertTrue(source.contains("snapshotGeneration: snapshot.generation"))
+    }
+
+    func testSessionBoundarySettlesOldJournalWriterBeforeSuccessOrFailureOutcome() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let beginStart = try XCTUnwrap(source.range(of: "private func beginActiveJournalBoundaryFence"))
+        let endStart = try XCTUnwrap(source.range(of: "private func endActiveJournalBoundaryFence",
+                                                  range: beginStart.upperBound..<source.endIndex))
+        let abortStart = try XCTUnwrap(source.range(of: "private func abortSessionBoundary(",
+                                                    range: endStart.upperBound..<source.endIndex))
+        let begin = String(source[beginStart.lowerBound..<endStart.lowerBound])
+        let end = String(source[endStart.lowerBound..<abortStart.lowerBound])
+        XCTAssertTrue(begin.contains("while activeJournalSaveInFlight"),
+                      "clear/reset must wait until the old detached writer and its main callback settle")
+        XCTAssertTrue(begin.contains("activeJournalBoundaryFenceID = id"))
+        XCTAssertTrue(end.contains("if committed"))
+        XCTAssertTrue(end.contains("session_boundary_abort_restore"),
+                      "failed SavedSession persistence must re-arm the retained live journal")
+        XCTAssertTrue(source.contains("self.activeJournalBoundaryFenceID == nil"),
+                      "an old completion must not schedule another write through the boundary fence")
+    }
+
     func testLongWearSessionRollsAtRecordedCivilMidnight() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -263,43 +322,21 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertEqual(healthyConsumed, 2)
     }
 
-    func testLiveStrapStepResearchPublishCadenceKeepsInternalStepsFreshButUIBounded() {
-        let now = t0
-
+    func testLiveStrapStepResearchPublishesEveryChangedPipelineSnapshot() {
         XCTAssertFalse(AtriaBLEManager.shouldPublishLiveStrapStepResearch(currentCount: 12,
-                                                                          publishedCount: 12,
-                                                                          lastPublishedAt: now,
-                                                                          now: now))
+                                                                          publishedCount: 12))
         XCTAssertTrue(AtriaBLEManager.shouldPublishLiveStrapStepResearch(currentCount: 1,
-                                                                         publishedCount: 0,
-                                                                         lastPublishedAt: nil,
-                                                                         now: now))
-        XCTAssertFalse(AtriaBLEManager.shouldPublishLiveStrapStepResearch(currentCount: 4,
-                                                                          publishedCount: 1,
-                                                                          lastPublishedAt: now,
-                                                                          now: now.addingTimeInterval(0.25)))
-        XCTAssertTrue(AtriaBLEManager.shouldPublishLiveStrapStepResearch(currentCount: 6,
-                                                                         publishedCount: 1,
-                                                                         lastPublishedAt: now,
-                                                                         now: now.addingTimeInterval(0.25)))
+                                                                         publishedCount: 0))
         XCTAssertTrue(AtriaBLEManager.shouldPublishLiveStrapStepResearch(currentCount: 4,
-                                                                         publishedCount: 1,
-                                                                         lastPublishedAt: now,
-                                                                         now: now.addingTimeInterval(1.1)))
+                                                                         publishedCount: 1))
+        XCTAssertTrue(AtriaBLEManager.shouldPublishLiveStrapStepResearch(currentCount: 6,
+                                                                         publishedCount: 1))
+        XCTAssertTrue(AtriaBLEManager.shouldPublishLiveStrapStepResearch(currentCount: 4,
+                                                                         publishedCount: 1))
         XCTAssertTrue(AtriaBLEManager.shouldPublishLiveStrapStepResearch(currentCount: 0,
                                                                          publishedCount: 42,
-                                                                         lastPublishedAt: now,
-                                                                         now: now,
                                                                          force: true))
 
-        XCTAssertEqual(AtriaBLEManager.liveStrapStepResearchTrailingDelay(
-            lastPublishedAt: now,
-            now: now.addingTimeInterval(0.25)
-        ), 0.75, accuracy: 0.000_001)
-        XCTAssertEqual(AtriaBLEManager.liveStrapStepResearchTrailingDelay(
-            lastPublishedAt: now,
-            now: now.addingTimeInterval(2)
-        ), 0, accuracy: 0.000_001)
     }
 
 
@@ -318,7 +355,32 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertTrue(publisher.contains("state.strapStepResearchCount"))
         XCTAssertTrue(publisher.contains("state.strapStepResearchState"))
         XCTAssertFalse(publisher.contains("pulseLiveStore"))
+        XCTAssertFalse(publisher.contains("liveStrapMotionCapturedAt"))
         XCTAssertTrue(source.contains("scheduleLiveSensorWidgetPatch(reason: \"live_steps\")"))
+    }
+
+    func testLongWearAnalysisDoesNotForceJournalWrites() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        let diagnosticStart = try XCTUnwrap(source.range(of:
+            "private func runLongWearSupervisorDiagnostic"))
+        let autoSaveStart = try XCTUnwrap(source.range(of:
+            "private func runLongWearSupervisorAutoSave",
+            range: diagnosticStart.upperBound..<source.endIndex))
+        let watchdogStart = try XCTUnwrap(source.range(of:
+            "private func scheduleNoDataWatchdogIfNeeded",
+            range: autoSaveStart.upperBound..<source.endIndex))
+        let diagnostic = source[diagnosticStart.lowerBound..<autoSaveStart.lowerBound]
+        let autoSave = source[autoSaveStart.lowerBound..<watchdogStart.lowerBound]
+
+        XCTAssertFalse(diagnostic.contains("persistActiveSessionJournalIfNeeded"))
+        XCTAssertTrue(autoSave.contains("onSessionCheckpoint?(saved)"))
+        XCTAssertTrue(autoSave.contains("persistActiveSessionJournalIfNeeded"))
+        XCTAssertFalse(autoSave.contains("persistFinishedSession(saved"))
     }
 
     func testUnvalidatedStrapMotionPeaksNeverBecomeUserFacingSteps() {
@@ -1275,6 +1337,29 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertEqual(session.localHRVWindowCount, 3)
     }
 
+    func testSavedSessionLowRateRRProducesThreeRealisticFiveMinuteWindows() {
+        var beat = 0.0
+        let rrPoints = (0..<600).map { index -> SavedSession.RRPoint in
+            let ms = index.isMultiple(of: 2) ? 1_490 : 1_510
+            beat += Double(ms) / 1_000
+            return SavedSession.RRPoint(t: beat,
+                                        ms: ms,
+                                        source: .standardHeartRateMeasurement2A37)
+        }
+        let session = SavedSession(
+            id: UUID(),
+            start: t0,
+            end: t0.addingTimeInterval(900),
+            label: "Low-rate local RR",
+            points: [SavedSession.Point(t: 0, bpm: 40),
+                     SavedSession.Point(t: 900, bpm: 40)],
+            rrPoints: rrPoints
+        )
+
+        XCTAssertEqual(session.localHRVWindowCount, 3)
+        XCTAssertEqual(session.localRMSSD, 20)
+    }
+
     func testSavedAndLiveHRVShareNonBridgingSuccessiveDifferencePolicy() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
@@ -1452,13 +1537,19 @@ final class AtriaPerfFixesTests: XCTestCase {
                      points: [SavedSession.Point(t: 0, bpm: 58),
                               SavedSession.Point(t: 60, bpm: 59)],
                      hrv: hrv,
+                     rrPoints: [SavedSession.RRPoint(
+                        t: 1,
+                        ms: 1_000,
+                        source: .standardHeartRateMeasurement2A37
+                     )],
                      hrvReferenceValidated: hrvReferenceValidated)
     }
 
     private func localRRSession(hrv: Int?) -> SavedSession {
         let rrPoints = (0...900).map { index in
             SavedSession.RRPoint(t: Double(index),
-                                 ms: index.isMultiple(of: 2) ? 980 : 1_020)
+                                 ms: index.isMultiple(of: 2) ? 980 : 1_020,
+                                 source: .standardHeartRateMeasurement2A37)
         }
         return SavedSession(id: UUID(),
                             start: t0,
@@ -1480,7 +1571,11 @@ final class AtriaPerfFixesTests: XCTestCase {
                      points: [SavedSession.Point(t: 0, bpm: 58),
                               SavedSession.Point(t: 60, bpm: 59)],
                      respiratoryRate: rate,
-                     rrPoints: [SavedSession.RRPoint(t: 0, ms: 1_000)],
+                     rrPoints: [SavedSession.RRPoint(
+                        t: 0,
+                        ms: 1_000,
+                        source: .standardHeartRateMeasurement2A37
+                     )],
                      sleepWakeResearchState: "sleep_research")
     }
 

@@ -2,19 +2,32 @@ import Foundation
 
 @main
 enum ReplayStepCalibration {
-    static func main() throws {
-        guard CommandLine.arguments.count >= 4,
-              let startMS = Int64(CommandLine.arguments[2]),
-              let endMS = Int64(CommandLine.arguments[3]),
-              startMS <= endMS else {
-            FileHandle.standardError.write(Data(
-                "usage: replay_step_calibration <csv-directory> <start-ms> <end-ms> [expected-steps]\n".utf8
-            ))
-            exit(2)
-        }
+    private struct CandidateOverride {
+        let filterLength: Int
+        let peakWindow: Int
+        let sensitivityG: Double
+        let confirmationSteps: Int
+        let referenceGain: Double
+    }
 
-        let directory = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
-        let expectedSteps = CommandLine.arguments.count > 4 ? Int(CommandLine.arguments[4]) : nil
+    private struct ParsedArguments {
+        let directory: URL
+        let startMS: Int64
+        let endMS: Int64
+        let expectedSteps: Int?
+        let candidateOverride: CandidateOverride?
+    }
+
+    private static let usage = """
+    usage: replay_step_calibration <csv-directory> <start-ms> <end-ms> [expected-steps] [--candidate-filter <4|6|8|10|12> --candidate-peak <17|21|25|29|33|37> --candidate-sensitivity <0.04...0.14 by 0.01> --candidate-confirmation <4|6|8|10> --candidate-gain <0.75...1.50>]
+    """
+
+    static func main() throws {
+        let arguments = parseArguments(CommandLine.arguments)
+        let directory = arguments.directory
+        let startMS = arguments.startMS
+        let endMS = arguments.endMS
+        let expectedSteps = arguments.expectedSteps
         guard let enumerator = FileManager.default.enumerator(
             at: directory,
             includingPropertiesForKeys: nil,
@@ -53,6 +66,10 @@ enum ReplayStepCalibration {
         var finalSnapshot: AtriaR10MotionPipeline.Snapshot?
         var motionFrames: [(deviceTimestamp: UInt32, magnitudes: [Double])] = []
         motionFrames.reserveCapacity(rows.count)
+        var gaitChallenger = AtriaStrapGaitQualityChallenger()
+        var gaitAssessments: [AtriaStrapGaitQualityChallenger.Assessment] = []
+        var currentAcceptedGaitSeconds = 0
+        var longestAcceptedGaitSeconds = 0
         // Keep a second, explicit representation of the evidence as strictly
         // contiguous device-time segments. The production replay below owns
         // the nuanced isolated-gap policy; these segments are a diagnostic
@@ -76,10 +93,24 @@ enum ReplayStepCalibration {
                     magnitudeSegments.append(currentMagnitudeSegment)
                     currentMagnitudeSegment.removeAll(keepingCapacity: true)
                 }
+                _ = gaitChallenger.resetForGap()
+                currentAcceptedGaitSeconds = 0
             }
             currentMagnitudeSegment.append(contentsOf: magnitudes)
             previousDeviceTimestamp = decoded.deviceTimestamp
             motionFrames.append((decoded.deviceTimestamp, magnitudes))
+            let gaitUpdate = gaitChallenger.ingest(acceleration: decoded.acceleration,
+                                                   rotationRate: decoded.rotationRate)
+            if let assessment = gaitUpdate.assessment {
+                gaitAssessments.append(assessment)
+                if assessment.verdict == .accepted {
+                    currentAcceptedGaitSeconds += 1
+                    longestAcceptedGaitSeconds = max(longestAcceptedGaitSeconds,
+                                                     currentAcceptedGaitSeconds)
+                } else {
+                    currentAcceptedGaitSeconds = 0
+                }
+            }
             finalSnapshot = pipeline.ingestSynchronouslyForTesting(decoded)
         }
         if !currentMagnitudeSegment.isEmpty {
@@ -143,6 +174,38 @@ enum ReplayStepCalibration {
                          snapshot.gravityValidatedFrames,
                          snapshot.state))
         }
+        print(gaitShadowSummary(assessments: gaitAssessments,
+                                longestAcceptedSeconds: longestAcceptedGaitSeconds))
+        if let candidate = arguments.candidateOverride {
+            guard evidenceIsScoreable else {
+                fail("candidate replay refused incomplete motion evidence")
+            }
+            let candidateRawSteps = rawStepCount(
+                motionFrames: motionFrames,
+                filterLength: candidate.filterLength,
+                peakWindow: candidate.peakWindow,
+                sensitivityG: candidate.sensitivityG,
+                confirmationSteps: candidate.confirmationSteps
+            )
+            let candidateSteps = Int((Double(candidateRawSteps) * candidate.referenceGain).rounded())
+            print(String(format: "candidate_override=1 filter=%d peak=%d sensitivity=%.2f confirmation=%d gain=%.4f",
+                         candidate.filterLength,
+                         candidate.peakWindow,
+                         candidate.sensitivityG,
+                         candidate.confirmationSteps,
+                         candidate.referenceGain))
+            print("candidate_raw_steps=\(candidateRawSteps) candidate_steps=\(candidateSteps)")
+            if let expectedSteps {
+                if expectedSteps > 0 {
+                    let error = Double(candidateSteps - expectedSteps) / Double(expectedSteps) * 100
+                    print(String(format: "candidate_expected_steps=%d scoreable=1 error_pct=%+.1f",
+                                 expectedSteps,
+                                 error))
+                } else {
+                    print("candidate_expected_steps=0 scoreable=1 rest_false_steps=\(candidateSteps) rest_pass=\(candidateSteps == 0 ? 1 : 0)")
+                }
+            }
+        }
         print("threshold_sweep sensitivity_g,confirmation_steps,raw_steps,suggested_gain")
         for sensitivity in stride(from: 0.04, through: 0.16, by: 0.02) {
             for confirmation in [4, 6, 8] {
@@ -183,6 +246,103 @@ enum ReplayStepCalibration {
                          steps,
                          gain.map { String(format: "%.4f", $0) } ?? "unavailable"))
         }
+    }
+
+    private static func parseArguments(_ commandLine: [String]) -> ParsedArguments {
+        guard commandLine.count >= 4,
+              let startMS = Int64(commandLine[2]),
+              let endMS = Int64(commandLine[3]),
+              startMS <= endMS else {
+            fail(usage)
+        }
+
+        var index = 4
+        var expectedSteps: Int?
+        if index < commandLine.count, !commandLine[index].hasPrefix("--") {
+            guard let parsed = Int(commandLine[index]), parsed >= 0 else {
+                fail("expected-steps must be a nonnegative integer\n\(usage)")
+            }
+            expectedSteps = parsed
+            index += 1
+        }
+
+        let allowedFlags = Set([
+            "--candidate-filter",
+            "--candidate-peak",
+            "--candidate-sensitivity",
+            "--candidate-confirmation",
+            "--candidate-gain",
+        ])
+        var optionValues: [String: String] = [:]
+        while index < commandLine.count {
+            let flag = commandLine[index]
+            guard allowedFlags.contains(flag) else {
+                fail("unknown candidate option: \(flag)\n\(usage)")
+            }
+            guard optionValues[flag] == nil else {
+                fail("duplicate candidate option: \(flag)\n\(usage)")
+            }
+            guard index + 1 < commandLine.count,
+                  !commandLine[index + 1].hasPrefix("--") else {
+                fail("missing value for candidate option: \(flag)\n\(usage)")
+            }
+            optionValues[flag] = commandLine[index + 1]
+            index += 2
+        }
+
+        let candidateOverride: CandidateOverride?
+        if optionValues.isEmpty {
+            candidateOverride = nil
+        } else {
+            guard optionValues.count == allowedFlags.count else {
+                fail("candidate override requires all five candidate options\n\(usage)")
+            }
+            guard let filterText = optionValues["--candidate-filter"],
+                  let filterLength = Int(filterText),
+                  [4, 6, 8, 10, 12].contains(filterLength) else {
+                fail("candidate filter must be one of 4, 6, 8, 10, 12")
+            }
+            guard let peakText = optionValues["--candidate-peak"],
+                  let peakWindow = Int(peakText),
+                  [17, 21, 25, 29, 33, 37].contains(peakWindow) else {
+                fail("candidate peak must be one of 17, 21, 25, 29, 33, 37")
+            }
+            guard let sensitivityText = optionValues["--candidate-sensitivity"],
+                  let sensitivityG = Double(sensitivityText),
+                  sensitivityG.isFinite,
+                  sensitivityG >= 0.04,
+                  sensitivityG <= 0.14,
+                  abs(sensitivityG * 100 - (sensitivityG * 100).rounded()) < 0.000_001 else {
+                fail("candidate sensitivity must be a finite 0.01 increment from 0.04 through 0.14")
+            }
+            guard let confirmationText = optionValues["--candidate-confirmation"],
+                  let confirmationSteps = Int(confirmationText),
+                  [4, 6, 8, 10].contains(confirmationSteps) else {
+                fail("candidate confirmation must be one of 4, 6, 8, 10")
+            }
+            guard let gainText = optionValues["--candidate-gain"],
+                  let referenceGain = Double(gainText),
+                  referenceGain.isFinite,
+                  referenceGain >= 0.75,
+                  referenceGain <= 1.50 else {
+                fail("candidate gain must be finite and within 0.75...1.50")
+            }
+            candidateOverride = CandidateOverride(
+                filterLength: filterLength,
+                peakWindow: peakWindow,
+                sensitivityG: sensitivityG,
+                confirmationSteps: confirmationSteps,
+                referenceGain: referenceGain
+            )
+        }
+
+        return ParsedArguments(
+            directory: URL(fileURLWithPath: commandLine[1], isDirectory: true),
+            startMS: startMS,
+            endMS: endMS,
+            expectedSteps: expectedSteps,
+            candidateOverride: candidateOverride
+        )
     }
 
     /// Replays the same gap policy as `AtriaR10MotionPipeline`: one missing
@@ -272,6 +432,45 @@ enum ReplayStepCalibration {
         return Double(expectedSteps) / Double(rawSteps)
     }
 
+    /// Research-only locomotion diagnostics for labelled physical windows.
+    /// These scores never select a production activity label; they make the
+    /// future walk/run/dance/strength/cycle/handling confusion matrix
+    /// reproducible from the same CRC-valid raw frames used for step fitting.
+    private static func gaitShadowSummary(
+        assessments: [AtriaStrapGaitQualityChallenger.Assessment],
+        longestAcceptedSeconds: Int
+    ) -> String {
+        let accepted = assessments.filter { $0.verdict == .accepted }
+        let ratio = assessments.isEmpty
+            ? 0
+            : Double(accepted.count) / Double(assessments.count)
+        let cadence = median(accepted.map(\.cadenceStepsPerMinute))
+        let periodicity = median(accepted.map(\.periodicity))
+        let consistency = median(accepted.map(\.cadenceConsistency))
+        let gyroValues = accepted.compactMap(\.gyroscopeAgreement)
+        let gyro = median(gyroValues)
+        return String(
+            format: "gait_shadow_overlapping_windows=%d window_s=5 stride_s=1 accepted_overlapping_windows=%d accepted_ratio=%.4f longest_accepted_stride_run_s=%d accepted_cadence_median_spm=%.2f accepted_periodicity_median=%.4f accepted_consistency_median=%.4f accepted_gyro_median=%@ activity_decoder_validated=0 production_label=none",
+            assessments.count,
+            accepted.count,
+            ratio,
+            longestAcceptedSeconds,
+            cadence ?? -1,
+            periodicity ?? -1,
+            consistency ?? -1,
+            gyro.map { String(format: "%.4f", $0) } ?? "unavailable"
+        )
+    }
+
+    private static func median(_ values: [Double]) -> Double? {
+        guard !values.isEmpty else { return nil }
+        let ordered = values.sorted()
+        let middle = ordered.count / 2
+        return ordered.count.isMultiple(of: 2)
+            ? (ordered[middle - 1] + ordered[middle]) / 2
+            : ordered[middle]
+    }
+
     private static func data(hex: Substring) -> Data? {
         let utf8 = hex.utf8
         guard utf8.count.isMultiple(of: 2) else { return nil }
@@ -322,5 +521,10 @@ enum ReplayStepCalibration {
            let text = String(data: pending, encoding: .utf8) {
             try body(text[...])
         }
+    }
+
+    private static func fail(_ message: String) -> Never {
+        FileHandle.standardError.write(Data((message + "\n").utf8))
+        exit(2)
     }
 }

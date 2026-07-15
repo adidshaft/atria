@@ -6,13 +6,14 @@ struct AtriaOnboardingFlow: View {
     @State private var draft: AthleteProfile
     let ble: AtriaBLEManager
     let onComplete: (AthleteProfile) -> Void
-    let onRestoreBackup: ((URL) -> Bool)?
+    let onRestoreBackup: ((URL) async -> Bool)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var step: Step = .whatThisIs
     @State private var focusMetric: OnboardingFocusMetric = .recovery
     @State private var backupImportPresented = false
     @State private var restoreMessage: String?
+    @State private var restoreInProgress = false
 
     private enum OnboardingFocusMetric: String, CaseIterable, Identifiable {
         case recovery
@@ -135,7 +136,7 @@ struct AtriaOnboardingFlow: View {
     init(profile: AthleteProfile,
          ble: AtriaBLEManager,
          debugInitialStep: String? = nil,
-         onRestoreBackup: ((URL) -> Bool)? = nil,
+         onRestoreBackup: ((URL) async -> Bool)? = nil,
          onComplete: @escaping (AthleteProfile) -> Void) {
         _draft = State(initialValue: profile)
         _step = State(initialValue: Step(debugName: debugInitialStep) ?? .whatThisIs)
@@ -182,7 +183,13 @@ struct AtriaOnboardingFlow: View {
                 VStack(spacing: 8) {
                     progressDots
                     PrimaryActionButton(ble: ble, step: step) {
-                        if step.isLast {
+                        if step == .strap, ble.status != .connected {
+                            // “Connect” must be an honest action. Advancing to
+                            // profile setup while the status card still said
+                            // Searching made first-run setup look successful
+                            // even though no sensor source existed.
+                            ble.startScan(reason: "onboarding_primary_connect")
+                        } else if step.isLast {
                             onComplete(draft)
                         } else {
                             move(to: Step(rawValue: step.rawValue + 1) ?? .expectations)
@@ -233,10 +240,18 @@ struct AtriaOnboardingFlow: View {
                 Button {
                     backupImportPresented = true
                 } label: {
-                    Label("Restore backup from Files", systemImage: "tray.and.arrow.down")
-                        .frame(maxWidth: .infinity)
+                    HStack(spacing: 8) {
+                        if restoreInProgress {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Label(restoreInProgress ? "Restoring…" : "Restore backup from Files",
+                              systemImage: "tray.and.arrow.down")
+                    }
+                    .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.glass)
+                .disabled(restoreInProgress)
                 if let restoreMessage {
                     Text(restoreMessage)
                         .font(.footnote.weight(.semibold))
@@ -423,15 +438,22 @@ struct AtriaOnboardingFlow: View {
     private func handleBackupImport(_ result: Result<[URL], Error>) {
         switch result {
         case .success(let urls):
-            guard let url = urls.first, let onRestoreBackup else { return }
-            let didAccess = url.startAccessingSecurityScopedResource()
-            defer {
-                if didAccess { url.stopAccessingSecurityScopedResource() }
-            }
-            if onRestoreBackup(url) {
-                restoreMessage = "Backup restored."
-            } else {
-                restoreMessage = "Restore failed. Choose an Atria .json or .json.gz archive."
+            guard let url = urls.first, let onRestoreBackup, !restoreInProgress else { return }
+            restoreInProgress = true
+            restoreMessage = nil
+            Task { @MainActor in
+                // Keep the scope alive through the worker's full archive read,
+                // safety-backup write and canonical apply.
+                let didAccess = url.startAccessingSecurityScopedResource()
+                defer {
+                    if didAccess { url.stopAccessingSecurityScopedResource() }
+                    restoreInProgress = false
+                }
+                if await onRestoreBackup(url) {
+                    restoreMessage = "Backup restored."
+                } else {
+                    restoreMessage = "Restore failed. Choose an Atria .json or .json.gz archive."
+                }
             }
         case .failure:
             restoreMessage = "Restore canceled."

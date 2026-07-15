@@ -67,6 +67,107 @@ final class AtriaPolicyMathTests: XCTestCase {
                        Set(sessions.map(\.id)))
     }
 
+    @MainActor
+    func testPartitionedPersistenceReportsHotAndColdSuccess() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atria-session-persist-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory,
+                                                withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let hotURL = directory.appendingPathComponent("sessions.json")
+        let coldURL = directory.appendingPathComponent("sessions-cold.json")
+        let recent = makeSession(start: Date())
+        let old = makeSession(start: Date().addingTimeInterval(-31 * 24 * 60 * 60))
+
+        XCTAssertTrue(SessionStore.persistPartitionedSessionsSnapshotForTesting(
+            [recent, old],
+            hotURL: hotURL,
+            coldURL: coldURL,
+            allowColdWrite: true,
+            reason: "test_success"
+        ))
+        XCTAssertEqual(try JSONDecoder().decode([SavedSession].self,
+                                                from: Data(contentsOf: hotURL)).map(\.id),
+                       [recent.id])
+        XCTAssertEqual(try JSONDecoder().decode([SavedSession].self,
+                                                from: Data(contentsOf: coldURL)).map(\.id),
+                       [old.id])
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: coldURL.appendingPathExtension("fingerprint").path
+        ))
+    }
+
+    @MainActor
+    func testPartitionedPersistenceReportsHotWriteFailureAndDoesNotWriteCold() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atria-session-persist-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let hotURL = directory.appendingPathComponent("missing/sessions.json")
+        let coldURL = directory.appendingPathComponent("sessions-cold.json")
+
+        XCTAssertFalse(SessionStore.persistPartitionedSessionsSnapshotForTesting(
+            [makeSession(start: Date())],
+            hotURL: hotURL,
+            coldURL: coldURL,
+            allowColdWrite: true,
+            reason: "test_hot_failure"
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: coldURL.path))
+    }
+
+    @MainActor
+    func testPartitionedPersistenceReportsColdWriteFailureAfterHotSuccess() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atria-session-persist-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory,
+                                                withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let hotURL = directory.appendingPathComponent("sessions.json")
+        let coldURL = directory.appendingPathComponent("missing/sessions-cold.json")
+        let old = makeSession(start: Date().addingTimeInterval(-31 * 24 * 60 * 60))
+
+        XCTAssertFalse(SessionStore.persistPartitionedSessionsSnapshotForTesting(
+            [old],
+            hotURL: hotURL,
+            coldURL: coldURL,
+            allowColdWrite: true,
+            reason: "test_cold_failure"
+        ))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: hotURL.path),
+                      "The result must still report failure when hot succeeded but cold did not")
+    }
+
+    @MainActor
+    func testAsyncFlushDoesNotAdvanceCompletedRevisionAfterInjectedWriteFailure() async {
+        let store = SessionStore()
+        store.setSessionPersistenceWriterForTesting { _, _, _, _, _ in false }
+        store.markSessionPersistenceDirtyForTesting()
+        let dirty = store.sessionPersistenceRevisionsForTesting
+
+        let failed = await withCheckedContinuation { continuation in
+            store.flushScheduledPersistenceAsync(reason: "test_injected_failure") { succeeded in
+                continuation.resume(returning: succeeded)
+            }
+        }
+        XCTAssertFalse(failed)
+        let afterFailure = store.sessionPersistenceRevisionsForTesting
+        XCTAssertGreaterThanOrEqual(afterFailure.current, dirty.current)
+        XCTAssertEqual(afterFailure.completed, dirty.completed)
+        XCTAssertEqual(afterFailure.pending, 0)
+
+        store.setSessionPersistenceWriterForTesting { _, _, _, _, _ in true }
+        let retried = await withCheckedContinuation { continuation in
+            store.flushScheduledPersistenceAsync(reason: "test_injected_retry") { succeeded in
+                continuation.resume(returning: succeeded)
+            }
+        }
+        XCTAssertTrue(retried)
+        let afterRetry = store.sessionPersistenceRevisionsForTesting
+        XCTAssertEqual(afterRetry.completed, afterRetry.current)
+        XCTAssertEqual(afterRetry.pending, 0)
+        store.setSessionPersistenceWriterForTesting(nil)
+    }
+
     // MARK: - LocalNotificationScheduler.quietHoursAdjustedDelay
 
     private func setLearnedWindow(start: Int = 1413, end: Int = 678) {

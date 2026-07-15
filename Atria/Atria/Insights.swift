@@ -217,16 +217,16 @@ struct PersonalBaseline: Codable {
     }
 
     // Persistence
-    private static let key = "personalBaseline"
+    static let persistenceKey = "personalBaseline"
     static func load() -> PersonalBaseline {
-        guard let data = UserDefaults.standard.data(forKey: key),
+        guard let data = UserDefaults.standard.data(forKey: persistenceKey),
               let b = try? JSONDecoder().decode(PersonalBaseline.self, from: data)
         else { return PersonalBaseline() }
         return b
     }
     func save() {
         if let data = try? JSONEncoder().encode(self) {
-            UserDefaults.standard.set(data, forKey: Self.key)
+            UserDefaults.standard.set(data, forKey: Self.persistenceKey)
         }
     }
 }
@@ -272,7 +272,7 @@ struct AthleteProfile: Codable, Equatable {
     var updated: Date?
     var hasCompletedOnboarding: Bool
 
-    private static let key = "athleteProfile"
+    static let persistenceKey = "athleteProfile"
     static let onboardingCompletionKey = "atria.onboarding.completed.v1"
     enum CodingKeys: String, CodingKey {
         case age, measuredMaxHR, maxHRSource, biologicalSex, weightKg, heightCm, updated, hasCompletedOnboarding
@@ -334,7 +334,7 @@ struct AthleteProfile: Codable, Equatable {
 
     static func load() -> AthleteProfile {
         let completedFlag = UserDefaults.standard.bool(forKey: onboardingCompletionKey)
-        guard let data = UserDefaults.standard.data(forKey: key),
+        guard let data = UserDefaults.standard.data(forKey: persistenceKey),
               let p = try? JSONDecoder().decode(AthleteProfile.self, from: data)
         else {
             return AthleteProfile(age: defaultAge,
@@ -354,7 +354,7 @@ struct AthleteProfile: Codable, Equatable {
 
     func save() {
         if let data = try? JSONEncoder().encode(self) {
-            UserDefaults.standard.set(data, forKey: Self.key)
+            UserDefaults.standard.set(data, forKey: Self.persistenceKey)
         }
         UserDefaults.standard.set(maxHR, forKey: "maxHR")
         UserDefaults.standard.set(hasCompletedOnboarding, forKey: Self.onboardingCompletionKey)

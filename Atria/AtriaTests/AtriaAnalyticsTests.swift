@@ -3,6 +3,8 @@ import UIKit
 @testable import Atria
 
 final class AtriaAnalyticsTests: XCTestCase {
+    private static let historicalArchiveTestLock = NSLock()
+
     func testLatestSleepSemanticsKeepNapsSeparateFromOvernightMetrics() throws {
         let day = Date(timeIntervalSince1970: 1_783_824_000)
         let mainStart = day.addingTimeInterval(23 * 60 * 60)
@@ -814,7 +816,8 @@ final class AtriaAnalyticsTests: XCTestCase {
         let cleanRR = (0...300).map { index in
             RRInterval(t: now.addingTimeInterval(Double(index - 300)),
                        ms: index.isMultiple(of: 2) ? 1_000 : 1_020,
-                       expectedHR: 60)
+                       expectedHR: 60,
+                       source: .standardHeartRateMeasurement2A37)
         }
 
         let clean = HRVAnalyzer.analyze(cleanRR, now: now, includeTachogram: false).0
@@ -827,7 +830,8 @@ final class AtriaAnalyticsTests: XCTestCase {
         let sparseRR = stride(from: 0, through: 300, by: 5).map { index in
             RRInterval(t: now.addingTimeInterval(Double(index - 300)),
                        ms: 1_000,
-                       expectedHR: 60)
+                       expectedHR: 60,
+                       source: .standardHeartRateMeasurement2A37)
         }
 
         let sparse = HRVAnalyzer.analyze(sparseRR, now: now, includeTachogram: false).0
@@ -841,7 +845,8 @@ final class AtriaAnalyticsTests: XCTestCase {
         let samples = (0...200).map { index in
             RRInterval(t: now.addingTimeInterval(-300 + Double(index) * 1.5),
                        ms: index.isMultiple(of: 2) ? 1_490 : 1_510,
-                       expectedHR: 40)
+                       expectedHR: 40,
+                       source: .standardHeartRateMeasurement2A37)
         }
 
         let snapshot = try XCTUnwrap(
@@ -857,13 +862,38 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertTrue(snapshot.isReady)
     }
 
+    func testHRVAnalyzerCountsFirstMeasuredIntervalAtRealisticFortyBPMBoundary() throws {
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        var beat = now.addingTimeInterval(-300)
+        let samples = (0..<200).map { index -> RRInterval in
+            let ms = index.isMultiple(of: 2) ? 1_490.0 : 1_510.0
+            beat = beat.addingTimeInterval(ms / 1_000)
+            return RRInterval(t: beat,
+                              ms: ms,
+                              expectedHR: 40,
+                              source: .standardHeartRateMeasurement2A37)
+        }
+
+        let snapshot = try XCTUnwrap(
+            HRVAnalyzer.analyze(samples, now: now, includeTachogram: false).0
+        )
+
+        XCTAssertEqual(snapshot.raw, 200)
+        XCTAssertEqual(snapshot.kept, 200)
+        XCTAssertEqual(snapshot.windowSeconds, 300, accuracy: 0.000_001)
+        XCTAssertEqual(snapshot.rmssd, 20, accuracy: 0.000_001)
+        XCTAssertEqual(snapshot.readinessReason, "ready")
+        XCTAssertTrue(snapshot.isReady)
+    }
+
     func testLowRateHRVStillRequiresArtifactConfidence() throws {
         let now = Date()
         let samples = (0...200).map { index -> RRInterval in
             let rejected = index < 51
             return RRInterval(t: now.addingTimeInterval(-300 + Double(index) * 1.5),
                               ms: rejected ? 2_100 : 1_500,
-                              expectedHR: 40)
+                              expectedHR: 40,
+                              source: .standardHeartRateMeasurement2A37)
         }
 
         let snapshot = try XCTUnwrap(
@@ -889,7 +919,8 @@ final class AtriaAnalyticsTests: XCTestCase {
         let samples = values.enumerated().map { index, value in
             RRInterval(t: now.addingTimeInterval(Double(index - 300)),
                        ms: value,
-                       expectedHR: nil)
+                       expectedHR: nil,
+                       source: .standardHeartRateMeasurement2A37)
         }
 
         let snapshot = HRVAnalyzer.analyze(samples, now: now, includeTachogram: false).0
@@ -904,11 +935,15 @@ final class AtriaAnalyticsTests: XCTestCase {
         var samples = (0...300).map { index in
             RRInterval(t: now.addingTimeInterval(Double(index - 300)),
                        ms: 1_000,
-                       expectedHR: 60)
+                       expectedHR: 60,
+                       source: .standardHeartRateMeasurement2A37)
         }
-        samples[20] = RRInterval(t: samples[20].t, ms: 250, expectedHR: 60)
-        samples[40] = RRInterval(t: samples[40].t, ms: 2_100, expectedHR: 60)
-        samples[60] = RRInterval(t: samples[60].t, ms: 1_000, expectedHR: 120)
+        samples[20] = RRInterval(t: samples[20].t, ms: 250, expectedHR: 60,
+                                 source: .standardHeartRateMeasurement2A37)
+        samples[40] = RRInterval(t: samples[40].t, ms: 2_100, expectedHR: 60,
+                                 source: .standardHeartRateMeasurement2A37)
+        samples[60] = RRInterval(t: samples[60].t, ms: 1_000, expectedHR: 120,
+                                 source: .standardHeartRateMeasurement2A37)
 
         let snapshot = HRVAnalyzer.analyze(samples, now: now, includeTachogram: false).0
         XCTAssertEqual(snapshot?.rejectedOutOfRange, 2)
@@ -922,20 +957,254 @@ final class AtriaAnalyticsTests: XCTestCase {
         var samples = (0...300).map { index in
             RRInterval(t: now.addingTimeInterval(Double(index - 300)),
                        ms: 1_000,
-                       expectedHR: nil)
+                       expectedHR: nil,
+                       source: .standardHeartRateMeasurement2A37)
         }
-        samples[149] = RRInterval(t: samples[149].t, ms: 920, expectedHR: nil)
-        samples[150] = RRInterval(t: samples[150].t, ms: 250, expectedHR: nil)
-        samples[151] = RRInterval(t: samples[151].t, ms: 1_080, expectedHR: nil)
+        samples[149] = RRInterval(t: samples[149].t, ms: 920, expectedHR: nil,
+                                  source: .standardHeartRateMeasurement2A37)
+        samples[150] = RRInterval(t: samples[150].t, ms: 250, expectedHR: nil,
+                                  source: .standardHeartRateMeasurement2A37)
+        samples[151] = RRInterval(t: samples[151].t, ms: 1_080, expectedHR: nil,
+                                  source: .standardHeartRateMeasurement2A37)
 
         let snapshot = try XCTUnwrap(HRVAnalyzer.analyze(samples,
                                                          now: now,
                                                          includeTachogram: false).0)
         let validAdjacentPairCount = 298.0
         XCTAssertEqual(snapshot.rejectedOutOfRange, 1)
+        XCTAssertEqual(snapshot.successiveDifferenceCount, Int(validAdjacentPairCount))
         XCTAssertEqual(snapshot.rmssd, sqrt((80 * 80 * 2) / validAdjacentPairCount), accuracy: 0.000_001)
         XCTAssertEqual(snapshot.pnn50, 2 / validAdjacentPairCount * 100, accuracy: 0.000_001)
         XCTAssertTrue(snapshot.isReady)
+    }
+
+    func testHRVReadinessRejectsSparseIslandsDespiteEnoughRetainedBeats() throws {
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let samples = (0..<400).map { index in
+            RRInterval(t: now.addingTimeInterval(-300 + Double(index) * 300 / 399),
+                       ms: index.isMultiple(of: 4) ? 250 : (index.isMultiple(of: 2) ? 1_000 : 1_020),
+                       expectedHR: nil,
+                       source: .standardHeartRateMeasurement2A37)
+        }
+
+        let snapshot = try XCTUnwrap(HRVAnalyzer.analyze(samples,
+                                                         now: now,
+                                                         includeTachogram: false).0)
+
+        XCTAssertEqual(snapshot.kept, 300)
+        XCTAssertEqual(snapshot.confidence, 0.75, accuracy: 0.000_001)
+        XCTAssertLessThan(snapshot.successiveDifferenceCount ?? .max,
+                          snapshot.minimumReadySuccessiveDifferenceCount)
+        XCTAssertEqual(snapshot.readinessReason, "differences")
+        XCTAssertFalse(snapshot.isReady)
+    }
+
+    func testSavedSessionRMSSDNeverBridgesRejectedIntervals() throws {
+        var samples = (0...300).map { index in
+            (t: Double(index), ms: 1_000.0)
+        }
+        samples[149].ms = 920
+        samples[150].ms = 250
+        samples[151].ms = 1_080
+
+        let lnRMSSD = try XCTUnwrap(SavedSession.qualifiedLnRMSSD(samples))
+        XCTAssertEqual(exp(lnRMSSD), sqrt((80 * 80 * 2) / 298.0), accuracy: 0.000_001)
+    }
+
+    func testSavedSessionRMSSDRejectsSparseAcceptedIslands() {
+        let samples = (0..<400).map { index in
+            (t: Double(index),
+             ms: index.isMultiple(of: 4) ? 250.0 : (index.isMultiple(of: 2) ? 1_000.0 : 1_020.0))
+        }
+
+        XCTAssertNil(SavedSession.qualifiedLnRMSSD(samples))
+    }
+
+    func testSavedSessionRMSSDAcceptsCleanFiveMinuteWindowAtFortyBPM() throws {
+        let samples = (0...200).map { index in
+            (t: Double(index) * 1.5,
+             ms: index.isMultiple(of: 2) ? 1_480.0 : 1_520.0)
+        }
+
+        let lnRMSSD = try XCTUnwrap(SavedSession.qualifiedLnRMSSD(samples))
+        XCTAssertEqual(exp(lnRMSSD), 40, accuracy: 0.000_001)
+    }
+
+    func testSavedSessionRMSSDAcceptsRealisticFortyBPMBeatBoundaries() throws {
+        var beat = 0.0
+        let samples = (0..<200).map { index -> (t: Double, ms: Double) in
+            let ms = index.isMultiple(of: 2) ? 1_490.0 : 1_510.0
+            beat += ms / 1_000
+            return (t: beat, ms: ms)
+        }
+
+        let lnRMSSD = try XCTUnwrap(SavedSession.qualifiedLnRMSSD(samples))
+        XCTAssertEqual(exp(lnRMSSD), 20, accuracy: 0.000_001)
+    }
+
+    func testSavedSessionRMSSDRejectsDenseButShortWindow() {
+        let samples = (0..<200).map { index in
+            (t: Double(index) * 0.5,
+             ms: index.isMultiple(of: 2) ? 980.0 : 1_020.0)
+        }
+
+        XCTAssertNil(SavedSession.qualifiedLnRMSSD(samples))
+    }
+
+    func testShortWindowRMSSDRejectsDisconnectedRRIslands() {
+        let start = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let samples = (0..<100).map { index in
+            let offset = index < 50 ? Double(index) : Double(index + 10)
+            return (date: start.addingTimeInterval(offset),
+                    ms: index.isMultiple(of: 2) ? 980.0 : 1_020.0)
+        }
+
+        XCTAssertNil(AtriaShortWindowRMSSD.value(samples: samples,
+                                                  minimumCoverageSeconds: 90))
+    }
+
+    func testShortWindowRMSSDNeverInventsCoverageAfterLastBeat() {
+        let start = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let samples = (0...89).map { index in
+            (date: start.addingTimeInterval(Double(index)),
+             ms: index == 0 ? 300.0 : (index.isMultiple(of: 2) ? 1_980.0 : 2_000.0))
+        }
+
+        XCTAssertNil(AtriaShortWindowRMSSD.value(samples: samples,
+                                                  minimumCoverageSeconds: 90))
+    }
+
+    func testShortWindowRMSSDDoesNotBridgeRejectedArtifact() throws {
+        let start = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        var samples = (0...100).map { index in
+            (date: start.addingTimeInterval(Double(index)),
+             ms: index.isMultiple(of: 2) ? 980.0 : 1_020.0)
+        }
+        samples[50].ms = 1_900
+
+        let rmssd = try XCTUnwrap(AtriaShortWindowRMSSD.value(samples: samples,
+                                                              minimumCoverageSeconds: 90))
+        XCTAssertEqual(rmssd, 40, accuracy: 0.000_001)
+    }
+
+    func testReferenceRMSSDNeverBridgesOrdinalGap() throws {
+        XCTAssertNil(SessionStore.referenceRMSSD([
+            (ordinal: 149, value: 920),
+            (ordinal: 151, value: 1_080)
+        ]))
+        XCTAssertEqual(try XCTUnwrap(SessionStore.referenceRMSSD([
+            (ordinal: 149, value: 920),
+            (ordinal: 150, value: 1_000),
+            (ordinal: 151, value: 1_080)
+        ])), 80, accuracy: 0.000_001)
+    }
+
+    func testSavedRRReferenceWindowRejectsSparseAcceptedIslands() {
+        let end = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let snapshot = HRVSnapshot(rmssd: 20,
+                                   sdnn: 30,
+                                   pnn50: 5,
+                                   lnRMSSD: log(20),
+                                   confidence: 0.75,
+                                   kept: 300,
+                                   raw: 400,
+                                   rejectedOutOfRange: 100,
+                                   rejectedDeltaOver20Percent: 0,
+                                   rejectedHRMismatch: 0,
+                                   interpolated: 0,
+                                   successiveDifferenceCount: 200,
+                                   windowSeconds: 300,
+                                   maxRRGapSeconds: 1,
+                                   respiratoryRate: nil,
+                                   measurementStart: end.addingTimeInterval(-300),
+                                   measurementEnd: end,
+                                   analyzedAt: end,
+                                   provenance: .sleepRRWindow)
+
+        XCTAssertFalse(SessionStore.savedRRReferenceWindowIsReady(snapshot: snapshot,
+                                                                   strictGap: 1))
+        XCTAssertEqual(SessionStore.replayReason(snapshot: snapshot, strictGap: 1),
+                       "differences")
+    }
+
+    func testLegacySourceAmbiguousValidatedSessionCannotExposeSDNN() {
+        let start = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let rrPoints = (0...300).map { SavedSession.RRPoint(t: Double($0), ms: 1_000) }
+        let legacy = SavedSession(id: UUID(),
+                                  start: start,
+                                  end: start.addingTimeInterval(300),
+                                  label: "Legacy",
+                                  points: [SavedSession.Point(t: 0, bpm: 60)],
+                                  rrPoints: rrPoints,
+                                  hrvReferenceValidated: true)
+        var bounded = legacy
+        bounded.hrvSDNN = 42
+
+        XCTAssertNil(legacy.referenceValidatedSDNN)
+        XCTAssertNil(bounded.referenceValidatedSDNN)
+    }
+
+    func testSavedRRProvenanceRoundTripAndMixedMetricGate() throws {
+        let start = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let standardPoint = SavedSession.RRPoint(
+            t: 1,
+            ms: 1_000,
+            source: .standardHeartRateMeasurement2A37
+        )
+        let decoded = try JSONDecoder().decode(
+            SavedSession.RRPoint.self,
+            from: JSONEncoder().encode(standardPoint)
+        )
+        XCTAssertEqual(decoded.source, .standardHeartRateMeasurement2A37)
+
+        let standard = SavedSession(
+            id: UUID(), start: start, end: start.addingTimeInterval(300), label: "Standard",
+            points: [SavedSession.Point(t: 0, bpm: 60)], hrv: 42,
+            respiratoryRate: 14,
+            rrPoints: [standardPoint]
+        )
+        let legacy = SavedSession(
+            id: UUID(), start: start, end: start.addingTimeInterval(300), label: "Legacy",
+            points: [SavedSession.Point(t: 0, bpm: 60)], hrv: 42,
+            respiratoryRate: 14,
+            rrPoints: [SavedSession.RRPoint(t: 1, ms: 1_000)],
+            sleepWakeResearchState: "sleep_research"
+        )
+        let mixed = SavedSession(
+            id: UUID(), start: start, end: start.addingTimeInterval(300), label: "Mixed",
+            points: [SavedSession.Point(t: 0, bpm: 60)], hrv: 42,
+            respiratoryRate: 14,
+            rrPoints: [standardPoint,
+                       SavedSession.RRPoint(t: 2, ms: 1_000,
+                                            source: .validatedProprietaryRealtime)],
+            sleepWakeResearchState: "sleep_research"
+        )
+
+        XCTAssertEqual(standard.localRMSSD, 42)
+        XCTAssertNil(legacy.localRMSSD)
+        XCTAssertNil(mixed.localRMSSD)
+        XCTAssertNil(legacy.sleepRespiratoryRate(rest: 55, maxHR: 190))
+        XCTAssertNil(mixed.sleepRespiratoryRate(rest: 55, maxHR: 190))
+    }
+
+    func testLiveHRVAnalyzerRejectsLegacyAndMixedSourceWindows() {
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let legacy = (0...300).map { index in
+            RRInterval(t: now.addingTimeInterval(Double(index - 300)),
+                       ms: index.isMultiple(of: 2) ? 1_000 : 1_020,
+                       expectedHR: 60)
+        }
+        var mixed = legacy.map {
+            RRInterval(t: $0.t, ms: $0.ms, expectedHR: $0.expectedHR,
+                       source: .standardHeartRateMeasurement2A37)
+        }
+        mixed[150] = RRInterval(t: mixed[150].t,
+                                ms: mixed[150].ms,
+                                expectedHR: mixed[150].expectedHR,
+                                source: .validatedProprietaryRealtime)
+
+        XCTAssertNil(HRVAnalyzer.analyze(legacy, now: now, includeTachogram: false).0)
+        XCTAssertNil(HRVAnalyzer.analyze(mixed, now: now, includeTachogram: false).0)
     }
 
     func testSuccessiveDifferenceHelperPreservesCleanAlternation() {
@@ -1595,6 +1864,24 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertNil(result.rmssdText)
     }
 
+    func testBreathworkSummaryDoesNotBridgeFragmentedRRIslands() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let end = start.addingTimeInterval(180)
+        var rr = breathworkRRSamples(start: start, end: end)
+        rr.removeAll {
+            $0.date >= start.addingTimeInterval(25)
+                && $0.date <= start.addingTimeInterval(35)
+        }
+
+        let result = AtriaBreathworkSession.summarize(samples: [],
+                                                       rrSamples: rr,
+                                                       start: start,
+                                                       end: end)
+
+        XCTAssertNil(result.rmssdDelta)
+        XCTAssertNil(result.rmssdText)
+    }
+
     private func breathworkRRSamples(start: Date, end: Date) -> [AtriaBreathworkSession.RRSample] {
         var output: [AtriaBreathworkSession.RRSample] = []
         var date = start
@@ -1865,7 +2152,9 @@ final class AtriaAnalyticsTests: XCTestCase {
         let rrPoints = (0..<360).map { index -> SavedSession.RRPoint in
             let seconds = Double(index)
             let wave = sin(2 * Double.pi * seconds / 4.0)
-            return SavedSession.RRPoint(t: seconds, ms: Int((920 + wave * 70).rounded()))
+            return SavedSession.RRPoint(t: seconds,
+                                        ms: Int((920 + wave * 70).rounded()),
+                                        source: .standardHeartRateMeasurement2A37)
         }
         let points = stride(from: 0, through: 360, by: 10).map {
             SavedSession.Point(t: Double($0), bpm: 62)
@@ -1943,7 +2232,9 @@ final class AtriaAnalyticsTests: XCTestCase {
         let rrPoints = (0..<360).map { index -> SavedSession.RRPoint in
             let seconds = Double(index)
             let wave = sin(2 * Double.pi * seconds / 4.0)
-            return SavedSession.RRPoint(t: seconds, ms: Int((920 + wave * 70).rounded()))
+            return SavedSession.RRPoint(t: seconds,
+                                        ms: Int((920 + wave * 70).rounded()),
+                                        source: .standardHeartRateMeasurement2A37)
         }
         let points = stride(from: 0, through: 360, by: 10).map {
             SavedSession.Point(t: Double($0), bpm: 62)
@@ -1968,10 +2259,14 @@ final class AtriaAnalyticsTests: XCTestCase {
         var rrPoints = (0..<240).map { index -> SavedSession.RRPoint in
             let seconds = Double(index)
             let wave = sin(2 * Double.pi * seconds / 4.0)
-            return SavedSession.RRPoint(t: seconds, ms: Int((920 + wave * 70).rounded()))
+            return SavedSession.RRPoint(t: seconds,
+                                        ms: Int((920 + wave * 70).rounded()),
+                                        source: .standardHeartRateMeasurement2A37)
         }
         rrPoints.append(contentsOf: (0..<18).map { index in
-            SavedSession.RRPoint(t: 900 + Double(index * 2), ms: 920)
+            SavedSession.RRPoint(t: 900 + Double(index * 2),
+                                 ms: 920,
+                                 source: .standardHeartRateMeasurement2A37)
         })
         let points = stride(from: 0, through: 940, by: 20).map {
             SavedSession.Point(t: Double($0), bpm: 62)
@@ -2148,7 +2443,8 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                           restingHeartRate: 60,
                                                           maxHeartRate: 190,
                                                           now: samples.last!.t)
-        XCTAssertEqual(result.elevatedSamples, 479, "only covered elapsed time in the trailing window counts")
+        XCTAssertEqual(result.elevatedSamples, 480,
+                       "destination-sample ownership counts the complete elevated trailing window")
         XCTAssertTrue(result.sustainedPath)
         XCTAssertTrue(result.shouldPrompt)
     }
@@ -2180,8 +2476,9 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                           maxHeartRate: 190,
                                                           now: spike[0].t)
 
-        XCTAssertEqual(result.longestElevatedBout, 0,
-                       "an instantaneous sample has no elapsed effort duration")
+        XCTAssertLessThan(result.longestElevatedBout,
+                          AtriaWorkoutPromptEvaluator.minimumContinuousElevatedSamples,
+                          "a single transition sample cannot prove a sustained effort")
         XCTAssertFalse(result.shouldPrompt)
     }
 
@@ -2214,7 +2511,7 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                           maxHeartRate: 190,
                                                           now: settled.last!.t)
 
-        XCTAssertEqual(result.zoneSamples, 240)
+        XCTAssertEqual(result.zoneSamples, zoneThree.count - 1)
         XCTAssertEqual(result.recentZoneSamples, 0)
         XCTAssertFalse(result.shouldPrompt)
     }
@@ -2485,7 +2782,11 @@ final class AtriaAnalyticsTests: XCTestCase {
             while cursor < phaseEnd {
                 let bpm = bpmAt(cursor - (phaseEnd - duration))
                 points.append(SavedSession.Point(t: cursor, bpm: bpm))
-                rrPoints.append(SavedSession.RRPoint(t: cursor, ms: Int((60_000.0 / Double(bpm)).rounded())))
+                rrPoints.append(SavedSession.RRPoint(
+                    t: cursor,
+                    ms: Int((60_000.0 / Double(bpm)).rounded()),
+                    source: .standardHeartRateMeasurement2A37
+                ))
                 cursor += 2
             }
         }
@@ -2571,7 +2872,9 @@ final class AtriaAnalyticsTests: XCTestCase {
             return SavedSession.Point(t: Double(minute) * 60, bpm: bpm)
         }
         let rrPoints = points.map {
-            SavedSession.RRPoint(t: $0.t, ms: Int((60_000.0 / Double($0.bpm)).rounded()))
+            SavedSession.RRPoint(t: $0.t,
+                                 ms: Int((60_000.0 / Double($0.bpm)).rounded()),
+                                 source: .standardHeartRateMeasurement2A37)
         }
         let session = workoutFixtureSession(start: start,
                                             end: start.addingTimeInterval(106 * 60),
@@ -2614,7 +2917,9 @@ final class AtriaAnalyticsTests: XCTestCase {
         }
         var rrCursor: TimeInterval = 0
         while rrCursor < 20 * 60 {
-            rrPoints.append(SavedSession.RRPoint(t: rrCursor, ms: 1_090))
+            rrPoints.append(SavedSession.RRPoint(t: rrCursor,
+                                                 ms: 1_090,
+                                                 source: .standardHeartRateMeasurement2A37))
             rrCursor += 24
         }
         let session = workoutFixtureSession(start: start,
@@ -2774,7 +3079,9 @@ final class AtriaAnalyticsTests: XCTestCase {
         }
         var rrCursor: TimeInterval = 0
         while rrCursor < 20 * 60 {
-            rrPoints.append(SavedSession.RRPoint(t: rrCursor, ms: 1_090))
+            rrPoints.append(SavedSession.RRPoint(t: rrCursor,
+                                                 ms: 1_090,
+                                                 source: .standardHeartRateMeasurement2A37))
             rrCursor += 24
         }
         let session = workoutFixtureSession(start: start,
@@ -2861,7 +3168,11 @@ final class AtriaAnalyticsTests: XCTestCase {
         var rrPoints: [SavedSession.RRPoint] = []
         var rrCursor: TimeInterval = 0
         while rrCursor < 25 * 60 {
-            rrPoints.append(SavedSession.RRPoint(t: rrCursor, ms: Int((60_000.0 / 120.0).rounded())))
+            rrPoints.append(SavedSession.RRPoint(
+                t: rrCursor,
+                ms: Int((60_000.0 / 120.0).rounded()),
+                source: .standardHeartRateMeasurement2A37
+            ))
             rrCursor += 24
         }
         let syntheticAggregate = workoutFixtureSession(start: start,
@@ -4538,6 +4849,11 @@ final class AtriaAnalyticsTests: XCTestCase {
                 unix += 60
             }
 
+            // Earlier tests can leave an intentionally asynchronous bounded
+            // cache warm-up in flight. Invalidate it after this fixture is
+            // fully written so the off-main assertion synchronously loads the
+            // archive generation created above.
+            HistoricalArchive.resetRecentGravityCacheForTesting()
             let candidates = runOffMain {
                 SessionStore.aggregateSleepCandidates(in: [frag1, frag2, frag3],
                                                       rest: rest,
@@ -4801,6 +5117,8 @@ final class AtriaAnalyticsTests: XCTestCase {
     }
 
     private func withCleanHistoricalArchive(_ body: () throws -> Void) throws {
+        Self.historicalArchiveTestLock.lock()
+        defer { Self.historicalArchiveTestLock.unlock() }
         try skipIfRealHistoricalArchivePresent()
         HistoricalArchive.resetRecentGravityCacheForTesting()
 

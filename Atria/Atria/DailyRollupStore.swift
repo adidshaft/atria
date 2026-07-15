@@ -564,10 +564,15 @@ final class DailyRollupStore {
     private var cache: [DailyRollupStoreEntry]
     private var cacheIndexByDay: [Date: Int] = [:]
     private var recoverySummariesByDay: [Date: FrozenRecoverySummary]
+    /// Restore spans this file and several other canonical destinations. While
+    /// that transaction owns persistence, mutations may update the in-memory
+    /// cache but cannot enqueue a stale file image behind the transaction.
+    private var persistencePaused = false
 
     init(url: URL? = nil,
          recoveryMetricsURL: URL? = nil,
          calendar: Calendar = .current,
+         loadPersisted: Bool = true,
          fileManager: FileManager = .default) {
         self.calendar = calendar
         let defaultDocuments = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
@@ -580,9 +585,10 @@ final class DailyRollupStore {
             self.recoveryMetricsURL = recoveryMetricsURL
                 ?? defaultDocuments.appendingPathComponent("daily-metrics.json")
         }
-        recoverySummariesByDay = Self.loadRecoverySummaries(from: self.recoveryMetricsURL,
-                                                            calendar: calendar)
-        let loaded = Self.load(from: self.url)
+        recoverySummariesByDay = loadPersisted
+            ? Self.loadRecoverySummaries(from: self.recoveryMetricsURL, calendar: calendar)
+            : [:]
+        let loaded = loadPersisted ? Self.load(from: self.url) : []
         cache = []
         cache.reserveCapacity(loaded.count)
         var normalizedByDay: [Date: DailyRollupStoreEntry] = [:]
@@ -616,12 +622,8 @@ final class DailyRollupStore {
         }
         cache = normalizedByDay.values.sorted { $0.day > $1.day }
         rebuildCacheIndex()
-        if cache != loaded {
-            let snapshot = cache
-            let targetURL = self.url
-            queue.async {
-                Self.persist(snapshot, to: targetURL)
-            }
+        if loadPersisted, cache != loaded {
+            schedulePersistence(of: cache)
         }
     }
 
@@ -658,11 +660,7 @@ final class DailyRollupStore {
         cache = updatedCache
         rebuildCacheIndex()
 
-        let snapshot = cache
-        let targetURL = url
-        queue.async {
-            Self.persist(snapshot, to: targetURL)
-        }
+        schedulePersistence(of: cache)
         return changed
     }
 
@@ -698,11 +696,7 @@ final class DailyRollupStore {
             rebuildCacheIndex()
         }
 
-        let snapshot = cache
-        let targetURL = url
-        queue.async {
-            Self.persist(snapshot, to: targetURL)
-        }
+        schedulePersistence(of: cache)
     }
 
     func reconcile(_ rollups: [DailyRollupStoreEntry], replacingDays: Set<Date>) {
@@ -754,11 +748,7 @@ final class DailyRollupStore {
         cache.sort { $0.day > $1.day }
         rebuildCacheIndex()
 
-        let snapshot = cache
-        let targetURL = url
-        queue.async {
-            Self.persist(snapshot, to: targetURL)
-        }
+        schedulePersistence(of: cache)
     }
 
     private func normalizedEntry(from rollup: DailyRollupStoreEntry,
@@ -855,7 +845,33 @@ final class DailyRollupStore {
     func replaceAll(_ rollups: [DailyRollupStoreEntry]) {
         cache = rollups.map { normalizedEntry(from: $0) }.sorted { $0.day > $1.day }
         rebuildCacheIndex()
-        let snapshot = cache
+        schedulePersistence(of: cache)
+    }
+
+    /// MainActor-owned transaction fence. Draining after pausing ensures every
+    /// previously queued image is durable before restore captures its rollback
+    /// image. Subsequent mutations remain in memory until the fence ends.
+    func beginPersistenceFence() async {
+        persistencePaused = true
+        await withCheckedContinuation { continuation in
+            queue.async { continuation.resume() }
+        }
+    }
+
+    /// Resume normal writes and publish the newest cache image, never an image
+    /// captured before or midway through restore.
+    func endPersistenceFence(persistCurrentSnapshot: Bool = true) {
+        let snapshot = persistCurrentSnapshot ? cache : nil
+        persistencePaused = false
+        if let snapshot {
+            schedulePersistence(of: snapshot)
+        }
+    }
+
+    private func schedulePersistence(of snapshot: [DailyRollupStoreEntry]) {
+        if persistencePaused {
+            return
+        }
         let targetURL = url
         queue.async {
             Self.persist(snapshot, to: targetURL)

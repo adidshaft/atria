@@ -85,7 +85,7 @@ final class AtriaRecoveryProjectionCadenceTests: XCTestCase {
         XCTAssertEqual(evaluations, 0)
     }
 
-    func testTTLInputAndCycleChangesEachPermitOneFreshEvaluation() {
+    func testOrdinaryInputChurnStaysStableUntilTTLButCycleChangesRefresh() {
         var cache = SessionStore.RecoveryProjectionCache()
         var evaluations = 0
         let firstFingerprint = SessionStore.RecoveryProjectionFingerprint(fallbackRMSSD: 55)
@@ -120,7 +120,43 @@ final class AtriaRecoveryProjectionCadenceTests: XCTestCase {
                           ttl: SessionStore.provisionalRecoveryProjectionTTL,
                           provisional: evaluate())
 
-        XCTAssertEqual(evaluations, 4)
+        XCTAssertEqual(evaluations, 3)
+    }
+
+    func testConfirmedSleepRevisionAndNewTrustedHRVRefreshImmediately() {
+        var cache = SessionStore.RecoveryProjectionCache()
+        var evaluations = 0
+        func evaluate() -> Metrics.RecoveryEstimate {
+            evaluations += 1
+            return estimate(50 + evaluations)
+        }
+        let cycle = makeCycle(start: start)
+
+        _ = cache.resolve(frozen: nil,
+                          cycle: cycle,
+                          fingerprint: .init(restingHeartRate: 60, sleepID: "night"),
+                          confirmedSleepsRevision: 1,
+                          now: start,
+                          ttl: SessionStore.provisionalRecoveryProjectionTTL,
+                          provisional: evaluate())
+        _ = cache.resolve(frozen: nil,
+                          cycle: cycle,
+                          fingerprint: .init(restingHeartRate: 55, sleepID: "night"),
+                          confirmedSleepsRevision: 2,
+                          now: start.addingTimeInterval(60),
+                          ttl: SessionStore.provisionalRecoveryProjectionTTL,
+                          provisional: evaluate())
+        _ = cache.resolve(frozen: nil,
+                          cycle: cycle,
+                          fingerprint: .init(fallbackRMSSD: 48,
+                                             restingHeartRate: 55,
+                                             sleepID: "night"),
+                          confirmedSleepsRevision: 2,
+                          now: start.addingTimeInterval(120),
+                          ttl: SessionStore.provisionalRecoveryProjectionTTL,
+                          provisional: evaluate())
+
+        XCTAssertEqual(evaluations, 3)
     }
 
     func testRecoveryRHRRejectsTransportSentinelsAndUsesCanonicalDurableFallback() {

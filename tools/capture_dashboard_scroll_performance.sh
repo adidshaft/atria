@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  tools/capture_dashboard_scroll_performance.sh --device DEVICE_ID [--pid PID] [--attach-name NAME] [--app-commit COMMIT] [--duration 12] [--countdown 5] [--xctrace-stop-grace 45] [--auto-scroll] [--bundle-id ID] [--measured-fps FPS] [--measured-fps-source PATH] [--final]
+  tools/capture_dashboard_scroll_performance.sh --device DEVICE_ID [--pid PID] [--attach-name NAME] [--app-commit COMMIT] [--duration 12] [--countdown 5] [--xctrace-stop-grace 45] [--auto-scroll] [--bundle-id ID] [--measured-fps FPS] [--measured-fps-source PATH] [--verified-accessibility-check CHECK]... [--final]
 
 Captures physical-device dashboard scroll evidence without installing Atria. By default
 it attaches to the already-running process; --auto-scroll launches the DEBUG fixture:
@@ -19,7 +19,10 @@ This script exports the Core Animation FPS table and uses the measured max FPS.
 --measured-fps remains available only as an explicit override after reading trace/video
 evidence; final override runs must also pass --measured-fps-source PATH.
 Final mode requires measured FPS from the trace or override and writes summary.json through
-prepare_accessibility_performance_evidence.py.
+prepare_accessibility_performance_evidence.py. This performance helper never infers
+accessibility success. Repeat --verified-accessibility-check only for checks already
+observed on the physical Release build: light_mode, dark_mode, increase_contrast,
+reduce_transparency, and reduce_motion.
 EOF
 }
 
@@ -30,6 +33,7 @@ duration="12"
 countdown="5"
 measured_fps=""
 measured_fps_source=""
+verified_accessibility_checks=()
 final=0
 xctrace_stop_grace="45"
 attach_name="Atria"
@@ -78,6 +82,19 @@ while [[ $# -gt 0 ]]; do
       measured_fps_source=${2:?--measured-fps-source requires a value}
       shift 2
       ;;
+    --verified-accessibility-check)
+      check=${2:?--verified-accessibility-check requires a value}
+      case "$check" in
+        light_mode|dark_mode|increase_contrast|reduce_transparency|reduce_motion)
+          verified_accessibility_checks+=("$check")
+          ;;
+        *)
+          printf 'Unknown accessibility check: %s\n' "$check" >&2
+          exit 64
+          ;;
+      esac
+      shift 2
+      ;;
     --final)
       final=1
       shift
@@ -113,6 +130,28 @@ if [[ "$final" -eq 1 && -n "$measured_fps" ]]; then
     exit 64
   fi
 fi
+if [[ "$final" -eq 1 ]]; then
+  missing_accessibility_checks=()
+  for required_check in light_mode dark_mode increase_contrast reduce_transparency reduce_motion; do
+    check_is_verified=0
+    if [[ "${#verified_accessibility_checks[@]}" -gt 0 ]]; then
+      for verified_check in "${verified_accessibility_checks[@]}"; do
+        if [[ "$verified_check" == "$required_check" ]]; then
+          check_is_verified=1
+          break
+        fi
+      done
+    fi
+    if [[ "$check_is_verified" -ne 1 ]]; then
+      missing_accessibility_checks+=("$required_check")
+    fi
+  done
+  if [[ "${#missing_accessibility_checks[@]}" -gt 0 ]]; then
+    printf 'Final mode requires explicitly verified physical accessibility checks; missing=%s\n' \
+      "$(IFS=,; printf '%s' "${missing_accessibility_checks[*]}")" >&2
+    exit 64
+  fi
+fi
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 evidence_root="$repo_root/docs/evidence/accessibility-performance/dashboard-scroll-${stamp}"
@@ -120,10 +159,15 @@ log_root="$repo_root/tmp/diag/dashboard-scroll-${stamp}"
 mkdir -p "$evidence_root" "$log_root"
 
 device_details=$(xcrun devicectl device info details --device "$device_id")
+xctrace_device_name=$(
+  awk -F': ' '/Device Name:/ { print $2; exit }' <<<"$device_details"
+)
 xctrace_device_id=$(
   awk -F': ' '/UDID:/ { print $2; exit }' <<<"$device_details"
 )
-if [[ -z "$xctrace_device_id" ]]; then
+if [[ -n "$xctrace_device_name" ]]; then
+  xctrace_device_id="$xctrace_device_name"
+elif [[ -z "$xctrace_device_id" ]]; then
   xctrace_device_id="$device_id"
 fi
 
@@ -360,10 +404,14 @@ prepare_args=(
   --repo "$repo_root"
   --force
   --out "$summary_out"
-  --all-accessibility-checks-pass
   --instruments-trace "$evidence_root/dashboard-scroll.trace"
-  --notes "Physical iPhone 15 Pro dashboard scroll capture ${stamp}; combined SwiftUI/Core Animation FPS/Hitches/Time Profiler trace artifacts are in ${evidence_root#$repo_root/}. Screen recording is optional and may be unavailable on this CoreDevice path. Use --measured-fps only after reading the trace evidence."
+  --notes "Physical iPhone 15 Pro dashboard scroll capture ${stamp}; combined SwiftUI/Core Animation FPS/Hitches/Time Profiler trace artifacts are in ${evidence_root#$repo_root/}. Screen recording is optional and may be unavailable on this CoreDevice path. Accessibility checks are included only when explicitly supplied as already verified physical observations. Use --measured-fps only after reading the trace evidence."
 )
+if [[ "${#verified_accessibility_checks[@]}" -gt 0 ]]; then
+  for check in "${verified_accessibility_checks[@]}"; do
+    prepare_args+=(--pass-check "$check")
+  done
+fi
 if [[ -n "$app_commit" ]]; then
   prepare_args+=(--app-commit "$app_commit")
 fi

@@ -487,8 +487,14 @@ final class AtriaStressMonitorStore: ObservableObject {
         hrBuffer.removeAll { now.timeIntervalSince($0.t) > Self.hrWindowSeconds }
 
         let rrWindow = recentRRSamples
-            .filter { now.timeIntervalSince($0.date) <= Self.rrWindowSeconds }
-            .map(\.ms)
+            .filter {
+                let age = now.timeIntervalSince($0.date)
+                return age >= -5 && age <= Self.rrWindowSeconds
+            }
+        let validatedShortWindowRMSSD = AtriaShortWindowRMSSD.value(
+            samples: rrWindow.map { (date: $0.date, ms: Double($0.ms)) },
+            minimumCoverageSeconds: AtriaStressMonitor.minimumHRVWindowSeconds
+        )
 
         let smoothedHR: Int
         if hrBuffer.isEmpty {
@@ -500,13 +506,16 @@ final class AtriaStressMonitorStore: ObservableObject {
 
         let contactAge = contactStartedAt.map { now.timeIntervalSince($0) } ?? 0
         let cooldownActive = lastWorkoutEndAt.map { now.timeIntervalSince($0) < AtriaStressMonitor.postWorkoutCooldownSeconds } ?? false
-        let hrvFallback: Double? = (hrvSnapshot?.isLiveStressEligible(on: now) == true)
-            ? hrvSnapshot?.rmssd
-            : nil
+        let hrvFallback: Double? = validatedShortWindowRMSSD
+            ?? ((hrvSnapshot?.isLiveStressEligible(on: now) == true) ? hrvSnapshot?.rmssd : nil)
 
         let raw = AtriaStressMonitor.score(hrNow: smoothedHR,
                                            hrWindow: hrBuffer.map(\.bpm),
-                                           rrWindowMs: rrWindow,
+                                           // The timestamped path above is authoritative in
+                                           // production. An empty raw array prevents the pure
+                                           // compatibility scorer from bridging disconnected
+                                           // RR islands when strict evidence is unavailable.
+                                           rrWindowMs: [],
                                            hrvFallbackRMSSD: hrvFallback,
                                            baseline: baseline,
                                            restingMaxHR: restingMaxHR,

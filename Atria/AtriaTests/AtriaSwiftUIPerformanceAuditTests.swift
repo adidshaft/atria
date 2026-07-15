@@ -60,14 +60,132 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
         XCTAssertTrue(home.contains("store.writeSessionBackupAsync(label: \"settings\", completion: completion)"))
         XCTAssertFalse(home.contains("store.writeSessionBackup(label: \"settings\")"),
                        "The Settings button must never synchronously encode and write on MainActor")
-        XCTAssertTrue(settings.contains("@State private var backupWriteInProgress = false"))
+        XCTAssertTrue(settings.contains("@State private var backupOperationInProgress = false"))
         XCTAssertTrue(settings.contains("ProgressView()"))
-        XCTAssertTrue(settings.contains(".disabled(backupWriteInProgress)"))
-        XCTAssertTrue(action.contains("guard !backupWriteInProgress else { return }"))
+        XCTAssertTrue(settings.contains(".disabled(backupOperationInProgress)"))
+        XCTAssertTrue(action.contains("guard !backupOperationInProgress else { return }"))
         XCTAssertTrue(action.contains("writer { status in"))
-        XCTAssertTrue(action.contains("backupWriteInProgress = false"))
+        XCTAssertTrue(action.contains("backupOperationInProgress = false"))
         XCTAssertTrue(action.contains("Backup saved."))
         XCTAssertTrue(action.contains("Backup failed. Try again."))
+    }
+
+    @MainActor
+    func testProfileDraftPersistenceCoalescesRapidEditsAndFlushesFinalValue() async {
+        let initial = AthleteProfile(age: 30,
+                                     measuredMaxHR: 190,
+                                     maxHRSource: .measured,
+                                     biologicalSex: .male,
+                                     weightKg: 72,
+                                     heightCm: 178,
+                                     updated: nil,
+                                     hasCompletedOnboarding: true)
+        var persisted: [AthleteProfile] = []
+        let coordinator = AtriaProfileDraftPersistenceCoordinator(
+            initialProfile: initial,
+            delay: .milliseconds(40),
+            persist: { persisted.append($0) }
+        )
+
+        var edit = initial
+        edit.age = 31
+        coordinator.schedule(edit)
+        edit.age = 32
+        coordinator.schedule(edit)
+        edit.age = 33
+        coordinator.schedule(edit)
+
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(persisted.map(\.age), [33],
+                       "Stepper repeats should produce one store refresh/backup, not one per tick")
+
+        edit.age = 34
+        coordinator.schedule(edit)
+        coordinator.flush(edit)
+        XCTAssertEqual(persisted.map(\.age), [33, 34],
+                       "Dismiss/navigation must synchronously preserve the final edit")
+
+        try? await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(persisted.map(\.age), [33, 34],
+                       "A canceled debounce task must not duplicate the flushed write")
+    }
+
+    @MainActor
+    func testProfileDraftPersistenceAdoptsExternalSourceWithoutWriteBack() async {
+        let initial = AthleteProfile(age: 30,
+                                     measuredMaxHR: 190,
+                                     maxHRSource: .measured,
+                                     updated: nil,
+                                     hasCompletedOnboarding: true)
+        var persisted: [AthleteProfile] = []
+        let coordinator = AtriaProfileDraftPersistenceCoordinator(
+            initialProfile: initial,
+            delay: .milliseconds(30),
+            persist: { persisted.append($0) }
+        )
+
+        var pending = initial
+        pending.age = 31
+        coordinator.schedule(pending)
+
+        var external = initial
+        external.age = 45
+        XCTAssertEqual(coordinator.synchronizeFromSource(external), external)
+        coordinator.schedule(external)
+        try? await Task.sleep(for: .milliseconds(70))
+
+        XCTAssertTrue(persisted.isEmpty,
+                      "A profile loaded by the store must not echo back into persistence")
+    }
+
+    func testBackupVerifyAndRestorePreparationUseAsyncSerialUtilityWorker() throws {
+        let sessions = try appSource("Sessions.swift")
+        let settings = try appSource("AtriaSettingsView.swift")
+        let onboarding = try appSource("AtriaOnboardingFlow.swift")
+        let ioStart = try XCTUnwrap(sessions.range(of: "private nonisolated static func performSessionBackupIO"))
+        let wrapperStart = try XCTUnwrap(sessions.range(of: "func verifyLatestSessionBackupFromLaunchIfRequested",
+                                                       range: ioStart.upperBound..<sessions.endIndex))
+        let io = String(sessions[ioStart.lowerBound..<wrapperStart.lowerBound])
+        let restoreStart = try XCTUnwrap(sessions.range(of: "private func restoreSessionBackup(request:"))
+        let applyStart = try XCTUnwrap(sessions.range(of: "private func applyPreparedSessionBackupRestore",
+                                                     range: restoreStart.upperBound..<sessions.endIndex))
+        let restoreCoordinator = String(sessions[restoreStart.lowerBound..<applyStart.lowerBound])
+
+        XCTAssertTrue(sessions.contains("com.adidshaft.atria.session-store.backup-read"))
+        XCTAssertTrue(sessions.contains("await sessionBackupIOWorker.performAsync"))
+        XCTAssertTrue(io.contains("FileManager.default.contentsOfDirectory"))
+        XCTAssertTrue(io.contains("sessionBackupPayloadData(at:"))
+        XCTAssertTrue(io.contains("decodeSessionBackupEnvelope"))
+        XCTAssertTrue(io.contains("makeBackupContentDigest"))
+        XCTAssertTrue(io.contains("SessionBackupWriter.write(snapshot.safetyWriteRequest)"))
+        XCTAssertFalse(restoreCoordinator.contains("Data(contentsOf:"))
+        XCTAssertFalse(restoreCoordinator.contains("JSONDecoder"))
+        XCTAssertFalse(restoreCoordinator.contains("SHA256"))
+        XCTAssertFalse(restoreCoordinator.contains("writeSessionBackup(label:"))
+        XCTAssertFalse(sessions.contains("defaults.synchronize()"))
+
+        XCTAssertTrue(settings.contains("let onVerifyBackup: (() async -> SessionBackupStatus)?"))
+        XCTAssertTrue(settings.contains("let onRestoreBackup: ((URL) async -> SessionBackupStatus?)?"))
+        XCTAssertTrue(settings.contains("if let next = await onRestoreBackup(url)"))
+        XCTAssertTrue(settings.contains("if didAccess { url.stopAccessingSecurityScopedResource() }"))
+        XCTAssertTrue(onboarding.contains("let onRestoreBackup: ((URL) async -> Bool)?"))
+        XCTAssertTrue(onboarding.contains("if await onRestoreBackup(url)"))
+    }
+
+    @MainActor
+    func testRequiredAsyncSerialWorkerNeverPerformsOnMainThread() async {
+        XCTAssertTrue(Thread.isMainThread)
+        let worker = AtriaCoalescingSerialWorker<Int, Bool>(
+            label: "com.adidshaft.atria.tests.backup-io",
+            qos: .utility
+        ) { _ in
+            Thread.isMainThread
+        }
+
+        let performedOnMain = await worker.performAsync(1)
+
+        XCTAssertFalse(performedOnMain,
+                       "Archive enumeration/decompression/decode/hash must stay off MainActor")
     }
 
     func testForegroundResearchCatchUpProjectsSessionPointsOffMainActor() throws {
@@ -387,7 +505,7 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
 
         XCTAssertTrue(completion.contains("await store.confirmWorkoutWindowForUIAsync(start: startedAt,"))
         XCTAssertFalse(completion.contains("store.confirmWorkoutWindowForUI(start: startedAt,"))
-        XCTAssertLessThan(try XCTUnwrap(completion.range(of: "finalIntent.save()")?.lowerBound),
+        XCTAssertLessThan(try XCTUnwrap(completion.range(of: "await finalIntent.persistTerminal()")?.lowerBound),
                           try XCTUnwrap(completion.range(of: "await store.confirmWorkoutWindowForUIAsync")?.lowerBound),
                           "Pending intent must become durable before asynchronous evidence preparation")
         XCTAssertLessThan(try XCTUnwrap(completion.range(of: "await store.confirmWorkoutWindowForUIAsync")?.lowerBound),

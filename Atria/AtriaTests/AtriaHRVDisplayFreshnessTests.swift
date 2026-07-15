@@ -52,6 +52,7 @@ final class AtriaHRVDisplayFreshnessTests: XCTestCase {
                     rejectedDeltaOver20Percent: 0,
                     rejectedHRMismatch: 0,
                     interpolated: 0,
+                    successiveDifferenceCount: 175,
                     windowSeconds: 300,
                     maxRRGapSeconds: 1,
                     respiratoryRate: nil,

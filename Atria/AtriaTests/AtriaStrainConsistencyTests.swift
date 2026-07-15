@@ -505,6 +505,255 @@ final class AtriaStrainConsistencyTests: XCTestCase {
         XCTAssertEqual(live.activeCalories ?? -1, expectedCalories, accuracy: 0.000_001)
     }
 
+    func testLiveWorkoutMetricsRemainMonotonicAcrossStrictlyForwardSessionRoll() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let profile = AthleteProfile(age: 30,
+                                     measuredMaxHR: 190,
+                                     maxHRSource: .measured,
+                                     biologicalSex: .male,
+                                     weightKg: 75,
+                                     heightCm: 178,
+                                     updated: nil,
+                                     hasCompletedOnboarding: true)
+        let firstSegment = stride(from: 0, through: 30, by: 10).map {
+            HRSample(t: start.addingTimeInterval(Double($0)), bpm: 150)
+        }
+        let secondSegment = stride(from: 40, through: 70, by: 10).map {
+            HRSample(t: start.addingTimeInterval(Double($0)), bpm: 155)
+        }
+        var accumulator = AtriaLiveWorkoutTRIMPAccumulator()
+        let first = accumulator.metrics(samples: firstSegment,
+                                        startedAt: start,
+                                        rest: 60,
+                                        maxHR: 190,
+                                        profile: profile,
+                                        excludedIntervals: [])
+        let rolled = accumulator.metrics(samples: secondSegment,
+                                         startedAt: start,
+                                         rest: 60,
+                                         maxHR: 190,
+                                         profile: profile,
+                                         excludedIntervals: [])
+        let expectedTRIMP = [firstSegment, secondSegment].reduce(0.0) { total, segment in
+            guard let origin = segment.first?.t else { return total }
+            return total + Metrics.trimp(segment.map {
+                ($0.t.timeIntervalSince(origin), $0.bpm)
+            }, rest: 60, max: 190, sex: .male)
+        }
+        let expectedCalories = [firstSegment, secondSegment].reduce(0.0) { total, segment in
+            total + (Metrics.dayCalories(segment.map {
+                Metrics.HeartRateEnergySample(t: $0.t, bpm: $0.bpm)
+            }, rest: 60, profile: profile) ?? 0)
+        }
+
+        XCTAssertGreaterThanOrEqual(rolled.trimp, first.trimp)
+        XCTAssertGreaterThanOrEqual(rolled.activeCalories ?? -1,
+                                    first.activeCalories ?? 0)
+        XCTAssertEqual(rolled.trimp, expectedTRIMP, accuracy: 0.000_001)
+        XCTAssertEqual(rolled.activeCalories ?? -1, expectedCalories, accuracy: 0.000_001)
+    }
+
+    func testLiveWorkoutMetricsDeduplicateOverlappingForwardSessionRoll() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let profile = AthleteProfile(age: 30,
+                                     measuredMaxHR: 190,
+                                     maxHRSource: .measured,
+                                     biologicalSex: .male,
+                                     weightKg: 75,
+                                     heightCm: 178,
+                                     updated: nil,
+                                     hasCompletedOnboarding: true)
+        let firstSegment = stride(from: 0, through: 30, by: 10).map {
+            HRSample(t: start.addingTimeInterval(Double($0)), bpm: 150)
+        }
+        let replacement = stride(from: 20, through: 50, by: 10).map {
+            HRSample(t: start.addingTimeInterval(Double($0)), bpm: 150)
+        }
+        let canonical = stride(from: 0, through: 50, by: 10).map {
+            HRSample(t: start.addingTimeInterval(Double($0)), bpm: 150)
+        }
+        var accumulator = AtriaLiveWorkoutTRIMPAccumulator()
+        _ = accumulator.metrics(samples: firstSegment,
+                                startedAt: start,
+                                rest: 60,
+                                maxHR: 190,
+                                profile: profile,
+                                excludedIntervals: [])
+        let rolled = accumulator.metrics(samples: replacement,
+                                         startedAt: start,
+                                         rest: 60,
+                                         maxHR: 190,
+                                         profile: profile,
+                                         excludedIntervals: [])
+        let expectedTRIMP = Metrics.trimp(canonical.map {
+            ($0.t.timeIntervalSince(start), $0.bpm)
+        }, rest: 60, max: 190, sex: .male)
+        let expectedCalories = Metrics.dayCalories(canonical.map {
+            Metrics.HeartRateEnergySample(t: $0.t, bpm: $0.bpm)
+        }, rest: 60, profile: profile)
+
+        XCTAssertEqual(rolled.trimp, expectedTRIMP, accuracy: 0.000_001)
+        XCTAssertEqual(rolled.activeCalories ?? -1, expectedCalories ?? -2, accuracy: 0.000_001)
+    }
+
+    func testRolledWorkoutPrefixSurvivesPauseResumeAndProfileChangeWithoutDoubleCount() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let originalProfile = AthleteProfile(age: 30,
+                                             measuredMaxHR: 190,
+                                             maxHRSource: .measured,
+                                             biologicalSex: .male,
+                                             weightKg: 75,
+                                             heightCm: 178,
+                                             updated: nil,
+                                             hasCompletedOnboarding: true)
+        let updatedProfile = AthleteProfile(age: 30,
+                                            measuredMaxHR: 190,
+                                            maxHRSource: .measured,
+                                            biologicalSex: .female,
+                                            weightKg: 80,
+                                            heightCm: 178,
+                                            updated: start.addingTimeInterval(120),
+                                            hasCompletedOnboarding: true)
+        let completedSegment = stride(from: 0, through: 30, by: 10).map {
+            HRSample(t: start.addingTimeInterval(Double($0)), bpm: 150)
+        }
+        let liveSegment = stride(from: 40, through: 110, by: 10).map {
+            HRSample(t: start.addingTimeInterval(Double($0)), bpm: 155)
+        }
+        let openPause = ExcludedInterval(start: start.addingTimeInterval(60),
+                                         end: .distantFuture)
+        let closedPause = ExcludedInterval(start: start.addingTimeInterval(60),
+                                           end: start.addingTimeInterval(80))
+        var accumulator = AtriaLiveWorkoutTRIMPAccumulator()
+        let prefix = accumulator.metrics(samples: completedSegment,
+                                         startedAt: start,
+                                         rest: 60,
+                                         maxHR: 190,
+                                         profile: originalProfile,
+                                         excludedIntervals: [])
+        _ = accumulator.metrics(samples: liveSegment,
+                                startedAt: start,
+                                rest: 60,
+                                maxHR: 190,
+                                profile: originalProfile,
+                                excludedIntervals: [])
+        let paused = accumulator.metrics(samples: liveSegment,
+                                         startedAt: start,
+                                         rest: 60,
+                                         maxHR: 190,
+                                         profile: originalProfile,
+                                         excludedIntervals: [openPause])
+        XCTAssertGreaterThanOrEqual(paused.trimp, prefix.trimp,
+                                    "opening a pause after a roll cannot erase completed load")
+
+        let resumed = accumulator.metrics(samples: liveSegment,
+                                          startedAt: start,
+                                          rest: 60,
+                                          maxHR: 190,
+                                          profile: originalProfile,
+                                          excludedIntervals: [closedPause])
+        let expectedResumedTRIMP = prefix.trimp
+            + AtriaAnalytics.Strain.contiguousSegments(liveSegment, excluding: [closedPause])
+                .reduce(0.0) { total, segment in
+                    guard let origin = segment.first?.t else { return total }
+                    return total + Metrics.trimp(segment.map {
+                        ($0.t.timeIntervalSince(origin), $0.bpm)
+                    }, rest: 60, max: 190, sex: .male)
+                }
+        XCTAssertEqual(resumed.trimp, expectedResumedTRIMP, accuracy: 0.000_001)
+
+        let reprofiled = accumulator.metrics(samples: liveSegment,
+                                              startedAt: start,
+                                              rest: 60,
+                                              maxHR: 190,
+                                              profile: updatedProfile,
+                                              excludedIntervals: [closedPause])
+        let activeSegments = AtriaAnalytics.Strain.contiguousSegments(
+            liveSegment,
+            excluding: [closedPause]
+        )
+        let expectedReprofiledTRIMP = prefix.trimp + activeSegments.reduce(0.0) { total, segment in
+            guard let origin = segment.first?.t else { return total }
+            return total + Metrics.trimp(segment.map {
+                ($0.t.timeIntervalSince(origin), $0.bpm)
+            }, rest: 60, max: 190, sex: .female)
+        }
+        let expectedCalories = (prefix.activeCalories ?? 0) + activeSegments.reduce(0.0) {
+            total, segment in
+            total + (Metrics.dayCalories(segment.map {
+                Metrics.HeartRateEnergySample(t: $0.t, bpm: $0.bpm)
+            }, rest: 60, profile: updatedProfile) ?? 0)
+        }
+        XCTAssertEqual(reprofiled.trimp, expectedReprofiledTRIMP, accuracy: 0.000_001)
+        XCTAssertEqual(reprofiled.activeCalories ?? -1, expectedCalories, accuracy: 0.000_001)
+
+        let repeated = accumulator.metrics(samples: liveSegment,
+                                            startedAt: start,
+                                            rest: 60,
+                                            maxHR: 190,
+                                            profile: updatedProfile,
+                                            excludedIntervals: [closedPause])
+        XCTAssertEqual(repeated, reprofiled,
+                       "replaying an unchanged rolled segment must not add its prefix twice")
+    }
+
+    func testDelayedExclusionOverFrozenPrefixMarksLiveLoadIncomplete() {
+        let start = Date(timeIntervalSince1970: 1_800_100_000)
+        let profile = AthleteProfile(age: 30,
+                                     measuredMaxHR: 190,
+                                     maxHRSource: .measured,
+                                     biologicalSex: .male,
+                                     weightKg: 75,
+                                     heightCm: 178,
+                                     updated: nil,
+                                     hasCompletedOnboarding: true)
+        let frozenSegment = stride(from: 0, through: 30, by: 10).map {
+            HRSample(t: start.addingTimeInterval(Double($0)), bpm: 150)
+        }
+        let replayableSegment = stride(from: 40, through: 80, by: 10).map {
+            HRSample(t: start.addingTimeInterval(Double($0)), bpm: 155)
+        }
+        var accumulator = AtriaLiveWorkoutTRIMPAccumulator()
+        _ = accumulator.metrics(samples: frozenSegment,
+                                startedAt: start,
+                                rest: 60,
+                                maxHR: 190,
+                                profile: profile,
+                                excludedIntervals: [])
+        let rolled = accumulator.metrics(samples: replayableSegment,
+                                         startedAt: start,
+                                         rest: 60,
+                                         maxHR: 190,
+                                         profile: profile,
+                                         excludedIntervals: [])
+        XCTAssertTrue(rolled.isComplete)
+
+        let delayedPause = ExcludedInterval(start: start.addingTimeInterval(10),
+                                            end: start.addingTimeInterval(20))
+        let invalidated = accumulator.metrics(samples: replayableSegment,
+                                              startedAt: start,
+                                              rest: 60,
+                                              maxHR: 190,
+                                              profile: profile,
+                                              excludedIntervals: [delayedPause])
+        XCTAssertTrue(invalidated.hasEvidence)
+        XCTAssertFalse(invalidated.isComplete,
+                       "discarded HR cannot be replayed to remove a delayed pause")
+
+        let projection = AtriaLiveWorkoutMetricProjection(
+            strain: Metrics.strain(fromTRIMP: invalidated.trimp),
+            activeCalories: nil,
+            sensorAvailability: .live,
+            sensorCapturedAt: replayableSegment.last?.t,
+            hasSensorEvidence: true,
+            loadIsComplete: invalidated.isComplete
+        )
+        XCTAssertFalse(projection.coachingIsLive)
+        XCTAssertEqual(projection.strainHUDText, "--")
+        XCTAssertEqual(projection.activeCaloriesHUDText, "--")
+        XCTAssertEqual(projection.sensorStatusTitle, "Load incomplete")
+    }
+
     func testWorkoutStepProjectionSharesFreshnessAcrossHUDAndLiveActivity() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let live = AtriaLiveWorkoutStepProjection.make(totalCount: 180,

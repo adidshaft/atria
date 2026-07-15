@@ -800,6 +800,8 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
 }
 
 enum AtriaWorkoutRouteStore {
+    private static let maximumSharePreviewPointCount = 240
+
     enum ReconciliationError: Error, Equatable {
         case writeFailed
         case deleteFailed
@@ -821,6 +823,29 @@ enum AtriaWorkoutRouteStore {
         case completed
         case deferred
         case failed
+    }
+
+    /// Complete immutable route context prepared for Activity presentation.
+    /// Route JSON decoding, full-point segment projection, and GPX generation
+    /// all happen on the route store's serial utility queue before this value
+    /// crosses back to the main actor.
+    struct PreparedPresentation: @unchecked Sendable {
+        let route: AtriaWorkoutRoute?
+        let segments: [[CLLocationCoordinate2D]]
+        let gpxURL: URL?
+        let sharePreviewPoints: [AtriaWorkoutShareSnapshot.RoutePoint]
+    }
+
+    /// Bounded, immutable inputs needed by the post-workout share receipt.
+    /// The full route never crosses back to Home's main-actor completion path:
+    /// GPX creation, pace projection and the at-most-240-point preview are all
+    /// completed on `persistenceQueue` first.
+    struct PreparedShareArtifact: Equatable, Sendable {
+        let routeWasPersisted: Bool
+        let routeFileURL: URL?
+        let routePoints: [AtriaWorkoutShareSnapshot.RoutePoint]
+        let distanceMeters: Double
+        let averagePaceSecondsPerKilometer: TimeInterval?
     }
 
     private struct PendingTransaction: Codable, Equatable {
@@ -849,6 +874,18 @@ enum AtriaWorkoutRouteStore {
         label: "com.adidshaft.atria.workout-route-store",
         qos: .utility
     )
+
+    /// Serializes every Activity-facing route transaction and large route-file
+    /// operation without making a main-actor caller block on JSON or disk I/O.
+    private static func performOnPersistenceQueue<T>(
+        _ operation: @escaping @Sendable () -> T
+    ) async -> T {
+        await withCheckedContinuation { continuation in
+            persistenceQueue.async {
+                continuation.resume(returning: operation())
+            }
+        }
+    }
 
     private static var directoryURL: URL {
         let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
@@ -892,6 +929,23 @@ enum AtriaWorkoutRouteStore {
     }
 
     @discardableResult
+    static func beginEditTransactionAsync(
+        from originalWorkout: CanonicalWorkoutState,
+        to newWorkoutID: String,
+        activityType: AtriaWorkoutActivityType,
+        start: Date,
+        end: Date
+    ) async -> Bool {
+        await performOnPersistenceQueue {
+            beginEditTransaction(from: originalWorkout,
+                                 to: newWorkoutID,
+                                 activityType: activityType,
+                                 start: start,
+                                 end: end)
+        }
+    }
+
+    @discardableResult
     static func beginDeleteTransaction(workoutID: String) -> Bool {
         guard !pendingTransactionFileExists else { return false }
         return savePendingTransaction(PendingTransaction(
@@ -908,6 +962,13 @@ enum AtriaWorkoutRouteStore {
             originalRoute: load(workoutID: workoutID),
             createdAt: Date()
         ))
+    }
+
+    @discardableResult
+    static func beginDeleteTransactionAsync(workoutID: String) async -> Bool {
+        await performOnPersistenceQueue {
+            beginDeleteTransaction(workoutID: workoutID)
+        }
     }
 
     /// Replays the pending transaction against authoritative metadata. Edits
@@ -996,6 +1057,15 @@ enum AtriaWorkoutRouteStore {
     }
 
     @discardableResult
+    static func recoverPendingTransactionAsync(
+        canonicalWorkouts: [CanonicalWorkoutState]
+    ) async -> TransactionRecoveryResult {
+        await performOnPersistenceQueue {
+            recoverPendingTransaction(canonicalWorkouts: canonicalWorkouts)
+        }
+    }
+
+    @discardableResult
     static func clearPendingTransaction() -> Bool {
         guard pendingTransactionFileExists else { return true }
         do {
@@ -1005,6 +1075,13 @@ enum AtriaWorkoutRouteStore {
             AtriaDebugLog("ATRIADBG workout_route_transaction status=clear_failed error=%@",
                           String(describing: error))
             return false
+        }
+    }
+
+    @discardableResult
+    static func clearPendingTransactionAsync() async -> Bool {
+        await performOnPersistenceQueue {
+            clearPendingTransaction()
         }
     }
 
@@ -1065,16 +1142,7 @@ enum AtriaWorkoutRouteStore {
     }
 
     static func save(_ draft: AtriaWorkoutRouteRecorder.Draft, workoutID: String) -> AtriaWorkoutRoute? {
-        let route = AtriaWorkoutRoute(id: workoutID,
-                                      workoutID: workoutID,
-                                      activityType: draft.activityType.rawValue,
-                                      startedAt: draft.startedAt,
-                                      endedAt: draft.endedAt,
-                                      coverageStartedAt: draft.coverageStartedAt,
-                                      points: draft.points,
-                                      distanceMeters: draft.distanceMeters,
-                                      elevationGainMeters: draft.elevationGainMeters,
-                                      pausedDuration: draft.pausedDuration)
+        let route = route(from: draft, workoutID: workoutID)
         do {
             try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
             let data = try JSONEncoder.atriaRoute.encode(route)
@@ -1123,14 +1191,94 @@ enum AtriaWorkoutRouteStore {
         }
     }
 
+    /// Saves a completed route and prepares every route-derived share input on
+    /// the serial utility queue. A failed route write still returns a bounded
+    /// preview for the immediate social card, but deliberately with no GPX URL;
+    /// callers retain the pending intent and show the existing attaching state.
+    static func savePreparedShareArtifactAsync(
+        _ draft: AtriaWorkoutRouteRecorder.Draft,
+        workoutID: String,
+        completion: @escaping @MainActor @Sendable (PreparedShareArtifact) -> Void
+    ) {
+        persistenceQueue.async {
+            let savedRoute = save(draft, workoutID: workoutID)
+            let previewRoute = savedRoute ?? route(from: draft, workoutID: workoutID)
+            let prepared = prepareShareArtifact(
+                from: previewRoute,
+                routeWasPersisted: savedRoute != nil,
+                includeGPX: savedRoute != nil
+            )
+            Task { @MainActor in completion(prepared) }
+        }
+    }
+
+    /// Awaitable counterpart used by launch recovery. Suspension happens before
+    /// any point traversal, JSON work or GPX generation begins.
+    static func savePreparedShareArtifactAsync(
+        _ draft: AtriaWorkoutRouteRecorder.Draft,
+        workoutID: String
+    ) async -> PreparedShareArtifact {
+        await performOnPersistenceQueue {
+            let savedRoute = save(draft, workoutID: workoutID)
+            let previewRoute = savedRoute ?? route(from: draft, workoutID: workoutID)
+            return prepareShareArtifact(
+                from: previewRoute,
+                routeWasPersisted: savedRoute != nil,
+                includeGPX: savedRoute != nil
+            )
+        }
+    }
+
     static func load(workoutID: String) -> AtriaWorkoutRoute? {
         guard let data = try? Data(contentsOf: fileURL(workoutID: workoutID)) else { return nil }
         return try? JSONDecoder.atriaRoute.decode(AtriaWorkoutRoute.self, from: data)
     }
 
+    static func loadAsync(workoutID: String) async -> AtriaWorkoutRoute? {
+        await performOnPersistenceQueue {
+            load(workoutID: workoutID)
+        }
+    }
+
+    /// Loads a canonical route and returns only bounded share inputs. This is
+    /// used by guided-save receipts so route decoding and GPX work cannot move
+    /// back onto Home's main actor after the review sheet dismisses.
+    static func loadPreparedShareArtifactAsync(
+        workoutID: String
+    ) async -> PreparedShareArtifact? {
+        await performOnPersistenceQueue {
+            guard let route = load(workoutID: workoutID) else { return nil }
+            return prepareShareArtifact(
+                from: route,
+                routeWasPersisted: true,
+                includeGPX: true
+            )
+        }
+    }
+
+    static func loadPreparedPresentationAsync(
+        workoutID: String
+    ) async -> PreparedPresentation {
+        await performOnPersistenceQueue {
+            let route = load(workoutID: workoutID)
+            return PreparedPresentation(
+                route: route,
+                segments: route.map {
+                    AtriaWorkoutRoute.presentationSegments(from: $0.points)
+                } ?? [],
+                gpxURL: route.flatMap { gpxURL(for: $0) },
+                sharePreviewPoints: route.map {
+                    AtriaWorkoutShareSnapshot.routePreviewPoints(from: $0)
+                } ?? []
+            )
+        }
+    }
+
     static func reassociate(from oldWorkoutID: String, to newWorkoutID: String) {
         guard oldWorkoutID != newWorkoutID,
               let old = load(workoutID: oldWorkoutID) else { return }
+        guard deleteTemporaryGPX(workoutID: oldWorkoutID),
+              deleteTemporaryGPX(workoutID: newWorkoutID) else { return }
         let updated = AtriaWorkoutRoute(id: newWorkoutID,
                                         workoutID: newWorkoutID,
                                         activityType: old.activityType,
@@ -1162,6 +1310,13 @@ enum AtriaWorkoutRouteStore {
                           activityType: AtriaWorkoutActivityType,
                           start: Date,
                           end: Date) -> Result<Void, ReconciliationError> {
+        // GPX files are derived, exact-coordinate exports. Invalidate both
+        // associations before any route edit so an old share artifact can never
+        // outlive a successful edit or be confused with the updated route.
+        guard deleteTemporaryGPX(workoutID: oldWorkoutID),
+              oldWorkoutID == newWorkoutID || deleteTemporaryGPX(workoutID: newWorkoutID) else {
+            return .failure(.deleteFailed)
+        }
         guard activityType.supportsRouteRecording else {
             // The metadata edit has already committed by the time this method
             // is called. Remove a possible destination first so a failure can
@@ -1269,24 +1424,49 @@ enum AtriaWorkoutRouteStore {
         }
     }
 
+    static func reconcileAsync(
+        from oldWorkoutID: String,
+        to newWorkoutID: String,
+        activityType: AtriaWorkoutActivityType,
+        start: Date,
+        end: Date
+    ) async -> Result<Void, ReconciliationError> {
+        await performOnPersistenceQueue {
+            reconcile(from: oldWorkoutID,
+                      to: newWorkoutID,
+                      activityType: activityType,
+                      start: start,
+                      end: end)
+        }
+    }
+
     @discardableResult
     static func delete(workoutID: String) -> Bool {
+        let fileManager = FileManager.default
+        var succeeded = deleteTemporaryGPX(workoutID: workoutID)
         let url = fileURL(workoutID: workoutID)
-        guard FileManager.default.fileExists(atPath: url.path) else { return true }
-        do {
-            try FileManager.default.removeItem(at: url)
-            return true
-        } catch {
-            AtriaDebugLog("ATRIADBG workout_route status=delete_failed workout_id=%@ error=%@",
-                          workoutID,
-                          String(describing: error))
-            return false
+        if fileManager.fileExists(atPath: url.path) {
+            do {
+                try fileManager.removeItem(at: url)
+            } catch {
+                succeeded = false
+                AtriaDebugLog("ATRIADBG workout_route status=delete_failed workout_id=%@ error=%@",
+                              workoutID,
+                              String(describing: error))
+            }
+        }
+        return succeeded
+    }
+
+    @discardableResult
+    static func deleteAsync(workoutID: String) async -> Bool {
+        await performOnPersistenceQueue {
+            delete(workoutID: workoutID)
         }
     }
 
     static func gpxURL(for route: AtriaWorkoutRoute) -> URL? {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Atria-\(safeComponent(route.workoutID)).gpx")
+        let url = temporaryGPXURL(workoutID: route.workoutID)
         let timestampFormatter = ISO8601DateFormatter()
         var segments: [[AtriaWorkoutRoute.Point]] = []
         for point in route.points {
@@ -1312,10 +1492,78 @@ enum AtriaWorkoutRouteStore {
         """
         do {
             try Data(xml.utf8).write(to: url, options: .atomic)
+            try FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.completeUnlessOpen],
+                ofItemAtPath: url.path
+            )
             return url
         } catch {
+            try? FileManager.default.removeItem(at: url)
             return nil
         }
+    }
+
+    static func temporaryGPXURL(workoutID: String) -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("Atria-\(safeComponent(workoutID)).gpx")
+    }
+
+    @discardableResult
+    private static func deleteTemporaryGPX(workoutID: String) -> Bool {
+        let url = temporaryGPXURL(workoutID: workoutID)
+        guard FileManager.default.fileExists(atPath: url.path) else { return true }
+        do {
+            try FileManager.default.removeItem(at: url)
+            return true
+        } catch {
+            AtriaDebugLog("ATRIADBG workout_route status=gpx_delete_failed workout_id=%@ error=%@",
+                          workoutID,
+                          String(describing: error))
+            return false
+        }
+    }
+
+    static func gpxURLAsync(for route: AtriaWorkoutRoute) async -> URL? {
+        await performOnPersistenceQueue {
+            gpxURL(for: route)
+        }
+    }
+
+    private static func route(
+        from draft: AtriaWorkoutRouteRecorder.Draft,
+        workoutID: String
+    ) -> AtriaWorkoutRoute {
+        AtriaWorkoutRoute(id: workoutID,
+                          workoutID: workoutID,
+                          activityType: draft.activityType.rawValue,
+                          startedAt: draft.startedAt,
+                          endedAt: draft.endedAt,
+                          coverageStartedAt: draft.coverageStartedAt,
+                          points: draft.points,
+                          distanceMeters: draft.distanceMeters,
+                          elevationGainMeters: draft.elevationGainMeters,
+                          pausedDuration: draft.pausedDuration)
+    }
+
+    private static func prepareShareArtifact(
+        from route: AtriaWorkoutRoute,
+        routeWasPersisted: Bool,
+        includeGPX: Bool
+    ) -> PreparedShareArtifact {
+        // This precondition makes the performance contract executable: future
+        // call sites cannot accidentally reuse this full-route traversal on a
+        // main/UI queue without failing immediately in development and tests.
+        dispatchPrecondition(condition: .onQueue(persistenceQueue))
+        return PreparedShareArtifact(
+            routeWasPersisted: routeWasPersisted,
+            routeFileURL: includeGPX ? gpxURL(for: route) : nil,
+            routePoints: AtriaWorkoutShareSnapshot.routePreviewPoints(
+                from: route,
+                limit: maximumSharePreviewPointCount
+            ),
+            distanceMeters: route.distanceMeters,
+            averagePaceSecondsPerKilometer: route.averagePaceSecondsPerKilometer
+        )
     }
 
     private static func fileURL(workoutID: String) -> URL {

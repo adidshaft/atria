@@ -678,6 +678,31 @@ enum AtriaVitalsEducationTopic: String, Identifiable {
         }
     }
 
+    /// Short action labels for the primary sheet. The complete rationale stays
+    /// attached as an accessibility hint, so sighted users do not have to read
+    /// three paragraph cards before reaching anything actionable.
+    var improvementTitles: [String] {
+        switch self {
+        case .recovery:
+            return ["Keep sleep consistent", "Match effort to readiness", "Let your baseline mature"]
+        case .restingHeartRate:
+            return ["Build an aerobic base", "Protect sleep and hydration", "Watch the trend"]
+        case .hrv:
+            return ["Protect consistent sleep", "Balance hard and easy days", "Limit late alcohol and meals"]
+        case .respiration:
+            return ["Check illness, altitude, and heat", "Favor calm nasal breathing", "Watch several nights"]
+        case .stress:
+            return ["Breathe slowly for 3 minutes", "Take a short daylight walk", "Ease load if it stays high"]
+        case .sleep:
+            return ["Anchor your wake time", "Wind down earlier", "Keep the room cool and dark"]
+        }
+    }
+
+    var compactSummary: String {
+        guard let first = whatItIs.components(separatedBy: ". ").first else { return whatItIs }
+        return first.hasSuffix(".") ? first : first + "."
+    }
+
     /// "How Atria computes it" methodology (2026-07-07 design handoff).
     /// Every figure here is the code's real behavior -- constants match
     /// Insights.swift / AtriaStressMonitor / the sleep aggregation, never the
@@ -735,9 +760,8 @@ enum AtriaVitalsEducationTopic: String, Identifiable {
     }
 }
 
-/// Compact three-section education sheet: what it is, your typical range
-/// (when a trusted baseline comparison exists), and how to improve. Reused by
-/// both the Vitals tab's Health Monitor card and the Health screen's monitor.
+/// Compact education sheet: one summary, one range row, and three actions.
+/// Methodology and honesty detail remain available in a native disclosure.
 struct AtriaVitalsEducationSheet: View {
     let topic: AtriaVitalsEducationTopic
     var numericRangeText: String? = nil
@@ -747,13 +771,26 @@ struct AtriaVitalsEducationSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 16) {
-                    detailBlock(title: "What it is", body: topic.whatItIs)
-                    detailBlock(title: "How Atria computes it", body: topic.howComputed)
-                    detailBlock(title: "Your typical range",
-                                body: numericRangeText ?? topic.rangeFallback(sleepGoalHours: sleepGoalHours))
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(topic.compactSummary)
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityHint(topic.whatItIs)
+
+                    LabeledContent("Typical") {
+                        Text(compactRangeText)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(topic.tint)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    .padding(14)
+                    .atriaInsetCard(tint: topic.tint)
+                    .accessibilityHint(numericRangeText
+                        ?? topic.rangeFallback(sleepGoalHours: sleepGoalHours))
+
                     improveBlock
-                    honestyBlock
+                    methodologyDisclosure
 
                     Text("General guidance, not medical advice.")
                         .font(.caption2.weight(.semibold))
@@ -775,19 +812,21 @@ struct AtriaVitalsEducationSheet: View {
 
     private var improveBlock: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("How to improve")
+            Text("Try next")
                 .font(.subheadline.weight(.semibold))
-            ForEach(Array(topic.howToImprove.enumerated()), id: \.offset) { _, bullet in
+            ForEach(Array(topic.improvementTitles.enumerated()), id: \.offset) { index, title in
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(topic.tint)
                         .padding(.top, 2)
-                    Text(bullet)
+                    Text(title)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                .accessibilityElement(children: .combine)
+                .accessibilityHint(topic.howToImprove[index])
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -795,39 +834,34 @@ struct AtriaVitalsEducationSheet: View {
         .atriaInsetCard(tint: topic.tint)
     }
 
-    /// Visually distinct honesty card (design handoff): shield header in the
-    /// metric hue, body stating the personal-baseline + fail-closed promise.
-    private var honestyBlock: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Honesty note", systemImage: "checkmark.shield.fill")
-                .font(.subheadline.weight(.bold))
-                .foregroundStyle(topic.tint)
+    private var methodologyDisclosure: some View {
+        DisclosureGroup {
             Text(topic.honestyNote)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .atriaInsetCard(tint: topic.tint)
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(topic.tint.opacity(0.35), lineWidth: 1)
-        }
-    }
-
-    private func detailBlock(title: String, body: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-            Text(body)
+            Divider()
+            Text(topic.howComputed)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        } label: {
+            Label("How it works", systemImage: "checkmark.shield.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(topic.tint)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
         .atriaInsetCard(tint: topic.tint)
+    }
+
+    private var compactRangeText: String {
+        if let numericRangeText { return numericRangeText }
+        switch topic {
+        case .recovery: return "1–33 low · 34–66 moderate · 67–100 high"
+        case .stress: return "Calm · Low · Medium · High"
+        case .sleep: return String(format: "%.1f h goal", sleepGoalHours)
+        case .restingHeartRate, .hrv, .respiration: return "Building your baseline"
+        }
     }
 }
 
@@ -2292,11 +2326,11 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
         ) != nil
     }
 
-    private func confirmSleepCandidate(_ night: SleepHistorySnapshot.Night) {
+    private func confirmSleepCandidate(_ night: SleepHistorySnapshot.Night) -> Bool {
         let vitals = vitalsStore.state
-        _ = store.confirmSleepHistoryNightForUI(night,
-                                                rest: vitals.baseline.restingInt ?? 60,
-                                                source: "vitals_sleep_history")
+        return store.confirmSleepHistoryNightForUI(night,
+                                                   rest: vitals.baseline.restingInt ?? 60,
+                                                   source: "vitals_sleep_history") != nil
     }
 
     #if DEBUG
@@ -2460,21 +2494,12 @@ private struct AtriaCollectionRRReferenceCardHost: View {
     @Binding var showRRImporter: Bool
     @Binding var rrShareURL: URL?
     let rrImportStatus: String
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var showDetails = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Beat-to-beat check", subtitle: "")
-
-                Spacer(minLength: 0)
-
-                AtriaStateBadge(state: homeStatsStore.state.rrPackageText.localizedCaseInsensitiveContains("ready") ? .validated : .learning)
-            }
-
-            VStack(spacing: 10) {
-                rrActionButtons
-            }
+        VStack(alignment: .leading, spacing: 12) {
+            header
 
             AtriaCollectionReferenceSummaryCard(
                 leadingTitle: "Beat-to-beat window",
@@ -2484,6 +2509,8 @@ private struct AtriaCollectionRRReferenceCardHost: View {
                 trailingValue: "Export or import",
                 trailingDetail: "local file flow"
             )
+
+            rrActionButtons
 
             if !rrImportStatus.isEmpty || !homeStatsStore.state.hrvDetail.isEmpty {
                 DisclosureGroup(isExpanded: $showDetails) {
@@ -2495,7 +2522,7 @@ private struct AtriaCollectionRRReferenceCardHost: View {
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 6)
                 } label: {
                     Label("Details", systemImage: "info.circle")
@@ -2504,33 +2531,85 @@ private struct AtriaCollectionRRReferenceCardHost: View {
                 .tint(.secondary)
             }
         }
-        .padding(18)
+        .padding(16)
         .atriaCard(emphasis: .soft)
     }
 
     @ViewBuilder
+    private var header: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 6) {
+                AtriaPanelSectionHeader(title: "Beat-to-beat check", subtitle: "")
+                referenceStateBadge
+            }
+        } else {
+            HStack(alignment: .top, spacing: 12) {
+                AtriaPanelSectionHeader(title: "Beat-to-beat check", subtitle: "")
+                Spacer(minLength: 8)
+                referenceStateBadge
+            }
+        }
+    }
+
+    private var referenceStateBadge: some View {
+        AtriaStateBadge(state: homeStatsStore.state.rrPackageText.localizedCaseInsensitiveContains("ready")
+            ? .validated
+            : .learning)
+    }
+
+    @ViewBuilder
     private var rrActionButtons: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(spacing: 8) {
+                exportButton
+                importButton
+                if let rrShareURL {
+                    shareButton(rrShareURL)
+                }
+            }
+        } else {
+            HStack(spacing: 8) {
+                exportButton
+                importButton
+                if let rrShareURL {
+                    shareButton(rrShareURL)
+                }
+            }
+        }
+    }
+
+    private var exportButton: some View {
         Button {
             rrShareURL = store.exportRRReferencePackageForUI()
         } label: {
-            Text("Export beats").frame(maxWidth: .infinity)
+            AtriaCollectionReferenceActionLabel(title: "Export beats",
+                                                systemImage: "square.and.arrow.up.on.square")
         }
-        .atriaCardAction(prominent: false, tint: .gray)
+        .tint(.blue)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.roundedRectangle(radius: 14))
+    }
 
+    private var importButton: some View {
         Button {
             showRRImporter = true
         } label: {
-            Text("Import beats").frame(maxWidth: .infinity)
+            AtriaCollectionReferenceActionLabel(title: "Import beats",
+                                                systemImage: "square.and.arrow.down")
         }
-        .atriaCardAction(tint: .blue)
+        .tint(.blue)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.roundedRectangle(radius: 14))
+    }
 
-        if let rrShareURL {
-            ShareLink(item: rrShareURL) {
-                Label("Share", systemImage: "square.and.arrow.up")
-                    .frame(maxWidth: .infinity)
-            }
-            .atriaCardAction(tint: .green)
+    private func shareButton(_ url: URL) -> some View {
+        ShareLink(item: url) {
+            AtriaCollectionReferenceActionLabel(title: "Share",
+                                                systemImage: "square.and.arrow.up")
         }
+        .tint(.green)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.roundedRectangle(radius: 14))
     }
 }
 
@@ -2540,21 +2619,12 @@ private struct AtriaCollectionHRReferenceCardHost: View {
     @Binding var showHRImporter: Bool
     @Binding var hrShareURL: URL?
     let hrImportStatus: String
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var showDetails = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Heart-rate check", subtitle: "")
-
-                Spacer(minLength: 0)
-
-                AtriaStateBadge(state: snapshotStore.state.referenceText.localizedCaseInsensitiveContains("ready") ? .validated : .learning)
-            }
-
-            VStack(spacing: 10) {
-                hrActionButtons
-            }
+        VStack(alignment: .leading, spacing: 12) {
+            header
 
             AtriaCollectionReferenceSummaryCard(
                 leadingTitle: "Heart-rate status",
@@ -2565,12 +2635,14 @@ private struct AtriaCollectionHRReferenceCardHost: View {
                 trailingDetail: "current classifier"
             )
 
+            hrActionButtons
+
             if !hrImportStatus.isEmpty {
                 DisclosureGroup(isExpanded: $showDetails) {
                     Text(hrImportStatus)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, 6)
                 } label: {
                     Label("Details", systemImage: "info.circle")
@@ -2579,33 +2651,105 @@ private struct AtriaCollectionHRReferenceCardHost: View {
                 .tint(.secondary)
             }
         }
-        .padding(18)
+        .padding(16)
         .atriaCard(emphasis: .soft)
     }
 
     @ViewBuilder
+    private var header: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 6) {
+                AtriaPanelSectionHeader(title: "Heart-rate check", subtitle: "")
+                referenceStateBadge
+            }
+        } else {
+            HStack(alignment: .top, spacing: 12) {
+                AtriaPanelSectionHeader(title: "Heart-rate check", subtitle: "")
+                Spacer(minLength: 8)
+                referenceStateBadge
+            }
+        }
+    }
+
+    private var referenceStateBadge: some View {
+        AtriaStateBadge(state: snapshotStore.state.referenceText.localizedCaseInsensitiveContains("ready")
+            ? .validated
+            : .learning)
+    }
+
+    @ViewBuilder
     private var hrActionButtons: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(spacing: 8) {
+                exportButton
+                importButton
+                if let hrShareURL {
+                    shareButton(hrShareURL)
+                }
+            }
+        } else {
+            HStack(spacing: 8) {
+                exportButton
+                importButton
+                if let hrShareURL {
+                    shareButton(hrShareURL)
+                }
+            }
+        }
+    }
+
+    private var exportButton: some View {
         Button {
             hrShareURL = store.exportHRReferencePackageForUI()
         } label: {
-            Text("Export heart rate").frame(maxWidth: .infinity)
+            AtriaCollectionReferenceActionLabel(title: "Export heart rate",
+                                                systemImage: "square.and.arrow.up.on.square")
         }
-        .atriaCardAction(prominent: false, tint: .gray)
+        .tint(.blue)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.roundedRectangle(radius: 14))
+    }
 
+    private var importButton: some View {
         Button {
             showHRImporter = true
         } label: {
-            Text("Import heart rate").frame(maxWidth: .infinity)
+            AtriaCollectionReferenceActionLabel(title: "Import heart rate",
+                                                systemImage: "square.and.arrow.down")
         }
-        .atriaCardAction(tint: .blue)
+        .tint(.blue)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.roundedRectangle(radius: 14))
+    }
 
-        if let hrShareURL {
-            ShareLink(item: hrShareURL) {
-                Label("Share", systemImage: "square.and.arrow.up")
-                    .frame(maxWidth: .infinity)
-            }
-            .atriaCardAction(tint: .green)
+    private func shareButton(_ url: URL) -> some View {
+        ShareLink(item: url) {
+            AtriaCollectionReferenceActionLabel(title: "Share",
+                                                systemImage: "square.and.arrow.up")
         }
+        .tint(.green)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.roundedRectangle(radius: 14))
+    }
+}
+
+private struct AtriaCollectionReferenceActionLabel: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.subheadline.weight(.semibold))
+                .frame(width: 18)
+
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44)
     }
 }
 
@@ -2668,17 +2812,17 @@ enum AtriaExperimentalSensorCopy {
     static func skinTemperatureFootnote(candidateValues: Int,
                                         decoderAvailable: Bool) -> String {
         guard !decoderAvailable else { return "Sleep-only relative deviation; no absolute temperature." }
-        return "Not available yet. Atria does not show raw sensor data as temperature."
+        return "Not available yet. Atria does not show raw sensor data as wrist temperature."
     }
 
     static func skinTemperatureDetail(summary: IMUAuditSummary.SkinTemperatureDeviationSummary,
                                       decoderAvailable: Bool) -> String {
         guard decoderAvailable else {
-            return "Not available yet. Atria does not show raw sensor data as body temperature."
+            return "Not available yet. Atria does not show raw sensor data as wrist temperature."
         }
         return summary.isReady
-            ? "\(summary.valueText) delta C versus your local sleep baseline. This is not an absolute body-temperature reading."
-            : "Atria is building a sleep baseline. It will only show relative deviation, never absolute body temperature."
+            ? "\(summary.valueText) delta C versus your local sleep baseline. This is a relative wrist-skin signal, not core temperature."
+            : "Atria is building a sleep baseline. It will only show relative wrist-skin deviation, never core temperature."
     }
 
     static func skinTemperatureAccessibilityDetail(
@@ -2688,10 +2832,10 @@ enum AtriaExperimentalSensorCopy {
         guard hasValidatedSkinTemperatureReading(summary: summary,
                                                   decoderAvailable: decoderAvailable) else {
             return decoderAvailable
-                ? "Body temperature is waiting for enough sleep data."
-                : "Body temperature is not available yet."
+                ? "Wrist temperature deviation is waiting for enough sleep data."
+                : "Wrist temperature deviation is not available yet."
         }
-        return "Body temperature relative sleep signal \(summary.valueText) delta C from baseline, \(summary.footnoteText)."
+        return "Wrist temperature relative sleep signal \(summary.valueText) delta C from baseline, \(summary.footnoteText)."
     }
 }
 
@@ -2766,7 +2910,7 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                     decoderAvailable: AtriaResearchProbe.validatedSpO2DecoderAvailable),
                                 zone: nil,
                                 targetMetric: nil)
-                AtriaMetricTile(label: "Body temp",
+                AtriaMetricTile(label: "Wrist temp",
                                 value: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
                                     ? summary.skinTemperatureDeviation.valueText
                                     : "--",
@@ -2844,7 +2988,7 @@ private struct AtriaResearchSignalInfoSheet: View {
 
                     researchInfoRow(systemImage: "thermometer.variable",
                                     tint: .teal,
-                                    title: "Body temperature signal",
+                                    title: "Wrist temperature signal",
                                     detail: AtriaExperimentalSensorCopy.skinTemperatureDetail(
                                         summary: skinTemperatureSummary,
                                         decoderAvailable: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable))
@@ -5062,7 +5206,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     let sleepEfficiencyYellowLower: Double
     let onAddManualSleep: (Date, Date, Bool) -> Void
     let onAdjustSleep: (SleepHistorySnapshot.Night, Date, Date, Bool) -> Bool
-    let onConfirmSleep: (SleepHistorySnapshot.Night) -> Void
+    let onConfirmSleep: (SleepHistorySnapshot.Night) -> Bool
 
     static func == (lhs: AtriaRecoveryStrainCard, rhs: AtriaRecoveryStrainCard) -> Bool {
         lhs.hero == rhs.hero
@@ -5242,10 +5386,11 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     let sleepEfficiencyYellowLower: Double
     let onAddManualSleep: (Date, Date, Bool) -> Void
     let onAdjustSleep: (SleepHistorySnapshot.Night, Date, Date, Bool) -> Bool
-    let onConfirmSleep: (SleepHistorySnapshot.Night) -> Void
+    let onConfirmSleep: (SleepHistorySnapshot.Night) -> Bool
     @State private var showManualSleepSheet = false
     @State private var showNightDetails = false
     @State private var adjustmentNight: SleepHistorySnapshot.Night?
+    @State private var sleepConfirmationFailed = false
 
     static func == (lhs: AtriaSleepHistoryCard, rhs: AtriaSleepHistoryCard) -> Bool {
         lhs.snapshot == rhs.snapshot
@@ -5374,7 +5519,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                     Button {
                         guard let latest = snapshot.latestReviewable,
                               latest.confirmed == false else { return }
-                        onConfirmSleep(latest)
+                        sleepConfirmationFailed = !onConfirmSleep(latest)
                     } label: {
                         Label("Confirm", systemImage: "checkmark.circle")
                             .font(.caption.weight(.semibold))
@@ -5382,6 +5527,15 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                     }
                     .atriaCardAction(prominent: false, tint: .cyan)
                     .accessibilityHint("Saves the shown sleep or nap candidate locally.")
+                }
+
+                if sleepConfirmationFailed {
+                    Label("Couldn't save. The suggestion is still here — try again, or tap Review to adjust the window.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel("Couldn't save sleep. The suggestion remains available. Try again or review the detected window.")
                 }
             }
 
@@ -5509,6 +5663,9 @@ private struct AtriaSleepHistoryCard: View, Equatable {
         }
         .padding(14)
         .atriaInsetCard(tint: .cyan)
+        .onChange(of: snapshot.latestReviewable?.id) { _, _ in
+            sleepConfirmationFailed = false
+        }
         .sheet(isPresented: $showManualSleepSheet) {
             AtriaManualSleepSheet { start, end, isNap in
                 onAddManualSleep(start, end, isNap)
@@ -6231,17 +6388,19 @@ private struct AtriaCollectionReferenceSummaryCard: View, Equatable {
     let trailingDetail: String
 
     var body: some View {
-        LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
+        VStack(alignment: .leading, spacing: 0) {
             AtriaCollectionReferenceSummaryTile(title: leadingTitle,
                                                 value: leadingValue,
                                                 detail: leadingDetail)
+
+            Divider()
+                .padding(.vertical, 10)
+
             AtriaCollectionReferenceSummaryTile(title: trailingTitle,
                                                 value: trailingValue,
                                                 detail: trailingDetail)
         }
     }
-
-    private static let statColumns = AtriaMetricTile.gridColumns
 }
 
 private struct AtriaCollectionReferenceSummaryTile: View, Equatable {
@@ -6250,17 +6409,27 @@ private struct AtriaCollectionReferenceSummaryTile: View, Equatable {
     let detail: String
 
     var body: some View {
-        AtriaMetricTile(label: title,
-                        value: value,
-                        state: value.localizedCaseInsensitiveContains("ready") ? .validated : .learning,
-                        tint: .blue,
-                        footnote: compactDetail)
-    }
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
-    private var compactDetail: String {
-        let words = detail.split(separator: " ")
-        guard words.count > 4 else { return detail }
-        return words.prefix(4).joined(separator: " ")
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(value.localizedCaseInsensitiveContains("ready") ? Color.green : Color.primary)
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
+
+            if !detail.isEmpty {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 }
 

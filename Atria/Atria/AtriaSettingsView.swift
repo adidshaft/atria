@@ -1,6 +1,78 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Coalesces high-frequency profile controls (notably Stepper repeats) into one
+/// durable store update. `flush` is called by every navigation/dismiss boundary,
+/// so a quick back-swipe cannot lose the final value.
+@MainActor
+final class AtriaProfileDraftPersistenceCoordinator {
+    private let delay: Duration
+    private let persist: (AthleteProfile) -> Void
+    private var committedProfile: AthleteProfile
+    private var pendingProfile: AthleteProfile?
+    private var persistenceTask: Task<Void, Never>?
+
+    init(initialProfile: AthleteProfile,
+         delay: Duration = .milliseconds(450),
+         persist: @escaping (AthleteProfile) -> Void) {
+        committedProfile = initialProfile
+        self.delay = delay
+        self.persist = persist
+    }
+
+    func schedule(_ profile: AthleteProfile) {
+        persistenceTask?.cancel()
+        persistenceTask = nil
+
+        guard profile != committedProfile else {
+            pendingProfile = nil
+            return
+        }
+
+        pendingProfile = profile
+        persistenceTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            commitPending()
+        }
+    }
+
+    /// Returns a source-of-truth profile that the editor should adopt. Echoes
+    /// from our own persisted edit are ignored, avoiding a write-back loop.
+    func synchronizeFromSource(_ profile: AthleteProfile) -> AthleteProfile? {
+        guard profile != committedProfile else { return nil }
+        persistenceTask?.cancel()
+        persistenceTask = nil
+        pendingProfile = nil
+        committedProfile = profile
+        return profile
+    }
+
+    func flush(_ profile: AthleteProfile? = nil) {
+        if let profile, profile != committedProfile {
+            pendingProfile = profile
+        }
+        persistenceTask?.cancel()
+        persistenceTask = nil
+        commitPending()
+    }
+
+    private func commitPending() {
+        guard let pendingProfile, pendingProfile != committedProfile else {
+            self.pendingProfile = nil
+            return
+        }
+        self.pendingProfile = nil
+        committedProfile = pendingProfile
+        persist(pendingProfile)
+    }
+}
+
 /// Native iOS 26 settings hub. Uses a grouped Form and folds in the
 /// community-requested differentiators (no subscription, data ownership/export,
 /// custom HR-zone & strain alerts).
@@ -116,8 +188,8 @@ struct AtriaSettingsView: View {
     /// completion is MainActor-isolated so Settings only performs the small UI
     /// state commit after encoding, compression and file I/O have finished.
     let onWriteBackup: ((@escaping @MainActor (SessionBackupStatus) -> Void) -> Void)?
-    let onVerifyBackup: (() -> Void)?
-    let onRestoreBackup: ((URL) -> SessionBackupStatus?)?
+    let onVerifyBackup: (() async -> SessionBackupStatus)?
+    let onRestoreBackup: ((URL) async -> SessionBackupStatus?)?
     let onForgetStrap: (() -> Void)?
     /// The developer validation surface is intentionally a factory. Building
     /// its large observation graph while the Settings sheet is animating can
@@ -142,17 +214,11 @@ struct AtriaSettingsView: View {
     @State private var backupImportPresented = false
     @State private var backupActionMessage: String?
     @State private var backupFeedbackTone = BackupFeedbackTone.neutral
-    @State private var backupWriteInProgress = false
+    @State private var backupOperationInProgress = false
     @State private var didLoadBackupStatus = false
     @State private var storageFootprintTotal: String?
     @State private var navigationPath = NavigationPath()
-    @AtriaDefault(SessionStore.iCloudBackupEnabledKey) private var iCloudBackupEnabled = false
-    @AtriaDefault(AtriaNutritionContext.healthReadNutritionKey) private var useHealthNutrition = false
-    @AppStorage("atriaAppearanceMode") private var appearanceMode = "system"
-    @AtriaDefault("atria.faceoff.displayName") private var faceOffDisplayName = ""
-    @AppStorage(AtriaTodayMetric.storageKey) private var todayHiddenCSV = ""
-    @AtriaDefault(AtriaTodayMetric.orderStorageKey) private var todayOrderCSV = ""
-    @AtriaDefault(AtriaTodayMetric.sizeStorageKey) private var todaySizeCSV = ""
+    @State private var profilePersistence: AtriaProfileDraftPersistenceCoordinator
 
     /// Support destinations are shown as text only. Atria's core stays local-first
     /// with no in-app network/browser clients, so contact details are surfaced for
@@ -188,8 +254,8 @@ struct AtriaSettingsView: View {
          onNutritionHealthToggle: (() -> Void)? = nil,
          backupStatusProvider: @escaping () -> SessionBackupStatus = { .missing },
          onWriteBackup: ((@escaping @MainActor (SessionBackupStatus) -> Void) -> Void)? = nil,
-         onVerifyBackup: (() -> Void)? = nil,
-         onRestoreBackup: ((URL) -> SessionBackupStatus?)? = nil,
+         onVerifyBackup: (() async -> SessionBackupStatus)? = nil,
+         onRestoreBackup: ((URL) async -> SessionBackupStatus?)? = nil,
          onForgetStrap: (() -> Void)? = nil,
          researchValidationContent: (() -> AnyView)? = nil) {
         self.profile = profile
@@ -232,6 +298,12 @@ struct AtriaSettingsView: View {
         _batterySaver = State(initialValue: batterySaverEnabled)
         _coachSettings = State(initialValue: aiCoachSettings)
         _coachHasAPIKey = State(initialValue: aiCoachHasAPIKey)
+        _profilePersistence = State(initialValue: AtriaProfileDraftPersistenceCoordinator(
+            initialProfile: profile,
+            persist: { profile in
+                onUpdateProfile { $0 = profile }
+            }
+        ))
         // Never ask the session store for backup state while SwiftUI is trying
         // to commit the sheet's first frame. The provider is cached today, but
         // this boundary keeps future backup validation/file work from silently
@@ -246,7 +318,12 @@ struct AtriaSettingsView: View {
                     strapSettingsContent
                 }
                 if debugPrioritizesDataSection {
-                    dataSection
+                    AtriaDataSettingsDefaultsScope(onNutritionHealthToggle: onNutritionHealthToggle) {
+                        iCloudBackupEnabled,
+                        useHealthNutrition in
+                        dataSection(iCloudBackupEnabled: iCloudBackupEnabled,
+                                    useHealthNutrition: useHealthNutrition)
+                    }
                 }
                 settingsHub
             }
@@ -256,7 +333,10 @@ struct AtriaSettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Close") { dismiss() }
+                    Button("Close") {
+                        profilePersistence.flush(draft)
+                        dismiss()
+                    }
                         .font(.body.weight(.semibold))
                 }
             }
@@ -272,7 +352,7 @@ struct AtriaSettingsView: View {
                 destinationPage(for: destination)
             }
         }
-        .onChange(of: draft) { _, value in onUpdateProfile { $0 = value } }
+        .onChange(of: draft) { _, value in profilePersistence.schedule(value) }
         // Keep the editable form in sync with the source of truth. Without this,
         // `draft` was seeded once at init; if the stored profile changed after
         // the sheet appeared (e.g. it finished loading, or a measured max-HR
@@ -280,7 +360,10 @@ struct AtriaSettingsView: View {
         // "my details never saved". The guard avoids a redundant write-back loop
         // (the user's own edits already made profile == draft).
         .onChange(of: profile) { _, newValue in
-            if newValue != draft { draft = newValue }
+            if let sourceProfile = profilePersistence.synchronizeFromSource(newValue),
+               sourceProfile != draft {
+                draft = sourceProfile
+            }
         }
         .onChange(of: haptics) { _, value in onUpdateHaptics(value) }
         .onChange(of: heartRateBroadcast) { _, value in onUpdateHeartRateBroadcast(value) }
@@ -289,11 +372,7 @@ struct AtriaSettingsView: View {
             if value != coachSettings { coachSettings = value }
         }
         .onChange(of: aiCoachHasAPIKey) { _, value in coachHasAPIKey = value }
-        .onChange(of: useHealthNutrition) { _, enabled in
-            if enabled {
-                onNutritionHealthToggle?()
-            }
-        }
+        .onDisappear { profilePersistence.flush(draft) }
         .fileImporter(isPresented: $backupImportPresented,
                       allowedContentTypes: backupArchiveTypes,
                       allowsMultipleSelection: false) { result in
@@ -364,25 +443,34 @@ struct AtriaSettingsView: View {
     }
 
     private var personalSettingsPage: some View {
-        compactSettingsForm(title: "Personal") {
-            todayLayoutSection
-            profileSection
-            appearanceSection
-            Section {
-                NavigationLink {
-                    coachSettingsPage
-                } label: {
-                    Label("Coach", systemImage: "brain.head.profile")
-                }
-                .accessibilityHint("Choose on-device or cloud summaries and manage cloud access")
+        AtriaPersonalSettingsDefaultsScope { appearanceMode,
+                                             faceOffDisplayName,
+                                             todayHiddenCSV,
+                                             todayOrderCSV,
+                                             todaySizeCSV in
+            compactSettingsForm(title: "Personal") {
+                todayLayoutSection(todayHiddenCSV: todayHiddenCSV,
+                                   todayOrderCSV: todayOrderCSV,
+                                   todaySizeCSV: todaySizeCSV)
+                profileSection(faceOffDisplayName: faceOffDisplayName)
+                appearanceSection(appearanceMode: appearanceMode)
+                Section {
+                    NavigationLink {
+                        coachSettingsPage
+                    } label: {
+                        Label("Coach", systemImage: "brain.head.profile")
+                    }
+                    .accessibilityHint("Choose on-device or cloud summaries and manage cloud access")
 
-                NavigationLink {
-                    AtriaAdvancedTargetsSettingsView()
-                } label: {
-                    Label("Advanced targets", systemImage: "scope")
+                    NavigationLink {
+                        AtriaAdvancedTargetsSettingsView()
+                    } label: {
+                        Label("Advanced targets", systemImage: "scope")
+                    }
+                    .accessibilityHint("Customize recovery, strain, sleep, and health metric ranges")
                 }
-                .accessibilityHint("Customize recovery, strain, sleep, and health metric ranges")
             }
+            .onDisappear { profilePersistence.flush(draft) }
         }
     }
 
@@ -507,8 +595,13 @@ struct AtriaSettingsView: View {
     }
 
     private var dataSettingsPage: some View {
-        compactSettingsForm(title: "Data") {
-            dataSection
+        AtriaDataSettingsDefaultsScope(onNutritionHealthToggle: onNutritionHealthToggle) {
+            iCloudBackupEnabled,
+            useHealthNutrition in
+            compactSettingsForm(title: "Data") {
+                dataSection(iCloudBackupEnabled: iCloudBackupEnabled,
+                            useHealthNutrition: useHealthNutrition)
+            }
         }
         // The archive can contain hundreds of megabytes and many rotated
         // segments. Its footprint is useful only on this destination, so do
@@ -605,9 +698,9 @@ struct AtriaSettingsView: View {
 
     // MARK: Appearance
 
-    private var appearanceSection: some View {
+    private func appearanceSection(appearanceMode: Binding<String>) -> some View {
         Section {
-            Picker("Appearance", selection: $appearanceMode) {
+            Picker("Appearance", selection: appearanceMode) {
                 Text("System").tag("system")
                 Text("Light").tag("light")
                 Text("Dark").tag("dark")
@@ -620,7 +713,7 @@ struct AtriaSettingsView: View {
 
     // MARK: Profile
 
-    private var profileSection: some View {
+    private func profileSection(faceOffDisplayName: Binding<String>) -> some View {
         Section {
             if let maxHRSuggestion {
                 maxHRSuggestionRow(maxHRSuggestion)
@@ -665,7 +758,7 @@ struct AtriaSettingsView: View {
                     Text("\(restingBaseline) bpm").monospacedDigit().foregroundStyle(.secondary)
                 }
             }
-            TextField("Face-Off name", text: $faceOffDisplayName)
+            TextField("Face-Off name", text: faceOffDisplayName)
                 .textInputAutocapitalization(.words)
                 .autocorrectionDisabled()
         } header: {
@@ -687,12 +780,11 @@ struct AtriaSettingsView: View {
 
             HStack(spacing: 8) {
                 Button {
-                    draft.measuredMaxHR = suggestion.observedPeak
-                    draft.maxHRSource = .measured
-                    onUpdateProfile {
-                        $0.measuredMaxHR = suggestion.observedPeak
-                        $0.maxHRSource = .measured
-                    }
+                    var updated = draft
+                    updated.measuredMaxHR = suggestion.observedPeak
+                    updated.maxHRSource = .measured
+                    draft = updated
+                    profilePersistence.flush(updated)
                     AtriaMaxHRSuggestionEngine.clearDismissal()
                 } label: {
                     Label("Update", systemImage: "checkmark.circle.fill")
@@ -728,9 +820,10 @@ struct AtriaSettingsView: View {
 
     // MARK: Data & privacy
 
-    private var dataSection: some View {
+    private func dataSection(iCloudBackupEnabled: Binding<Bool>,
+                             useHealthNutrition: Binding<Bool>) -> some View {
         Section {
-            backupArchiveRow
+            backupArchiveRow(iCloudBackupEnabled: iCloudBackupEnabled)
             if let onExportHealth {
                 Button {
                     onExportHealth()
@@ -750,7 +843,7 @@ struct AtriaSettingsView: View {
                                 detail: "Your heart rate, workouts and sleep sync to Apple Health from the collection tools.")
             }
 
-            Toggle(isOn: $useHealthNutrition) {
+            Toggle(isOn: useHealthNutrition) {
                 Label("Use nutrition from Apple Health", systemImage: "fork.knife.circle.fill")
             }
             .accessibilityHint("Read-only calories, macros, water, caffeine, and alcohol from Apple Health when you grant permission. Atria never asks you to log meals.")
@@ -878,7 +971,7 @@ struct AtriaSettingsView: View {
         await refreshStorageFootprintIfNeeded()
     }
 
-    private var backupArchiveRow: some View {
+    private func backupArchiveRow(iCloudBackupEnabled: Binding<Bool>) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: backupStatus.available ? "externaldrive.badge.checkmark" : "externaldrive")
@@ -908,29 +1001,35 @@ struct AtriaSettingsView: View {
                         startBackup(using: onWriteBackup)
                     } label: {
                         HStack(spacing: 6) {
-                            if backupWriteInProgress {
+                            if backupOperationInProgress {
                                 ProgressView()
                                     .controlSize(.small)
                             }
-                            Label(backupWriteInProgress ? "Backing up…" : "Back up now",
+                            Label(backupOperationInProgress ? "Working…" : "Back up now",
                                   systemImage: "arrow.down.doc.fill")
                         }
                     }
                     .atriaCardAction(prominent: false, tint: .blue)
-                    .disabled(backupWriteInProgress)
+                    .disabled(backupOperationInProgress)
                 }
                 if let onVerifyBackup {
                     Button {
-                        onVerifyBackup()
-                        backupStatus = backupStatusProvider()
-                        backupActionMessage = backupStatus.current ? "Latest backup matches this phone." : "Latest backup needs review."
-                        backupFeedbackTone = backupStatus.current ? .success : .failure
+                        guard !backupOperationInProgress else { return }
+                        backupOperationInProgress = true
+                        backupActionMessage = nil
+                        Task { @MainActor in
+                            let status = await onVerifyBackup()
+                            backupStatus = status
+                            backupActionMessage = status.current ? "Latest backup matches this phone." : "Latest backup needs review."
+                            backupFeedbackTone = status.current ? .success : .failure
+                            backupOperationInProgress = false
+                        }
                     } label: {
                         Image(systemName: "checkmark.seal")
                             .accessibilityLabel("Verify backup")
                     }
                     .atriaCardAction(prominent: false, tint: .green)
-                    .disabled(backupWriteInProgress)
+                    .disabled(backupOperationInProgress)
                 }
                 if onRestoreBackup != nil {
                     Button {
@@ -940,12 +1039,12 @@ struct AtriaSettingsView: View {
                             .accessibilityLabel("Restore backup from Files")
                     }
                     .atriaCardAction(prominent: false, tint: .orange)
-                    .disabled(backupWriteInProgress)
+                    .disabled(backupOperationInProgress)
                 }
             }
             .labelStyle(.titleAndIcon)
 
-            Toggle(isOn: $iCloudBackupEnabled) {
+            Toggle(isOn: iCloudBackupEnabled) {
                 Label("Copy to iCloud Drive", systemImage: "icloud.and.arrow.up")
             }
             .font(.subheadline)
@@ -976,13 +1075,13 @@ struct AtriaSettingsView: View {
     private func startBackup(
         using writer: @escaping (@escaping @MainActor (SessionBackupStatus) -> Void) -> Void
     ) {
-        guard !backupWriteInProgress else { return }
-        backupWriteInProgress = true
+        guard !backupOperationInProgress else { return }
+        backupOperationInProgress = true
         backupActionMessage = nil
         backupFeedbackTone = .neutral
 
         writer { status in
-            backupWriteInProgress = false
+            backupOperationInProgress = false
             if status.available && status.current {
                 backupStatus = status
                 backupActionMessage = "Backup saved."
@@ -997,18 +1096,25 @@ struct AtriaSettingsView: View {
     private func handleBackupImport(_ result: Result<[URL], Error>) {
         switch result {
         case .success(let urls):
-            guard let url = urls.first, let onRestoreBackup else { return }
-            let didAccess = url.startAccessingSecurityScopedResource()
-            defer {
-                if didAccess { url.stopAccessingSecurityScopedResource() }
-            }
-            if let next = onRestoreBackup(url) {
-                backupStatus = next
-                backupActionMessage = next.available ? "Backup restored." : "Restore finished; backup status is missing."
-                backupFeedbackTone = next.available ? .success : .failure
-            } else {
-                backupActionMessage = "Restore failed. Choose an Atria .json or .json.gz archive."
-                backupFeedbackTone = .failure
+            guard let url = urls.first, let onRestoreBackup, !backupOperationInProgress else { return }
+            backupOperationInProgress = true
+            backupActionMessage = nil
+            Task { @MainActor in
+                // A Files URL remains security-scoped until every awaited
+                // worker phase (safety write, decode/hash and apply) completes.
+                let didAccess = url.startAccessingSecurityScopedResource()
+                defer {
+                    if didAccess { url.stopAccessingSecurityScopedResource() }
+                    backupOperationInProgress = false
+                }
+                if let next = await onRestoreBackup(url) {
+                    backupStatus = next
+                    backupActionMessage = next.available ? "Backup restored." : "Restore finished; backup status is missing."
+                    backupFeedbackTone = next.available ? .success : .failure
+                } else {
+                    backupActionMessage = "Restore failed. Choose an Atria .json or .json.gz archive."
+                    backupFeedbackTone = .failure
+                }
             }
         case .failure:
             backupActionMessage = "Restore canceled."
@@ -1054,28 +1160,33 @@ struct AtriaSettingsView: View {
 
     // MARK: Today screen layout
 
-    private func todayBinding(_ metric: AtriaTodayMetric) -> Binding<Bool> {
+    private func todayBinding(_ metric: AtriaTodayMetric,
+                              todayHiddenCSV: Binding<String>) -> Binding<Bool> {
         Binding(
-            get: { !AtriaTodayMetric.hidden(from: todayHiddenCSV).contains(metric.rawValue) },
+            get: { !AtriaTodayMetric.hidden(from: todayHiddenCSV.wrappedValue).contains(metric.rawValue) },
             set: { visible in
-                var hidden = AtriaTodayMetric.hidden(from: todayHiddenCSV)
+                var hidden = AtriaTodayMetric.hidden(from: todayHiddenCSV.wrappedValue)
                 if visible {
                     hidden.remove(metric.rawValue)
                 } else {
                     hidden.insert(metric.rawValue)
                 }
-                todayHiddenCSV = AtriaTodayMetric.hiddenStorageValue(for: hidden)
+                todayHiddenCSV.wrappedValue = AtriaTodayMetric.hiddenStorageValue(for: hidden)
             }
         )
     }
 
-    private func resetTodayLayout() {
-        todayOrderCSV = AtriaTodayMetric.defaultGlanceOrder.map(\.rawValue).joined(separator: ",")
-        todayHiddenCSV = ""
-        todaySizeCSV = ""
+    private func resetTodayLayout(todayHiddenCSV: Binding<String>,
+                                  todayOrderCSV: Binding<String>,
+                                  todaySizeCSV: Binding<String>) {
+        todayOrderCSV.wrappedValue = AtriaTodayMetric.defaultGlanceOrder.map(\.rawValue).joined(separator: ",")
+        todayHiddenCSV.wrappedValue = ""
+        todaySizeCSV.wrappedValue = ""
     }
 
-    private var todayLayoutSection: some View {
+    private func todayLayoutSection(todayHiddenCSV: Binding<String>,
+                                    todayOrderCSV: Binding<String>,
+                                    todaySizeCSV: Binding<String>) -> some View {
         Section {
             if let onCustomizeToday {
                 Button {
@@ -1088,9 +1199,9 @@ struct AtriaSettingsView: View {
             } else {
                 // Compatibility fallback for hosts that do not provide the
                 // dedicated drag-and-drop customizer.
-                ForEach(AtriaTodayMetric.ordered(from: todayOrderCSV)) { metric in
+                ForEach(AtriaTodayMetric.ordered(from: todayOrderCSV.wrappedValue)) { metric in
                     HStack(spacing: 10) {
-                        Toggle(isOn: todayBinding(metric)) {
+                        Toggle(isOn: todayBinding(metric, todayHiddenCSV: todayHiddenCSV)) {
                             Label(metric.label, systemImage: metric.systemImage)
                         }
 
@@ -1098,18 +1209,26 @@ struct AtriaSettingsView: View {
 
                         Menu {
                             Button {
-                                todayOrderCSV = AtriaTodayMetric.moving(metric, direction: -1, in: todayOrderCSV)
+                                todayOrderCSV.wrappedValue = AtriaTodayMetric.moving(
+                                    metric,
+                                    direction: -1,
+                                    in: todayOrderCSV.wrappedValue
+                                )
                             } label: {
                                 Label("Move up", systemImage: "arrow.up")
                             }
-                            .disabled(metric == AtriaTodayMetric.ordered(from: todayOrderCSV).first)
+                            .disabled(metric == AtriaTodayMetric.ordered(from: todayOrderCSV.wrappedValue).first)
 
                             Button {
-                                todayOrderCSV = AtriaTodayMetric.moving(metric, direction: 1, in: todayOrderCSV)
+                                todayOrderCSV.wrappedValue = AtriaTodayMetric.moving(
+                                    metric,
+                                    direction: 1,
+                                    in: todayOrderCSV.wrappedValue
+                                )
                             } label: {
                                 Label("Move down", systemImage: "arrow.down")
                             }
-                            .disabled(metric == AtriaTodayMetric.ordered(from: todayOrderCSV).last)
+                            .disabled(metric == AtriaTodayMetric.ordered(from: todayOrderCSV.wrappedValue).last)
                         } label: {
                             Image(systemName: "ellipsis")
                                 .frame(width: 44, height: 44)
@@ -1124,7 +1243,11 @@ struct AtriaSettingsView: View {
             HStack {
                 Text("Today screen")
                 Spacer(minLength: 8)
-                Button(action: resetTodayLayout) {
+                Button {
+                    resetTodayLayout(todayHiddenCSV: todayHiddenCSV,
+                                     todayOrderCSV: todayOrderCSV,
+                                     todaySizeCSV: todaySizeCSV)
+                } label: {
                     Image(systemName: "arrow.counterclockwise")
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
@@ -1244,8 +1367,8 @@ struct AtriaSettingsView: View {
                             detail: "Sleep-only evidence; no SpO2 percentage or Health export yet.")
                 settingsInfoRow(icon: "thermometer.variable",
                             tint: .teal,
-                            title: "Body temperature signal",
-                            detail: "Skin-temp deviation only; no absolute body temperature or Health export.")
+                            title: "Wrist temperature signal",
+                            detail: "Relative wrist-skin deviation only; no core temperature or Health export.")
         } header: {
             Text("Sensors")
         }
@@ -1295,6 +1418,60 @@ struct AtriaSettingsView: View {
         let short = info?["CFBundleShortVersionString"] as? String ?? "1.0"
         let build = info?["CFBundleVersion"] as? String ?? "1"
         return "\(short) (\(build))"
+    }
+}
+
+/// Destination-owned defaults. SwiftUI constructs this scope only after the
+/// user opens Personal, keeping its observation boxes out of the Settings hub.
+private struct AtriaPersonalSettingsDefaultsScope<Content: View>: View {
+    @AppStorage("atriaAppearanceMode") private var appearanceMode = "system"
+    @AtriaDefault("atria.faceoff.displayName") private var faceOffDisplayName = ""
+    @AppStorage(AtriaTodayMetric.storageKey) private var todayHiddenCSV = ""
+    @AtriaDefault(AtriaTodayMetric.orderStorageKey) private var todayOrderCSV = ""
+    @AtriaDefault(AtriaTodayMetric.sizeStorageKey) private var todaySizeCSV = ""
+
+    private let content: (Binding<String>, Binding<String>, Binding<String>, Binding<String>, Binding<String>) -> Content
+
+    init(@ViewBuilder content: @escaping (
+        Binding<String>,
+        Binding<String>,
+        Binding<String>,
+        Binding<String>,
+        Binding<String>
+    ) -> Content) {
+        self.content = content
+    }
+
+    var body: some View {
+        content($appearanceMode,
+                $faceOffDisplayName,
+                $todayHiddenCSV,
+                $todayOrderCSV,
+                $todaySizeCSV)
+    }
+}
+
+/// Data-specific defaults remain dormant until Data is actually presented.
+private struct AtriaDataSettingsDefaultsScope<Content: View>: View {
+    @AtriaDefault(SessionStore.iCloudBackupEnabledKey) private var iCloudBackupEnabled = false
+    @AtriaDefault(AtriaNutritionContext.healthReadNutritionKey) private var useHealthNutrition = false
+
+    let onNutritionHealthToggle: (() -> Void)?
+    private let content: (Binding<Bool>, Binding<Bool>) -> Content
+
+    init(onNutritionHealthToggle: (() -> Void)?,
+         @ViewBuilder content: @escaping (Binding<Bool>, Binding<Bool>) -> Content) {
+        self.onNutritionHealthToggle = onNutritionHealthToggle
+        self.content = content
+    }
+
+    var body: some View {
+        content($iCloudBackupEnabled, $useHealthNutrition)
+            .onChange(of: useHealthNutrition) { _, enabled in
+                if enabled {
+                    onNutritionHealthToggle?()
+                }
+            }
     }
 }
 
@@ -1583,9 +1760,13 @@ private struct AtriaAdvancedTargetsSettingsView: View {
                     targetGroupHeader(title: "Recovery",
                                   subtitle: target.summaryText,
                                   systemImage: "gauge.with.dots.needle.67percent",
-                                  tint: .green,
-                                  resetTitle: "Reset to recommended",
-                                  onReset: resetRecoveryTargets)
+                                  tint: .green)
+                }
+                .padding(.trailing, 48)
+                .overlay(alignment: .topTrailing) {
+                    targetGroupResetMenu(title: "Recovery",
+                                         resetTitle: "Reset to recommended",
+                                         onReset: resetRecoveryTargets)
                 }
 
                 DisclosureGroup(isExpanded: targetGroupBinding("Strain")) {
@@ -1608,9 +1789,13 @@ private struct AtriaAdvancedTargetsSettingsView: View {
                     targetGroupHeader(title: "Strain",
                                   subtitle: "Today's strain goal, scaled to how recovered you are.",
                                   systemImage: "bolt.fill",
-                                  tint: .orange,
-                                  resetTitle: "Reset strain band",
-                                  onReset: resetStrainTargets)
+                                  tint: .orange)
+                }
+                .padding(.trailing, 48)
+                .overlay(alignment: .topTrailing) {
+                    targetGroupResetMenu(title: "Strain",
+                                         resetTitle: "Reset strain band",
+                                         onReset: resetStrainTargets)
                 }
 
                 DisclosureGroup(isExpanded: targetGroupBinding("Training load")) {
@@ -1661,9 +1846,13 @@ private struct AtriaAdvancedTargetsSettingsView: View {
                     targetGroupHeader(title: "Training load",
                                   subtitle: "Warns when training ramps up too fast or gets too repetitive.",
                                   systemImage: "chart.bar.xaxis",
-                                  tint: .orange,
-                                  resetTitle: "Reset training-load target",
-                                  onReset: resetTrainingLoadTargets)
+                                  tint: .orange)
+                }
+                .padding(.trailing, 48)
+                .overlay(alignment: .topTrailing) {
+                    targetGroupResetMenu(title: "Training load",
+                                         resetTitle: "Reset training-load target",
+                                         onReset: resetTrainingLoadTargets)
                 }
 
                 DisclosureGroup(isExpanded: targetGroupBinding("Activity")) {
@@ -1686,9 +1875,13 @@ private struct AtriaAdvancedTargetsSettingsView: View {
                     targetGroupHeader(title: "Activity",
                                   subtitle: "Your daily step and active-calorie goals.",
                                   systemImage: "figure.walk.motion",
-                                  tint: .green,
-                                  resetTitle: "Reset activity targets",
-                                  onReset: resetActivityTargets)
+                                  tint: .green)
+                }
+                .padding(.trailing, 48)
+                .overlay(alignment: .topTrailing) {
+                    targetGroupResetMenu(title: "Activity",
+                                         resetTitle: "Reset activity targets",
+                                         onReset: resetActivityTargets)
                 }
 
                 DisclosureGroup(isExpanded: targetGroupBinding("Sleep")) {
@@ -1725,9 +1918,13 @@ private struct AtriaAdvancedTargetsSettingsView: View {
                     targetGroupHeader(title: "Sleep",
                                   subtitle: "Your nightly sleep goal and how restful your nights were.",
                                   systemImage: "bed.double.fill",
-                                  tint: .cyan,
-                                  resetTitle: "Reset sleep targets",
-                                  onReset: resetSleepTargets)
+                                  tint: .cyan)
+                }
+                .padding(.trailing, 48)
+                .overlay(alignment: .topTrailing) {
+                    targetGroupResetMenu(title: "Sleep",
+                                         resetTitle: "Reset sleep targets",
+                                         onReset: resetSleepTargets)
                 }
 
                 DisclosureGroup(isExpanded: targetGroupBinding("Personal baselines")) {
@@ -1764,9 +1961,13 @@ private struct AtriaAdvancedTargetsSettingsView: View {
                     targetGroupHeader(title: "Personal baselines",
                                   subtitle: "Your HRV and resting-heart-rate ranges, set once Atria learns your normal.",
                                   systemImage: "heart.text.square.fill",
-                                  tint: .pink,
-                                  resetTitle: "Reset baseline targets",
-                                  onReset: resetBaselineTargets)
+                                  tint: .pink)
+                }
+                .padding(.trailing, 48)
+                .overlay(alignment: .topTrailing) {
+                    targetGroupResetMenu(title: "Personal baselines",
+                                         resetTitle: "Reset baseline targets",
+                                         onReset: resetBaselineTargets)
                 }
 
                 DisclosureGroup(isExpanded: targetGroupBinding("Sleep-only signals")) {
@@ -1814,9 +2015,13 @@ private struct AtriaAdvancedTargetsSettingsView: View {
                     targetGroupHeader(title: "Sleep-only signals",
                                   subtitle: "Breathing rate, skin temperature, and blood-oxygen ranges.",
                                   systemImage: "waveform.path.ecg",
-                                  tint: .teal,
-                                  resetTitle: "Reset signal targets",
-                                  onReset: resetSignalTargets)
+                                  tint: .teal)
+                }
+                .padding(.trailing, 48)
+                .overlay(alignment: .topTrailing) {
+                    targetGroupResetMenu(title: "Sleep-only signals",
+                                         resetTitle: "Reset signal targets",
+                                         onReset: resetSignalTargets)
                 }
 
                 DisclosureGroup(isExpanded: targetGroupBinding("Fitness age")) {
@@ -1843,9 +2048,13 @@ private struct AtriaAdvancedTargetsSettingsView: View {
                     targetGroupHeader(title: "Fitness age",
                                   subtitle: "How much younger or older your fitness looks than your age.",
                                   systemImage: "figure.stand",
-                                  tint: .purple,
-                                  resetTitle: "Reset fitness-age target",
-                                  onReset: resetFitnessAgeTargets)
+                                  tint: .purple)
+                }
+                .padding(.trailing, 48)
+                .overlay(alignment: .topTrailing) {
+                    targetGroupResetMenu(title: "Fitness age",
+                                         resetTitle: "Reset fitness-age target",
+                                         onReset: resetFitnessAgeTargets)
                 }
 
                 DisclosureGroup(isExpanded: targetGroupBinding("VO2max")) {
@@ -1868,9 +2077,13 @@ private struct AtriaAdvancedTargetsSettingsView: View {
                     targetGroupHeader(title: "VO2max",
                                   subtitle: "How much your VO2max must change to shift color.",
                                   systemImage: "lungs.fill",
-                                  tint: .blue,
-                                  resetTitle: "Reset VO2 trend target",
-                                  onReset: resetVO2TrendTargets)
+                                  tint: .blue)
+                }
+                .padding(.trailing, 48)
+                .overlay(alignment: .topTrailing) {
+                    targetGroupResetMenu(title: "VO2max",
+                                         resetTitle: "Reset VO2 trend target",
+                                         onReset: resetVO2TrendTargets)
                 }
             }
         } header: {
@@ -1896,9 +2109,7 @@ private struct AtriaAdvancedTargetsSettingsView: View {
     private func targetGroupHeader(title: String,
                                    subtitle: String,
                                    systemImage: String,
-                                   tint: Color,
-                                   resetTitle: String,
-                                   onReset: @escaping () -> Void) -> some View {
+                                   tint: Color) -> some View {
         HStack(spacing: 12) {
             Image(systemName: systemImage)
                 .font(.headline.weight(.semibold))
@@ -1922,19 +2133,23 @@ private struct AtriaAdvancedTargetsSettingsView: View {
             .accessibilityLabel("\(title). \(subtitle)")
 
             Spacer(minLength: 0)
-
-            Menu {
-                Button(action: onReset) {
-                    Label(resetTitle, systemImage: "arrow.counterclockwise")
-                }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.title3)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel(resetTitle)
         }
+    }
+
+    private func targetGroupResetMenu(title: String,
+                                      resetTitle: String,
+                                      onReset: @escaping () -> Void) -> some View {
+        Menu {
+            Button(action: onReset) {
+                Label(resetTitle, systemImage: "arrow.counterclockwise")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.title3)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel(resetTitle)
         .accessibilityHint("Restores the recommended \(title.lowercased()) values")
     }
 }

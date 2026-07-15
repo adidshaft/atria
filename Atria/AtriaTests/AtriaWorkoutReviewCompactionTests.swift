@@ -1,6 +1,14 @@
 import XCTest
 
 final class AtriaWorkoutReviewCompactionTests: XCTestCase {
+    func testDetectedBroadActivityDoesNotInventAReviewSubtype() throws {
+        let source = try flow
+
+        XCTAssertTrue(source.contains("_selectedSubtype = State(initialValue: nil)"))
+        XCTAssertTrue(source.contains("selectedType = type\n        selectedSubtype = nil"))
+        XCTAssertFalse(source.contains("_selectedSubtype = State(initialValue: suggestedType.subtypeOptions.first)"))
+    }
+
     private var flow: String {
         get throws {
             let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tools import audit_handoff_status
+from test_physical_qualification import write_passing_report as write_passing_physical_qualification
 
 
 def touch(root: Path, rel: Path) -> None:
@@ -133,11 +134,22 @@ class AuditHandoffStatusTests(unittest.TestCase):
             "xcrun xctrace export",
             "--toc",
             "${trace_path}.toc.xml",
+            "Device Name:",
+            "xctrace_device_name",
             "--attach \"$pid\"",
             "devicectl device capture screenshot",
             "devicectl device settings appearance",
             "prepare_accessibility_performance_evidence.py",
-            "--all-accessibility-checks-pass",
+            "--pass-check light_mode",
+            "--pass-check dark_mode",
+            "--pass-check increase_contrast",
+            "--pass-check reduce_transparency",
+            "--verified-reduce-motion",
+            "Final mode requires --verified-reduce-motion after a real physical behavior check.",
+            "Accessibility appearance restoration did not return to the original state.",
+            "Accessibility screenshot validation failed:",
+            "blank/near-black frame",
+            "byte-identical to dark-baseline.png",
             "--dashboard-scroll-fps",
             "Final mode requires --dashboard-scroll-fps from a real measured scroll pass.",
         ]:
@@ -147,6 +159,7 @@ class AuditHandoffStatusTests(unittest.TestCase):
             "device install app",
             "device process terminate",
             "live_device_debug.sh",
+            "--all-accessibility-checks-pass",
         ]:
             self.assertNotIn(forbidden, script)
 
@@ -159,6 +172,8 @@ class AuditHandoffStatusTests(unittest.TestCase):
             "--instrument 'Core Animation FPS'",
             "--instrument 'Hitches'",
             "--instrument 'Time Profiler'",
+            "Device Name:",
+            "xctrace_device_name",
             "devicectl device capture screen-record",
             "--attach \"$pid\"",
             "core-animation-fps-estimate",
@@ -173,6 +188,9 @@ class AuditHandoffStatusTests(unittest.TestCase):
             "--measured-fps",
             "Final mode requires measured FPS from the xctrace FPS table or --measured-fps override.",
             "prepare_accessibility_performance_evidence.py",
+            "--verified-accessibility-check",
+            "verified_accessibility_checks",
+            "Final mode requires explicitly verified physical accessibility checks; missing=%s",
             "--dashboard-scroll-fps",
         ]:
             self.assertIn(required, script)
@@ -181,8 +199,41 @@ class AuditHandoffStatusTests(unittest.TestCase):
             "device install app",
             "device process terminate",
             "live_device_debug.sh",
+            "--all-accessibility-checks-pass",
         ]:
             self.assertNotIn(forbidden, script)
+
+    def test_accessibility_visual_final_requires_behavioral_reduce_motion_proof(self):
+        script = Path(__file__).resolve().parent / "tools" / "capture_accessibility_visual_evidence.sh"
+        result = subprocess.run(
+            [str(script), "--device", "not-a-device", "--dashboard-scroll-fps", "60", "--final"],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+        self.assertEqual(result.returncode, 64)
+        self.assertIn(
+            "Final mode requires --verified-reduce-motion after a real physical behavior check.",
+            result.stdout,
+        )
+
+    def test_dashboard_final_requires_explicit_physical_accessibility_checks(self):
+        script = Path(__file__).resolve().parent / "tools" / "capture_dashboard_scroll_performance.sh"
+        result = subprocess.run(
+            [str(script), "--device", "not-a-device", "--final"],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+        self.assertEqual(result.returncode, 64)
+        self.assertIn(
+            "missing=light_mode,dark_mode,increase_contrast,reduce_transparency,reduce_motion",
+            result.stdout,
+        )
 
     def test_running_long_wear_progress_reports_eta_and_remaining_samples(self):
         progress = audit_handoff_status.running_long_wear_progress(
@@ -961,6 +1012,7 @@ class AuditHandoffStatusTests(unittest.TestCase):
             write_passing_long_wear_summary(summary)
             accessibility = repo / "docs/evidence/accessibility-performance/summary.json"
             write_passing_accessibility_performance(accessibility)
+            write_passing_physical_qualification(repo)
 
             report = audit_handoff_status.evaluate(
                 repo,
@@ -978,6 +1030,7 @@ class AuditHandoffStatusTests(unittest.TestCase):
             repo = Path(tmp)
             for rel in audit_handoff_status.LOCAL_CHECK_FILES + audit_handoff_status.REQUIRED_SOURCE_FILES:
                 touch(repo, rel)
+            write_passing_physical_qualification(repo)
 
             report = audit_handoff_status.evaluate(
                 repo,
@@ -1222,6 +1275,7 @@ class AuditHandoffStatusTests(unittest.TestCase):
             write_passing_long_wear_summary(summary)
             accessibility = repo / audit_handoff_status.DEFAULT_ACCESSIBILITY_PERFORMANCE_SUMMARY
             write_passing_accessibility_performance(accessibility)
+            write_passing_physical_qualification(repo)
 
             report = audit_handoff_status.evaluate(
                 repo,

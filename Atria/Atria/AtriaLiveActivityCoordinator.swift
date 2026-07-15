@@ -230,6 +230,9 @@ final class AtriaLiveActivityCoordinator {
         var heartRateAvailability: AtriaLiveSensorAvailability = .unavailable
         var strain: Double
         var batteryLevel: Int
+        var batteryCapturedAt: Date? = nil
+        var batteryChargeCapturedAt: Date? = nil
+        var batteryAvailability: AtriaLiveSensorAvailability = .unavailable
         var batteryChargeStatus: AtriaBLEManager.BatteryChargeStatus
         var readingCount: Int
         var startedAt: Date
@@ -245,6 +248,8 @@ final class AtriaLiveActivityCoordinator {
         var dailyStepsAreEstimated: Bool = false
         var dailyStepGoal: Int? = nil
         var workoutStrain: Double
+        var workoutStrainCapturedAt: Date? = nil
+        var workoutStrainAvailability: AtriaLiveSensorAvailability = .unavailable
         var targetWorkoutStrain: Double? = nil
         var activeEnergyKilocalories: Double? = nil
         var targetLowerHeartRateZone: Int? = nil
@@ -459,6 +464,9 @@ final class AtriaLiveActivityCoordinator {
                                                  batteryLevel: snapshot.batteryLevel,
                                                  batteryChargeStatus: snapshot.batteryChargeStatus.rawValue,
                                                  batteryChargeText: snapshot.batteryChargeStatus.label,
+                                                 batteryCapturedAt: snapshot.batteryCapturedAt,
+                                                 batteryChargeCapturedAt: snapshot.batteryChargeCapturedAt,
+                                                 batteryAvailability: snapshot.batteryAvailability,
                                                  readingCount: snapshot.readingCount,
                                                  updatedAt: now,
                                                  heartRateCapturedAt: snapshot.heartRateCapturedAt,
@@ -476,6 +484,8 @@ final class AtriaLiveActivityCoordinator {
                                                  dailyStepsAreEstimated: snapshot.dailyStepsAreEstimated,
                                                  dailyStepGoal: snapshot.dailyStepGoal,
                                                  workoutStrain: snapshot.workoutStrain,
+                                                 workoutStrainCapturedAt: snapshot.workoutStrainCapturedAt,
+                                                 workoutStrainAvailability: snapshot.workoutStrainAvailability,
                                                  targetWorkoutStrain: snapshot.targetWorkoutStrain,
                                                  activeEnergyKilocalories: snapshot.activeEnergyKilocalories,
                                                  targetLowerHeartRateZone: snapshot.targetLowerHeartRateZone,
@@ -581,9 +591,13 @@ final class AtriaLiveActivityCoordinator {
         let now = Date()
         return Self.sensorStaleDate(heartRateCapturedAt: snapshot.heartRateCapturedAt,
                                     stepsCapturedAt: snapshot.stepsCapturedAt,
+                                    strainCapturedAt: snapshot.workoutStrainCapturedAt,
+                                    batteryCapturedAt: snapshot.batteryCapturedAt,
                                     fallback: now,
                                     heartRateAvailability: snapshot.heartRateAvailability,
                                     stepsAvailability: snapshot.stepsAvailability,
+                                    strainAvailability: snapshot.workoutStrainAvailability,
+                                    batteryAvailability: snapshot.batteryAvailability,
                                     sensorHasContact: snapshot.sensorHasContact)
     }
 
@@ -594,23 +608,36 @@ final class AtriaLiveActivityCoordinator {
     /// 90-second HR deadline (or incorrectly make fresh HR stale).
     nonisolated static func sensorStaleDate(heartRateCapturedAt: Date?,
                                             stepsCapturedAt: Date?,
+                                            strainCapturedAt: Date? = nil,
+                                            batteryCapturedAt: Date? = nil,
                                             fallback: Date = Date(),
                                             heartRateFreshnessWindow: TimeInterval = 90,
                                             stepFreshnessWindow: TimeInterval = 15,
+                                            batteryFreshnessWindow: TimeInterval = 10 * 60,
                                             heartRateAvailability: AtriaLiveSensorAvailability? = nil,
                                             stepsAvailability: AtriaLiveSensorAvailability? = nil,
+                                            strainAvailability: AtriaLiveSensorAvailability? = nil,
+                                            batteryAvailability: AtriaLiveSensorAvailability? = nil,
                                             sensorHasContact: Bool? = nil) -> Date {
         let heartRateExpiry = heartRateCapturedAt?.addingTimeInterval(heartRateFreshnessWindow)
         let stepsExpiry = stepsCapturedAt?.addingTimeInterval(stepFreshnessWindow)
+        let strainExpiry = strainCapturedAt?.addingTimeInterval(heartRateFreshnessWindow)
+        let batteryExpiry = batteryCapturedAt?.addingTimeInterval(batteryFreshnessWindow)
         let hasExplicitSourceState = heartRateAvailability != nil
             || stepsAvailability != nil
+            || strainAvailability != nil
+            || batteryAvailability != nil
             || sensorHasContact != nil
         let expiries = [
             (date: heartRateExpiry,
              canAdvance: sensorHasContact != false
                 && (heartRateAvailability == nil || heartRateAvailability == .live)),
             (date: stepsExpiry,
-             canAdvance: stepsAvailability == nil || stepsAvailability == .live)
+             canAdvance: stepsAvailability == nil || stepsAvailability == .live),
+            (date: strainExpiry,
+             canAdvance: strainAvailability == nil || strainAvailability == .live),
+            (date: batteryExpiry,
+             canAdvance: batteryAvailability == nil || batteryAvailability == .live)
         ].compactMap { source -> Date? in
             guard source.canAdvance,
                   let expiry = source.date,

@@ -15,6 +15,12 @@ struct AtriaLiveActivityAttributes: ActivityAttributes {
         var batteryLevel: Int
         var batteryChargeStatus: String
         var batteryChargeText: String
+        // Battery percentage and charger state are independent sources. These
+        // clocks prevent an unrelated HR/timer update from renewing either.
+        // Optional so activities created by older builds still decode.
+        var batteryCapturedAt: Date? = nil
+        var batteryChargeCapturedAt: Date? = nil
+        var batteryAvailability: AtriaLiveSensorAvailability? = nil
         var readingCount: Int
         var updatedAt: Date
         // Sensor-source freshness must not be re-stamped by unrelated battery,
@@ -37,6 +43,8 @@ struct AtriaLiveActivityAttributes: ActivityAttributes {
         var dailyStepsAreEstimated: Bool? = nil
         var dailyStepGoal: Int? = nil
         var workoutStrain: Double? = nil
+        var workoutStrainCapturedAt: Date? = nil
+        var workoutStrainAvailability: AtriaLiveSensorAvailability? = nil
         var targetWorkoutStrain: Double? = nil
         // Active energy is an optional, cumulative workout estimate. Keeping
         // it optional avoids inventing calories when the athlete profile is
