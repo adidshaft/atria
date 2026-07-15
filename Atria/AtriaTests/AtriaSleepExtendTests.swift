@@ -27,7 +27,8 @@ final class AtriaSleepExtendTests: XCTestCase {
             historicalMotionMeanVectorDelta: nil, historicalMotionP95VectorDelta: nil,
             historicalMotionMagnitudeStdDev: nil, historicalMotionArchiveFirstUnix: 0,
             historicalMotionArchiveLastUnix: 0, historicalMotionNearestSeparationSeconds: 0,
-            historicalMotionValidated: false)
+            historicalMotionValidated: false,
+            nearStrictMorningHROnlyReviewQualified: false)
     }
 
     private func sleep(source: String = "auto_sleep", start: Date, end: Date) -> UserConfirmedSleep {

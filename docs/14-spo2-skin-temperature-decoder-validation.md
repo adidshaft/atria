@@ -32,6 +32,22 @@ python3 tools/replay_sensor_reference.py capture.log \
   --max-pair-age-s 2
 ```
 
+For a copy-only device pull, `tools/pair_sensor_references.py` joins the
+developer-mode CSV to the copied historical JSONL without decoding a metric:
+
+```sh
+python3 tools/pair_sensor_references.py reference.csv \
+  <pull>/historical-archive-segments \
+  --output-dir <new-empty-output-directory> \
+  --window-seconds 2
+```
+
+It selects one nearest clock-qualified raw frame per reference, preserves the
+original input/unit/notes and raw clock/layout provenance, reports the complete
+archive time range, candidate counts, duplicates, rejected rows, and frame
+reuse, and rejects malformed JSON or boolean numeric fields. Output remains
+research-only and `not_validated`; a successful pair is not decoder validation.
+
 Reference CSV shape:
 
 ```csv

@@ -24,7 +24,10 @@ Pulled files, when present:
   - historical-archive.diagnostics.json
   - historical-archive.manifest.json
   - historical-archive-segments/
+  - atria-captures/ plus SHA-256 manifest
   - atria-step-calibration/
+  - recovered completed step-calibration manifest (when present)
+  - authoritative workout/route/step-ledger state plus SHA-256 manifest
   - app preferences plist
   - process-check.txt
   - pull-summary.txt
@@ -65,6 +68,17 @@ fi
 if [[ -z "$evidence_dir" ]]; then
   usage >&2
   exit 2
+fi
+
+if [[ -e "$evidence_dir" ]]; then
+  if [[ ! -d "$evidence_dir" ]]; then
+    printf 'Evidence path exists and is not a directory: %s\n' "$evidence_dir" >&2
+    exit 73
+  fi
+  if find "$evidence_dir" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+    printf 'Evidence directory must be new or empty: %s\n' "$evidence_dir" >&2
+    exit 73
+  fi
 fi
 
 if [[ -n "${ATRIA_DEVICETCL:-}" ]]; then
@@ -227,14 +241,77 @@ copy_from_container "Documents/atria-historical/historical-archive.manifest.json
 copy_from_container "Documents/atria-historical/segments" \
   "$evidence_dir/historical-archive-segments" \
   "historical_archive_segments" || true
+copy_from_container "Documents/atria-captures" \
+  "$evidence_dir/atria-captures" \
+  "explicit_sensor_captures" || true
+if [[ -d "$evidence_dir/atria-captures" ]]; then
+  capture_manifest="$evidence_dir/atria-captures.sha256"
+  find -s "$evidence_dir/atria-captures" -type f -exec shasum -a 256 {} \; > "$capture_manifest"
+  capture_file_count=$(wc -l < "$capture_manifest" | tr -d ' ')
+  capture_total_bytes=$(find -s "$evidence_dir/atria-captures" -type f -exec stat -f '%z' {} \; \
+    | awk '{ total += $1 } END { print total + 0 }')
+  printf 'explicit_sensor_captures_file_count=%s\n' "$capture_file_count" | tee -a "$summary"
+  printf 'explicit_sensor_captures_total_bytes=%s\n' "$capture_total_bytes" | tee -a "$summary"
+  printf 'explicit_sensor_captures_manifest=%s\n' "$capture_manifest" | tee -a "$summary"
+fi
 copy_from_container "Documents/atria-step-calibration" \
   "$evidence_dir/atria-step-calibration" \
   "step_calibration_archive" || true
 copy_from_container "Library/Preferences/${bundle_id}.plist" "$evidence_dir/preferences.plist" "preferences" || true
 
-python3 - "$evidence_dir" "$(dirname "$0")/Atria/Atria/HistoricalArchive.swift" <<'PY' | tee -a "$summary"
+runtime_state_dir="$evidence_dir/authoritative-runtime-state"
+mkdir -p "$runtime_state_dir"
+copy_from_container "Library/Application Support/Atria/pending-workout-intent-v1.json" \
+  "$runtime_state_dir/pending-workout-intent-v1.json" \
+  "pending_workout_intent" || true
+copy_from_container "Library/Application Support/Atria/active-workout-route.json" \
+  "$runtime_state_dir/active-workout-route.json" \
+  "active_workout_route" || true
+copy_from_container "Library/Application Support/Atria/active-workout-route.points.ndjson" \
+  "$runtime_state_dir/active-workout-route.points.ndjson" \
+  "active_workout_route_points" || true
+copy_from_container "Library/Application Support/Atria/pending-workout-route-transaction.json" \
+  "$runtime_state_dir/pending-workout-route-transaction.json" \
+  "pending_workout_route_transaction" || true
+copy_from_container "Library/Application Support/atria-strap-step-ledger.json" \
+  "$runtime_state_dir/atria-strap-step-ledger.json" \
+  "strap_step_ledger" || true
+copy_from_container "Documents/atria-workout-routes" \
+  "$runtime_state_dir/atria-workout-routes" \
+  "workout_routes" || true
+
+runtime_state_manifest="$evidence_dir/authoritative-runtime-state.sha256"
+if find "$runtime_state_dir" -type f -print -quit | grep -q .; then
+  find -s "$runtime_state_dir" -type f -exec shasum -a 256 {} \; > "$runtime_state_manifest"
+  runtime_state_file_count=$(wc -l < "$runtime_state_manifest" | tr -d ' ')
+  runtime_state_total_bytes=$(find -s "$runtime_state_dir" -type f -exec stat -f '%z' {} \; \
+    | awk '{ total += $1 } END { print total + 0 }')
+  printf 'authoritative_runtime_state_status=ok\n' | tee -a "$summary"
+  printf 'authoritative_runtime_state_file_count=%s\n' "$runtime_state_file_count" | tee -a "$summary"
+  printf 'authoritative_runtime_state_total_bytes=%s\n' "$runtime_state_total_bytes" | tee -a "$summary"
+  printf 'authoritative_runtime_state_manifest=%s\n' "$runtime_state_manifest" | tee -a "$summary"
+else
+  rmdir "$runtime_state_dir" 2>/dev/null || true
+  printf 'authoritative_runtime_state_status=missing\n' | tee -a "$summary"
+  printf 'authoritative_runtime_state_file_count=0\n' | tee -a "$summary"
+  printf 'authoritative_runtime_state_total_bytes=0\n' | tee -a "$summary"
+fi
+if [[ -f "$(dirname "$0")/tools/validate_runtime_evidence.py" ]]; then
+  python3 "$(dirname "$0")/tools/validate_runtime_evidence.py" "$runtime_state_dir" \
+    | tee -a "$summary" || true
+else
+  printf 'runtime_evidence_validation_status=validator_unavailable\n' | tee -a "$summary"
+fi
+
+python3 - "$evidence_dir" \
+  "$(dirname "$0")/Atria/Atria/HistoricalArchive.swift" \
+  "$(dirname "$0")/Atria/Atria/AtriaStrapCalibrationArchive.swift" \
+  "$(dirname "$0")/tools/summarize_step_calibration_preflight.py" \
+  "$bundle_id" <<'PY' | tee -a "$summary"
 import csv
 import datetime as dt
+import hashlib
+import importlib.util
 import json
 import math
 import plistlib
@@ -246,6 +323,19 @@ from pathlib import Path
 
 evidence = Path(sys.argv[1])
 historical_archive_source = Path(sys.argv[2])
+strap_calibration_archive_source = Path(sys.argv[3])
+step_preflight_source = Path(sys.argv[4])
+bundle_id = sys.argv[5]
+try:
+    step_preflight_spec = importlib.util.spec_from_file_location(
+        "summarize_step_calibration_preflight", step_preflight_source
+    )
+    if step_preflight_spec is None or step_preflight_spec.loader is None:
+        raise ImportError("missing preflight module loader")
+    step_preflight = importlib.util.module_from_spec(step_preflight_spec)
+    step_preflight_spec.loader.exec_module(step_preflight)
+except Exception:
+    step_preflight = None
 apple_epoch = dt.datetime(2001, 1, 1, tzinfo=dt.timezone.utc)
 ist = dt.timezone(dt.timedelta(hours=5, minutes=30), "IST")
 
@@ -321,6 +411,7 @@ def emit_step_calibration_archive_summary():
         print("step_calibration_archive_total_bytes=0")
         print("step_calibration_archive_packet_types=missing")
         print("step_calibration_archive_record_types=missing")
+        emit_step_calibration_retention_forecast([], 0, 0, 0)
         return
 
     total_bytes = 0
@@ -328,13 +419,39 @@ def emit_step_calibration_archive_summary():
     earliest_received_at = None
     latest_received_at = None
     read_errors = 0
+    invalid_timestamp_rows = 0
+    retention_observations = []
     packet_type_counts = {}
     record_type_counts = {}
+
+    class ByteCountingIterator:
+        def __init__(self, handle):
+            self.handle = handle
+            self.bytes_read = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            line = next(self.handle)
+            self.bytes_read += len(line.encode("utf-8"))
+            return line
+
     for path in csv_paths:
         try:
             total_bytes += path.stat().st_size
             with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
-                for row in csv.DictReader(handle):
+                header_line = handle.readline()
+                fieldnames = next(csv.reader([header_line]), [])
+                counting_lines = ByteCountingIterator(handle)
+                reader = csv.DictReader(counting_lines, fieldnames=fieldnames)
+                while True:
+                    bytes_before_row = counting_lines.bytes_read
+                    try:
+                        row = next(reader)
+                    except StopIteration:
+                        break
+                    row_bytes = counting_lines.bytes_read - bytes_before_row
                     total_rows += 1
                     packet_type = (row.get("packet_type") or "legacy").strip().lower()
                     record_type = (row.get("record_type") or "legacy").strip().lower()
@@ -344,10 +461,12 @@ def emit_step_calibration_archive_summary():
                     try:
                         unix_ms = float(raw_received_at)
                         if not math.isfinite(unix_ms):
-                            continue
+                            raise ValueError("non-finite timestamp")
                         received_at = dt.datetime.fromtimestamp(unix_ms / 1_000, tz=dt.timezone.utc)
                     except (TypeError, ValueError, OverflowError, OSError):
+                        invalid_timestamp_rows += 1
                         continue
+                    retention_observations.append((unix_ms, row_bytes))
                     earliest_received_at = min(earliest_received_at, received_at) if earliest_received_at else received_at
                     latest_received_at = max(latest_received_at, received_at) if latest_received_at else received_at
         except (OSError, csv.Error):
@@ -368,6 +487,132 @@ def emit_step_calibration_archive_summary():
     print("step_calibration_archive_record_types=" + ",".join(
         f"{key}:{record_type_counts[key]}" for key in sorted(record_type_counts)
     ))
+    emit_step_calibration_retention_forecast(
+        retention_observations,
+        total_bytes,
+        read_errors,
+        invalid_timestamp_rows,
+    )
+
+def emit_step_calibration_retention_forecast(observations, total_bytes, read_errors, invalid_timestamp_rows):
+    if step_preflight is None:
+        forecast = {
+            "step_calibration_archive_retention_capacity_status": "unknown",
+            "step_calibration_archive_retention_capacity_bytes": "-1",
+            "step_calibration_archive_retention_maximum_file_bytes": "-1",
+            "step_calibration_archive_retention_total_bytes": str(total_bytes),
+            "step_calibration_archive_retention_capacity_used_percent": "-1.000",
+            "step_calibration_archive_retention_recent_window_hours": "0.000",
+            "step_calibration_archive_retention_recent_rows": "0",
+            "step_calibration_archive_retention_recent_bytes": "0",
+            "step_calibration_archive_recent_ingress_bytes_per_hour": "-1.000",
+            "step_calibration_archive_recent_ingress_basis": "peak_rolling_1h_within_latest_6h",
+            "step_calibration_archive_estimated_retained_hours": "-1.000",
+            "step_calibration_archive_required_delayed_pull_hours": "2.000",
+            "step_calibration_archive_retention_forecast_status": "insufficient_evidence",
+            "step_calibration_archive_retention_evidence_reason": "preflight_tool_unavailable",
+            "step_calibration_archive_retention_risk": "retention_cannot_be_proven",
+            "step_calibration_archive_retention_action": "pull_now_and_restore_preflight_tool",
+        }
+    else:
+        try:
+            archive_source = strap_calibration_archive_source.read_text(encoding="utf-8")
+        except OSError:
+            archive_source = ""
+        forecast = step_preflight.retention_forecast(
+            observations,
+            total_archive_bytes=total_bytes,
+            archive_source=archive_source,
+            read_errors=read_errors,
+            invalid_timestamp_rows=invalid_timestamp_rows,
+        )
+    for key, value in forecast.items():
+        print(f"{key}={value}")
+
+def emit_step_calibration_capture_preferences():
+    prefs_path = evidence / "preferences.plist"
+    if not prefs_path.exists():
+        print("step_calibration_capture_status=missing_preferences")
+        print("step_calibration_capture_armed=0")
+        return
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception as exc:
+        print(f"step_calibration_capture_status=error:{type(exc).__name__}:{exc}")
+        print("step_calibration_capture_armed=0")
+        return
+    raw_until = pref(prefs, "strapStepCalibration.captureUntil")
+    now = time.time()
+    if not isinstance(raw_until, (int, float)) or not math.isfinite(float(raw_until)):
+        print("step_calibration_capture_status=missing")
+        print("step_calibration_capture_armed=0")
+        print("step_calibration_capture_until_unix_s=-1")
+        print("step_calibration_capture_remaining_s=-1")
+        return
+    capture_until = float(raw_until)
+    remaining = capture_until - now
+    capture_date = dt.datetime.fromtimestamp(capture_until, tz=dt.timezone.utc)
+    print("step_calibration_capture_status=armed" if remaining > 0 else "step_calibration_capture_status=expired")
+    print(f"step_calibration_capture_namespace={pref_namespace(prefs, 'strapStepCalibration.captureUntil')}")
+    print(f"step_calibration_capture_armed={bool_int(remaining > 0)}")
+    print(f"step_calibration_capture_until_unix_s={capture_until:.3f}")
+    print("step_calibration_capture_until_iso_utc=" + capture_date.isoformat(timespec="milliseconds").replace("+00:00", "Z"))
+    print(f"step_calibration_capture_remaining_s={max(0.0, remaining):.1f}")
+
+def emit_step_calibration_sequence_preferences():
+    unknown = {
+        "step_calibration_sequence_state": "unknown_preferences",
+        "step_calibration_sequence_completed_window_count": "-1",
+        "step_calibration_sequence_total_window_count": "6",
+        "step_calibration_sequence_active": "0",
+        "step_calibration_sequence_finishing": "0",
+        "step_calibration_sequence_complete": "0",
+        "step_calibration_sequence_state_source": "preferences_unavailable",
+        "step_calibration_sequence_ui_visibility_proven": "0",
+        "step_calibration_sequence_interpretation": "preferences_state_only_not_ui_visibility",
+    }
+    prefs_path = evidence / "preferences.plist"
+    raw_state = None
+    if not prefs_path.exists() or step_preflight is None:
+        summary = unknown
+    else:
+        try:
+            with prefs_path.open("rb") as handle:
+                prefs = plistlib.load(handle)
+            raw_state = prefs.get("atria.stepCalibration.sequence.v1")
+            summary = step_preflight.sequence_summary(raw_state)
+        except Exception:
+            summary = unknown
+    for key, value in summary.items():
+        print(f"{key}={value}")
+
+    manifest_path = evidence / "step-calibration-manifest.json"
+    manifest_path.unlink(missing_ok=True)
+    state = summary.get("step_calibration_sequence_state")
+    if state == "complete" and step_preflight is not None:
+        try:
+            manifest = step_preflight.completed_sequence_manifest(raw_state)
+            payload = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
+            manifest_path.write_bytes(payload)
+            print("step_calibration_manifest_status=ok")
+            print("step_calibration_manifest_source=Library/Preferences/"
+                  f"{bundle_id}.plist#atria.stepCalibration.sequence.v1")
+            print(f"step_calibration_manifest_file={manifest_path}")
+            print(f"step_calibration_manifest_sha256={hashlib.sha256(payload).hexdigest()}")
+            print(f"step_calibration_manifest_window_count={len(manifest['windows'])}")
+        except Exception:
+            print("step_calibration_manifest_status=corrupt")
+            print("step_calibration_manifest_window_count=-1")
+    elif state == "corrupt":
+        print("step_calibration_manifest_status=corrupt")
+        print("step_calibration_manifest_window_count=-1")
+    elif state in {"not_started", "ready", "active", "finishing"}:
+        print("step_calibration_manifest_status=not_complete")
+        print("step_calibration_manifest_window_count=0")
+    else:
+        print("step_calibration_manifest_status=unavailable")
+        print("step_calibration_manifest_window_count=-1")
 
 def app_time(value):
     if isinstance(value, (int, float)):
@@ -1101,6 +1346,8 @@ emit_confirmed_workout_preferences()
 emit_daily_rollups_summary()
 emit_historical_archive_index_summary()
 emit_historical_archive_rotation_summary()
+emit_step_calibration_capture_preferences()
+emit_step_calibration_sequence_preferences()
 emit_step_calibration_archive_summary()
 
 def decode_historical_gravity(payload_hex):

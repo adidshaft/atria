@@ -49,7 +49,7 @@ final class AtriaExperimentalSensorCopyTests: XCTestCase {
         XCTAssertEqual(AtriaExperimentalSensorCopy.skinTemperatureDetail(
             summary: summary,
             decoderAvailable: false),
-            "Not available yet. Atria does not show raw sensor data as body temperature.")
+            "Not available yet. Atria does not show raw sensor data as wrist temperature.")
         XCTAssertFalse(AtriaExperimentalSensorCopy.skinTemperatureDetail(
             summary: summary,
             decoderAvailable: false).contains("building a sleep baseline"))

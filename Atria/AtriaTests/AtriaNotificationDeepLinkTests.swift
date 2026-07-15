@@ -135,4 +135,23 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
         XCTAssertTrue(handler.contains("AtriaNotificationDeepLinkInbox.shared.enqueue"))
         XCTAssertFalse(handler.contains("await MainActor.run"))
     }
+
+    func testColdCacheSleepReviewRouteWaitsForResolvedCandidate() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let home = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        let sessions = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/Sessions.swift"), encoding: .utf8)
+
+        XCTAssertTrue(sessions.contains("enum SleepReviewResolution: Equatable"))
+        XCTAssertTrue(sessions.contains("case loading"))
+        XCTAssertTrue(sessions.contains("case ready(SleepHistorySnapshot.Night?)"))
+        XCTAssertTrue(home.contains("@State private var pendingSleepReviewDeepLink = false"))
+        XCTAssertTrue(home.contains(".onReceive(store.$pendingSleepReviewNightForUI)"))
+        XCTAssertTrue(home.contains("resolvePendingSleepReviewDeepLinkIfNeeded(publishedNight: night)"))
+        XCTAssertTrue(home.contains("if let night = publishedNight"))
+        XCTAssertTrue(home.contains("case .loading:\n                pendingSleepReviewDeepLink = true"))
+        XCTAssertFalse(home.contains("AtriaSleepReviewSheetRoute(night: night)\n            AtriaDebugLog"),
+                       "A cache miss must not immediately present a nil-night Add Sleep route")
+    }
 }

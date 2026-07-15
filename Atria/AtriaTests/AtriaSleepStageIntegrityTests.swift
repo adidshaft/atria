@@ -196,6 +196,26 @@ final class AtriaSleepStageIntegrityTests: XCTestCase {
         XCTAssertTrue(AtriaSleepStageIntegrity.validates(segments, for: record))
     }
 
+    func testDuplicateOrOverlappingStageSegmentsFailClosed() {
+        let duplicate = [
+            segment(0, 3_600, .light, id: "same"),
+            segment(3_600, 3_600, .rem, id: "same")
+        ]
+        XCTAssertFalse(AtriaSleepStageIntegrity.validates(
+            duplicate,
+            for: sleep(duration: 7_200, span: 7_200, segments: duplicate)
+        ))
+
+        let overlapping = [
+            segment(0, 4_000, .light, id: "first"),
+            segment(3_600, 3_600, .rem, id: "second")
+        ]
+        XCTAssertFalse(AtriaSleepStageIntegrity.validates(
+            overlapping,
+            for: sleep(duration: 7_200, span: 7_200, segments: overlapping)
+        ))
+    }
+
     func testHistoryNightSuppressesStagePreviewWhenCreditedSleepDoesNotSupportIt() {
         let span: TimeInterval = 36_170
         let segments = [

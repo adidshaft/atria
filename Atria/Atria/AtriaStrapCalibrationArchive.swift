@@ -62,6 +62,7 @@ final class AtriaStrapCalibrationArchive: @unchecked Sendable {
     private let retentionInterval: TimeInterval
     private let maximumArchiveBytes: Int64
     private let maximumFileBytes: Int64
+    private let archivePruneInterval: TimeInterval
     private let queue = DispatchQueue(label: "com.adidshaft.atria.step-calibration", qos: .utility)
     private let launchID = UUID().uuidString.prefix(8).lowercased()
 
@@ -72,6 +73,7 @@ final class AtriaStrapCalibrationArchive: @unchecked Sendable {
     private var currentFileURL: URL?
     private var currentFileHandle: FileHandle?
     private var recentR10DeviceTimestampsMS: [Int64] = []
+    private var lastArchivePruneAt: Date?
     private let recentTimestampRetentionMS: Int64 = 2 * 60 * 60 * 1_000
     private let maximumRecentTimestampCount = 10_000
 
@@ -80,13 +82,15 @@ final class AtriaStrapCalibrationArchive: @unchecked Sendable {
          flushInterval: TimeInterval = 2,
          maximumBufferedBytes: Int = 128 * 1_024,
          retentionInterval: TimeInterval = defaultCaptureDuration,
-         maximumArchiveBytes: Int64 = 96 * 1_024 * 1_024) {
+         maximumArchiveBytes: Int64 = 96 * 1_024 * 1_024,
+         archivePruneInterval: TimeInterval = 15 * 60) {
         self.directoryURL = directoryURL
         self.fileManager = fileManager
         self.flushInterval = max(0.05, flushInterval)
         self.maximumBufferedBytes = max(1_024, maximumBufferedBytes)
         self.retentionInterval = max(60, retentionInterval)
         self.maximumArchiveBytes = max(1_024 * 1_024, maximumArchiveBytes)
+        self.archivePruneInterval = max(60, archivePruneInterval)
         self.maximumFileBytes = max(1_024 * 1_024,
                                     min(32 * 1_024 * 1_024, self.maximumArchiveBytes / 3))
     }
@@ -265,6 +269,7 @@ final class AtriaStrapCalibrationArchive: @unchecked Sendable {
 
         do {
             var index = 0
+            var rotatedForSize = false
             while index < rows.count {
                 let dayKey = Self.utcDayKey(for: rows[index].receivedAt)
                 var end = index + 1
@@ -278,6 +283,7 @@ final class AtriaStrapCalibrationArchive: @unchecked Sendable {
                 if let handle = currentFileHandle,
                    Int64(try handle.offset()) + Int64(data.count) > maximumFileBytes {
                     closeCurrentFileLocked()
+                    rotatedForSize = true
                     try prepareCurrentFileLocked(
                         dayKey: dayKey,
                         firstTimestampMS: Self.unixMilliseconds(rows[index].receivedAt)
@@ -288,7 +294,7 @@ final class AtriaStrapCalibrationArchive: @unchecked Sendable {
             }
             try currentFileHandle?.synchronize()
             if let newest = rows.last?.receivedAt {
-                pruneArchiveLocked(now: newest)
+                pruneArchiveLocked(now: newest, force: rotatedForSize)
             }
         } catch {
             pendingRows.insert(contentsOf: rows, at: 0)
@@ -315,7 +321,8 @@ final class AtriaStrapCalibrationArchive: @unchecked Sendable {
         currentDayKey = dayKey
         currentFileURL = url
         currentFileHandle = handle
-        pruneArchiveLocked(now: Date(timeIntervalSince1970: Double(firstTimestampMS) / 1_000))
+        pruneArchiveLocked(now: Date(timeIntervalSince1970: Double(firstTimestampMS) / 1_000),
+                           force: true)
     }
 
     private func synchronizeCurrentFileLocked() {
@@ -335,7 +342,13 @@ final class AtriaStrapCalibrationArchive: @unchecked Sendable {
         currentDayKey = nil
     }
 
-    private func pruneArchiveLocked(now: Date) {
+    private func pruneArchiveLocked(now: Date, force: Bool = false) {
+        if !force, let lastArchivePruneAt,
+           now.timeIntervalSince(lastArchivePruneAt) >= 0,
+           now.timeIntervalSince(lastArchivePruneAt) < archivePruneInterval {
+            return
+        }
+        lastArchivePruneAt = now
         guard let files = try? fileManager.contentsOfDirectory(
             at: directoryURL,
             includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],

@@ -2070,7 +2070,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .vo2max: return "VO2max"
         case .bioAge: return "Fitness age"
         case .bloodOxygen: return "Blood oxygen"
-        case .bodyTemp: return "Body temp"
+        case .bodyTemp: return "Wrist temp"
         case .trend: return "Resting trend"
         case .insights: return "Insights"
         }
@@ -3739,7 +3739,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   accessibilityDetail: "Blood oxygen is not available yet. Atria does not estimate a percentage.")
         case .bodyTemp:
             let decoderAvailable = AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
-            AtriaGlanceMetricCard(title: "Body temp",
+            AtriaGlanceMetricCard(title: "Wrist temp",
                                   value: AtriaExperimentalSensorCopy.skinTemperatureValue(
                                     summary: skinTemperatureSummary,
                                     decoderAvailable: decoderAvailable),
@@ -9995,7 +9995,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .animation(.snappy(duration: 0.28), value: showDetails)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.28), value: showDetails)
     }
 
     private var revealAffordance: some View {
@@ -10680,7 +10680,7 @@ private struct AtriaMetricMeaningSheet: View {
         case .sleepEfficiency:
             return "The current estimate is duration-based; Atria doesn't yet save a night-by-night efficiency history to chart."
         case .skinTemperature:
-            return "Atria does not show raw sensor data as temperature."
+            return "Atria does not show raw sensor data as wrist temperature."
         case .fitnessAge:
             return "The pace-of-aging chart only appears once 28 days of the estimate are saved; until then this shows the calibrating state."
         case .hrZones:

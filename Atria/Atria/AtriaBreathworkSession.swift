@@ -95,6 +95,15 @@ struct AtriaBreathworkSession: View {
     struct RRSample: Equatable {
         let date: Date
         let ms: Int
+        let source: AtriaRRSourceProvenance?
+
+        init(date: Date,
+             ms: Int,
+             source: AtriaRRSourceProvenance? = nil) {
+            self.date = date
+            self.ms = ms
+            self.source = source
+        }
     }
 
     private struct RRInputKey: Equatable {
@@ -675,7 +684,9 @@ struct AtriaBreathworkSession: View {
 
         for sample in rrSamples where (300...2000).contains(sample.ms) {
             if sample.date >= start && sample.date <= end {
-                rrPoints.append(SavedSession.RRPoint(t: max(0, sample.date.timeIntervalSince(start)), ms: sample.ms))
+                rrPoints.append(SavedSession.RRPoint(t: max(0, sample.date.timeIntervalSince(start)),
+                                                     ms: sample.ms,
+                                                     source: sample.source))
             }
             if sample.date >= start && sample.date <= firstWindowEnd {
                 startingRR.append(sample)
@@ -735,19 +746,10 @@ struct AtriaBreathworkSession: View {
     }
 
     private static func rmssd(inWindow samples: [RRSample], duration: TimeInterval) -> Double? {
-        let window = samples.sorted { $0.date < $1.date }
-        guard window.count >= 3 else { return nil }
-        let coveredMS = window.reduce(0) { $0 + $1.ms }
-        guard Double(coveredMS) >= duration * 1_000 * 0.8 else { return nil }
-        var squaredDiffTotal = 0.0
-        var diffCount = 0
-        for pair in zip(window, window.dropFirst()) {
-            let diff = Double(pair.1.ms - pair.0.ms)
-            squaredDiffTotal += diff * diff
-            diffCount += 1
-        }
-        guard diffCount > 0 else { return nil }
-        return sqrt(squaredDiffTotal / Double(diffCount))
+        AtriaShortWindowRMSSD.value(
+            samples: samples.map { (date: $0.date, ms: Double($0.ms)) },
+            minimumCoverageSeconds: duration * 0.8
+        )
     }
 
     #if DEBUG

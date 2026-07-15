@@ -18,6 +18,19 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
         XCTAssertFalse(page.contains("StrapChargeIllustration"))
     }
 
+    func testConnectActionCannotAdvanceBeforeStrapConnection() throws {
+        let source = try source("AtriaOnboardingFlow.swift")
+        let actionStart = try XCTUnwrap(source.range(of: "PrimaryActionButton(ble: ble, step: step)"))
+        let actionEnd = try XCTUnwrap(source.range(of: "}",
+                                                  range: actionStart.upperBound..<source.endIndex))
+        let action = String(source[actionStart.lowerBound...actionEnd.lowerBound])
+
+        XCTAssertTrue(action.contains("if step == .strap, ble.status != .connected"))
+        XCTAssertTrue(action.contains("ble.startScan(reason: \"onboarding_primary_connect\")"))
+        XCTAssertFalse(action.contains("move(to:"),
+                       "The disconnected Connect branch must stay on the strap step")
+    }
+
     func testCompactOnboardingHeadersKeepAccessibleCombinedTitles() throws {
         let source = try source("AtriaOnboardingFlow.swift")
 

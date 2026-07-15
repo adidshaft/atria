@@ -13,7 +13,13 @@ enum AtriaWorkoutPromptEvaluator {
     static let zoneMinimumIndex = 3
     static let recentConfirmationSeconds: TimeInterval = 45
     static let recentConfirmationSamples = 30
-    static let maximumPacketGap: TimeInterval = 5
+    /// Match the persisted-session continuity contract. Real strap delivery is
+    /// bursty: a CRC-valid accepted sample can arrive 5–15 seconds after the
+    /// previous one without representing a physiological discontinuity. A gap
+    /// above this limit still breaks the bout and contributes no elapsed
+    /// evidence. Keeping one shared limit avoids rejecting a live episode that
+    /// the exact same accepted samples prove after persistence.
+    static let maximumPacketGap: TimeInterval = SavedSession.workoutContinuityGapLimit
     static let maximumSampleAge: TimeInterval = 5
     static let cooldown: TimeInterval = 45 * 60
 
@@ -43,13 +49,23 @@ enum AtriaWorkoutPromptEvaluator {
             guard rawSamples > 0 else { return false }
             let artifactShare = Double(heldArtifacts + droppedArtifacts) / Double(rawSamples)
             let zeroShare = Double(zeroSamples) / Double(rawSamples)
+            let acceptedShare = Double(acceptedSamples) / Double(rawSamples)
             if artifactShare >= 0.15 { return true }
             if zeroShare >= 0.25 { return true }
+            // The audit stream can contain rejected packets that are neither a
+            // zero nor a held/dropped optical artifact (for example malformed
+            // or out-of-order transport values). A low accepted share is still
+            // insufficient contact/continuity evidence and must fail closed.
+            if acceptedShare < 0.70 { return true }
             return maxAcceptedGap > 120 && acceptedGapCount >= 3
         }
 
         var hasContinuityEvidence: Bool {
-            rrImpliedMedianBPM != nil || (acceptedGapCount == 0 && maxAcceptedGap <= 15)
+            // A handful of RR values can corroborate HR rate, but they do not
+            // prove that an otherwise missing accepted-HR interval was covered.
+            // Never let sparse RR presence bridge a hard transport gap.
+            acceptedGapCount == 0
+                && maxAcceptedGap <= AtriaWorkoutPromptEvaluator.maximumPacketGap
         }
     }
 
@@ -136,24 +152,12 @@ enum AtriaWorkoutPromptEvaluator {
         var elevated = TimedEvidence()
         var zone = TimedEvidence()
 
-        for index in timed.indices {
-            let sample = timed[index]
-            let naturalEnd = index + 1 < timed.endIndex ? timed[index + 1].t : now
-            let intervalEnd = min(min(naturalEnd,
-                                      sample.t.addingTimeInterval(maximumPacketGap)),
-                                  now)
-            let gapToPrevious = index > timed.startIndex
-                ? sample.t.timeIntervalSince(timed[index - 1].t)
-                : 0
-            if gapToPrevious > maximumPacketGap {
-                elevated.breakBout()
-                zone.breakBout()
-            }
-
-            let isElevated = sample.t >= sustainedStart
-                && sample.bpm - restingHeartRate >= minimumBPMOverRest
+        func addEvidence(for sample: HRSample,
+                         intervalStart: Date,
+                         intervalEnd: Date) {
+            let isElevated = sample.bpm - restingHeartRate >= minimumBPMOverRest
             if isElevated {
-                let start = max(sample.t, sustainedStart)
+                let start = max(intervalStart, sustainedStart)
                 elevated.add(intervalStart: start,
                              intervalEnd: max(start, intervalEnd),
                              recentStart: recentStart)
@@ -164,15 +168,41 @@ enum AtriaWorkoutPromptEvaluator {
             let zoneIndex = Metrics.heartRateZone(bpm: sample.bpm,
                                                   rest: restingHeartRate,
                                                   max: maxHeartRate)?.index ?? 0
-            let isInZone = sample.t >= zoneStart && zoneIndex >= zoneMinimumIndex
-            if isInZone {
-                let start = max(sample.t, zoneStart)
+            if zoneIndex >= zoneMinimumIndex {
+                let start = max(intervalStart, zoneStart)
                 zone.add(intervalStart: start,
                          intervalEnd: max(start, intervalEnd),
                          recentStart: recentStart)
             } else {
                 zone.breakBout()
             }
+        }
+
+        // Persisted readiness associates elapsed evidence with the sample
+        // arriving after an interval. Mirror that contract live so a missing
+        // interval or reconnect-like jump contributes no duration and its first
+        // sample cannot seed a bout that disappears after review.
+        if timed.count > 1 {
+            for index in timed.index(after: timed.startIndex)..<timed.endIndex {
+                let previous = timed[timed.index(before: index)]
+                let sample = timed[index]
+                let gap = sample.t.timeIntervalSince(previous.t)
+                let unverifiedReconnectBlip = gap > SavedSession.workoutMicroGapReseedCadence
+                    && abs(sample.bpm - previous.bpm) >= SavedSession.workoutMicroGapReseedJumpBPM
+                guard gap <= maximumPacketGap, !unverifiedReconnectBlip else {
+                    elevated.breakBout()
+                    zone.breakBout()
+                    continue
+                }
+                addEvidence(for: sample,
+                            intervalStart: previous.t,
+                            intervalEnd: sample.t)
+            }
+        }
+        if freshest.t < now {
+            addEvidence(for: freshest,
+                        intervalStart: freshest.t,
+                        intervalEnd: now)
         }
 
         let elevatedSeconds = wholeSeconds(elevated.total)
@@ -192,15 +222,19 @@ enum AtriaWorkoutPromptEvaluator {
             && !rrDisagreement
             && signalQuality.hasContinuityEvidence
         let currentElevated = currentHeartRate - restingHeartRate >= minimumBPMOverRest
+        let currentZoneIndex = Metrics.heartRateZone(bpm: currentHeartRate,
+                                                     rest: restingHeartRate,
+                                                     max: maxHeartRate)?.index ?? 0
         let sustainedPath = trustworthySignal
             && elevatedSeconds >= minimumSustainedElevatedSamples
-            && longestElevatedSeconds >= minimumContinuousElevatedSamples
+            && longestElevatedSeconds >= minimumSustainedElevatedSamples
             && recentElevatedSeconds >= recentConfirmationSamples
             && currentElevated
         let zonePath = trustworthySignal
             && zoneSeconds >= zoneMinimumSamples
-            && longestZoneSeconds >= zoneMinimumContinuousSamples
+            && longestZoneSeconds >= zoneMinimumSamples
             && recentZoneSeconds >= recentConfirmationSamples
+            && currentZoneIndex >= zoneMinimumIndex
 
         return Result(shouldPrompt: sustainedPath || zonePath,
                       sustainedPath: sustainedPath,

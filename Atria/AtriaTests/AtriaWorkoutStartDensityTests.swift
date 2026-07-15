@@ -1,6 +1,26 @@
 import XCTest
+@testable import Atria
 
 final class AtriaWorkoutStartDensityTests: XCTestCase {
+    func testRecentActivityChangesOnlyWhenStartCommits() throws {
+        let suite = "AtriaWorkoutStartDensityTests.recents.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set([AtriaWorkoutActivityType.walking.rawValue],
+                     forKey: AtriaWorkoutRecentActivityStore.key)
+
+        // Browsing/selecting is sheet-local; without the Start commit the store
+        // remains byte-for-byte unchanged.
+        let selection = AtriaWorkoutActivityType.running
+        XCTAssertEqual(selection, .running)
+        XCTAssertEqual(AtriaWorkoutRecentActivityStore.activities(defaults: defaults), [.walking])
+
+        AtriaWorkoutRecentActivityStore.recordStarted(selection, defaults: defaults)
+        XCTAssertEqual(AtriaWorkoutRecentActivityStore.activities(defaults: defaults), [.running, .walking])
+        AtriaWorkoutRecentActivityStore.recordStarted(.walking, defaults: defaults)
+        XCTAssertEqual(AtriaWorkoutRecentActivityStore.activities(defaults: defaults), [.walking, .running])
+    }
+
     func testStartSheetUsesCompactRecentRailAndSearchableCatalog() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
@@ -23,7 +43,7 @@ final class AtriaWorkoutStartDensityTests: XCTestCase {
         XCTAssertTrue(sheet.contains("configuration.lowerTargetZone = upper"),
                       "Editing either boundary must keep the target valid")
         XCTAssertTrue(sheet.contains(".searchable(text: $activitySearch, prompt: \"Search activities\")"))
-        XCTAssertTrue(sheet.contains("atria.workout.recentActivityTypes"))
+        XCTAssertTrue(source.contains("static let key = \"atria.workout.recentActivityTypes\""))
         XCTAssertTrue(sheet.contains("resolvedInitial.activityType = recent ?? .walking"),
                       "The visible recent/default activity must also be the value that starts")
         XCTAssertTrue(sheet.contains("([configuration.activityType] + recent + preferred)"),
@@ -34,6 +54,22 @@ final class AtriaWorkoutStartDensityTests: XCTestCase {
                        "The start sheet must not stack the complete catalog before HR-zone controls")
         XCTAssertTrue(sheet.contains(".buttonStyle(.glass)"))
         XCTAssertTrue(sheet.contains(".buttonStyle(.glassProminent)"))
+        XCTAssertTrue(sheet.contains("private var activityButtonHeight: CGFloat"))
+        XCTAssertTrue(sheet.contains("dynamicTypeSize.isAccessibilitySize ? 52 : 48"),
+                      "Normal activity controls should be compact while accessibility sizes retain breathing room")
+        XCTAssertTrue(sheet.contains(".scrollClipDisabled()"),
+                      "The horizontal rail must not crop native Liquid Glass interaction")
+        XCTAssertTrue(sheet.contains(".padding(.vertical, 8)"),
+                      "Glass controls need a real animation gutter inside the scroll viewport")
+        XCTAssertTrue(sheet.contains(".buttonBorderShape(.capsule)"))
+        XCTAssertTrue(sheet.contains("transaction.animation = nil"),
+                      "Reduce Motion must suppress optional selector transitions")
+        XCTAssertTrue(sheet.contains(".accessibilityValue(configuration.activityType == type ? \"Selected\" : \"Not selected\")"))
+        XCTAssertTrue(sheet.contains("AtriaWorkoutRecentActivityStore.recordStarted(value.activityType)"))
+        let selectionStart = try XCTUnwrap(sheet.range(of: "private func selectActivity"))
+        let selection = String(sheet[selectionStart.lowerBound...])
+        XCTAssertFalse(selection.contains("UserDefaults.standard.set"),
+                       "Selection and cancellation must not mutate recent workout history")
     }
 
     func testStartSheetStacksTargetControlsAtAccessibilitySizes() throws {

@@ -145,7 +145,10 @@ final class AtriaTodaySessionProjectionStore: ObservableObject {
 struct AtriaTodayScreen: View {
     let liveStore: AtriaHomeModel.CoreLiveStore
     let pulseStore: AtriaHomeModel.HeroPulseStore
-    @ObservedObject var heroStore: AtriaHomeModel.HeroStore
+    // Lifetime reference only. Live HeroStore publishes are observed by the
+    // narrow AtriaTodayHeroProjectionHost leaves below, so a 1.5-second strain
+    // update cannot invalidate this section-order/lazy-container view.
+    let heroStore: AtriaHomeModel.HeroStore
     let homeStatsStore: AtriaHomeModel.HomeStatsStore
     @ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
     @ObservedObject var sessionProjectionStore: AtriaTodaySessionProjectionStore
@@ -217,10 +220,12 @@ struct AtriaTodayScreen: View {
         // — main-thread jank that grows with data. Lazy renders only what's on screen.
         LazyVStack(spacing: 16) {
             if debugShowsAICoachOnly {
-                AtriaAICoachCard(context: coachContext,
-                                 preparedPayload: coachPayload,
-                                 settings: effectiveAICoachSettings,
-                                 hasAPIKey: aiCoachHasAPIKey)
+                AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in
+                    AtriaAICoachCard(context: coachContext,
+                                     preparedPayload: coachPayload,
+                                     settings: effectiveAICoachSettings,
+                                     hasAPIKey: aiCoachHasAPIKey)
+                }
             } else if AtriaOverviewBehaviorJournalSection.debugShowsImpactOnlyFixture {
                 AtriaOverviewBehaviorJournalSection(store: store)
             } else {
@@ -231,7 +236,11 @@ struct AtriaTodayScreen: View {
             // duplication -- and was removed; the ring hero plus its legend
             // chips are now the single source of truth for those values.
             todayHeader
-            triRingHero
+            AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in
+                triRingHero
+                    .preference(key: AtriaTodayCompactRingPreferenceKey.self,
+                                value: compactRingPresentation)
+            }
             if layoutConfig.showLiveStrip {
                 AtriaTodayLiveStatusHost(liveStore: liveStore,
                                          pulseStore: pulseStore)
@@ -261,28 +270,28 @@ struct AtriaTodayScreen: View {
 
             }
         }
-        .preference(key: AtriaTodayCompactRingPreferenceKey.self,
-                    value: compactRingPresentation)
         .sheet(item: $metricDetail) { detail in
-            AtriaMetricDetailSheet(metric: detail,
-                                   rollups: highlightRollups,
-                                   rollupsRevision: sessionProjectionStore.state.dailyRollupHistoryRevision,
-                                   confirmedWorkouts: debugMetricDetailWorkouts ?? sessionProjectionStore.state.confirmedWorkouts,
-                                   confirmedWorkoutsRevision: debugMetricDetailWorkouts == nil ? sessionProjectionStore.state.confirmedWorkoutsRevision : nil,
-                                   behaviorImpacts: sessionProjectionStore.state.behaviorImpactSummaries,
-                                   baseline: AtriaBaselineTargetSnapshot(sessionProjectionStore.state.baseline),
-                                   sleepHistory: sessionProjectionStore.state.sleepHistorySnapshot,
-                                   sleepHistoryRevision: sessionProjectionStore.state.sleepHistorySnapshotRevision,
-                                   guidance: displayHero.guidance,
-                                   recoveryEstimate: displayHero.recoveryEstimate,
-                                   sleepGoalHours: sleepGoalHours,
-                                   sleepBaseNeedHours: sleepBaseNeedHours,
-                                   hrZoneMinutes: displayHero.hrZoneMinutes,
-                                   maxHeartRate: sessionProjectionStore.state.maxHeartRate,
-                                   vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
-                                   skinTemperatureDeviation: sessionProjectionStore.state.skinTemperatureDeviationSummary)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
+            AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in
+                AtriaMetricDetailSheet(metric: detail,
+                                       rollups: highlightRollups,
+                                       rollupsRevision: sessionProjectionStore.state.dailyRollupHistoryRevision,
+                                       confirmedWorkouts: debugMetricDetailWorkouts ?? sessionProjectionStore.state.confirmedWorkouts,
+                                       confirmedWorkoutsRevision: debugMetricDetailWorkouts == nil ? sessionProjectionStore.state.confirmedWorkoutsRevision : nil,
+                                       behaviorImpacts: sessionProjectionStore.state.behaviorImpactSummaries,
+                                       baseline: AtriaBaselineTargetSnapshot(sessionProjectionStore.state.baseline),
+                                       sleepHistory: sessionProjectionStore.state.sleepHistorySnapshot,
+                                       sleepHistoryRevision: sessionProjectionStore.state.sleepHistorySnapshotRevision,
+                                       guidance: displayHero.guidance,
+                                       recoveryEstimate: displayHero.recoveryEstimate,
+                                       sleepGoalHours: sleepGoalHours,
+                                       sleepBaseNeedHours: sleepBaseNeedHours,
+                                       hrZoneMinutes: displayHero.hrZoneMinutes,
+                                       maxHeartRate: sessionProjectionStore.state.maxHeartRate,
+                                       vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
+                                       skinTemperatureDeviation: sessionProjectionStore.state.skinTemperatureDeviationSummary)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
         }
         .sheet(isPresented: $showWeeklyReport) {
             AtriaWeeklyReportSheet(report: weeklyReport)
@@ -467,10 +476,12 @@ struct AtriaTodayScreen: View {
             }
 
             if layoutConfig.showPlan {
-                AtriaTodayPlanCard(title: planTitle,
-                                   detail: planDetail,
-                                   target: planTargetText,
-                                   tint: displayHero.guidance.color)
+                AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in
+                    AtriaTodayPlanCard(title: planTitle,
+                                       detail: planDetail,
+                                       target: planTargetText,
+                                       tint: displayHero.guidance.color)
+                }
             }
         case .shortcuts:
             AtriaTodayShortcutStrip(journalValue: journalValue,
@@ -486,37 +497,43 @@ struct AtriaTodayScreen: View {
         case .glance:
             glanceKicker
 
-            if glanceLayoutBars {
-                // Bars layout: one full-width horizontal bar per metric.
-                VStack(spacing: 10) {
-                    ForEach(glanceMetrics) { metric in
-                        glanceTile(for: metric, isBar: true)
-                            .contextMenu {
-                                Button(action: onCustomizeToday) {
-                                    Label("Customize Today", systemImage: "slider.horizontal.3")
-                                }
+            AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in
+                Group {
+                    if glanceLayoutBars {
+                        // Bars layout: one full-width horizontal bar per metric.
+                        VStack(spacing: 10) {
+                            ForEach(glanceMetrics) { metric in
+                                glanceTile(for: metric, isBar: true)
+                                    .contextMenu {
+                                        Button(action: onCustomizeToday) {
+                                            Label("Customize Today", systemImage: "slider.horizontal.3")
+                                        }
+                                    }
                             }
-                    }
-                }
-            } else {
-                LazyVGrid(columns: glanceColumns, spacing: 10) {
-                    ForEach(glanceMetrics) { metric in
-                        glanceTile(for: metric)
-                            .gridCellColumns(glanceColumnSpan(for: metric))
-                            .contextMenu {
-                                Button(action: onCustomizeToday) {
-                                    Label("Customize Today", systemImage: "slider.horizontal.3")
-                                }
+                        }
+                    } else {
+                        LazyVGrid(columns: glanceColumns, spacing: 10) {
+                            ForEach(glanceMetrics) { metric in
+                                glanceTile(for: metric)
+                                    .gridCellColumns(glanceColumnSpan(for: metric))
+                                    .contextMenu {
+                                        Button(action: onCustomizeToday) {
+                                            Label("Customize Today", systemImage: "slider.horizontal.3")
+                                        }
+                                    }
                             }
+                        }
                     }
                 }
             }
         case .coach:
             if layoutConfig.showAICoach && effectiveAICoachSettings.mode != .off {
-                AtriaAICoachCard(context: coachContext,
-                                 preparedPayload: coachPayload,
-                                 settings: effectiveAICoachSettings,
-                                 hasAPIKey: aiCoachHasAPIKey)
+                AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in
+                    AtriaAICoachCard(context: coachContext,
+                                     preparedPayload: coachPayload,
+                                     settings: effectiveAICoachSettings,
+                                     hasAPIKey: aiCoachHasAPIKey)
+                }
             }
         }
     }
@@ -1343,11 +1360,7 @@ struct AtriaTodayScreen: View {
         // the glance tile below it.
         let target = userSetStrainTarget ?? displayHero.guidance.target
         let percentOfTarget = target.map { displayHero.strain / $0 * 100 }
-        let incomplete = AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(
-            day: Date(),
-            strain: displayHero.strain,
-            workouts: sessionProjectionStore.state.confirmedWorkouts
-        )
+        let incomplete = dayStrainIsIncomplete
         return AtriaTriRingMetric(title: "Strain",
                                   value: incomplete ? "Incomplete" : displayHero.strainValue,
                                   detail: incomplete ? "Sparse HR" : (target.map { String(format: "of %.1f", $0) } ?? "Strain"),
@@ -1360,6 +1373,30 @@ struct AtriaTodayScreen: View {
                                   // Honest: no marker unless there's a real target (a real
                                   // user-set value, or the coach's recovery-based recommendation).
                                   targetFraction: incomplete ? nil : target.map { min(max($0 / 20.0, 0), 1) })
+    }
+
+    /// The ring, compact header, accessibility summary and glance grid all ask
+    /// for `strainMetric` during one render. Without this cache each request
+    /// filtered the complete workout archive and repeated civil-time conversion.
+    /// Below 1.0 strain the result depends only on the workout revision and local
+    /// day; at/above 1.0 the presentation rule is unconditionally complete.
+    private var dayStrainIsIncomplete: Bool {
+        let calendar = Calendar.current
+        let day = calendar.startOfDay(for: Date())
+        let isLowStrain = displayHero.strain < 1
+        let key = AtriaTodayDayStrainIncompleteKey(
+            confirmedWorkoutsRevision: sessionProjectionStore.state.confirmedWorkoutsRevision,
+            day: day,
+            isLowStrain: isLowStrain
+        )
+        return glanceMemo.dayStrainIncompleteCache.resolve(key: key) {
+            isLowStrain && AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(
+                day: day,
+                strain: displayHero.strain,
+                workouts: sessionProjectionStore.state.confirmedWorkouts,
+                calendar: calendar
+            )
+        }
     }
 
     /// HRV ring metric. Fill is nil (learning placeholder cap) unless the
@@ -1989,6 +2026,28 @@ struct AtriaTodayScreen: View {
     #endif
 }
 
+struct AtriaTodayDayStrainIncompleteKey: Equatable {
+    let confirmedWorkoutsRevision: Int
+    let day: Date
+    let isLowStrain: Bool
+}
+
+struct AtriaTodayDayStrainIncompleteCache {
+    private(set) var key: AtriaTodayDayStrainIncompleteKey?
+    private(set) var value: Bool?
+
+    mutating func resolve(key nextKey: AtriaTodayDayStrainIncompleteKey,
+                          compute: () -> Bool) -> Bool {
+        if key == nextKey, let value {
+            return value
+        }
+        let nextValue = compute()
+        key = nextKey
+        value = nextValue
+        return nextValue
+    }
+}
+
 /// Read-through memo for the glance-tile derivations that are expensive to
 /// recompute but only change when their source aggregate does (measured-perf
 /// pass, 2026-07-05). A plain class (not `ObservableObject`/`@Published`)
@@ -2011,6 +2070,7 @@ private final class AtriaTodayGlanceMemo {
     var workoutsWeekStart: Date?
     var workoutsWeekCount: Int?
     var workoutsOneLiner: String?
+    var dayStrainIncompleteCache = AtriaTodayDayStrainIncompleteCache()
     var dayDescendingRevision: Int?
     var dayDescendingRollups: [DailyRollupStoreEntry]?
     var highlightsRevision: Int?
@@ -2025,6 +2085,24 @@ private final class AtriaTodayGlanceMemo {
     var coachPayloadValue: AtriaCoachPayload?
     var sleepNeedKey: AtriaTodaySleepNeedKey?
     var sleepNeedValue: AtriaTodaySleepNeedSnapshot?
+}
+
+/// Live strain/recovery publications terminate here instead of at the large
+/// Today screen. The host's Equatable identity documents that its only durable
+/// owner is HeroStore; the observed object still drives this leaf directly,
+/// while parent reconciliation remains free to replace the content closure when
+/// layout or session inputs actually change.
+private struct AtriaTodayHeroProjectionHost<Content: View>: View, Equatable {
+    @ObservedObject var heroStore: AtriaHomeModel.HeroStore
+    @ViewBuilder let content: (AtriaHomeModel.HeroSnapshot) -> Content
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.heroStore === rhs.heroStore
+    }
+
+    var body: some View {
+        content(heroStore.state)
+    }
 }
 
 /// Breathwork needs every live HR/RR publication, while the rest of Today must

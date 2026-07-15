@@ -34,6 +34,9 @@ struct ActiveSessionJournalRecord: Codable {
     /// Optional so journals written before step capture remain decodable.
     var strapStepResearchCount: Int? = nil
     var strapStepResearchRawCount: Int? = nil
+    /// Last CRC-valid R10 device second included in the cumulative checkpoint.
+    /// A relaunch restores it only as a replay watermark, never as freshness.
+    var strapStepResearchDeviceTimestamp: UInt32? = nil
     var strapStepResearchState: String? = nil
 
     struct Sample: Codable {
@@ -44,6 +47,17 @@ struct ActiveSessionJournalRecord: Codable {
     struct RRSample: Codable {
         let t: Date
         let ms: Int
+        /// Optional solely so pre-provenance journal files still decode. They
+        /// remain diagnostic evidence and are not admitted to restored metrics.
+        let source: AtriaRRSourceProvenance?
+
+        init(t: Date,
+             ms: Int,
+             source: AtriaRRSourceProvenance? = nil) {
+            self.t = t
+            self.ms = ms
+            self.source = source
+        }
     }
 }
 
@@ -90,10 +104,73 @@ private struct ActiveSessionJournalSegment: Codable {
     var skinTempResearchCandidateValueCount: Int? = nil
     var strapStepResearchCount: Int? = nil
     var strapStepResearchRawCount: Int? = nil
+    var strapStepResearchDeviceTimestamp: UInt32? = nil
     var strapStepResearchState: String? = nil
 }
 
 enum ActiveSessionJournal {
+    /// Coarse, value-only identity used to invalidate sleep-review projections
+    /// when the resident journal is the only source that advanced. A five-
+    /// minute bucket avoids rebuilding the overnight projection for every
+    /// checkpoint while still making newly sufficient morning evidence visible.
+    struct SleepReviewCacheIdentity: Equatable, Sendable {
+        let id: UUID?
+        let endFiveMinuteBucket: Int?
+
+        static let empty = SleepReviewCacheIdentity(id: nil,
+                                                    endFiveMinuteBucket: nil)
+
+        /// Build cache freshness from evidence that was actually committed,
+        /// never from the checkpoint wall clock. Forced lifecycle checkpoints
+        /// are allowed to rewrite metadata without adding an HR/RR value; in
+        /// that case this identity remains unchanged and the expensive sleep
+        /// projection is not rebuilt. The evidence timestamp is still rounded
+        /// to five minutes so normal sensor flow cannot rebuild on every save.
+        init(id: UUID?,
+             latestHRSampleAt: Date?,
+             persistedHRSampleCount: Int,
+             latestRRSampleAt: Date?,
+             persistedRRSampleCount: Int) {
+            self.id = id
+            let evidenceDates = [
+                persistedHRSampleCount > 0 ? latestHRSampleAt : nil,
+                persistedRRSampleCount > 0 ? latestRRSampleAt : nil
+            ].compactMap { $0 }
+            self.endFiveMinuteBucket = evidenceDates.max().map {
+                Int($0.timeIntervalSince1970 / (5 * 60))
+            }
+        }
+
+        private init(id: UUID?, endFiveMinuteBucket: Int?) {
+            self.id = id
+            self.endFiveMinuteBucket = endFiveMinuteBucket
+        }
+    }
+
+    static let didPersistSleepReviewEvidenceNotification = Notification.Name(
+        "AtriaActiveSessionJournalDidPersistSleepReviewEvidence"
+    )
+
+    /// Called only after an atomic journal checkpoint succeeds. SessionStore
+    /// observes this publication on MainActor; no journal file is decoded on a
+    /// render or notification-routing path merely to discover freshness.
+    static func publishSleepReviewCacheIdentity(id: UUID?,
+                                                latestHRSampleAt: Date?,
+                                                persistedHRSampleCount: Int,
+                                                latestRRSampleAt: Date?,
+                                                persistedRRSampleCount: Int) {
+        NotificationCenter.default.post(
+            name: didPersistSleepReviewEvidenceNotification,
+            object: SleepReviewCacheIdentity(
+                id: id,
+                latestHRSampleAt: latestHRSampleAt,
+                persistedHRSampleCount: persistedHRSampleCount,
+                latestRRSampleAt: latestRRSampleAt,
+                persistedRRSampleCount: persistedRRSampleCount
+            )
+        )
+    }
+
     struct IncrementalSaveResult {
         let sampleCount: Int
         let rrSampleCount: Int
@@ -329,6 +406,7 @@ enum ActiveSessionJournal {
             skinTempResearchCandidateValueCount: record.skinTempResearchCandidateValueCount,
             strapStepResearchCount: record.strapStepResearchCount,
             strapStepResearchRawCount: record.strapStepResearchRawCount,
+            strapStepResearchDeviceTimestamp: record.strapStepResearchDeviceTimestamp,
             strapStepResearchState: record.strapStepResearchState
         )
         try JSONEncoder().encode(segment).write(to: segmentURL(sequence: nextSequence), options: [.atomic])
@@ -465,6 +543,7 @@ enum ActiveSessionJournal {
             skinTempResearchCandidateValueCount: record.skinTempResearchCandidateValueCount,
             strapStepResearchCount: record.strapStepResearchCount,
             strapStepResearchRawCount: record.strapStepResearchRawCount,
+            strapStepResearchDeviceTimestamp: record.strapStepResearchDeviceTimestamp,
             strapStepResearchState: record.strapStepResearchState
         )
         let data = try JSONEncoder().encode(segment)
@@ -603,6 +682,7 @@ enum ActiveSessionJournal {
             skinTempResearchCandidateValueCount: segment.skinTempResearchCandidateValueCount,
             strapStepResearchCount: segment.strapStepResearchCount,
             strapStepResearchRawCount: segment.strapStepResearchRawCount,
+            strapStepResearchDeviceTimestamp: segment.strapStepResearchDeviceTimestamp,
             strapStepResearchState: segment.strapStepResearchState
         )
         guard let samples = replaying(
@@ -624,7 +704,7 @@ enum ActiveSessionJournal {
             segmentValues: segment.rrSamples,
             recoveryStartIndex: segment.recoveryRRSampleStartIndex,
             recoveryValues: segment.recoveryRRSamples,
-            valuesMatch: { $0.t == $1.t && $0.ms == $1.ms }
+            valuesMatch: { $0.t == $1.t && $0.ms == $1.ms && $0.source == $1.source }
         ) else {
             AtriaDebugLog("ATRIADBG active_session_journal status=segment_gap sequence=%d rr_start=%d current_rr=%d",
                           segment.sequence, segment.rrSampleStartIndex, currentRR.count)
@@ -676,7 +756,23 @@ enum ActiveSessionJournal {
         } else {
             record.strapStepResearchState = segment.strapStepResearchState
         }
+        if !incomingCheckpointIsWeaker {
+            record.strapStepResearchDeviceTimestamp = newestDeviceTimestamp(
+                existing: record.strapStepResearchDeviceTimestamp,
+                incoming: segment.strapStepResearchDeviceTimestamp
+            )
+        }
         return record
+    }
+
+    /// RFC-1982 ordering keeps the replay watermark monotonic across ordinary
+    /// incremental saves and the UInt32 seconds-clock wrap.
+    private static func newestDeviceTimestamp(existing: UInt32?,
+                                              incoming: UInt32?) -> UInt32? {
+        guard let incoming, incoming > 0 else { return existing }
+        guard let existing, existing > 0 else { return incoming }
+        let delta = incoming &- existing
+        return delta > 0 && delta < (UInt32.max / 2 + 1) ? incoming : existing
     }
 
     private static func monotonicOptionalCount(_ incoming: Int?, _ existing: Int?) -> Int? {

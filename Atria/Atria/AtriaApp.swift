@@ -50,27 +50,47 @@ private final class AtriaAppDependencies {
     let workoutRuntime: AtriaWorkoutRuntime
 
     init() {
-        let ble = AtriaBLEManager()
         let store = SessionStore()
+        // A retained restore marker means canonical files may disagree. Do not
+        // start any producer that could append new evidence until recovery can
+        // resolve that transaction on a later launch.
+        if !store.restoreInitializationBlocked {
+            // Queue the tiny crash-recovery hydration before CoreBluetooth
+            // starts; later BLE policy reads remain lock-only.
+            AtriaPendingWorkoutIntentStore.shared.beginPreparing()
+        }
+        let ble = AtriaBLEManager(startsBluetooth: !store.restoreInitializationBlocked)
         let workoutRouteRecorder = AtriaWorkoutRouteRecorder()
         let workoutRuntime = AtriaWorkoutRuntime(ble: ble,
                                                  store: store,
                                                  routeRecorder: workoutRouteRecorder)
-        ble.onSessionEnd = { [store] saved in store.add(saved) }
-        ble.onSessionCheckpoint = { [store] saved in store.checkpoint(saved) }
+        if !store.restoreInitializationBlocked {
+            ble.onSessionEnd = { [store] saved in store.add(saved) }
+            ble.onSessionEndDurably = { [store] saved in
+                guard store.add(saved) else { return false }
+                return await withCheckedContinuation { continuation in
+                    store.flushScheduledPersistenceAsync(reason: "ble_session_boundary") { succeeded in
+                        continuation.resume(returning: succeeded)
+                    }
+                }
+            }
+            ble.onSessionCheckpoint = { [store] saved in store.checkpoint(saved) }
+        }
         self.ble = ble
         self.store = store
         self.workoutRouteRecorder = workoutRouteRecorder
         self.workoutRuntime = workoutRuntime
-        AppDependencyManager.shared.add(
-            dependency: AtriaLiveWorkoutCommandHandler { [workoutRuntime] action, startedAt, issuedAt in
-                await workoutRuntime.handleLiveActivityCommand(
-                    action,
-                    workoutStartedAt: startedAt,
-                    issuedAt: issuedAt
-                )
-            }
-        )
+        if !store.restoreInitializationBlocked {
+            AppDependencyManager.shared.add(
+                dependency: AtriaLiveWorkoutCommandHandler { [workoutRuntime] action, startedAt, issuedAt in
+                    await workoutRuntime.handleLiveActivityCommand(
+                        action,
+                        workoutStartedAt: startedAt,
+                        issuedAt: issuedAt
+                    )
+                }
+            )
+        }
     }
 }
 
@@ -127,12 +147,37 @@ struct AtriaApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(ble: ble,
-                        store: store,
-                        workoutRouteRecorder: dependencies.workoutRouteRecorder)
+            Group {
+                if store.restoreInitializationBlocked {
+                    ZStack {
+                        Color(.systemBackground).ignoresSafeArea()
+                        VStack(spacing: 12) {
+                            Image(systemName: "externaldrive.badge.exclamationmark")
+                                .font(.system(size: 34, weight: .semibold))
+                                .foregroundStyle(.orange)
+                            Text("Atria needs recovery")
+                                .font(.title3.weight(.semibold))
+                            Text("Your health history is protected. Reopen Atria to retry the interrupted restore.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: 300)
+                        }
+                        .padding(24)
+                    }
+                } else {
+                    ContentView(ble: ble,
+                                store: store,
+                                workoutRouteRecorder: dependencies.workoutRouteRecorder)
+                }
+            }
                 .onAppear {
                     guard !didScheduleLaunchWork else { return }
                     didScheduleLaunchWork = true
+                    guard !store.restoreInitializationBlocked else {
+                        AtriaDebugLog("ATRIADBG app_launch status=blocked reason=restore_marker_retained")
+                        return
+                    }
                     dependencies.workoutRuntime.schedulePendingActionReplay()
                     recordScenePhase("appear", reason: "content_on_appear")
                     let launchArguments = ProcessInfo.processInfo.arguments
@@ -156,6 +201,7 @@ struct AtriaApp: App {
                     }
                 }
                 .onChange(of: scenePhase) { _, phase in
+                    guard !store.restoreInitializationBlocked else { return }
                     switch phase {
                     case .background:
                         foregroundBLETransitionTask?.cancel()
@@ -218,7 +264,13 @@ struct AtriaApp: App {
                         store.requestPersistenceFlush(reason: "scene_unknown")
                     }
                 }
+                .onChange(of: store.restoreInitializationBlocked) { _, blocked in
+                    guard blocked else { return }
+                    dependencies.workoutRuntime.suspendForCanonicalRestoreFailure()
+                    ble.suspendForCanonicalRestoreFailure()
+                }
                 .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
+                    guard !store.restoreInitializationBlocked else { return }
                     inactiveFlushTask?.cancel()
                     inactiveFlushTask = nil
                     AtriaStrapCalibrationArchive.shared.flush()
@@ -259,6 +311,11 @@ struct AtriaApp: App {
                                              store: SessionStore,
                                              ble: AtriaBLEManager,
                                              reason: String) {
+        guard !store.restoreInitializationBlocked else {
+            task.setTaskCompleted(success: false)
+            AtriaDebugLog("ATRIADBG bg_task status=blocked reason=restore_marker_retained kind=%@", reason)
+            return
+        }
         scheduleBackgroundRefresh(reason: "\(reason)_reschedule")
         scheduleBackgroundProcessing(reason: "\(reason)_reschedule")
         let completion = AtriaBackgroundTaskCompletionGate()
@@ -374,6 +431,7 @@ struct AtriaApp: App {
 
     @MainActor
     private func handleFastLaunchWork(arguments: [String]) {
+        guard !store.restoreInitializationBlocked else { return }
         let isInteractiveForeground = isInteractiveForegroundLaunch()
         let fastLaunchReason = isInteractiveForeground ? "fast_launch_active" : "fast_launch_background"
         recordScenePhase(isInteractiveForeground ? "active" : scenePhaseLabel(scenePhase), reason: fastLaunchReason)
@@ -459,6 +517,7 @@ struct AtriaApp: App {
 
     @MainActor
     private func handleDeferredLaunchWork(arguments: [String]) {
+        guard !store.restoreInitializationBlocked else { return }
         logLaunchTiming(event: "deferred_launch_begin")
         store.restoreLatestSessionBackupFromLaunchIfRequested()
         store.completeOnboardingFromLaunchIfRequested()

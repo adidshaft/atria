@@ -3,6 +3,40 @@ import UIKit
 @testable import Atria
 
 final class AtriaActivitySectionsCacheTests: XCTestCase {
+    func testDetectedActivityPresentationUsesOnlyExplicitClassifierHint() {
+        let generic = AtriaDetectedActivityPresentation.make(kind: .activityCandidate,
+                                                             suggestedActivityType: nil)
+        XCTAssertEqual(generic.title, "Activity detected")
+        XCTAssertEqual(generic.icon, "waveform.path.ecg")
+
+        let walking = AtriaDetectedActivityPresentation.make(kind: .activityCandidate,
+                                                             suggestedActivityType: .walking)
+        XCTAssertEqual(walking.title, "Walking suggested")
+        XCTAssertEqual(walking.icon, AtriaWorkoutActivityType.walking.icon)
+
+        let genericWorkout = AtriaDetectedActivityPresentation.make(kind: .workout,
+                                                                    suggestedActivityType: nil)
+        XCTAssertEqual(genericWorkout.title, "Workout detected")
+        XCTAssertEqual(genericWorkout.icon, "figure.mixed.cardio")
+
+        let now = Date()
+        let classified = ActivityDetection(id: UUID(),
+                                           kind: .activityCandidate,
+                                           confidence: .medium,
+                                           start: now.addingTimeInterval(-600),
+                                           end: now,
+                                           duration: 600,
+                                           avgHR: 118,
+                                           peakHR: 136,
+                                           reason: "independent classifier evidence",
+                                           suggestedActivityType: .cycling)
+        XCTAssertEqual(classified.suggestedActivityType, .cycling)
+        XCTAssertEqual(AtriaDetectedActivityPresentation.make(
+            kind: classified.kind,
+            suggestedActivityType: classified.suggestedActivityType
+        ), AtriaDetectedActivityPresentation(title: "Cycling suggested", icon: "bicycle"))
+    }
+
     private func workout(samples: Int = 177,
                          avgHR: Int = 86,
                          strain: Double? = 0.051,

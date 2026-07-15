@@ -36,25 +36,34 @@ final class AtriaActivityEditorObservationTests: XCTestCase {
         XCTAssertTrue(detail.contains("private var hasUnsavedChanges: Bool"))
         XCTAssertTrue(detail.contains("sharePresentationGate.requestPresentation()"))
         XCTAssertTrue(detail.contains("sharePresentationGate.completeRoutePreparation()"))
-        XCTAssertTrue(detail.contains("if let steps = workout.workoutSteps"),
-                      "Saved workout step evidence should remain visible in Activity detail")
+        XCTAssertTrue(detail.contains("if let steps = completedWorkoutStepsText"),
+                      "Activity detail must apply the completed-step provenance gate before showing steps")
+        XCTAssertTrue(detail.contains("AtriaWorkoutSharePresentation.completedStepsText("))
+        XCTAssertTrue(detail.contains("capturedAt: workout.workoutStepsCapturedAt"))
+        XCTAssertTrue(detail.contains("workoutEndedAt: workout.end"))
+        XCTAssertFalse(detail.contains("if let steps = workout.workoutSteps"),
+                       "Activity detail must not expose stale or incomplete workout step evidence directly")
         XCTAssertTrue(detail.contains("steps: steps"),
-                      "Activity sharing should forward available workout step evidence")
-        XCTAssertTrue(detail.contains(".disabled(hasUnsavedChanges || sharePresentationGate.requestIsPending)"))
+                      "Activity sharing should forward only gated completed workout step evidence")
+        XCTAssertTrue(detail.contains("|| isRouteTransactionInFlight)"))
         XCTAssertTrue(detail.contains("Save your changes before sharing."))
         XCTAssertTrue(detail.contains("Preparing the saved route."))
         XCTAssertTrue(detail.contains("Button(\"Delete workout\", systemImage: \"trash\", role: .destructive)"))
         XCTAssertTrue(detail.contains("guard store.deleteConfirmedWorkout(id: workout.id) else"),
                       "Route deletion and dismissal must be gated by durable workout deletion")
         let metadataDelete = try XCTUnwrap(detail.range(of: "guard store.deleteConfirmedWorkout(id: workout.id) else"))
-        let routeDelete = try XCTUnwrap(detail.range(of: "AtriaWorkoutRouteStore.delete(workoutID: workout.id)",
+        let routeDelete = try XCTUnwrap(detail.range(of: "AtriaWorkoutRouteStore.deleteAsync(workoutID: workout.id)",
                                                      range: metadataDelete.upperBound..<detail.endIndex))
         let deleteDismiss = try XCTUnwrap(detail.range(of: "dismiss()",
                                                        range: routeDelete.upperBound..<detail.endIndex))
         XCTAssertLessThan(metadataDelete.lowerBound, routeDelete.lowerBound)
         XCTAssertLessThan(routeDelete.lowerBound, deleteDismiss.lowerBound)
-        XCTAssertTrue(detail.contains("switch AtriaWorkoutRouteStore.reconcile("),
+        XCTAssertTrue(detail.contains("switch await AtriaWorkoutRouteStore.reconcileAsync("),
                       "Atomic Save must inspect route persistence instead of dismissing unconditionally")
+        XCTAssertTrue(detail.contains("loadPreparedPresentationAsync("),
+                      "Route JSON, full-point map projection, and GPX preparation must stay off MainActor")
+        XCTAssertFalse(detail.contains("AtriaWorkoutRouteStore.gpxURL(for:"),
+                       "SwiftUI body/share projection must consume the prepared GPX URL without file I/O")
         XCTAssertTrue(detail.contains("let rollback = store.editConfirmedWorkout("),
                       "A route failure must restore the original canonical workout metadata")
         XCTAssertTrue(detail.contains("your original workout was kept unchanged"))

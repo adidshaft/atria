@@ -76,7 +76,11 @@ final class AtriaPostWorkoutRecapTests: XCTestCase {
         XCTAssertTrue(completion.contains("routeState: .attaching"))
         XCTAssertTrue(completion.contains("finish its route details automatically"))
         XCTAssertTrue(completion.contains("schedulePendingWorkoutRecoveryRetries()"))
-        XCTAssertTrue(completion.contains("AtriaWorkoutRouteStore.saveAsync(routeDraft, workoutID: confirmed.id)"))
+        XCTAssertTrue(completion.contains("AtriaWorkoutRouteStore.savePreparedShareArtifactAsync("))
+        XCTAssertTrue(completion.contains("guard preparedRoute.routeWasPersisted else"))
+        XCTAssertTrue(completion.contains("routeArtifact: preparedRoute"))
+        XCTAssertFalse(completion.contains("AtriaWorkoutRouteStore.gpxURL(for:"))
+        XCTAssertFalse(completion.contains("AtriaWorkoutShareSnapshot.routePreviewPoints(from:"))
     }
 
     private func section(in source: String, from startToken: String, to endToken: String) throws -> String {

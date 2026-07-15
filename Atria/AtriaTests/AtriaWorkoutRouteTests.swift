@@ -46,10 +46,14 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
             .appendingPathComponent("Atria/AtriaActivityMonitor.swift"), encoding: .utf8)
+        let routeStoreSource = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaWorkoutRoute.swift"), encoding: .utf8)
         let start = try XCTUnwrap(source.range(of: "private struct AtriaSavedWorkoutRouteMap"))
         let map = String(source[start.lowerBound...])
 
-        XCTAssertTrue(source.contains("AtriaWorkoutRoute.presentationSegments(from: $0.points)"))
+        XCTAssertTrue(routeStoreSource.contains("AtriaWorkoutRoute.presentationSegments(from: $0.points)"))
+        XCTAssertTrue(source.contains("loadPreparedPresentationAsync("),
+                      "Full route projection must be prepared off MainActor before Map renders")
         XCTAssertTrue(map.contains("ForEach(Array(segments.enumerated()), id: \\.offset)"))
         XCTAssertTrue(map.contains("Marker(\"Start\", systemImage: \"flag.fill\""))
         XCTAssertTrue(map.contains("Marker(\"Finish\", systemImage: \"flag.checkered\""))
@@ -664,6 +668,134 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         XCTAssertEqual(xml.components(separatedBy: "</trkseg>").count - 1, 2)
     }
 
+    func testDeletingWorkoutRouteAlsoRemovesOrphanedExactGPX() throws {
+        let workoutID = "orphan-gpx-\(UUID().uuidString)"
+        let start = Date(timeIntervalSince1970: 1_500)
+        let route = AtriaWorkoutRoute(
+            id: workoutID,
+            workoutID: workoutID,
+            activityType: AtriaWorkoutActivityType.walking.rawValue,
+            startedAt: start,
+            endedAt: start.addingTimeInterval(30),
+            points: [
+                AtriaWorkoutRoute.Point(latitude: 28.610, longitude: 77.200, altitude: 200,
+                                        timestamp: start, horizontalAccuracy: 5,
+                                        startsNewSegment: true),
+                AtriaWorkoutRoute.Point(latitude: 28.611, longitude: 77.201, altitude: 201,
+                                        timestamp: start.addingTimeInterval(30), horizontalAccuracy: 5),
+            ],
+            distanceMeters: 150,
+            elevationGainMeters: 1
+        )
+        let url = try XCTUnwrap(AtriaWorkoutRouteStore.gpxURL(for: route))
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertNil(AtriaWorkoutRouteStore.load(workoutID: workoutID),
+                     "This specifically exercises a derivative left without canonical route JSON")
+
+        XCTAssertTrue(AtriaWorkoutRouteStore.delete(workoutID: workoutID))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path),
+                       "Deleting an Activity must remove its exact-coordinate derivative too")
+    }
+
+    func testRouteEditInvalidatesBothOldAndDestinationGPXDerivatives() throws {
+        let oldID = "gpx-edit-old-\(UUID().uuidString)"
+        let newID = "gpx-edit-new-\(UUID().uuidString)"
+        let start = Date(timeIntervalSince1970: 1_800)
+        let points = (0..<3).map { index in
+            AtriaWorkoutRoute.Point(latitude: 28.61 + Double(index) * 0.0001,
+                                    longitude: 77.20,
+                                    altitude: 200,
+                                    timestamp: start.addingTimeInterval(Double(index) * 30),
+                                    horizontalAccuracy: 5,
+                                    startsNewSegment: index == 0)
+        }
+        let draft = AtriaWorkoutRouteRecorder.Draft(activityType: .walking,
+                                                    startedAt: start,
+                                                    endedAt: start.addingTimeInterval(60),
+                                                    coverageStartedAt: start,
+                                                    points: points,
+                                                    distanceMeters: 25,
+                                                    elevationGainMeters: 0,
+                                                    pausedDuration: 0)
+        let oldRoute = try XCTUnwrap(AtriaWorkoutRouteStore.save(draft, workoutID: oldID))
+        let destinationRoute = AtriaWorkoutRoute(id: newID,
+                                                 workoutID: newID,
+                                                 activityType: oldRoute.activityType,
+                                                 startedAt: oldRoute.startedAt,
+                                                 endedAt: oldRoute.endedAt,
+                                                 coverageStartedAt: oldRoute.coverageStartedAt,
+                                                 points: oldRoute.points,
+                                                 distanceMeters: oldRoute.distanceMeters,
+                                                 elevationGainMeters: oldRoute.elevationGainMeters,
+                                                 pausedDuration: oldRoute.pausedDuration)
+        let oldGPX = try XCTUnwrap(AtriaWorkoutRouteStore.gpxURL(for: oldRoute))
+        let destinationGPX = try XCTUnwrap(AtriaWorkoutRouteStore.gpxURL(for: destinationRoute))
+        defer {
+            _ = AtriaWorkoutRouteStore.delete(workoutID: oldID)
+            _ = AtriaWorkoutRouteStore.delete(workoutID: newID)
+        }
+
+        XCTAssertNoThrow(try AtriaWorkoutRouteStore.reconcile(from: oldID,
+                                                              to: newID,
+                                                              activityType: .running,
+                                                              start: start,
+                                                              end: start.addingTimeInterval(60)).get())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldGPX.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destinationGPX.path))
+    }
+
+    func testGPXExportRequestsDeviceFileProtection() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("Atria/AtriaWorkoutRoute.swift"),
+                                encoding: .utf8)
+        XCTAssertTrue(source.contains("FileProtectionType.completeUnlessOpen"),
+                      "Exact-coordinate exports need explicit device-side data protection")
+    }
+
+    @MainActor
+    func testPreparedPresentationBuildsAllRouteArtifactsOnPersistenceQueue() async throws {
+        let workoutID = "prepared-route-\(UUID().uuidString)"
+        let start = Date(timeIntervalSince1970: 2_000)
+        let points = [
+            AtriaWorkoutRoute.Point(latitude: 28.610, longitude: 77.200, altitude: 200,
+                                    timestamp: start, horizontalAccuracy: 5,
+                                    startsNewSegment: true),
+            AtriaWorkoutRoute.Point(latitude: 28.611, longitude: 77.201, altitude: 201,
+                                    timestamp: start.addingTimeInterval(30), horizontalAccuracy: 5),
+            AtriaWorkoutRoute.Point(latitude: 28.620, longitude: 77.210, altitude: 202,
+                                    timestamp: start.addingTimeInterval(300), horizontalAccuracy: 5,
+                                    startsNewSegment: true),
+        ]
+        let draft = AtriaWorkoutRouteRecorder.Draft(
+            activityType: .walking,
+            startedAt: start,
+            endedAt: start.addingTimeInterval(600),
+            coverageStartedAt: start,
+            points: points,
+            distanceMeters: 500,
+            elevationGainMeters: 2,
+            pausedDuration: 20
+        )
+        let saved = await AtriaWorkoutRouteStore.saveAsync(draft, workoutID: workoutID)
+        let prepared = await AtriaWorkoutRouteStore.loadPreparedPresentationAsync(
+            workoutID: workoutID
+        )
+        defer {
+            if let url = prepared.gpxURL { try? FileManager.default.removeItem(at: url) }
+            _ = AtriaWorkoutRouteStore.delete(workoutID: workoutID)
+        }
+
+        XCTAssertEqual(prepared.route, saved)
+        XCTAssertEqual(prepared.segments.map(\.count), [2, 1])
+        XCTAssertEqual(prepared.sharePreviewPoints.count, 3)
+        let url = try XCTUnwrap(prepared.gpxURL)
+        let xml = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertEqual(xml.components(separatedBy: "<trkseg>").count - 1, 2)
+    }
+
     @MainActor
     func testActivityEditClipsAndReconcilesRouteThenIndoorTypeDeletesIt() throws {
         let oldID = "route-edit-old-\(UUID().uuidString)"
@@ -952,8 +1084,8 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         let routeEdit = try XCTUnwrap(saveBody.range(of: "AtriaWorkoutRouteStore.reconcile"))
         XCTAssertLessThan(beginEdit.lowerBound, metadataEdit.lowerBound)
         XCTAssertLessThan(metadataEdit.lowerBound, routeEdit.lowerBound)
-        XCTAssertTrue(saveBody.contains("AtriaWorkoutRouteStore.clearPendingTransaction()"))
-        XCTAssertTrue(saveBody.contains("recoverPendingTransaction("),
+        XCTAssertTrue(saveBody.contains("AtriaWorkoutRouteStore.clearPendingTransactionAsync()"))
+        XCTAssertTrue(saveBody.contains("recoverPendingTransactionAsync("),
                       "A failed route write must drive the durable rollback recovery path")
 
         let beginDelete = try XCTUnwrap(deleteBody.range(of: "beginDeleteTransaction"))
@@ -961,6 +1093,78 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         let routeDelete = try XCTUnwrap(deleteBody.range(of: "AtriaWorkoutRouteStore.delete"))
         XCTAssertLessThan(beginDelete.lowerBound, metadataDelete.lowerBound)
         XCTAssertLessThan(metadataDelete.lowerBound, routeDelete.lowerBound)
+    }
+
+    func testActivityRouteTransactionsAndFullPresentationIOStayOffMainActor() throws {
+        let sourceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let activity = try String(
+            contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaActivityMonitor.swift"),
+            encoding: .utf8
+        )
+        let routeStore = try String(
+            contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaWorkoutRoute.swift"),
+            encoding: .utf8
+        )
+        let detailStart = try XCTUnwrap(
+            activity.range(of: "private struct AtriaActivityWorkoutDetailSheet: View")
+        )
+        let addStart = try XCTUnwrap(
+            activity.range(of: "struct AtriaAddWorkoutSheet: View",
+                           range: detailStart.upperBound..<activity.endIndex)
+        )
+        let detail = String(activity[detailStart.lowerBound..<addStart.lowerBound])
+
+        for requiredAsyncCall in [
+            "recoverPendingTransactionAsync(",
+            "loadPreparedPresentationAsync(",
+            "beginEditTransactionAsync(",
+            "reconcileAsync(",
+            "clearPendingTransactionAsync()",
+            "beginDeleteTransactionAsync(",
+            "deleteAsync(workoutID: workout.id)",
+        ] {
+            XCTAssertTrue(activity.contains(requiredAsyncCall),
+                          "Missing off-main route operation: \(requiredAsyncCall)")
+        }
+        XCTAssertFalse(detail.contains("AtriaWorkoutRouteStore.load(workoutID:"))
+        XCTAssertFalse(detail.contains("AtriaWorkoutRouteStore.gpxURL(for:"))
+        XCTAssertFalse(detail.contains("AtriaWorkoutShareSnapshot.routePreviewPoints(from:"))
+        XCTAssertTrue(routeStore.contains("private static func performOnPersistenceQueue<T>"))
+        XCTAssertTrue(routeStore.contains("persistenceQueue.async"))
+        XCTAssertTrue(routeStore.contains("AtriaWorkoutRoute.presentationSegments(from: $0.points)"))
+        XCTAssertTrue(routeStore.contains("AtriaWorkoutShareSnapshot.routePreviewPoints(from: $0)"))
+        XCTAssertTrue(routeStore.contains("gpxURL: route.flatMap { gpxURL(for: $0) }"))
+        XCTAssertTrue(routeStore.contains("dispatchPrecondition(condition: .onQueue(persistenceQueue))"),
+                      "Full-route share preparation must enforce its utility-queue contract")
+        XCTAssertTrue(routeStore.contains("private static let maximumSharePreviewPointCount = 240"))
+        XCTAssertTrue(routeStore.contains("limit: maximumSharePreviewPointCount"))
+        XCTAssertTrue(routeStore.contains("static func savePreparedShareArtifactAsync("))
+        XCTAssertTrue(routeStore.contains("static func loadPreparedShareArtifactAsync("))
+    }
+
+    func testPreparedPostWorkoutShareHandoffCannotCarryAnUnboundedCanonicalRoute() throws {
+        let sourceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let routeStore = try String(
+            contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaWorkoutRoute.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(routeStore.range(of: "struct PreparedShareArtifact:"))
+        let end = try XCTUnwrap(routeStore.range(of: "private struct PendingTransaction:",
+                                                 range: start.upperBound..<routeStore.endIndex))
+        let handoff = String(routeStore[start.lowerBound..<end.lowerBound])
+
+        XCTAssertFalse(handoff.contains("AtriaWorkoutRoute"),
+                       "The full canonical route must remain confined to the persistence queue")
+        XCTAssertTrue(handoff.contains("let routeFileURL: URL?"))
+        XCTAssertTrue(handoff.contains("let routePoints: [AtriaWorkoutShareSnapshot.RoutePoint]"))
+        XCTAssertTrue(handoff.contains("let distanceMeters: Double"))
+        XCTAssertTrue(handoff.contains("let averagePaceSecondsPerKilometer: TimeInterval?"))
+        XCTAssertFalse(handoff.contains("var "),
+                       "Only immutable prepared values may cross into post-workout UI state")
     }
 
     func testLegacyRouteWithoutPausedDurationStillDecodes() throws {
@@ -1041,6 +1245,59 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         XCTAssertEqual(AtriaWorkoutRouteStore.load(workoutID: workoutID), saved)
     }
 
+    @MainActor
+    func testLargePostWorkoutRoutePublishesOnlyBoundedPreparedShareArtifactOnMainActor() async throws {
+        let workoutID = "route-large-share-\(UUID().uuidString)"
+        let start = Date(timeIntervalSince1970: 22_000)
+        let pointCount = 20_000
+        let points = (0..<pointCount).map { index in
+            AtriaWorkoutRoute.Point(
+                latitude: 28.61 + (Double(index) * 0.000_001),
+                longitude: 77.20 + (Double(index) * 0.000_001),
+                altitude: 200 + Double(index % 20),
+                timestamp: start.addingTimeInterval(Double(index)),
+                horizontalAccuracy: 4,
+                startsNewSegment: index == 0 || index == 10_000
+            )
+        }
+        let draft = AtriaWorkoutRouteRecorder.Draft(
+            activityType: .running,
+            startedAt: start,
+            endedAt: start.addingTimeInterval(Double(pointCount - 1)),
+            coverageStartedAt: start,
+            points: points,
+            distanceMeters: 15_250,
+            elevationGainMeters: 20,
+            pausedDuration: 120
+        )
+
+        let prepared = await withCheckedContinuation { continuation in
+            AtriaWorkoutRouteStore.savePreparedShareArtifactAsync(
+                draft,
+                workoutID: workoutID
+            ) { artifact in
+                XCTAssertTrue(Thread.isMainThread,
+                              "Only the bounded immutable result should publish on MainActor")
+                continuation.resume(returning: artifact)
+            }
+        }
+
+        XCTAssertTrue(prepared.routeWasPersisted)
+        XCTAssertEqual(prepared.distanceMeters, draft.distanceMeters)
+        XCTAssertNotNil(prepared.averagePaceSecondsPerKilometer)
+        XCTAssertEqual(prepared.routePoints.first?.latitude, points.first?.latitude)
+        XCTAssertEqual(prepared.routePoints.last?.latitude, points.last?.latitude)
+        XCTAssertLessThanOrEqual(prepared.routePoints.count, 240,
+                                 "A full route must never cross into post-workout UI state")
+        let gpxURL = try XCTUnwrap(prepared.routeFileURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: gpxURL.path))
+        XCTAssertEqual(AtriaWorkoutRouteStore.load(workoutID: workoutID)?.points.count,
+                       pointCount)
+
+        try? FileManager.default.removeItem(at: gpxURL)
+        _ = await AtriaWorkoutRouteStore.deleteAsync(workoutID: workoutID)
+    }
+
     func testRecoveredWorkoutRoutePersistenceNeverBlocksMainActor() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -1052,8 +1309,10 @@ final class AtriaWorkoutRouteTests: XCTestCase {
                                            range: start.upperBound..<home.endIndex))
         let recovery = String(home[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(recovery.contains("await AtriaWorkoutRouteStore.saveAsync("))
+        XCTAssertTrue(recovery.contains("await AtriaWorkoutRouteStore.savePreparedShareArtifactAsync("))
         XCTAssertFalse(recovery.contains("AtriaWorkoutRouteStore.save("))
+        XCTAssertFalse(recovery.contains("AtriaWorkoutRouteStore.gpxURL(for:"))
+        XCTAssertFalse(recovery.contains("AtriaWorkoutShareSnapshot.routePreviewPoints(from:"))
     }
 
     func testWorkoutEndUsesAsynchronousRoutePersistence() throws {
@@ -1067,8 +1326,13 @@ final class AtriaWorkoutRouteTests: XCTestCase {
                                            range: start.upperBound..<home.endIndex))
         let body = String(home[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(body.contains("AtriaWorkoutRouteStore.saveAsync"))
+        XCTAssertTrue(body.contains("AtriaWorkoutRouteStore.savePreparedShareArtifactAsync"))
         XCTAssertFalse(body.contains("AtriaWorkoutRouteStore.save("))
+        XCTAssertFalse(body.contains("AtriaWorkoutRouteStore.gpxURL(for:"))
+        XCTAssertFalse(body.contains("AtriaWorkoutShareSnapshot.routePreviewPoints(from:"))
+        XCTAssertFalse(body.contains("AtriaWorkoutRoute("),
+                       "Home completion must not rebuild a full route on MainActor")
+        XCTAssertTrue(body.contains("routeArtifact: preparedRoute"))
     }
 
     func testOnlyOutdoorRouteActivitiesRequestGps() {

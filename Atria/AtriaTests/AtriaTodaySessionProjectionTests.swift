@@ -62,11 +62,55 @@ final class AtriaTodaySessionProjectionTests: XCTestCase {
             .appendingPathComponent("Atria/AtriaTodayScreen.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
-        XCTAssertTrue(source.contains("@ObservedObject var heroStore: AtriaHomeModel.HeroStore"))
+        let screenStart = try XCTUnwrap(source.range(of: "struct AtriaTodayScreen: View"))
+        let hostStart = try XCTUnwrap(source.range(of: "private struct AtriaTodayHeroProjectionHost<Content: View>"))
+        let screenSource = String(source[screenStart.lowerBound..<hostStart.lowerBound])
+        XCTAssertTrue(screenSource.contains("let heroStore: AtriaHomeModel.HeroStore"))
+        XCTAssertFalse(screenSource.contains("@ObservedObject var heroStore: AtriaHomeModel.HeroStore"))
+        XCTAssertTrue(source.contains("private struct AtriaTodayHeroProjectionHost<Content: View>: View, Equatable"))
+        XCTAssertTrue(source.contains("@ObservedObject var heroStore: AtriaHomeModel.HeroStore"),
+                      "Only the narrow hero leaf should own live HeroStore observation")
         XCTAssertTrue(source.contains("@ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore"))
         XCTAssertTrue(source.contains("@ObservedObject var sessionProjectionStore: AtriaTodaySessionProjectionStore"))
         XCTAssertFalse(source.contains("@ObservedObject var store: SessionStore"))
         XCTAssertTrue(source.contains("guard next != state else { return false }"))
+    }
+
+    func testDayStrainIncompleteCacheReusesOnlyExactSourceWindow() {
+        let day = Date(timeIntervalSince1970: 1_720_000_000)
+        let key = AtriaTodayDayStrainIncompleteKey(confirmedWorkoutsRevision: 7,
+                                                   day: day,
+                                                   isLowStrain: true)
+        var cache = AtriaTodayDayStrainIncompleteCache()
+        var computations = 0
+
+        XCTAssertTrue(cache.resolve(key: key) {
+            computations += 1
+            return true
+        })
+        XCTAssertTrue(cache.resolve(key: key) {
+            computations += 1
+            return false
+        })
+        XCTAssertEqual(computations, 1)
+
+        let newRevision = AtriaTodayDayStrainIncompleteKey(confirmedWorkoutsRevision: 8,
+                                                           day: day,
+                                                           isLowStrain: true)
+        XCTAssertFalse(cache.resolve(key: newRevision) {
+            computations += 1
+            return false
+        })
+        XCTAssertEqual(computations, 2)
+
+        let noLongerLow = AtriaTodayDayStrainIncompleteKey(confirmedWorkoutsRevision: 8,
+                                                           day: day,
+                                                           isLowStrain: false)
+        XCTAssertFalse(cache.resolve(key: noLongerLow) {
+            computations += 1
+            return false
+        })
+        XCTAssertEqual(computations, 3)
     }
 
     func testBroadDashboardSignalIsRevisionGatedBeforeTodaySnapshotRebuild() throws {

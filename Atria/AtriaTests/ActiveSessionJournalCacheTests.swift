@@ -392,12 +392,14 @@ final class ActiveSessionJournalCacheTests: XCTestCase {
         var initial = record(sampleCount: 2, rrCount: 1)
         initial.strapStepResearchCount = 123
         initial.strapStepResearchRawCount = 111
+        initial.strapStepResearchDeviceTimestamp = 5_000
         initial.strapStepResearchState = "r10_live_preliminary"
         try ActiveSessionJournal.save(initial)
 
         var delayed = record(id: initial.id, sampleCount: 4, rrCount: 2)
         delayed.strapStepResearchCount = 4
         delayed.strapStepResearchRawCount = 4
+        delayed.strapStepResearchDeviceTimestamp = 5_100
         delayed.strapStepResearchState = "connection_local"
         try ActiveSessionJournal.save(delayed, previousSampleCount: 2, previousRRCount: 1)
         ActiveSessionJournal.resetCachesForTesting()
@@ -405,6 +407,7 @@ final class ActiveSessionJournalCacheTests: XCTestCase {
         let restored = try XCTUnwrap(ActiveSessionJournal.load())
         XCTAssertEqual(restored.strapStepResearchCount, 123)
         XCTAssertEqual(restored.strapStepResearchRawCount, 111)
+        XCTAssertEqual(restored.strapStepResearchDeviceTimestamp, 5_000)
         XCTAssertEqual(restored.strapStepResearchState, "r10_live_preliminary")
     }
 
@@ -427,6 +430,7 @@ final class ActiveSessionJournalCacheTests: XCTestCase {
         valid.skinTempResearchCandidateValueCount = 4
         valid.strapStepResearchCount = 111
         valid.strapStepResearchRawCount = 100
+        valid.strapStepResearchDeviceTimestamp = 7_654
         valid.strapStepResearchState = "r10_live_calibrating"
 
         let restored = AtriaBLEManager.validatedResearchAggregates(from: valid)
@@ -437,6 +441,7 @@ final class ActiveSessionJournalCacheTests: XCTestCase {
         XCTAssertEqual(restored?.skinTempCandidateValueCount, 4)
         XCTAssertEqual(restored?.strapSteps, 111)
         XCTAssertEqual(restored?.strapRawSteps, 100)
+        XCTAssertEqual(restored?.strapDeviceTimestamp, 7_654)
         XCTAssertEqual(restored?.strapStepState, "r10_live_calibrating")
 
         var incompleteTemperature = valid
@@ -455,6 +460,14 @@ final class ActiveSessionJournalCacheTests: XCTestCase {
         incompleteSteps.strapStepResearchRawCount = nil
         XCTAssertNil(AtriaBLEManager.validatedResearchAggregates(from: incompleteSteps))
 
+        var implausibleSteps = valid
+        implausibleSteps.strapStepResearchCount = 10_000_001
+        XCTAssertNil(AtriaBLEManager.validatedResearchAggregates(from: implausibleSteps))
+
+        var zeroTimestamp = valid
+        zeroTimestamp.strapStepResearchDeviceTimestamp = 0
+        XCTAssertNil(AtriaBLEManager.validatedResearchAggregates(from: zeroTimestamp)?.strapDeviceTimestamp)
+
         XCTAssertFalse(AtriaResearchProbe.validatedSpO2DecoderAvailable)
         XCTAssertFalse(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
     }
@@ -464,7 +477,8 @@ final class ActiveSessionJournalCacheTests: XCTestCase {
         source.rrSamples = (90..<100).map {
             ActiveSessionJournalRecord.RRSample(
                 t: baseDate.addingTimeInterval(Double($0)),
-                ms: 700 + $0
+                ms: 700 + $0,
+                source: .standardHeartRateMeasurement2A37
             )
         }
         source.strapStepResearchCount = 88
@@ -521,6 +535,67 @@ final class ActiveSessionJournalCacheTests: XCTestCase {
         XCTAssertEqual(payload.age, 95, accuracy: 0.000_001)
     }
 
+    func testLegacyAndMixedRRRestoreFailClosedForMetricAdmission() throws {
+        var legacy = record(sampleCount: 8, rrCount: 4)
+        legacy.rrSamples = legacy.rrSamples?.map {
+            ActiveSessionJournalRecord.RRSample(t: $0.t, ms: $0.ms)
+        }
+        let legacyPrepared = AtriaBLEManager.prepareActiveSessionJournalRestore(
+            legacy,
+            now: legacy.updatedAt.addingTimeInterval(1),
+            maxAge: 1_000,
+            maxSamples: 100,
+            segmentGapLimit: 90,
+            biologicalSex: .unspecified
+        )
+        guard case let .live(legacyPayload) = legacyPrepared.payload else {
+            return XCTFail("Expected legacy live payload")
+        }
+        XCTAssertTrue(legacyPayload.rrArchive.isEmpty)
+        XCTAssertTrue(legacyPayload.rrPoints.isEmpty)
+
+        var mixed = record(sampleCount: 8, rrCount: 4)
+        let mixedPoint = try XCTUnwrap(mixed.rrSamples?[2])
+        mixed.rrSamples?[2] = ActiveSessionJournalRecord.RRSample(
+            t: mixedPoint.t,
+            ms: mixedPoint.ms,
+            source: .validatedProprietaryRealtime
+        )
+        let mixedPrepared = AtriaBLEManager.prepareActiveSessionJournalRestore(
+            mixed,
+            now: mixed.updatedAt.addingTimeInterval(1),
+            maxAge: 1_000,
+            maxSamples: 100,
+            segmentGapLimit: 90,
+            biologicalSex: .unspecified
+        )
+        guard case let .live(mixedPayload) = mixedPrepared.payload else {
+            return XCTFail("Expected mixed live payload")
+        }
+        XCTAssertTrue(mixedPayload.rrArchive.isEmpty)
+        XCTAssertTrue(mixedPayload.rrPoints.isEmpty)
+    }
+
+    func testJournalRRSourceRoundTripsAndLegacyJSONDefaultsToNil() throws {
+        let standard = ActiveSessionJournalRecord.RRSample(
+            t: baseDate,
+            ms: 812,
+            source: .standardHeartRateMeasurement2A37
+        )
+        let roundTrip = try JSONDecoder().decode(
+            ActiveSessionJournalRecord.RRSample.self,
+            from: JSONEncoder().encode(standard)
+        )
+        XCTAssertEqual(roundTrip.source, .standardHeartRateMeasurement2A37)
+
+        let legacyJSON = "{\"t\":0,\"ms\":812}".data(using: .utf8)!
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        let legacy = try decoder.decode(ActiveSessionJournalRecord.RRSample.self,
+                                        from: legacyJSON)
+        XCTAssertNil(legacy.source)
+    }
+
     func testConditionalClearCannotEraseNewerJournalCheckpoint() throws {
         let initial = record(sampleCount: 2, rrCount: 1)
         try ActiveSessionJournal.save(initial)
@@ -559,7 +634,11 @@ final class ActiveSessionJournalCacheTests: XCTestCase {
                 ActiveSessionJournalRecord.Sample(t: baseDate.addingTimeInterval(Double($0)), bpm: 70 + $0)
             },
             rrSamples: (0..<rrCount).map {
-                ActiveSessionJournalRecord.RRSample(t: baseDate.addingTimeInterval(Double($0)), ms: 800 + $0)
+                ActiveSessionJournalRecord.RRSample(
+                    t: baseDate.addingTimeInterval(Double($0)),
+                    ms: 800 + $0,
+                    source: .standardHeartRateMeasurement2A37
+                )
             },
             rawHRNotifications: sampleCount,
             acceptedHRSamples: sampleCount,

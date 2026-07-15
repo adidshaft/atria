@@ -10,6 +10,14 @@ struct WidgetSnapshot: Codable {
     let recoveryConfidence: String
     let recoveryDetail: String
     let strain: Double
+    /// When the cumulative wake-to-wake strain projection was recomputed.
+    /// This is deliberately independent of the latest live HR sample; a radio
+    /// pause cannot invalidate load already accumulated from durable evidence.
+    var strainCapturedAt: Date? = nil
+    /// Physiological wake-to-wake cycle owning `strain`. Optional for backward
+    /// decoding, but current widgets fail closed when either boundary is absent.
+    var strainCycleStart: Date? = nil
+    var strainCycleExpiresAt: Date? = nil
     let restingHR: Int?
     let hrvRMSSD: Int?
     let hrvState: String
@@ -39,6 +47,13 @@ struct WidgetSnapshot: Codable {
     var heartRateZoneIndex: Int? = nil
     var heartRateZoneName: String? = nil
     let batteryLevel: Int?
+    var batteryCapturedAt: Date? = nil
+    /// A current 2A19 notification lease can corroborate an unchanged accepted
+    /// mid-range level without pretending that a new battery packet arrived.
+    var batteryCorroboratedAt: Date? = nil
+    /// Independent evidence clock for charger state. A fresh percentage or
+    /// notification lease must never renew an older charging/full claim.
+    var batteryChargeCapturedAt: Date? = nil
     let batteryChargeStatus: String?
     let batteryChargeText: String?
     let layoutGlanceMetrics: [String]?
@@ -96,7 +111,11 @@ enum WidgetSnapshotPublisher {
                                          stepsAreEstimated: Bool,
                                          stepsCapturedAt: Date?,
                                          strain: Double,
+                                         strainCapturedAt: Date? = nil,
                                          batteryLevel: Int?,
+                                         batteryCapturedAt: Date? = nil,
+                                         batteryCorroboratedAt: Date? = nil,
+                                         batteryChargeCapturedAt: Date? = nil,
                                          batteryChargeStatus: String,
                                          batteryChargeText: String,
                                          reason: String,
@@ -127,7 +146,11 @@ enum WidgetSnapshotPublisher {
                 stepsAreEstimated: stepsAreEstimated,
                 stepsCapturedAt: stepsCapturedAt,
                 strain: strain,
+                strainCapturedAt: strainCapturedAt,
                 batteryLevel: batteryLevel,
+                batteryCapturedAt: batteryCapturedAt,
+                batteryCorroboratedAt: batteryCorroboratedAt,
+                batteryChargeCapturedAt: batteryChargeCapturedAt,
                 batteryChargeStatus: batteryChargeStatus,
                 batteryChargeText: batteryChargeText
             )
@@ -157,7 +180,11 @@ enum WidgetSnapshotPublisher {
         stepsAreEstimated: Bool,
         stepsCapturedAt: Date?,
         strain: Double,
+        strainCapturedAt: Date? = nil,
         batteryLevel: Int?,
+        batteryCapturedAt: Date? = nil,
+        batteryCorroboratedAt: Date? = nil,
+        batteryChargeCapturedAt: Date? = nil,
         batteryChargeStatus: String,
         batteryChargeText: String
     ) -> WidgetSnapshot {
@@ -169,6 +196,14 @@ enum WidgetSnapshotPublisher {
             recoveryConfidence: current.recoveryConfidence,
             recoveryDetail: current.recoveryDetail,
             strain: strain,
+            strainCapturedAt: cumulativeStrainCaptureDate(
+                previousValue: current.strain,
+                previousCapturedAt: current.strainCapturedAt,
+                nextValue: strain,
+                nextEvidenceAt: strainCapturedAt
+            ),
+            strainCycleStart: current.strainCycleStart,
+            strainCycleExpiresAt: current.strainCycleExpiresAt,
             restingHR: current.restingHR,
             hrvRMSSD: current.hrvRMSSD,
             hrvState: current.hrvState,
@@ -183,6 +218,9 @@ enum WidgetSnapshotPublisher {
             heartRateZoneIndex: heartRate == nil ? nil : heartRateZone?.rawValue,
             heartRateZoneName: heartRate == nil ? nil : heartRateZone?.name,
             batteryLevel: batteryLevel,
+            batteryCapturedAt: batteryLevel == nil ? nil : batteryCapturedAt,
+            batteryCorroboratedAt: batteryLevel == nil ? nil : batteryCorroboratedAt,
+            batteryChargeCapturedAt: batteryLevel == nil ? nil : batteryChargeCapturedAt,
             batteryChargeStatus: batteryChargeStatus,
             batteryChargeText: batteryChargeText,
             layoutGlanceMetrics: current.layoutGlanceMetrics,
@@ -231,6 +269,9 @@ enum WidgetSnapshotPublisher {
                                        recoveryConfidence: snapshot.recoveryConfidence,
                                        recoveryDetail: snapshot.recoveryDetail,
                                        strain: snapshot.strain,
+                                       strainCapturedAt: snapshot.strainCapturedAt,
+                                       strainCycleStart: snapshot.strainCycleStart,
+                                       strainCycleExpiresAt: snapshot.strainCycleExpiresAt,
                                        restingHR: snapshot.restingHR,
                                        hrvRMSSD: snapshot.hrvRMSSD,
                                        hrvState: snapshot.hrvState,
@@ -245,6 +286,9 @@ enum WidgetSnapshotPublisher {
                                        heartRateZoneIndex: snapshot.heartRateZoneIndex,
                                        heartRateZoneName: snapshot.heartRateZoneName,
                                        batteryLevel: nil,
+                                       batteryCapturedAt: nil,
+                                       batteryCorroboratedAt: nil,
+                                       batteryChargeCapturedAt: nil,
                                        batteryChargeStatus: AtriaBLEManager.BatteryChargeStatus.levelOnly.rawValue,
                                        batteryChargeText: "Unavailable",
                                        layoutGlanceMetrics: snapshot.layoutGlanceMetrics,
@@ -340,10 +384,13 @@ enum WidgetSnapshotPublisher {
                 && calendar.isDate($0.day, inSameDayAs: physiologicalCycle.start)
                 && $0.recovery != nil
         }
-        let strain = dayStrain(store: store, ble: ble, rest: rest ?? 60)
         let savedAggregate = store.homeSavedAggregate(rest: rest ?? 60,
                                                        maxHR: store.profile.maxHR,
                                                        activeSessionID: ble.currentLiveSessionID)
+        let strain = dayStrain(saved: savedAggregate,
+                               store: store,
+                               ble: ble,
+                               rest: rest ?? 60)
         let strapStepsToday = AtriaHomeModel.mergedStrapStepResearchCount(
             savedToday: savedAggregate.savedTodayStrapSteps,
             savedActiveSession: savedAggregate.savedActiveSessionStrapSteps,
@@ -368,8 +415,7 @@ enum WidgetSnapshotPublisher {
             : nil
         let stepsCapturedAt = publishedSteps == nil
             ? nil
-            : ble.liveStrapMotionCapturedAt
-                ?? AtriaStrapStepLiveStatus.persistedMotionDate()
+            : ble.liveStrapStepCountCapturedAt
         let storedDailyStepGoal = UserDefaults.standard.integer(forKey: "atria.target.steps.goal")
         let dailyStepGoal = storedDailyStepGoal > 0 ? storedDailyStepGoal : 8_000
         let hrvRMSSD: Int?
@@ -394,21 +440,41 @@ enum WidgetSnapshotPublisher {
         }
         let layout = currentHomeLayoutConfig()
         let widgetDiagnostics = Self.diagnostics
+        let defaults = widgetDiagnostics.appGroupEnabled
+            ? (UserDefaults(suiteName: appGroupID) ?? .standard)
+            : .standard
+        let strainCycleExpiresAt = cumulativeStrainCycleExpiration(
+            cycle: physiologicalCycle,
+            confirmedSleeps: store.confirmedSleeps,
+            calendar: calendar
+        )
         // `displayableBatteryLevel` already fails closed unless the level is a
         // validated mid-range packet or the running app is renewing a proven
         // change-driven 2A19 lease. Re-applying the older "recent baseline"
         // veto here made widgets disagree with the app and show Learning while
         // the same connected strap truthfully showed 12% · Low.
         let displayableBatteryLevel = ble.displayableBatteryLevel()
+        let persistedBattery = AtriaBLEManager.cachedBattery(now: now)
         let displayableChargeStatus = displayableBatteryLevel == nil
             ? AtriaBLEManager.BatteryChargeStatus.levelOnly
             : ble.batteryChargeStatus
+        let batteryChargeCapturedAt = displayableBatteryLevel != nil
+            && (displayableChargeStatus == .charging || displayableChargeStatus == .full)
+            && persistedBattery.chargeAge >= 0
+            ? now.addingTimeInterval(-persistedBattery.chargeAge)
+            : nil
         let snapshot = WidgetSnapshot(schema: 4,
-                                      createdAt: Date(),
+                                      createdAt: now,
                                       recoveryPercent: recoveryPercent,
                                       recoveryConfidence: displayedRecovery.confidence.rawValue,
                                       recoveryDetail: displayedRecovery.detail,
                                       strain: strain,
+                                      // `dayStrain` was recomputed immediately
+                                      // above; this is its true computation
+                                      // clock, not a generic snapshot fallback.
+                                      strainCapturedAt: now,
+                                      strainCycleStart: physiologicalCycle.start,
+                                      strainCycleExpiresAt: strainCycleExpiresAt,
                                       restingHR: rest,
                                       hrvRMSSD: hrvRMSSD,
                                       hrvState: hrvState,
@@ -423,6 +489,10 @@ enum WidgetSnapshotPublisher {
                                       heartRateZoneIndex: liveHeartRateZone?.rawValue,
                                       heartRateZoneName: liveHeartRateZone?.name,
                                       batteryLevel: displayableBatteryLevel,
+                                      batteryCapturedAt: displayableBatteryLevel == nil ? nil : ble.lastVerifiedBatteryLevelAt,
+                                      batteryCorroboratedAt: displayableBatteryLevel == nil
+                                        ? nil : ble.batteryDisplayCorroboratedAt(),
+                                      batteryChargeCapturedAt: batteryChargeCapturedAt,
                                       batteryChargeStatus: displayableChargeStatus.rawValue,
                                       batteryChargeText: displayableChargeStatus.label,
                                       layoutGlanceMetrics: layout.glanceMetrics,
@@ -443,9 +513,6 @@ enum WidgetSnapshotPublisher {
             return snapshot
         }
         if let data = try? JSONEncoder.widgetSnapshotEncoder.encode(snapshot) {
-            let defaults = widgetDiagnostics.appGroupEnabled
-                ? (UserDefaults(suiteName: appGroupID) ?? .standard)
-                : .standard
             defaults.set(data, forKey: key)
             AtriaDebugLog("ATRIADBG widget_snapshot status=ok reason=%@ schema=%d recovery=%@ confidence=%@ hrv=%@ strain=%.1f rhr=%@ max_hr=%d battery=%@ charge=%@ bytes=%d storage=%@ app_group=%d widget_target=%d complication_target=%d",
                           reason,
@@ -521,6 +588,10 @@ enum WidgetSnapshotPublisher {
             || previous.stepsCapturedAt != snapshot.stepsCapturedAt
             || previous.heartRate != snapshot.heartRate
             || previous.heartRateCapturedAt != snapshot.heartRateCapturedAt
+            || previous.batteryCapturedAt != snapshot.batteryCapturedAt
+            || previous.batteryCorroboratedAt != snapshot.batteryCorroboratedAt
+            || previous.batteryChargeCapturedAt != snapshot.batteryChargeCapturedAt
+            || previous.strainCapturedAt != snapshot.strainCapturedAt
         let elapsed = max(0, now.timeIntervalSince(lastReloadAt))
         if sensorProjectionChanged {
             return elapsed >= liveSensorTimelineReloadMinimumInterval
@@ -535,6 +606,8 @@ enum WidgetSnapshotPublisher {
         parts.append(snapshot.recoveryPercent.map(String.init) ?? "learning")
         parts.append(snapshot.recoveryConfidence)
         parts.append(String(format: "%.1f", snapshot.strain))
+        parts.append(snapshot.strainCycleStart.map { String($0.timeIntervalSince1970) } ?? "strain_cycle_absent")
+        parts.append(snapshot.strainCycleExpiresAt.map { String($0.timeIntervalSince1970) } ?? "strain_expiry_absent")
         parts.append(snapshot.restingHR.map(String.init) ?? "-")
         parts.append(snapshot.hrvRMSSD.map(String.init) ?? "-")
         parts.append(snapshot.sleepHours.map { String(format: "%.1f", $0) } ?? "-")
@@ -626,10 +699,49 @@ enum WidgetSnapshotPublisher {
     private static var liveTRIMPCycleStart: Date?
     private static var liveTRIMPValue = 0.0
 
-    private static func dayStrain(store: SessionStore, ble: AtriaBLEManager, rest: Int) -> Double {
-        let saved = store.homeSavedAggregate(rest: rest,
-                                              maxHR: store.profile.maxHR,
-                                              activeSessionID: ble.currentLiveSessionID)
+    /// Preserve the cumulative clock when a live patch only changes HR, steps,
+    /// battery, or another unrelated field. A changed aggregate may advance
+    /// only from its explicit load-evidence clock; `createdAt` is intentionally
+    /// not accepted as a fallback here.
+    nonisolated static func cumulativeStrainCaptureDate(
+        previousValue: Double?,
+        previousCapturedAt: Date?,
+        nextValue: Double,
+        nextEvidenceAt: Date?
+    ) -> Date? {
+        guard let previousValue,
+              abs(previousValue - nextValue) <= 0.000_000_001 else {
+            return nextEvidenceAt
+        }
+        return previousCapturedAt ?? nextEvidenceAt
+    }
+
+    nonisolated static func cumulativeStrainCycleExpiration(
+        cycle: AtriaPhysiologicalCycle,
+        confirmedSleeps: [UserConfirmedSleep],
+        calendar: Calendar
+    ) -> Date {
+        let cycleCalendar: Calendar
+        if let anchorID = cycle.anchorSleepID,
+           let anchor = confirmedSleeps.first(where: { $0.id == anchorID }) {
+            cycleCalendar = EventCivilTime.eventCalendar(
+                timeZoneIdentifier: anchor.eventTimeZoneIdentifier,
+                fallback: calendar
+            )
+        } else {
+            cycleCalendar = calendar
+        }
+        // `AtriaPhysiologicalCycle.current` advances the no-sleep boundary by
+        // one civil day in this same event calendar. Persist that exact future
+        // boundary so WidgetKit cannot keep yesterday's load current-looking.
+        return cycleCalendar.date(byAdding: .day, value: 1, to: cycle.start)
+            ?? cycle.start.addingTimeInterval(AtriaPhysiologicalCycle.maximumLearnedInterval)
+    }
+
+    private static func dayStrain(saved: SessionStore.HomeSavedAggregate,
+                                  store: SessionStore,
+                                  ble: AtriaBLEManager,
+                                  rest: Int) -> Double {
         let live = incrementalLiveTRIMP(samples: ble.session,
                                         rest: rest,
                                         max: store.profile.maxHR,
@@ -775,7 +887,7 @@ private extension JSONEncoder {
     }()
 }
 
-private extension JSONDecoder {
+extension JSONDecoder {
     static let widgetSnapshotDecoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601

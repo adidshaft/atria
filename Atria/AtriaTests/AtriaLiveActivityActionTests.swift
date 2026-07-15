@@ -658,6 +658,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
 
         XCTAssertTrue(source.contains("state.heartRateCapturedAt?.addingTimeInterval(90)"))
         XCTAssertTrue(source.contains("state.stepsCapturedAt?.addingTimeInterval(15)"))
+        XCTAssertTrue(source.contains("state.batteryCapturedAt?.addingTimeInterval(10 * 60)"))
         XCTAssertTrue(source.contains("expiry > canonicalState.appliedAt"),
                       "an already-expired source must not keep a fresh source globally stale")
         XCTAssertTrue(source.contains("let staleDate = sourceExpiries.min()"),
@@ -707,6 +708,9 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             batteryLevel: 100,
             batteryChargeStatus: "notCharging",
             batteryChargeText: "Not charging",
+            batteryCapturedAt: Date(timeIntervalSince1970: 2_000_000_000),
+            batteryChargeCapturedAt: nil,
+            batteryAvailability: .live,
             readingCount: .max,
             updatedAt: Date(timeIntervalSince1970: 2_000_000_000),
             heartRateCapturedAt: Date(timeIntervalSince1970: 2_000_000_000),
@@ -776,8 +780,17 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(source.contains("liveActivityStrainProgressText(for: context.state)"))
         XCTAssertTrue(source.contains("String(format: \"%.1f / %.1f\", strain, target)"))
         XCTAssertTrue(source.contains("String(format: \"Goal ✓ · %.1f\", strain)"))
-        XCTAssertTrue(source.contains("let strain = max(0, state.workoutStrain ?? 0)"),
+        XCTAssertTrue(source.contains("let strain = state.workoutStrain else { return nil }"),
                       "workout goals must use the canonical workout-only strain projection")
+        XCTAssertTrue(source.contains("guard state.workoutStrainAvailability == .live"),
+                      "stale or disconnected strain must fail closed instead of retaining a numeric goal")
+        XCTAssertTrue(source.contains("let capturedAt = state.batteryCapturedAt"),
+                      "Lock Screen battery must have its own level-bearing evidence clock")
+        XCTAssertTrue(source.contains("let capturedAt = state.batteryChargeCapturedAt"),
+                      "the charging bolt must expire independently from the percentage")
+        XCTAssertTrue(source.contains("age > atriaBatteryFreshness"))
+        XCTAssertFalse(source.contains("state.batteryCapturedAt ?? state.updatedAt"),
+                       "timer and HR writes must not renew battery evidence")
         XCTAssertTrue(source.contains("ProgressView(value: liveActivityStrainProgressFraction(for: context.state))"))
         XCTAssertTrue(source.contains("liveActivityDailyStepGoalPresentation(for: context.state)"))
         XCTAssertTrue(source.contains("state.dailyStepsAreEstimated ?? false"))
@@ -804,7 +817,9 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
         XCTAssertTrue(home.contains("steps: metricProjection.steps.count"))
-        XCTAssertTrue(home.contains("activeEnergyKilocalories: metricProjection.activeCalories"))
+        XCTAssertTrue(home.contains("activeEnergyKilocalories: metricProjection.loadIsComplete"))
+        XCTAssertTrue(home.contains("? metricProjection.activeCalories : nil"),
+                      "incomplete rolled or retroactively paused load must not publish precise calories")
         XCTAssertTrue(home.contains("stepsCapturedAt: metricProjection.steps.capturedAt"),
                       "A stale transition must retain its real source time for the Lock Screen's last-seen label")
         XCTAssertFalse(home.contains("stepsCapturedAt: metricProjection.steps.liveCapturedAt"))
@@ -840,6 +855,9 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             heartRateAvailability: .live,
             strain: 5.4,
             batteryLevel: 53,
+            batteryCapturedAt: Date(timeIntervalSince1970: 2_000_000_000),
+            batteryChargeCapturedAt: nil,
+            batteryAvailability: .live,
             batteryChargeStatus: .levelOnly,
             readingCount: 100,
             startedAt: Date(timeIntervalSince1970: 2_000_000_000),
@@ -860,5 +878,80 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             isPaused: false,
             elapsedDuration: elapsed
         )
+    }
+
+    func testWorkoutStrainClockParticipatesInLiveActivityStaleness() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        XCTAssertEqual(AtriaLiveActivityCoordinator.sensorStaleDate(
+            heartRateCapturedAt: nil,
+            stepsCapturedAt: nil,
+            strainCapturedAt: now,
+            fallback: now,
+            heartRateFreshnessWindow: 90,
+            strainAvailability: .live
+        ), now.addingTimeInterval(90))
+        XCTAssertEqual(AtriaLiveActivityCoordinator.sensorStaleDate(
+            heartRateCapturedAt: nil,
+            stepsCapturedAt: nil,
+            strainCapturedAt: now,
+            fallback: now,
+            strainAvailability: .stale
+        ), now)
+    }
+
+    func testBatteryClockParticipatesInLiveActivityStalenessWithoutRenewingHR() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        XCTAssertEqual(AtriaLiveActivityCoordinator.sensorStaleDate(
+            heartRateCapturedAt: nil,
+            stepsCapturedAt: nil,
+            batteryCapturedAt: now,
+            fallback: now,
+            batteryFreshnessWindow: 600,
+            batteryAvailability: .live
+        ), now.addingTimeInterval(600))
+        XCTAssertEqual(AtriaLiveActivityCoordinator.sensorStaleDate(
+            heartRateCapturedAt: nil,
+            stepsCapturedAt: nil,
+            batteryCapturedAt: now,
+            fallback: now,
+            batteryAvailability: .stale
+        ), now)
+    }
+
+    func testLegacyLiveActivityStateDecodesWithoutBatteryFreshness() throws {
+        let encoded = try JSONEncoder().encode(AtriaLiveActivityAttributes.ContentState(
+            heartRate: 80, strain: 3.2, batteryLevel: 50,
+            batteryChargeStatus: "levelOnly", batteryChargeText: "Unavailable",
+            batteryCapturedAt: Date(), batteryChargeCapturedAt: Date(), batteryAvailability: .live,
+            readingCount: 10, updatedAt: Date()
+        ))
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "batteryCapturedAt")
+        object.removeValue(forKey: "batteryChargeCapturedAt")
+        object.removeValue(forKey: "batteryAvailability")
+        let decoded = try JSONDecoder().decode(
+            AtriaLiveActivityAttributes.ContentState.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        XCTAssertNil(decoded.batteryCapturedAt)
+        XCTAssertNil(decoded.batteryChargeCapturedAt)
+        XCTAssertNil(decoded.batteryAvailability)
+    }
+
+    func testLegacyLiveActivityStateDecodesWithoutStrainFreshness() throws {
+        let legacy = try JSONEncoder().encode(AtriaLiveActivityAttributes.ContentState(
+            heartRate: 80, strain: 3.2, batteryLevel: 50,
+            batteryChargeStatus: "levelOnly", batteryChargeText: "Unavailable",
+            readingCount: 10, updatedAt: Date()
+        ))
+        var object = try JSONSerialization.jsonObject(with: legacy) as! [String: Any]
+        object.removeValue(forKey: "workoutStrainCapturedAt")
+        object.removeValue(forKey: "workoutStrainAvailability")
+        let decoded = try JSONDecoder().decode(
+            AtriaLiveActivityAttributes.ContentState.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        XCTAssertNil(decoded.workoutStrainCapturedAt)
+        XCTAssertNil(decoded.workoutStrainAvailability)
     }
 }

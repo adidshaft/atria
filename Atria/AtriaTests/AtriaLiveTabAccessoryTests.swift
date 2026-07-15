@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import Atria
 
 final class AtriaLiveTabAccessoryTests: XCTestCase {
@@ -28,6 +29,48 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         XCTAssertFalse(source.contains("AtriaLiveStatusTabAccessory"))
     }
 
+    func testHomeChromeDefersWorkoutStatusToActivityKitAndStacksForLargeType() {
+        XCTAssertTrue(AtriaHomeChromeLayout.showsHomeStatusChip(workoutIsActive: false))
+        XCTAssertFalse(AtriaHomeChromeLayout.showsHomeStatusChip(workoutIsActive: true))
+        XCTAssertFalse(AtriaHomeChromeLayout.stacksStatusAndActions(dynamicTypeSize: .large,
+                                                                   workoutIsActive: false))
+        XCTAssertTrue(AtriaHomeChromeLayout.stacksStatusAndActions(dynamicTypeSize: .accessibility1,
+                                                                  workoutIsActive: false))
+        XCTAssertFalse(AtriaHomeChromeLayout.stacksStatusAndActions(dynamicTypeSize: .accessibility1,
+                                                                   workoutIsActive: true))
+    }
+
+    func testPinnedHomeMetricsRespectSafeAreaAndDoNotDuplicateAnActiveWorkout() throws {
+        let source = try String(contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaHomeView.swift"),
+                                encoding: .utf8)
+
+        XCTAssertTrue(source.contains(".safeAreaInset(edge: .top, spacing: 0)"))
+        XCTAssertTrue(source.contains(".safeAreaPadding(.top, 8)"),
+                      "Pinned metrics must consume scene safe-area geometry instead of using a cutout-blind offset")
+        XCTAssertTrue(source.contains("!prefersLiveActivityStatus"))
+        XCTAssertTrue(source.contains("prefersLiveActivityStatus: workoutSession != nil"))
+        XCTAssertTrue(source.contains("@Environment(\\.dynamicTypeSize) private var dynamicTypeSize"))
+    }
+
+    func testDynamicIslandUsesStateDrivenNativeTransitionsWithReduceMotionFallback() throws {
+        let source = try String(contentsOf: sourceRoot.appendingPathComponent("AtriaWidget/AtriaWidget.swift"),
+                                encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private struct AtriaLiveActivityValueTransition"))
+        let end = try XCTUnwrap(source.range(of: "private func liveActivityBatteryAvailability",
+                                             range: start.upperBound..<source.endIndex))
+        let island = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(island.contains("@Environment(\\.accessibilityReduceMotion) private var reduceMotion"))
+        XCTAssertTrue(island.contains("if reduceMotion"))
+        XCTAssertTrue(island.contains(".contentTransition(.numericText())"))
+        XCTAssertTrue(island.contains(".animation(.snappy(duration: 0.22), value: value)"))
+        XCTAssertTrue(island.contains(".symbolEffect(.pulse, options: .nonRepeating, value: heartRate)"))
+        XCTAssertTrue(island.contains(".symbolEffect(.bounce, options: .nonRepeating, value: isPaused)"))
+        XCTAssertTrue(island.contains("AtriaDynamicIslandCompactHeartRate"))
+        XCTAssertFalse(island.contains("Timer."))
+        XCTAssertFalse(island.contains("Task.sleep"))
+    }
+
     func testUnknownBatteryIsNotDrawnAsZeroPercent() throws {
         let home = try String(contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaHomeView.swift"),
                               encoding: .utf8)
@@ -36,7 +79,8 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
 
         XCTAssertTrue(home.contains("guard batteryLevel >= 0 else { return \"questionmark.circle\" }"))
         XCTAssertTrue(widget.contains("guard state.batteryLevel >= 0 else { return \"questionmark.circle\" }"))
-        XCTAssertTrue(widget.contains("if context.state.batteryLevel >= 0"))
+        XCTAssertTrue(widget.contains("if batteryAvailability == .live"),
+                      "Live Activity must render battery only after the freshness helper validates a nonnegative level")
     }
 
     func testConnectivityPillUsesBatteryPacketAgeWhenShowingPercentage() {
@@ -222,7 +266,35 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                        "17%, Charging")
     }
 
-    func testFullBatteryUsesCompactBoltAndRetainsAccessibleChargingMeaning() {
+    func testRestoredChargingBoltExpiresWithoutAnotherCoreEvent() {
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let chargeVerifiedAt = now.addingTimeInterval(
+            -(AtriaHomeModel.freshChargerEvidenceInterval - 5)
+        )
+        let input = topStatusInput(
+            status: .connected,
+            hasRecentHeartRateSample: false,
+            batteryLevel: 17,
+            batteryShowsPowered: true,
+            batteryChargeStatus: .charging,
+            batteryLastVerifiedAt: now.addingTimeInterval(-30 * 60),
+            batteryChargeLastVerifiedAt: chargeVerifiedAt,
+            hasEverConnected: true
+        )
+
+        XCTAssertEqual(AtriaTopStatusProjection.presentation(input: input, now: now).accessorySymbol,
+                       "bolt.fill")
+        XCTAssertEqual(AtriaTopStatusProjection.nextSemanticDeadline(input: input, now: now),
+                       chargeVerifiedAt.addingTimeInterval(AtriaHomeModel.freshChargerEvidenceInterval))
+
+        let expired = now.addingTimeInterval(6)
+        let presentation = AtriaTopStatusProjection.presentation(input: input, now: expired)
+        XCTAssertNil(presentation.accessorySymbol)
+        XCTAssertEqual(presentation.label, "17% · Low")
+        XCTAssertNotEqual(presentation.accessibilityLabel, "17%, Charging")
+    }
+
+    func testFullBatteryDoesNotInventExternalPower() {
         let input = topStatusInput(status: .connected,
                                    hasRecentHeartRateSample: true,
                                    lastReadingAt: Date(),
@@ -231,10 +303,10 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                    hasEverConnected: true)
         let presentation = AtriaTopStatusProjection.presentation(input: input, now: Date())
 
-        XCTAssertEqual(presentation.label, "100%")
+        XCTAssertEqual(presentation.label, "100% · Full")
         XCTAssertEqual(presentation.symbol, "battery.100percent")
-        XCTAssertEqual(presentation.accessorySymbol, "bolt.fill")
-        XCTAssertEqual(presentation.accessibilityLabel, "100%, Charging, Full")
+        XCTAssertNil(presentation.accessorySymbol)
+        XCTAssertEqual(presentation.accessibilityLabel, "100%, Full")
     }
 
     func testHeaderBatterySnapshotFailsClosedOnContradictoryChargingFields() {
@@ -435,6 +507,7 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         batteryChargeStatus: AtriaBLEManager.BatteryChargeStatus = .levelOnly,
         batteryReadingIsRecentBaseline: Bool = false,
         batteryLastVerifiedAt: Date? = nil,
+        batteryChargeLastVerifiedAt: Date? = nil,
         hasEverConnected: Bool
     ) -> AtriaTopStatusProjectionInput {
         AtriaTopStatusProjectionInput(status: status,
@@ -457,7 +530,8 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                         showsPowered: batteryShowsPowered,
                                         chargeStatus: batteryChargeStatus,
                                         isRecentBaseline: batteryReadingIsRecentBaseline,
-                                        verifiedAt: batteryLastVerifiedAt
+                                        verifiedAt: batteryLastVerifiedAt,
+                                        chargeVerifiedAt: batteryChargeLastVerifiedAt
                                       ))
     }
 

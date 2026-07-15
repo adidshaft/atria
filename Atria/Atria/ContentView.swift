@@ -56,10 +56,10 @@ struct ContentView: View {
                                         ble: ble,
                                         debugInitialStep: Self.debugOnboardingStepArgument(),
                                         onRestoreBackup: { url in
-                                            guard store.restoreSessionBackup(from: url) else { return false }
+                                            guard await store.restoreSessionBackup(from: url) else { return false }
                                             showOnboarding = !store.profile.hasCompletedOnboarding
                                             return true
-                    }) { profile in
+                                        }) { profile in
                         onboardingStage = .sharingChoice(profile)
                     }
                     .interactiveDismissDisabled()

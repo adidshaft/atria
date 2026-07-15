@@ -162,4 +162,47 @@ final class AtriaSensorReferenceCaptureTests: XCTestCase {
         XCTAssertTrue(store.entries.isEmpty)
         XCTAssertNil(defaults.data(forKey: AtriaSensorReferenceStore.defaultsKey))
     }
+
+    func testSensorReferenceCardUsesCompactNonTruncatingGlassRows() throws {
+        let source = try sensorReferenceSource()
+        let start = try XCTUnwrap(source.range(of: "struct AtriaSensorReferenceCaptureCard: View"))
+        let end = try XCTUnwrap(source.range(of: "private struct AtriaSensorReferenceCaptureSheet: View",
+                                             range: start.upperBound..<source.endIndex))
+        let card = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(card.contains(".frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)"))
+        XCTAssertTrue(card.contains(".frame(maxWidth: .infinity, minHeight: 44)"))
+        XCTAssertTrue(card.contains(".buttonBorderShape(.roundedRectangle(radius: 14))"))
+        XCTAssertTrue(card.contains(".lineLimit(2)"))
+        XCTAssertTrue(card.contains(".layoutPriority(1)"))
+        XCTAssertFalse(card.contains(".minimumScaleFactor("),
+                       "Reference titles should wrap at a consistent font instead of shrinking")
+        XCTAssertFalse(card.contains("LazyVGrid"),
+                       "Reference actions should be aligned rows, not uneven adaptive capsules")
+        XCTAssertFalse(card.contains("AtriaStatusChip"),
+                       "The record count should not be nested in another oversized capsule")
+        XCTAssertFalse(card.contains(".atriaInsetCard"),
+                       "The latest record should remain a simple row inside the quiet outer card")
+    }
+
+    func testSensorReferenceCardStacksHeaderAndExportAtAccessibilitySizes() throws {
+        let source = try sensorReferenceSource()
+        let start = try XCTUnwrap(source.range(of: "struct AtriaSensorReferenceCaptureCard: View"))
+        let end = try XCTUnwrap(source.range(of: "private struct AtriaSensorReferenceCaptureSheet: View",
+                                             range: start.upperBound..<source.endIndex))
+        let card = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(card.contains("@Environment(\\.dynamicTypeSize) private var dynamicTypeSize"))
+        XCTAssertGreaterThanOrEqual(card.components(separatedBy: "if dynamicTypeSize.isAccessibilitySize").count - 1, 2)
+        XCTAssertTrue(card.contains("private var exportActions: some View"))
+        XCTAssertTrue(card.contains("VStack(spacing: 8)"))
+        XCTAssertTrue(card.contains(".fixedSize(horizontal: false, vertical: true)"))
+    }
+
+    private func sensorReferenceSource() throws -> String {
+        let testsURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let appURL = testsURL.deletingLastPathComponent().appendingPathComponent("Atria")
+        return try String(contentsOf: appURL.appendingPathComponent("AtriaSensorReferenceCapture.swift"),
+                          encoding: .utf8)
+    }
 }

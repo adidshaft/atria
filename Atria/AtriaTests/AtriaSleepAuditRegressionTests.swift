@@ -13,6 +13,7 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
                       _ day: Int,
                       _ hour: Int,
                       _ minute: Int = 0,
+                      _ second: Int = 0,
                       timeZoneIdentifier: String = "UTC") -> Date {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: timeZoneIdentifier)!
@@ -20,7 +21,8 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
                                                   month: month,
                                                   day: day,
                                                   hour: hour,
-                                                  minute: minute))!
+                                                  minute: minute,
+                                                  second: second))!
     }
 
     private func session(start: Date,
@@ -40,6 +42,26 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
                                  eventTimeZoneIdentifier: eventTimeZoneIdentifier)
         value.motionEvidenceValidated = motionValidated
         value.motionEvidenceSource = motionValidated ? "validated_strap_stillness" : nil
+        return value
+    }
+
+    private func denseHRRRSession(start: Date,
+                                  end: Date,
+                                  bpm: Int = 65,
+                                  eventTimeZoneIdentifier: String? = "UTC") -> SavedSession {
+        let duration = end.timeIntervalSince(start)
+        let points = stride(from: 0.0, to: duration, by: 1.5).map {
+            SavedSession.Point(t: $0, bpm: bpm)
+        }
+        var value = SavedSession(id: UUID(),
+                                 start: start,
+                                 end: end,
+                                 label: "Dense morning HR+RR fixture",
+                                 points: points,
+                                 eventTimeZoneIdentifier: eventTimeZoneIdentifier)
+        value.rrPoints = points.map {
+            SavedSession.RRPoint(t: $0.t, ms: Int((60_000.0 / Double(bpm)).rounded()))
+        }
         return value
     }
 
@@ -202,6 +224,56 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
 
         XCTAssertTrue(candidates([quietAwake]).isEmpty,
                       "a 3h47 HR-only midnight window is quiet-awake ambiguous")
+    }
+
+    func testSevenSecondShortDenseMorningWindowSurfacesForReviewOnly() throws {
+        // Physical 2026-07-15 shape: the journal closed seven seconds before
+        // the exact three-hour boundary despite retaining dense HR and RR.
+        let morningSleep = denseHRRRSession(
+            start: date(2032, 7, 9, 6, 16, 3),
+            end: date(2032, 7, 9, 9, 15, 56)
+        )
+
+        let candidate = try XCTUnwrap(candidates([morningSleep], rest: 55).first)
+        XCTAssertEqual(candidate.duration, 3 * 60 * 60 - 7, accuracy: 0.1)
+        XCTAssertTrue(candidate.nearStrictMorningHROnlyReviewQualified)
+        XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(candidate))
+        XCTAssertFalse(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate),
+                       "boundary tolerance must never auto-confirm or affect recovery before Save")
+
+        let rollups = SessionStore.makeHistoryDailyRollups(sessions: [morningSleep],
+                                                           detections: [],
+                                                           confirmedWorkouts: [],
+                                                           rest: 55,
+                                                           maxHR: 190,
+                                                           calendar: Self.utcCalendar)
+        let rollup = try XCTUnwrap(rollups.first)
+        XCTAssertEqual(rollup.sleepCandidates, 1,
+                       "the review-only recovery must be visible in Activity Center")
+        XCTAssertEqual(rollup.sleepReady, 0)
+        XCTAssertEqual(rollup.sleepStart, morningSleep.start)
+        XCTAssertEqual(rollup.sleepEnd, morningSleep.end)
+    }
+
+    func testMateriallyShortDenseMorningWindowRemainsRejected() {
+        let shortMorningRest = denseHRRRSession(
+            start: date(2032, 7, 10, 6, 16),
+            end: date(2032, 7, 10, 9, 14)
+        )
+
+        XCTAssertTrue(candidates([shortMorningRest], rest: 55).isEmpty,
+                      "dense evidence must not broadly lower the three-hour review threshold")
+    }
+
+    func testDenseHRRRDoesNotReviveReportedQuietAwakeFalseWindow() {
+        let quietAwake = denseHRRRSession(
+            start: date(2032, 7, 11, 22, 18),
+            end: date(2032, 7, 12, 2, 5),
+            bpm: 52
+        )
+
+        XCTAssertTrue(candidates([quietAwake], rest: 50).isEmpty,
+                      "22:18–02:05 remains ambiguous quiet-awake even with dense HR and RR")
     }
 
     func testMotionValidatedQuietAwakeWindowRemainsDiagnosticOnly() throws {

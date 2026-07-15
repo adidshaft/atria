@@ -162,12 +162,15 @@ struct AtriaLiveWorkoutControlIntent: LiveActivityIntent {
         // stale pulse or motion evidence look newly sampled.
         let heartRateExpiry = state.heartRateCapturedAt?.addingTimeInterval(90)
         let stepsExpiry = state.stepsCapturedAt?.addingTimeInterval(15)
+        let batteryExpiry = state.batteryCapturedAt?.addingTimeInterval(10 * 60)
         let sourceExpiries = [
             (date: heartRateExpiry,
              canAdvance: state.sensorHasContact != false
                 && (state.heartRateAvailability == nil || state.heartRateAvailability == .live)),
             (date: stepsExpiry,
-             canAdvance: state.stepsAvailability == nil || state.stepsAvailability == .live)
+             canAdvance: state.stepsAvailability == nil || state.stepsAvailability == .live),
+            (date: batteryExpiry,
+             canAdvance: state.batteryAvailability == nil || state.batteryAvailability == .live)
         ].compactMap { source -> Date? in
             guard source.canAdvance,
                   let expiry = source.date,

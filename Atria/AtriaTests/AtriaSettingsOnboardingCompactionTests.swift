@@ -29,8 +29,10 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
                       "The large destination Forms need one shallow metadata boundary")
         XCTAssertFalse(hub.contains("DisclosureGroup"))
         XCTAssertFalse(source.contains("atria.settings.v3.expanded."))
-        XCTAssertTrue(source.contains("Button(\"Close\") { dismiss() }"),
+        XCTAssertTrue(source.contains("Button(\"Close\") {"),
                       "Settings auto-save, so the dismissal action should say Close")
+        XCTAssertTrue(source.contains("profilePersistence.flush(draft)"),
+                      "Closing Settings must synchronously flush the final debounced profile edit")
     }
 
     func testSettingsDestinationMetadataIsErasedWithoutEagerlyBuildingPages() throws {
@@ -86,7 +88,7 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
         XCTAssertFalse(settingsRoot.contains("@AtriaDefault(\"atria.target."),
                        "Opening Settings must not construct advanced target observers")
         XCTAssertFalse(settingsRoot.contains("@AtriaDefault(\"atria.sleep.baseNeedHours\""))
-        XCTAssertTrue(settingsRoot.contains("NavigationLink {\n                    AtriaAdvancedTargetsSettingsView()"))
+        XCTAssertTrue(settingsRoot.contains("AtriaAdvancedTargetsSettingsView()"))
         XCTAssertFalse(settingsRoot.contains(".onChange(of: recoveryTargetSignature)"))
 
         XCTAssertTrue(advancedTargets.contains("@AtriaDefault(\"atria.target.recovery.greenLower\""))
@@ -94,6 +96,45 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
         XCTAssertTrue(advancedTargets.contains("@AtriaDefault(\"atria.sleep.baseNeedHours\""))
         XCTAssertTrue(advancedTargets.contains(".onChange(of: recoveryTargetSignature)"))
         XCTAssertTrue(advancedTargets.contains("private var targetsSection: some View"))
+    }
+
+    func testSettingsRootOwnsNoDestinationOnlyDefaultsObservers() throws {
+        let source = try source("AtriaSettingsView.swift")
+        let rootStart = try XCTUnwrap(source.range(of: "struct AtriaSettingsView: View"))
+        let personalScopeStart = try XCTUnwrap(source.range(
+            of: "private struct AtriaPersonalSettingsDefaultsScope",
+            range: rootStart.upperBound..<source.endIndex
+        ))
+        let root = String(source[rootStart.lowerBound..<personalScopeStart.lowerBound])
+        let personalScopeEnd = try XCTUnwrap(source.range(
+            of: "private struct AtriaDataSettingsDefaultsScope",
+            range: personalScopeStart.upperBound..<source.endIndex
+        ))
+        let personalScope = String(source[personalScopeStart.lowerBound..<personalScopeEnd.lowerBound])
+        let advancedStart = try XCTUnwrap(source.range(
+            of: "private struct AtriaAdvancedTargetsSettingsView",
+            range: personalScopeEnd.upperBound..<source.endIndex
+        ))
+        let dataScope = String(source[personalScopeEnd.lowerBound..<advancedStart.lowerBound])
+
+        XCTAssertFalse(root.contains("@AppStorage"),
+                       "The first Settings hub frame must not register destination-only AppStorage observers")
+        XCTAssertFalse(root.contains("@AtriaDefault"),
+                       "The first Settings hub frame must not register destination-only defaults observers")
+        XCTAssertTrue(root.contains("AtriaPersonalSettingsDefaultsScope"))
+        XCTAssertTrue(root.contains("AtriaDataSettingsDefaultsScope"))
+
+        for key in [
+            "atriaAppearanceMode", "atria.faceoff.displayName",
+            "AtriaTodayMetric.storageKey", "AtriaTodayMetric.orderStorageKey",
+            "AtriaTodayMetric.sizeStorageKey"
+        ] {
+            XCTAssertTrue(personalScope.contains(key), "Personal destination lost default: \(key)")
+        }
+        XCTAssertTrue(dataScope.contains("SessionStore.iCloudBackupEnabledKey"))
+        XCTAssertTrue(dataScope.contains("AtriaNutritionContext.healthReadNutritionKey"))
+        XCTAssertTrue(dataScope.contains(".onChange(of: useHealthNutrition)"),
+                      "Health nutrition authorization behavior must remain destination-local")
     }
 
     func testSettingsGearDefersArchiveFootprintWalkUntilDataDestinationOpens() throws {

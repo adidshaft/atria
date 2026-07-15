@@ -58,6 +58,72 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertFalse(source.contains("Text(\"Pulls data your strap stored while disconnected"))
     }
 
+    func testVitalsEducationLeadsWithActionsInsteadOfThreeParagraphCards() throws {
+        let source = try source("AtriaVitalsCollectionSections.swift")
+        let start = try XCTUnwrap(source.range(of: "struct AtriaVitalsEducationSheet"))
+        let end = try XCTUnwrap(source.range(of: "/// Small inline hint chip",
+                                              range: start.upperBound..<source.endIndex))
+        let sheet = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(sheet.contains("Text(topic.compactSummary)"))
+        XCTAssertTrue(sheet.contains("LabeledContent(\"Typical\")"))
+        XCTAssertTrue(sheet.contains("Text(\"Try next\")"))
+        XCTAssertTrue(sheet.contains("DisclosureGroup"))
+        XCTAssertTrue(sheet.contains("Label(\"How it works\", systemImage: \"checkmark.shield.fill\")"))
+        XCTAssertTrue(sheet.contains(".accessibilityHint(topic.whatItIs)"))
+        XCTAssertTrue(sheet.contains(".accessibilityHint(topic.howToImprove[index])"))
+        XCTAssertFalse(sheet.contains("detailBlock(title: \"What it is\""))
+        XCTAssertFalse(sheet.contains("detailBlock(title: \"How Atria computes it\""))
+        XCTAssertFalse(sheet.contains("detailBlock(title: \"Your typical range\""))
+    }
+
+    func testDeveloperReferenceChecksUseFlatReadableLiquidGlassHierarchy() throws {
+        let source = try source("AtriaVitalsCollectionSections.swift")
+        let rrStart = try XCTUnwrap(source.range(of: "private struct AtriaCollectionRRReferenceCardHost"))
+        let hrStart = try XCTUnwrap(source.range(of: "private struct AtriaCollectionHRReferenceCardHost",
+                                                 range: rrStart.upperBound..<source.endIndex))
+        let actionStart = try XCTUnwrap(source.range(of: "private struct AtriaCollectionReferenceActionLabel",
+                                                     range: hrStart.upperBound..<source.endIndex))
+        let sensorCopyStart = try XCTUnwrap(source.range(of: "enum AtriaExperimentalSensorCopy",
+                                                         range: actionStart.upperBound..<source.endIndex))
+        let summaryStart = try XCTUnwrap(source.range(of: "private struct AtriaCollectionReferenceSummaryCard"))
+        let summaryEnd = try XCTUnwrap(source.range(of: "private struct AtriaCollectionToggleCard",
+                                                    range: summaryStart.upperBound..<source.endIndex))
+
+        let rr = String(source[rrStart.lowerBound..<hrStart.lowerBound])
+        let hr = String(source[hrStart.lowerBound..<actionStart.lowerBound])
+        let action = String(source[actionStart.lowerBound..<sensorCopyStart.lowerBound])
+        let summary = String(source[summaryStart.lowerBound..<summaryEnd.lowerBound])
+
+        for card in [rr, hr] {
+            XCTAssertTrue(card.contains("@Environment(\\.dynamicTypeSize) private var dynamicTypeSize"))
+            XCTAssertTrue(card.contains("if dynamicTypeSize.isAccessibilitySize"),
+                          "Reference controls should stack before Dynamic Type compresses their labels")
+            XCTAssertTrue(card.contains(".buttonStyle(.glass)"))
+            XCTAssertTrue(card.contains(".buttonBorderShape(.roundedRectangle(radius: 14))"))
+            XCTAssertTrue(card.contains(".fixedSize(horizontal: false, vertical: true)"))
+            XCTAssertFalse(card.contains(".minimumScaleFactor("),
+                           "Developer action titles must never shrink to fit")
+            XCTAssertFalse(card.contains(".atriaCardAction("),
+                           "Reference cards should use one consistent native glass action treatment")
+        }
+
+        XCTAssertTrue(action.contains(".frame(width: 18)"),
+                      "Every developer action should reserve the same icon slot")
+        XCTAssertTrue(action.contains(".frame(maxWidth: .infinity, minHeight: 44)"))
+        XCTAssertTrue(action.contains(".lineLimit(2)"))
+        XCTAssertTrue(action.contains(".layoutPriority(1)"))
+
+        XCTAssertTrue(summary.contains("Divider()"))
+        XCTAssertTrue(summary.contains(".accessibilityElement(children: .combine)"))
+        XCTAssertFalse(summary.contains("LazyVGrid"),
+                       "Status belongs in plain rows, not nested adaptive tiles")
+        XCTAssertFalse(summary.contains("AtriaMetricTile("),
+                       "The quiet outer card should not contain another card-like metric surface")
+        XCTAssertFalse(summary.contains("prefix(4)"),
+                       "Developer status detail must remain complete rather than being word-truncated")
+    }
+
     func testSettingsAlertCardsRemoveVisibleExplanationsAndAdaptTheirGrid() throws {
         let alerts = try source("AtriaHapticAlerts.swift")
         let settings = try source("AtriaSettingsView.swift")
@@ -98,8 +164,10 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertFalse(timeline.contains("Previous day"), "Day controls belong in the single toolbar, not another stacked row")
         XCTAssertFalse(source.contains("detection.kind == .workout ? \"figure.run\""))
         XCTAssertFalse(source.contains("$0.kind == .workout ? \"figure.run\""))
-        XCTAssertTrue(source.contains("detection.kind == .workout ? \"figure.mixed.cardio\""),
+        XCTAssertTrue(source.contains("icon: kind == .workout ? \"figure.mixed.cardio\" : \"waveform.path.ecg\""),
                       "unclassified detections must use a neutral activity icon")
+        XCTAssertTrue(source.contains("if let suggestedActivityType"),
+                      "a specific icon may appear only when classifier evidence supplies a type hint")
         XCTAssertTrue(source.contains("let compactAssignments = AtriaActivityTimelineLanePacker.assignments"))
         XCTAssertTrue(source.contains("lane: \"timeline-\\(compactAssignments[$0.id] ?? 0)\""),
                       "Non-overlapping sleep, workout, and review spans should reuse compact lanes")
@@ -272,6 +340,22 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertTrue(source.contains(".frame(minHeight: 44)"))
         XCTAssertTrue(source.contains("Label(\"Advanced targets\", systemImage: \"scope\")"),
                       "Dense target controls belong behind one explicit destination")
+        let advancedStart = try XCTUnwrap(source.range(of: "private struct AtriaAdvancedTargetsSettingsView"))
+        let advanced = String(source[advancedStart.lowerBound...])
+        let headerStart = try XCTUnwrap(advanced.range(of: "private func targetGroupHeader"))
+        let menuStart = try XCTUnwrap(advanced.range(of: "private func targetGroupResetMenu",
+                                                     range: headerStart.upperBound..<advanced.endIndex))
+        let header = String(advanced[headerStart.lowerBound..<menuStart.lowerBound])
+        XCTAssertFalse(header.contains("Menu {"),
+                       "DisclosureGroup labels must remain noninteractive content")
+        XCTAssertEqual(advanced.components(separatedBy: ".overlay(alignment: .topTrailing)").count - 1,
+                       9,
+                       "Every advanced target group should expose one sibling reset menu")
+        XCTAssertEqual(advanced.components(separatedBy: ".padding(.trailing, 48)").count - 1,
+                       9,
+                       "Disclosure indicators must reserve space beside the reset hit target")
+        XCTAssertTrue(advanced.contains(".frame(width: 44, height: 44)"),
+                      "The sibling reset menu needs a native accessible hit target")
         XCTAssertFalse(source.contains("title: \"On this iPhone\""))
         XCTAssertFalse(source.contains("title: \"Background tracking\""))
         XCTAssertFalse(source.contains("storageFootprintBreakdown"))
@@ -313,15 +397,58 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertTrue(share.contains("case .story: return CGSize(width: 1080, height: 1920)"))
     }
 
-    func testShareExportDebouncesStyleChangesAndKeepsEncodingOffMainActor() throws {
+    func testShareExportRunsOnlyFromAnActionAndRejectsStaleResults() throws {
         let share = try source("AtriaShareCard.swift")
 
-        XCTAssertEqual(share.components(separatedBy: "Task.sleep(for: .milliseconds(120))").count - 1, 3)
+        XCTAssertFalse(share.contains(".task(id: renderKey)"),
+                       "A live preview change must not schedule a full-size export")
+        XCTAssertFalse(share.contains("Task.sleep(for: .milliseconds(120))"),
+                       "Debouncing eager export still performs avoidable work")
+        XCTAssertEqual(share.components(separatedBy: ".sheet(item: $sharePayload)").count - 1, 3)
+        XCTAssertTrue(share.contains("private func prepareShare()"))
+        XCTAssertTrue(share.contains("private func prepareShare(_ kind: ExportKind)"))
+        XCTAssertTrue(share.contains("private func prepareWeeklyShare()"))
+        XCTAssertTrue(share.contains("renderKey == requestedRenderKey"),
+                      "An export must match the exact preview generation requested by the user")
+        XCTAssertTrue(share.contains("exportTask?.cancel()"))
+        XCTAssertTrue(share.contains("private struct AtriaSystemShareSheet"))
+        XCTAssertTrue(share.contains("ProgressView()"),
+                      "Share needs an honest preparing state while the image is rendered")
+        XCTAssertFalse(share.contains("@State private var shareURL"),
+                       "A previously rendered URL must not survive later style/photo changes")
+        XCTAssertEqual(share.components(separatedBy:
+            "photoBackground == nil ? \"canvas\" : UUID().uuidString").count - 1,
+                       2,
+                       "Daily and workout photo exports need unique files so canceled writes cannot overwrite a newer share")
+        XCTAssertTrue(share.contains("static func dailyCacheKey(snapshot:"))
+        XCTAssertTrue(share.contains("static func weeklyCacheKey(snapshot:"))
+        XCTAssertTrue(share.contains("return \"daily-\\(stableDigest(content))\""))
+        XCTAssertTrue(share.contains("return \"weekly-\\(stableDigest(content))\""))
         XCTAssertTrue(share.contains("private struct SendableCGImage: @unchecked Sendable"))
         XCTAssertTrue(share.contains("nonisolated private static func encodePNGForExport"))
         XCTAssertTrue(share.contains("Task.detached(priority: .utility)"))
-        XCTAssertTrue(share.contains("renderedImageURL: photoBackground == nil ? renderedURL : nil"),
-                      "Portable workout recap should reuse the already-rendered story image")
+        XCTAssertTrue(share.contains("renderedImageURL: imageURL"),
+                      "Portable workout recap should preserve and reuse the exact rendered preview")
+        let portableStart = try XCTUnwrap(share.range(of: "static func renderPortableWorkoutURL"))
+        let portableEnd = try XCTUnwrap(share.range(of: "static func portableWorkoutHTML",
+                                                    range: portableStart.upperBound..<share.endIndex))
+        let portableRenderer = String(share[portableStart.lowerBound..<portableEnd.lowerBound])
+        XCTAssertFalse(portableRenderer.contains("renderPNGDataForExport"),
+                       "Portable recap must embed the already-rendered preview instead of rendering twice")
+        XCTAssertTrue(share.contains("removeRenderedImageAfterEmbedding: requestedPhotoBackground != nil"))
+        XCTAssertTrue(share.contains("cameraPreparationTask?.cancel()"))
+        XCTAssertTrue(share.contains("AtriaSharePhotoPreparation.acceptsResult("),
+                      "A late camera result must match both its generation and render key")
+        XCTAssertTrue(share.contains("completionWithItemsHandler"))
+        XCTAssertTrue(share.contains("releaseTemporaryExport(at: payload.url)"))
+        XCTAssertTrue(share.contains(".completeFileProtection"))
+        XCTAssertTrue(share.contains("FileProtectionType.completeUnlessOpen"))
+        XCTAssertTrue(share.contains("private static let cacheCapacity = 24"))
+        XCTAssertTrue(share.contains("while cacheRecency.count > cacheCapacity"))
+        XCTAssertTrue(share.contains("await removeExportFile(evictedURL)"))
+        XCTAssertTrue(share.contains("withTaskCancellationHandler"))
+        XCTAssertTrue(share.contains("route-absent"))
+        XCTAssertTrue(share.contains("route-present"))
     }
 
     func testCustomizeCommitsOnceWithSaveAndDoesNotInventUnavailableVitals() throws {

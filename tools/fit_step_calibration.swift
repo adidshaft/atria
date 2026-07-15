@@ -4,7 +4,13 @@ private struct CalibrationManifest: Decodable {
     struct Window: Decodable {
         enum Kind: String, Decodable {
             case walk
+            case run
             case rest
+            case negative
+
+            var expectsSteps: Bool {
+                self == .walk || self == .run
+            }
         }
 
         let label: String
@@ -89,15 +95,29 @@ private struct CandidateResult {
     }
 }
 
+private struct HoldoutWindowResult {
+    let evidence: WindowEvidence
+    let rawSteps: Int
+    let steps: Int
+    let error: Double?
+
+    var passes: Bool {
+        if evidence.manifest.kind.expectsSteps {
+            return (error ?? .infinity) <= 0.05
+        }
+        return steps == 0
+    }
+}
+
 @main
 enum FitStepCalibration {
-    static func main() throws {
-        guard CommandLine.arguments.count == 3 else {
-            fail("usage: fit_step_calibration <csv-directory> <manifest.json>")
-        }
+    private static let usage = "usage: fit_step_calibration <csv-directory> <manifest.json> [--holdout-manifest <holdout.json>]"
 
-        let archiveDirectory = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
-        let manifestURL = URL(fileURLWithPath: CommandLine.arguments[2])
+    static func main() throws {
+        let arguments = parseArguments(CommandLine.arguments)
+
+        let archiveDirectory = arguments.archiveDirectory
+        let manifestURL = arguments.calibrationManifestURL
         let manifest = try JSONDecoder().decode(
             CalibrationManifest.self,
             from: Data(contentsOf: manifestURL)
@@ -119,47 +139,11 @@ enum FitStepCalibration {
               }) else {
             fail("manifest must contain the exact six-stage guided calibration sequence")
         }
-        for window in manifest.windows {
-            guard window.startMS < window.endMS,
-                  window.expectedSteps >= 0,
-                  (window.kind == .walk ? window.expectedSteps > 0 : window.expectedSteps == 0),
-                  window.kind != .rest || window.endMS - window.startMS >= 60_000 else {
-                fail("invalid window: \(window.label)")
-            }
-        }
-        for (previous, next) in zip(manifest.windows, manifest.windows.dropFirst()) {
-            guard previous.endMS <= next.startMS else {
-                fail("windows must be chronological and non-overlapping: \(previous.label), \(next.label)")
-            }
-        }
-        for (index, window) in manifest.windows.enumerated() {
-            for other in manifest.windows.dropFirst(index + 1) where window.startMS < other.endMS
-                && other.startMS < window.endMS {
-                fail("overlapping windows: \(window.label) and \(other.label)")
-            }
-        }
+        validateWindowShapes(manifest.windows, requireLongRest: true)
 
-        let evidence = try loadEvidence(directory: archiveDirectory, windows: manifest.windows)
-        var evidenceIsComplete = true
-        print("evidence")
-        for window in evidence {
-            print(String(format: "%@ kind=%@ expected=%d frames=%d duration_s=%.1f coverage=%.1f%% breaks=%d max_gap_ms=%lld ready=%d",
-                         window.manifest.label,
-                         window.manifest.kind.rawValue,
-                         window.manifest.expectedSteps,
-                         window.decodedFrames,
-                         window.durationSeconds,
-                         window.coverage * 100,
-                         window.continuityBreaks,
-                         window.maximumUncoveredGapMS,
-                         window.isCalibrationReady ? 1 : 0))
-            if !window.isCalibrationReady {
-                evidenceIsComplete = false
-            }
-        }
-        guard evidenceIsComplete else {
-            fail("invalid motion evidence: every window requires >=95% coverage, contiguous device seconds, and zero uncovered boundary time")
-        }
+        let evidence = try loadAndPrintEvidence(directory: archiveDirectory,
+                                                windows: manifest.windows,
+                                                heading: "evidence")
 
         var results: [CandidateResult] = []
         for filterLength in [4, 6, 8, 10, 12] {
@@ -211,6 +195,183 @@ enum FitStepCalibration {
                      best.candidate.sensitivityG,
                      best.candidate.confirmationSteps,
                      best.gain))
+
+        // Holdout evidence is deliberately decoded and scored only after the
+        // training candidate and its gain are frozen. It therefore cannot
+        // influence parameter ranking or silently re-fit the gain.
+        if let holdoutManifestURL = arguments.holdoutManifestURL {
+            let holdoutManifest = try JSONDecoder().decode(
+                CalibrationManifest.self,
+                from: Data(contentsOf: holdoutManifestURL)
+            )
+            validateHoldoutManifest(holdoutManifest, calibration: manifest)
+            let holdoutEvidence = try loadAndPrintEvidence(
+                directory: archiveDirectory,
+                windows: holdoutManifest.windows,
+                heading: "holdout_evidence"
+            )
+            validateHoldouts(candidate: best.candidate,
+                             gain: best.gain,
+                             evidence: holdoutEvidence)
+        } else {
+            print("holdout_validation=not_provided")
+        }
+    }
+
+    private struct ParsedArguments {
+        let archiveDirectory: URL
+        let calibrationManifestURL: URL
+        let holdoutManifestURL: URL?
+    }
+
+    private static func parseArguments(_ commandLine: [String]) -> ParsedArguments {
+        guard commandLine.count == 3 || commandLine.count == 5 else {
+            fail(usage)
+        }
+        let holdoutManifestURL: URL?
+        if commandLine.count == 5 {
+            guard commandLine[3] == "--holdout-manifest" else {
+                fail("unknown option: \(commandLine[3])\n\(usage)")
+            }
+            holdoutManifestURL = URL(fileURLWithPath: commandLine[4])
+        } else {
+            holdoutManifestURL = nil
+        }
+        return ParsedArguments(
+            archiveDirectory: URL(fileURLWithPath: commandLine[1], isDirectory: true),
+            calibrationManifestURL: URL(fileURLWithPath: commandLine[2]),
+            holdoutManifestURL: holdoutManifestURL
+        )
+    }
+
+    private static func validateHoldoutManifest(
+        _ manifest: CalibrationManifest,
+        calibration: CalibrationManifest
+    ) {
+        guard !manifest.windows.isEmpty else {
+            fail("holdout manifest must contain at least one window")
+        }
+        guard Set(manifest.windows.map(\.label)).count == manifest.windows.count else {
+            fail("holdout window labels must be unique")
+        }
+        validateWindowShapes(manifest.windows, requireLongRest: false)
+        guard manifest.windows.contains(where: { $0.kind.expectsSteps }) else {
+            fail("holdout manifest requires at least one counted walk or run")
+        }
+        guard manifest.windows.contains(where: { !$0.kind.expectsSteps }) else {
+            fail("holdout manifest requires at least one zero-step negative")
+        }
+        for holdout in manifest.windows {
+            for fitted in calibration.windows where overlaps(holdout, fitted) {
+                fail("holdout overlaps calibration evidence: \(holdout.label), \(fitted.label)")
+            }
+        }
+    }
+
+    private static func validateWindowShapes(
+        _ windows: [CalibrationManifest.Window],
+        requireLongRest: Bool
+    ) {
+        for window in windows {
+            guard !window.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  window.startMS < window.endMS,
+                  window.expectedSteps >= 0,
+                  (window.kind.expectsSteps ? window.expectedSteps > 0 : window.expectedSteps == 0),
+                  !requireLongRest || window.kind != .rest || window.endMS - window.startMS >= 60_000 else {
+                fail("invalid window: \(window.label)")
+            }
+        }
+        for (previous, next) in zip(windows, windows.dropFirst()) {
+            guard previous.endMS <= next.startMS else {
+                fail("windows must be chronological and non-overlapping: \(previous.label), \(next.label)")
+            }
+        }
+        for (index, window) in windows.enumerated() {
+            for other in windows.dropFirst(index + 1) where overlaps(window, other) {
+                fail("overlapping windows: \(window.label) and \(other.label)")
+            }
+        }
+    }
+
+    private static func overlaps(
+        _ lhs: CalibrationManifest.Window,
+        _ rhs: CalibrationManifest.Window
+    ) -> Bool {
+        lhs.startMS < rhs.endMS && rhs.startMS < lhs.endMS
+    }
+
+    private static func loadAndPrintEvidence(
+        directory: URL,
+        windows: [CalibrationManifest.Window],
+        heading: String
+    ) throws -> [WindowEvidence] {
+        let evidence = try loadEvidence(directory: directory, windows: windows)
+        var evidenceIsComplete = true
+        print("\n\(heading)")
+        for window in evidence {
+            print(String(format: "%@ kind=%@ expected=%d frames=%d duration_s=%.1f coverage=%.1f%% breaks=%d max_gap_ms=%lld ready=%d",
+                         window.manifest.label,
+                         window.manifest.kind.rawValue,
+                         window.manifest.expectedSteps,
+                         window.decodedFrames,
+                         window.durationSeconds,
+                         window.coverage * 100,
+                         window.continuityBreaks,
+                         window.maximumUncoveredGapMS,
+                         window.isCalibrationReady ? 1 : 0))
+            if !window.isCalibrationReady {
+                evidenceIsComplete = false
+            }
+        }
+        guard evidenceIsComplete else {
+            fail("invalid motion evidence: every window requires >=95% coverage, contiguous device seconds, and zero uncovered boundary time")
+        }
+        return evidence
+    }
+
+    private static func validateHoldouts(
+        candidate: Candidate,
+        gain: Double,
+        evidence: [WindowEvidence]
+    ) {
+        let results = evidence.map { window -> HoldoutWindowResult in
+            let raw = rawStepCount(magnitudes: window.magnitudes, candidate: candidate)
+            let steps = Int((Double(raw) * gain).rounded())
+            let error = window.manifest.kind.expectsSteps
+                ? abs(Double(steps - window.manifest.expectedSteps))
+                    / Double(window.manifest.expectedSteps)
+                : nil
+            return HoldoutWindowResult(evidence: window,
+                                       rawSteps: raw,
+                                       steps: steps,
+                                       error: error)
+        }
+        print("\nholdout_results")
+        for result in results {
+            if let error = result.error {
+                print(String(format: "%@ kind=%@ expected=%d raw=%d steps=%d error=%.2f%% pass=%d",
+                             result.evidence.manifest.label,
+                             result.evidence.manifest.kind.rawValue,
+                             result.evidence.manifest.expectedSteps,
+                             result.rawSteps,
+                             result.steps,
+                             error * 100,
+                             result.passes ? 1 : 0))
+            } else {
+                print(String(format: "%@ kind=%@ expected=0 raw=%d steps=%d false_steps=%d pass=%d",
+                             result.evidence.manifest.label,
+                             result.evidence.manifest.kind.rawValue,
+                             result.rawSteps,
+                             result.steps,
+                             result.steps,
+                             result.passes ? 1 : 0))
+            }
+        }
+        let failed = results.filter { !$0.passes }
+        print("holdout_summary windows=\(results.count) passed=\(results.count - failed.count) failed=\(failed.count) pass=\(failed.isEmpty ? 1 : 0)")
+        guard failed.isEmpty else {
+            fail("selected candidate failed independent holdout validation")
+        }
     }
 
     private static func loadEvidence(

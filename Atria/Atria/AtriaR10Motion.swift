@@ -605,16 +605,24 @@ struct AtriaStrapGaitQualityChallenger: Sendable {
 }
 
 /// Keeps R10 decoding and step analysis off the BLE and main queues. Atria only
-/// publishes when the displayed count changes, at most once per second. A
+/// publishes cadence-limited detector snapshots at most once per second. A
 /// trailing evaluation guarantees that a final/batched frame cannot leave a
-/// newer internal count stranded behind the cadence gate.
+/// newer internal state stranded behind the cadence gate.
 final class AtriaR10MotionPipeline: @unchecked Sendable {
     struct Snapshot: Equatable, Sendable {
+        /// Identifies the pipeline accounting segment that produced this
+        /// snapshot. Main-actor consumers must reject snapshots from an older
+        /// generation after a session roll/reset.
+        let generation: UInt64
         let steps: Int
         let rawSteps: Int
         let frames: Int
         let samples: Int
         let deviceTimestamp: UInt32
+        /// Host receipt time of the newest frame whose samples have actually
+        /// been applied to this detector snapshot. Transport receipt alone is
+        /// not step-count freshness until the serial detector catches up.
+        let receivedAt: Date?
         let stillnessRatio: Double
         let movementIntensity: Double
         let activityBursts: Int
@@ -622,11 +630,79 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
         let state: String
     }
 
+    struct SegmentTransition: Equatable, Sendable {
+        /// Final detector state from the segment being closed, before its
+        /// persisted prefix is rebased.
+        let finalSnapshot: Snapshot?
+        /// Motion accepted after the persisted snapshot was captured. This is
+        /// carried into the new accounting segment instead of being dropped.
+        let carriedSnapshot: Snapshot?
+        let generation: UInt64
+    }
+
+    struct BoundaryToken: Equatable, Sendable {
+        let id: UUID
+        let finalSnapshot: Snapshot?
+        let generation: UInt64
+        let markerRawSteps: Int
+    }
+
+    /// A FIFO marker is enqueued synchronously at the caller's logical edge,
+    /// while its result remains asynchronously awaitable. This closes the gap
+    /// where the main actor had already started buffering HR/RR but a newly
+    /// arriving R10 frame could still enter the old segment before an async
+    /// task got around to calling `prepareBoundary()`.
+    final class BoundaryPreparation: @unchecked Sendable {
+        let enqueuedAt: Date
+        private let lock = NSLock()
+        private var token: BoundaryToken?
+        private var waiters: [CheckedContinuation<BoundaryToken, Never>] = []
+
+        fileprivate init(enqueuedAt: Date) {
+            self.enqueuedAt = enqueuedAt
+        }
+
+        fileprivate func resolve(_ token: BoundaryToken) {
+            lock.lock()
+            guard self.token == nil else {
+                lock.unlock()
+                return
+            }
+            self.token = token
+            let continuations = waiters
+            waiters.removeAll(keepingCapacity: false)
+            lock.unlock()
+            continuations.forEach { $0.resume(returning: token) }
+        }
+
+        func value() async -> BoundaryToken {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if let token {
+                    lock.unlock()
+                    continuation.resume(returning: token)
+                } else {
+                    waiters.append(continuation)
+                    lock.unlock()
+                }
+            }
+        }
+    }
+
     private let queue = DispatchQueue(label: "com.adidshaft.atria.r10-motion", qos: .utility)
     private let gain: Double
     private let snapshotMinimumInterval: TimeInterval
     private var detector = AtriaStrapPedometer.StreamingDetector()
     private var committedRawSteps = 0
+    /// Largest durable prefix already merged by `seed`. Journal restoration
+    /// can be requested more than once across foreground/restoration races;
+    /// only a newly larger prefix may advance accounting a second time.
+    private var restoredRawStepPrefix = 0
+    /// A resident journal is bounded to 18 hours. If CoreBluetooth replays a
+    /// few pre-checkpoint frames before that first restore finishes, their
+    /// older device seconds can be identified without confusing a genuine
+    /// firmware clock reset (whose backwards jump is much larger).
+    private static let maximumPreRestoreReplayGapSeconds: UInt32 = 18 * 60 * 60
     private var totalFrames = 0
     private var totalSamples = 0
     private var stillSamples = 0
@@ -640,9 +716,19 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
     private var lastObservedRawSteps = 0
     private var lastPublishedSteps = -1
     private var lastSnapshotEvaluationAt: Date?
+    private var segmentRawStepBaseline = 0
+    private var generation: UInt64 = 0
     private var pendingSnapshotWorkItem: DispatchWorkItem?
     private var pendingSnapshotDeviceTimestamp: UInt32?
     private var pendingSnapshotUpdate: (@Sendable (Snapshot) -> Void)?
+    private struct BufferedFrame {
+        let frame: AtriaR10MotionFrame
+        let receivedAt: Date
+        let onUpdate: @Sendable (Snapshot) -> Void
+    }
+    private var preparedBoundary: BoundaryToken?
+    private var committedBoundaryAwaitingRelease: (id: UUID, generation: UInt64)?
+    private var bufferedBoundaryFrames: [BufferedFrame] = []
 
     init(sampleRateHz: Int = AtriaStrapPedometer.sampleRateHz,
          gain: Double = AtriaStrapPedometer.referenceGain,
@@ -658,23 +744,36 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
                 receivedAt: Date,
                 onUpdate: @escaping @Sendable (Snapshot) -> Void) {
         queue.async { [self] in
-            guard accept(frame, receivedAt: receivedAt) else { return }
-            let firstFrame = totalFrames == 1
-            guard Self.shouldEvaluateSnapshot(firstFrame: firstFrame,
-                                              lastEvaluatedAt: lastSnapshotEvaluationAt,
-                                              receivedAt: receivedAt,
-                                              minimumInterval: snapshotMinimumInterval) else {
-                scheduleTrailingSnapshot(deviceTimestamp: frame.deviceTimestamp,
-                                         receivedAt: receivedAt,
-                                         onUpdate: onUpdate)
+            if preparedBoundary != nil || committedBoundaryAwaitingRelease != nil {
+                bufferedBoundaryFrames.append(BufferedFrame(frame: frame,
+                                                            receivedAt: receivedAt,
+                                                            onUpdate: onUpdate))
                 return
             }
-            cancelTrailingSnapshot()
-            publishSnapshot(deviceTimestamp: frame.deviceTimestamp,
-                            evaluatedAt: receivedAt,
-                            firstFrame: firstFrame,
-                            onUpdate: onUpdate)
+            ingestLocked(frame, receivedAt: receivedAt, onUpdate: onUpdate)
         }
+    }
+
+    private func ingestLocked(
+        _ frame: AtriaR10MotionFrame,
+        receivedAt: Date,
+        onUpdate: @escaping @Sendable (Snapshot) -> Void
+    ) {
+        guard accept(frame, receivedAt: receivedAt) else { return }
+        let firstFrame = totalFrames == 1
+        guard Self.shouldEvaluateSnapshot(firstFrame: firstFrame,
+                                          lastEvaluatedAt: lastSnapshotEvaluationAt,
+                                          receivedAt: receivedAt,
+                                          minimumInterval: snapshotMinimumInterval) else {
+            scheduleTrailingSnapshot(deviceTimestamp: frame.deviceTimestamp,
+                                     receivedAt: receivedAt,
+                                     onUpdate: onUpdate)
+            return
+        }
+        cancelTrailingSnapshot()
+        publishSnapshot(deviceTimestamp: frame.deviceTimestamp,
+                        evaluatedAt: receivedAt,
+                        onUpdate: onUpdate)
     }
 
     static func shouldEvaluateSnapshot(firstFrame: Bool,
@@ -696,11 +795,17 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
         return delta
     }
 
-    func resetSynchronously() {
+    @discardableResult
+    func resetSynchronously() -> UInt64 {
         queue.sync { [self] in
+            precondition(preparedBoundary == nil && committedBoundaryAwaitingRelease == nil,
+                         "testing reset must not invalidate an active async boundary")
             cancelTrailingSnapshot()
+            generation &+= 1
             detector.reset()
             committedRawSteps = 0
+            restoredRawStepPrefix = 0
+            segmentRawStepBaseline = 0
             totalFrames = 0
             totalSamples = 0
             stillSamples = 0
@@ -714,30 +819,338 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
             lastObservedRawSteps = 0
             lastPublishedSteps = -1
             lastSnapshotEvaluationAt = nil
+            return generation
         }
+    }
+
+    /// Drains all already-enqueued detector work and returns its current state.
+    /// The trailing cadence callback remains armed; callers use this to make a
+    /// persistence snapshot authoritative without disturbing live delivery.
+    func currentSnapshotSynchronously() -> Snapshot? {
+        queue.sync { [self] in
+            guard totalFrames > 0 else { return nil }
+            return makeSnapshot(deviceTimestamp: lastAcceptedDeviceTimestamp ?? 0,
+                                receivedAt: lastAcceptedReceivedAt)
+        }
+    }
+
+    /// Inserts a FIFO marker after every frame already submitted to the motion
+    /// queue. Preparing is non-mutating, so failed session persistence can leave
+    /// the live detector and its accounting segment completely untouched.
+    func enqueueBoundaryPreparation(at enqueuedAt: Date = Date()) -> BoundaryPreparation {
+        let preparation = BoundaryPreparation(enqueuedAt: enqueuedAt)
+        queue.async { [self] in
+            if let preparedBoundary {
+                preparation.resolve(preparedBoundary)
+                return
+            }
+            precondition(committedBoundaryAwaitingRelease == nil,
+                         "a committed boundary must be released before preparing another")
+            cancelTrailingSnapshot()
+            let markerRawSteps = currentRawSteps()
+            let snapshot = (totalFrames > 0 || markerRawSteps > 0)
+                ? makeSnapshot(deviceTimestamp: lastAcceptedDeviceTimestamp ?? 0,
+                               receivedAt: lastAcceptedReceivedAt)
+                : nil
+            let token = BoundaryToken(
+                id: UUID(),
+                finalSnapshot: snapshot,
+                generation: generation,
+                markerRawSteps: markerRawSteps
+            )
+            preparedBoundary = token
+            preparation.resolve(token)
+        }
+        return preparation
+    }
+
+    func prepareBoundary() async -> BoundaryToken {
+        await enqueueBoundaryPreparation().value()
+    }
+
+    /// Commits a previously prepared boundary only after its SavedSession is
+    /// durable. Frames accepted after the marker remain in the new segment;
+    /// detector filters, confirmed gait and device-time continuity are kept.
+    func commitBoundary(
+        _ token: BoundaryToken,
+        handedOffRawSteps: Int? = nil,
+        nextGeneration: UInt64
+    ) async -> SegmentTransition? {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                guard preparedBoundary?.id == token.id,
+                      generation == token.generation,
+                      nextGeneration == generation &+ 1,
+                      (handedOffRawSteps == token.markerRawSteps || handedOffRawSteps == 0),
+                      currentRawSteps() >= token.markerRawSteps else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                let transition = transitionSegmentLocked(
+                    handedOffRawSteps: handedOffRawSteps ?? token.markerRawSteps,
+                    nextGeneration: nextGeneration
+                )
+                preparedBoundary = nil
+                committedBoundaryAwaitingRelease = (token.id, nextGeneration)
+                continuation.resume(returning: transition)
+            }
+        }
+    }
+
+    /// Releases post-marker frames only after the main actor has installed the
+    /// new generation and reset HR/RR state. Until then, both already-buffered
+    /// and newly submitted R10 frames remain behind the committed fence.
+    func releaseCommittedBoundaryFrames(
+        _ token: BoundaryToken,
+        generation expectedGeneration: UInt64
+    ) async -> Bool {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                guard generation == expectedGeneration else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                guard let committedBoundaryAwaitingRelease else {
+                    // A repeated manager completion after a successful release
+                    // is harmless and must not turn into a false failure.
+                    continuation.resume(returning: true)
+                    return
+                }
+                guard committedBoundaryAwaitingRelease.id == token.id,
+                      committedBoundaryAwaitingRelease.generation == expectedGeneration else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                releaseBufferedBoundaryFramesLocked()
+                continuation.resume(returning: true)
+            }
+        }
+    }
+
+    /// Recovery for the only possible normal-release rejection: the manager
+    /// has the installed generation but its token identity was lost/corrupted.
+    /// There can be only one committed fence, so generation matching makes this
+    /// safe, bounded and idempotent without accepting frames into a wrong epoch.
+    func forceReleaseCommittedBoundaryFrames(generation expectedGeneration: UInt64) async -> Bool {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                guard generation == expectedGeneration else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                guard let committedBoundaryAwaitingRelease else {
+                    continuation.resume(returning: true)
+                    return
+                }
+                guard committedBoundaryAwaitingRelease.generation == expectedGeneration else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                releaseBufferedBoundaryFramesLocked()
+                continuation.resume(returning: true)
+            }
+        }
+    }
+
+    private func releaseBufferedBoundaryFramesLocked() {
+        committedBoundaryAwaitingRelease = nil
+        let buffered = bufferedBoundaryFrames
+        bufferedBoundaryFrames.removeAll(keepingCapacity: true)
+        for item in buffered {
+            ingestLocked(item.frame,
+                         receivedAt: item.receivedAt,
+                         onUpdate: item.onUpdate)
+        }
+    }
+
+    func abortBoundary(_ token: BoundaryToken) async -> Bool {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                guard preparedBoundary?.id == token.id,
+                      generation == token.generation else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                preparedBoundary = nil
+                let buffered = bufferedBoundaryFrames
+                bufferedBoundaryFrames.removeAll(keepingCapacity: true)
+                for item in buffered {
+                    ingestLocked(item.frame,
+                                 receivedAt: item.receivedAt,
+                                 onUpdate: item.onUpdate)
+                }
+                continuation.resume(returning: true)
+            }
+        }
+    }
+
+    /// Closes only the current accounting segment. Filter, confirmed-gait and
+    /// device-timestamp continuity remain live because a journal/HR roll is not
+    /// a physical strap disconnect. Raw steps accepted after the caller's
+    /// persisted snapshot are rebased into `carriedSnapshot` for the next
+    /// segment, making the persistence/reset boundary lossless.
+    func rollSegmentSynchronously(persistedRawSteps: Int) -> SegmentTransition {
+        queue.sync { [self] in
+            precondition(preparedBoundary == nil && committedBoundaryAwaitingRelease == nil,
+                         "testing roll must not invalidate an active async boundary")
+            return transitionSegmentLocked(
+                handedOffRawSteps: persistedRawSteps,
+                nextGeneration: generation &+ 1
+            )
+        }
+    }
+
+    private func transitionSegmentLocked(
+        handedOffRawSteps: Int,
+        nextGeneration: UInt64
+    ) -> SegmentTransition {
+        cancelTrailingSnapshot()
+        let currentSegmentRawSteps = currentRawSteps()
+        let finalSnapshot = (totalFrames > 0 || currentSegmentRawSteps > 0)
+            ? makeSnapshot(deviceTimestamp: lastAcceptedDeviceTimestamp ?? 0,
+                           receivedAt: lastAcceptedReceivedAt)
+            : nil
+        precondition(handedOffRawSteps >= 0 && handedOffRawSteps <= currentSegmentRawSteps)
+        segmentRawStepBaseline += handedOffRawSteps
+        let carriedRawSteps = currentRawSteps()
+
+        generation = nextGeneration
+        totalFrames = 0
+        totalSamples = 0
+        stillSamples = 0
+        movementTotal = 0
+        activityBursts = 0
+        gravityValidatedFrames = 0
+        lastObservedRawSteps = carriedRawSteps
+        lastPublishedSteps = -1
+        lastSnapshotEvaluationAt = nil
+
+        let carriedSnapshot: Snapshot?
+        if carriedRawSteps > 0 {
+            carriedSnapshot = makeSnapshot(
+                deviceTimestamp: lastAcceptedDeviceTimestamp ?? 0,
+                receivedAt: lastAcceptedReceivedAt
+            )
+        } else {
+            carriedSnapshot = nil
+        }
+        return SegmentTransition(finalSnapshot: finalSnapshot,
+                                 carriedSnapshot: carriedSnapshot,
+                                 generation: generation)
     }
 
     /// Restores the detector's durable prefix after process relaunch. A journal
     /// cannot reconstruct pre-relaunch filter/gait state without raw samples,
     /// so new frames continue monotonically from the last published raw total.
-    func seedSynchronously(committedRawSteps restoredRawSteps: Int) -> (steps: Int, rawSteps: Int) {
+    func seed(
+        committedRawSteps restoredRawSteps: Int,
+        lastAcceptedDeviceTimestamp restoredDeviceTimestamp: UInt32? = nil
+    ) async -> (steps: Int, rawSteps: Int) {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                continuation.resume(returning: seedLocked(
+                    committedRawSteps: restoredRawSteps,
+                    lastAcceptedDeviceTimestamp: restoredDeviceTimestamp
+                ))
+            }
+        }
+    }
+
+    func seedSynchronously(
+        committedRawSteps restoredRawSteps: Int,
+        lastAcceptedDeviceTimestamp restoredDeviceTimestamp: UInt32? = nil
+    ) -> (steps: Int, rawSteps: Int) {
         queue.sync { [self] in
-            // Journal loading is asynchronous. If fresh R10 frames arrived
-            // before restore completed, retain their continuous detector state
-            // and add the durable prefix instead of losing post-launch motion.
-            committedRawSteps += max(0, restoredRawSteps)
-            let rawSteps = max(lastObservedRawSteps, committedRawSteps + detector.rawSteps)
-            lastObservedRawSteps = rawSteps
-            let steps = Int((Double(rawSteps) * gain).rounded())
-            lastPublishedSteps = steps
-            return (steps, rawSteps)
+            seedLocked(committedRawSteps: restoredRawSteps,
+                       lastAcceptedDeviceTimestamp: restoredDeviceTimestamp)
+        }
+    }
+
+    private func seedLocked(
+        committedRawSteps restoredRawSteps: Int,
+        lastAcceptedDeviceTimestamp restoredDeviceTimestamp: UInt32?
+    ) -> (steps: Int, rawSteps: Int) {
+        guard preparedBoundary == nil && committedBoundaryAwaitingRelease == nil else {
+            let rawSteps = max(lastObservedRawSteps, currentRawSteps())
+            return (Int((Double(rawSteps) * gain).rounded()), rawSteps)
+        }
+        // Journal loading is asynchronous. If fresh R10 frames arrived before
+        // restore completed, retain their detector state and add the durable
+        // prefix instead of losing post-launch motion. Merge only the delta
+        // above an already-restored prefix so repeated restore requests cannot
+        // duplicate the same durable steps.
+        let boundedRestoredRawSteps = max(0, restoredRawSteps)
+        if boundedRestoredRawSteps > 0 {
+            discardPreRestoreReplayIfNeeded(restoredDeviceTimestamp)
+        }
+        let newlyRestoredRawSteps = max(0, boundedRestoredRawSteps - restoredRawStepPrefix)
+        committedRawSteps += newlyRestoredRawSteps
+        restoredRawStepPrefix = max(restoredRawStepPrefix, boundedRestoredRawSteps)
+        installRestoredDeviceTimestampWatermark(restoredDeviceTimestamp)
+        let rawSteps = max(lastObservedRawSteps, currentRawSteps())
+        lastObservedRawSteps = rawSteps
+        let steps = Int((Double(rawSteps) * gain).rounded())
+        lastPublishedSteps = steps
+        return (steps, rawSteps)
+    }
+
+    /// Drops only frames that raced ahead of the first journal restore and are
+    /// provably an older prefix within the journal's retention horizon. This
+    /// prevents replayed gait from being added to the durable prefix. Large
+    /// backwards jumps remain intact because they can be a strap clock reset.
+    private func discardPreRestoreReplayIfNeeded(_ restored: UInt32?) {
+        guard restoredRawStepPrefix == 0,
+              generation == 0,
+              let restored, restored > 0,
+              let current = lastAcceptedDeviceTimestamp, current > 0 else { return }
+        let replayGap = restored &- current
+        guard replayGap > 0,
+              replayGap < (UInt32.max / 2 + 1),
+              replayGap <= Self.maximumPreRestoreReplayGapSeconds else { return }
+
+        cancelTrailingSnapshot()
+        detector.reset()
+        totalFrames = 0
+        totalSamples = 0
+        stillSamples = 0
+        movementTotal = 0
+        activityBursts = 0
+        gravityValidatedFrames = 0
+        seenTimestamps.removeAll(keepingCapacity: true)
+        timestampOrder.removeAll(keepingCapacity: true)
+        lastAcceptedDeviceTimestamp = nil
+        lastAcceptedReceivedAt = nil
+        lastObservedRawSteps = max(0, committedRawSteps - segmentRawStepBaseline)
+        lastPublishedSteps = -1
+        lastSnapshotEvaluationAt = nil
+    }
+
+    /// A durable R10 second is a replay watermark, not live freshness. Keep a
+    /// genuinely newer frame that won the async restore race, but otherwise
+    /// install the checkpoint so subsequent equal/older CoreBluetooth replay
+    /// is rejected before it can enter gait confirmation.
+    private func installRestoredDeviceTimestampWatermark(_ restored: UInt32?) {
+        guard let restored, restored > 0 else { return }
+        if let current = lastAcceptedDeviceTimestamp {
+            if current == restored
+                || Self.forwardDeviceTimestampDelta(from: restored, to: current) != nil {
+                return
+            }
+        }
+        lastAcceptedDeviceTimestamp = restored
+        if seenTimestamps.insert(restored).inserted {
+            timestampOrder.append(restored)
+            if timestampOrder.count > 512 {
+                seenTimestamps.remove(timestampOrder.removeFirst())
+            }
         }
     }
 
     func ingestSynchronouslyForTesting(_ frame: AtriaR10MotionFrame) -> Snapshot? {
         queue.sync { [self] in
             guard accept(frame, receivedAt: nil) else { return nil }
-            return makeSnapshot(deviceTimestamp: frame.deviceTimestamp)
+            return makeSnapshot(deviceTimestamp: frame.deviceTimestamp,
+                                receivedAt: nil)
         }
     }
 
@@ -850,7 +1263,6 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
             self.pendingSnapshotDeviceTimestamp = nil
             self.publishSnapshot(deviceTimestamp: deviceTimestamp,
                                  evaluatedAt: Date(),
-                                 firstFrame: false,
                                  onUpdate: onUpdate)
         }
         pendingSnapshotWorkItem = workItem
@@ -866,12 +1278,14 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
 
     private func publishSnapshot(deviceTimestamp: UInt32,
                                  evaluatedAt: Date,
-                                 firstFrame: Bool,
                                  onUpdate: @escaping @Sendable (Snapshot) -> Void) {
         lastSnapshotEvaluationAt = evaluatedAt
-        let snapshot = makeSnapshot(deviceTimestamp: deviceTimestamp)
-        guard firstFrame || snapshot.steps != lastPublishedSteps else { return }
+        let snapshot = makeSnapshot(deviceTimestamp: deviceTimestamp,
+                                    receivedAt: lastAcceptedReceivedAt)
         lastPublishedSteps = snapshot.steps
+        // Publish every cadence-limited detector evaluation, including an
+        // unchanged count. Stationary samples still advance the authoritative
+        // detector-snapshot clock used by workout action boundaries.
         onUpdate(snapshot)
     }
 
@@ -882,17 +1296,24 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
         } else {
             detector.reset()
         }
-        lastObservedRawSteps = max(lastObservedRawSteps, committedRawSteps)
+        lastObservedRawSteps = max(lastObservedRawSteps, currentRawSteps())
     }
 
-    private func makeSnapshot(deviceTimestamp: UInt32) -> Snapshot {
-        let rawSteps = max(lastObservedRawSteps, committedRawSteps + detector.rawSteps)
+    private func currentRawSteps() -> Int {
+        max(0, committedRawSteps + detector.rawSteps - segmentRawStepBaseline)
+    }
+
+    private func makeSnapshot(deviceTimestamp: UInt32,
+                              receivedAt: Date?) -> Snapshot {
+        let rawSteps = max(lastObservedRawSteps, currentRawSteps())
         lastObservedRawSteps = rawSteps
-        return Snapshot(steps: Int((Double(rawSteps) * gain).rounded()),
+        return Snapshot(generation: generation,
+                        steps: Int((Double(rawSteps) * gain).rounded()),
                         rawSteps: rawSteps,
                         frames: totalFrames,
                         samples: totalSamples,
                         deviceTimestamp: deviceTimestamp,
+                        receivedAt: receivedAt,
                         stillnessRatio: Double(stillSamples) / Double(max(1, totalSamples)),
                         movementIntensity: movementTotal / Double(max(1, totalSamples)),
                         activityBursts: activityBursts,

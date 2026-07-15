@@ -16,7 +16,8 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
                        start: Date,
                        end: Date,
                        source: String = "manual_sleep",
-                       hrv: Int? = 60) -> UserConfirmedSleep {
+                       hrv: Int? = 60,
+                       eventTimeZoneIdentifier: String = "UTC") -> UserConfirmedSleep {
         UserConfirmedSleep(id: id,
                            createdAt: end,
                            start: start,
@@ -36,7 +37,7 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
                            motionSource: "test",
                            motionValidated: true,
                            stageSegments: nil,
-                           eventTimeZoneIdentifier: "UTC")
+                           eventTimeZoneIdentifier: eventTimeZoneIdentifier)
     }
 
     func testMainSleepWakeStartsCurrentCycle() {
@@ -236,6 +237,100 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
 
         XCTAssertEqual(cycle.start, date(3, 7))
         XCTAssertEqual(cycle.boundaryKind, .noSleepFallback)
+    }
+
+    func testShortSleepRecordCannotMaskNoSleepRollover() {
+        let priorMain = sleep(id: "prior-main", start: date(1, 23), end: date(2, 7))
+        let shortRest = sleep(id: "short-rest",
+                              start: date(3, 2),
+                              end: date(3, 4),
+                              source: "manual_sleep")
+
+        let cycle = AtriaPhysiologicalCycle.current(now: date(3, 10),
+                                                    confirmedSleeps: [priorMain, shortRest],
+                                                    calendar: calendar)
+
+        XCTAssertEqual(cycle.start, date(3, 7))
+        XCTAssertEqual(cycle.boundaryKind, .noSleepFallback)
+        XCTAssertEqual(cycle.anchorSleepID, priorMain.id)
+    }
+
+    func testNoPriorMainSleepStaysInitialInsteadOfInventingAllNighterRecovery() {
+        let shortRest = sleep(id: "short-rest",
+                              start: date(2, 2),
+                              end: date(2, 4),
+                              source: "manual_sleep")
+
+        let cycle = AtriaPhysiologicalCycle.current(now: date(3, 10),
+                                                    confirmedSleeps: [shortRest],
+                                                    calendar: calendar)
+
+        XCTAssertEqual(cycle.boundaryKind, .initialFallback)
+        XCTAssertNil(cycle.anchorSleepID)
+    }
+
+    func testNoSleepFallbackPreservesLocalWakeHourAcrossSpringDST() throws {
+        var losAngeles = Calendar(identifier: .gregorian)
+        losAngeles.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Los_Angeles"))
+        func local(_ day: Int, _ hour: Int, _ minute: Int = 0) -> Date {
+            losAngeles.date(from: DateComponents(year: 2032,
+                                                 month: 3,
+                                                 day: day,
+                                                 hour: hour,
+                                                 minute: minute))!
+        }
+        // DST begins on 2032-03-14 in Los Angeles. The next local 07:00 is
+        // only 23 elapsed hours after the prior wake, but it is the correct
+        // bounded physiological rollover.
+        let main = sleep(id: "dst-main",
+                         start: local(13, 23),
+                         end: local(14, 7),
+                         eventTimeZoneIdentifier: "America/Los_Angeles")
+        let cycle = AtriaPhysiologicalCycle.current(now: local(15, 7, 30),
+                                                    confirmedSleeps: [main],
+                                                    calendar: losAngeles)
+
+        XCTAssertEqual(cycle.start, local(15, 7))
+        XCTAssertEqual(losAngeles.component(.hour, from: cycle.start), 7)
+        XCTAssertEqual(cycle.boundaryKind, .noSleepFallback)
+    }
+
+    func testLateCrossMidnightSleepIsAttributedToWakeCivilDay() {
+        let session = SavedSession(id: UUID(),
+                                   start: date(2, 23),
+                                   end: date(3, 13),
+                                   label: "Late wake",
+                                   points: [SavedSession.Point(t: 0, bpm: 52)],
+                                   eventTimeZoneIdentifier: "UTC")
+
+        XCTAssertEqual(SessionStore.aggregateSleepDay(for: [session],
+                                                       eventTimeZoneIdentifier: "UTC",
+                                                       calendar: calendar),
+                       calendar.startOfDay(for: date(3, 13)))
+    }
+
+    func testSleepWakeDayUsesEventTimeZoneWhenOutputCalendarDiffers() throws {
+        var tokyo = Calendar(identifier: .gregorian)
+        tokyo.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Tokyo"))
+        let start = try XCTUnwrap(tokyo.date(from: DateComponents(year: 2032,
+                                                                 month: 1,
+                                                                 day: 2,
+                                                                 hour: 23)))
+        let end = try XCTUnwrap(tokyo.date(from: DateComponents(year: 2032,
+                                                               month: 1,
+                                                               day: 3,
+                                                               hour: 12)))
+        let session = SavedSession(id: UUID(),
+                                   start: start,
+                                   end: end,
+                                   label: "Tokyo late wake",
+                                   points: [SavedSession.Point(t: 0, bpm: 52)],
+                                   eventTimeZoneIdentifier: "Asia/Tokyo")
+
+        XCTAssertEqual(SessionStore.aggregateSleepDay(for: [session],
+                                                       eventTimeZoneIdentifier: "Asia/Tokyo",
+                                                       calendar: calendar),
+                       date(3, 0))
     }
 
     func testHomeAggregateSplitsTRIMPAndStepsAtCycleBoundary() {

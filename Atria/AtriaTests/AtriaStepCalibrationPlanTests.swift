@@ -39,6 +39,8 @@ final class AtriaStepCalibrationPlanTests: XCTestCase {
             XCTAssertTrue(store.startCurrentStage())
             let startMS = try XCTUnwrap(store.state.activeStageStartMS)
             milliseconds += max(stage.minimumDurationMS, Int64(10_000 + index))
+            XCTAssertTrue(store.requestFinishCurrentStage())
+            milliseconds += AtriaStepCalibrationPlanStore.boundaryGuardDurationMS
             XCTAssertTrue(store.stopCurrentStage(validatedQuality: readyQuality(
                 startMS: startMS,
                 endMS: milliseconds
@@ -56,13 +58,14 @@ final class AtriaStepCalibrationPlanTests: XCTestCase {
         XCTAssertEqual(store.manifest.windows.count, 6)
     }
 
-    func testRestStagesRejectStopBeforeSixtySeconds() {
+    func testRestStagesRejectFinishBeforeSixtySecondsAndEnforceTrailingGuard() {
         var milliseconds: Int64 = 1_720_000_000_000
         let store = makeStore(milliseconds: { milliseconds })
         XCTAssertTrue(store.startCurrentStage())
 
         milliseconds += 59_999
-        XCTAssertFalse(store.canStopCurrentStage())
+        XCTAssertFalse(store.canRequestFinish())
+        XCTAssertFalse(store.requestFinishCurrentStage())
         XCTAssertFalse(store.stopCurrentStage(validatedQuality: readyQuality(
             startMS: 1_720_000_000_000,
             endMS: milliseconds
@@ -70,7 +73,14 @@ final class AtriaStepCalibrationPlanTests: XCTestCase {
         XCTAssertTrue(store.isRunning)
 
         milliseconds += 1
-        XCTAssertTrue(store.canStopCurrentStage())
+        XCTAssertTrue(store.canRequestFinish())
+        XCTAssertTrue(store.requestFinishCurrentStage())
+        XCTAssertEqual(store.fixedCaptureEndMS, milliseconds + 2_000)
+        XCTAssertFalse(store.canValidateCurrentStage())
+        milliseconds += 1_999
+        XCTAssertFalse(store.canValidateCurrentStage())
+        milliseconds += 1
+        XCTAssertTrue(store.canValidateCurrentStage())
         XCTAssertTrue(store.stopCurrentStage(validatedQuality: readyQuality(
             startMS: 1_720_000_000_000,
             endMS: milliseconds
@@ -78,23 +88,54 @@ final class AtriaStepCalibrationPlanTests: XCTestCase {
         XCTAssertEqual(store.state.windows.first?.endMS, milliseconds)
     }
 
-    func testActiveStageSurvivesStoreRecreationAndCanStop() throws {
+    func testFrozenFinishSurvivesStoreRecreationAndUsesDeterministicEnd() throws {
         var milliseconds: Int64 = 1_720_000_000_000
         var store: AtriaStepCalibrationPlanStore? = makeStore(milliseconds: { milliseconds })
         XCTAssertTrue(store?.startCurrentStage() == true)
         let startMS = try XCTUnwrap(store?.state.activeStageStartMS)
 
-        store = nil
         milliseconds += 60_000
+        XCTAssertTrue(store?.requestFinishCurrentStage() == true)
+        let requestedFinishMS = milliseconds
+        store = nil
         let resumed = makeStore(milliseconds: { milliseconds })
         XCTAssertTrue(resumed.isRunning)
+        XCTAssertTrue(resumed.isFinishing)
         XCTAssertEqual(resumed.state.activeStageStartMS, startMS)
+        XCTAssertEqual(resumed.state.activeStageFinishRequestedMS, requestedFinishMS)
+        XCTAssertEqual(resumed.fixedCaptureEndMS, requestedFinishMS + 2_000)
         XCTAssertEqual(resumed.currentStage?.label, "Rest before")
+        milliseconds += 20_000
         XCTAssertTrue(resumed.stopCurrentStage(validatedQuality: readyQuality(
             startMS: startMS,
+            endMS: requestedFinishMS + 2_000
+        )))
+        XCTAssertEqual(resumed.state.windows.first?.endMS, requestedFinishMS + 2_000)
+        XCTAssertEqual(resumed.currentStage?.label, "Slow 100")
+    }
+
+    func testWalkCannotFinishDuringLeadingGuard() {
+        var milliseconds: Int64 = 1_720_000_000_000
+        let store = makeStore(milliseconds: { milliseconds })
+        XCTAssertTrue(store.startCurrentStage())
+        let restStartMS = milliseconds
+        milliseconds += 60_000
+        XCTAssertTrue(store.requestFinishCurrentStage())
+        milliseconds += 2_000
+        XCTAssertTrue(store.stopCurrentStage(validatedQuality: readyQuality(
+            startMS: restStartMS,
             endMS: milliseconds
         )))
-        XCTAssertEqual(resumed.currentStage?.label, "Slow 100")
+        milliseconds += 1_000
+
+        XCTAssertEqual(store.currentStage?.label, "Slow 100")
+        XCTAssertTrue(store.startCurrentStage())
+        milliseconds += 1_999
+        XCTAssertFalse(store.canBeginCountedMotion())
+        XCTAssertFalse(store.requestFinishCurrentStage())
+        milliseconds += 1
+        XCTAssertTrue(store.canBeginCountedMotion())
+        XCTAssertTrue(store.requestFinishCurrentStage())
     }
 
     func testFailedCaptureCannotAdvanceAndRetryKeepsEarlierStages() {
@@ -102,22 +143,28 @@ final class AtriaStepCalibrationPlanTests: XCTestCase {
         let store = makeStore(milliseconds: { milliseconds })
         XCTAssertTrue(store.startCurrentStage())
         milliseconds += 60_000
+        XCTAssertTrue(store.requestFinishCurrentStage())
+        let fixedEndMS = milliseconds + 2_000
+        milliseconds = fixedEndMS
         let failed = AtriaStrapCalibrationArchive.CaptureQuality(
             decodedFrames: 20,
-            durationMS: 60_000,
+            durationMS: 62_000,
             coveragePercent: 33.3,
             continuityBreaks: 8,
             maximumUncoveredGapMS: 12_000,
             alignedStartMS: 1_720_000_000_000,
-            alignedEndMSExclusive: milliseconds
+            alignedEndMSExclusive: fixedEndMS
         )
 
         XCTAssertFalse(store.stopCurrentStage(validatedQuality: failed))
         XCTAssertEqual(store.completedStageCount, 0)
         XCTAssertTrue(store.isRunning)
+        XCTAssertTrue(store.isFinishing)
+        XCTAssertEqual(store.fixedCaptureEndMS, fixedEndMS)
 
-        store.discardCurrentStage()
+        store.retryCurrentStage()
         XCTAssertFalse(store.isRunning)
+        XCTAssertFalse(store.isFinishing)
         XCTAssertEqual(store.currentStage?.label, "Rest before")
         XCTAssertTrue(store.startCurrentStage())
     }
@@ -128,6 +175,8 @@ final class AtriaStepCalibrationPlanTests: XCTestCase {
         XCTAssertTrue(store.startCurrentStage())
         let startMS = try! XCTUnwrap(store.state.activeStageStartMS)
         milliseconds += 60_000
+        XCTAssertTrue(store.requestFinishCurrentStage())
+        milliseconds += 2_000
         XCTAssertTrue(store.stopCurrentStage(validatedQuality: readyQuality(
             startMS: startMS,
             endMS: milliseconds
@@ -147,6 +196,8 @@ final class AtriaStepCalibrationPlanTests: XCTestCase {
             XCTAssertTrue(store.startCurrentStage())
             let startMS = try XCTUnwrap(store.state.activeStageStartMS)
             milliseconds += max(stage.minimumDurationMS, 5_000)
+            XCTAssertTrue(store.requestFinishCurrentStage())
+            milliseconds += 2_000
             XCTAssertTrue(store.stopCurrentStage(validatedQuality: readyQuality(
                 startMS: startMS,
                 endMS: milliseconds
@@ -191,6 +242,49 @@ final class AtriaStepCalibrationPlanTests: XCTestCase {
         XCTAssertNil(defaults.data(forKey: AtriaStepCalibrationPlanStore.defaultsKey))
     }
 
+    func testLegacyPersistedStateWithoutFinishMarkerStillLoads() throws {
+        let legacyJSON = """
+        {
+          "version": 1,
+          "sessionStartedMS": 1720000000000,
+          "activeStageIndex": 0,
+          "activeStageStartMS": 1720000000000,
+          "windows": []
+        }
+        """
+        defaults.set(try XCTUnwrap(legacyJSON.data(using: .utf8)),
+                     forKey: AtriaStepCalibrationPlanStore.defaultsKey)
+
+        let store = makeStore(milliseconds: { 1_720_000_001_000 })
+
+        XCTAssertTrue(store.isRunning)
+        XCTAssertFalse(store.isFinishing)
+        XCTAssertNil(store.state.activeStageFinishRequestedMS)
+        XCTAssertEqual(store.currentStage?.label, "Rest before")
+    }
+
+    func testQualityMustMatchFrozenCaptureDuration() {
+        var milliseconds: Int64 = 1_720_000_000_000
+        let store = makeStore(milliseconds: { milliseconds })
+        XCTAssertTrue(store.startCurrentStage())
+        let startMS = milliseconds
+        milliseconds += 60_000
+        XCTAssertTrue(store.requestFinishCurrentStage())
+        let fixedEndMS = milliseconds + 2_000
+        milliseconds += 20_000
+
+        XCTAssertFalse(store.stopCurrentStage(validatedQuality: readyQuality(
+            startMS: startMS,
+            endMS: milliseconds
+        )))
+        XCTAssertTrue(store.isFinishing)
+        XCTAssertTrue(store.stopCurrentStage(validatedQuality: readyQuality(
+            startMS: startMS,
+            endMS: fixedEndMS
+        )))
+        XCTAssertEqual(store.state.windows.first?.endMS, fixedEndMS)
+    }
+
     func testResearchUIWaitsForFreshMotionBeforeTimestamping() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceRoot = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
@@ -205,6 +299,9 @@ final class AtriaStepCalibrationPlanTests: XCTestCase {
 
         XCTAssertTrue(planSource.contains("ble.stepCalibrationMotionStreamReady"))
         XCTAssertTrue(planSource.contains("Waiting for fresh motion"))
+        XCTAssertTrue(planSource.contains("Keep the strap wrist still. Begin only when GO appears."))
+        XCTAssertTrue(planSource.contains("Steps complete"))
+        XCTAssertTrue(planSource.contains("Retry stage"))
         XCTAssertTrue(bleSource.contains("markStepCalibrationMotionStreamReady(receivedAt:"))
         XCTAssertTrue(bleSource.contains("finishStepCalibrationCapture"))
 
@@ -239,6 +336,53 @@ final class AtriaStepCalibrationPlanTests: XCTestCase {
         XCTAssertFalse(finishBody.contains("applyStandardHROnly("))
         XCTAssertFalse(finishBody.contains("reconnect: true"))
         XCTAssertTrue(finishBody.contains("AtriaStrapCalibrationArchive.shared.flush()"))
+    }
+
+    func testCalibrationMotionPreparationRebuildsOnlyAStaleConnectedStreamAfterGrace() {
+        let armedAt = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let afterGrace = armedAt.addingTimeInterval(4)
+        XCTAssertTrue(AtriaBLEManager.stepCalibrationMotionPreparationNeedsReconnect(
+            armedAt: armedAt,
+            motionStreamReady: false,
+            lastR10FrameAt: armedAt.addingTimeInterval(-1),
+            connected: true,
+            now: afterGrace
+        ))
+        XCTAssertTrue(AtriaBLEManager.stepCalibrationMotionPreparationNeedsReconnect(
+            armedAt: armedAt,
+            motionStreamReady: false,
+            lastR10FrameAt: nil,
+            connected: true,
+            now: afterGrace
+        ))
+        XCTAssertFalse(AtriaBLEManager.stepCalibrationMotionPreparationNeedsReconnect(
+            armedAt: armedAt,
+            motionStreamReady: true,
+            lastR10FrameAt: armedAt.addingTimeInterval(1),
+            connected: true,
+            now: afterGrace
+        ))
+        XCTAssertFalse(AtriaBLEManager.stepCalibrationMotionPreparationNeedsReconnect(
+            armedAt: armedAt,
+            motionStreamReady: false,
+            lastR10FrameAt: armedAt.addingTimeInterval(1),
+            connected: true,
+            now: afterGrace
+        ))
+        XCTAssertFalse(AtriaBLEManager.stepCalibrationMotionPreparationNeedsReconnect(
+            armedAt: armedAt,
+            motionStreamReady: false,
+            lastR10FrameAt: nil,
+            connected: false,
+            now: afterGrace
+        ))
+        XCTAssertFalse(AtriaBLEManager.stepCalibrationMotionPreparationNeedsReconnect(
+            armedAt: armedAt,
+            motionStreamReady: false,
+            lastR10FrameAt: nil,
+            connected: true,
+            now: armedAt.addingTimeInterval(3.999)
+        ))
     }
 
     func testCalibrationToolsUseDeviceTimeAndPreserveContinuousDetectorState() throws {
@@ -280,6 +424,7 @@ final class AtriaStepCalibrationPlanTests: XCTestCase {
             alignedEndMSExclusive: endMS
         )
     }
+
 }
 
 private struct FitterManifest: Decodable {

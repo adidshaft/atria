@@ -38,6 +38,109 @@ struct AtriaMotionActivityContext: Equatable {
                                                     observedAt: .distantPast)
 }
 
+/// Confidence-owned activity typing. Workout existence is intentionally not an
+/// input: sustained strap physiology decides whether an effort is reviewable,
+/// while this classifier may only add a conservative label to that already-
+/// qualified episode.
+///
+/// Phone activity is optional context. Strap gait is retained as shadow
+/// evidence until charger-free, user-labelled captures establish its confusion
+/// matrix against walking, running, cycling, dance, strength and ordinary wrist
+/// handling. In particular, periodic wrist movement is not enough to call an
+/// episode dance or strength training.
+enum AtriaActivitySubtypeClassifier {
+    enum Confidence: Int, Comparable, Equatable {
+        case none
+        case low
+        case medium
+        case high
+
+        static func < (lhs: Self, rhs: Self) -> Bool {
+            lhs.rawValue < rhs.rawValue
+        }
+    }
+
+    enum Source: String, Equatable {
+        case nativePhoneActivity
+        case strapGaitShadow
+        case unavailable
+    }
+
+    struct StrapGaitEvidence: Equatable {
+        let contiguousDuration: TimeInterval
+        let cadenceStepsPerMinute: Double
+        let periodicity: Double
+        let cadenceConsistency: Double
+        let gyroscopeAgreement: Double?
+
+        var isPlausibleLocomotion: Bool {
+            contiguousDuration.isFinite
+                && periodicity.isFinite
+                && cadenceConsistency.isFinite
+                && (gyroscopeAgreement?.isFinite ?? true)
+                && contiguousDuration >= 30
+                && (48...220).contains(cadenceStepsPerMinute)
+                && (0.55...1).contains(periodicity)
+                && (0.78...1).contains(cadenceConsistency)
+                && (gyroscopeAgreement.map { (0.72...1).contains($0) } ?? true)
+        }
+    }
+
+    struct Decision: Equatable {
+        /// A user-visible suggestion. Nil means explicit abstention; callers
+        /// must offer Other rather than inventing a subtype from HR or motion.
+        let suggestedActivityType: AtriaWorkoutActivityType?
+        let confidence: Confidence
+        let source: Source
+        /// Research-only candidate. This must never be displayed or persisted
+        /// as a confirmed activity type before labelled physical validation.
+        let shadowCandidate: AtriaWorkoutActivityType?
+        let reason: String
+
+        static let abstain = Decision(suggestedActivityType: nil,
+                                      confidence: .none,
+                                      source: .unavailable,
+                                      shadowCandidate: nil,
+                                      reason: "no_validated_subtype_evidence")
+    }
+
+    static func evaluate(phone context: AtriaMotionActivityContext?,
+                         strapGait: StrapGaitEvidence? = nil,
+                         now: Date = Date()) -> Decision {
+        if let context,
+           AtriaMotionActivityGate.isFresh(context, now: now),
+           context.confidence >= .medium,
+           now.timeIntervalSince(context.startedAt) >= AtriaMotionActivityGate.minimumSuggestionDuration {
+            let type: AtriaWorkoutActivityType?
+            switch context.kind {
+            case .walking: type = .walking
+            case .running: type = .running
+            case .cycling: type = .cycling
+            case .stationary, .automotive, .unknown: type = nil
+            }
+            if let type {
+                return Decision(suggestedActivityType: type,
+                                confidence: context.confidence == .high ? .high : .medium,
+                                source: .nativePhoneActivity,
+                                shadowCandidate: nil,
+                                reason: "fresh_sustained_native_\(context.kind.rawValue)")
+            }
+        }
+
+        if let strapGait, strapGait.isPlausibleLocomotion {
+            // A cadence-like wrist trace is useful training evidence, but is
+            // not specific enough to distinguish a walk from dance, lifting,
+            // household motion or other rhythmic arm use.
+            return Decision(suggestedActivityType: nil,
+                            confidence: .low,
+                            source: .strapGaitShadow,
+                            shadowCandidate: .walking,
+                            reason: "plausible_strap_locomotion_shadow_only")
+        }
+        return .abstain
+    }
+}
+
 enum AtriaMotionActivityGate {
     static let minimumSuggestionDuration: TimeInterval = 2 * 60
     static let maximumEvidenceAge: TimeInterval = 45
@@ -48,16 +151,21 @@ enum AtriaMotionActivityGate {
         let suggestedActivityType: AtriaWorkoutActivityType?
     }
 
+    static func isFresh(_ context: AtriaMotionActivityContext,
+                        now: Date = Date()) -> Bool {
+        let evidenceAge = now.timeIntervalSince(context.observedAt)
+        let classificationAge = now.timeIntervalSince(context.startedAt)
+        return evidenceAge >= -maximumFutureSkew
+            && evidenceAge <= maximumEvidenceAge
+            && classificationAge >= 0
+    }
+
     /// Automotive evidence is a hard veto. Locomotion labels are suggestions
     /// only after fresh, medium-or-better evidence has remained unambiguous for
     /// two minutes. Everything else abstains, including dance.
     static func evaluate(_ context: AtriaMotionActivityContext,
                          now: Date = Date()) -> Decision {
-        let evidenceAge = now.timeIntervalSince(context.observedAt)
-        let classificationAge = now.timeIntervalSince(context.startedAt)
-        guard evidenceAge >= -maximumFutureSkew,
-              evidenceAge <= maximumEvidenceAge,
-              classificationAge >= 0 else {
+        guard isFresh(context, now: now) else {
             return Decision(vetoesWorkoutPrompt: false,
                             suggestedActivityType: nil)
         }
@@ -69,21 +177,10 @@ enum AtriaMotionActivityGate {
                             suggestedActivityType: nil)
         }
 
-        guard context.confidence >= .medium,
-              classificationAge >= minimumSuggestionDuration else {
-            return Decision(vetoesWorkoutPrompt: false,
-                            suggestedActivityType: nil)
-        }
-
-        let suggestion: AtriaWorkoutActivityType?
-        switch context.kind {
-        case .walking: suggestion = .walking
-        case .running: suggestion = .running
-        case .cycling: suggestion = .cycling
-        case .stationary, .automotive, .unknown: suggestion = nil
-        }
+        let subtype = AtriaActivitySubtypeClassifier.evaluate(phone: context,
+                                                               now: now)
         return Decision(vetoesWorkoutPrompt: false,
-                        suggestedActivityType: suggestion)
+                        suggestedActivityType: subtype.suggestedActivityType)
     }
 }
 

@@ -438,6 +438,31 @@ final class AtriaR10MotionTests: XCTestCase {
         ))
     }
 
+    func testDetectorSnapshotClockAdvancesEvenWhenStepCountIsUnchanged() {
+        let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100,
+                                              gain: 1,
+                                              snapshotMinimumInterval: 0.01)
+        let anchor = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let published = expectation(description: "each evaluated detector snapshot published")
+        published.expectedFulfillmentCount = 2
+        let latest = AtriaR10SnapshotBox()
+
+        pipeline.ingest(constantFrame(timestamp: 70_000, magnitude: 1),
+                        receivedAt: anchor) { snapshot in
+            latest.store(snapshot)
+            published.fulfill()
+        }
+        pipeline.ingest(constantFrame(timestamp: 70_001, magnitude: 1),
+                        receivedAt: anchor.addingTimeInterval(1)) { snapshot in
+            latest.store(snapshot)
+            published.fulfill()
+        }
+
+        wait(for: [published], timeout: 5)
+        XCTAssertEqual(latest.load()?.steps, 0)
+        XCTAssertEqual(latest.load()?.receivedAt, anchor.addingTimeInterval(1))
+    }
+
     func testLivePipelineTrailingSnapshotPublishesLatestCountFromBatchedFrames() {
         let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100,
                                               gain: 1,
@@ -467,6 +492,279 @@ final class AtriaR10MotionTests: XCTestCase {
         let snapshot = finalSnapshot.load()
         XCTAssertEqual(snapshot?.frames, 10)
         XCTAssertGreaterThan(snapshot?.steps ?? 0, 0)
+        XCTAssertEqual(snapshot?.receivedAt, anchor,
+                       "freshness must describe detector-applied input, not callback wall time")
+    }
+
+    func testCurrentSnapshotSynchronouslyDrainsCadencePendingBatch() throws {
+        let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100,
+                                              gain: 1,
+                                              snapshotMinimumInterval: 60)
+        let reference = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1)
+        let anchor = Date(timeIntervalSinceReferenceDate: 800_100_000)
+        var referenceSnapshot: AtriaR10MotionPipeline.Snapshot?
+
+        for second in 0..<10 {
+            let frame = gaitFrame(timestamp: UInt32(80_000 + second),
+                                  sampleOffset: second * 100)
+            pipeline.ingest(frame, receivedAt: anchor) { _ in }
+            referenceSnapshot = reference.ingestSynchronouslyForTesting(frame)
+        }
+
+        let drained = try XCTUnwrap(pipeline.currentSnapshotSynchronously())
+        let expected = try XCTUnwrap(referenceSnapshot)
+        XCTAssertEqual(drained.frames, 10)
+        XCTAssertEqual(drained.samples, 1_000)
+        XCTAssertEqual(drained.deviceTimestamp, 80_009)
+        XCTAssertEqual(drained.receivedAt, anchor)
+        XCTAssertEqual(drained.rawSteps, expected.rawSteps)
+        XCTAssertEqual(drained.steps, expected.steps)
+        XCTAssertGreaterThan(drained.steps, 0)
+        pipeline.resetSynchronously()
+    }
+
+    func testResetAdvancesGenerationAndSeparatesDelayedSnapshotEpoch() throws {
+        let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1)
+        let oldSnapshot = try XCTUnwrap(pipeline.ingestSynchronouslyForTesting(
+            gaitFrame(timestamp: 81_000, sampleOffset: 0)
+        ))
+
+        let newGeneration = pipeline.resetSynchronously()
+        XCTAssertEqual(newGeneration, oldSnapshot.generation &+ 1)
+
+        let newSnapshot = try XCTUnwrap(pipeline.ingestSynchronouslyForTesting(
+            gaitFrame(timestamp: 81_000, sampleOffset: 0)
+        ))
+        XCTAssertEqual(newSnapshot.generation, newGeneration)
+        XCTAssertNotEqual(oldSnapshot.generation, newSnapshot.generation)
+    }
+
+    func testAccountingRollPreservesDetectorContinuityAndRawStepConservation() throws {
+        let uninterrupted = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1)
+        let rolled = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1)
+        var uninterruptedSnapshot: AtriaR10MotionPipeline.Snapshot?
+        var firstSegmentSnapshot: AtriaR10MotionPipeline.Snapshot?
+        var secondSegmentSnapshot: AtriaR10MotionPipeline.Snapshot?
+
+        for second in 0..<20 {
+            let frame = gaitFrame(timestamp: UInt32(82_000 + second),
+                                  sampleOffset: second * 100)
+            uninterruptedSnapshot = uninterrupted.ingestSynchronouslyForTesting(frame)
+            if second < 10 {
+                firstSegmentSnapshot = rolled.ingestSynchronouslyForTesting(frame)
+            }
+        }
+        let first = try XCTUnwrap(firstSegmentSnapshot)
+        let transition = rolled.rollSegmentSynchronously(persistedRawSteps: first.rawSteps)
+        XCTAssertEqual(transition.finalSnapshot?.rawSteps, first.rawSteps)
+        XCTAssertNil(transition.carriedSnapshot)
+
+        for second in 10..<20 {
+            secondSegmentSnapshot = rolled.ingestSynchronouslyForTesting(
+                gaitFrame(timestamp: UInt32(82_000 + second),
+                          sampleOffset: second * 100)
+            )
+        }
+
+        let uninterruptedFinal = try XCTUnwrap(uninterruptedSnapshot)
+        let second = try XCTUnwrap(secondSegmentSnapshot)
+        XCTAssertEqual(first.rawSteps + second.rawSteps, uninterruptedFinal.rawSteps)
+        XCTAssertEqual(second.generation, transition.generation)
+    }
+
+    func testAccountingRollCarriesFramesAcceptedAfterPersistedSnapshot() throws {
+        let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100,
+                                              gain: 1,
+                                              snapshotMinimumInterval: 60)
+        let anchor = Date(timeIntervalSinceReferenceDate: 800_200_000)
+        var persistedSnapshot: AtriaR10MotionPipeline.Snapshot?
+        for second in 0..<10 {
+            persistedSnapshot = pipeline.ingestSynchronouslyForTesting(
+                gaitFrame(timestamp: UInt32(83_000 + second),
+                          sampleOffset: second * 100)
+            )
+        }
+        let persisted = try XCTUnwrap(persistedSnapshot)
+
+        for second in 10..<20 {
+            pipeline.ingest(
+                gaitFrame(timestamp: UInt32(83_000 + second),
+                          sampleOffset: second * 100),
+                receivedAt: anchor
+            ) { _ in }
+        }
+        let transition = pipeline.rollSegmentSynchronously(
+            persistedRawSteps: persisted.rawSteps
+        )
+        let final = try XCTUnwrap(transition.finalSnapshot)
+        let carried = try XCTUnwrap(transition.carriedSnapshot)
+        XCTAssertGreaterThan(carried.rawSteps, 0)
+        XCTAssertEqual(persisted.rawSteps + carried.rawSteps, final.rawSteps)
+        XCTAssertEqual(carried.generation, transition.generation)
+        XCTAssertEqual(carried.receivedAt, anchor)
+    }
+
+    func testAsyncBoundaryCommitBuffersPostMarkerFramesAndConservesRawSteps() async throws {
+        let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100,
+                                              gain: 1,
+                                              snapshotMinimumInterval: 60)
+        let reference = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1)
+        let anchor = Date(timeIntervalSinceReferenceDate: 800_300_000)
+        var referenceFinal: AtriaR10MotionPipeline.Snapshot?
+        for second in 0..<20 {
+            let frame = gaitFrame(timestamp: UInt32(84_000 + second),
+                                  sampleOffset: second * 100)
+            referenceFinal = reference.ingestSynchronouslyForTesting(frame)
+            if second < 10 {
+                pipeline.ingest(frame, receivedAt: anchor) { _ in }
+            }
+        }
+
+        let token = await pipeline.prepareBoundary()
+        let secondPrepare = await pipeline.prepareBoundary()
+        XCTAssertEqual(secondPrepare, token, "a concurrent prepare must join the same marker")
+        let first = try XCTUnwrap(token.finalSnapshot)
+        XCTAssertGreaterThan(first.rawSteps, 0)
+
+        for second in 10..<20 {
+            pipeline.ingest(
+                gaitFrame(timestamp: UInt32(84_000 + second),
+                          sampleOffset: second * 100),
+                receivedAt: anchor.addingTimeInterval(Double(second))
+            ) { _ in }
+        }
+        let committed = await pipeline.commitBoundary(
+            token,
+            handedOffRawSteps: token.markerRawSteps,
+            nextGeneration: token.generation &+ 1
+        )
+        let transition = try XCTUnwrap(committed)
+        XCTAssertEqual(transition.generation, token.generation &+ 1)
+        XCTAssertNil(transition.carriedSnapshot)
+        XCTAssertNil(pipeline.currentSnapshotSynchronously(),
+                     "post-marker frames must stay fenced until the manager installs the generation")
+        let released = await pipeline.releaseCommittedBoundaryFrames(
+            token,
+            generation: transition.generation
+        )
+        XCTAssertTrue(released)
+
+        let second = try XCTUnwrap(pipeline.currentSnapshotSynchronously())
+        let uninterrupted = try XCTUnwrap(referenceFinal)
+        XCTAssertEqual(first.rawSteps + second.rawSteps, uninterrupted.rawSteps)
+        XCTAssertEqual(second.generation, transition.generation)
+        XCTAssertEqual(second.frames, 10)
+    }
+
+    func testAsyncBoundaryAbortRetainsGenerationAndReplaysEveryBufferedFrame() async throws {
+        let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100,
+                                              gain: 1,
+                                              snapshotMinimumInterval: 60)
+        let reference = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1)
+        let anchor = Date(timeIntervalSinceReferenceDate: 800_400_000)
+        var referenceFinal: AtriaR10MotionPipeline.Snapshot?
+        for second in 0..<10 {
+            let frame = gaitFrame(timestamp: UInt32(85_000 + second),
+                                  sampleOffset: second * 100)
+            pipeline.ingest(frame, receivedAt: anchor) { _ in }
+            referenceFinal = reference.ingestSynchronouslyForTesting(frame)
+        }
+        let token = await pipeline.prepareBoundary()
+        for second in 10..<20 {
+            let frame = gaitFrame(timestamp: UInt32(85_000 + second),
+                                  sampleOffset: second * 100)
+            pipeline.ingest(frame,
+                            receivedAt: anchor.addingTimeInterval(Double(second))) { _ in }
+            referenceFinal = reference.ingestSynchronouslyForTesting(frame)
+        }
+
+        let aborted = await pipeline.abortBoundary(token)
+        XCTAssertTrue(aborted)
+        let retained = try XCTUnwrap(pipeline.currentSnapshotSynchronously())
+        XCTAssertEqual(retained.generation, token.generation)
+        XCTAssertEqual(retained.frames, 20)
+        XCTAssertEqual(retained.rawSteps, referenceFinal?.rawSteps)
+
+        let retry = await pipeline.prepareBoundary()
+        XCTAssertNotEqual(retry.id, token.id)
+        let retryAborted = await pipeline.abortBoundary(retry)
+        XCTAssertTrue(retryAborted)
+    }
+
+    func testAsyncBoundaryRejectsInexactPersistedPrefixWithoutLosingAbortPath() async throws {
+        let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1)
+        for second in 0..<12 {
+            pipeline.ingest(
+                gaitFrame(timestamp: UInt32(86_000 + second),
+                          sampleOffset: second * 100),
+                receivedAt: Date(timeIntervalSinceReferenceDate: 800_500_000 + Double(second))
+            ) { _ in }
+        }
+        let token = await pipeline.prepareBoundary()
+        XCTAssertGreaterThan(token.markerRawSteps, 1)
+        let mismatchedPrefix = token.markerRawSteps - 1
+        let rejected = await pipeline.commitBoundary(
+            token,
+            handedOffRawSteps: mismatchedPrefix,
+            nextGeneration: token.generation &+ 1
+        )
+        XCTAssertNil(rejected)
+        let aborted = await pipeline.abortBoundary(token)
+        XCTAssertTrue(aborted, "a rejected commit must leave the prepared marker abortable")
+        XCTAssertEqual(pipeline.currentSnapshotSynchronously()?.generation, token.generation)
+    }
+
+    func testCommittedBoundaryForceReleaseRecoversRejectedTokenAndIsIdempotent() async throws {
+        let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100,
+                                              gain: 1,
+                                              snapshotMinimumInterval: 60)
+        let anchor = Date(timeIntervalSinceReferenceDate: 800_550_000)
+        for second in 0..<10 {
+            pipeline.ingest(
+                gaitFrame(timestamp: UInt32(86_500 + second),
+                          sampleOffset: second * 100),
+                receivedAt: anchor.addingTimeInterval(Double(second))
+            ) { _ in }
+        }
+        let token = await pipeline.prepareBoundary()
+        for second in 10..<16 {
+            pipeline.ingest(
+                gaitFrame(timestamp: UInt32(86_500 + second),
+                          sampleOffset: second * 100),
+                receivedAt: anchor.addingTimeInterval(Double(second))
+            ) { _ in }
+        }
+        let committed = await pipeline.commitBoundary(
+            token,
+            handedOffRawSteps: token.markerRawSteps,
+            nextGeneration: token.generation &+ 1
+        )
+        let transition = try XCTUnwrap(committed)
+        let rejectedToken = AtriaR10MotionPipeline.BoundaryToken(
+            id: UUID(),
+            finalSnapshot: token.finalSnapshot,
+            generation: token.generation,
+            markerRawSteps: token.markerRawSteps
+        )
+        let ordinaryRelease = await pipeline.releaseCommittedBoundaryFrames(
+            rejectedToken,
+            generation: transition.generation
+        )
+        XCTAssertFalse(ordinaryRelease)
+        XCTAssertNil(pipeline.currentSnapshotSynchronously(),
+                     "a rejected token must leave the committed fence intact for recovery")
+
+        let forcedRelease = await pipeline.forceReleaseCommittedBoundaryFrames(
+            generation: transition.generation
+        )
+        XCTAssertTrue(forcedRelease)
+        let recovered = try XCTUnwrap(pipeline.currentSnapshotSynchronously())
+        XCTAssertEqual(recovered.generation, transition.generation)
+        XCTAssertEqual(recovered.frames, 6)
+        let repeatedRelease = await pipeline.forceReleaseCommittedBoundaryFrames(
+            generation: transition.generation
+        )
+        XCTAssertTrue(repeatedRelease, "force release must be safe to repeat after recovery")
     }
 
     func testPipelineRestoreSeedKeepsPublishedStepsMonotonic() throws {
@@ -491,6 +789,74 @@ final class AtriaR10MotionTests: XCTestCase {
         let restored = try XCTUnwrap(pipeline.ingestSynchronouslyForTesting(frame))
         XCTAssertGreaterThanOrEqual(restored.rawSteps, 90)
         XCTAssertGreaterThanOrEqual(restored.steps, 100)
+    }
+
+    func testRepeatedRestoreSeedIsIdempotentAndOnlyAddsLargerDurablePrefixDelta() {
+        let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1)
+
+        XCTAssertEqual(
+            pipeline.seedSynchronously(committedRawSteps: 90,
+                                       lastAcceptedDeviceTimestamp: 5_000).rawSteps,
+            90
+        )
+        XCTAssertEqual(
+            pipeline.seedSynchronously(committedRawSteps: 90,
+                                       lastAcceptedDeviceTimestamp: 5_000).rawSteps,
+            90,
+            "repeating the same durable restore must not add its prefix twice"
+        )
+        XCTAssertEqual(
+            pipeline.seedSynchronously(committedRawSteps: 100,
+                                       lastAcceptedDeviceTimestamp: 5_010).rawSteps,
+            100,
+            "a newer checkpoint contributes only its ten-step delta"
+        )
+    }
+
+    func testRestoreWatermarkRejectsEqualAndOlderReplayAndAcceptsNextSecond() throws {
+        let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1)
+        _ = pipeline.seedSynchronously(committedRawSteps: 50,
+                                       lastAcceptedDeviceTimestamp: 5_000)
+
+        XCTAssertNil(pipeline.ingestSynchronouslyForTesting(constantFrame(timestamp: 5_000,
+                                                                           magnitude: 1)))
+        XCTAssertNil(pipeline.ingestSynchronouslyForTesting(constantFrame(timestamp: 4_999,
+                                                                           magnitude: 1)))
+        let next = try XCTUnwrap(pipeline.ingestSynchronouslyForTesting(
+            constantFrame(timestamp: 5_001, magnitude: 1)
+        ))
+        XCTAssertEqual(next.rawSteps, 50)
+    }
+
+    func testRestoreWatermarkAcceptsDeviceTimestampWrap() throws {
+        let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1)
+        _ = pipeline.seedSynchronously(committedRawSteps: 50,
+                                       lastAcceptedDeviceTimestamp: UInt32.max - 1)
+
+        let wrapped = try XCTUnwrap(pipeline.ingestSynchronouslyForTesting(
+            constantFrame(timestamp: 1, magnitude: 1)
+        ))
+        XCTAssertEqual(wrapped.rawSteps, 50)
+    }
+
+    func testFirstRestoreDiscardsBoundedPreCheckpointReplay() throws {
+        let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1)
+        _ = try XCTUnwrap(pipeline.ingestSynchronouslyForTesting(
+            gaitFrame(timestamp: 4_998, sampleOffset: 0)
+        ))
+        _ = try XCTUnwrap(pipeline.ingestSynchronouslyForTesting(
+            gaitFrame(timestamp: 4_999, sampleOffset: 100)
+        ))
+
+        let restored = pipeline.seedSynchronously(committedRawSteps: 50,
+                                                   lastAcceptedDeviceTimestamp: 5_000)
+        XCTAssertEqual(restored.rawSteps, 50)
+        XCTAssertNil(pipeline.ingestSynchronouslyForTesting(
+            gaitFrame(timestamp: 4_999, sampleOffset: 200)
+        ))
+        XCTAssertNotNil(pipeline.ingestSynchronouslyForTesting(
+            gaitFrame(timestamp: 5_001, sampleOffset: 300)
+        ))
     }
 
     func testRestoreSeedPreservesFramesThatArrivedBeforeJournalLoad() throws {

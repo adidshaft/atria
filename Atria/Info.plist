@@ -72,8 +72,6 @@
 	</dict>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Atria can read the photo you choose only to place it behind a share card.</string>
-	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Atria can save the share card image to Photos only when you tap Save.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
