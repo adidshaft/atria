@@ -44,3 +44,11 @@ design/
 # macOS
 .DS_Store
 .build/
+
+# Imported design references (local only, never committed)
+atria-design-import/
+design-import/
+*.dc.html
+
+# Local screenshot/scratch drop folder
+/tmp/
