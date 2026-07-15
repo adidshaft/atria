@@ -6,6 +6,65 @@ extension Notification.Name {
     )
 }
 
+/// One all-day step coordinate shared by foreground Home and headless
+/// Lock-Screen commands. `liveActiveSession` is connection-local; the saved
+/// prefix must be hydrated and reconciled before a pause/resume/end command can
+/// safely compare it with the workout's Home-created starting anchor.
+struct AtriaWorkoutStepCoordinate: Equatable {
+    /// Pause/resume/end attach a count to an exact user action. Unlike a HUD
+    /// render, an action-time coordinate must not borrow even the next 1 Hz
+    /// motion frame; that would attribute post-tap steps to the earlier edge.
+    static let actionFutureTolerance: TimeInterval = 0
+    /// The HUD may retain a 15-second last-known count for continuity, but a
+    /// pause/resume/end boundary needs a detector-applied coordinate close to
+    /// the tap. R10 evaluates at 1 Hz; 2.5 seconds allows one delayed cadence
+    /// without treating a visibly stale count as complete workout evidence.
+    static let actionDetectorSnapshotMaximumAge: TimeInterval = 2.5
+
+    let cumulativeCount: Int
+    let hasEvidence: Bool
+    let isEstimated: Bool
+    let capturedAt: Date?
+    let isLiveForCompletion: Bool
+
+    static func make(savedPrefixHydrated: Bool,
+                     savedToday: Int,
+                     savedActiveSession: Int,
+                     savedActiveSessionTotal: Int,
+                     liveActiveSession: Int,
+                     hasLiveStepEvidence: Bool,
+                     isValidated: Bool,
+                     capturedAt: Date?,
+                     isConnected: Bool,
+                     reconnectPending: Bool,
+                     rangeLossBackfillPending: Bool,
+                     now: Date) -> Self? {
+        guard savedPrefixHydrated else { return nil }
+        let cumulativeCount = AtriaHomeModel.mergedStrapStepResearchCount(
+            savedToday: savedToday,
+            savedActiveSession: savedActiveSession,
+            savedActiveSessionTotal: savedActiveSessionTotal,
+            liveActiveSession: liveActiveSession
+        )
+        let hasEvidence = cumulativeCount > 0 || hasLiveStepEvidence || capturedAt != nil
+        let fresh = capturedAt.map {
+            $0 <= now.addingTimeInterval(actionFutureTolerance)
+                && now.timeIntervalSince($0) <= actionDetectorSnapshotMaximumAge
+        } ?? false
+        return Self(
+            cumulativeCount: cumulativeCount,
+            hasEvidence: hasEvidence,
+            isEstimated: hasEvidence && !isValidated,
+            capturedAt: capturedAt,
+            isLiveForCompletion: hasEvidence
+                && fresh
+                && isConnected
+                && !reconnectPending
+                && !rangeLossBackfillPending
+        )
+    }
+}
+
 /// Pure canonical-state transition used by the root runtime and unit tests.
 /// Sensor values are inputs, never inferred: pause-only step deltas are based
 /// on the strap's current cumulative count, while unavailable evidence remains
@@ -26,7 +85,12 @@ enum AtriaWorkoutCommandTransaction {
         case .pause:
             guard updated.pauseStartedAt == nil else { return updated }
             updated.pauseStartedAt = boundedDate
-            updated.pauseStartedStepCount = max(0, currentStepCount)
+            if hasCurrentStepEvidence {
+                updated.pauseStartedStepCount = max(0, currentStepCount)
+            } else {
+                updated.pauseStartedStepCount = nil
+                updated.stepAccountingIsComplete = false
+            }
         case .resume:
             guard let pauseStartedAt = updated.pauseStartedAt else { return updated }
             let resumedAt = max(boundedDate, pauseStartedAt)
@@ -35,8 +99,12 @@ enum AtriaWorkoutCommandTransaction {
                     ExcludedInterval(start: pauseStartedAt, end: resumedAt)
                 )
             }
-            if let pauseStepAnchor = updated.pauseStartedStepCount {
+            if let pauseStepAnchor = updated.pauseStartedStepCount,
+               hasCurrentStepEvidence,
+               updated.stepAccountingIsComplete {
                 updated.pausedStepCount += max(0, currentStepCount - pauseStepAnchor)
+            } else {
+                updated.stepAccountingIsComplete = false
             }
             updated.pauseStartedAt = nil
             updated.pauseStartedStepCount = nil
@@ -44,11 +112,23 @@ enum AtriaWorkoutCommandTransaction {
             // End is terminal before any route/session side effect. An open
             // pause remains represented by pauseStartedAt so recovery closes
             // it exactly at endedAt via finalizedExcludedIntervals().
-            if let pauseStepAnchor = updated.pauseStartedStepCount {
+            if let pauseStepAnchor = updated.pauseStartedStepCount,
+               hasCurrentStepEvidence,
+               updated.stepAccountingIsComplete {
                 updated.pausedStepCount += max(0, currentStepCount - pauseStepAnchor)
                 updated.pauseStartedStepCount = nil
+            } else if updated.pauseStartedAt != nil {
+                updated.pauseStartedStepCount = nil
+                updated.stepAccountingIsComplete = false
             }
-            if hasCurrentStepEvidence {
+            // End evidence is a snapshot, not a sticky progress field. A stale
+            // motion clock or pending reconnect/backfill must clear any prior
+            // provisional completion so recovery/share cannot present a partial
+            // total as the whole workout.
+            updated.completedStepCount = nil
+            updated.completedStepsAreEstimated = nil
+            updated.completedStepsCapturedAt = nil
+            if hasCurrentStepEvidence, updated.stepAccountingIsComplete {
                 updated.completedStepCount = max(
                     0,
                     currentStepCount - updated.startingStepCount - updated.pausedStepCount
@@ -75,6 +155,11 @@ final class AtriaWorkoutRuntime {
     /// the same transition. Keep one replay owner so those edges never scan the
     /// app-group command directory twice while the return animation is drawing.
     private var pendingActionReplayTask: Task<Void, Never>?
+    /// A terminal intent is the crash-safe authority for a workout whose End
+    /// command was accepted. Materializing that intent must not depend on the
+    /// Home view existing: the app can be launched into another destination or
+    /// suspended before Home's short presentation-level retry window runs.
+    private var terminalWorkoutRecoveryTask: Task<Void, Never>?
 
     init(ble: AtriaBLEManager,
          store: SessionStore,
@@ -84,20 +169,29 @@ final class AtriaWorkoutRuntime {
         self.routeRecorder = routeRecorder
     }
 
+    func suspendForCanonicalRestoreFailure() {
+        pendingActionReplayTask?.cancel()
+        pendingActionReplayTask = nil
+        terminalWorkoutRecoveryTask?.cancel()
+        terminalWorkoutRecoveryTask = nil
+    }
+
     func handleLiveActivityCommand(
         _ requestedAction: AtriaLiveWorkoutControlCommand,
         workoutStartedAt: Date,
         issuedAt: Date
     ) async -> AtriaLiveWorkoutCanonicalCommandState? {
+        await store.waitForDeferredSessionLoadIfNeeded()
+        guard store.hasLoadedSavedSessions else { return nil }
         let now = Date()
         let commands = await Self.performPendingActionLoad {
             AtriaLiveWorkoutActionStore.consumeAll(now: now)
         }
-        return applyPendingActions(commands: commands,
-                                   expectedAction: requestedAction,
-                                   expectedWorkoutStartedAt: workoutStartedAt,
-                                   expectedIssuedAt: issuedAt,
-                                   now: now)
+        return await applyPendingActions(commands: commands,
+                                         expectedAction: requestedAction,
+                                         expectedWorkoutStartedAt: workoutStartedAt,
+                                         expectedIssuedAt: issuedAt,
+                                         now: now)
     }
 
     /// Schedule root-launch/foreground replay without doing app-group file I/O
@@ -109,9 +203,98 @@ final class AtriaWorkoutRuntime {
             // the returning frame before any command side effect is applied.
             await Task.yield()
             guard let self else { return }
+            guard await AtriaPendingWorkoutIntent.preparePersistence() else {
+                self.pendingActionReplayTask = nil
+                return
+            }
             _ = await self.replayPendingActions()
             self.pendingActionReplayTask = nil
+            self.scheduleTerminalWorkoutRecovery()
         }
+    }
+
+    /// App-lifetime completion owner for an ended workout intent. Failed sensor,
+    /// route, or persistence preparation keeps the immutable intent in place and
+    /// retries with a bounded cadence for as long as this process remains alive.
+    /// Confirmation is idempotent by workout ID, so a presentation-layer attempt
+    /// racing this worker cannot create a duplicate workout.
+    func scheduleTerminalWorkoutRecovery() {
+        guard terminalWorkoutRecoveryTask == nil,
+              AtriaPendingWorkoutIntent.load()?.endedAt != nil else { return }
+        terminalWorkoutRecoveryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.terminalWorkoutRecoveryTask = nil }
+            var retryDelay: TimeInterval = 2
+            while !Task.isCancelled {
+                await self.store.waitForDeferredSessionLoadIfNeeded()
+                if await self.recoverTerminalWorkoutIntentIfNeeded() {
+                    return
+                }
+                do {
+                    try await Task.sleep(for: .seconds(retryDelay))
+                } catch {
+                    return
+                }
+                retryDelay = min(retryDelay * 2, 5 * 60)
+            }
+        }
+    }
+
+    /// Returns true when there is no longer a terminal intent for this worker,
+    /// including successful completion or a concurrent owner replacing it.
+    private func recoverTerminalWorkoutIntentIfNeeded() async -> Bool {
+        guard let intent = AtriaPendingWorkoutIntent.load(),
+              let endedAt = intent.endedAt else { return true }
+        let routeDraft = await routeRecorder.finalizedDraft(
+            startedAt: intent.startedAt,
+            activityType: intent.resolvedActivityType,
+            endedAt: endedAt
+        )
+        guard AtriaPendingWorkoutIntent.load() == intent else { return true }
+
+        let confirmed = await store.confirmWorkoutWindowForUIAsync(
+            start: intent.startedAt,
+            end: endedAt,
+            rest: intent.calculationContext?.restingHeartRate
+                ?? store.baseline.restingInt
+                ?? 60,
+            maxHR: intent.calculationContext?.maximumHeartRate
+                ?? store.profile.maxHR,
+            source: "pending_live_workout_root_recovery",
+            preserveUserDeclaredActivityWithoutHeartRate: true,
+            activityType: intent.resolvedActivityType == .other ? nil : intent.activityType,
+            strengthSets: intent.strengthSets,
+            excludedIntervals: intent.finalizedExcludedIntervals(),
+            workoutSteps: intent.completedStepCount,
+            workoutStepsAreEstimated: intent.completedStepsAreEstimated,
+            workoutStepsCapturedAt: intent.completedStepsCapturedAt
+        )
+        guard let confirmed else { return false }
+
+        if let routeDraft,
+           await AtriaWorkoutRouteStore.saveAsync(routeDraft, workoutID: confirmed.id) == nil {
+            // The canonical workout is safe, but retain the terminal intent so a
+            // later pass can attach the exact route before clearing its checkpoint.
+            return false
+        }
+        let persisted = await withCheckedContinuation {
+            (continuation: CheckedContinuation<Bool, Never>) in
+            store.flushScheduledPersistenceAsync(reason: "root_terminal_workout_recovery") { succeeded in
+                continuation.resume(returning: succeeded)
+            }
+        }
+        guard persisted else { return false }
+        guard AtriaPendingWorkoutIntent.load() == intent else { return true }
+        guard await AtriaPendingWorkoutIntent.clearIfUnchanged(intent) else { return false }
+        // The intent is fully recovered and cleared; release the strap motion
+        // ownership lease so no bounded activation outlives the workout.
+        ble.endWorkoutMotionLease(reason: "terminal_recovery")
+        routeRecorder.discardDurableCheckpoint()
+        store.exportToHealthKit()
+        AtriaDebugLog("ATRIADBG live_workout_recovery status=confirmed owner=root workout_id=%@ route=%d",
+                      confirmed.id,
+                      routeDraft == nil ? 0 : 1)
+        return true
     }
 
     /// Root-launch replay for a command whose process was interrupted after
@@ -119,14 +302,16 @@ final class AtriaWorkoutRuntime {
     /// away from MainActor; only the canonical state transaction returns here.
     @discardableResult
     func replayPendingActions(now: Date = Date()) async -> AtriaLiveWorkoutCanonicalCommandState? {
+        await store.waitForDeferredSessionLoadIfNeeded()
+        guard store.hasLoadedSavedSessions else { return nil }
         let commands = await Self.performPendingActionLoad {
             AtriaLiveWorkoutActionStore.consumeAll(now: now)
         }
-        return applyPendingActions(commands: commands,
-                                   expectedAction: nil,
-                                   expectedWorkoutStartedAt: nil,
-                                   expectedIssuedAt: nil,
-                                   now: now)
+        return await applyPendingActions(commands: commands,
+                                         expectedAction: nil,
+                                         expectedWorkoutStartedAt: nil,
+                                         expectedIssuedAt: nil,
+                                         now: now)
     }
 
     /// Small reusable seam that proves filesystem-backed command discovery is
@@ -143,17 +328,20 @@ final class AtriaWorkoutRuntime {
         expectedWorkoutStartedAt: Date?,
         expectedIssuedAt: Date?,
         now: Date
-    ) -> AtriaLiveWorkoutCanonicalCommandState? {
+    ) async -> AtriaLiveWorkoutCanonicalCommandState? {
         guard !commands.isEmpty else { return nil }
 
         var canonicalState: AtriaLiveWorkoutCanonicalCommandState?
         var didApplyExpectedCommand = expectedAction == nil
-        for command in commands {
+        for (commandIndex, command) in commands.enumerated() {
             guard var intent = AtriaPendingWorkoutIntent.load() else {
                 // Startup restoration can race the App Intent host. Release the
-                // claim immediately; root-launch replay will retry it.
-                AtriaLiveWorkoutActionStore.release(command)
-                continue
+                // complete ordered tail; applying a later Resume before this
+                // Pause would invert canonical state.
+                for pending in commands[commandIndex...] {
+                    AtriaLiveWorkoutActionStore.release(pending)
+                }
+                break
             }
             guard AtriaLiveWorkoutActionStore.matches(
                 command,
@@ -167,27 +355,56 @@ final class AtriaWorkoutRuntime {
                 workoutStartedAt: intent.startedAt,
                 now: now
             )
-            let motionCapturedAt = ble.liveStrapMotionCapturedAt
-                ?? AtriaStrapStepLiveStatus.persistedMotionDate()
+            guard let motionBoundaryAt = await ble.synchronizeCurrentR10MotionAccounting() else {
+                for pending in commands[commandIndex...] {
+                    AtriaLiveWorkoutActionStore.release(pending)
+                }
+                break
+            }
+            // A promptly handled command uses the FIFO marker as its exact step
+            // edge. A delayed launch replay preserves the original action time
+            // and therefore fails live step evidence closed instead of borrowing
+            // motion that occurred minutes later.
+            let stepReferenceDate = motionBoundaryAt.timeIntervalSince(actionDate)
+                <= AtriaWorkoutStepCoordinate.actionDetectorSnapshotMaximumAge
+                ? max(actionDate, motionBoundaryAt)
+                : actionDate
+            guard let stepCoordinate = currentStepCoordinate(now: stepReferenceDate) else {
+                // The Home-created starting anchor is in the merged all-day
+                // coordinate. Until the saved prefix is hydrated, comparing it
+                // with a connection-local count can underflow or invent paused
+                // steps. Keep the entire ordered tail pending for a later replay.
+                for pending in commands[commandIndex...] {
+                    AtriaLiveWorkoutActionStore.release(pending)
+                }
+                break
+            }
             guard let transitioned = AtriaWorkoutCommandTransaction.applying(
                 command.action,
                 to: intent,
                 at: actionDate,
-                currentStepCount: ble.liveStrapStepResearchCount,
-                hasCurrentStepEvidence: ble.liveStrapStepResearchCount > 0 || motionCapturedAt != nil,
-                currentStepsAreEstimated: !WidgetSnapshotPublisher.strapStepsAreValidated(
-                    state: ble.liveStrapStepResearchState
-                ),
-                currentStepsCapturedAt: motionCapturedAt
+                currentStepCount: stepCoordinate.cumulativeCount,
+                hasCurrentStepEvidence: stepCoordinate.isLiveForCompletion,
+                currentStepsAreEstimated: stepCoordinate.isEstimated,
+                currentStepsCapturedAt: stepCoordinate.isLiveForCompletion
+                    ? stepCoordinate.capturedAt : nil
             ) else {
                 // A terminal intent proves this tap is obsolete and safe to ack.
                 AtriaLiveWorkoutActionStore.acknowledge(command)
                 continue
             }
+            let original = intent
             intent = transitioned
-            guard intent.save() else {
-                AtriaLiveWorkoutActionStore.release(command)
-                continue
+            intent.persistenceRevision = command.action == .end
+                ? .max
+                : original.persistenceRevision &+ 1
+            guard await intent.replacePersisted(expected: original) else {
+                // Preserve FIFO semantics across a transient write/CAS failure.
+                // Every later claimed action returns to pending with this one.
+                for pending in commands[commandIndex...] {
+                    AtriaLiveWorkoutActionStore.release(pending)
+                }
+                break
             }
 
             applyDurableSideEffects(for: command.action,
@@ -213,6 +430,7 @@ final class AtriaWorkoutRuntime {
                 // End is terminal for this immutable workout token. Commands
                 // later in the same burst cannot safely alter the ended record.
                 commands.forEach(AtriaLiveWorkoutActionStore.acknowledge)
+                scheduleTerminalWorkoutRecovery()
                 break
             }
         }
@@ -221,6 +439,34 @@ final class AtriaWorkoutRuntime {
         NotificationCenter.default.post(name: .atriaWorkoutRuntimeDidApplyCommand,
                                         object: nil)
         return canonicalState
+    }
+
+    private func currentStepCoordinate(now: Date) -> AtriaWorkoutStepCoordinate? {
+        guard store.hasLoadedSavedSessions else { return nil }
+        let rest = store.baseline.restingInt ?? 60
+        let saved = store.homeSavedAggregate(
+            rest: rest,
+            maxHR: store.profile.maxHR,
+            activeSessionID: ble.currentLiveSessionID,
+            now: now
+        )
+        let capturedAt = ble.liveStrapStepCountCapturedAt
+        return AtriaWorkoutStepCoordinate.make(
+            savedPrefixHydrated: true,
+            savedToday: saved.savedTodayStrapSteps,
+            savedActiveSession: saved.savedActiveSessionStrapSteps,
+            savedActiveSessionTotal: saved.savedActiveSessionTotalStrapSteps,
+            liveActiveSession: ble.liveStrapStepResearchCount,
+            hasLiveStepEvidence: ble.liveStrapStepResearchCount > 0,
+            isValidated: WidgetSnapshotPublisher.strapStepsAreValidated(
+                state: ble.liveStrapStepResearchState
+            ),
+            capturedAt: capturedAt,
+            isConnected: ble.status == .connected,
+            reconnectPending: ble.pendingKnownReconnectStartedAt != nil,
+            rangeLossBackfillPending: ble.rangeLossBackfillPending,
+            now: now
+        )
     }
 
     private func applyDurableSideEffects(for action: AtriaLiveWorkoutAction,

@@ -201,9 +201,10 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
             rest: 60,
             maxHR: 190
         ).get()
-        XCTAssertEqual(windowEdited.workoutSteps, 842)
-        XCTAssertEqual(windowEdited.workoutStepsAreEstimated, false)
-        XCTAssertEqual(windowEdited.workoutStepsCapturedAt, capturedAt)
+        XCTAssertNil(windowEdited.workoutSteps,
+                     "A time edit must not reuse a step count from the old absolute window")
+        XCTAssertNil(windowEdited.workoutStepsAreEstimated)
+        XCTAssertNil(windowEdited.workoutStepsCapturedAt)
     }
 
     func testInitiallySelectedOutdoorWorkoutStartsRouteRecorder() throws {
@@ -249,6 +250,11 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                 .appendingPathComponent("Atria/AtriaHomeView.swift"),
             encoding: .utf8
         )
+        let routeStore = try String(
+            contentsOf: testsDirectory.deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaWorkoutRoute.swift"),
+            encoding: .utf8
+        )
         let start = try XCTUnwrap(source.range(of: "private func endWorkoutSession(startedAt: Date,"))
         let end = try XCTUnwrap(source.range(of: "private func workoutShareSnapshot(for workout:",
                                              range: start.upperBound..<source.endIndex))
@@ -262,7 +268,8 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertTrue(source.contains("case persisted("))
         XCTAssertTrue(source.contains("workout: UserConfirmedWorkout"),
                       "The shareable completion state must carry canonical persistence proof")
-        XCTAssertTrue(source.contains("snapshot.routeFileURL = nil"),
+        XCTAssertTrue(routeStore.contains("routeFileURL: includeGPX ? gpxURL(for: route) : nil"))
+        XCTAssertTrue(routeStore.contains("includeGPX: savedRoute != nil"),
                       "A canonical workout whose route is attaching must not expose a non-durable GPX file")
         XCTAssertTrue(completion.contains("message: workoutCompletionMessage(confirmed)"))
         XCTAssertFalse(completion.contains("queued it for Health export"),
@@ -284,19 +291,19 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         let end = try XCTUnwrap(home.range(of: "private func workoutShareSnapshot(for workout:",
                                            range: start.upperBound..<home.endIndex))
         let completion = String(home[start.lowerBound..<end.lowerBound])
-        let persistenceGuard = try XCTUnwrap(completion.range(of: "guard finalIntent.save() else"))
+        let persistenceGuard = try XCTUnwrap(completion.range(of: "guard let finalIntent = await finalIntent.persistTerminal() else"))
         let clearActiveWorkout = try XCTUnwrap(completion.range(of: "workoutSession = nil"))
         let asynchronousCompletion = try XCTUnwrap(completion.range(of: "Task { @MainActor in"))
 
-        XCTAssertTrue(completion.contains("excludedIntervals: [ExcludedInterval]) -> Bool"))
+        XCTAssertTrue(completion.contains("excludedIntervals: [ExcludedInterval]) async -> Bool"))
         XCTAssertLessThan(persistenceGuard.lowerBound, clearActiveWorkout.lowerBound)
         XCTAssertLessThan(persistenceGuard.lowerBound, asynchronousCompletion.lowerBound)
         XCTAssertTrue(completion.contains("status=terminal_intent_save_failed"))
         XCTAssertTrue(completion.contains("return false"))
         XCTAssertTrue(completion.contains("return true"))
 
-        XCTAssertTrue(live.contains("let onStop: () -> Bool"))
-        XCTAssertTrue(live.contains("if onStop() {\n            dismiss()"),
+        XCTAssertTrue(live.contains("let onStop: () async -> Bool"))
+        XCTAssertTrue(live.contains("if await onStop() {\n                dismiss()"),
                       "A successful terminal save must preserve the existing dismissal flow")
         XCTAssertTrue(live.contains("showEndPersistenceError = true"))
         XCTAssertTrue(live.contains(".alert(\"Workout still running\""))
@@ -414,14 +421,27 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                                                                     requestedDuration: 50 * 60))
         XCTAssertTrue(SessionStore.explicitWorkoutSaveIsConfirmable(sampleCount: 2,
                                                                     requestedDuration: 60))
+        XCTAssertTrue(SessionStore.explicitWorkoutSaveIsConfirmable(sampleCount: 2,
+                                                                    requestedDuration: 1),
+                      "an explicitly ended short workout must not enter an impossible retry loop")
         XCTAssertFalse(SessionStore.explicitWorkoutSaveIsConfirmable(sampleCount: 1,
                                                                      requestedDuration: 50 * 60))
+        XCTAssertFalse(SessionStore.explicitWorkoutSaveIsConfirmable(sampleCount: 2,
+                                                                     requestedDuration: 0))
     }
 
     func testExplicitUserActivityCanPersistWithoutInventingSensorMetrics() throws {
         XCTAssertTrue(SessionStore.metadataOnlyWorkoutSaveIsConfirmable(
             isExplicitUserActivity: true,
             requestedDuration: 30 * 60
+        ))
+        XCTAssertTrue(SessionStore.metadataOnlyWorkoutSaveIsConfirmable(
+            isExplicitUserActivity: true,
+            requestedDuration: 1
+        ), "a user-started short activity must still materialize in Activity Center")
+        XCTAssertFalse(SessionStore.metadataOnlyWorkoutSaveIsConfirmable(
+            isExplicitUserActivity: true,
+            requestedDuration: 0
         ))
         XCTAssertFalse(SessionStore.metadataOnlyWorkoutSaveIsConfirmable(
             isExplicitUserActivity: false,
@@ -767,6 +787,223 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertNil(AtriaPendingWorkoutIntent.load(defaults: defaults))
     }
 
+    func testPendingWorkoutAtomicStoreSurvivesColdReloadAndWritesOffMain() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pending-intent-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        let intent = pendingAtomicIntent(start: start)
+        let writer = AtriaPendingWorkoutIntentStore(directoryURL: directory,
+                                                    legacyDefaults: nil)
+
+        let created = await writer.createIfAbsent(intent)
+        XCTAssertTrue(created)
+        XCTAssertFalse(writer.lastPersistenceWasOnMainThread)
+        XCTAssertEqual(writer.snapshot, intent)
+
+        // A fresh instance has no in-memory/defaults state: the atomic file is
+        // the only evidence available after a process termination.
+        let cold = AtriaPendingWorkoutIntentStore(directoryURL: directory,
+                                                  legacyDefaults: nil)
+        let prepared = await cold.prepare()
+        XCTAssertTrue(prepared)
+        XCTAssertEqual(cold.snapshot, intent)
+    }
+
+    func testColdPendingWorkoutHydrationConservativelyProtectsBLEContinuity() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pending-cold-policy-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AtriaPendingWorkoutIntentStore(directoryURL: directory,
+                                                   legacyDefaults: nil)
+        XCTAssertFalse(store.isPrepared)
+        XCTAssertTrue(store.isActiveForBLEContinuity(),
+                      "Unknown cold state must not downgrade BLE before disk hydration")
+        let prepared = await store.prepare()
+        XCTAssertTrue(prepared)
+        XCTAssertFalse(store.isActiveForBLEContinuity(),
+                       "A hydrated empty authority can safely leave workout continuity")
+    }
+
+    func testPendingWorkoutAtomicStoreTerminalRejectsLateProgress() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pending-terminal-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let start = Date(timeIntervalSince1970: 2_000_100_000)
+        let original = pendingAtomicIntent(start: start)
+        let store = AtriaPendingWorkoutIntentStore(directoryURL: directory,
+                                                   legacyDefaults: nil)
+        let created = await store.createIfAbsent(original)
+        XCTAssertTrue(created)
+
+        var terminal = original
+        terminal.endedAt = start.addingTimeInterval(600)
+        terminal.persistenceRevision = .max
+        let terminalSaved = await store.persistTerminal(terminal)
+        XCTAssertNotNil(terminalSaved)
+        var lateProgress = original
+        lateProgress.targetStrain = 12
+        lateProgress.persistenceRevision = 1
+        let lateSaved = await store.persistProgress(lateProgress)
+        XCTAssertFalse(lateSaved)
+        XCTAssertEqual(store.snapshot, terminal)
+    }
+
+    func testPendingWorkoutAtomicStoreTerminalRebasesOnNewestCanonicalProgress() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pending-terminal-race-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let start = Date(timeIntervalSince1970: 2_000_150_000)
+        let original = pendingAtomicIntent(start: start)
+        let store = AtriaPendingWorkoutIntentStore(directoryURL: directory,
+                                                   legacyDefaults: nil)
+        let created = await store.createIfAbsent(original)
+        XCTAssertTrue(created)
+        var newest = original
+        newest.persistenceRevision = 4
+        newest.pauseStartedAt = start.addingTimeInterval(300)
+        newest.excludedIntervals = [ExcludedInterval(start: start.addingTimeInterval(100),
+                                                     end: start.addingTimeInterval(150))]
+        let newestSaved = await store.persistProgress(newest)
+        XCTAssertTrue(newestSaved)
+
+        // This stale Home capture was made before the Lock Screen pause above.
+        var staleTerminal = original
+        staleTerminal.endedAt = start.addingTimeInterval(600)
+        staleTerminal.completedStepCount = 88
+        staleTerminal.activityType = AtriaWorkoutActivityType.strength.rawValue
+        staleTerminal.strengthSets = [LoggedSet(exercise: "Bench press",
+                                               weightKg: 80,
+                                               reps: 8,
+                                               rpe: 8,
+                                               t: start.addingTimeInterval(500))]
+        staleTerminal.persistenceRevision = .max
+        let committedValue = await store.persistTerminal(staleTerminal)
+        let committed = try XCTUnwrap(committedValue)
+        XCTAssertEqual(committed.pauseStartedAt, newest.pauseStartedAt)
+        XCTAssertEqual(committed.excludedIntervals, newest.excludedIntervals)
+        XCTAssertFalse(committed.stepAccountingIsComplete)
+        XCTAssertNil(committed.completedStepCount,
+                     "A terminal total derived before the canonical pause must fail closed")
+        XCTAssertNil(committed.completedStepsAreEstimated)
+        XCTAssertNil(committed.completedStepsCapturedAt)
+        XCTAssertEqual(committed.activityType, staleTerminal.activityType)
+        XCTAssertEqual(committed.strengthSets, staleTerminal.strengthSets)
+        XCTAssertEqual(committed.endedAt, staleTerminal.endedAt)
+        XCTAssertEqual(store.snapshot, committed)
+    }
+
+    func testPendingWorkoutAtomicStoreOldClearCannotDeleteNewerState() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pending-cas-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = pendingAtomicIntent(start: Date(timeIntervalSince1970: 2_000_200_000))
+        var updated = original
+        updated.targetStrain = 8
+        let store = AtriaPendingWorkoutIntentStore(directoryURL: directory,
+                                                   legacyDefaults: nil)
+        let created = await store.createIfAbsent(original)
+        XCTAssertTrue(created)
+        updated.persistenceRevision = 1
+        let replaced = await store.replace(expected: original, with: updated)
+        XCTAssertTrue(replaced)
+        let oldCleared = await store.clearIfUnchanged(original)
+        XCTAssertFalse(oldCleared)
+        XCTAssertEqual(store.snapshot, updated)
+        let updatedCleared = await store.clearIfUnchanged(updated)
+        XCTAssertTrue(updatedCleared)
+        XCTAssertNil(store.snapshot)
+    }
+
+    func testPendingWorkoutAtomicStoreDelayedOlderProgressCannotRevertNewerOpenProgress() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pending-order-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = pendingAtomicIntent(start: Date(timeIntervalSince1970: 2_000_250_000))
+        var older = original
+        older.persistenceRevision = 1
+        older.targetStrain = 6
+        var newer = original
+        newer.persistenceRevision = 2
+        newer.targetStrain = 12
+        let store = AtriaPendingWorkoutIntentStore(directoryURL: directory,
+                                                   legacyDefaults: nil)
+        let created = await store.createIfAbsent(original)
+        XCTAssertTrue(created)
+        let newerSaved = await store.persistProgress(newer)
+        XCTAssertTrue(newerSaved)
+        // Deliberately submit the old capture after the newer one has committed.
+        let delayedOlderSaved = await store.persistProgress(older)
+        XCTAssertFalse(delayedOlderSaved)
+        XCTAssertEqual(store.snapshot, newer)
+    }
+
+    func testPendingWorkoutAtomicStoreMigratesLegacyOnlyAfterFileCommit() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pending-migrate-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let suite = "AtriaWorkoutSaveDurabilityTests.migrate.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let intent = pendingAtomicIntent(start: Date(timeIntervalSince1970: 2_000_300_000))
+        XCTAssertTrue(intent.save(defaults: defaults))
+
+        let store = AtriaPendingWorkoutIntentStore(directoryURL: directory,
+                                                   legacyDefaults: defaults)
+        let migrated = await store.prepare()
+        XCTAssertTrue(migrated)
+        XCTAssertEqual(store.snapshot, intent)
+        XCTAssertNil(defaults.data(forKey: AtriaPendingWorkoutIntent.defaultsKey))
+        let cold = AtriaPendingWorkoutIntentStore(directoryURL: directory,
+                                                  legacyDefaults: nil)
+        let coldPrepared = await cold.prepare()
+        XCTAssertTrue(coldPrepared)
+        XCTAssertEqual(cold.snapshot, intent)
+    }
+
+    func testPendingWorkoutAtomicStoreCorruptOrUnwritableAuthorityFailsClosed() async throws {
+        let corruptDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pending-corrupt-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: corruptDirectory,
+                                                withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: corruptDirectory) }
+        try Data("not-json".utf8).write(
+            to: corruptDirectory.appendingPathComponent("pending-workout-intent-v1.json"),
+            options: .atomic
+        )
+        let corrupt = AtriaPendingWorkoutIntentStore(directoryURL: corruptDirectory,
+                                                     legacyDefaults: nil)
+        let corruptPrepared = await corrupt.prepare()
+        XCTAssertFalse(corruptPrepared)
+        let corruptCreated = await corrupt.createIfAbsent(
+            pendingAtomicIntent(start: Date(timeIntervalSince1970: 2_000_400_000))
+        )
+        XCTAssertFalse(corruptCreated)
+        XCTAssertNil(corrupt.snapshot)
+
+        let blocked = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pending-blocked-\(UUID().uuidString)")
+        try Data([0]).write(to: blocked)
+        defer { try? FileManager.default.removeItem(at: blocked) }
+        let unwritable = AtriaPendingWorkoutIntentStore(directoryURL: blocked,
+                                                        legacyDefaults: nil)
+        let unwritableCreated = await unwritable.createIfAbsent(
+            pendingAtomicIntent(start: Date(timeIntervalSince1970: 2_000_500_000))
+        )
+        XCTAssertFalse(unwritableCreated)
+        XCTAssertNil(unwritable.snapshot)
+    }
+
+    private func pendingAtomicIntent(start: Date) -> AtriaPendingWorkoutIntent {
+        AtriaPendingWorkoutIntent(startedAt: start,
+                                  endedAt: nil,
+                                  activityType: AtriaWorkoutActivityType.walking.rawValue,
+                                  strengthSets: [],
+                                  excludedIntervals: [],
+                                  startingStepCount: 42,
+                                  startingDayStrain: 1.5)
+    }
+
     func testCompletionClosesPauseWithoutDependingOnVisibleWorkoutView() {
         let start = Date(timeIntervalSince1970: 1_783_767_620)
         let endedAt = start.addingTimeInterval(50 * 60)
@@ -792,13 +1029,16 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
             .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
-        let start = try XCTUnwrap(source.range(of: "guard let savedRoute else"))
+        let routeStore = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaWorkoutRoute.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "guard preparedRoute.routeWasPersisted else"))
         let tail = source[start.lowerBound...]
         let end = try XCTUnwrap(tail.range(of: "return"))
         let routeFailure = String(tail[..<end.upperBound])
 
-        XCTAssertTrue(routeFailure.contains("routeDraft: routeDraft"))
-        XCTAssertTrue(source.contains("snapshot.routeFileURL = nil"),
+        XCTAssertTrue(routeFailure.contains("routeArtifact: preparedRoute"))
+        XCTAssertTrue(routeStore.contains("includeGPX: savedRoute != nil"))
+        XCTAssertTrue(routeStore.contains("routeFileURL: includeGPX ? gpxURL(for: route) : nil"),
                       "An in-memory route preview must never imply the exact GPX write succeeded")
     }
 
@@ -1106,7 +1346,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertEqual(result.excludedIntervals, [pause])
     }
 
-    func testWorkoutEndDismissesBeforeCompletionAwarePersistenceAndKeepsIntentUntilFlush() throws {
+    func testWorkoutEndAwaitsAtomicIntentBeforeDismissAndKeepsIntentUntilFlush() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let source = try String(
             contentsOf: testsDirectory.deletingLastPathComponent()
@@ -1115,7 +1355,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         )
         let start = try XCTUnwrap(source.range(of: "private func endWorkoutSession(startedAt: Date,"))
         let tail = String(source[start.lowerBound...])
-        let intent = try XCTUnwrap(tail.range(of: "persistPendingWorkoutProgress(endedAt: endedAt)"))
+        let intent = try XCTUnwrap(tail.range(of: "await finalIntent.persistTerminal()"))
         let dismiss = try XCTUnwrap(tail.range(of: "workoutSession = nil"))
         let delayedWork = try XCTUnwrap(tail.range(of: "Task { @MainActor in"))
 
@@ -1124,6 +1364,25 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertTrue(tail.contains("requestPersistenceFlush(reason: \"live_workout_end_checkpoint\")"))
         XCTAssertTrue(tail.contains("flushScheduledPersistenceAsync(reason: \"live_workout_end_confirmed\")"))
         XCTAssertFalse(tail.contains("flushScheduledPersistence(reason: \"live_workout_end\")"))
+    }
+
+    func testWorkoutEndConsumesRebasedCanonicalIntentForCheckpointAndConfirmation() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(
+            contentsOf: testsDirectory.deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaHomeView.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(of: "private func endWorkoutSession(startedAt: Date,"))
+        let end = try XCTUnwrap(source.range(of: "private func workoutShareSnapshot(for workout:",
+                                             range: start.upperBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        let durable = try XCTUnwrap(body.range(of: "guard let finalIntent = await finalIntent.persistTerminal() else"))
+        let normalized = try XCTUnwrap(body.range(of: "let finalizedExcludedIntervals = finalIntent.finalizedExcludedIntervals()"))
+        XCTAssertLessThan(durable.lowerBound, normalized.lowerBound)
+        XCTAssertTrue(body.contains("strengthSets: finalIntent.strengthSets"))
+        XCTAssertTrue(body.contains("excludedIntervals: finalizedExcludedIntervals"))
+        XCTAssertFalse(String(body[normalized.lowerBound...]).contains("strengthSets: strengthSets"))
     }
 
     func testGuidedWorkoutSaveOffersTheSameShareExperienceAsLiveWorkoutCompletion() throws {
@@ -1143,13 +1402,14 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertTrue(saveFlow.contains("return confirmed"))
         XCTAssertTrue(saveFlow.contains("let workoutID = confirmed.id"),
                       "Route lookup must capture only the canonical persisted ID before leaving the main actor")
-        XCTAssertTrue(saveFlow.contains("Task.detached(priority: .userInitiated)"))
-        XCTAssertTrue(saveFlow.contains("AtriaWorkoutRouteStore.load(workoutID: workoutID)"),
-                      "Post-save sharing must resolve route data by the persisted workout ID")
+        XCTAssertTrue(saveFlow.contains("loadPreparedShareArtifactAsync(workoutID: workoutID)"),
+                      "Post-save sharing must resolve bounded route artifacts by the persisted workout ID")
+        XCTAssertFalse(saveFlow.contains("AtriaWorkoutRouteStore.load(workoutID: workoutID)"),
+                       "The full canonical route must not cross back to Home's main actor")
         XCTAssertTrue(saveFlow.contains("await Task.yield()"),
                       "The saved receipt must wait for the review save callback and dismissal turn")
-        XCTAssertTrue(saveFlow.contains("snapshot: workoutShareSnapshot(for: confirmed, route: savedRoute)"),
-                      "The share composer must receive canonical saved metrics and route data")
+        XCTAssertTrue(saveFlow.contains("routeArtifact: routeArtifact"),
+                      "The share composer must receive canonical saved metrics and bounded route data")
         XCTAssertTrue(source.contains("settlingCandidateWindow: (draft.suggestedStart, draft.suggestedEnd)"),
                       "A guided review must preserve the detector's original window through an adjusted Save")
         XCTAssertTrue(saveFlow.contains("settlingCandidateWindow: settlingCandidateWindow"),
@@ -1184,7 +1444,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
 
         let rejected = store.confirmWorkoutWindowForUI(
             start: adjustedStart,
-            end: adjustedStart.addingTimeInterval(30),
+            end: adjustedStart,
             rest: 60,
             maxHR: 190,
             source: marker,
@@ -1296,4 +1556,160 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                              zoneSeconds: ["aerobic": 60],
                              eventTimeZoneIdentifier: "Asia/Kolkata")
     }
+
+    // MARK: Exact workout-start journal ownership
+
+    private func durabilitySource(_ name: String) throws -> String {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/\(name)")
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    func testWorkoutCheckpointLabelPreservesAllDayJournalWithoutStartBoundary() {
+        let workoutStart = Date(timeIntervalSince1970: 805_813_649)
+        let allDayFirstSample = Date(timeIntervalSince1970: 805_809_485)
+        // Buffer still contains pre-workout all-day samples: the workout label
+        // must never be applied to the retained journal (F799A190 corruption).
+        let preserved = AtriaBLEManager.workoutCheckpointLabel(
+            requested: "Live workout",
+            allDayLabel: "All-day wear",
+            firstSampleAt: allDayFirstSample,
+            notBefore: workoutStart
+        )
+        XCTAssertEqual(preserved.label, "All-day wear")
+        XCTAssertTrue(preserved.preservedAllDay)
+        // Boundary was committed: buffer begins exactly at the workout start.
+        let owned = AtriaBLEManager.workoutCheckpointLabel(
+            requested: "Live workout",
+            allDayLabel: "All-day wear",
+            firstSampleAt: workoutStart,
+            notBefore: workoutStart
+        )
+        XCTAssertEqual(owned.label, "Live workout")
+        XCTAssertFalse(owned.preservedAllDay)
+        // Later samples only: still owned by the workout.
+        let laterOwned = AtriaBLEManager.workoutCheckpointLabel(
+            requested: "Live workout",
+            allDayLabel: "All-day wear",
+            firstSampleAt: workoutStart.addingTimeInterval(4),
+            notBefore: workoutStart
+        )
+        XCTAssertEqual(laterOwned.label, "Live workout")
+        // No ownership constraint (non-workout checkpoints) keeps the request.
+        XCTAssertEqual(AtriaBLEManager.workoutCheckpointLabel(
+            requested: "Checkpoint",
+            allDayLabel: "All-day wear",
+            firstSampleAt: allDayFirstSample,
+            notBefore: nil
+        ).label, "Checkpoint")
+    }
+
+    func testWorkoutStartBoundaryRequirementUsesExactPersistedStart() {
+        let startedAt = Date(timeIntervalSince1970: 805_813_649)
+        XCTAssertTrue(AtriaBLEManager.workoutStartBoundaryIsRequired(
+            firstSampleAt: startedAt.addingTimeInterval(-4_164),
+            startedAt: startedAt
+        ))
+        XCTAssertFalse(AtriaBLEManager.workoutStartBoundaryIsRequired(
+            firstSampleAt: startedAt,
+            startedAt: startedAt
+        ))
+        XCTAssertFalse(AtriaBLEManager.workoutStartBoundaryIsRequired(
+            firstSampleAt: startedAt.addingTimeInterval(1),
+            startedAt: startedAt
+        ))
+        XCTAssertFalse(AtriaBLEManager.workoutStartBoundaryIsRequired(
+            firstSampleAt: nil,
+            startedAt: startedAt
+        ))
+    }
+
+    func testWorkoutStartCommitsExactBoundaryAfterIntentPersistence() throws {
+        let home = try durabilitySource("AtriaHomeView.swift")
+        let start = try XCTUnwrap(home.range(
+            of: "private func makeWorkoutSession"
+        ))
+        let end = try XCTUnwrap(home.range(
+            of: "private func beginWorkoutSession",
+            range: start.upperBound..<home.endIndex
+        ))
+        let body = String(home[start.lowerBound..<end.lowerBound])
+        let intentPersisted = try XCTUnwrap(body.range(
+            of: "guard await intent.createPersisted()"
+        ))
+        let boundary = try XCTUnwrap(body.range(
+            of: "commitWorkoutStartSessionBoundary(startedAt: boundaryStart)"
+        ))
+        let lease = try XCTUnwrap(body.range(
+            of: "beginWorkoutMotionLease(startedAt: session.start"
+        ))
+        XCTAssertLessThan(intentPersisted.lowerBound, boundary.lowerBound,
+                          "The exact boundary must follow the persisted intent start")
+        XCTAssertLessThan(boundary.lowerBound, lease.lowerBound)
+        XCTAssertTrue(body.contains("status=start_boundary_persist_failed action=retain_all_day_journal"))
+    }
+
+    func testWorkoutEndCheckpointPassesPersistedStartOwnership() throws {
+        let home = try durabilitySource("AtriaHomeView.swift")
+        let start = try XCTUnwrap(home.range(
+            of: "private func endWorkoutSession(startedAt: Date,"
+        ))
+        let end = try XCTUnwrap(home.range(
+            of: "private func workoutShareSnapshot(for workout:",
+            range: start.upperBound..<home.endIndex
+        ))
+        let body = String(home[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("notBefore: finalIntent.startedAt"),
+                      "The end checkpoint must carry the persisted exact workout start")
+        XCTAssertTrue(body.contains("endWorkoutMotionLease(reason: \"workout_end\")"))
+    }
+
+    func testCheckpointOwnershipGuardRunsBeforeSnapshotAndFailsClosed() throws {
+        let manager = try durabilitySource("AtriaBLEManager.swift")
+        let start = try XCTUnwrap(manager.range(
+            of: "func checkpointCurrentSession(label: String,"
+        ))
+        let end = try XCTUnwrap(manager.range(
+            of: "private func shouldRollActiveSessionAfterLongGap",
+            range: start.upperBound..<manager.endIndex
+        ))
+        let body = String(manager[start.lowerBound..<end.lowerBound])
+        let ownership = try XCTUnwrap(body.range(
+            of: "Self.workoutCheckpointLabel("
+        ))
+        let snapshot = try XCTUnwrap(body.range(
+            of: "snapshotSession(label: label,"
+        ))
+        XCTAssertLessThan(ownership.lowerBound, snapshot.lowerBound,
+                          "Label ownership must be decided before the buffer is snapshotted")
+        XCTAssertTrue(body.contains("status=label_preserved reason=missing_workout_start_boundary"))
+    }
+
+    func testWorkoutStartBoundaryFailureRetainsAllDayJournal() throws {
+        let manager = try durabilitySource("AtriaBLEManager.swift")
+        let start = try XCTUnwrap(manager.range(
+            of: "func commitWorkoutStartSessionBoundary(startedAt: Date)"
+        ))
+        let end = try XCTUnwrap(manager.range(
+            of: "func checkpointCurrentSession(label: String,",
+            range: start.upperBound..<manager.endIndex
+        ))
+        let body = String(manager[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("persistenceReason: \"workout_start_boundary\""))
+        XCTAssertTrue(body.contains("resetWhenUnsavable: false"),
+                      "A boundary that cannot persist must retain the live all-day session")
+        XCTAssertTrue(body.contains("retain_all_day_journal_fail_closed"))
+    }
+
+    func testTerminalRecoveryAndCanonicalSyncReleaseMotionLease() throws {
+        let runtime = try durabilitySource("AtriaWorkoutRuntime.swift")
+        XCTAssertTrue(runtime.contains("endWorkoutMotionLease(reason: \"terminal_recovery\")"))
+        let home = try durabilitySource("AtriaHomeView.swift")
+        XCTAssertTrue(home.contains("endWorkoutMotionLease(reason: \"canonical_intent_terminal\")"))
+        XCTAssertTrue(home.contains("beginWorkoutMotionLease(startedAt: pending.startedAt"),
+                      "Relaunch recovery must re-adopt the lease from the persisted startedAt")
+    }
+
 }
