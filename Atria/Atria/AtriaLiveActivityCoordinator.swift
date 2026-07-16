@@ -334,7 +334,15 @@ final class AtriaLiveActivityCoordinator {
             let finalSnapshot = lastSnapshot ?? snapshot
             isEndingActivity = true
             let predecessor = activityWriteTask
+            let terminalBackgroundTask = UIApplication.shared.beginBackgroundTask(
+                withName: "Atria live workout terminal"
+            )
             activityEndTask = Task { @MainActor in
+                defer {
+                    if terminalBackgroundTask != .invalid {
+                        UIApplication.shared.endBackgroundTask(terminalBackgroundTask)
+                    }
+                }
                 if let predecessor { await predecessor.value }
                 await endActivity(with: finalSnapshot)
             }
@@ -435,9 +443,16 @@ final class AtriaLiveActivityCoordinator {
 
     private func endActivity(with snapshot: Snapshot) async {
         guard let activity else { return }
-        await activity.end(ActivityContent(state: contentState(from: snapshot, isEnding: true),
-                                           staleDate: nil),
-                           dismissalPolicy: .after(Date().addingTimeInterval(30)))
+        let terminalContent = ActivityContent(
+            state: contentState(from: snapshot, isEnding: true),
+            staleDate: nil
+        )
+        // `end(content:)` does not guarantee that its final state is rendered
+        // before retained dismissal. Publish the canonical terminal state first
+        // so controls disable and the timer reads Ending…, then dismiss shortly.
+        await activity.update(terminalContent)
+        await activity.end(terminalContent,
+                           dismissalPolicy: .after(Date().addingTimeInterval(2)))
         self.activity = nil
         isEndingActivity = false
         startedAt = nil

@@ -822,6 +822,42 @@ final class AtriaStrainConsistencyTests: XCTestCase {
                        "Completed paused steps remain excluded after workout steps resume")
     }
 
+    func testWorkoutMotionProjectionUsesRawFrameFreshnessWithoutInventingSteps() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let live = AtriaLiveWorkoutMotionProjection.make(
+            capturedAt: now.addingTimeInterval(-3),
+            isReconnecting: false,
+            now: now
+        )
+        XCTAssertEqual(live.availability, .live)
+        XCTAssertEqual(live.compactLabel, "Motion live")
+        XCTAssertEqual(live.ageSeconds, 3)
+
+        let gap = AtriaLiveWorkoutMotionProjection.make(
+            capturedAt: now.addingTimeInterval(-19),
+            isReconnecting: false,
+            now: now
+        )
+        XCTAssertEqual(gap.availability, .stale)
+        XCTAssertEqual(gap.compactLabel, "Motion gap · 19s")
+
+        let syncing = AtriaLiveWorkoutMotionProjection.make(
+            capturedAt: now.addingTimeInterval(-19),
+            isReconnecting: true,
+            now: now
+        )
+        XCTAssertEqual(syncing.availability, .reconnecting)
+        XCTAssertEqual(syncing.compactLabel, "Motion syncing")
+
+        let pending = AtriaLiveWorkoutMotionProjection.make(
+            capturedAt: nil,
+            isReconnecting: false,
+            now: now
+        )
+        XCTAssertEqual(pending.availability, .unavailable)
+        XCTAssertEqual(pending.compactLabel, "Motion pending")
+    }
+
     func testWorkoutMovingDurationMatchesClosedAndOpenPauseProjection() {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let now = start.addingTimeInterval(30 * 60)

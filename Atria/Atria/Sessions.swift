@@ -1728,6 +1728,8 @@ struct AutoSleepLoggedBanner: Identifiable, Equatable {
 
 struct BehaviorJournalEntry: Codable, Identifiable, Equatable {
     enum Tag: String, Codable, CaseIterable, Identifiable {
+        // Original high-signal set (the default tracked behaviors). Order here
+        // is the canonical catalog order for the check-in deck and settings.
         case sleep
         case alcohol
         case caffeine
@@ -1738,8 +1740,49 @@ struct BehaviorJournalEntry: Codable, Identifiable, Equatable {
         case lateMeal
         case morningLight
         case meditation
+        // Expanded WHOOP-style catalog (2026-07-16). All additive: existing
+        // journal entries only ever stored the raw values above, so decoding
+        // old data is unaffected. Off by default — a user opts each one in from
+        // onboarding or Settings (see `defaultTracked`).
+        case nicotine
+        case cannabis
+        case bigMeal
+        case addedSugar
+        case vegetables
+        case fasted
+        case supplements
+        case melatonin
+        case medication
+        case sauna
+        case coldExposure
+        case stretching
+        case massage
+        case soreness
+        case activeDay
+        case nap
+        case screenInBed
+        case readBeforeBed
+        case sharedBed
+        case warmRoom
+        case consistentBedtime
+        case socialTime
+        case anxious
+        case gratitude
+        case outdoors
+        case travel
+        case unwell
+        case sexualActivity
+        case selfPleasure
 
         var id: String { rawValue }
+
+        /// The behaviors tracked by default (and for anyone who never opened the
+        /// picker). Keeps the original, proven morning check-in unchanged unless
+        /// a user deliberately expands it.
+        static let defaultTracked: [Tag] = [
+            .sleep, .alcohol, .caffeine, .protein, .training,
+            .stress, .hydration, .lateMeal, .morningLight, .meditation
+        ]
 
         var label: String {
             switch self {
@@ -1753,6 +1796,35 @@ struct BehaviorJournalEntry: Codable, Identifiable, Equatable {
             case .lateMeal: return "Late meal"
             case .morningLight: return "Morning light"
             case .meditation: return "Meditation"
+            case .nicotine: return "Nicotine"
+            case .cannabis: return "Cannabis"
+            case .bigMeal: return "Large meal"
+            case .addedSugar: return "Added sugar"
+            case .vegetables: return "Vegetables"
+            case .fasted: return "Fasted"
+            case .supplements: return "Supplements"
+            case .melatonin: return "Melatonin"
+            case .medication: return "Medication"
+            case .sauna: return "Sauna"
+            case .coldExposure: return "Cold exposure"
+            case .stretching: return "Stretching"
+            case .massage: return "Massage"
+            case .soreness: return "Soreness"
+            case .activeDay: return "Active day"
+            case .nap: return "Nap"
+            case .screenInBed: return "Screen in bed"
+            case .readBeforeBed: return "Read before bed"
+            case .sharedBed: return "Shared bed"
+            case .warmRoom: return "Warm room"
+            case .consistentBedtime: return "Consistent bedtime"
+            case .socialTime: return "Social time"
+            case .anxious: return "Anxious"
+            case .gratitude: return "Gratitude"
+            case .outdoors: return "Time outdoors"
+            case .travel: return "Travel"
+            case .unwell: return "Feeling unwell"
+            case .sexualActivity: return "Sexual activity"
+            case .selfPleasure: return "Self-pleasure"
             }
         }
 
@@ -1768,6 +1840,35 @@ struct BehaviorJournalEntry: Codable, Identifiable, Equatable {
             case .lateMeal: return "clock.badge.exclamationmark"
             case .morningLight: return "sun.max.fill"
             case .meditation: return "figure.mind.and.body"
+            case .nicotine: return "smoke.fill"
+            case .cannabis: return "leaf.fill"
+            case .bigMeal: return "takeoutbag.and.cup.and.straw.fill"
+            case .addedSugar: return "cube.fill"
+            case .vegetables: return "carrot.fill"
+            case .fasted: return "timer"
+            case .supplements: return "capsule.fill"
+            case .melatonin: return "pills.fill"
+            case .medication: return "cross.case.fill"
+            case .sauna: return "thermometer.sun.fill"
+            case .coldExposure: return "snowflake"
+            case .stretching: return "figure.flexibility"
+            case .massage: return "hand.raised.fill"
+            case .soreness: return "figure.walk.motion"
+            case .activeDay: return "figure.walk"
+            case .nap: return "powersleep"
+            case .screenInBed: return "iphone"
+            case .readBeforeBed: return "book.fill"
+            case .sharedBed: return "bed.double.fill"
+            case .warmRoom: return "thermometer.high"
+            case .consistentBedtime: return "clock.fill"
+            case .socialTime: return "person.2.fill"
+            case .anxious: return "brain.head.profile"
+            case .gratitude: return "heart.text.square.fill"
+            case .outdoors: return "tree.fill"
+            case .travel: return "airplane"
+            case .unwell: return "thermometer.medium"
+            case .sexualActivity: return "heart.circle.fill"
+            case .selfPleasure: return "heart.fill"
             }
         }
     }

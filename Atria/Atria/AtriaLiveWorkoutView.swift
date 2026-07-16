@@ -158,6 +158,61 @@ struct AtriaLiveWorkoutStepProjection: Equatable {
     }
 }
 
+/// Presentation-only freshness for the CRC-valid strap motion stream. This is
+/// intentionally independent from step detection: a detector may need several
+/// frames before its count changes, while the UI can still truthfully say that
+/// raw motion is arriving.
+struct AtriaLiveWorkoutMotionProjection: Equatable {
+    static let freshnessInterval: TimeInterval = 15
+    static let futureTolerance: TimeInterval = 5
+
+    let capturedAt: Date?
+    let availability: AtriaLiveSensorAvailability
+    let ageSeconds: Int?
+
+    static let unavailable = AtriaLiveWorkoutMotionProjection(capturedAt: nil,
+                                                               availability: .unavailable,
+                                                               ageSeconds: nil)
+
+    static func make(capturedAt: Date?,
+                     isReconnecting: Bool,
+                     now: Date = Date()) -> Self {
+        let age = capturedAt.map { max(0, now.timeIntervalSince($0)) }
+        let isFresh = capturedAt.map {
+            $0 <= now.addingTimeInterval(futureTolerance)
+                && now.timeIntervalSince($0) <= freshnessInterval
+        } ?? false
+        let availability: AtriaLiveSensorAvailability
+        if isFresh {
+            availability = .live
+        } else if isReconnecting {
+            availability = .reconnecting
+        } else if capturedAt != nil {
+            availability = .stale
+        } else {
+            availability = .unavailable
+        }
+        return Self(capturedAt: capturedAt,
+                    availability: availability,
+                    ageSeconds: age.map { Int($0.rounded(.down)) })
+    }
+
+    var compactLabel: String {
+        switch availability {
+        case .live: return "Motion live"
+        case .reconnecting: return "Motion syncing"
+        case .stale:
+            return ageSeconds.map { "Motion gap · \($0)s" } ?? "Motion gap"
+        case .unavailable: return "Motion pending"
+        }
+    }
+
+    var accessibilityText: String {
+        guard let ageSeconds else { return compactLabel }
+        return "\(compactLabel), last strap motion \(ageSeconds) seconds ago"
+    }
+}
+
 /// One pause-aware elapsed-time definition shared by the foreground workout
 /// clock and ActivityKit. Keeping this pure also makes relaunch projections
 /// deterministic from the durable pending intent.
@@ -183,6 +238,7 @@ struct AtriaLiveWorkoutMetricProjection: Equatable {
     var strain: Double = 0
     var activeCalories: Double?
     var steps: AtriaLiveWorkoutStepProjection = .unavailable
+    var motion: AtriaLiveWorkoutMotionProjection = .unavailable
     var sensorAvailability: AtriaLiveSensorAvailability = .unavailable
     var sensorCapturedAt: Date?
     var hasSensorEvidence = false
@@ -1440,19 +1496,36 @@ struct AtriaWorkoutStartSheet: View {
                     value.lowerTargetZone = range.lowerBound
                     value.upperTargetZone = range.upperBound
                     isStarting = true
+                    UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
                     Task { @MainActor in
                         if await onStart(value) {
+                            UINotificationFeedbackGenerator().notificationOccurred(.success)
                             AtriaWorkoutRecentActivityStore.recordStarted(value.activityType)
                             dismiss()
                         } else {
                             isStarting = false
                             showStartError = true
+                            UINotificationFeedbackGenerator().notificationOccurred(.error)
                         }
                     }
                 } label: {
-                    Label("Start \(configuration.activityType.rawValue)", systemImage: "play.fill")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity, minHeight: 52)
+                    Group {
+                        if isStarting {
+                            HStack(spacing: 10) {
+                                startingActivityGlyph
+                                Text("Starting \(configuration.activityType.rawValue)…")
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.78)
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .tint(.white)
+                            }
+                        } else {
+                            Label("Start \(configuration.activityType.rawValue)", systemImage: "play.fill")
+                        }
+                    }
+                    .font(.headline)
+                    .frame(maxWidth: .infinity, minHeight: 52)
                 }
                 .buttonStyle(.glassProminent)
                 .tint(.cyan)
@@ -1478,6 +1551,17 @@ struct AtriaWorkoutStartSheet: View {
                     configuration.lowerTargetZone = upper
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var startingActivityGlyph: some View {
+        let glyph = Image(systemName: configuration.activityType.icon)
+            .font(.headline.weight(.black))
+        if accessibilityReduceMotion {
+            glyph
+        } else {
+            glyph.symbolEffect(.pulse, options: .repeating)
         }
     }
 
@@ -1869,6 +1953,7 @@ struct AtriaLiveWorkoutView: View {
 
             VStack(spacing: 10) {
                 header
+                AtriaLiveWorkoutMotionStatusHost(metricStore: metricStore)
                 Spacer(minLength: 24)
                 AtriaLiveWorkoutRouteMetricsHost(metricStore: metricStore,
                                                  pulseStore: pulseStore,
@@ -1895,6 +1980,7 @@ struct AtriaLiveWorkoutView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 10) {
                         header
+                        AtriaLiveWorkoutMotionStatusHost(metricStore: metricStore)
                         AtriaLiveWorkoutHeartBlock(pulseStore: pulseStore,
                                                    maxHR: maxHR,
                                                    lowerTargetZone: lowerTargetZone,
@@ -2463,6 +2549,47 @@ private struct AtriaLiveWorkoutBackdrop: View {
                        startPoint: .top, endPoint: .bottom)
             .ignoresSafeArea()
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.6), value: zone)
+    }
+}
+
+/// A narrow leaf for the raw strap-motion transport clock. Keeping it separate
+/// from the step and strain cards makes the distinction explicit and prevents
+/// one timestamp update from rebuilding workout controls or the route map.
+private struct AtriaLiveWorkoutMotionStatusHost: View {
+    @ObservedObject var metricStore: AtriaLiveWorkoutMetricStore
+
+    var body: some View {
+        AtriaLiveWorkoutMotionStatus(motion: metricStore.state.motion)
+    }
+}
+
+private struct AtriaLiveWorkoutMotionStatus: View {
+    let motion: AtriaLiveWorkoutMotionProjection
+
+    private var tint: Color {
+        switch motion.availability {
+        case .live: return .mint
+        case .reconnecting: return .orange
+        case .stale: return .red
+        case .unavailable: return .secondary
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(tint)
+                .frame(width: 6, height: 6)
+                .accessibilityHidden(true)
+            Text(motion.compactLabel)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.72))
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(motion.accessibilityText)
     }
 }
 

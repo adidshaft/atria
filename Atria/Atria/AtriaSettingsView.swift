@@ -468,6 +468,13 @@ struct AtriaSettingsView: View {
                         Label("Advanced targets", systemImage: "scope")
                     }
                     .accessibilityHint("Customize recovery, strain, sleep, and health metric ranges")
+
+                    NavigationLink {
+                        AtriaTrackedBehaviorsSettingsView()
+                    } label: {
+                        Label("Journal behaviors", systemImage: "checklist")
+                    }
+                    .accessibilityHint("Choose which behaviors appear in your morning check-in")
                 }
             }
             .onDisappear { profilePersistence.flush(draft) }
@@ -2151,5 +2158,67 @@ private struct AtriaAdvancedTargetsSettingsView: View {
         }
         .accessibilityLabel(resetTitle)
         .accessibilityHint("Restores the recommended \(title.lowercased()) values")
+    }
+}
+
+/// Add/remove which behaviors appear in the morning check-in. Writes the shared
+/// tracked-behaviors preference (see AtriaTrackedBehaviors); the deck and impact
+/// section pick it up live via UserDefaults change notifications.
+struct AtriaTrackedBehaviorsSettingsView: View {
+    @AtriaDefault(AtriaTrackedBehaviors.storageKey) private var trackedRaw: String = ""
+
+    private var trackedSet: Set<BehaviorJournalEntry.Tag> {
+        Set(AtriaTrackedBehaviors.parse(trackedRaw))
+    }
+
+    private var groups: [(title: String, tags: [BehaviorJournalEntry.Tag])] {
+        [
+            ("Sleep & recovery", [.sleep, .consistentBedtime, .nap, .melatonin, .sharedBed,
+                                  .warmRoom, .screenInBed, .readBeforeBed, .sauna, .coldExposure,
+                                  .massage, .stretching, .soreness]),
+            ("Activity & nutrition", [.training, .activeDay, .protein, .hydration, .vegetables,
+                                      .bigMeal, .addedSugar, .lateMeal, .fasted, .caffeine,
+                                      .supplements, .medication]),
+            ("Substances", [.alcohol, .nicotine, .cannabis]),
+            ("Mind & lifestyle", [.stress, .anxious, .meditation, .gratitude, .socialTime,
+                                  .morningLight, .outdoors, .travel, .unwell]),
+            ("Intimacy", [.sexualActivity, .selfPleasure])
+        ]
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Text("Choose the behaviors you want to log each morning. Your daily check-in shows only these — add or remove them anytime.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(groups, id: \.title) { group in
+                Section(group.title) {
+                    ForEach(group.tags) { tag in
+                        Toggle(isOn: binding(for: tag)) {
+                            Label(tag.label, systemImage: tag.symbolName)
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("Journal behaviors")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func binding(for tag: BehaviorJournalEntry.Tag) -> Binding<Bool> {
+        Binding(
+            get: { trackedSet.contains(tag) },
+            set: { isOn in
+                var set = trackedSet
+                if isOn { set.insert(tag) } else { set.remove(tag) }
+                // Never persist an empty set — parse() treats empty as "use the
+                // default set", which would silently re-enable everything.
+                if set.isEmpty { set = [.sleep] }
+                let ordered = BehaviorJournalEntry.Tag.allCases.filter { set.contains($0) }
+                trackedRaw = AtriaTrackedBehaviors.serialize(ordered)
+            }
+        )
     }
 }

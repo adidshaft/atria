@@ -165,6 +165,17 @@ struct AtriaExpandedChartView: View {
             }
 
             ForEach(points) { point in
+                // Subtle area fill beneath the current line (Apple Health idiom,
+                // matching AtriaTrendChartCard). Purely decorative: the bounded
+                // y-scale below keeps it inside the plot, and no value is
+                // implied beyond the real sampled line it sits under.
+                AreaMark(x: .value("Day", point.day, unit: .day),
+                         y: .value(title, point.value))
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(
+                        LinearGradient(colors: [tint.opacity(0.24), tint.opacity(0.02)],
+                                       startPoint: .top, endPoint: .bottom)
+                    )
                 LineMark(x: .value("Day", point.day, unit: .day),
                          y: .value(title, point.value),
                          series: .value("Series", "current"))

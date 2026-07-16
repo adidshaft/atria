@@ -9554,13 +9554,25 @@ private struct AtriaPreparedMetricChart: View {
                 RuleMark(x: .value("Day", selectedPoint.day, unit: .day))
                     .foregroundStyle(tint.opacity(0.30))
                     .annotation(position: .top, spacing: 0,
-                                overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
+                                overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
+                        // Cross-metric context tracks the scrub (design "Graph
+                        // Interactions"): that day's sibling metrics as one compact
+                        // line, real values only — a day without a companion sample
+                        // is simply omitted, never invented.
+                        let companionContext = companions.enumerated().compactMap { index, companion -> String? in
+                            let match = prepared.companionPointIndex(at: index, on: selectedPoint.day).map { companion.points[$0] }
+                            return match.map { "\(companion.title.uppercased()) \(AtriaDetailPeriodSummary.valueText($0.value, unit: companion.unit))" }
+                        }
                         VStack(spacing: 1) {
                             Text(valueText(selectedPoint.value)).font(.caption.weight(.bold).monospacedDigit()).foregroundStyle(tint)
                             Text(selectedPoint.day, format: .dateTime.month(.abbreviated).day()).font(.caption2).foregroundStyle(.secondary)
                             if let baselineBand {
                                 Text(String(format: "%+.0f vs typical", selectedPoint.value - (baselineBand.lower + baselineBand.upper) / 2))
                                     .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                            }
+                            if !companionContext.isEmpty {
+                                Text(companionContext.joined(separator: "  ·  "))
+                                    .font(.caption2.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
                             }
                         }
                         .padding(.horizontal, 8).padding(.vertical, 4)
@@ -9597,22 +9609,9 @@ private struct AtriaPreparedMetricChart: View {
         if scrubbedDay != nil, onOpenDay != nil {
             Text("Double-tap the chart to open this day").font(.caption2).foregroundStyle(.tertiary)
         }
-        if let selectedPoint, !companions.isEmpty {
-            HStack(spacing: 8) {
-                ForEach(Array(companions.enumerated()), id: \.element.title) { index, companion in
-                    let match = prepared.companionPointIndex(at: index, on: selectedPoint.day).map { companion.points[$0] }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(companion.title.uppercased()).font(.caption2.weight(.black)).foregroundStyle(.tertiary)
-                        Text(match.map { AtriaDetailPeriodSummary.valueText($0.value, unit: companion.unit) } ?? "\u{2014}")
-                            .font(.subheadline.weight(.bold).monospacedDigit())
-                            .foregroundStyle(match == nil ? .secondary : companion.tint)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(10)
-                    .background(companion.tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-            }
-            .transition(.opacity)
-        }
+        // Cross-metric companion values now ride inside the scrub callout
+        // (see chartContent) so the context tracks the finger, per the design's
+        // "Graph Interactions" grammar, instead of a separate row below.
     }
 
     private func valueText(_ value: Double) -> String {

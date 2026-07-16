@@ -1422,24 +1422,31 @@ private struct AtriaLiveActivityLockScreenView: View {
     private var steps: AtriaLiveActivityStepsPresentation {
         liveActivityStepsPresentation(for: context.state)
     }
-    private var dailyStepGoal: AtriaLiveActivityGoalPresentation? {
-        liveActivityDailyStepGoalPresentation(for: context.state)
-    }
     private var batteryAvailability: AtriaLiveSensorAvailability {
         liveActivityBatteryAvailability(for: context.state)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        // Lock Screen Live Activities have a deliberately tight system-owned
+        // height. Keep this composition deterministic: header, pulse, metrics,
+        // controls. Goal progress remains available in the expanded Island and
+        // app instead of conditionally growing this surface until iOS clips it.
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Label(context.state.activityName ?? "Workout",
                       systemImage: context.state.activitySystemImage ?? "figure.mixed.cardio")
                     .font(.headline.weight(.bold))
-                Spacer(minLength: 8)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .allowsTightening(true)
+                    .layoutPriority(1)
+                Spacer(minLength: 4)
                 liveActivityTimer(state: context.state,
                                   startedAt: context.attributes.startedAt)
                     .font(.subheadline.monospacedDigit().weight(.semibold))
                     .foregroundStyle((context.state.isPaused ?? false) ? .orange : .secondary)
+                    .lineLimit(1)
+                    .fixedSize()
                 if batteryAvailability == .live {
                     Label("\(context.state.batteryLevel)%",
                           systemImage: liveActivityBatterySymbol(for: context.state))
@@ -1447,11 +1454,12 @@ private struct AtriaLiveActivityLockScreenView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(liveActivityBatteryTint(for: context.state))
                         .lineLimit(1)
+                        .fixedSize()
                         .accessibilityLabel(liveActivityBatteryText(for: context.state))
                 }
             }
 
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: "heart.fill")
                     .foregroundStyle(.red)
                 Text(signalFresh ? "\(context.state.heartRate)" : "--")
@@ -1466,16 +1474,16 @@ private struct AtriaLiveActivityLockScreenView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .fixedSize()
-                Spacer(minLength: 8)
-                Text(liveActivityZoneLabel(for: context.state,
-                                           availability: heartRateAvailability))
+                Spacer(minLength: 4)
+                Text(zoneAndTargetText)
                     .font(.subheadline.weight(.black))
                     .foregroundStyle(liveActivityZoneColor(for: context.state,
                                                            availability: heartRateAvailability))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                    .minimumScaleFactor(0.68)
+                    .allowsTightening(true)
                     .padding(.horizontal, 8)
-                    .frame(minHeight: 28)
+                    .frame(minHeight: 26)
                     .background(liveActivityZoneColor(for: context.state,
                                                       availability: heartRateAvailability).opacity(0.14),
                                 in: Capsule())
@@ -1486,81 +1494,52 @@ private struct AtriaLiveActivityLockScreenView: View {
                                 : liveActivityZoneLabel(for: context.state,
                                                         availability: heartRateAvailability))
 
-            VStack(spacing: 4) {
-                HStack(spacing: 12) {
-                    if let target = liveActivityTargetZoneLabel(for: context.state) {
-                        Label(target, systemImage: "scope")
-                            .foregroundStyle(.cyan)
-                            .accessibilityLabel("Target heart rate \(target)")
-                    }
-                    Label(steps.compactText, systemImage: "figure.walk")
-                        .foregroundStyle(steps.tint)
-                        .accessibilityLabel(steps.accessibilityText)
-                    Label(liveActivityCaloriesText(for: context.state), systemImage: "flame.fill")
-                        .foregroundStyle(.pink)
-                        .accessibilityLabel(liveActivityCaloriesAccessibilityText(for: context.state))
-                    Spacer(minLength: 4)
-                    Label(liveActivityStrainProgressText(for: context.state), systemImage: "bolt.fill")
-                        .foregroundStyle(liveActivityStrainProgressColor(for: context.state))
-                        .layoutPriority(1)
-                }
-                .font(.caption.weight(.semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.68)
-
-                if context.state.targetWorkoutStrain.map({ $0 > 0 }) == true
-                    || dailyStepGoal != nil {
-                    HStack(spacing: 8) {
-                        if let dailyStepGoal {
-                            Group {
-                                if let fraction = dailyStepGoal.fraction {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(dailyStepGoal.text)
-                                            .foregroundStyle(dailyStepGoal.tint)
-                                        ProgressView(value: fraction)
-                                            .tint(dailyStepGoal.tint)
-                                    }
-                                } else {
-                                    Label(dailyStepGoal.text, systemImage: "target")
-                                        .foregroundStyle(dailyStepGoal.tint)
-                                }
-                            }
-                            .accessibilityElement(children: .ignore)
-                            .accessibilityLabel("Daily strap step goal progress")
-                            .accessibilityValue(dailyStepGoal.accessibilityText)
-                        }
-                        if context.state.targetWorkoutStrain.map({ $0 > 0 }) == true {
-                            VStack(alignment: .trailing, spacing: 2) {
-                                Text(liveActivityStrainProgressText(for: context.state))
-                                    .foregroundStyle(liveActivityStrainProgressColor(for: context.state))
-                                ProgressView(value: liveActivityStrainProgressFraction(for: context.state))
-                                    .tint(liveActivityStrainProgressColor(for: context.state))
-                            }
-                            .accessibilityElement(children: .ignore)
-                            .accessibilityLabel("Workout strain goal progress")
-                            .accessibilityValue(liveActivityStrainProgressText(for: context.state))
-                        }
-                    }
-                    .font(.caption2.weight(.semibold))
-                }
+            HStack(spacing: 10) {
+                Label(steps.compactText, systemImage: "figure.walk")
+                    .foregroundStyle(steps.tint)
+                    .accessibilityLabel(steps.accessibilityText)
+                Label(liveActivityCaloriesText(for: context.state), systemImage: "flame.fill")
+                    .foregroundStyle(.pink)
+                    .accessibilityLabel(liveActivityCaloriesAccessibilityText(for: context.state))
+                Spacer(minLength: 2)
+                Label(liveActivityStrainProgressText(for: context.state), systemImage: "bolt.fill")
+                    .foregroundStyle(liveActivityStrainProgressColor(for: context.state))
+                    .layoutPriority(1)
             }
+            .font(.caption.weight(.semibold))
+            .lineLimit(1)
+            .minimumScaleFactor(0.68)
+            .allowsTightening(true)
 
-            if let sensorStatus = liveActivitySensorStatusText(
-                state: context.state,
-                heartRateAvailability: heartRateAvailability
-            ) {
-                Text(sensorStatus)
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .accessibilityLabel("Sensor status \(sensorStatus)")
+            HStack(spacing: 8) {
+                if let sensorStatus = liveActivitySensorStatusText(
+                    state: context.state,
+                    heartRateAvailability: heartRateAvailability
+                ) {
+                    Label(sensorStatus, systemImage: "antenna.radiowaves.left.and.right")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .accessibilityLabel("Sensor status \(sensorStatus)")
+                }
+                Spacer(minLength: 2)
+                AtriaLiveActivityControls(state: context.state,
+                                          startedAt: context.attributes.startedAt,
+                                          compact: true)
+                    .controlSize(.small)
+                    .frame(width: 118)
             }
-
-            AtriaLiveActivityControls(state: context.state,
-                                      startedAt: context.attributes.startedAt)
-                .font(.caption.weight(.bold))
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, 2)
+        .padding(.vertical, 2)
+    }
+
+    private var zoneAndTargetText: String {
+        let zone = liveActivityZoneLabel(for: context.state,
+                                         availability: heartRateAvailability)
+        guard let target = liveActivityTargetZoneLabel(for: context.state) else { return zone }
+        return "\(zone) · \(target)"
     }
 }
 

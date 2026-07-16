@@ -447,6 +447,8 @@ struct AtriaTriRing: View, Equatable {
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .allowsTightening(true)
                     // Value line suppressed when the ring center owns this
                     // metric's numeral (dedup audit 2026-07-07).
                     if !metric.suppressesValue {
@@ -466,7 +468,8 @@ struct AtriaTriRing: View, Equatable {
                             .foregroundStyle(metric.tint)
                             .contentTransition(reduceMotion ? .identity : .numericText())
                             .lineLimit(1)
-                            .minimumScaleFactor(0.80)
+                            .minimumScaleFactor(0.6)
+                            .allowsTightening(true)
                     }
                     }
                     // The name line above already says it -- don't repeat
@@ -476,7 +479,8 @@ struct AtriaTriRing: View, Equatable {
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                            .minimumScaleFactor(0.80)
+                            .minimumScaleFactor(0.6)
+                            .allowsTightening(true)
                     }
                 }
             }

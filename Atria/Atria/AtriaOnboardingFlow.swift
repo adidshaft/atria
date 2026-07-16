@@ -14,6 +14,10 @@ struct AtriaOnboardingFlow: View {
     @State private var backupImportPresented = false
     @State private var restoreMessage: String?
     @State private var restoreInProgress = false
+    // Which journal behaviors the user wants to track. Shared key with the deck
+    // and the Settings picker (see AtriaTrackedBehaviors); empty falls back to
+    // the default set, so skipping this step keeps the proven default check-in.
+    @AtriaDefault(AtriaTrackedBehaviors.storageKey) private var trackedBehaviorsRaw: String = ""
 
     private enum OnboardingFocusMetric: String, CaseIterable, Identifiable {
         case recovery
@@ -67,6 +71,7 @@ struct AtriaOnboardingFlow: View {
         case whatThisIs
         case strap
         case you
+        case behaviors
         case expectations
 
         var isFirst: Bool { self == .whatThisIs }
@@ -78,6 +83,7 @@ struct AtriaOnboardingFlow: View {
             case "welcome", "what-this-is", "what": self = .whatThisIs
             case "strap", "connect": self = .strap
             case "you", "profile": self = .you
+            case "behaviors", "track", "tracking": self = .behaviors
             case "expectations", "expect", "tomorrow": self = .expectations
             default: return nil
             }
@@ -105,6 +111,7 @@ struct AtriaOnboardingFlow: View {
             case .whatThisIs: return "Get started"
             case .strap: return ble.status == .connected ? "Continue" : "Connect"
             case .you: return "Continue"
+            case .behaviors: return "Continue"
             case .expectations: return "Start using Atria"
             }
         }
@@ -158,6 +165,8 @@ struct AtriaOnboardingFlow: View {
                         .tag(Step.strap)
                     page { youPage }
                         .tag(Step.you)
+                    page { behaviorsPage }
+                        .tag(Step.behaviors)
                     page { expectationsPage }
                         .tag(Step.expectations)
                 }
@@ -296,6 +305,93 @@ struct AtriaOnboardingFlow: View {
             .padding(14)
             .atriaCard(emphasis: .soft)
         }
+    }
+
+    private var behaviorsPage: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            onboardingHeader("What to track", systemImage: "checklist", tint: .cyan)
+            Text("Pick the behaviors you want to log each morning. Your check-in shows only these — you can add or remove them anytime in Settings.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            ForEach(behaviorGroups, id: \.title) { group in
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(group.title.uppercased())
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.tertiary)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)],
+                              alignment: .leading, spacing: 8) {
+                        ForEach(group.tags) { tag in
+                            behaviorChip(tag)
+                        }
+                    }
+                }
+                .padding(14)
+                .atriaCard(emphasis: .soft)
+            }
+        }
+    }
+
+    private var trackedBehaviorSet: Set<BehaviorJournalEntry.Tag> {
+        Set(AtriaTrackedBehaviors.parse(trackedBehaviorsRaw))
+    }
+
+    private var behaviorGroups: [(title: String, tags: [BehaviorJournalEntry.Tag])] {
+        [
+            ("Sleep & recovery", [.sleep, .consistentBedtime, .nap, .melatonin, .sharedBed,
+                                  .warmRoom, .screenInBed, .readBeforeBed, .sauna, .coldExposure,
+                                  .massage, .stretching, .soreness]),
+            ("Activity & nutrition", [.training, .activeDay, .protein, .hydration, .vegetables,
+                                      .bigMeal, .addedSugar, .lateMeal, .fasted, .caffeine,
+                                      .supplements, .medication]),
+            ("Substances", [.alcohol, .nicotine, .cannabis]),
+            ("Mind & lifestyle", [.stress, .anxious, .meditation, .gratitude, .socialTime,
+                                  .morningLight, .outdoors, .travel, .unwell]),
+            ("Intimacy", [.sexualActivity, .selfPleasure])
+        ]
+    }
+
+    private func behaviorChip(_ tag: BehaviorJournalEntry.Tag) -> some View {
+        let selected = trackedBehaviorSet.contains(tag)
+        return Button {
+            toggleTrackedBehavior(tag)
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: tag.symbolName)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(selected ? .cyan : .secondary)
+                    .frame(width: 18)
+                Text(tag.label)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(selected ? .primary : .secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Spacer(minLength: 0)
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.caption)
+                    .foregroundStyle(selected ? Color.cyan : Color.secondary.opacity(0.45))
+            }
+            .padding(.horizontal, 10)
+            .frame(minHeight: 40)
+            .frame(maxWidth: .infinity)
+            .background(selected ? Color.cyan.opacity(0.12) : Color.secondary.opacity(0.06),
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(selected ? Color.cyan.opacity(0.4) : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(tag.label)
+        .accessibilityValue(selected ? "Tracked" : "Not tracked")
+    }
+
+    private func toggleTrackedBehavior(_ tag: BehaviorJournalEntry.Tag) {
+        var set = trackedBehaviorSet
+        if set.contains(tag) { set.remove(tag) } else { set.insert(tag) }
+        // Never persist an empty set — parse() treats empty as "use defaults".
+        if set.isEmpty { set = [.sleep] }
+        let ordered = BehaviorJournalEntry.Tag.allCases.filter { set.contains($0) }
+        trackedBehaviorsRaw = AtriaTrackedBehaviors.serialize(ordered)
     }
 
     // Ring preview only. The focus selector lives in the metric list below

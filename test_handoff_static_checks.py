@@ -3076,7 +3076,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, vitals, "private static let statColumns = [GridItem(.adaptive(minimum:")
 
         # Connection updates are isolated to the primary action leaf instead of
-        # invalidating the entire four-page onboarding hierarchy on every BLE publish.
+        # invalidating the entire onboarding hierarchy on every BLE publish.
         assert_contains(self, onboarding, "private struct PrimaryActionButton: View")
         assert_contains(self, onboarding, "Text(title)")
         assert_contains(self, onboarding, "let ble: AtriaBLEManager")
@@ -10056,6 +10056,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "case whatThisIs",
             "case strap",
             "case you",
+            # 2026-07-16: added a "What to track" behavior-selection page between
+            # profile and expectations (WHOOP-style journal opt-in).
+            "case behaviors",
             "case expectations",
             "Your strap. Your data.",
             "Close WHOOP",
@@ -10075,7 +10078,9 @@ class HandoffStaticChecks(unittest.TestCase):
 
         assert_not_contains(self, content, "I’ll do this — continue")
 
-    def test_onb1_uses_single_four_page_onboarding_flow(self):
+    # 2026-07-16: onboarding grew from four to five pages — added a
+    # "What to track" journal-behavior selection step before expectations.
+    def test_onb1_uses_single_five_page_onboarding_flow(self):
         content = source(ROOT / "Atria" / "Atria" / "ContentView.swift")
         onboarding = source(ROOT / "Atria" / "Atria" / "AtriaOnboardingFlow.swift")
 
@@ -10089,6 +10094,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "case whatThisIs",
             "case strap",
             "case you",
+            # 2026-07-16: added a "What to track" behavior-selection page between
+            # profile and expectations (WHOOP-style journal opt-in).
+            "case behaviors",
             "case expectations",
             "Your strap. Your data.",
             "WHOOP insights without the subscription.",
@@ -10640,12 +10648,19 @@ class HandoffStaticChecks(unittest.TestCase):
             "private struct AtriaLiveWorkoutRouteMetricsHost: View",
             "private struct AtriaLiveWorkoutStrainGuidanceHost: View",
             "private struct AtriaLiveWorkoutStrainGuidance: View",
+            # 2026-07-16: honest motion-status indicator added as its own narrow
+            # leaf so a raw strap-motion timestamp update cannot rebuild the
+            # workout controls or route map.
+            "private struct AtriaLiveWorkoutMotionStatusHost: View",
         ]:
             assert_contains(self, workout, leaf)
         assert_contains(self, workout, "AtriaLiveWorkoutHeartBlock(pulseStore: pulseStore,")
         assert_contains(self, workout, "AtriaLiveWorkoutRouteMetricsHost(metricStore: metricStore,")
         assert_contains(self, workout, "AtriaLiveWorkoutStrainGuidanceHost(metricStore: metricStore,")
-        self.assertEqual(workout.count("@ObservedObject var metricStore: AtriaLiveWorkoutMetricStore"), 2)
+        assert_contains(self, workout, "AtriaLiveWorkoutMotionStatusHost(metricStore: metricStore)")
+        # 2026-07-16: 2 -> 3 for the added motion-status leaf above; the root
+        # view still must not observe metricStore directly (asserted above).
+        self.assertEqual(workout.count("@ObservedObject var metricStore: AtriaLiveWorkoutMetricStore"), 3)
         assert_not_contains(self, workout, "private struct AtriaLiveWorkoutZoneCard: View")
         assert_not_contains(self, workout, "private struct AtriaLiveWorkoutStatsRow: View")
 
