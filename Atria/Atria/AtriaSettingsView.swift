@@ -205,6 +205,7 @@ struct AtriaSettingsView: View {
     @State private var nameDraft: String
     @State private var heartRateBroadcast: Bool
     @State private var batterySaver: Bool
+    @AppStorage("atria.allDayMotion.enabled") private var allDayMotionEnabled = true
     @State private var coachSettings: AtriaAICoachSettings
     @State private var coachHasAPIKey: Bool
     @State private var coachAPIKeyDraft = ""
@@ -590,9 +591,27 @@ struct AtriaSettingsView: View {
     @ViewBuilder
     private var strapSettingsContent: some View {
         radioModeSection
+        allDayMotionSection
         heartRateBroadcastSection
         deviceSection
         sensorAvailabilitySection
+    }
+
+    private var allDayMotionSection: some View {
+        Section {
+            Toggle(isOn: $allDayMotionEnabled) {
+                Label("All-day step capture", systemImage: "figure.walk.motion")
+            }
+            .accessibilityHint("Uses more strap battery. Pauses automatically when the strap battery is low.")
+            settingsInfoRow(icon: allDayMotionEnabled ? "battery.75percent" : "figure.run",
+                            tint: allDayMotionEnabled ? .green : .secondary,
+                            title: allDayMotionEnabled ? "Dense motion all day" : "Workouts only",
+                            detail: allDayMotionEnabled
+                                ? "Keeps the strap's dense motion stream on between workouts so movement is captured all day. Pauses below 25% strap battery and resumes when charging or recovered. Workouts always take priority."
+                                : "The dense motion stream runs only during workouts and step calibration.")
+        } header: {
+            Text("All-day motion")
+        }
     }
 
     private var alertsSettingsPage: some View {

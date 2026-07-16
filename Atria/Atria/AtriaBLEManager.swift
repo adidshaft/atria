@@ -1524,6 +1524,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         static let boundaryStartedAt = "atria.workoutMotion.boundaryStartedAt"
         static let backfillPending = "atria.workoutMotion.backfillPending"
         static let backfillReason = "atria.workoutMotion.backfillReason"
+        static let allDayEnabled = "atria.allDayMotion.enabled"
+        static let allDaySuspendedForBattery = "atria.allDayMotion.suspendedForBattery"
     }
     enum CaptureDefaults {
         static let configured = "atria.capture.defaultsConfigured"
@@ -15169,6 +15171,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // The 60 s cadence doubles as the lease's lifecycle safety net: it
         // re-adopts a persisted workout lease after foreground/background or
         // restoration, and releases one whose pending intent no longer exists.
+        // The governor runs before the restore audit so a battery-pressure
+        // release goes through its own path (which records the suspension for
+        // resume hysteresis) instead of the stale-intent path.
+        evaluateAllDayMotionGovernor(reason: "\(reason)_all_day_audit")
         restoreWorkoutMotionLeaseIfNeeded(reason: "\(reason)_lease_audit")
         let connected = status == .connected && peripheral?.state == .connected
         let eligible = r10TransportIsExpected
@@ -15280,6 +15286,115 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return .activate
     }
 
+    // MARK: All-day dense motion governor
+    //
+    // The governor is a lowest-priority holder of the SAME workout motion
+    // lease machinery: it acquires via beginWorkoutMotionLease and releases
+    // via endWorkoutMotionLease, so dense bring-up, density gating, gap
+    // accounting and the per-connection launch-style profile are identical to
+    // the physically proven workout path. It always yields to an explicit
+    // workout intent or an armed calibration hold, and it never writes to the
+    // strap itself.
+
+    enum AllDayMotionGovernorAction: Equatable {
+        case hold
+        case release
+        case none
+    }
+
+    /// Headroom above the low-battery warning boundary required to re-arm
+    /// dense motion after a battery-pressure release, so the link does not
+    /// flap when the strap hovers at the threshold.
+    nonisolated static let allDayMotionResumeBatteryMargin = 5
+
+    /// Whether the all-day governor wants dense motion held right now.
+    /// Battery policy is the same physically derived
+    /// `shouldArmHighFrequencyMotion` gate that protects HR continuity below
+    /// the warning boundary, plus resume hysteresis after a suspension.
+    nonisolated static func allDayMotionWantsHold(enabled: Bool,
+                                                  batteryLevel: Int,
+                                                  isCharging: Bool,
+                                                  suspendedForBattery: Bool) -> Bool {
+        guard enabled else { return false }
+        guard shouldArmHighFrequencyMotion(batteryLevel: batteryLevel,
+                                           isCharging: isCharging) else { return false }
+        if suspendedForBattery,
+           !isCharging,
+           batteryLevel >= 0,
+           batteryLevel <= lowBatteryWarningThreshold + allDayMotionResumeBatteryMargin {
+            return false
+        }
+        return true
+    }
+
+    nonisolated static func allDayMotionGovernorAction(wantsHold: Bool,
+                                                       connected: Bool,
+                                                       workoutIntentActive: Bool,
+                                                       calibrationHoldActive: Bool,
+                                                       leaseHeld: Bool) -> AllDayMotionGovernorAction {
+        // An explicit workout or an armed calibration session outranks the
+        // governor unconditionally: it must never acquire over, release, or
+        // reshape a lease another holder claimed.
+        if workoutIntentActive || calibrationHoldActive { return .none }
+        if wantsHold {
+            return (connected && !leaseHeld) ? .hold : .none
+        }
+        return leaseHeld ? .release : .none
+    }
+
+    var allDayMotionCaptureEnabled: Bool {
+        UserDefaults.standard.object(
+            forKey: WorkoutMotionDefaults.allDayEnabled
+        ) as? Bool ?? true
+    }
+
+    private var allDayMotionSuspendedForBattery: Bool {
+        get { UserDefaults.standard.bool(forKey: WorkoutMotionDefaults.allDaySuspendedForBattery) }
+        set { UserDefaults.standard.set(newValue, forKey: WorkoutMotionDefaults.allDaySuspendedForBattery) }
+    }
+
+    private func allDayMotionGovernorWantsHold() -> Bool {
+        Self.allDayMotionWantsHold(enabled: allDayMotionCaptureEnabled,
+                                   batteryLevel: motionEligibilityBatteryLevel(),
+                                   isCharging: motionEligibilityIsCharging,
+                                   suspendedForBattery: allDayMotionSuspendedForBattery)
+    }
+
+    func evaluateAllDayMotionGovernor(reason: String) {
+        let battery = motionEligibilityBatteryLevel()
+        let charging = motionEligibilityIsCharging
+        let batteryAllows = Self.shouldArmHighFrequencyMotion(batteryLevel: battery,
+                                                              isCharging: charging)
+        let leaseHeld = workoutMotionOwnerStartedAt != nil
+            || UserDefaults.standard.object(forKey: WorkoutMotionDefaults.ownerStartedAt) != nil
+        let action = Self.allDayMotionGovernorAction(
+            wantsHold: Self.allDayMotionWantsHold(enabled: allDayMotionCaptureEnabled,
+                                                  batteryLevel: battery,
+                                                  isCharging: charging,
+                                                  suspendedForBattery: allDayMotionSuspendedForBattery),
+            connected: peripheral?.state == .connected,
+            workoutIntentActive: AtriaPendingWorkoutIntent.isActiveForBLEContinuity(),
+            calibrationHoldActive: workoutMotionCalibrationHoldUntil.map { Date() < $0 } == true,
+            leaseHeld: leaseHeld
+        )
+        switch action {
+        case .none:
+            return
+        case .hold:
+            allDayMotionSuspendedForBattery = false
+            AtriaDebugLog("ATRIADBG all_day_motion status=governor_hold battery=%d charging=%d reason=%@",
+                          battery, charging ? 1 : 0, reason)
+            beginWorkoutMotionLease(startedAt: Date(), reason: "all_day_\(reason)")
+        case .release:
+            if !batteryAllows { allDayMotionSuspendedForBattery = true }
+            AtriaDebugLog("ATRIADBG all_day_motion status=governor_release battery=%d charging=%d reason=%@",
+                          battery, charging ? 1 : 0, reason)
+            endWorkoutMotionLease(
+                reason: batteryAllows ? "all_day_release_\(reason)" : "all_day_battery_\(reason)"
+            )
+        }
+    }
+
     /// Begin the persisted motion ownership lease for an explicit workout.
     /// Idempotent for the same `startedAt`, so lifecycle replays cannot reset
     /// activation accounting for the current connection.
@@ -15344,6 +15459,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.removeObject(forKey: WorkoutMotionDefaults.gapStartedAt)
         setWorkoutMotionStatus("released", at: now)
         AtriaDebugLog("ATRIADBG workout_motion status=lease_released reason=%@", reason)
+        // A released lease returns ownership to the all-day governor: after a
+        // workout or calibration ends, dense capture resumes if the battery
+        // policy allows. A battery-pressure release re-enters with its
+        // suspension flag set and stays released until the resume margin.
+        Task { @MainActor [weak self] in
+            self?.evaluateAllDayMotionGovernor(reason: "post_lease_release")
+        }
     }
 
     /// Re-adopts a persisted lease after background/foreground transitions,
@@ -15361,6 +15483,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if let hold = workoutMotionCalibrationHoldUntil, Date() < hold {
             return false
         }
+        // The all-day governor is a legitimate lease holder: while it wants
+        // dense capture, an absent workout intent is not staleness. Battery
+        // pressure ends this hold through the governor's own release path.
+        if allDayMotionGovernorWantsHold() {
+            return false
+        }
         guard let intent = AtriaPendingWorkoutIntent.load() else { return true }
         return intent.endedAt != nil
     }
@@ -15371,7 +15499,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             guard let stamp = UserDefaults.standard.object(
                 forKey: WorkoutMotionDefaults.ownerStartedAt
             ) as? Double else { return }
-            if !AtriaPendingWorkoutIntent.isActiveForBLEContinuity(), !calibrationHoldActive {
+            if !AtriaPendingWorkoutIntent.isActiveForBLEContinuity(),
+               !calibrationHoldActive,
+               !allDayMotionGovernorWantsHold() {
                 if workoutMotionLeaseIntentIsDefinitivelyOver() {
                     endWorkoutMotionLease(reason: "\(reason)_stale_intent")
                 }
@@ -15381,7 +15511,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG workout_motion status=lease_restored reason=%@ started_unix=%d",
                           reason,
                           Int(stamp.rounded()))
-        } else if !AtriaPendingWorkoutIntent.isActiveForBLEContinuity(), !calibrationHoldActive {
+        } else if !AtriaPendingWorkoutIntent.isActiveForBLEContinuity(),
+                  !calibrationHoldActive,
+                  !allDayMotionGovernorWantsHold() {
             if workoutMotionLeaseIntentIsDefinitivelyOver() {
                 endWorkoutMotionLease(reason: "\(reason)_stale_intent")
             }
@@ -19875,6 +20007,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 // the persisted workout lease re-arms on this restored
                 // connection epoch with the same one-attempt bound.
                 self.restoreWorkoutMotionLeaseIfNeeded(reason: "state_restore_connected")
+                self.evaluateAllDayMotionGovernor(reason: "state_restore_connected")
                 if self.beginMotionHandshakeLaunchConnectionCutoverIfNeeded(
                     peripheral: restoredPeripheral,
                     central: central,
@@ -20039,13 +20172,18 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             // bounded activation attempt after passive grace; repeated
             // lifecycle callbacks on the same connection cannot resend it.
             restoreWorkoutMotionLeaseIfNeeded(reason: "did_connect")
+            // The governor acquires before the bring-up check below so an
+            // all-day hold gets the same launch-style profile per connection
+            // that an explicit workout lease does.
+            evaluateAllDayMotionGovernor(reason: "did_connect")
             // Dense motion has only ever been sustained on links brought up by
             // the complete launch-style sequence (fresh discovery, ordered
             // profile, command pair, stability proof) — bonded auto-reconnects
             // stay sparse and die within ~25 s regardless of what is sent on
-            // them (2026-07-16 00:50 telemetry). While an explicit workout owns
-            // the motion lease, every new connection re-enters the proven
-            // launch-pending bring-up for this peripheral.
+            // them (2026-07-16 00:50 telemetry). While any holder — explicit
+            // workout, calibration, or the all-day governor — owns the motion
+            // lease, every new connection re-enters the proven launch-pending
+            // bring-up for this peripheral.
             if workoutMotionOwnerStartedAt != nil,
                standardHROnlyMode,
                !historyOnlyProbeMode,

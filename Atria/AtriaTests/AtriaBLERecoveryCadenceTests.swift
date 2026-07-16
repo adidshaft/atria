@@ -5153,4 +5153,113 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(finishBody.contains("endWorkoutMotionLease(reason: \"step_calibration_\\(reason)\")"))
     }
 
+    // MARK: - All-day dense motion governor
+
+    func testAllDayMotionGovernorAlwaysYieldsToWorkoutAndCalibration() {
+        // The governor must be a strictly lowest-priority holder: with a
+        // workout intent or calibration hold active it takes no action in any
+        // combination of desire, connection, or lease state.
+        for wantsHold in [true, false] {
+            for leaseHeld in [true, false] {
+                XCTAssertEqual(AtriaBLEManager.allDayMotionGovernorAction(
+                    wantsHold: wantsHold, connected: true,
+                    workoutIntentActive: true, calibrationHoldActive: false,
+                    leaseHeld: leaseHeld
+                ), .none)
+                XCTAssertEqual(AtriaBLEManager.allDayMotionGovernorAction(
+                    wantsHold: wantsHold, connected: true,
+                    workoutIntentActive: false, calibrationHoldActive: true,
+                    leaseHeld: leaseHeld
+                ), .none)
+            }
+        }
+    }
+
+    func testAllDayMotionGovernorAcquiresAndReleases() {
+        XCTAssertEqual(AtriaBLEManager.allDayMotionGovernorAction(
+            wantsHold: true, connected: true,
+            workoutIntentActive: false, calibrationHoldActive: false,
+            leaseHeld: false
+        ), .hold)
+        // Never acquire without a live connection; never double-acquire.
+        XCTAssertEqual(AtriaBLEManager.allDayMotionGovernorAction(
+            wantsHold: true, connected: false,
+            workoutIntentActive: false, calibrationHoldActive: false,
+            leaseHeld: false
+        ), .none)
+        XCTAssertEqual(AtriaBLEManager.allDayMotionGovernorAction(
+            wantsHold: true, connected: true,
+            workoutIntentActive: false, calibrationHoldActive: false,
+            leaseHeld: true
+        ), .none)
+        // Release its own hold when the desire ends (battery or disabled),
+        // even while disconnected, so the lease never outlives the policy.
+        XCTAssertEqual(AtriaBLEManager.allDayMotionGovernorAction(
+            wantsHold: false, connected: false,
+            workoutIntentActive: false, calibrationHoldActive: false,
+            leaseHeld: true
+        ), .release)
+        XCTAssertEqual(AtriaBLEManager.allDayMotionGovernorAction(
+            wantsHold: false, connected: true,
+            workoutIntentActive: false, calibrationHoldActive: false,
+            leaseHeld: false
+        ), .none)
+    }
+
+    func testAllDayMotionWantsHoldUsesProvenBatteryPolicyWithResumeHysteresis() {
+        // Same physically derived gate that protects HR continuity: a 13%
+        // proof delivered frames but destabilized the link within seconds.
+        XCTAssertFalse(AtriaBLEManager.allDayMotionWantsHold(
+            enabled: true, batteryLevel: 20, isCharging: false, suspendedForBattery: false))
+        XCTAssertTrue(AtriaBLEManager.allDayMotionWantsHold(
+            enabled: true, batteryLevel: 26, isCharging: false, suspendedForBattery: false))
+        XCTAssertFalse(AtriaBLEManager.allDayMotionWantsHold(
+            enabled: false, batteryLevel: 90, isCharging: false, suspendedForBattery: false))
+        // Unknown battery (-1) and credible charging follow the proven gate.
+        XCTAssertTrue(AtriaBLEManager.allDayMotionWantsHold(
+            enabled: true, batteryLevel: -1, isCharging: false, suspendedForBattery: false))
+        XCTAssertTrue(AtriaBLEManager.allDayMotionWantsHold(
+            enabled: true, batteryLevel: 10, isCharging: true, suspendedForBattery: false))
+        // After a battery-pressure release the strap must recover past the
+        // resume margin before re-arming, so the link cannot flap at 25%.
+        XCTAssertFalse(AtriaBLEManager.allDayMotionWantsHold(
+            enabled: true, batteryLevel: 27, isCharging: false, suspendedForBattery: true))
+        XCTAssertTrue(AtriaBLEManager.allDayMotionWantsHold(
+            enabled: true, batteryLevel: 31, isCharging: false, suspendedForBattery: true))
+        XCTAssertTrue(AtriaBLEManager.allDayMotionWantsHold(
+            enabled: true, batteryLevel: 27, isCharging: true, suspendedForBattery: true))
+    }
+
+    func testAllDayGovernorUsesTheProvenLeaseMachineryAndNeverWritesDirectly() throws {
+        let source = try leaseManagerSource()
+        let gov = try XCTUnwrap(source.range(of: "func evaluateAllDayMotionGovernor"))
+        let govBody = String(source[gov.lowerBound...].prefix(2_600))
+        XCTAssertTrue(govBody.contains("beginWorkoutMotionLease(startedAt: Date(), reason: \"all_day_\\(reason)\")"),
+                      "the governor must acquire through the physically proven lease path, not a parallel one")
+        XCTAssertTrue(govBody.contains("endWorkoutMotionLease("),
+                      "the governor must release through the lease path so gaps are recorded honestly")
+        XCTAssertFalse(govBody.contains("writeValue"),
+                       "the governor itself must never write to the strap")
+        // The lease lifecycle must recognize the governor as a legitimate
+        // holder, or the 60 s stale-intent audit would release its own hold.
+        let over = try XCTUnwrap(source.range(of: "private func workoutMotionLeaseIntentIsDefinitivelyOver"))
+        let overBody = String(source[over.lowerBound...].prefix(1_400))
+        XCTAssertTrue(overBody.contains("allDayMotionGovernorWantsHold()"))
+        // Released leases hand ownership back to the governor so dense
+        // capture resumes after every workout or calibration.
+        let end = try XCTUnwrap(source.range(of: "func endWorkoutMotionLease"))
+        let endBody = String(source[end.lowerBound...].prefix(3_000))
+        XCTAssertTrue(endBody.contains("evaluateAllDayMotionGovernor(reason: \"post_lease_release\")"))
+        // Both connection paths and the liveness audit evaluate the governor,
+        // and the connect-path evaluation happens before the launch-style
+        // bring-up check so a governor hold gets the full profile.
+        XCTAssertTrue(source.contains("evaluateAllDayMotionGovernor(reason: \"did_connect\")"))
+        XCTAssertTrue(source.contains("evaluateAllDayMotionGovernor(reason: \"state_restore_connected\")"))
+        XCTAssertTrue(source.contains("evaluateAllDayMotionGovernor(reason: \"\\(reason)_all_day_audit\")"))
+        let didConnect = try XCTUnwrap(source.range(of: "evaluateAllDayMotionGovernor(reason: \"did_connect\")"))
+        let afterGovernor = String(source[didConnect.upperBound...].prefix(1_200))
+        XCTAssertTrue(afterGovernor.contains("workoutMotionOwnerStartedAt != nil"),
+                      "governor acquisition must precede the per-connection bring-up gate")
+    }
+
 }
