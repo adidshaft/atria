@@ -834,8 +834,12 @@ final class AtriaLiveActivityActionTests: XCTestCase {
                       "healthy live sources must not waste Lock Screen space on a redundant status row")
         XCTAssertTrue(source.contains("\\(label) last \\(atriaCaptureTimeText($0))"),
                       "stale sensor values must reveal their actual capture time")
-        XCTAssertTrue(source.contains("|| dailyStepGoal != nil"),
-                      "the daily goal remains visible as an honest unavailable/stale state")
+        XCTAssertTrue(source.contains("|| dailyStepGoal?.fraction != nil"),
+                      "the goal progress row renders only with a live fraction; stale/unavailable honesty is carried by the presentation function and sensor status row")
+        XCTAssertTrue(source.contains("text: \"Step goal stale\""),
+                      "stale daily-goal evidence must keep its fail-closed presentation branch")
+        XCTAssertTrue(source.contains("text: \"Step goal --\""),
+                      "missing daily-goal evidence must keep its fail-closed presentation branch")
         XCTAssertTrue(source.contains("Label(dailyStepGoal.text, systemImage: \"target\")"))
         XCTAssertTrue(source.contains("liveActivityCaloriesText(for: context.state)"))
         XCTAssertTrue(source.contains("Approximately \\(Int(calories.rounded())) active calories"))
@@ -875,7 +879,8 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(widgetSource.contains("return lower == upper ? \"Z\\(lower)\" : \"Z\\(lower)–Z\\(upper)\""))
         XCTAssertTrue(widgetSource.contains("compactLeading:"))
         XCTAssertTrue(widgetSource.contains("Text(target)"))
-        XCTAssertTrue(widgetSource.contains("Label(target, systemImage: \"scope\")"))
+        XCTAssertTrue(widgetSource.contains("accessibilityLabel(\"Target heart rate \\(target)\")"),
+                      "the target zone must stay an accessible element wherever the layout renders it")
     }
 
     private func liveSnapshot(elapsed: TimeInterval,
