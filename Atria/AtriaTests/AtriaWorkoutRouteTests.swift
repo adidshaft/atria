@@ -236,9 +236,16 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         let activityEnd = try XCTUnwrap(widgetSource.range(of: "private func liveActivityBatteryText",
                                                            range: activityStart.upperBound..<widgetSource.endIndex))
         let island = String(widgetSource[activityStart.lowerBound..<activityEnd.lowerBound])
+        let compactHeartStart = try XCTUnwrap(widgetSource.range(of: "private struct AtriaDynamicIslandCompactHeartRate"))
+        let compactHeartEnd = try XCTUnwrap(widgetSource.range(of: "private struct AtriaDynamicIslandActivityGlyph",
+                                                               range: compactHeartStart.upperBound..<widgetSource.endIndex))
+        let compactHeart = String(widgetSource[compactHeartStart.lowerBound..<compactHeartEnd.lowerBound])
         XCTAssertTrue(island.contains(".minimumScaleFactor(0.62)"))
-        XCTAssertTrue(island.contains(".minimumScaleFactor(0.55)"))
         XCTAssertTrue(island.contains("Heart rate \\(context.state.heartRate) beats per minute"))
+        XCTAssertTrue(island.contains("AtriaDynamicIslandCompactHeartRate(heartRate: context.state.heartRate"))
+        XCTAssertTrue(compactHeart.contains(".minimumScaleFactor(0.55)"))
+        XCTAssertTrue(compactHeart.contains(".lineLimit(1)"))
+        XCTAssertTrue(compactHeart.contains("Heart rate \\(heartRate) beats per minute"))
 
         let lockStart = try XCTUnwrap(widgetSource.range(of: "private struct AtriaLiveActivityLockScreenView"))
         let lockEnd = try XCTUnwrap(widgetSource.range(of: "private func elapsedText",

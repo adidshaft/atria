@@ -32,7 +32,11 @@ final class AtriaLiveActivityActionTests: XCTestCase {
 
         let islandStart = try XCTUnwrap(source.range(of: "struct AtriaLiveActivityWidget: Widget"))
         let lockScreenStart = try XCTUnwrap(source.range(of: "private struct AtriaLiveActivityLockScreenView"))
+        let compactHeartStart = try XCTUnwrap(source.range(of: "private struct AtriaDynamicIslandCompactHeartRate"))
+        let compactHeartEnd = try XCTUnwrap(source.range(of: "private struct AtriaDynamicIslandActivityGlyph",
+                                                        range: compactHeartStart.upperBound..<source.endIndex))
         let island = String(source[islandStart.lowerBound..<lockScreenStart.lowerBound])
+        let compactHeart = String(source[compactHeartStart.lowerBound..<compactHeartEnd.lowerBound])
         let lockScreen = String(source[lockScreenStart.lowerBound...])
 
         XCTAssertTrue(island.contains("Text(signalFresh ? \"\\(context.state.heartRate) bpm\" : \"-- bpm\")"))
@@ -40,8 +44,12 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(island.contains(".minimumScaleFactor(0.62)"))
         XCTAssertTrue(island.contains(".allowsTightening(true)"))
         XCTAssertTrue(island.contains(".layoutPriority(2)"))
-        XCTAssertTrue(island.contains("Text(signalFresh ? \"\\(context.state.heartRate)\" : \"--\")"),
+        XCTAssertTrue(island.contains("AtriaDynamicIslandCompactHeartRate(heartRate: context.state.heartRate"))
+        XCTAssertTrue(compactHeart.contains("Text(isLive ? \"\\(heartRate)\" : \"--\")"),
                       "the compact island must show the live numeric HR without an overflowing suffix")
+        XCTAssertTrue(compactHeart.contains(".lineLimit(1)"))
+        XCTAssertTrue(compactHeart.contains(".minimumScaleFactor(0.55)"))
+        XCTAssertTrue(compactHeart.contains("Heart rate \\(heartRate) beats per minute"))
 
         XCTAssertTrue(lockScreen.contains(".font(.system(size: 34, weight: .black, design: .rounded))"))
         XCTAssertTrue(lockScreen.contains(".minimumScaleFactor(0.58)"))
@@ -623,6 +631,31 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             .appendingPathComponent("Atria/AtriaLiveActivityCoordinator.swift"), encoding: .utf8)
         XCTAssertTrue(coordinator.contains("beginBackgroundTask(withName: \"Atria live workout snapshot\")"))
         XCTAssertTrue(coordinator.contains("endBackgroundTask(backgroundTask)"))
+    }
+
+    func testCanonicalTerminalTransitionUpdatesThenDismissesLiveActivityPromptly() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
+        let home = try String(contentsOf: appDirectory.appendingPathComponent("AtriaHomeView.swift"),
+                              encoding: .utf8)
+        let syncStart = try XCTUnwrap(home.range(of: "private func synchronizeWorkoutUIWithCanonicalIntent"))
+        let syncEnd = try XCTUnwrap(home.range(of: "private func restoreOrFinalizePendingWorkoutIntent",
+                                              range: syncStart.upperBound..<home.endIndex))
+        let terminalSync = String(home[syncStart.lowerBound..<syncEnd.lowerBound])
+        XCTAssertTrue(terminalSync.contains("updateLiveActivity(forceActivityWrite: true)"))
+
+        let coordinator = try String(contentsOf: appDirectory
+            .appendingPathComponent("AtriaLiveActivityCoordinator.swift"), encoding: .utf8)
+        let endStart = try XCTUnwrap(coordinator.range(of: "private func endActivity(with snapshot"))
+        let endFinish = try XCTUnwrap(coordinator.range(of: "private func contentState",
+                                                       range: endStart.upperBound..<coordinator.endIndex))
+        let terminal = String(coordinator[endStart.lowerBound..<endFinish.lowerBound])
+        let update = try XCTUnwrap(terminal.range(of: "await activity.update(terminalContent)"))
+        let end = try XCTUnwrap(terminal.range(of: "await activity.end(terminalContent"))
+        XCTAssertLessThan(update.lowerBound, end.lowerBound)
+        XCTAssertTrue(terminal.contains("contentState(from: snapshot, isEnding: true)"))
+        XCTAssertTrue(terminal.contains("addingTimeInterval(2)"))
+        XCTAssertTrue(coordinator.contains("beginBackgroundTask(\n                withName: \"Atria live workout terminal\""))
     }
 
     func testForegroundResumeRefreshesWorkoutMetricsAfterFirstFrame() throws {

@@ -10,7 +10,11 @@ struct AtriaJournalProjectionState: Equatable {
 }
 
 struct AtriaJournalDeckSizing: Equatable {
-    static let standardHeight: CGFloat = 250
+    // Large, focal swipe cards (2026-07-16): the morning check-in is the primary
+    // action of the Journal tab, so the deck fills most of the leftover area
+    // rather than sitting as a small 250pt tile. The glass surface reads far
+    // better at this scale. Accessibility sizes still grow past this floor.
+    static let standardHeight: CGFloat = 460
 
     let minimumHeight: CGFloat
     let maximumHeight: CGFloat?
@@ -20,6 +24,28 @@ struct AtriaJournalDeckSizing: Equatable {
         minimumHeight = Self.standardHeight
         maximumHeight = dynamicTypeSize.isAccessibilitySize ? nil : Self.standardHeight
         clipsContent = !dynamicTypeSize.isAccessibilitySize
+    }
+}
+
+/// Single source of truth for which behaviors a user has chosen to track. The
+/// catalog (`BehaviorJournalEntry.Tag`) is WHOOP-scale, but the daily check-in
+/// and the impact section only ever show this opted-in subset — an empty/unset
+/// preference falls back to the original proven default set, so nothing changes
+/// for anyone who never opens the picker. Stored as a CSV of raw values under
+/// one shared key so the deck, Settings picker, and onboarding stay in sync via
+/// UserDefaults change notifications (see AtriaDefault).
+enum AtriaTrackedBehaviors {
+    static let storageKey = "atria.journal.trackedBehaviors"
+
+    static func parse(_ raw: String) -> [BehaviorJournalEntry.Tag] {
+        let stored = Set(raw.split(separator: ",").map(String.init))
+        // Preserve canonical catalog order regardless of stored order.
+        let picked = BehaviorJournalEntry.Tag.allCases.filter { stored.contains($0.rawValue) }
+        return picked.isEmpty ? BehaviorJournalEntry.Tag.defaultTracked : picked
+    }
+
+    static func serialize(_ tags: [BehaviorJournalEntry.Tag]) -> String {
+        tags.map(\.rawValue).joined(separator: ",")
     }
 }
 
@@ -480,7 +506,8 @@ private struct AtriaJournalCheckInDeck: View {
                            store: store)
     }
 
-    private var tags: [BehaviorJournalEntry.Tag] { BehaviorJournalEntry.Tag.allCases }
+    @AtriaDefault(AtriaTrackedBehaviors.storageKey) private var trackedBehaviorsRaw: String = ""
+    private var tags: [BehaviorJournalEntry.Tag] { AtriaTrackedBehaviors.parse(trackedBehaviorsRaw) }
     /// Standalone typed cards appended after the boolean tags.
     private var scaleQuestions: [AtriaJournalTypedQuestion] { [.moodScale, .stressScale, .energyScale, .focusScale, .windDownScale] }
     private var cardCount: Int { tags.count + scaleQuestions.count }
@@ -772,13 +799,16 @@ private struct AtriaJournalCheckInDeck: View {
         let answeredYes = todayEntry.tags.contains(tag)
         let isAutoTag = todayEntry.healthAutoTags.contains(tag)
         let followUp = AtriaJournalTypedQuestion.allCases.first { $0.linkedTag == tag }
-        return VStack(spacing: 12) {
+        return VStack(spacing: 16) {
+            Spacer(minLength: 8)
+
             Image(systemName: tag.symbolName)
-                .font(.system(size: 28, weight: .medium))
+                .font(.system(size: 40, weight: .medium))
                 .foregroundStyle(.cyan)
+                .symbolRenderingMode(.hierarchical)
 
             Text(question(for: tag))
-                .font(.headline)
+                .font(.title2.weight(.semibold))
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -786,14 +816,16 @@ private struct AtriaJournalCheckInDeck: View {
                 AtriaStatusChip(text: "from Health", systemImage: "heart.fill", tint: .pink)
             }
 
-            HStack(spacing: 10) {
+            Spacer(minLength: 8)
+
+            HStack(spacing: 12) {
                 Button {
                     recordYes(tag: tag)
                     if followUp == nil { advance() }
                 } label: {
                     Text("Yes")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
+                        .font(.body.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 30)
                 }
                 .atriaCardAction(tint: answeredYes ? .cyan : .accentColor)
 
@@ -802,8 +834,8 @@ private struct AtriaJournalCheckInDeck: View {
                     advance()
                 } label: {
                     Text("No")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
+                        .font(.body.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 30)
                 }
                 .atriaCardAction(prominent: false, tint: .secondary)
             }
@@ -815,10 +847,11 @@ private struct AtriaJournalCheckInDeck: View {
             Button("Skip") {
                 advance()
             }
-            .font(.caption.weight(.medium))
+            .font(.subheadline.weight(.medium))
             .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 18)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 26)
         .frame(maxWidth: .infinity)
     }
 
@@ -971,6 +1004,35 @@ private struct AtriaJournalCheckInDeck: View {
         case .lateMeal: return "Did you eat within two hours of bed?"
         case .morningLight: return "Did you get outdoor light yesterday morning?"
         case .meditation: return "Did you meditate or do breathwork yesterday?"
+        case .nicotine: return "Any nicotine yesterday?"
+        case .cannabis: return "Any cannabis yesterday?"
+        case .bigMeal: return "A large or heavy meal yesterday?"
+        case .addedSugar: return "A lot of added sugar yesterday?"
+        case .vegetables: return "Plenty of vegetables yesterday?"
+        case .fasted: return "Did you fast for a long stretch yesterday?"
+        case .supplements: return "Took your supplements yesterday?"
+        case .melatonin: return "Melatonin or a sleep aid last night?"
+        case .medication: return "Took your medication yesterday?"
+        case .sauna: return "Sauna or heat session yesterday?"
+        case .coldExposure: return "Cold plunge or cold shower yesterday?"
+        case .stretching: return "Did you stretch or do mobility yesterday?"
+        case .massage: return "Massage or bodywork yesterday?"
+        case .soreness: return "Waking up sore today?"
+        case .activeDay: return "Were you active on your feet yesterday?"
+        case .nap: return "Did you nap yesterday?"
+        case .screenInBed: return "Screens in bed last night?"
+        case .readBeforeBed: return "Did you read before bed?"
+        case .sharedBed: return "Shared your bed (partner or pet) last night?"
+        case .warmRoom: return "Was your room too warm last night?"
+        case .consistentBedtime: return "A consistent bedtime last night?"
+        case .socialTime: return "Meaningful social time yesterday?"
+        case .anxious: return "Feeling anxious yesterday?"
+        case .gratitude: return "Practice gratitude or journaling yesterday?"
+        case .outdoors: return "Time outdoors in nature yesterday?"
+        case .travel: return "Travel or a time-zone change yesterday?"
+        case .unwell: return "Feeling unwell or run down today?"
+        case .sexualActivity: return "Sexual activity yesterday?"
+        case .selfPleasure: return "Self-pleasure yesterday?"
         }
     }
 

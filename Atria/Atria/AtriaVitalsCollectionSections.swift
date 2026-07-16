@@ -4009,14 +4009,17 @@ private struct AtriaPulseStatRail: View {
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.72)
+                .minimumScaleFactor(0.6)
+                .allowsTightening(true)
             Text(value)
                 .font(.title3.weight(.bold).monospacedDigit())
                 .foregroundStyle(tint)
                 .lineLimit(1)
-                .minimumScaleFactor(0.75)
+                .minimumScaleFactor(0.55)
+                .allowsTightening(true)
         }
         .frame(maxWidth: .infinity)
+        .padding(.horizontal, 2)
     }
 }
 

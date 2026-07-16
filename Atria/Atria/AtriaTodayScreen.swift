@@ -2928,15 +2928,20 @@ private struct AtriaTodayHighlightsStrip: View, Equatable {
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(highlight.tint)
                 .lineLimit(1)
-                .minimumScaleFactor(0.75)
-                .layoutPriority(1)
+                .minimumScaleFactor(0.6)
+                .allowsTightening(true)
+                // The value phrase (e.g. "3 nights", "↓ RHR") is the row's
+                // identity — give it the higher priority so at large Dynamic
+                // Type the sentence wraps instead of squeezing the value away.
+                .layoutPriority(2)
 
             Text(highlight.sentence)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
-                .lineLimit(1)
+                .lineLimit(2)
                 .minimumScaleFactor(0.75)
-                .layoutPriority(2)
+                .allowsTightening(true)
+                .layoutPriority(1)
 
             Spacer(minLength: 8)
 

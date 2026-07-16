@@ -66,6 +66,14 @@ final class AtriaWorkoutStartDensityTests: XCTestCase {
                       "Reduce Motion must suppress optional selector transitions")
         XCTAssertTrue(sheet.contains(".accessibilityValue(configuration.activityType == type ? \"Selected\" : \"Not selected\")"))
         XCTAssertTrue(sheet.contains("AtriaWorkoutRecentActivityStore.recordStarted(value.activityType)"))
+        XCTAssertTrue(sheet.contains("if isStarting"))
+        XCTAssertTrue(sheet.contains("ProgressView()"),
+                      "The real authority wait needs visible native progress instead of a frozen button")
+        XCTAssertTrue(sheet.contains("startingActivityGlyph"))
+        XCTAssertTrue(sheet.contains("if accessibilityReduceMotion"))
+        XCTAssertTrue(sheet.contains("UIImpactFeedbackGenerator(style: .rigid).impactOccurred()"))
+        XCTAssertTrue(sheet.contains("UINotificationFeedbackGenerator().notificationOccurred(.success)"))
+        XCTAssertTrue(sheet.contains("UINotificationFeedbackGenerator().notificationOccurred(.error)"))
         let selectionStart = try XCTUnwrap(sheet.range(of: "private func selectActivity"))
         let selection = String(sheet[selectionStart.lowerBound...])
         XCTAssertFalse(selection.contains("UserDefaults.standard.set"),

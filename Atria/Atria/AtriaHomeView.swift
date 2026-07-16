@@ -1973,6 +1973,10 @@ struct AtriaHomeView: View {
                 liveWorkoutPauseStartedAt = nil
                 liveWorkoutMinimized = false
                 synchronizeWorkoutZoneHaptics(nil)
+                // The canonical owner has already committed the terminal
+                // intent. Push that edge immediately so the Lock Screen cannot
+                // remain visually active while final session assembly runs.
+                updateLiveActivity(forceActivityWrite: true)
             }
             // Final workout construction can require the deferred sensor
             // archive. The terminal intent remains authoritative if suspension
@@ -2919,6 +2923,13 @@ struct AtriaHomeView: View {
             strain: Metrics.strain(fromTRIMP: sensorMetrics.trimp),
             activeCalories: sensorMetrics.isComplete ? sensorMetrics.activeCalories : nil,
             steps: steps,
+            motion: AtriaLiveWorkoutMotionProjection.make(
+                capturedAt: ble.liveStrapMotionCapturedAt.flatMap {
+                    $0 >= session.start ? $0 : nil
+                },
+                isReconnecting: isReconnecting,
+                now: now
+            ),
             sensorAvailability: sensorAvailability,
             sensorCapturedAt: ble.lastAcceptedHeartRateAt.flatMap {
                 $0 >= session.start ? $0 : nil
@@ -10550,7 +10561,8 @@ private struct AtriaTopStatusChip: View, Equatable {
                 .imageScale(.small)
             Text(presentation.label)
                 .lineLimit(1)
-                .minimumScaleFactor(0.85)
+                .minimumScaleFactor(0.6)
+                .allowsTightening(true)
             if let accessorySymbol = presentation.accessorySymbol {
                 Image(systemName: accessorySymbol)
                     .font(.caption2.weight(.black))
