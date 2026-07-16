@@ -587,6 +587,103 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.rollback"))
     }
 
+    func testFallbackRequalifyPolicyRequiresPhysicalProofAndCooldown() {
+        let now = 2_000_000_000.0
+        let cooldown = AtriaBLEManager.protectedR10FallbackRequalifyCooldown
+        // Never requalify a transport that has no physical qualification.
+        XCTAssertFalse(AtriaBLEManager.protectedR10FallbackShouldRequalify(
+            priorQualifiedAt: nil, fallbackAt: now - 10 * cooldown,
+            lastAttemptAt: nil, now: now))
+        // A fresh fallback or a recent attempt must wait out the cooldown.
+        XCTAssertFalse(AtriaBLEManager.protectedR10FallbackShouldRequalify(
+            priorQualifiedAt: now - 86_400, fallbackAt: now - cooldown + 60,
+            lastAttemptAt: nil, now: now))
+        XCTAssertFalse(AtriaBLEManager.protectedR10FallbackShouldRequalify(
+            priorQualifiedAt: now - 86_400, fallbackAt: now - 10 * cooldown,
+            lastAttemptAt: now - cooldown + 60, now: now))
+        XCTAssertTrue(AtriaBLEManager.protectedR10FallbackShouldRequalify(
+            priorQualifiedAt: now - 86_400, fallbackAt: now - cooldown - 60,
+            lastAttemptAt: now - cooldown - 60, now: now))
+        // Installs demoted before the fallback timestamp existed recover on
+        // their next launch instead of being stranded (2026-07-16 regression).
+        XCTAssertTrue(AtriaBLEManager.protectedR10FallbackShouldRequalify(
+            priorQualifiedAt: now - 86_400, fallbackAt: nil,
+            lastAttemptAt: nil, now: now))
+    }
+
+    func testPhysicallyQualifiedV10FallbackRequalifiesOncePerCooldown() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.v10Requalify.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        defaults.set(true, forKey: "atria.protectedR10.responseEventDataMigrationV9")
+        defaults.set(true, forKey: "atria.protectedR10.cleanOwnerMigrationV7")
+        defaults.set("pure_hr_v10", forKey: "atria.protectedR10.cleanOwner")
+        defaults.set("fallback_active", forKey: "atria.protectedR10.cleanOwnerState")
+        defaults.set(true, forKey: "atria.protectedR10.streamSuppressed")
+        defaults.set(true, forKey: "atria.protectedR10.rollback")
+        defaults.set(true, forKey: "atria.protectedR10.pureHRV10InProcessCutover")
+        defaults.set(now.timeIntervalSince1970 - 86_400,
+                     forKey: "atria.protectedR10.stableTransportQualifiedAt")
+
+        XCTAssertEqual(
+            AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(defaults: defaults, now: now),
+            .requalifiedProtectedV9FromFallback
+        )
+        XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwner"),
+                       "protected_redp_v9")
+        XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwnerState"),
+                       "protected_launch_pending")
+        XCTAssertFalse(defaults.bool(forKey: "atria.protectedR10.streamSuppressed"))
+        XCTAssertFalse(defaults.bool(forKey: "atria.protectedR10.rollback"))
+        XCTAssertFalse(defaults.bool(forKey: "atria.protectedR10.pureHRV10InProcessCutover"))
+        XCTAssertFalse(defaults.bool(forKey: "atria.protectedR10.responseEventDataSequenceSentV9"))
+        XCTAssertNotNil(defaults.object(forKey: "atria.protectedR10.stableTransportQualifiedAt"),
+                        "the physical credential must survive so later cooldown attempts stay authorized")
+        XCTAssertNotNil(defaults.object(forKey: "atria.protectedR10.requalifyAttemptAt"))
+
+        // A failed attempt that falls back again must NOT retry within the
+        // cooldown: the transport degrades to pure HR instead of flapping.
+        defaults.set("pure_hr_v10", forKey: "atria.protectedR10.cleanOwner")
+        defaults.set("fallback_active", forKey: "atria.protectedR10.cleanOwnerState")
+        XCTAssertEqual(
+            AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(
+                defaults: defaults, now: now.addingTimeInterval(60)),
+            .none
+        )
+        XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.streamSuppressed"))
+
+        // After the cooldown the bounded attempt is available again.
+        XCTAssertEqual(
+            AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(
+                defaults: defaults,
+                now: now.addingTimeInterval(
+                    AtriaBLEManager.protectedR10FallbackRequalifyCooldown + 61)),
+            .requalifiedProtectedV9FromFallback
+        )
+    }
+
+    func testProofChurnWithLeaseHeldRetainsQualifiedOwnerUpToThreshold() throws {
+        let source = try leaseManagerSource()
+        let fb = try XCTUnwrap(source.range(of: "private func persistProtectedR10CleanOwnerFallback"))
+        let fbBody = String(source[fb.lowerBound...].prefix(4_500))
+        XCTAssertTrue(fbBody.contains("workoutMotionOwnerStartedAt != nil"),
+                      "an in-memory or persisted motion lease must gate proof-churn tolerance")
+        XCTAssertTrue(fbBody.contains("WorkoutMotionDefaults.ownerStartedAt"))
+        XCTAssertTrue(fbBody.contains("protectedR10StableTransportQualifiedAtKey) != nil"),
+                      "churn tolerance is only honest with a prior physical qualification")
+        XCTAssertTrue(fbBody.contains("protectedR10ProofChurnFailureCountKey"))
+        XCTAssertTrue(fbBody.contains("churnFailures < Self.protectedR10ProofChurnFallbackThreshold"),
+                      "one mid-proof disconnect must never demote the qualified owner (2026-07-16 21:27 IST)")
+        XCTAssertTrue(fbBody.contains("status=proof_churn_tolerated"))
+        XCTAssertTrue(fbBody.contains("protectedR10FallbackAtKey"),
+                      "an honored fallback must stamp its time so requalification is cooldown-bounded")
+        let qualify = try XCTUnwrap(source.range(of: "private func qualifyProtectedR10RecoveryIfNeeded"))
+        let qualifyBody = String(source[qualify.lowerBound...].prefix(1_600))
+        XCTAssertTrue(qualifyBody.contains("set(0, forKey: Self.protectedR10ProofChurnFailureCountKey)"),
+                      "a successful qualification must clear the churn streak")
+    }
+
     func testInterruptedV9ProofSelectsFreshPureHRV10WithoutReplayingCommands() throws {
         let suite = "AtriaBLERecoveryCadenceTests.interruptedV9.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

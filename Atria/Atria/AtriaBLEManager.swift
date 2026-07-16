@@ -2378,6 +2378,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let protectedR10RetryCountKey = "atria.protectedR10.retryCount"
     nonisolated private static let protectedR10StableTransportKey = "atria.protectedR10.stableTransport"
     nonisolated private static let protectedR10StableTransportQualifiedAtKey = "atria.protectedR10.stableTransportQualifiedAt"
+    nonisolated private static let protectedR10FallbackAtKey = "atria.protectedR10.fallbackAt"
+    nonisolated private static let protectedR10RequalifyAttemptAtKey = "atria.protectedR10.requalifyAttemptAt"
+    nonisolated private static let protectedR10ProofChurnFailureCountKey = "atria.protectedR10.proofChurnFailures"
+    /// Consecutive interrupted proofs tolerated while a motion lease is held
+    /// before honoring the pure-HR fallback. One mid-proof disconnect on a
+    /// link that churns every 15–25 s demoted the physically qualified owner
+    /// on 2026-07-16 21:27 IST and cost 76 minutes of HR plus the rest of the
+    /// night's dense motion.
+    nonisolated static let protectedR10ProofChurnFallbackThreshold = 3
+    /// Minimum spacing between bounded attempts to requalify the protected
+    /// owner out of a pure-HR fallback at process launch.
+    nonisolated static let protectedR10FallbackRequalifyCooldown: TimeInterval = 30 * 60
     // V7 also clears the rollback previously latched by passive restoration
     // edges before Atria had sent its one protected activation command.
     nonisolated private static let protectedR10HistoryInterlockMigrationKey = "atria.protectedR10.realtimeActivationMigrationV5"
@@ -2626,6 +2638,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case activatedPureHRV8Fallback
         case migratedPureHRV8ToProtectedV9
         case activatedPureHRV10Fallback
+        case requalifiedProtectedV9FromFallback
+    }
+
+    /// Whether a pure-HR fallback may attempt to requalify the physically
+    /// proven protected owner at this launch. Requires a prior physical
+    /// qualification (the credential that the full launch bring-up has
+    /// actually sustained dense motion on this device) and a cooldown since
+    /// both the fallback and the last requalification attempt, so a genuinely
+    /// unstable transport degrades to pure HR instead of flapping.
+    nonisolated static func protectedR10FallbackShouldRequalify(
+        priorQualifiedAt: Double?,
+        fallbackAt: Double?,
+        lastAttemptAt: Double?,
+        cooldown: TimeInterval = protectedR10FallbackRequalifyCooldown,
+        now: Double
+    ) -> Bool {
+        guard priorQualifiedAt != nil else { return false }
+        if let lastAttemptAt, now - lastAttemptAt < cooldown { return false }
+        if let fallbackAt, now - fallbackAt < cooldown { return false }
+        return true
     }
 
     /// Selects the process owner before `CBCentralManager` is created. The V5
@@ -2635,7 +2667,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// process launch.
     @discardableResult
     nonisolated static func prepareProtectedR10CleanOwnerAtLaunch(
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        now: Date = Date()
     ) -> ProtectedR10LaunchPreparation {
         migrateLegacyFalseR10StormSuppressionIfNeeded(defaults: defaults)
         let owner = ProtectedR10CleanOwner(
@@ -2715,6 +2748,44 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
 
         if owner == .pureHRV10 {
+            // A fallback that holds a prior physical qualification is a
+            // recoverable degradation, not a terminal one: after a cooldown,
+            // re-enter the full launch-style bring-up exactly once per
+            // window. A failed attempt falls back again (stamping a fresh
+            // cooldown); success requalifies and resumes dense capture.
+            // Before 2026-07-17 this branch re-suppressed forever — one
+            // demotion silently ended all-day motion until a reinstall.
+            if state == .fallbackActive || state == .fallbackPending,
+               protectedR10FallbackShouldRequalify(
+                   priorQualifiedAt: defaults.object(
+                       forKey: protectedR10StableTransportQualifiedAtKey) as? Double,
+                   fallbackAt: defaults.object(
+                       forKey: protectedR10FallbackAtKey) as? Double,
+                   lastAttemptAt: defaults.object(
+                       forKey: protectedR10RequalifyAttemptAtKey) as? Double,
+                   now: now.timeIntervalSince1970
+               ) {
+                defaults.set(now.timeIntervalSince1970,
+                             forKey: protectedR10RequalifyAttemptAtKey)
+                defaults.set(ProtectedR10CleanOwner.protectedV9.rawValue,
+                             forKey: protectedR10CleanOwnerKey)
+                defaults.set(ProtectedR10CleanOwnerState.protectedLaunchPending.rawValue,
+                             forKey: protectedR10CleanOwnerStateKey)
+                defaults.set(false, forKey: protectedR10StreamSuppressedKey)
+                defaults.set(false, forKey: protectedR10RollbackKey)
+                defaults.set(false, forKey: protectedR10StableTransportKey)
+                defaults.set(false, forKey: protectedR10ResponseEventDataConnectionCutoverKey)
+                defaults.set(false, forKey: protectedR10ResponseEventDataSequenceSentKey)
+                defaults.set(false, forKey: protectedR10PureHRV10InProcessCutoverKey)
+                defaults.set(0, forKey: protectedR10ProofChurnFailureCountKey)
+                defaults.removeObject(forKey: protectedR10CleanOwnerProofStartedAtKey)
+                defaults.removeObject(forKey: protectedR10CleanOwnerFailureReasonKey)
+                // stableTransportQualifiedAt is deliberately retained: it is
+                // the physical credential authorizing each bounded attempt.
+                defaults.set("clean_owner_v9_requalify_from_fallback",
+                             forKey: RadioDefaults.passiveR10Status)
+                return .requalifiedProtectedV9FromFallback
+            }
             defaults.set(true, forKey: protectedR10StreamSuppressedKey)
             defaults.set(true, forKey: protectedR10RollbackKey)
             defaults.set(false, forKey: protectedR10PassiveReprobePendingKey)
@@ -2739,6 +2810,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                          forKey: protectedR10CleanOwnerStateKey)
             defaults.set(true, forKey: protectedR10StreamSuppressedKey)
             defaults.set(true, forKey: protectedR10RollbackKey)
+            defaults.set(now.timeIntervalSince1970, forKey: protectedR10FallbackAtKey)
             defaults.removeObject(forKey: protectedR10CleanOwnerProofStartedAtKey)
             defaults.set("clean_owner_v10_pure_hr_active",
                          forKey: RadioDefaults.passiveR10Status)
@@ -7248,6 +7320,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set(false, forKey: Self.protectedR10StreamSuppressedKey)
         defaults.set(false, forKey: Self.protectedR10PassiveReprobePendingKey)
         defaults.set(0, forKey: Self.protectedR10PassiveReprobeFailureCountKey)
+        defaults.set(0, forKey: Self.protectedR10ProofChurnFailureCountKey)
         if protectedR10CleanOwner == .protectedV7
             || protectedR10CleanOwner == .protectedV9 {
             defaults.set(ProtectedR10CleanOwnerState.qualified.rawValue,
@@ -7282,6 +7355,35 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           reason)
             return
         }
+        let leaseHeld = workoutMotionOwnerStartedAt != nil
+            || defaults.object(forKey: WorkoutMotionDefaults.ownerStartedAt) != nil
+        if leaseHeld,
+           defaults.object(forKey: Self.protectedR10StableTransportQualifiedAtKey) != nil {
+            // A disconnect or timeout on a proof link that churns every
+            // 15–25 s is normal operation, not evidence against an owner this
+            // device has physically qualified (2026-07-16 21:27 IST: one
+            // mid-proof disconnect demoted the transport, put HR in a
+            // next-process limbo for 76 minutes, and ended dense motion for
+            // the night). While any holder owns the motion lease, tolerate a
+            // bounded streak and let each next connection re-enter the proven
+            // launch-style bring-up; only repeated consecutive failures may
+            // fall back to pure HR.
+            let churnFailures = defaults.integer(
+                forKey: Self.protectedR10ProofChurnFailureCountKey
+            ) + 1
+            defaults.set(churnFailures,
+                         forKey: Self.protectedR10ProofChurnFailureCountKey)
+            if churnFailures < Self.protectedR10ProofChurnFallbackThreshold {
+                defaults.set(ProtectedR10CleanOwnerState.qualified.rawValue,
+                             forKey: Self.protectedR10CleanOwnerStateKey)
+                defaults.removeObject(forKey: Self.protectedR10CleanOwnerProofStartedAtKey)
+                protectedR10CleanOwnerProofTimeoutTask?.cancel()
+                protectedR10CleanOwnerProofTimeoutTask = nil
+                AtriaDebugLog("ATRIADBG protected_r10 status=proof_churn_tolerated reason=%@ failures=%d action=retain_qualified_owner_retry_next_connection",
+                              reason, churnFailures)
+                return
+            }
+        }
         let failures = defaults.integer(forKey: Self.protectedR10PassiveReprobeFailureCountKey) + 1
         defaults.set(failures, forKey: Self.protectedR10PassiveReprobeFailureCountKey)
         let fallbackOwner: ProtectedR10CleanOwner = protectedR10CleanOwner == .protectedV9
@@ -7296,6 +7398,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set(true, forKey: Self.protectedR10RollbackKey)
         defaults.set(reason, forKey: Self.protectedR10DisconnectStormReasonKey)
         defaults.set(reason, forKey: Self.protectedR10CleanOwnerFailureReasonKey)
+        defaults.set(Date().timeIntervalSince1970, forKey: Self.protectedR10FallbackAtKey)
         defaults.removeObject(forKey: Self.protectedR10CleanOwnerProofStartedAtKey)
         defaults.set(fallbackOwner == .pureHRV10
                         ? "clean_owner_v10_fallback_pending"
