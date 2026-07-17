@@ -814,11 +814,15 @@ enum AtriaAnalytics {
         static func edwardsLoad(_ series: [(t: Double, bpm: Int)], rest: Int, max: Int) -> Double {
             guard series.count > 1, max > rest else { return 0 }
             let span = Double(max - rest)
+            // maximumLoadEvidenceGap is expressed in SECONDS (shared with the
+            // TRIMP/zone integrators, which compare in seconds); this
+            // integrator works in minutes, so convert once and by name.
+            let maximumGapMinutes = maximumLoadEvidenceGap / 60
             var total = 0.0
             for index in 1..<series.count {
                 let dtMin = (series[index].t - series[index - 1].t) / 60.0
                 guard dtMin > 0,
-                      dtMin <= maximumLoadEvidenceGap / 60 else { continue }
+                      dtMin <= maximumGapMinutes else { continue }
                 let reserve = Swift.min(Swift.max((Double(series[index].bpm) - Double(rest)) / span, 0), 1)
                 total += dtMin * Double(edwardsWeight(forHRReserve: reserve))
             }
@@ -1161,7 +1165,10 @@ enum AtriaAnalytics {
                 Estimate.Contributor(kind: .sleep,
                                      zScore: sleepZ,
                                      weight: 0.15,
-                                     detail: String(format: "Sleep %.1fσ", sleepZ),
+                                     // Unlike HRV/RHR, the sleep z is anchored
+                                     // to population norms (7 h, 85% eff), not
+                                     // a personal baseline — disclose that.
+                                     detail: String(format: "Sleep %.1fσ vs 7h·85%% norm", sleepZ),
                                      displayValue: sleepDurationHours.map { "\(AtriaMetricFormat.sleepHours($0)) ✓" } ?? String(format: "Sleep %+.1fσ", sleepZ)),
                 Estimate.Contributor(kind: .respiration,
                                      zScore: respirationZ,
