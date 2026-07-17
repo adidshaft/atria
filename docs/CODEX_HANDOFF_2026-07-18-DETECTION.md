@@ -38,8 +38,14 @@ Read it fully before editing. Intended to run as autonomous OVERNIGHT night runs
   boundary preserved, BT off/on, 2A37 HR restored+accepted FIRST, CRC-valid
   dense R10 through bounded reconnect.
 - Exact workout-start journal ownership (unchanged, still verified).
-- Confirmed-sleep persistence into daily history (commit `dd100bca`) — this
-  persists sleep that is CONFIRMED; it does not fix detection (see §3).
+- Confirmed-sleep persistence into daily history (commit `dd100bca`) — persists
+  sleep that is CONFIRMED. NOTE (verified): the same commit also TIGHTENED the
+  daily pipeline to trust only confirmed sleep (day→night filter requires
+  `$0.confirmed`, Sessions.swift:7612; morning-metric HRV returns nil once any
+  sleep was ever confirmed but this day's is not, :7985-7995), and `ba6020c8`
+  pinned "no recovery on an unconfirmed day" as the test contract. This is
+  honest but fails FULLY CLOSED when upstream confirmation is starved — it is
+  part of the cascade, not a clean win (see §3).
 - Residual, honestly NOT claimed fixed: the strap still has short natural
   transport drops after dense activation; recovery is HR-first + per-epoch
   re-establish, not a claim the hardware link is stable.
@@ -76,80 +82,118 @@ Daily rollups (`daily-rollups.json`) — recovery/sleep/HRV persist through
 - Steps: ledger stays `research_unvalidated` (correct; needs the treadmill
   session). Not in scope to "fix" here.
 
-## 3. Root cause — one failure, whole cascade
+## 3. Root cause — the whole chain is gated on strap-transport EVIDENCE (verified)
 
-Automatic **sleep confirmation stopped after 07-14**. The wake-boundary
-finalizer `commitPreparedWakeBoundarySleepIfUseful` (Sessions.swift:16206) and
-its upstream candidate/anchor logic reject recent nights with blockers
-`no_night_anchor` ("No overnight-started session found for the wake-boundary
-check"), `tail_not_awake`, and the default strong-confirm-gate failure
-(Sessions.swift:16220–16240; the closed-candidate "all already saved or
-overlapping" path is ~15873). This approach landed in `29e804c4` ("Accuracy
-wave 2: wake-boundary sleep finalize") — likely the regression relative to the
-pre-07-14 behavior. The overnight transport churn of 07-15…17 fragmented each
-night into many short sessions, so there is no single "overnight-started"
-anchor session and the strong-confirm gates never clear — even though the user
-demonstrably slept.
+This is NOT primarily a sleep-logic problem to loosen. A full code trace (line
+refs verified) shows three INDEPENDENT gates that each require evidence the
+unreliable strap transport did not deliver through 07-17:
 
-Cascade (this is the user's ENTIRE complaint list, one cause):
+- **Sleep auto-confirm requires validated dense MOTION.**
+  `isStrongAutoConfirmableSleepCandidate` (Sessions.swift:16314) guards on
+  `candidate.motionEvidenceValidated` (:16320) — true only when the strap
+  delivered validated dense R10. The prior-phase transport non-convergence
+  (C1: `s5=0 dense=0` for 42 min on a stable link, 0/460 frames) makes it
+  false ⇒ sleep is NEVER auto-confirmed. The high-specificity HR-only tiers
+  (`isUnambiguousHROnlyMainSleepCandidate` :16339,
+  `isDegradedHROnlyOvernightSleepCandidate` :16363) only feed a REVIEW CARD
+  (`isReviewWorthySleepCandidate` :7431) — "never sufficient for automatic
+  promotion" (:16356). So a night the strap saw all night via HR is shown for
+  review and, unless the user taps confirm, never anchors the day or feeds
+  recovery.
+- **HRV qualification requires standard-2A37 RR provenance.** `session.localRMSSD`
+  (Sessions.swift:454) returns nil unless `hasQualifiedStandardRRProvenance`
+  (every RR point sourced from 2A37, :447-449). No standard RR overnight ⇒
+  localRMSSD nil ⇒ `baseline.learn(hrv: 0)` ⇒ the day's sample has RHR but no
+  lnRMSSD ⇒ `freshHRVSampleCount` (Insights.swift:113) does not count it. That
+  is the exact HRV 1/14 vs RHR 9/14 shape (RHR needs no RR). NOTE: HRV baseline
+  qualification is time-of-day based (`isOvernightHRVWindow`), NOT confirmed-
+  sleep based — it needs qualified RR, not a confirmed sleep. (Per-day recovery
+  attribution, separately, DOES require confirmed sleep — see the dd100bca note.)
+- **Workout readiness requires contact-qualified HR/RR.**
+  `workoutReadiness.ready` (Sessions.swift:4419) needs `contactQualified`
+  (RR>0 OR zero accepted-HR gaps, :4406) and `!contactCompromised` (:4415). The
+  prior-phase 56-min HR hole (C2) ⇒ the 07-17 shoulder workout produced no
+  candidate. Workouts are never auto-counted (only `UserConfirmedWorkout`
+  counts, :4487) — "auto-detection" means surfacing a review candidate.
+
+Then `dd100bca` correctly TIGHTENED the daily pipeline to trust only CONFIRMED
+sleep (§1 note), so the moment upstream confirmation is starved, recovery/HRV
+blank fully closed — honest, but brittle.
+
+Cascade (root → the user's EXACT complaints), all verified:
 
 ```
-sleep NOT confirmed
-  → AtriaPhysiologicalCycle can't anchor the day on sleep (falls to
-    noSleepFallback / civil)                → "day not starting/ending on sleep"
-  → recovery is gated on sleep evidence     → recovery shows None / stuck
-    (the sleep-missing recovery path needs BOTH trusted baselines, and the
-     HRV baseline is not trusted, so no recovery is produced)
-  → no overnight window                      → HRV sample rarely qualifies
-    → HRV baseline stuck 1/14 (RHR is 9/14)  → recovery confidence never leaves
-      "unverified/provisional"
+STRAP TRANSPORT not delivering validated motion + standard 2A37 RR (prior C1/C2)
+ ├ no validated motion → isStrongAutoConfirmableSleepCandidate=false → sleep NEVER auto-confirmed
+ │    ├ cachedConfirmedSleeps empty → AtriaPhysiologicalCycle → .initialFallback 6AM civil
+ │    │     → currentPhysiologicalMainSleep=nil        ⇒ "day not starting/ending on sleep"
+ │    └ makeMorningFrozenDailyMetric else{nil} (dd100bca) → hrv/recovery nil ⇒ "recovery stuck"
+ └ no standard-2A37 RR → session.localRMSSD=nil → baseline sample has RHR, no lnRMSSD
+      ├ freshHRVSampleCount 1/14 vs RHR 9/14           ⇒ "HRV stuck / recovery unverified"
+      └ workoutReadiness.contactQualified=false        ⇒ "workouts not detected"
 ```
 
-Workout/activity detection is largely working; its visible weakness this cycle
-was the HR hole (fixed) and possibly surfacing/confidence presentation.
+The prior-phase transport fix (`566a6c24`, HR-first convergent bring-up) targets
+the root. The FIRST job of this phase is to VERIFY on real overnight data whether
+it now delivers the evidence — because if it does, most of this cascade
+self-heals, and the remaining work is the code-level gates that make detection
+invisible when evidence is only PARTIAL.
 
-## 4. Priorities (all under the honesty rules of §8 — RESTORE detection on real
-data; NEVER relax a gate in a way that fabricates a night, a workout, or a metric)
+## 4. Priorities (RESTORE detection on real EVIDENCE; NEVER loosen a gate in a way
+that fabricates sleep, a workout, or a metric)
 
-- **P0 — Restore sleep detection/confirmation for real, churn-fragmented nights.**
-  Make the wake-boundary + anchor logic tolerant of a night split across
-  multiple sessions by reconnect churn: find the overnight anchor across a
-  fragmented set (not a single "overnight-started" session), and let a genuine
-  night clear confirmation without requiring perfect continuity. Distinguish
-  "real night with gappy transport" (confirm) from "no sleep evidence"
-  (skip) — the discriminator must be physiological (sustained low HR + low
-  motion across the window), never a wall-clock assumption. Verify
-  `buildAutoConfirmedSleep` actually fires for such nights. Ensure a user-facing
-  confirm/add-sleep fallback exists and reaches the user for a night the
-  auto-gate legitimately can't clear (the review flow from `a82073e`;
-  `AtriaManualSleepSheet.swift`), so a rejected-but-real night is recoverable
-  without fabrication. CRITICAL VERIFICATION: the detection engine recomputes
-  over history, so after the fix the stored 07-15…18 all-day sessions should
-  re-confirm those nights from data already on device — prove it on the pull,
-  do not just unit-test.
-- **P1 — Sleep-anchored day boundary.** With sleep confirmed, verify
-  `AtriaPhysiologicalCycle.current(...)` re-derives wake-to-wake `boundaryKind
-  == .mainSleep` for recent days and that Home/rollups/notifications all read
-  the same boundary. No civil/noSleepFallback when a real sleep exists.
-- **P2 — Recovery + HRV maturation.** With sleep back, verify recovery
-  populates for those days and that the overnight HRV qualification keys off the
-  confirmed sleep window (Insights.swift `PersonalBaseline`,
-  `freshHRVSampleCount`/distinct-day counting, `overnightHRVPreferenceMinimum`).
+- **P0 — VERIFY THE TRANSPORT FIX ON REAL DATA (pull-only, do first).** On the
+  morning pull determine whether the `566a6c24` build now delivers, overnight:
+  (a) validated dense R10 motion (⇒ `motionEvidenceValidated` true on the night's
+  sessions), and (b) standard-2A37 RR provenance (⇒ `session.localRMSSD`
+  non-nil). If yes, confirm sleep auto-confirmed, the day anchored on it,
+  recovery populated, and an HRV distinct-day accrued. This is the linchpin —
+  report it plainly before touching code.
+- **P1 — Sleep detection when motion is legitimately down.** If transport now
+  delivers evidence, verify `isStrongAutoConfirmableSleepCandidate` /
+  `buildAutoConfirmedSleep` fire. If the strap delivers HR but motion is still
+  intermittently absent, allow the UNAMBIGUOUS HR-only overnight tier
+  (`isUnambiguousHROnlyMainSleepCandidate`, Sessions.swift:16339) to ANCHOR the
+  day/recovery — not merely surface a review card — gated to high specificity
+  (sustained low HR + low motion across a real overnight window). NEVER
+  auto-promote the ambiguous/degraded tier. The discriminator must be
+  physiological, never a wall-clock assumption.
+- **P2 — Make the HR-only review actually reach the user.** For a night the
+  auto-gate legitimately can't clear, ensure the review card / notification
+  surfaces (the `a82073e` flow, `AtriaManualSleepSheet.swift`) so the user can
+  confirm it. A detected night must never silently vanish.
+- **P3 — Historical recoverability, honestly.** Check whether the stored
+  07-15…18 sessions actually carry `motionEvidenceValidated` / 2A37 RR. If they
+  do, the recompute should re-confirm those nights — prove it on the pull. If
+  they DON'T, those nights are honestly UNRECOVERABLE (the evidence was never
+  captured); say so and do NOT backfill or fabricate them.
+- **P4 — Recovery attribution honesty (the `dd100bca` `else { nil }` branch,
+  Sessions.swift:7985-7995).** Only if a day has a clean overnight low-HR wear
+  window WITH qualified 2A37 RR but no confirmed sleep should you consider a
+  reduced-confidence recovery from it; otherwise keep nil. Re-examine whether
+  `ba6020c8`'s pinned "no recovery on an unconfirmed day" contract should stand.
+  Do NOT relax this into fabricating recovery from a wear window lacking
+  qualified RR.
+- **P5 — HRV maturation.** Confirm standard-2A37 RR overnight is what unblocks
+  HRV qualification (Insights.swift `PersonalBaseline`, `freshHRVSampleCount`).
   Report the user's ACTUAL distinct-day RHR/HRV counts and the honest ETA to
   `.personalBaseline`/`.validated`. Never relax a trust gate to make a number
-  appear — if HRV genuinely needs more nights, say so, and make sure the fixed
-  sleep detection is what unblocks the accrual.
-- **P3 — Workout/activity detection surfacing.** Verify detected workouts (e.g.
-  the 07-17 Strength) surface in the detected-activity review UI
-  (`AtriaHistorySection`, the `a82073e` multi-candidate flow) with honest,
-  legible confidence and reversible dismissal, and that HR-covered detections
-  going forward (now that the HR hole is fixed) are complete. Do not fabricate a
-  workout with no HR evidence (`no_strap_hr_samples` stays honestly excluded).
-- **P4 — No-hardcoding truth audit.** Sweep the sleep/recovery/strain/steps
-  DISPLAY paths for any placeholder, fixed fallback, or fixture value that could
-  render as if real (default sleep hours, a constant recovery %, seeded-fixture
-  leakage). Every surface must show a real value or an honest learning/absent
-  state. Report each finding with file:line; fix or gate each.
+  appear.
+- **P6 — Workout/activity surfacing.** Verify detected workouts (the 07-17
+  Strength) surface in the review UI (`AtriaHistorySection`, `a82073e`) with
+  honest, legible confidence and reversible dismissal; HR-covered detections are
+  now complete post-transport-fix. Never fabricate a no-HR workout
+  (`no_strap_hr_samples` stays honestly excluded).
+
+TRUTH AUDIT (already run — NO fabrication found): every recovery/sleep literal in
+the codebase is a `#if DEBUG` fixture unreachable in Release (AtriaTodayScreen
+`debugHighlightRollups`, LocalNotificationScheduler debug summaries, the
+detected-activities fixture gated by a non-DEBUG `false`); the manual-sleep
+sheet's 8h is a user-editable default; steps are honestly labeled unvalidated
+estimates (`AtriaStrapStepResearch.validatedDecoderAvailable=false`); "unverified/
+provisional" is the honest confidence tier. The user's "sleep is hardcoded" fear
+is UNFOUNDED — the values are honestly absent (nil/learning), not faked. Keep it
+that way; if you touch display code, re-verify no fixture leaks into Release.
 
 ## 5. Required deterministic tests (plus keep ALL existing suites green)
 
@@ -224,21 +268,36 @@ python3 test_handoff_static_checks.py   # must end OK
 
 ## 10. Key code anchors (grep-stable)
 
-- Sleep detection / wake boundary: `commitPreparedWakeBoundarySleepIfUseful`,
-  `buildAutoConfirmedSleep`, `ForegroundSleepSettlementProposal` (Sessions.swift
-  ~15800–16260); blocker strings quoted in §2.
+- Sleep auto-confirm gate (VERIFIED): `isStrongAutoConfirmableSleepCandidate`
+  (Sessions.swift:16314, motion guard :16320); HR-only tiers
+  `isUnambiguousHROnlyMainSleepCandidate` (:16339),
+  `isDegradedHROnlyOvernightSleepCandidate` (:16363), review-only at :16356;
+  `isReviewWorthySleepCandidate` (:7431); scheduler
+  `autoConfirmSleepOnForegroundIfUseful` (:15611), `resident_morning_checkpoint`
+  (:10770); commit `autoConfirmStrongSleepCandidates` (:15800),
+  `buildAutoConfirmedSleep`; `motionEvidenceValidated` set/forced-false at
+  :342-343/:10347/:11750.
+- HRV/RR provenance (VERIFIED): `session.localRMSSD` (:454),
+  `hasQualifiedStandardRRProvenance` (:447-449); `learnBaselineIfEligible`
+  (:10568-10604); `PersonalBaseline` (Insights.swift `freshHRVSampleCount` :113,
+  `trustedMinimumSamples=14` :19, `isOvernightHRVWindow` Sessions.swift:4557).
+- Workout readiness (VERIFIED): `workoutReadiness` (:4380-4470, `ready` :4419,
+  `contactQualified` :4406, `contactCompromised` :4415); `detectedActivities`
+  (:18975); review UI `AtriaHistorySection.swift:260/862`.
+- Day boundary (VERIFIED): `AtriaPhysiologicalCycle.current` (Sessions.swift:113,
+  `.initialFallback` 6AM :127-137, `.mainSleep` :146, `.noSleepFallback` :162);
+  `currentPhysiologicalMainSleep` (:8535).
+- Recovery attribution (VERIFIED): `makeMorningFrozenDailyMetric` (:7942,
+  HRV `else{nil}` :7985-7995), day→night filter `$0.confirmed` (:7612).
 - Sleep files: `AtriaCycleTracking.swift`, `AtriaSleepPlanner.swift`,
   `AtriaSleepWakeResearch.swift`, `AtriaManualSleepSheet.swift`,
   `AtriaDetectionLog.swift`.
-- Day boundary: `AtriaPhysiologicalCycle` (search `boundaryKind`, `.mainSleep`,
-  `.noSleepFallback`).
-- Recovery/baseline: `AtriaAnalytics.Recovery.estimate` (AtriaAnalytics.swift),
-  `PersonalBaseline` (Insights.swift, `trustedMinimumSamples=14`).
-- Detected-activity review UI: `AtriaHistorySection.swift`, commit `a82073e4`.
-- Suspected regression to study first: `29e804c4` (Accuracy wave 2 —
-  wake-boundary finalize). Compare its gate against the pre-07-14 confirm path.
+- VERIFIED regressions: `dd100bca` (daily-pipeline confirmed-only tightening +
+  `else{nil}` HRV branch — the behavioral change) and `ba6020c8` (test that pins
+  "no recovery on an unconfirmed day"). The transport fix `566a6c24` targets the
+  upstream cause.
 
-STOP after P0–P4 are implemented, gated, and morning-pull-verified on real data,
+STOP after P0–P6 are implemented, gated, and morning-pull-verified on real data,
 with an honest report of what confirmed, what remains genuinely evidence-limited
 (HRV baseline days), and anything you could only characterize. Gym calibration
 and physical step qualification remain separately user-pending.
