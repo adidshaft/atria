@@ -7184,10 +7184,9 @@ final class SessionStore: ObservableObject {
             let dayLoadSessions = loadSessionsByDay[day] ?? []
             let dayDetections = detectionsByDay[day] ?? []
             let aggregateSleep = aggregateSleeps[day]
-            // Only the same motion-validated evidence accepted by automatic
-            // promotion may mark a rollup ready. HR-only windows remain visible
-            // as review candidates, but must never become settled sleep here.
-            let aggregateSleepReady = (aggregateSleep.map(Self.isStrongAutoConfirmableSleepCandidate) == true) ? 1 : 0
+            // A rollup is ready only when either the motion-backed gate or the
+            // narrow physiological HR-only main-sleep gate can persist it.
+            let aggregateSleepReady = (aggregateSleep.map(Self.isAutoConfirmableMainSleepCandidate) == true) ? 1 : 0
             let sleepStart = aggregateSleep?.start
             let sleepEnd = aggregateSleep?.end
             let sleepStageSegments = aggregateSleep.map { candidate in
@@ -15764,7 +15763,7 @@ final class SessionStore: ObservableObject {
             maxHR: maxHR,
             calendar: .current,
             historicalMotionPolicy: .boundedRecent
-        ).filter(isStrongAutoConfirmableSleepCandidate)
+        ).filter(isAutoConfirmableMainSleepCandidate)
         let wakeBoundary = prepareWakeBoundarySleep(
             sourceSessions: foregroundSessions,
             rest: rest,
@@ -15794,7 +15793,7 @@ final class SessionStore: ObservableObject {
             maxHR: profile.maxHR,
             calendar: .current,
             historicalMotionPolicy: .boundedRecent
-        ).filter(Self.isStrongAutoConfirmableSleepCandidate)
+        ).filter(Self.isAutoConfirmableMainSleepCandidate)
         let candidates = strongCandidates.filter {
             Self.sleepCandidateIsSettledForClosedAutoConfirmation(candidateEnd: $0.end, now: now)
         }
@@ -16172,7 +16171,7 @@ final class SessionStore: ObservableObject {
                                                          maxHR: maxHR,
                                                          calendar: calendar,
                                                          now: now),
-              isStrongAutoConfirmableSleepCandidate(candidate) else {
+              isAutoConfirmableMainSleepCandidate(candidate) else {
             return .init(candidate: nil,
                          blocker: "candidate_did_not_clear_gates",
                          windowEndMinute: windowEnd,
@@ -16320,21 +16319,32 @@ final class SessionStore: ObservableObject {
         return candidate.maxGap <= 2 * 60 * 60
     }
 
+    /// The only two paths allowed to persist sensor-derived main sleep. The
+    /// degraded HR-only tier intentionally never reaches this predicate.
+    nonisolated static func isAutoConfirmableMainSleepCandidate(_ candidate: AggregateSleepCandidate) -> Bool {
+        isStrongAutoConfirmableSleepCandidate(candidate)
+            || isUnambiguousHROnlyMainSleepCandidate(candidate)
+    }
+
     nonisolated static func isUnambiguousHROnlyMainSleepCandidate(_ candidate: AggregateSleepCandidate,
                                                                    calendar: Calendar = .current) -> Bool {
         guard candidate.kind != "nap_candidate",
-              candidate.sessions == 1,
               candidate.duration >= 5 * 60 * 60,
-              candidate.maxGap <= 60,
+              candidate.span <= candidate.duration * 1.20,
+              candidate.maxGap <= AggregateSleepCandidate.briefSleepGapCreditMax,
+              Double(candidate.samples) >= candidate.duration / 90,
               candidate.avgHR <= candidate.baselineRestingHR + 12,
-              candidate.hrStandardDeviation <= 9.5 else { return false }
+              candidate.hrStandardDeviation <= 9.5,
+              candidate.medianHR <= candidate.baselineRestingHR + 8,
+              candidate.hrP90 <= candidate.baselineRestingHR + 18,
+              candidate.elevatedSampleFraction < 0.05,
+              candidate.elevatedSampleFraction * candidate.duration < 10 * 60 else { return false }
         let eventCalendar = EventCivilTime.eventCalendar(timeZoneIdentifier: candidate.eventTimeZoneIdentifier,
                                                          fallback: calendar)
-        guard mainSleepAutoConfirmWindowReady(candidate, calendar: eventCalendar) else { return false }
-        let startHour = eventCalendar.component(.hour, from: candidate.start)
-        let endHour = eventCalendar.component(.hour, from: candidate.end)
-        let overnight = startHour >= 20 || startHour <= 3 || endHour <= 10
-        return overnight
+        // The window establishes that this is a main-sleep-shaped observation;
+        // eligibility itself comes entirely from the physiological shape above,
+        // never from a start/end-hour shortcut.
+        return mainSleepAutoConfirmWindowReady(candidate, calendar: eventCalendar)
     }
 
     /// High-specificity HR-only overnight review tier for a fragmented or
@@ -16433,7 +16443,10 @@ final class SessionStore: ObservableObject {
 
     nonisolated static func autoSleepClassification(for candidate: AggregateSleepCandidate) -> AutoSleepClassification {
         let motionReady = candidate.motionEvidenceValidated && candidate.confidence != .low
-        let autoConfirmable = motionReady && isStrongAutoConfirmableSleepCandidate(candidate)
+        let strongMotionAutoConfirmable = motionReady && isStrongAutoConfirmableSleepCandidate(candidate)
+        let unambiguousHROnlyAutoConfirmable = !candidate.motionEvidenceValidated
+            && isUnambiguousHROnlyMainSleepCandidate(candidate)
+        let autoConfirmable = strongMotionAutoConfirmable || unambiguousHROnlyAutoConfirmable
         guard autoConfirmable else {
             let source: String
             if candidate.kind == "nap_candidate" {
@@ -16452,6 +16465,13 @@ final class SessionStore: ObservableObject {
                                             ? candidate.motionEvidenceSource
                                             : "strap_hr_only",
                                            isHROnly: !candidate.motionEvidenceValidated)
+        }
+        if unambiguousHROnlyAutoConfirmable {
+            return AutoSleepClassification(source: "auto_confirmed_sleep_hr_only",
+                                           confidence: "provisional",
+                                           motionValidated: false,
+                                           motionSource: "strap_hr_only",
+                                           isHROnly: true)
         }
         return AutoSleepClassification(source: "auto_confirmed_sleep",
                                        confidence: candidate.confidence.rawValue,
@@ -19033,10 +19053,9 @@ final class SessionStore: ObservableObject {
             let restCandidates = detections.filter { $0.kind == .restCandidate }.count
             let singleSessionSleepCandidates = detections.filter { $0.kind == .sleepCandidate }.count
             let aggregateSleep = aggregateSleeps[day]
-            // Only the same motion-validated evidence accepted by automatic
-            // promotion may mark a rollup ready. HR-only windows remain visible
-            // as review candidates, but must never become settled sleep here.
-            let aggregateSleepReady = (aggregateSleep.map(Self.isStrongAutoConfirmableSleepCandidate) == true) ? 1 : 0
+            // A rollup is ready only when either the motion-backed gate or the
+            // narrow physiological HR-only main-sleep gate can persist it.
+            let aggregateSleepReady = (aggregateSleep.map(Self.isAutoConfirmableMainSleepCandidate) == true) ? 1 : 0
             let sleepCandidates = max(singleSessionSleepCandidates, aggregateSleep == nil ? 0 : 1)
             let singleSessionSleepDuration = detections
                 .filter { $0.kind == .sleepCandidate }
@@ -21373,7 +21392,7 @@ final class SessionStore: ObservableObject {
     private func logSleepValidationCandidateMatrix(candidates: [AggregateSleepCandidate],
                                                    maxRows: Int = 6) {
         let preferred = Self.preferredSleepCandidateForReview(from: candidates)
-        let readyCount = candidates.filter { $0.motionEvidenceValidated && $0.confidence != .low }.count
+        let readyCount = candidates.filter(Self.isAutoConfirmableMainSleepCandidate).count
         AtriaDebugLog("ATRIADBG sleep_candidate_matrix candidates=%d emitted=%d ready_candidates=%d preferred_kind=%@ preferred_start=%@ preferred_end=%@ policy=review_before_recovery",
                       candidates.count,
                       min(maxRows, candidates.count),
@@ -21388,7 +21407,7 @@ final class SessionStore: ObservableObject {
                     && abs($0.start.timeIntervalSince(candidate.start)) < 1
                     && abs($0.end.timeIntervalSince(candidate.end)) < 1
             } ?? false
-            let autoConfirmable = Self.isStrongAutoConfirmableSleepCandidate(candidate)
+            let autoConfirmable = Self.isAutoConfirmableMainSleepCandidate(candidate)
             AtriaDebugLog("ATRIADBG sleep_candidate rank=%d selected=%d kind=%@ source=%@ duration_s=%.0f span_s=%.0f max_gap_s=%.0f sessions=%d samples=%d avg_hr=%d peak_hr=%d sleep_rhr=%d confidence=%@ auto_confirmable=%d motion_source=%@ motion_validated=%d blocker=%@ fallback_source=%@ historical_motion_status=%@ historical_motion_reason=%@ historical_motion_rows=%d historical_motion_validated_rows=%d historical_motion_coverage_s=%d historical_motion_nearest_separation_s=%d detail=%@",
                           index + 1,
                           selected ? 1 : 0,

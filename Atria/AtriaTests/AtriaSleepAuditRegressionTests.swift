@@ -199,7 +199,7 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
                       "classification must use event-local hours, not the supplied UTC fallback")
         XCTAssertFalse(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
         XCTAssertEqual(SessionStore.autoSleepClassification(for: candidate).source,
-                       "sleep_review_hr_only")
+                       "auto_confirmed_sleep_hr_only")
         XCTAssertEqual(SessionStore.autoSleepEventTimeZoneIdentifier(
             for: candidate,
             existingEventTimeZoneIdentifier: "Asia/Kolkata",
@@ -365,7 +365,7 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertFalse(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
     }
 
-    func testStableFiveHourHROnlyMainSleepRemainsReviewable() throws {
+    func testStableFiveHourHROnlyMainSleepCanAnchorWithoutMotion() throws {
         let mainSleep = session(start: date(2032, 7, 4, 23, 0),
                                 end: date(2032, 7, 5, 4, 30),
                                 bpm: 52)
@@ -376,7 +376,40 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertFalse(candidate.motionEvidenceValidated)
         XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(candidate))
         XCTAssertFalse(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
+        XCTAssertTrue(SessionStore.isAutoConfirmableMainSleepCandidate(candidate))
         XCTAssertEqual(SessionStore.autoSleepClassification(for: candidate).source,
-                       "sleep_review_hr_only")
+                       "auto_confirmed_sleep_hr_only")
+    }
+
+    func testReconnectFragmentsCanAnchorOnlyWithDenseStablePhysiology() throws {
+        let first = session(start: date(2032, 7, 9, 23, 30),
+                            end: date(2032, 7, 10, 2, 20),
+                            bpm: 52)
+        let second = session(start: date(2032, 7, 10, 2, 30),
+                             end: date(2032, 7, 10, 5, 30),
+                             bpm: 53)
+        let candidate = try XCTUnwrap(candidates([first, second]).first)
+
+        XCTAssertEqual(candidate.sessions, 2)
+        XCTAssertFalse(candidate.motionEvidenceValidated)
+        XCTAssertTrue(SessionStore.isUnambiguousHROnlyMainSleepCandidate(candidate))
+        XCTAssertTrue(SessionStore.isAutoConfirmableMainSleepCandidate(candidate))
+    }
+
+    func testLongQuietWindowWithWakePhysiologyDoesNotAnchor() throws {
+        let start = date(2032, 7, 11, 23, 0)
+        let end = date(2032, 7, 12, 5, 30)
+        let duration = end.timeIntervalSince(start)
+        let points = stride(from: 0.0, to: duration, by: 60.0).map {
+            SavedSession.Point(t: $0, bpm: $0 < 4 * 60 * 60 ? 52 : 78)
+        }
+        let awake = SavedSession(id: UUID(),
+                                 start: start,
+                                 end: end,
+                                 label: "Quiet awake tail",
+                                 points: points,
+                                 eventTimeZoneIdentifier: "UTC")
+        XCTAssertTrue(candidates([awake]).isEmpty,
+                      "a sustained wake-shaped tail must be rejected before automatic anchoring")
     }
 }
