@@ -4384,17 +4384,20 @@ class HandoffStaticChecks(unittest.TestCase):
             "precomputedStrongCandidates: proposal.strongCandidates",
             "commitPreparedWakeBoundarySleepIfUseful(",
             "private func autoConfirmStrongSleepCandidates(reason: String,\n                                                   limit: Int = 2,\n                                                   sourceSessions: [SavedSession]? = nil,\n                                                   precomputedStrongCandidates: [AggregateSleepCandidate]? = nil,",
-            ".filter(Self.isStrongAutoConfirmableSleepCandidate)",
-            # HR-only windows may surface for review but automatic persistence is
-            # restricted to validated motion/stillness evidence.
+            ".filter(Self.isAutoConfirmableMainSleepCandidate)",
+            # 2026-07-18: automatic persistence accepts validated motion or the
+            # narrow physiological HR-only main-sleep gate; degraded stays review-only.
             "let classification = Self.autoSleepClassification(for: candidate)",
             "confidence: classification.confidence,",
             "nonisolated static func isStrongAutoConfirmableSleepCandidate(_ candidate: AggregateSleepCandidate) -> Bool",
             "candidate.motionEvidenceValidated,",
             "candidate.confidence != .low,",
+            "nonisolated static func isAutoConfirmableMainSleepCandidate(_ candidate: AggregateSleepCandidate) -> Bool",
+            "|| isUnambiguousHROnlyMainSleepCandidate(candidate)",
             "nonisolated static func isDegradedHROnlyOvernightSleepCandidate(_ candidate: AggregateSleepCandidate,",
             "nonisolated static func autoSleepClassification(for candidate: AggregateSleepCandidate) -> AutoSleepClassification",
             'source = "sleep_review_hr_only"',
+            'source: "auto_confirmed_sleep_hr_only"',
             "private nonisolated static func sleepWindowsOverlap(_ sleep: UserConfirmedSleep, candidate: AggregateSleepCandidate) -> Bool",
             '"auto_nap"',
             '"auto_sleep"',
@@ -5936,7 +5939,7 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "ATRIADBG sleep_candidate_matrix candidates=%d emitted=%d ready_candidates=%d preferred_kind=%@ preferred_start=%@ preferred_end=%@ policy=review_before_recovery",
             "Self.preferredSleepCandidateForReview(from: candidates)",
-            "Self.isStrongAutoConfirmableSleepCandidate(candidate)",
+            "Self.isAutoConfirmableMainSleepCandidate(candidate)",
             "ATRIADBG sleep_candidate rank=%d selected=%d kind=%@ source=%@ duration_s=%.0f span_s=%.0f max_gap_s=%.0f",
             "auto_confirmable=%d",
             "blocker=%@",
