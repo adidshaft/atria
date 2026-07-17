@@ -4,13 +4,17 @@ import XCTest
 final class AtriaWorkoutReviewCacheTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
-    private func session(endingAt end: Date) -> SavedSession {
+    private func session(endingAt end: Date,
+                         kind: String? = nil,
+                         sleepWakeResearchState: String? = nil) -> SavedSession {
         SavedSession(id: UUID(),
                      start: end.addingTimeInterval(-15 * 60),
                      end: end,
                      label: "Workout review cache test",
                      points: [SavedSession.Point(t: 0, bpm: 120),
-                              SavedSession.Point(t: 15 * 60, bpm: 130)])
+                              SavedSession.Point(t: 15 * 60, bpm: 130)],
+                     sleepWakeResearchState: sleepWakeResearchState,
+                     kind: kind)
     }
 
     private func candidate(endingAt end: Date) -> WorkoutReviewCandidate {
@@ -39,6 +43,20 @@ final class AtriaWorkoutReviewCacheTests: XCTestCase {
                                                                        now: now)
 
         XCTAssertEqual(Set(filtered.map(\.id)), Set([boundary.id, recent.id]))
+    }
+
+    func testWorkoutReviewBoundaryExcludesExplicitSleepAndBreathwork() {
+        let active = session(endingAt: now.addingTimeInterval(-60))
+        let sleep = session(endingAt: now.addingTimeInterval(-120),
+                            sleepWakeResearchState: "sleep_research")
+        let breathwork = session(endingAt: now.addingTimeInterval(-180), kind: "breathwork")
+
+        let filtered = SessionStore.workoutReviewSessionsWithinHorizon([active, sleep, breathwork],
+                                                                       now: now)
+
+        XCTAssertEqual(filtered.map(\.id), [active.id])
+        XCTAssertNil(sleep.detectedActivity(rest: 60, maxHR: 190))
+        XCTAssertNil(breathwork.detectedActivity(rest: 60, maxHR: 190))
     }
 
     func testCacheKeyInvalidatesForSessionConfirmationAndHRInputChanges() {
