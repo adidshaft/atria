@@ -111,7 +111,9 @@ struct PersonalBaseline: Codable {
     }
 
     func freshHRVSampleCount(now: Date = Date()) -> Int {
-        Self.distinctDayCount(freshSamples(now: now).filter { $0.lnRMSSD != nil })
+        Self.distinctDayCount(freshSamples(now: now).filter {
+            $0.lnRMSSD != nil && $0.isOvernightSample
+        })
     }
 
     private static func distinctDayCount(_ samples: [BaselineSample],
