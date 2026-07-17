@@ -1609,6 +1609,19 @@ struct AtriaDismissedSleepCandidate: Codable, Equatable {
     func overlaps(start otherStart: Date, end otherEnd: Date) -> Bool {
         start < otherEnd && end > otherStart
     }
+
+    /// A dismissal applies only when it covers most of the regenerated
+    /// candidate. A tiny false-positive fragment must not hide a materially
+    /// larger, later-completed night, while a deleted full night stays deleted
+    /// across small detector-boundary changes.
+    func suppresses(start otherStart: Date, end otherEnd: Date) -> Bool {
+        let overlap = min(end, otherEnd).timeIntervalSince(max(start, otherStart))
+        guard overlap > 0 else { return false }
+        let dismissedDuration = end.timeIntervalSince(start)
+        let candidateDuration = otherEnd.timeIntervalSince(otherStart)
+        let longest = max(dismissedDuration, candidateDuration)
+        return longest > 0 && overlap / longest >= 0.70
+    }
 }
 
 enum AtriaDismissedSleepCandidateStore {
@@ -15127,7 +15140,7 @@ final class SessionStore: ObservableObject {
                                           candidateEnd: end,
                                           candidateDuration: latest.duration,
                                           isNap: latest.isNapEvidence) != nil),
-           !dismissedCandidates.contains(where: { $0.overlaps(start: start, end: end) }) {
+           !dismissedCandidates.contains(where: { $0.suppresses(start: start, end: end) }) {
             // Daily rollups are intentionally cheap and can include a long,
             // quiet awake lead-in or stop at a BLE gap. Prefer the robust
             // five-minute physiological bout when it materially trims or
@@ -15156,7 +15169,7 @@ final class SessionStore: ObservableObject {
                                              candidateDuration: candidate.duration,
                                              isNap: candidate.kind == "nap_candidate") != nil),
               !dismissedCandidates.contains(where: {
-                  $0.overlaps(start: candidate.start, end: candidate.end)
+                  $0.suppresses(start: candidate.start, end: candidate.end)
               }) else {
             return physiologicalReview
         }
@@ -15287,7 +15300,7 @@ final class SessionStore: ObservableObject {
                                                                isNap: nap) != nil
             guard mainSleep || nap,
                   !overlapsConfirmed || extendsConfirmed,
-                  !dismissedCandidates.contains(where: { $0.overlaps(start: start, end: end) }) else { return nil }
+                  !dismissedCandidates.contains(where: { $0.suppresses(start: start, end: end) }) else { return nil }
             let source = mainSleep ? "sleep_episode_review" : "nap_candidate"
             let day = endHour <= 11 ? calendar.startOfDay(for: end) : calendar.startOfDay(for: start)
             let weightedCount = episode.reduce(0) { $0 + $1.sampleCount }
@@ -15841,6 +15854,9 @@ final class SessionStore: ObservableObject {
         var saved = 0
         var firstSavedOvernight: UserConfirmedSleep?
         for candidate in candidates.prefix(limit) {
+            guard !dismissedSleepCandidates.contains(where: {
+                $0.suppresses(start: candidate.start, end: candidate.end)
+            }) else { continue }
             let id = confirmedSleepID(start: candidate.start,
                                      end: candidate.end,
                                      source: Self.autoSleepClassification(for: candidate).source)
@@ -16237,6 +16253,15 @@ final class SessionStore: ObservableObject {
             DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped",
                                                      reason: "wake_boundary_no_wake_detected",
                                                      detail: detail))
+            return false
+        }
+
+        guard !dismissedSleepCandidates.contains(where: {
+            $0.suppresses(start: candidate.start, end: candidate.end)
+        }) else {
+            DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped",
+                                                     reason: "wake_boundary_dismissed",
+                                                     detail: "Wake-boundary candidate matches a durable user dismissal"))
             return false
         }
 
@@ -25624,7 +25649,7 @@ struct SleepHistorySnapshot: Equatable {
                     $0.start < candidateEnd && $0.end > candidateStart
                 }
                 let wasDismissed = dismissedCandidates.contains {
-                    $0.overlaps(start: candidateStart, end: candidateEnd)
+                    $0.suppresses(start: candidateStart, end: candidateEnd)
                 }
                 if overlapsConfirmed || wasDismissed { continue }
             }

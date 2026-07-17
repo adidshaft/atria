@@ -117,6 +117,40 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
         XCTFail("the cold-cache projection did not publish a resolved result")
     }
 
+    func testSleepDismissalRequiresSubstantialCandidateCoverage() {
+        let start = Date(timeIntervalSince1970: 1_900_000_000)
+        let fullEnd = start.addingTimeInterval(6 * 60 * 60)
+        let deletedNight = AtriaDismissedSleepCandidate(start: start,
+                                                        end: fullEnd)
+        XCTAssertTrue(deletedNight.suppresses(start: start.addingTimeInterval(5 * 60),
+                                              end: fullEnd.addingTimeInterval(10 * 60)),
+                      "a deleted full night stays suppressed across small boundary drift")
+
+        let partialFalseWindow = AtriaDismissedSleepCandidate(
+            start: start.addingTimeInterval(2 * 60 * 60),
+            end: start.addingTimeInterval(2 * 60 * 60 + 10 * 60)
+        )
+        XCTAssertTrue(partialFalseWindow.overlaps(start: start, end: fullEnd))
+        XCTAssertFalse(partialFalseWindow.suppresses(start: start, end: fullEnd),
+                       "a tiny dismissed fragment must not hide a materially larger real night")
+    }
+
+    func testBothAutomaticPersistencePathsHonorDurableDismissals() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sessions = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/Sessions.swift"), encoding: .utf8)
+
+        let closedStart = try XCTUnwrap(sessions.range(of: "private func autoConfirmStrongSleepCandidates"))
+        let closedEnd = try XCTUnwrap(sessions.range(of: "private func buildAutoConfirmedSleep", range: closedStart.upperBound..<sessions.endIndex))
+        let closed = sessions[closedStart.lowerBound..<closedEnd.lowerBound]
+        XCTAssertTrue(closed.contains("$0.suppresses(start: candidate.start, end: candidate.end)"))
+
+        let wakeStart = try XCTUnwrap(sessions.range(of: "private func commitPreparedWakeBoundarySleepIfUseful"))
+        let wakeEnd = try XCTUnwrap(sessions.range(of: "private func applySleepExtend", range: wakeStart.upperBound..<sessions.endIndex))
+        let wake = sessions[wakeStart.lowerBound..<wakeEnd.lowerBound]
+        XCTAssertTrue(wake.contains("$0.suppresses(start: candidate.start, end: candidate.end)"))
+    }
+
     func testArchiveStatusNotificationsCannotStarveSleepReviewResolution() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sessions = try String(contentsOf: testsDirectory.deletingLastPathComponent()
