@@ -38,6 +38,10 @@ struct ActiveSessionJournalRecord: Codable {
     /// A relaunch restores it only as a replay watermark, never as freshness.
     var strapStepResearchDeviceTimestamp: UInt32? = nil
     var strapStepResearchState: String? = nil
+    /// RESEARCH-ONLY all-day gyro-cadence shadow total for this live session.
+    /// Validation evidence only — never rendered, never feeds daily steps or
+    /// any production ledger. Optional so pre-schema journals stay decodable.
+    var gyroCadenceResearchSteps: Int? = nil
 
     struct Sample: Codable {
         let t: Date
@@ -106,6 +110,7 @@ private struct ActiveSessionJournalSegment: Codable {
     var strapStepResearchRawCount: Int? = nil
     var strapStepResearchDeviceTimestamp: UInt32? = nil
     var strapStepResearchState: String? = nil
+    var gyroCadenceResearchSteps: Int? = nil
 }
 
 enum ActiveSessionJournal {
@@ -407,7 +412,8 @@ enum ActiveSessionJournal {
             strapStepResearchCount: record.strapStepResearchCount,
             strapStepResearchRawCount: record.strapStepResearchRawCount,
             strapStepResearchDeviceTimestamp: record.strapStepResearchDeviceTimestamp,
-            strapStepResearchState: record.strapStepResearchState
+            strapStepResearchState: record.strapStepResearchState,
+            gyroCadenceResearchSteps: record.gyroCadenceResearchSteps
         )
         try JSONEncoder().encode(segment).write(to: segmentURL(sequence: nextSequence), options: [.atomic])
         clearLegacySnapshotFileIfPresent()
@@ -544,7 +550,8 @@ enum ActiveSessionJournal {
             strapStepResearchCount: record.strapStepResearchCount,
             strapStepResearchRawCount: record.strapStepResearchRawCount,
             strapStepResearchDeviceTimestamp: record.strapStepResearchDeviceTimestamp,
-            strapStepResearchState: record.strapStepResearchState
+            strapStepResearchState: record.strapStepResearchState,
+            gyroCadenceResearchSteps: record.gyroCadenceResearchSteps
         )
         let data = try JSONEncoder().encode(segment)
         try data.write(to: segmentURL(sequence: nextSequence), options: [.atomic])
@@ -683,7 +690,8 @@ enum ActiveSessionJournal {
             strapStepResearchCount: segment.strapStepResearchCount,
             strapStepResearchRawCount: segment.strapStepResearchRawCount,
             strapStepResearchDeviceTimestamp: segment.strapStepResearchDeviceTimestamp,
-            strapStepResearchState: segment.strapStepResearchState
+            strapStepResearchState: segment.strapStepResearchState,
+            gyroCadenceResearchSteps: segment.gyroCadenceResearchSteps
         )
         guard let samples = replaying(
             current: record.samples,
@@ -762,6 +770,12 @@ enum ActiveSessionJournal {
                 incoming: segment.strapStepResearchDeviceTimestamp
             )
         }
+        // Research-only gyro-cadence shadow: monotonic within a session; a
+        // delayed/lower segment must never downgrade the persisted total.
+        record.gyroCadenceResearchSteps = monotonicOptionalCount(
+            segment.gyroCadenceResearchSteps,
+            record.gyroCadenceResearchSteps
+        )
         return record
     }
 

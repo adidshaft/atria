@@ -123,6 +123,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let strapRawSteps: Int
         let strapDeviceTimestamp: UInt32?
         let strapStepState: String?
+        /// RESEARCH-ONLY gyro-cadence shadow steps for the live session.
+        /// Validation evidence only — never feeds a user-facing count.
+        let gyroCadenceResearchSteps: Int
 
         init(sensorProbeFrames: Int,
              spo2CandidateFrames: Int,
@@ -132,7 +135,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
              strapSteps: Int = 0,
              strapRawSteps: Int = 0,
              strapDeviceTimestamp: UInt32? = nil,
-             strapStepState: String? = nil) {
+             strapStepState: String? = nil,
+             gyroCadenceResearchSteps: Int = 0) {
             self.sensorProbeFrames = sensorProbeFrames
             self.spo2CandidateFrames = spo2CandidateFrames
             self.skinTempCandidateFrames = skinTempCandidateFrames
@@ -142,6 +146,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             self.strapRawSteps = strapRawSteps
             self.strapDeviceTimestamp = strapDeviceTimestamp
             self.strapStepState = strapStepState
+            self.gyroCadenceResearchSteps = gyroCadenceResearchSteps
         }
 
         static let zero = ResearchAggregates(sensorProbeFrames: 0,
@@ -170,6 +175,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return nil
         }
 
+        let gyroCadenceResearchSteps = record.gyroCadenceResearchSteps ?? 0
+        guard gyroCadenceResearchSteps >= 0,
+              gyroCadenceResearchSteps <= 10_000_000 else { return nil }
+
         let temperatureValues: (sum: Int, count: Int)
         switch (record.skinTempResearchCandidateValueSum,
                 record.skinTempResearchCandidateValueCount) {
@@ -189,7 +198,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                   strapRawSteps: strap.raw,
                                   strapDeviceTimestamp: record.strapStepResearchDeviceTimestamp
                                       .flatMap { $0 > 0 ? $0 : nil },
-                                  strapStepState: strap.state)
+                                  strapStepState: strap.state,
+                                  gyroCadenceResearchSteps: gyroCadenceResearchSteps)
     }
 
     /// Fully prepared restore output produced away from the MainActor. The
@@ -1868,6 +1878,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var strapStepResearchState = "research_unvalidated"
     private var strapStepResearchDay = Calendar.current.startOfDay(for: Date())
     private var strapStepResearchDayBaseline = 0
+    /// RESEARCH-ONLY gyro-cadence shadow accounting. `TotalSteps` mirrors the
+    /// shadow accumulator's closed-span total; the baseline/prefix pair maps
+    /// it onto the current live session. None of these ever feed dailySteps,
+    /// the strap step ledger, live activities, or any user-facing surface.
+    private var gyroCadenceResearchShadowTotalSteps = 0.0
+    private var gyroCadenceResearchSessionBaselineSteps = 0.0
+    private var gyroCadenceResearchRestoredPrefixSteps = 0
     private var researchProbeFrameCount = 0
     private var researchProbeOxygenCandidateFrames = 0
     private var researchProbeTemperatureCandidateFrames = 0
@@ -2233,6 +2250,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                              qos: .utility)
     private nonisolated let proprietaryFrameReassembler = AtriaWhoop4FrameReassembler()
     private nonisolated let r10MotionPipeline = AtriaR10MotionPipeline()
+    /// RESEARCH-ONLY: consumes the same decoded R10 stream read-only; issues
+    /// no strap writes and never influences production step accounting.
+    private nonisolated let gyroCadenceResearchShadow = AtriaGyroCadenceResearchShadow()
     private var r10MotionPipelineGeneration: UInt64 = 0
     private enum BufferedSessionInput {
         case heartRate(measurement: ParsedHeartRatePacket, rawData: Data)
@@ -9404,6 +9424,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             incoming: strapStepResearchDeviceTimestamp
         )
         strapStepResearchState = researchAggregates.strapStepState ?? "research_unvalidated"
+        // Research-only gyro shadow: adopt the stronger of the journal's
+        // persisted session total and the value already accumulated in this
+        // process, then restart the shadow delta so nothing double-counts.
+        rebaseGyroCadenceResearchShadowSession(
+            restoredPrefixSteps: max(currentGyroCadenceResearchSessionSteps(),
+                                     researchAggregates.gyroCadenceResearchSteps)
+        )
         publishLiveStrapStepResearchIfNeeded(now: now, force: true)
         assignIfChanged(\.liveStrapStepResearchState, strapStepResearchState)
         activeJournalDirtySamples = 0
@@ -9445,7 +9472,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             strapSteps: strapStepResearchCount,
             strapRawSteps: strapStepResearchPeakCount,
             strapDeviceTimestamp: strapStepResearchDeviceTimestamp,
-            strapStepState: strapStepResearchState
+            strapStepState: strapStepResearchState,
+            gyroCadenceResearchSteps: currentGyroCadenceResearchSessionSteps()
         )
         if force,
            !refreshTimestampIfUnchanged,
@@ -9563,7 +9591,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 strapStepResearchRawCount: researchAggregates.strapRawSteps > 0 ? researchAggregates.strapRawSteps : nil,
                 strapStepResearchDeviceTimestamp: researchAggregates.strapRawSteps > 0
                     ? researchAggregates.strapDeviceTimestamp : nil,
-                strapStepResearchState: researchAggregates.strapSteps > 0 ? researchAggregates.strapStepState : nil
+                strapStepResearchState: researchAggregates.strapSteps > 0 ? researchAggregates.strapStepState : nil,
+                gyroCadenceResearchSteps: researchAggregates.gyroCadenceResearchSteps > 0
+                    ? researchAggregates.gyroCadenceResearchSteps : nil
             )
             let duration = finalSample.t.timeIntervalSince(first.t)
             do {
@@ -19870,6 +19900,45 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         assignIfChanged(\.liveStrapStepResearchTodayCount, 0)
     }
 
+    /// RESEARCH-ONLY gyro-cadence shadow. The shadow accumulator's total is
+    /// monotonic per process; snapshots may arrive out of order across the
+    /// actor hop, so only a forward move is ever applied.
+    private func applyGyroCadenceResearchShadowSnapshot(
+        _ snapshot: AtriaGyroCadenceResearchShadow.Snapshot
+    ) {
+        gyroCadenceResearchShadowTotalSteps = max(gyroCadenceResearchShadowTotalSteps,
+                                                  snapshot.totalSteps)
+    }
+
+    private func currentGyroCadenceResearchSessionSteps() -> Int {
+        Self.gyroCadenceResearchSessionSteps(
+            restoredPrefixSteps: gyroCadenceResearchRestoredPrefixSteps,
+            shadowTotalSteps: gyroCadenceResearchShadowTotalSteps,
+            sessionBaselineSteps: gyroCadenceResearchSessionBaselineSteps
+        )
+    }
+
+    /// Maps the process-monotonic shadow total onto the live session:
+    /// journal-restored prefix plus the shadow delta since the last rebase.
+    /// Research evidence only — this value never feeds a user-facing count.
+    nonisolated static func gyroCadenceResearchSessionSteps(
+        restoredPrefixSteps: Int,
+        shadowTotalSteps: Double,
+        sessionBaselineSteps: Double
+    ) -> Int {
+        let delta = max(0, shadowTotalSteps - sessionBaselineSteps)
+        let combined = Double(max(0, restoredPrefixSteps)) + delta
+        return min(Int(combined.rounded()), 10_000_000)
+    }
+
+    /// Rebase at a session boundary or journal restore: the given prefix is
+    /// adopted once and the shadow delta restarts from the current total, so
+    /// no closed span is ever attributed to two sessions.
+    private func rebaseGyroCadenceResearchShadowSession(restoredPrefixSteps: Int) {
+        gyroCadenceResearchRestoredPrefixSteps = max(0, min(restoredPrefixSteps, 10_000_000))
+        gyroCadenceResearchSessionBaselineSteps = gyroCadenceResearchShadowTotalSteps
+    }
+
     private static func standardDeviation(_ values: [Double]) -> Double {
         guard values.count >= 2 else { return 0 }
         let mean = values.reduce(0, +) / Double(values.count)
@@ -19903,6 +19972,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         strapStepResearchPeakCount = 0
         strapStepResearchDeviceTimestamp = nil
         strapStepResearchState = "research_unvalidated"
+        // Research-only gyro shadow restarts with the new session. Any span
+        // still open in the accumulator is deliberately not attributed to
+        // either session (an honest undercount, never a double count).
+        rebaseGyroCadenceResearchShadowSession(restoredPrefixSteps: 0)
         if let carriedMotionSnapshot {
             strapStepResearchCount = carriedMotionSnapshot.steps
             strapStepResearchPeakCount = carriedMotionSnapshot.rawSteps
@@ -21597,6 +21670,16 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 r10MotionPipeline.ingest(r10Frame, receivedAt: receivedAt) { [weak self] snapshot in
                     Task { @MainActor [weak self] in
                         self?.applyR10MotionSnapshot(snapshot)
+                    }
+                }
+                // RESEARCH-ONLY shadow: same stream, read-only, never a
+                // user-facing count. Splits at every device-time gap itself.
+                gyroCadenceResearchShadow.ingest(
+                    deviceTimestamp: r10Frame.deviceTimestamp,
+                    rotationMagnitudes: r10Frame.rotationRate.map(\.magnitude)
+                ) { [weak self] shadowSnapshot in
+                    Task { @MainActor [weak self] in
+                        self?.applyGyroCadenceResearchShadowSnapshot(shadowSnapshot)
                     }
                 }
                 if !storesProprietaryFrames {
