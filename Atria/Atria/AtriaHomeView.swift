@@ -4203,23 +4203,36 @@ struct AtriaHomeView: View {
         // Fill against the user's own sleep goal, not a hardcoded 8h — same key
         // the Today sleep cards read (atria.target.sleep.goalHours).
         let sleepGoalHours = (UserDefaults.standard.object(forKey: "atria.target.sleep.goalHours") as? Double) ?? 8.0
-        let sleepFill = sleep.map { min(max($0.durationHours / max(sleepGoalHours, 1), 0), 1) }
+        let sleepIsConfirmedNight = sleep?.confirmed == true && sleep?.isNapEvidence != true
+        let sleepFill = sleepIsConfirmedNight ? sleep.map {
+            min(max($0.durationHours / max(sleepGoalHours, 1), 0), 1)
+        } : nil
+        let sleepZone = sleepIsConfirmedNight
+            ? Metrics.sleepDurationZone(sleep?.durationHours, goalHours: sleepGoalHours)
+            : nil
         let recoveryPercent = hero.recoveryEstimate.percent
-        let recoveryTint: String
-        switch recoveryPercent ?? 50 {
-        case 67...:
-            recoveryTint = "#42f59b"
-        case 34..<67:
-            recoveryTint = "#ffd166"
-        default:
-            recoveryTint = "#ff6b6b"
-        }
-        // Fill against the strain target when one exists, otherwise against the
-        // 0-21 strain scale (same basis as the workout share ring) so the strain
-        // ring always reflects the real value instead of rendering empty when no
-        // target has been set yet.
-        let strainFill = hero.guidance.target.map { min(max(hero.strain / max($0, 0.1), 0), 1) }
-            ?? (hero.strain > 0 ? min(max(hero.strain / 21, 0), 1) : nil)
+        let defaults = UserDefaults.standard
+        let recoveryTarget = AtriaMetricTarget.recovery(
+            greenLower: (defaults.object(forKey: "atria.target.recovery.greenLower") as? Double) ?? 67,
+            yellowLower: (defaults.object(forKey: "atria.target.recovery.yellowLower") as? Double) ?? 34
+        )
+        let recoveryZone = Metrics.recoveryZone(recoveryPercent, target: recoveryTarget)
+        let strainGreenBand = (defaults.object(forKey: "atria.target.strain.greenBand") as? Double) ?? 1.5
+        let strainYellowBand = (defaults.object(forKey: "atria.target.strain.yellowBand") as? Double) ?? 3.0
+        let strainValue = pendingShareValue(hero.strainValue)
+        let strainIsPending = strainValue.isEmpty
+        let strainFill = AtriaRingMetricProjection.strainFill(strain: hero.strain,
+                                                              isPending: strainIsPending)
+        let strainProgress = strainIsPending ? nil : AtriaRingMetricProjection.strainTargetProgress(
+            strain: hero.strain,
+            target: hero.guidance.target
+        )
+        let strainZone = strainIsPending ? nil : Metrics.strainZone(
+            strain: hero.strain,
+            target: hero.guidance.target,
+            greenBand: strainGreenBand,
+            yellowBand: strainYellowBand
+        )
         let recoveryValue = recoveryPercent.map { "\($0)%" } ?? ""
         let stats = [
             AtriaShareSnapshot.Stat(id: "recovery",
@@ -4255,18 +4268,22 @@ struct AtriaHomeView: View {
                                   recovery: AtriaShareSnapshot.Ring(title: "Recovery",
                                                                     value: recoveryValue,
                                                                     detail: hero.recoveryDetail,
-                                                                    tintHex: recoveryTint,
+                                                                    tintHex: AtriaRingMetricProjection.zoneTintHex(recoveryZone?.level),
                                                                     fill: recoveryPercent.map { Double($0) / 100.0 }),
                                   sleep: AtriaShareSnapshot.Ring(title: "Sleep",
                                                                  value: pendingShareValue(sleepValue),
                                                                  detail: sleep?.confirmationText ?? "sleep",
-                                                                 tintHex: "#56d7ff",
-                                                                 fill: sleepFill),
+                                                                 tintHex: AtriaRingMetricProjection.achievementTintHex(fill: sleepFill),
+                                                                 fill: sleepFill,
+                                                                 stateTintHex: sleepZone.map { AtriaRingMetricProjection.zoneTintHex($0.level) },
+                                                                 targetFraction: sleepGoalHours.isFinite && sleepGoalHours > 0 ? 1.0 : nil),
                                   strain: AtriaShareSnapshot.Ring(title: "Strain",
-                                                                  value: pendingShareValue(hero.strainValue),
+                                                                  value: strainValue,
                                                                   detail: hero.strainDetail,
-                                                                  tintHex: "#ff8a3d",
-                                                                  fill: strainFill),
+                                                                  tintHex: AtriaRingMetricProjection.achievementTintHex(fill: strainProgress),
+                                                                  fill: strainFill,
+                                                                  stateTintHex: strainZone.map { AtriaRingMetricProjection.zoneTintHex($0.level) },
+                                                                  targetFraction: strainIsPending ? nil : AtriaRingMetricProjection.strainTargetFraction(hero.guidance.target)),
                                   stats: stats)
     }
 

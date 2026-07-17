@@ -26,18 +26,21 @@ final class AtriaTodayTileLogicTests: XCTestCase {
         XCTAssertEqual(AtriaTriRing.zoneTint(.sleep, percent: 125), Metrics.electricStrain)
     }
 
-    func testStrainZoneBands() {
-        XCTAssertEqual(AtriaTriRing.zoneTint(.strain, percent: 40), Metrics.electricStrain)
-        XCTAssertEqual(AtriaTriRing.zoneTint(.strain, percent: 90), Metrics.electricGreen)
-        XCTAssertEqual(AtriaTriRing.zoneTint(.strain, percent: 110), Metrics.electricGreen)
-        XCTAssertEqual(AtriaTriRing.zoneTint(.strain, percent: 120), Metrics.electricYellow)
-        XCTAssertEqual(AtriaTriRing.zoneTint(.strain, percent: 155), Metrics.electricRed)
-    }
+    func testConfiguredRingZonesOwnRecoveryAndStrainState() {
+        let recoveryTarget = AtriaMetricTarget.recovery(greenLower: 80, yellowLower: 50)
+        XCTAssertNil(Metrics.recoveryZone(nil, target: recoveryTarget))
+        XCTAssertEqual(Metrics.recoveryZone(49, target: recoveryTarget)?.level, .red)
+        XCTAssertEqual(Metrics.recoveryZone(70, target: recoveryTarget)?.level, .yellow)
+        XCTAssertEqual(Metrics.recoveryZone(80, target: recoveryTarget)?.level, .green)
 
-    func testRecoveryZoneMatchesExistingBands() {
-        XCTAssertEqual(AtriaTriRing.zoneTint(.recovery, percent: 20), Metrics.recoveryColor(20))
-        XCTAssertEqual(AtriaTriRing.zoneTint(.recovery, percent: 50), Metrics.recoveryColor(50))
-        XCTAssertEqual(AtriaTriRing.zoneTint(.recovery, percent: 80), Metrics.recoveryColor(80))
+        XCTAssertNil(Metrics.strainZone(strain: 12, target: nil,
+                                        greenBand: 1.5, yellowBand: 3))
+        XCTAssertEqual(Metrics.strainZone(strain: 12, target: 10,
+                                          greenBand: 1.5, yellowBand: 3)?.level,
+                       .yellow)
+        XCTAssertEqual(Metrics.strainZone(strain: 12, target: 10,
+                                          greenBand: 2.5, yellowBand: 3)?.level,
+                       .green)
     }
 
     func testRingProgressRequiresRealTargetAndUsesDisplayedEvidence() {
@@ -62,6 +65,14 @@ final class AtriaTodayTileLogicTests: XCTestCase {
         XCTAssertEqual(AtriaRingMetricProjection.lowerIsBetterProgress(
             value: 50, baseline: 55, baselineIsTrusted: true
         ) ?? -1, 1.1, accuracy: 0.0001)
+
+        XCTAssertEqual(AtriaRingMetricProjection.achievementTintHex(fill: nil),
+                       AtriaRingMetricProjection.neutralTintHex)
+        XCTAssertEqual(AtriaRingMetricProjection.achievementTintHex(fill: 0.8), "#f5d142")
+        XCTAssertEqual(AtriaRingMetricProjection.achievementTintHex(fill: 1), "#42f59b")
+        XCTAssertEqual(AtriaRingMetricProjection.zoneTintHex(nil),
+                       AtriaRingMetricProjection.neutralTintHex)
+        XCTAssertEqual(AtriaRingMetricProjection.zoneTintHex(.red), "#ff4f7b")
     }
 
     // MARK: TodayHRZoneMinutes text

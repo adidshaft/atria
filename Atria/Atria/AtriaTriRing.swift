@@ -35,6 +35,8 @@ struct AtriaTriRingMetric: Equatable {
 /// Pure ring math shared by Today and Overview. Actual strain owns the arc;
 /// achievement and target markers exist only when a real target exists.
 enum AtriaRingMetricProjection {
+    static let neutralTintHex = "#8c929e"
+
     static func strainFill(strain: Double, isPending: Bool = false) -> Double? {
         guard !isPending, strain.isFinite else { return nil }
         return min(max(strain / 21, 0), 1)
@@ -48,6 +50,31 @@ enum AtriaRingMetricProjection {
     static func strainTargetFraction(_ target: Double?) -> Double? {
         guard let target, target.isFinite, target > 0 else { return nil }
         return min(max(target / 21, 0), 1)
+    }
+
+    static func achievementTintHex(fill: Double?) -> String {
+        guard let fill, fill.isFinite else { return neutralTintHex }
+        if fill >= 1 { return "#42f59b" }
+        if fill >= 0.6 { return "#f5d142" }
+        return "#ff8a3d"
+    }
+
+    static func zoneTintHex(_ level: AtriaMetricZoneLevel?) -> String {
+        switch level {
+        case .green: return "#42f59b"
+        case .yellow: return "#f5d142"
+        case .red: return "#ff4f7b"
+        case nil: return neutralTintHex
+        }
+    }
+
+    static func sleepStateTintHex(percent: Double?) -> String? {
+        guard let percent, percent.isFinite else { return nil }
+        switch percent {
+        case ..<85: return "#f5d142"
+        case 85...110: return "#42f59b"
+        default: return "#0093e7"
+        }
     }
 
     static func higherIsBetterProgress(value: Int?,
@@ -213,12 +240,11 @@ struct AtriaTriRing: View, Equatable {
             && lhs.accessibilitySummary == rhs.accessibilitySummary
     }
 
-    /// Which of the three metrics that have a defined "how good is this
-    /// number" zone semantic (as opposed to HRV/RHR, which only have a
-    /// personal-baseline ratio, not a zone) `zoneTint(_:percent:)` is being
-    /// asked to grade.
+    /// Sleep performance is the one ring zone whose thresholds are intrinsic
+    /// to its percent-of-need scale. Recovery and strain must go through
+    /// `Metrics.recoveryZone` / `Metrics.strainZone` so edited targets apply.
     enum ZoneMetric {
-        case sleep, strain, recovery
+        case sleep
     }
 
     /// Shared under/optimal/over color semantics -- deliberately independent
@@ -228,11 +254,6 @@ struct AtriaTriRing: View, Equatable {
     /// percent of the reference" (100 == exactly on target/need):
     /// - sleep: percent of sleep need (the same number `sleepPerformance`
     ///   already carries).
-    /// - strain: percent of the coach's strain target for today.
-    /// - recovery: the recovery percent itself (0-100), which has no
-    ///   separate "target" -- its own value is already the 0-100 scale the
-    ///   existing 33/66 red/yellow/green bands (`Metrics.recoveryColor`)
-    ///   grade directly.
     static func zoneTint(_ metric: ZoneMetric, percent: Double) -> Color {
         switch metric {
         case .sleep:
@@ -241,15 +262,6 @@ struct AtriaTriRing: View, Equatable {
             case 85...110: return Metrics.electricGreen
             default: return Metrics.electricStrain // oversleep: cool blue-ish, not a warning color
             }
-        case .strain:
-            switch percent {
-            case ..<90: return Metrics.electricStrain
-            case 90...110: return Metrics.electricGreen
-            case 110...140: return Metrics.electricYellow
-            default: return Metrics.electricRed
-            }
-        case .recovery:
-            return Metrics.recoveryColor(Int(percent.rounded()))
         }
     }
 
