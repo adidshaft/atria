@@ -552,4 +552,24 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
                        widgetTargetPresent: true,
                        complicationTargetPresent: true)
     }
+
+    func testWidgetStrainCredibilityGateWithholdsClockWithoutRestEvidence() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/WidgetSnapshot.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let gate = try XCTUnwrap(source.range(
+            of: "let strainIsCredible = rest != nil && store.profile.maxHR > (rest ?? 60)"
+        ))
+        let captured = try XCTUnwrap(source.range(
+            of: "strainCapturedAt: strainIsCredible ? now : nil"
+        ))
+        XCTAssertLessThan(gate.lowerBound, captured.lowerBound)
+        // All three clock fields gate together: the widget's freshness guard
+        // requires the full set, so a partial gate would leak a confident 0.0.
+        XCTAssertTrue(source.contains("strainCycleStart: strainIsCredible ? physiologicalCycle.start : nil"))
+        XCTAssertTrue(source.contains("strainCycleExpiresAt: strainIsCredible ? strainCycleExpiresAt : nil"))
+    }
+
 }

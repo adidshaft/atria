@@ -391,6 +391,9 @@ enum WidgetSnapshotPublisher {
                                store: store,
                                ble: ble,
                                rest: rest ?? 60)
+        // Mirrors AtriaHomeModel.strainConfidence's "learning" guard: strain is
+        // only credible with real resting-HR evidence and a usable max HR.
+        let strainIsCredible = rest != nil && store.profile.maxHR > (rest ?? 60)
         let strapStepsToday = AtriaHomeModel.mergedStrapStepResearchCount(
             savedToday: savedAggregate.savedTodayStrapSteps,
             savedActiveSession: savedAggregate.savedActiveSessionStrapSteps,
@@ -472,9 +475,15 @@ enum WidgetSnapshotPublisher {
                                       // `dayStrain` was recomputed immediately
                                       // above; this is its true computation
                                       // clock, not a generic snapshot fallback.
-                                      strainCapturedAt: now,
-                                      strainCycleStart: physiologicalCycle.start,
-                                      strainCycleExpiresAt: strainCycleExpiresAt,
+                                      // Without resting-HR evidence or a max HR
+                                      // above rest, TRIMP integrates against a
+                                      // fabricated anchor and reads a confident
+                                      // 0.0 — withhold the credibility clock so
+                                      // the widget shows its placeholder, the
+                                      // same honesty gate as the Home hero.
+                                      strainCapturedAt: strainIsCredible ? now : nil,
+                                      strainCycleStart: strainIsCredible ? physiologicalCycle.start : nil,
+                                      strainCycleExpiresAt: strainIsCredible ? strainCycleExpiresAt : nil,
                                       restingHR: rest,
                                       hrvRMSSD: hrvRMSSD,
                                       hrvState: hrvState,
