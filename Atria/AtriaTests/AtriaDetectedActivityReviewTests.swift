@@ -45,6 +45,35 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
                             hrMaxAcceptedGap: 2)
     }
 
+    /// A clean, RR-agreeing Strength-shaped effort that sits three bpm below
+    /// the HRR50 workout band. It is intentionally review-worthy but not ready:
+    /// enough sustained borderline evidence to offer for review, never enough
+    /// evidence to earn medium confidence or count as a workout.
+    private func strengthLikeReviewSession(start: Date) -> SavedSession {
+        let duration: TimeInterval = 25 * 60
+        let points = stride(from: 0.0, to: duration, by: 2.0).map {
+            SavedSession.Point(t: $0, bpm: 120)
+        }
+        let rrPoints = stride(from: 0.0, to: duration, by: 24.0).map {
+            SavedSession.RRPoint(t: $0,
+                                 ms: 500,
+                                 source: .standardHeartRateMeasurement2A37)
+        }
+        return SavedSession(id: UUID(),
+                            start: start,
+                            end: start.addingTimeInterval(duration),
+                            label: "Strength",
+                            points: points,
+                            rrPoints: rrPoints,
+                            hrRaw2A37: points.count,
+                            hrAccepted: points.count,
+                            hrZero: 0,
+                            hrArtifactHeld: 0,
+                            hrArtifactDropped: 0,
+                            hrAcceptedGaps: 0,
+                            hrMaxAcceptedGap: 2)
+    }
+
     private func confirmedWorkout(covering session: SavedSession) -> UserConfirmedWorkout {
         UserConfirmedWorkout(id: "confirmed-\(UUID().uuidString)",
                              createdAt: session.end,
@@ -111,6 +140,61 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
         XCTAssertNotNil(single)
         XCTAssertTrue(candidates.contains { $0.id == single?.id },
                       "the list variant must agree with the single-best summary about qualifying windows")
+    }
+
+    func testStrengthLikeNonReadyEffortSurfacesWithLowConfidenceAcrossReviewBuilders() throws {
+        let start = Date(timeIntervalSince1970: 1_800_100_000)
+        let session = strengthLikeReviewSession(start: start)
+        let readiness = session.workoutReadiness(rest: rest, maxHR: maxHR)
+
+        XCTAssertFalse(readiness.ready)
+        XCTAssertTrue(readiness.strengthCandidate)
+        XCTAssertTrue(readiness.reviewWorthyCandidate)
+        XCTAssertEqual(session.detectedActivity(rest: rest, maxHR: maxHR)?.confidence, .low,
+                       "the direct detector is the confidence authority for a non-ready effort")
+
+        let single = try XCTUnwrap(SessionStore.makeWorkoutReviewCandidateForCache(
+            sessions: [session],
+            confirmedWorkouts: [],
+            rest: rest,
+            maxHR: maxHR
+        ))
+        XCTAssertEqual(single.kind, .activityCandidate)
+        XCTAssertEqual(single.confidence, .low,
+                       "the Home/notification cache must not promote a Strength-like near miss to medium")
+
+        let listed = SessionStore.makeWorkoutReviewCandidatesForCache(
+            sessions: [session],
+            confirmedWorkouts: [],
+            rest: rest,
+            maxHR: maxHR
+        )
+        XCTAssertFalse(listed.isEmpty, "a review-worthy Strength-like effort must remain visible")
+        XCTAssertTrue(listed.allSatisfy { $0.kind == .activityCandidate && $0.confidence == .low },
+                      "every Health-history projection of the non-ready effort must keep low confidence")
+    }
+
+    func testNoHeartRateStrengthWindowNeverSurfacesForAutomaticReview() {
+        let start = Date(timeIntervalSince1970: 1_800_200_000)
+        let session = SavedSession(id: UUID(),
+                                   start: start,
+                                   end: start.addingTimeInterval(30 * 60),
+                                   label: "Strength",
+                                   points: [])
+
+        XCTAssertNil(session.detectedActivity(rest: rest, maxHR: maxHR))
+        XCTAssertNil(SessionStore.makeWorkoutReviewCandidateForCache(
+            sessions: [session],
+            confirmedWorkouts: [],
+            rest: rest,
+            maxHR: maxHR
+        ))
+        XCTAssertTrue(SessionStore.makeWorkoutReviewCandidatesForCache(
+            sessions: [session],
+            confirmedWorkouts: [],
+            rest: rest,
+            maxHR: maxHR
+        ).isEmpty, "metadata-only/no-HR Strength must stay user-confirmed only")
     }
 
     func testConfirmedAndDismissedWindowsAreExcludedFromCandidateList() {
