@@ -959,7 +959,12 @@ struct AtriaDetectedActivitiesSection: View {
                 .font(.caption2.weight(.semibold).monospacedDigit())
                 .foregroundStyle(.secondary)
 
-            if candidate.confidence == .low {
+            if candidate.confidence == .medium {
+                Text("Medium confidence: sustained strap-HR evidence; confirm the activity type")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            } else {
                 Text("Low confidence: \(Self.reasonText(candidate.reason))")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -987,6 +992,7 @@ struct AtriaDetectedActivitiesSection: View {
                 .atriaCardAction(prominent: false, tint: .secondary)
             }
         }
+        .accessibilityElement(children: .combine)
         .padding(12)
         .atriaInsetCard(cornerRadius: 16, tint: Color.cyan.opacity(0.4))
         .accessibilityElement(children: .contain)

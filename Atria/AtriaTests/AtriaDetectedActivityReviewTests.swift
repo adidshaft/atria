@@ -96,6 +96,8 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
             XCTAssertGreaterThan(candidate.peakHR, 0)
             XCTAssertGreaterThan(candidate.streamCoveragePercent, 0)
             XCTAssertFalse(candidate.reason.isEmpty)
+            XCTAssertEqual(candidate.confidence, .medium,
+                           "only detector-ready HR windows earn medium review confidence")
         }
 
         // The single-candidate path is unchanged: exactly one best window,
@@ -336,8 +338,12 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
                        "the history surface must never claim a workout was found from HR alone")
         XCTAssertTrue(section.contains("Coverage \\(candidate.streamCoveragePercent)% · Avg \\(candidate.avgHR) · Peak \\(candidate.peakHR) bpm"),
                       "rows show the real evidence: coverage, average and peak HR")
-        XCTAssertTrue(section.contains("if candidate.confidence == .low"),
+        XCTAssertTrue(section.contains("if candidate.confidence == .medium"),
+                      "medium-confidence rows must state that activity type still needs confirmation")
+        XCTAssertTrue(section.contains("Low confidence: \\(Self.reasonText(candidate.reason))"),
                       "low-confidence rows must say why, using the pipeline's own reason code")
+        XCTAssertTrue(section.contains(".accessibilityElement(children: .combine)"),
+                      "confidence and evidence must be included in the row's accessibility output")
         for fabricated in ["strain", "calorie", "kcal", "steps"] {
             XCTAssertFalse(section.lowercased().contains(fabricated),
                            "no synthesized \(fabricated) for HR-only windows")

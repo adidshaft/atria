@@ -12719,7 +12719,7 @@ final class SessionStore: ObservableObject {
             : nil
         let reviewConfidence: ActivityDetection.Confidence = summary.readySessions > 0
             ? .medium
-            : (summary.strengthCandidate || summary.nearMiss ? .medium : .low)
+            : .low
         // A saved strap-HR window can establish sustained physiological effort,
         // but it cannot establish *what happened*. Stress, driving, dancing and
         // training can overlap in HR shape, and this cache has no time-aligned,
@@ -12842,7 +12842,7 @@ final class SessionStore: ObservableObject {
         let windowIsReady = summary.bestStatus == "ready"
         let reviewConfidence: ActivityDetection.Confidence = windowIsReady
             ? .medium
-            : (summary.strengthCandidate || summary.nearMiss ? .medium : .low)
+            : .low
         return WorkoutReviewCandidate(id: id,
                                       start: displayStart,
                                       end: end,
