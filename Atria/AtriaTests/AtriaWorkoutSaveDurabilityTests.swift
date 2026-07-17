@@ -1712,4 +1712,53 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                       "Relaunch recovery must re-adopt the lease from the persisted startedAt")
     }
 
+    // MARK: - Abandoned workout recovery
+
+    func testAbandonedRecoveryEndDateCapsNeverEndedIntentAtContinuityBound() {
+        let started = Date(timeIntervalSince1970: 2_000_000_000)
+        let intent = AtriaPendingWorkoutIntent(startedAt: started,
+                                               endedAt: nil,
+                                               activityType: "Walking",
+                                               strengthSets: [],
+                                               excludedIntervals: [],
+                                               startingStepCount: 0,
+                                               startingDayStrain: 0)
+        // Fresh and mid-bound intents are legitimate — never finalized.
+        XCTAssertNil(AtriaPendingWorkoutIntent.abandonedRecoveryEndDate(
+            intent: intent, now: started.addingTimeInterval(60)))
+        XCTAssertNil(AtriaPendingWorkoutIntent.abandonedRecoveryEndDate(
+            intent: intent,
+            now: started.addingTimeInterval(AtriaPendingWorkoutIntent.bleContinuityMaxAge)))
+        // Past the bound: end is capped at the bound, never at "now" (a
+        // 134 h elapsed timer must not become a 134 h workout).
+        XCTAssertEqual(AtriaPendingWorkoutIntent.abandonedRecoveryEndDate(
+            intent: intent,
+            now: started.addingTimeInterval(134 * 3_600)
+        ), started.addingTimeInterval(AtriaPendingWorkoutIntent.bleContinuityMaxAge))
+        // Already-ended and absent intents are the terminal worker's domain.
+        var ended = intent
+        ended.endedAt = started.addingTimeInterval(1_800)
+        XCTAssertNil(AtriaPendingWorkoutIntent.abandonedRecoveryEndDate(
+            intent: ended, now: started.addingTimeInterval(134 * 3_600)))
+        XCTAssertNil(AtriaPendingWorkoutIntent.abandonedRecoveryEndDate(
+            intent: nil, now: started))
+    }
+
+    func testRuntimeFinalizesAbandonedIntentBeforeSchedulingTerminalRecovery() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaWorkoutRuntime.swift"), encoding: .utf8)
+        let recover = try XCTUnwrap(source.range(of: "private func recoverAbandonedWorkoutIntentIfNeeded"))
+        let body = String(source[recover.lowerBound...].prefix(1_400))
+        XCTAssertTrue(body.contains("abandonedRecoveryEndDate"),
+                      "finalization must use the capped policy end, not Date()")
+        XCTAssertTrue(body.contains("persistTerminal()"),
+                      "the abandoned intent must become terminal so the existing recovery worker owns completion")
+        let replay = try XCTUnwrap(source.range(of: "await self.recoverAbandonedWorkoutIntentIfNeeded()"))
+        let afterReplay = String(source[replay.upperBound...].prefix(200))
+        XCTAssertTrue(afterReplay.contains("scheduleTerminalWorkoutRecovery()"),
+                      "abandoned finalization must run before the terminal recovery scheduling it feeds")
+    }
+
 }

@@ -898,6 +898,24 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
         return age >= -bleContinuityFutureTolerance && age <= maxAge
     }
 
+    /// Honest end for an abandoned (never-ended) workout intent. The 24 h
+    /// continuity bound already stops transport ownership, but nothing
+    /// terminalized the intent itself, so a forgotten workout ran a live
+    /// timer forever (a 134 h elapsed chip was observed on 2026-07-17).
+    /// The recovery end is capped at the continuity bound: the saved
+    /// workout's stats come from the actual samples in that window, and its
+    /// coverage percentage discloses how much of it was really worn.
+    /// Returns nil while the intent is fresh, already ended, or absent.
+    static func abandonedRecoveryEndDate(
+        intent: Self?,
+        now: Date = Date(),
+        maxAge: TimeInterval = bleContinuityMaxAge
+    ) -> Date? {
+        guard let intent, intent.endedAt == nil else { return nil }
+        guard now.timeIntervalSince(intent.startedAt) > maxAge else { return nil }
+        return intent.startedAt.addingTimeInterval(maxAge)
+    }
+
     /// Produces the pause exclusions that belong to a completed workout. The
     /// visible End button normally resumes first, but Lock Screen actions,
     /// process recovery and suspension can all finalize without that view
