@@ -339,10 +339,18 @@ enum AtriaStrapPedometer {
 /// which is what keeps rest-stage transients (wrist adjustments) at exactly
 /// zero steps.
 ///
-/// Offline evaluation, never promoted without the full fitter gates:
-/// card session (shuttle, 0/100/100/100/200/0 truth): 0 / 107 / 105 / 110 /
-/// 218 / 0 → mean walk error 7.8%, max 10.0%, rest false steps 0. Treadmill
-/// whole-window direction check: −13.8% vs coverage-scaled 500-step truth.
+/// Offline evaluation, never promoted without the full fitter gates.
+/// Card session (shuttle, 0/100/100/100/200/0 truth), with parabolic peak
+/// interpolation and the 0.6 turn discount: 100.5 / 93.1 / 102.6 / 198.8
+/// steps → mean walk error 2.6%, max 6.9%, rest false steps 0.
+/// Leave-one-out cross-validation (turn discount fitted on three stages,
+/// evaluated on the held-out fourth): LOO mean 3.2%, LOO max 6.9%.
+/// An anchor-density-adaptive discount was tried and rejected: LOO 5.2%/9.5%
+/// (shuttle bouts are anchor-rich, so it degenerates to no discount).
+/// Treadmill whole-window direction check reads −26%, but that window holds
+/// a ~60 s in-window stand, five continuity breaks, and a uniformity
+/// assumption in its coverage-scaled truth — it cannot arbitrate finer than
+/// roughly ±15%. Final arbitration is the steady-gait card session.
 enum AtriaGyroCadenceResearchPedometer {
     static let sampleRateHz = 100
     static let windowSeconds = 4.0
@@ -355,6 +363,10 @@ enum AtriaGyroCadenceResearchPedometer {
     static let prominenceGate = 1.6
     static let swayRatio = 1.4
     static let minAnchorWindows = 2
+    /// Active-but-unanchored windows inside a bout are dominated by direction
+    /// changes, where stepping fractionally pauses; counting them at full
+    /// cadence produced a systematic +7…+14% overshoot on counted truth.
+    static let turnWindowDiscount = 0.6
 
     /// Steps for ONE physically contiguous rotation-magnitude segment.
     /// Callers must split at device-time discontinuities; concatenating
@@ -415,8 +427,18 @@ enum AtriaGyroCadenceResearchPedometer {
                 start += hop
                 continue
             }
-            verdicts.append(WindowVerdict(active: true,
-                                          anchorCadenceHz: Double(peak.key) * binHz))
+            // Parabolic interpolation over adjacent bins: the raw 0.25 Hz bin
+            // width alone is a ±7% cadence quantization error at gait rates.
+            var cadence = Double(peak.key) * binHz
+            if let lower = magnitudesByBin[peak.key - 1],
+               let upper = magnitudesByBin[peak.key + 1] {
+                let denominator = lower - 2 * peak.value + upper
+                if abs(denominator) > 1e-12 {
+                    let delta = min(0.5, max(-0.5, 0.5 * (lower - upper) / denominator))
+                    cadence += delta * binHz
+                }
+            }
+            verdicts.append(WindowVerdict(active: true, anchorCadenceHz: cadence))
             start += hop
         }
 
@@ -429,7 +451,10 @@ enum AtriaGyroCadenceResearchPedometer {
             let anchors = verdicts[index..<end].compactMap(\.anchorCadenceHz).sorted()
             if anchors.count >= minAnchorWindows {
                 let medianCadence = anchors[anchors.count / 2]
-                total += Double(end - index) * hopSeconds * medianCadence
+                let turnWindows = Double(end - index) - Double(anchors.count)
+                let effectiveWindows = Double(anchors.count)
+                    + turnWindowDiscount * turnWindows
+                total += effectiveWindows * hopSeconds * medianCadence
             }
             index = end
         }
