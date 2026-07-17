@@ -54,18 +54,31 @@ enum AtriaDailyStrainTargetStore {
                         load: TrainingLoadSummary?,
                         recoveryIsAttributedToCurrentDay: Bool = true,
                         loadIsPrepared: Bool = true,
+                        cycleStart: Date? = nil,
                         now: Date = Date(),
                         calendar: Calendar = .current,
                         defaults: UserDefaults = .standard) -> AtriaFrozenDailyStrainTarget? {
-        if let existing = loadSnapshot(defaults: defaults),
+        let existing = loadSnapshot(defaults: defaults)
+        guard recoveryIsAttributedToCurrentDay else {
+            // A deleted/reclassified sleep must not leave a target that implies
+            // recovery still belongs to the active physiological cycle.
+            defaults.removeObject(forKey: storageKey)
+            return nil
+        }
+        if let existing,
            existing.target.isFinite,
-           (0...21).contains(existing.target),
-           calendar.isDate(existing.day, inSameDayAs: now) {
-            return existing
+           (0...21).contains(existing.target) {
+            let sameCycle = cycleStart.map {
+                abs(existing.day.timeIntervalSince($0)) < 1
+            } ?? calendar.isDate(existing.day, inSameDayAs: now)
+            if sameCycle, recovery == nil || existing.recovery == recovery {
+                // Preserve through transient hydration, but never across a new
+                // wake boundary or a changed recovery for this sleep.
+                return existing
+            }
         }
 
-        guard recoveryIsAttributedToCurrentDay,
-              loadIsPrepared,
+        guard loadIsPrepared,
               let recovery else {
             return nil
         }
@@ -89,7 +102,7 @@ enum AtriaDailyStrainTargetStore {
             provenance = "load_learning_at_mint"
         }
         let snapshot = AtriaFrozenDailyStrainTarget(
-            day: calendar.startOfDay(for: now),
+            day: cycleStart ?? calendar.startOfDay(for: now),
             timeZoneIdentifier: calendar.timeZone.identifier,
             recovery: recovery,
             target: min(max(base + adjustment, 4), 21),
