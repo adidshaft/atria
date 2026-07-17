@@ -1157,11 +1157,18 @@ final class AtriaAnalyticsTests: XCTestCase {
         )
         XCTAssertEqual(decoded.source, .standardHeartRateMeasurement2A37)
 
+        let qualifiedStandardPoints = (0...900).map { index in
+            SavedSession.RRPoint(
+                t: Double(index),
+                ms: index.isMultiple(of: 2) ? 980 : 1_020,
+                source: .standardHeartRateMeasurement2A37
+            )
+        }
         let standard = SavedSession(
             id: UUID(), start: start, end: start.addingTimeInterval(300), label: "Standard",
             points: [SavedSession.Point(t: 0, bpm: 60)], hrv: 42,
             respiratoryRate: 14,
-            rrPoints: [standardPoint]
+            rrPoints: qualifiedStandardPoints
         )
         let legacy = SavedSession(
             id: UUID(), start: start, end: start.addingTimeInterval(300), label: "Legacy",
@@ -3721,7 +3728,8 @@ final class AtriaAnalyticsTests: XCTestCase {
         (0..<count).map { index in
             PersonalBaseline.BaselineSample(date: now.addingTimeInterval(Double(-index * 86_400)),
                                             restingHR: [58.0, 60.0, 62.0][index % 3],
-                                            rmssd: [48.0, 52.0, 56.0][index % 3])
+                                            rmssd: [48.0, 52.0, 56.0][index % 3],
+                                            overnight: true)
         }
     }
 
