@@ -1530,18 +1530,21 @@ final class AtriaPerfFixesTests: XCTestCase {
                             duration: TimeInterval,
                             hrv: Int?,
                             hrvReferenceValidated: Bool? = nil) -> SavedSession {
-        SavedSession(id: id,
+        let qualifiedStandardPoints = (0...900).map { index in
+            SavedSession.RRPoint(
+                t: Double(index),
+                ms: index.isMultiple(of: 2) ? 980 : 1_020,
+                source: .standardHeartRateMeasurement2A37
+            )
+        }
+        return SavedSession(id: id,
                      start: start,
                      end: start.addingTimeInterval(duration),
                      label: "HRV",
                      points: [SavedSession.Point(t: 0, bpm: 58),
                               SavedSession.Point(t: 60, bpm: 59)],
                      hrv: hrv,
-                     rrPoints: [SavedSession.RRPoint(
-                        t: 1,
-                        ms: 1_000,
-                        source: .standardHeartRateMeasurement2A37
-                     )],
+                     rrPoints: hrv == nil ? nil : qualifiedStandardPoints,
                      hrvReferenceValidated: hrvReferenceValidated)
     }
 
