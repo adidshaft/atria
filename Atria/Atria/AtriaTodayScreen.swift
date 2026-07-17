@@ -203,6 +203,10 @@ struct AtriaTodayScreen: View {
     /// AtriaHomeView on every live-pulse tick.
     @State private var glanceMemo = AtriaTodayGlanceMemo()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AtriaDefault("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
+    @AtriaDefault("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
+    @AtriaDefault("atria.target.strain.greenBand") private var strainGreenBand: Double = 1.5
+    @AtriaDefault("atria.target.strain.yellowBand") private var strainYellowBand: Double = 3.0
     @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AtriaDefault("atria.sleep.baseNeedHours") private var sleepBaseNeedHours: Double = 8.0
     /// Optional display name set elsewhere in the app. Empty -- the default
@@ -743,33 +747,36 @@ struct AtriaTodayScreen: View {
     }
 
     private var ringShareSnapshot: AtriaShareSnapshot {
-        let recoveryHex: String
-        if let percent = displayRecovery.percent {
-            switch percent {
-            case ..<34: recoveryHex = "#ff4f7b"
-            case ..<67: recoveryHex = "#f5d142"
-            default: recoveryHex = "#42f59b"
-            }
-        } else {
-            recoveryHex = "#8c929e"
-        }
+        let target = displayHero.guidance.target
+        let strainIncomplete = dayStrainIsIncomplete
+        let strainProgress = strainIncomplete ? nil : AtriaRingMetricProjection.strainTargetProgress(
+            strain: displayHero.strain,
+            target: target
+        )
+        let strainZone = strainIncomplete ? nil : ringStrainZone(target: target)
         return AtriaShareSnapshot(
             date: Date(),
             recovery: .init(title: "Recovery",
                             value: recoveryMetric.value,
                             detail: recoveryMetric.detail,
-                            tintHex: recoveryHex,
+                            tintHex: AtriaRingMetricProjection.zoneTintHex(ringRecoveryZone?.level),
                             fill: recoveryMetric.fill),
             sleep: .init(title: "Sleep",
                          value: sleepMetric.value,
                          detail: sleepMetric.detail,
-                         tintHex: "#ff8a3d",
-                         fill: sleepMetric.fill),
+                         tintHex: AtriaRingMetricProjection.achievementTintHex(fill: sleepMetric.fill),
+                         fill: sleepMetric.fill,
+                         stateTintHex: AtriaRingMetricProjection.sleepStateTintHex(
+                            percent: sleepPerformancePercent.map(Double.init)
+                         ),
+                         targetFraction: sleepMetric.targetFraction),
             strain: .init(title: "Strain",
                           value: strainMetric.value,
                           detail: strainMetric.detail,
-                          tintHex: "#d6a51f",
-                          fill: strainMetric.fill),
+                          tintHex: AtriaRingMetricProjection.achievementTintHex(fill: strainProgress),
+                          fill: strainMetric.fill,
+                          stateTintHex: strainZone.map { AtriaRingMetricProjection.zoneTintHex($0.level) },
+                          targetFraction: strainMetric.targetFraction),
             stats: [
                 .init(id: "hrv", title: "HRV", value: hrvMetric.value, detail: hrvMetric.detail),
                 .init(id: "rhr", title: "RHR", value: restingHeartRateMetric.value, detail: restingHeartRateMetric.detail)
@@ -1327,29 +1334,19 @@ struct AtriaTodayScreen: View {
                                   systemImage: "arrow.clockwise.heart.fill",
                                   // EXCEPTION to the identity-hue rule (color-coherence pass,
                                   // 2026-07-05): recovery's hue IS its value (WHOOP red/yellow/
-                                  // green over 0-100), so `tint` itself stays zone-graded. Falls
-                                  // back to identity heart-green, never `.secondary` gray, while
-                                  // learning. `stateTint` stays nil -- the dot would be redundant.
-                                  tint: display.percent.map { AtriaTriRing.zoneTint(.recovery, percent: Double($0)) } ?? .secondary,
+                                  // green over 0-100), so `tint` itself stays zone-graded. A
+                                  // missing score is neutral, and configured thresholds own the
+                                  // grade everywhere this ring is projected.
+                                  tint: ringRecoveryZone?.tint ?? .secondary,
                                   fill: display.percent.map { Double($0) / 100.0 })
                                   // No target marker: recovery has no separate "target" of its
                                   // own -- its value is already the 0-100 scale it's graded on.
     }
 
-    /// Real, user-set absolute strain target if one is ever wired up in
-    /// AtriaMetricTargets -- currently there is none (only the green/yellow
-    /// *band widths* around the coach's own target are user-editable there,
-    /// via AtriaSettingsView's strainGreenBand/strainYellowBand), so this is
-    /// nil today and the ring marker/absolute-strain semantics below fall
-    /// through to the coach's recovery-derived recommendation. Kept as its
-    /// own hook so a future real per-user strain target slots in here
-    /// without touching the ring math again.
-    private var userSetStrainTarget: Double? { nil }
-
     private var strainMetric: AtriaTriRingMetric {
         // The arc is actual strain on the canonical 0–21 scale. Achievement
         // color and the marker are separate and require a real frozen target.
-        let target = userSetStrainTarget ?? displayHero.guidance.target
+        let target = displayHero.guidance.target
         let incomplete = dayStrainIsIncomplete
         let fill = AtriaRingMetricProjection.strainFill(
             strain: displayHero.strain,
@@ -1364,9 +1361,9 @@ struct AtriaTodayScreen: View {
                                   detail: incomplete ? "Sparse HR" : (target.map { String(format: "of %.1f", $0) } ?? "Strain"),
                                   systemImage: "flame.fill",
                                   // Achievement coloring turns green only when the real target is met.
-                                  tint: Metrics.ringAchievementTint(fill: targetProgress),
+                                  tint: Metrics.ringAchievementTint(fill: incomplete ? nil : targetProgress),
                                   fill: fill,
-                                  stateTint: targetProgress.map { AtriaTriRing.zoneTint(.strain, percent: $0 * 100) },
+                                  stateTint: incomplete ? nil : ringStrainZone(target: target)?.tint,
                                   targetFraction: incomplete ? nil : AtriaRingMetricProjection.strainTargetFraction(target))
     }
 
@@ -1999,14 +1996,27 @@ struct AtriaTodayScreen: View {
     }
 
     private func recoveryState(percent: Int) -> String {
-        switch percent {
-        case 67...:
-            return "Good"
-        case 34..<67:
-            return "Fair"
-        default:
-            return "Low"
+        switch Metrics.recoveryZone(percent, target: recoveryTarget)?.level {
+        case .green: return "Good"
+        case .yellow: return "Fair"
+        case .red: return "Low"
+        case nil: return "Learning"
         }
+    }
+
+    private var recoveryTarget: AtriaMetricTarget {
+        .recovery(greenLower: recoveryGreenLower, yellowLower: recoveryYellowLower)
+    }
+
+    private var ringRecoveryZone: AtriaMetricZone? {
+        Metrics.recoveryZone(displayRecovery.percent, target: recoveryTarget)
+    }
+
+    private func ringStrainZone(target: Double?) -> AtriaMetricZone? {
+        Metrics.strainZone(strain: displayHero.strain,
+                           target: target,
+                           greenBand: strainGreenBand,
+                           yellowBand: strainYellowBand)
     }
 
     #if DEBUG

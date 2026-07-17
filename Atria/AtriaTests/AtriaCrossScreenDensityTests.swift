@@ -397,6 +397,36 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertTrue(share.contains("case .story: return CGSize(width: 1080, height: 1920)"))
     }
 
+    func testRingTargetsStayConfiguredAcrossTodayOverviewAndShare() throws {
+        let today = try source("AtriaTodayScreen.swift")
+        for key in [
+            "atria.target.recovery.greenLower",
+            "atria.target.recovery.yellowLower",
+            "atria.target.strain.greenBand",
+            "atria.target.strain.yellowBand",
+        ] {
+            XCTAssertTrue(today.contains(key))
+        }
+        XCTAssertTrue(today.contains("tint: ringRecoveryZone?.tint ?? .secondary"))
+        XCTAssertTrue(today.contains("stateTint: incomplete ? nil : ringStrainZone(target: target)?.tint"))
+        XCTAssertFalse(today.contains("AtriaTriRing.zoneTint(.recovery"))
+        XCTAssertFalse(today.contains("AtriaTriRing.zoneTint(.strain"))
+
+        let overview = try source("AtriaOverviewSections.swift")
+        XCTAssertTrue(overview.contains("switch recoveryZone?.level"))
+        XCTAssertTrue(overview.contains("stateTint: pending ? nil : strainZone?.tint"))
+        XCTAssertFalse(overview.contains("hero.guidance.target ?? 21"))
+
+        let home = try source("AtriaHomeView.swift")
+        XCTAssertFalse(home.contains("switch recoveryPercent ?? 50"))
+        XCTAssertTrue(home.contains("AtriaRingMetricProjection.strainFill(strain: hero.strain"))
+
+        let share = try source("AtriaShareCard.swift")
+        XCTAssertTrue(share.contains("let stateTintHex: String?"))
+        XCTAssertTrue(share.contains("let targetFraction: Double?"))
+        XCTAssertTrue(share.contains("if let targetFraction = ring.targetFraction"))
+    }
+
     func testShareExportRunsOnlyFromAnActionAndRejectsStaleResults() throws {
         let share = try source("AtriaShareCard.swift")
 

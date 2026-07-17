@@ -89,6 +89,24 @@ struct AtriaShareSnapshot: Equatable, Hashable {
         let detail: String
         let tintHex: String
         let fill: Double?
+        let stateTintHex: String?
+        let targetFraction: Double?
+
+        init(title: String,
+             value: String,
+             detail: String,
+             tintHex: String,
+             fill: Double?,
+             stateTintHex: String? = nil,
+             targetFraction: Double? = nil) {
+            self.title = title
+            self.value = value
+            self.detail = detail
+            self.tintHex = tintHex
+            self.fill = fill
+            self.stateTintHex = stateTintHex
+            self.targetFraction = targetFraction
+        }
     }
 
     struct Stat: Equatable, Hashable, Identifiable {
@@ -659,8 +677,29 @@ struct AtriaShareCardView: View {
                     .stroke(ring.tint, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                     .rotationEffect(.degrees(-90))
             }
+            if let targetFraction = ring.targetFraction {
+                targetMarker(diameter: diameter,
+                             lineWidth: lineWidth,
+                             tint: ring.stateTint ?? ring.tint,
+                             fraction: targetFraction)
+            }
         }
         .frame(width: diameter, height: diameter)
+    }
+
+    private func targetMarker(diameter: CGFloat,
+                              lineWidth: CGFloat,
+                              tint: Color,
+                              fraction: Double) -> some View {
+        let clamped = min(max(fraction, 0), 1)
+        let theta = Angle.degrees(-90 + 360 * clamped)
+        let radius = diameter / 2
+        return Capsule()
+            .fill(tint)
+            .overlay(Capsule().strokeBorder(Color.black.opacity(0.45), lineWidth: 1))
+            .frame(width: 3, height: lineWidth + 5)
+            .rotationEffect(theta + .degrees(90))
+            .offset(x: radius * cos(theta.radians), y: radius * sin(theta.radians))
     }
 
     private var recoveryHeroValue: String {
@@ -2840,7 +2879,8 @@ enum AtriaShareCardRenderer {
                               canvasStyle: AtriaShareCanvasStyle) -> String {
         let chips = selectedStatIDs.sorted().joined(separator: "-")
         let rings = [snapshot.recovery, snapshot.sleep, snapshot.strain].map {
-            "\($0.title):\($0.value):\($0.detail):\($0.tintHex):\($0.fill.map { String($0) } ?? "nil")"
+            "\($0.title):\($0.value):\($0.detail):\($0.tintHex):\($0.fill.map { String($0) } ?? "nil"):" +
+                "\($0.stateTintHex ?? "nil"):\($0.targetFraction.map { String($0) } ?? "nil")"
         }.joined(separator: "|")
         let stats = snapshot.stats.map {
             "\($0.id):\($0.title):\($0.value):\($0.detail)"
@@ -2918,6 +2958,7 @@ enum AtriaShareCardRenderer {
 
 private extension AtriaShareSnapshot.Ring {
     var tint: Color { Color(hex: tintHex) }
+    var stateTint: Color? { stateTintHex.map { Color(hex: $0) } }
 }
 
 private extension AtriaWorkoutShareSnapshot.ZoneMinute {

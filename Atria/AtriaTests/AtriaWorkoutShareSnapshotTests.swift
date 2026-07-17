@@ -655,6 +655,19 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
             strain: ring("Strain", "9.2"),
             stats: [.init(id: "hrv", title: "HRV", value: "55 ms", detail: "overnight")]
         )
+        let markerChangedDaily = AtriaShareSnapshot(
+            date: date,
+            recovery: ring("Recovery", "71%"),
+            sleep: ring("Sleep", "8h"),
+            strain: .init(title: "Strain",
+                          value: "9.2",
+                          detail: "measured",
+                          tintHex: "34c759",
+                          fill: 0.7,
+                          stateTintHex: "ff4f7b",
+                          targetFraction: 0.62),
+            stats: [.init(id: "hrv", title: "HRV", value: "55 ms", detail: "overnight")]
+        )
         XCTAssertNotEqual(
             AtriaShareCardRenderer.dailyCacheKey(snapshot: firstDaily,
                                                  format: .story,
@@ -665,6 +678,17 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
                                                  selectedStatIDs: ["recovery", "strain", "sleep"],
                                                  canvasStyle: .midnight),
             "A second same-day share must not reuse an image with older visible metrics"
+        )
+        XCTAssertNotEqual(
+            AtriaShareCardRenderer.dailyCacheKey(snapshot: firstDaily,
+                                                 format: .story,
+                                                 selectedStatIDs: ["recovery", "strain", "sleep"],
+                                                 canvasStyle: .midnight),
+            AtriaShareCardRenderer.dailyCacheKey(snapshot: markerChangedDaily,
+                                                 format: .story,
+                                                 selectedStatIDs: ["recovery", "strain", "sleep"],
+                                                 canvasStyle: .midnight),
+            "Target marker and configured state tint are visible share content"
         )
 
         let firstWeekly = AtriaWeeklyShareSnapshot(date: date,

@@ -3151,7 +3151,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                      value: hero.recoveryEstimate.percent.map { "\($0)%" } ?? recoveryCalibratingDay.map { "Day \($0)" } ?? "Learning",
                                      detail: recoveryDetailText,
                                      systemImage: AtriaTodayMetric.recovery.systemImage,
-                                     tint: recoveryZone?.tint ?? recoveryColor(hero.recoveryEstimate.percent),
+                                     tint: recoveryZone?.tint ?? .secondary,
                                      progress: hero.recoveryEstimate.percent.map { Double($0) / 100.0 }),
             AtriaDailyFocusRail.Item(title: "Strain",
                                      value: hero.strainValue,
@@ -3180,7 +3180,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                            detail: sleepTriRingDetailText,
                            systemImage: sleepGlanceSystemImage,
                            tint: Metrics.ringAchievementTint(fill: sleepFocusProgress),
-                           fill: sleepFocusProgress)
+                           fill: sleepFocusProgress,
+                           stateTint: sleepGlanceZone?.tint,
+                           targetFraction: sleepGoalHours.isFinite && sleepGoalHours > 0 ? 1.0 : nil)
     }
 
     private var triRingRecoveryMetric: AtriaTriRingMetric {
@@ -3188,7 +3190,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                            value: hero.recoveryEstimate.percent.map { "\($0)%" } ?? recoveryCalibratingDay.map { "Day \($0)" } ?? "Learning",
                            detail: recoveryTriRingDetailText,
                            systemImage: AtriaTodayMetric.recovery.systemImage,
-                           tint: recoveryZone?.tint ?? recoveryColor(hero.recoveryEstimate.percent),
+                           tint: recoveryZone?.tint ?? .secondary,
                            fill: hero.recoveryEstimate.percent.map { Double($0) / 100.0 })
     }
 
@@ -3206,9 +3208,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   systemImage: AtriaTodayMetric.strain.systemImage,
                                   tint: Metrics.ringAchievementTint(fill: pending ? nil : targetProgress),
                                   fill: fill,
-                                  stateTint: pending ? nil : targetProgress.map {
-                                    AtriaTriRing.zoneTint(.strain, percent: $0 * 100)
-                                  },
+                                  stateTint: pending ? nil : strainZone?.tint,
                                   targetFraction: pending ? nil : AtriaRingMetricProjection.strainTargetFraction(hero.guidance.target))
     }
 
@@ -3217,14 +3217,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var triRingCenterState: String {
-        guard let percent = hero.recoveryEstimate.percent else { return "Calibrating" }
-        switch percent {
-        case 67...:
-            return "Good"
-        case 34..<67:
-            return "Steady"
-        default:
-            return "Low"
+        switch recoveryZone?.level {
+        case .green: return "Good"
+        case .yellow: return "Steady"
+        case .red: return "Low"
+        case nil: return "Calibrating"
         }
     }
 
@@ -3237,13 +3234,21 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private var sleepTriRingDetailText: String {
         if let latest = sleepHistory.latestMainSleep, latest.confirmed {
-            return "Good"
+            switch sleepGlanceZone?.level {
+            case .green: return "Good"
+            case .yellow: return "Fair"
+            case .red: return "Low"
+            case nil: return "Recorded"
+            }
         }
         return sleepGlanceDetailText
     }
 
     private var triRingAccessibilitySummary: String {
-        "Sleep \(sleepGlanceValueText), \(sleepTriRingDetailText). Recovery \(triRingRecoveryMetric.value), \(recoveryTriRingDetailText). Strain \(hero.strainValue) of \(hero.guidance.target.map { String(format: "%.1f", $0) } ?? "target")."
+        let strain = hero.guidance.target.map {
+            "Strain \(hero.strainValue) of \(String(format: "%.1f", $0))."
+        } ?? "Strain \(hero.strainValue), target building."
+        return "Sleep \(sleepGlanceValueText), \(sleepTriRingDetailText). Recovery \(triRingRecoveryMetric.value), \(recoveryTriRingDetailText). \(strain)"
     }
 
     private var liveFocusDetailText: String {
@@ -3268,8 +3273,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var sleepFocusProgress: Double? {
-        guard let latest = sleepHistory.latestMainSleep else { return nil }
-        return min(max(latest.durationHours / sleepGoalHours, 0.08), 1)
+        guard let latest = sleepHistory.latestMainSleep,
+              latest.confirmed,
+              latest.isNapEvidence != true,
+              sleepGoalHours.isFinite,
+              sleepGoalHours > 0 else { return nil }
+        return min(max(latest.durationHours / sleepGoalHours, 0), 1)
     }
 
     private func glanceRows(sizeOverrides: [String: AtriaGlanceGridSize]) -> [[AtriaTodayMetric]] {
@@ -3548,7 +3557,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                       value: hero.recoveryEstimate.percent == nil ? "Learning" : hero.recoveryValue,
                                       detail: recoveryDetailText,
                                       systemImage: metric.systemImage,
-                                      tint: recoveryZone?.tint ?? recoveryColor(hero.recoveryEstimate.percent),
+                                      tint: recoveryZone?.tint ?? .secondary,
                                       ringFraction: hero.recoveryEstimate.percent.map { Double($0) / 100 },
                                       sparklineValues: dailyMetricSparklines.recovery,
                                       zone: recoveryZone,
@@ -3987,13 +3996,6 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         value.localizedCaseInsensitiveContains("learning")
             || value.localizedCaseInsensitiveContains("prepar")
             || value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private func recoveryColor(_ percent: Int?) -> Color {
-        guard let percent else { return .secondary }
-        if percent >= 67 { return .green }
-        if percent >= 34 { return .yellow }
-        return .red
     }
 
     private var recoveryZone: AtriaMetricZone? {
