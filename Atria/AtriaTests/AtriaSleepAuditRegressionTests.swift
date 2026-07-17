@@ -381,6 +381,47 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
                        "auto_confirmed_sleep_hr_only")
     }
 
+    func testClusteredHRBurstCannotClaimWholeNightCoverage() throws {
+        let start = date(2032, 7, 5, 23, 0)
+        let end = date(2032, 7, 6, 5, 0)
+        let points = stride(from: 0.0, through: 5 * 60.0, by: 1.0).map {
+            SavedSession.Point(t: $0, bpm: 52)
+        }
+        var session = SavedSession(id: UUID(),
+                                   start: start,
+                                   end: end,
+                                   label: "Clustered HR burst",
+                                   points: points,
+                                   eventTimeZoneIdentifier: "UTC")
+        session.motionEvidenceValidated = true
+        session.motionEvidenceSource = "validated_strap_stillness"
+
+        let candidate = try XCTUnwrap(candidates([session]).first)
+        XCTAssertLessThan(candidate.hrObservedCoverageFraction, 0.10)
+        XCTAssertGreaterThan(candidate.maximumHRSampleGap, 5 * 60 * 60)
+        XCTAssertFalse(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
+        XCTAssertFalse(SessionStore.isUnambiguousHROnlyMainSleepCandidate(candidate))
+    }
+
+    func testLongSilentTailCannotBeAutoConfirmedAsObservedSleep() throws {
+        let start = date(2032, 7, 6, 23, 0)
+        let end = date(2032, 7, 7, 5, 0)
+        let points = stride(from: 0.0, through: 60 * 60.0, by: 10.0).map {
+            SavedSession.Point(t: $0, bpm: 52)
+        }
+        let session = SavedSession(id: UUID(),
+                                   start: start,
+                                   end: end,
+                                   label: "Silent HR tail",
+                                   points: points,
+                                   eventTimeZoneIdentifier: "UTC")
+
+        let candidate = try XCTUnwrap(candidates([session]).first)
+        XCTAssertLessThan(candidate.hrObservedCoverageFraction, 0.20)
+        XCTAssertGreaterThan(candidate.maximumHRSampleGap, 4 * 60 * 60)
+        XCTAssertFalse(SessionStore.isAutoConfirmableMainSleepCandidate(candidate))
+    }
+
     func testReconnectFragmentsCanAnchorOnlyWithDenseStablePhysiology() throws {
         let first = session(start: date(2032, 7, 9, 23, 30),
                             end: date(2032, 7, 10, 2, 20),

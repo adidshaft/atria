@@ -2936,6 +2936,7 @@ struct AggregateSleepCandidate {
     /// evidence of sleep across an hours-long unmeasured stretch (e.g. the strap
     /// battery died), so Atria never fabricates it.
     static let briefSleepGapCreditMax: TimeInterval = 20 * 60
+    static let minimumAutoConfirmHRCoverageFraction = 0.80
 
     let kind: String
     let day: Date
@@ -2947,6 +2948,13 @@ struct AggregateSleepCandidate {
     let span: TimeInterval
     let maxGap: TimeInterval
     let samples: Int
+    /// Fraction of five-minute bins across the claimed window containing at
+    /// least one real HR sample. This prevents a dense burst at one edge from
+    /// standing in for observation of the whole night.
+    let hrObservedCoverageFraction: Double
+    /// Largest uncovered interval, including the window edges and reconnect
+    /// gaps between sessions.
+    let maximumHRSampleGap: TimeInterval
     let avgHR: Int
     let peakHR: Int
     let hrStandardDeviation: Double
@@ -16312,6 +16320,8 @@ final class SessionStore: ObservableObject {
               candidate.motionEvidenceValidated,
               candidate.confidence != .low,
               candidate.duration >= AggregateSleepCandidate.minimumAutoConfirmMainSleepDuration,
+              candidate.hrObservedCoverageFraction >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction,
+              candidate.maximumHRSampleGap <= 60 * 60,
               mainSleepAutoConfirmWindowReady(candidate, calendar: .current) else {
             return false
         }
@@ -16342,6 +16352,8 @@ final class SessionStore: ObservableObject {
               candidate.span <= candidate.duration * 1.20,
               candidate.maxGap <= AggregateSleepCandidate.briefSleepGapCreditMax,
               Double(candidate.samples) >= candidate.duration / 90,
+              candidate.hrObservedCoverageFraction >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction,
+              candidate.maximumHRSampleGap <= AggregateSleepCandidate.briefSleepGapCreditMax,
               candidate.avgHR <= candidate.baselineRestingHR + 12,
               candidate.hrStandardDeviation <= 9.5,
               candidate.medianHR <= candidate.baselineRestingHR + 8,
@@ -19559,6 +19571,22 @@ final class SessionStore: ObservableObject {
                 let allHR = cluster.flatMap(\.bpms)
                 guard !allHR.isEmpty, let start = cluster.first?.start, let end = cluster.last?.end else { return nil }
                 let span = end.timeIntervalSince(start)
+                let sampleDates = cluster.flatMap { session in
+                    session.points.map { point in
+                        session.start.addingTimeInterval(min(max(0, point.t), session.duration))
+                    }
+                }.sorted()
+                let binSeconds: TimeInterval = 5 * 60
+                let expectedHRBins = max(1, Int(ceil(span / binSeconds)))
+                let observedHRBins = Set(sampleDates.map { sample in
+                    min(expectedHRBins - 1,
+                        max(0, Int(sample.timeIntervalSince(start) / binSeconds)))
+                }).count
+                let hrObservedCoverageFraction = Double(observedHRBins) / Double(expectedHRBins)
+                let hrGapBoundaries = [start] + sampleDates + [end]
+                let maximumHRSampleGap = zip(hrGapBoundaries, hrGapBoundaries.dropFirst())
+                    .map { max(0, $1.timeIntervalSince($0)) }
+                    .max() ?? span
                 let avg = allHR.reduce(0, +) / allHR.count
                 let peak = allHR.max() ?? 0
                 let hrStandardDeviation = standardDeviation(allHR.map(Double.init))
@@ -19707,6 +19735,8 @@ final class SessionStore: ObservableObject {
                                                span: span,
                                                maxGap: maxGap,
                                                samples: cluster.reduce(0) { $0 + $1.points.count },
+                                               hrObservedCoverageFraction: hrObservedCoverageFraction,
+                                               maximumHRSampleGap: maximumHRSampleGap,
                                                avgHR: avg,
                                                peakHR: peak,
                                                hrStandardDeviation: hrStandardDeviation,
