@@ -341,6 +341,10 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertEqual(candidate.kind, "overnight_sleep")
         XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(candidate))
         XCTAssertTrue(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
+        XCTAssertTrue(SessionStore.isAutoConfirmableMainSleepCandidate(
+            candidate,
+            baselineRestingIsTrusted: false
+        ), "validated motion remains sufficient without a mature resting-HR baseline")
     }
 
     func testMotionValidatedNightWithSustainedAwakeTailDoesNotAutoConfirm() throws {
@@ -376,7 +380,12 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertFalse(candidate.motionEvidenceValidated)
         XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(candidate))
         XCTAssertFalse(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
-        XCTAssertTrue(SessionStore.isAutoConfirmableMainSleepCandidate(candidate))
+        XCTAssertFalse(SessionStore.isAutoConfirmableMainSleepCandidate(candidate),
+                       "HR-only sleep must fail closed without trusted resting-HR provenance")
+        XCTAssertTrue(SessionStore.isAutoConfirmableMainSleepCandidate(
+            candidate,
+            baselineRestingIsTrusted: true
+        ))
         XCTAssertEqual(SessionStore.autoSleepClassification(for: candidate).source,
                        "auto_confirmed_sleep_hr_only")
     }
@@ -434,7 +443,11 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertEqual(candidate.sessions, 2)
         XCTAssertFalse(candidate.motionEvidenceValidated)
         XCTAssertTrue(SessionStore.isUnambiguousHROnlyMainSleepCandidate(candidate))
-        XCTAssertTrue(SessionStore.isAutoConfirmableMainSleepCandidate(candidate))
+        XCTAssertFalse(SessionStore.isAutoConfirmableMainSleepCandidate(candidate))
+        XCTAssertTrue(SessionStore.isAutoConfirmableMainSleepCandidate(
+            candidate,
+            baselineRestingIsTrusted: true
+        ))
     }
 
     func testLongQuietWindowWithWakePhysiologyDoesNotAnchor() throws {

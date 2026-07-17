@@ -92,6 +92,7 @@ final class AtriaSceneResumePolicyTests: XCTestCase {
             canonicalSessionsRevision: 9,
             confirmedSleepsRevision: 4,
             restingHR: 58,
+            baselineRestingIsTrusted: true,
             maxHR: 190
         )
 
@@ -114,8 +115,19 @@ final class AtriaSceneResumePolicyTests: XCTestCase {
             currentFingerprint: .init(canonicalSessionsRevision: 10,
                                       confirmedSleepsRevision: 4,
                                       restingHR: 58,
+                                      baselineRestingIsTrusted: true,
                                       maxHR: 190)
         ))
+        XCTAssertFalse(SessionStore.shouldCommitForegroundSleepSettlement(
+            completedGeneration: 3,
+            currentGeneration: 3,
+            preparedFingerprint: prepared,
+            currentFingerprint: .init(canonicalSessionsRevision: 9,
+                                      confirmedSleepsRevision: 4,
+                                      restingHR: 58,
+                                      baselineRestingIsTrusted: false,
+                                      maxHR: 190)
+        ), "baseline trust is part of the mutation identity even when its numeric value is unchanged")
     }
 
     func testForegroundSleepSettlementProposalCanBuildAwayFromMainThread() {
@@ -126,6 +138,7 @@ final class AtriaSceneResumePolicyTests: XCTestCase {
                 canonicalSessionsRevision: 1,
                 confirmedSleepsRevision: 2,
                 restingHR: 60,
+                baselineRestingIsTrusted: false,
                 maxHR: 190
             )
             let proposal = SessionStore.makeForegroundSleepSettlementProposal(
