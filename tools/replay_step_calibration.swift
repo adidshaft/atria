@@ -77,6 +77,8 @@ enum ReplayStepCalibration {
         // opposite sides of an unavailable strap second.
         var magnitudeSegments: [[Double]] = []
         var currentMagnitudeSegment: [Double] = []
+        var gyroSegments: [[Double]] = []
+        var currentGyroSegment: [Double] = []
         var previousDeviceTimestamp: UInt32?
         var seenDeviceTimestamps = Set<UInt32>()
         for row in rows {
@@ -93,10 +95,15 @@ enum ReplayStepCalibration {
                     magnitudeSegments.append(currentMagnitudeSegment)
                     currentMagnitudeSegment.removeAll(keepingCapacity: true)
                 }
+                if !currentGyroSegment.isEmpty {
+                    gyroSegments.append(currentGyroSegment)
+                    currentGyroSegment.removeAll(keepingCapacity: true)
+                }
                 _ = gaitChallenger.resetForGap()
                 currentAcceptedGaitSeconds = 0
             }
             currentMagnitudeSegment.append(contentsOf: magnitudes)
+            currentGyroSegment.append(contentsOf: decoded.rotationRate.map(\.magnitude))
             previousDeviceTimestamp = decoded.deviceTimestamp
             motionFrames.append((decoded.deviceTimestamp, magnitudes))
             let gaitUpdate = gaitChallenger.ingest(acceleration: decoded.acceleration,
@@ -115,6 +122,9 @@ enum ReplayStepCalibration {
         }
         if !currentMagnitudeSegment.isEmpty {
             magnitudeSegments.append(currentMagnitudeSegment)
+        }
+        if !currentGyroSegment.isEmpty {
+            gyroSegments.append(currentGyroSegment)
         }
 
         let expectedFrames = expectedFrameCount(startMS: startMS, endMS: endMS)
@@ -135,6 +145,13 @@ enum ReplayStepCalibration {
         let strictSegmentRawSteps = magnitudeSegments.reduce(0) { total, magnitudes in
             total + AtriaStrapPedometer.rawStepCount(magnitudes: magnitudes)
         }
+        // Research shadow only — never a production count. See
+        // AtriaGyroCadenceResearchPedometer for the physical basis.
+        let gyroCadenceResearchSteps = gyroSegments.reduce(0.0) { total, segment in
+            total + AtriaGyroCadenceResearchPedometer.steps(
+                contiguousRotationMagnitudes: segment
+            )
+        }
         print("window_ms=\(startMS)...\(endMS)")
         print("archive_rows=\(rows.count) decoded_unique_frames=\(decodedFrames) duplicate_frames=\(duplicateFrames) samples=\(finalSnapshot?.samples ?? 0)")
         print(String(format: "expected_frames=%d missing_frames=%d coverage_pct=%.1f continuity_breaks=%d isolated_missing_seconds=%d long_breaks=%d longest_contiguous_seconds=%d evidence_scoreable=%d",
@@ -147,6 +164,8 @@ enum ReplayStepCalibration {
                      diagnostics.longestContiguousSeconds,
                      evidenceIsScoreable ? 1 : 0))
         print("raw_steps=\(rawSteps) production_gain=\(AtriaStrapPedometer.referenceGain) production_steps=\(productionSteps)")
+        print(String(format: "gyro_cadence_research_steps=%.1f status=research_never_production",
+                     gyroCadenceResearchSteps))
         print("strict_contiguous_segments=\(magnitudeSegments.count) strict_segment_raw_steps=\(strictSegmentRawSteps)")
         if let expectedSteps, expectedSteps > 0 {
             if evidenceIsScoreable {

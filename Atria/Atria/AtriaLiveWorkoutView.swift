@@ -141,7 +141,9 @@ struct AtriaLiveWorkoutStepProjection: Equatable {
         case .live:
             guard let count else { return "--" }
             return isEstimated ? "~\(count)" : "\(count)"
-        case .reconnecting: return "reconnecting"
+        // "syncing" matches the Live Activity's steps copy and, unlike
+        // "reconnecting", fits the third-width HUD chip at XXXL Dynamic Type.
+        case .reconnecting: return "syncing"
         case .stale: return "stale"
         case .unavailable: return "--"
         }
