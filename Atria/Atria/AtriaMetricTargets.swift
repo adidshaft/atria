@@ -300,10 +300,12 @@ extension Metrics {
 
     static func skinTemperatureDeviationZone(_ summary: IMUAuditSummary.SkinTemperatureDeviationSummary,
                                              greenDelta: Double = 0.5,
-                                             yellowDelta: Double = 1.0) -> AtriaMetricZone? {
+                                             yellowDelta: Double = 1.0,
+                                             decoderAvailable: Bool = AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable) -> AtriaMetricZone? {
         AtriaAnalytics.TargetZones.skinTemperatureDeviation(summary,
                                                             greenDelta: greenDelta,
-                                                            yellowDelta: yellowDelta)
+                                                            yellowDelta: yellowDelta,
+                                                            decoderAvailable: decoderAvailable)
     }
 
     static func bloodOxygenResearchZone(candidateFrames: Int,

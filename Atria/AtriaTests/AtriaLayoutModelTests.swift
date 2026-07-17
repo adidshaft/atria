@@ -38,6 +38,48 @@ final class AtriaLayoutModelTests: XCTestCase {
         XCTAssertNil(AtriaTodayMetric.draggedMetric(from: AtriaTodayMetric.stress.rawValue))
     }
 
+    func testTodaySectionOrderRepairsMalformedAndDuplicateCSV() {
+        XCTAssertEqual(AtriaTodayScreen.orderedTodaySections(from: "coach,unknown,plan,coach"),
+                       [.coach, .plan, .shortcuts, .weeklyPlan, .glance])
+    }
+
+    func testTodayScreenGlanceMetricsUsesValidatedLayoutConfig() {
+        var config = AtriaHomeLayoutConfig.default
+        config.glanceMetrics = ["hrv", "unknown", "hrv", "sleepPerformance"]
+
+        XCTAssertEqual(AtriaTodayScreen.glanceMetrics(for: config), [.hrv, .sleepPerformance])
+    }
+
+    func testHomeLayoutMovesGlanceCardsByStableMetricKey() {
+        var config = AtriaHomeLayoutConfig.default
+        let original = config.glanceMetrics
+
+        config.moveGlanceMetric("workouts", before: "hrv")
+
+        XCTAssertEqual(config.glanceMetrics.first, "workouts")
+        XCTAssertEqual(Set(config.glanceMetrics), Set(original))
+        XCTAssertEqual(config.glanceMetrics.count, original.count)
+
+        config.moveGlanceMetric("unknown", before: "hrv")
+        XCTAssertEqual(config.glanceMetrics.first, "workouts", "Unknown payloads must be ignored")
+    }
+
+    func testHomeLayoutAccessibleGlanceShiftHonorsBoundaries() {
+        var config = AtriaHomeLayoutConfig.default
+        let original = config.glanceMetrics
+
+        config.shiftGlanceMetric(original[1], direction: -1)
+        XCTAssertEqual(config.glanceMetrics.prefix(2), [original[1], original[0]])
+
+        config.shiftGlanceMetric(original[1], direction: -1)
+        XCTAssertEqual(config.glanceMetrics.prefix(2), [original[1], original[0]],
+                       "Moving the first card up must be a no-op")
+
+        config.shiftGlanceMetric(config.glanceMetrics.last!, direction: 1)
+        XCTAssertEqual(Set(config.glanceMetrics), Set(original))
+        XCTAssertEqual(config.glanceMetrics.count, original.count)
+    }
+
     func testTodayMetricLegacyPreferenceMigrationDropsNonMetricsAndMergesSteps() {
         let legacyOrder = "workout,recovery,strapSteps,backfill,hapticAlerts,sleep,unknown,steps"
         XCTAssertEqual(AtriaTodayMetric.ordered(from: legacyOrder),
@@ -59,7 +101,7 @@ final class AtriaLayoutModelTests: XCTestCase {
     func testDefaultHomeLayoutConfigHas14TilesIncludingSleepEfficiencyAndBioAge() {
         let config = AtriaHomeLayoutConfig.default.validated()
 
-        XCTAssertEqual(config.glanceMetrics.count, AtriaHomeLayoutConfig.maxTodayCards)
+        XCTAssertEqual(config.glanceMetrics.count, 8)
         XCTAssertTrue(config.glanceMetrics.contains("sleepEfficiency"))
         XCTAssertTrue(config.glanceMetrics.contains("bioAge"))
     }

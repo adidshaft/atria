@@ -257,4 +257,48 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertEqual(state.kind, .calibrating)
         XCTAssertEqual(state.label, "Calibrating (5/14)")
     }
+
+    func testStressDistributionTypicalRequiresThreeComparableMeasuredDays() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let monday = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026,
+                                                                       month: 7,
+                                                                       day: 6,
+                                                                       hour: 12)))
+        var archive = AtriaStressDistributionArchive()
+
+        for dayOffset in [0, 1, 2] {
+            let day = try XCTUnwrap(calendar.date(byAdding: .day, value: dayOffset, to: monday))
+            for sample in 0..<10 {
+                let date = day.addingTimeInterval(TimeInterval(sample * 30))
+                XCTAssertTrue(archive.record(level: dayOffset == 1 ? .high : .calm,
+                                             at: date,
+                                             calendar: calendar))
+            }
+        }
+
+        let thursday = try XCTUnwrap(calendar.date(byAdding: .day, value: 3, to: monday))
+        XCTAssertTrue(archive.record(level: .medium, at: thursday, calendar: calendar))
+        let comparison = try XCTUnwrap(archive.comparison(at: thursday, calendar: calendar))
+
+        XCTAssertEqual(comparison.comparisonDayCount, 3)
+        XCTAssertEqual(comparison.today.mediumSamples, 1)
+        XCTAssertEqual(comparison.typical?.calmSamples, 20)
+        XCTAssertEqual(comparison.typical?.highSamples, 10)
+    }
+
+    func testStressDistributionDoesNotCountRestoredDuplicateSample() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let date = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026,
+                                                                    month: 7,
+                                                                    day: 13,
+                                                                    hour: 10)))
+        var archive = AtriaStressDistributionArchive()
+
+        XCTAssertTrue(archive.record(level: .medium, at: date, calendar: calendar))
+        XCTAssertFalse(archive.record(level: .high, at: date, calendar: calendar))
+        XCTAssertEqual(archive.comparison(at: date, calendar: calendar)?.today.mediumSamples, 1)
+        XCTAssertEqual(archive.comparison(at: date, calendar: calendar)?.today.highSamples, 0)
+    }
 }

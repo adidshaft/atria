@@ -131,6 +131,23 @@ final class AtriaJournalStoreTests: XCTestCase {
         XCTAssertNil(store.answer(questionID: "stress.scale", day: dayA, calendar: calendar))
     }
 
+    func testAnswersByQuestionReturnsOnlyRequestedDay() {
+        let store = makeStore()
+        let now = Date(timeIntervalSince1970: 1_750_000_000)
+        let dayA = Date(timeIntervalSince1970: 1_750_000_000)
+        let dayB = Date(timeIntervalSince1970: 1_750_000_000 + 86_400)
+
+        store.record(questionID: "mood.scale", day: dayA, value: .scale(4), now: now, calendar: calendar)
+        store.record(questionID: "stress.scale", day: dayA, value: .scale(2), now: now, calendar: calendar)
+        store.record(questionID: "mood.scale", day: dayB, value: .scale(5), now: now, calendar: calendar)
+
+        let lookup = store.answersByQuestion(for: dayA, calendar: calendar)
+
+        XCTAssertEqual(lookup.count, 2)
+        XCTAssertEqual(lookup["mood.scale"]?.value, .scale(4))
+        XCTAssertEqual(lookup["stress.scale"]?.value, .scale(2))
+    }
+
     // MARK: - 5. latestActivityDay is the max day
 
     func testLatestActivityDayReturnsMaxDay() {

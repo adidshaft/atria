@@ -3,12 +3,8 @@ import SwiftUI
 struct AtriaStrapScreen: View {
     @ObservedObject var statusStore: AtriaHomeModel.StatusStore
     @ObservedObject var coreLiveStore: AtriaHomeModel.CoreLiveStore
-    @ObservedObject var pulseLiveStore: AtriaHomeModel.PulseLiveStore
+    let pulseLiveStore: AtriaHomeModel.PulseLiveStore
     @ObservedObject var collectionLiveStore: AtriaHomeModel.CollectionLiveStore
-    @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
-    @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
-    @ObservedObject var profileStore: AtriaHomeModel.ProfileStore
-    @ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
     let store: SessionStore
     let ble: AtriaBLEManager
     let horizontalSizeClass: UserInterfaceSizeClass?
@@ -25,6 +21,7 @@ struct AtriaStrapScreen: View {
     /// Opens the status-aware connection guide sheet (owned by AtriaHomeView).
     /// Optional so previews/tests without the home context still compile.
     var onShowConnectionGuide: (() -> Void)? = nil
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var rawExportURL: URL?
     @State private var rawExportInProgress = false
     @State private var rawExportStatus = "Full-resolution zip"
@@ -34,15 +31,21 @@ struct AtriaStrapScreen: View {
         VStack(alignment: .leading, spacing: 14) {
             header
 
-            connectionHero
+            AtriaStrapConnectionHero(statusStore: statusStore,
+                                     coreLiveStore: coreLiveStore,
+                                     pulseLiveStore: pulseLiveStore,
+                                     ble: ble,
+                                     onShowConnectionGuide: onShowConnectionGuide)
 
-            VStack(spacing: 8) {
+            LazyVGrid(columns: statusColumns, spacing: 8) {
                 // Connection row removed (dedup audit 2026-07-07): the
                 // state-differentiated hero above renders the identical
                 // value + detail strings; the row added nothing.
                 AtriaStrapStatusRow(title: "Battery",
-                                    value: coreLiveStore.state.batteryText,
-                                    detail: coreLiveStore.state.batteryChargeCompactText,
+                                    value: coreLiveStore.state.batteryLevel >= 0
+                                        ? coreLiveStore.state.batteryText : "—",
+                                    detail: coreLiveStore.state.batteryLevel >= 0
+                                        ? coreLiveStore.state.batteryChargeCompactText : "Unavailable",
                                     systemImage: coreLiveStore.state.batterySymbol,
                                     tint: coreLiveStore.state.batteryShowsPowered ? .green : .cyan)
                 AtriaStrapStatusRow(title: "Mode",
@@ -60,8 +63,9 @@ struct AtriaStrapScreen: View {
                                     detail: officialAppInstalled ? "Official app installed" : "Local control",
                                     systemImage: "checkmark.shield.fill",
                                     tint: collectionLiveStore.state.officialAppCoexistenceRisk == .suspected ? .red : Metrics.electricGreen)
-                rawExportRow
             }
+
+            rawExportRow
         }
         .padding(16)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
@@ -69,6 +73,11 @@ struct AtriaStrapScreen: View {
         .task {
             await prepareRawExportFixtureIfNeeded()
         }
+    }
+
+    private var statusColumns: [GridItem] {
+        let column = GridItem(.flexible(minimum: 0), spacing: 8, alignment: .top)
+        return dynamicTypeSize.isAccessibilitySize ? [column] : [column, column]
     }
 
     private var rawExportRow: some View {
@@ -125,9 +134,8 @@ struct AtriaStrapScreen: View {
         rawExportInProgress = true
         rawExportStatus = "Writing zip..."
         rawExportURL = nil
-        Task { @MainActor in
-            await Task.yield()
-            let url = store.exportRawDataPackage()
+        Task {
+            let url = await store.exportRawDataPackageAsync()
             rawExportInProgress = false
             rawExportURL = url
             if let url {
@@ -157,18 +165,71 @@ struct AtriaStrapScreen: View {
     }
     #endif
 
-    /// State-differentiated connection hero (design handoff, user-approved
-    /// over the auto-scan-only deferral 2026-07-07). The scan button triggers
-    /// the same scan the chrome chip tap runs — auto-scan keeps working;
-    /// this only adds a visible affordance.
+    private var header: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Strap")
+                    .font(.title2.weight(.bold))
+                Text(identitySubtitle)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            // Header state capsule removed (dedup audit): primaryState
+            // renders as the hero headline one card below.
+        }
+        .accessibilityHint("Atria reads the strap over Bluetooth and does not send data to WHOOP.")
+    }
+
+    /// Enriches the sanitized `displayDeviceName` (which already strips "WHOOP"
+    /// to a generic "Strap" for the always-on chrome) with the detected
+    /// generation from the strap's own Device Information service, when known.
+    /// Falls back to the plain identity — never a guess.
+    private var identitySubtitle: String {
+        let hasName = !coreLiveStore.state.displayDeviceName.isEmpty
+        let identity = hasName ? coreLiveStore.state.displayDeviceName : "Strap"
+        let rawName = coreLiveStore.state.deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let looksLikeWhoop = rawName.uppercased().contains("WHOOP") || ble.strapModel != .unknown
+        // When the strap isn't identified yet and has no saved name, describe the
+        // device instead of echoing the "Strap" title verbatim ("Strap / Strap").
+        // Also guard when the SAVED display name is itself the literal title
+        // "Strap" (seen in the wild 2026-07-07): a subtitle repeating the
+        // title says nothing — describe the device instead.
+        guard looksLikeWhoop else {
+            return hasName && identity != "Strap" ? identity : "Bluetooth heart-rate strap"
+        }
+
+        switch ble.strapModel {
+        case .strapMG: return "WHOOP MG · \(identity)"
+        case .strap5: return "WHOOP 5.0 · \(identity)"
+        case .strap4: return "WHOOP 4.0 · \(identity)"
+        case .strap4Class: return "WHOOP-class strap · \(identity)"
+        case .strap3: return "WHOOP 3.0 · \(identity)"
+        case .unknown: return identity
+        }
+    }
+
+}
+
+/// Keeps per-pulse connection text updates from rebuilding the export and
+/// status sections below it.
+private struct AtriaStrapConnectionHero: View {
+    @ObservedObject var statusStore: AtriaHomeModel.StatusStore
+    @ObservedObject var coreLiveStore: AtriaHomeModel.CoreLiveStore
+    @ObservedObject var pulseLiveStore: AtriaHomeModel.PulseLiveStore
+    let ble: AtriaBLEManager
+    let onShowConnectionGuide: (() -> Void)?
+
     @ViewBuilder
-    private var connectionHero: some View {
+    var body: some View {
         switch displayStatus {
         case .connected:
             HStack(spacing: 12) {
-                // The state-driven symbol the removed Connection row used —
-                // the hero now owns it (dedup audit 2026-07-07).
-                heroStatusIcon(systemImage: connectionSymbol, tint: Metrics.electricGreen)
+                statusIcon(systemImage: connectionSymbol, tint: Metrics.electricGreen)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(primaryState)
                         .font(.headline.weight(.bold))
@@ -179,8 +240,6 @@ struct AtriaStrapScreen: View {
                         .lineLimit(2)
                 }
                 Spacer(minLength: 8)
-                // Battery block removed from the hero (dedup audit): the
-                // Battery status row below owns the value + charging detail.
             }
             .padding(14)
             .atriaInsetCard(tint: Metrics.electricGreen)
@@ -241,7 +300,7 @@ struct AtriaStrapScreen: View {
         }
     }
 
-    private func heroStatusIcon(systemImage: String, tint: Color) -> some View {
+    private func statusIcon(systemImage: String, tint: Color) -> some View {
         Image(systemName: systemImage)
             .font(.title3.weight(.bold))
             .foregroundStyle(tint)
@@ -249,74 +308,9 @@ struct AtriaStrapScreen: View {
             .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Strap")
-                        .font(.title2.weight(.bold))
-                    Text(identitySubtitle)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 8)
-
-                // Header state capsule removed (dedup audit): primaryState
-                // renders as the hero headline one card below.
-            }
-
-            Text("Your strap, your data — Atria reads it over Bluetooth. Nothing is sent to WHOOP.")
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    /// Enriches the sanitized `displayDeviceName` (which already strips "WHOOP"
-    /// to a generic "Strap" for the always-on chrome) with the detected
-    /// generation from the strap's own Device Information service, when known.
-    /// Falls back to the plain identity — never a guess.
-    private var identitySubtitle: String {
-        let hasName = !coreLiveStore.state.displayDeviceName.isEmpty
-        let identity = hasName ? coreLiveStore.state.displayDeviceName : "Strap"
-        let rawName = coreLiveStore.state.deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let looksLikeWhoop = rawName.uppercased().contains("WHOOP") || ble.strapModel != .unknown
-        // When the strap isn't identified yet and has no saved name, describe the
-        // device instead of echoing the "Strap" title verbatim ("Strap / Strap").
-        // Also guard when the SAVED display name is itself the literal title
-        // "Strap" (seen in the wild 2026-07-07): a subtitle repeating the
-        // title says nothing — describe the device instead.
-        guard looksLikeWhoop else {
-            return hasName && identity != "Strap" ? identity : "Bluetooth heart-rate strap"
-        }
-
-        switch ble.strapModel {
-        case .strapMG: return "WHOOP MG · \(identity)"
-        case .strap5: return "WHOOP 5.0 · \(identity)"
-        case .strap4: return "WHOOP 4.0 · \(identity)"
-        case .strap4Class: return "WHOOP-class strap · \(identity)"
-        case .strap3: return "WHOOP 3.0 · \(identity)"
-        case .unknown: return identity
-        }
-    }
-
     private var primaryState: String {
-        if displayStatus == .connected {
-            return coreLiveStore.state.strapStreamConnectionLabel
-        }
-        switch displayStatus {
-        case .connected:
-            return "Live"
-        case .connecting, .scanning:
-            return "Finding"
-        case .disconnected:
-            return "Off"
-        case .poweredOff:
-            return "Bluetooth"
-        }
+        guard displayStatus == .connected else { return "Finding" }
+        return coreLiveStore.state.strapStreamConnectionLabel
     }
 
     private var connectionDetail: String {
@@ -336,24 +330,6 @@ struct AtriaStrapScreen: View {
         return coreLiveStore.state.bluetoothPermissionDenied ? "Permission needed" : "Waiting for HR"
     }
 
-    private var connectionValue: String {
-        if displayStatus == .connected {
-            return coreLiveStore.state.strapStreamConnectionLabel
-        }
-        switch displayStatus {
-        case .connected:
-            return pulseLiveStore.state.hasPulseSignal ? "Live" : "No signal"
-        case .connecting:
-            return "Connecting"
-        case .scanning:
-            return "Searching"
-        case .disconnected:
-            return "Disconnected"
-        case .poweredOff:
-            return "Bluetooth off"
-        }
-    }
-
     private var connectionSymbol: String {
         if displayStatus == .connected {
             return coreLiveStore.state.strapStreamConnectionSymbol
@@ -367,35 +343,7 @@ struct AtriaStrapScreen: View {
 
     private var displayStatus: AtriaBLEManager.Status {
         guard hasPulseSignal else { return statusStore.state.status }
-        switch statusStore.state.status {
-        case .poweredOff:
-            return .poweredOff
-        case .connected, .connecting, .scanning, .disconnected:
-            return .connected
-        }
-    }
-
-    private var connectionTint: Color {
-        if displayStatus == .connected {
-            switch coreLiveStore.state.strapStreamState {
-            case .live:
-                return Metrics.electricGreen
-            case .lowBatteryShutoff, .lowBatteryReducedDetail:
-                return .yellow
-            case .silentUnknown:
-                return .orange
-            case .warming, .unknown:
-                return .cyan
-            }
-        }
-        switch displayStatus {
-        case .connected:
-            return Metrics.electricGreen
-        case .connecting, .scanning:
-            return .cyan
-        case .disconnected, .poweredOff:
-            return .secondary
-        }
+        return statusStore.state.status == .poweredOff ? .poweredOff : .connected
     }
 }
 
@@ -414,36 +362,31 @@ private struct AtriaStrapStatusRow: View, Equatable {
     }
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: systemImage)
-                .font(.subheadline.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 28, height: 28)
-                .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(tint)
+                    .frame(width: 26, height: 26)
+                    .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                Spacer(minLength: 4)
+                Text(value)
                     .font(.subheadline.weight(.bold))
-                // Dynamic connection detail wraps instead of mid-word
-                // ellipsis (UX audit 2026-07-07).
-                Text(detail)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.trailing)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
             }
 
-            Spacer(minLength: 8)
-
-            Text(value)
-                .font(.headline.weight(.bold))
-                .multilineTextAlignment(.trailing)
-                .lineLimit(2)
+            Text(title)
+                .font(.caption.weight(.bold))
+            Text(detail)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
                 .minimumScaleFactor(0.8)
-                .layoutPriority(1)
         }
-        .frame(minHeight: 54)
-        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, minHeight: 72, alignment: .topLeading)
+        .padding(10)
         .background(Color(uiColor: .tertiarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .accessibilityElement(children: .ignore)

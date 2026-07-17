@@ -24,6 +24,10 @@ Pulled files, when present:
   - historical-archive.diagnostics.json
   - historical-archive.manifest.json
   - historical-archive-segments/
+  - atria-captures/ plus SHA-256 manifest
+  - atria-step-calibration/
+  - recovered completed step-calibration manifest (when present)
+  - authoritative workout/route/step-ledger state plus SHA-256 manifest
   - app preferences plist
   - process-check.txt
   - pull-summary.txt
@@ -64,6 +68,17 @@ fi
 if [[ -z "$evidence_dir" ]]; then
   usage >&2
   exit 2
+fi
+
+if [[ -e "$evidence_dir" ]]; then
+  if [[ ! -d "$evidence_dir" ]]; then
+    printf 'Evidence path exists and is not a directory: %s\n' "$evidence_dir" >&2
+    exit 73
+  fi
+  if find "$evidence_dir" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+    printf 'Evidence directory must be new or empty: %s\n' "$evidence_dir" >&2
+    exit 73
+  fi
 fi
 
 if [[ -n "${ATRIA_DEVICETCL:-}" ]]; then
@@ -109,6 +124,8 @@ copy_first_from_container() {
   local label=$2
   shift 2
 
+  rm -f "${destination_path}.partial"
+
   local source_path
   for source_path in "$@"; do
     if "${devicectl_cmd[@]}" device copy from \
@@ -123,6 +140,15 @@ copy_first_from_container() {
       return 0
     fi
   done
+  if [[ -s "$destination_path" ]]; then
+    local partial_bytes
+    partial_bytes=$(wc -c < "$destination_path" | tr -d ' ')
+    : > "${destination_path}.partial"
+    printf '%s_status=partial_copy\n' "$label" | tee -a "$summary"
+    printf '%s_file=%s\n' "$label" "$destination_path" | tee -a "$summary"
+    printf '%s_partial_bytes=%s\n' "$label" "$partial_bytes" | tee -a "$summary"
+    return 0
+  fi
   printf '%s_status=missing\n' "$label" | tee -a "$summary"
   printf '%s_sources=%s\n' "$label" "$*" | tee -a "$summary"
   return 1
@@ -215,19 +241,101 @@ copy_from_container "Documents/atria-historical/historical-archive.manifest.json
 copy_from_container "Documents/atria-historical/segments" \
   "$evidence_dir/historical-archive-segments" \
   "historical_archive_segments" || true
+copy_from_container "Documents/atria-captures" \
+  "$evidence_dir/atria-captures" \
+  "explicit_sensor_captures" || true
+if [[ -d "$evidence_dir/atria-captures" ]]; then
+  capture_manifest="$evidence_dir/atria-captures.sha256"
+  find -s "$evidence_dir/atria-captures" -type f -exec shasum -a 256 {} \; > "$capture_manifest"
+  capture_file_count=$(wc -l < "$capture_manifest" | tr -d ' ')
+  capture_total_bytes=$(find -s "$evidence_dir/atria-captures" -type f -exec stat -f '%z' {} \; \
+    | awk '{ total += $1 } END { print total + 0 }')
+  printf 'explicit_sensor_captures_file_count=%s\n' "$capture_file_count" | tee -a "$summary"
+  printf 'explicit_sensor_captures_total_bytes=%s\n' "$capture_total_bytes" | tee -a "$summary"
+  printf 'explicit_sensor_captures_manifest=%s\n' "$capture_manifest" | tee -a "$summary"
+fi
+copy_from_container "Documents/atria-step-calibration" \
+  "$evidence_dir/atria-step-calibration" \
+  "step_calibration_archive" || true
 copy_from_container "Library/Preferences/${bundle_id}.plist" "$evidence_dir/preferences.plist" "preferences" || true
 
-python3 - "$evidence_dir" <<'PY' | tee -a "$summary"
+runtime_state_dir="$evidence_dir/authoritative-runtime-state"
+mkdir -p "$runtime_state_dir"
+copy_from_container "Library/Application Support/Atria/pending-workout-intent-v1.json" \
+  "$runtime_state_dir/pending-workout-intent-v1.json" \
+  "pending_workout_intent" || true
+copy_from_container "Library/Application Support/Atria/active-workout-route.json" \
+  "$runtime_state_dir/active-workout-route.json" \
+  "active_workout_route" || true
+copy_from_container "Library/Application Support/Atria/active-workout-route.points.ndjson" \
+  "$runtime_state_dir/active-workout-route.points.ndjson" \
+  "active_workout_route_points" || true
+copy_from_container "Library/Application Support/Atria/pending-workout-route-transaction.json" \
+  "$runtime_state_dir/pending-workout-route-transaction.json" \
+  "pending_workout_route_transaction" || true
+copy_from_container "Library/Application Support/atria-strap-step-ledger.json" \
+  "$runtime_state_dir/atria-strap-step-ledger.json" \
+  "strap_step_ledger" || true
+copy_from_container "Documents/atria-workout-routes" \
+  "$runtime_state_dir/atria-workout-routes" \
+  "workout_routes" || true
+
+runtime_state_manifest="$evidence_dir/authoritative-runtime-state.sha256"
+if find "$runtime_state_dir" -type f -print -quit | grep -q .; then
+  find -s "$runtime_state_dir" -type f -exec shasum -a 256 {} \; > "$runtime_state_manifest"
+  runtime_state_file_count=$(wc -l < "$runtime_state_manifest" | tr -d ' ')
+  runtime_state_total_bytes=$(find -s "$runtime_state_dir" -type f -exec stat -f '%z' {} \; \
+    | awk '{ total += $1 } END { print total + 0 }')
+  printf 'authoritative_runtime_state_status=ok\n' | tee -a "$summary"
+  printf 'authoritative_runtime_state_file_count=%s\n' "$runtime_state_file_count" | tee -a "$summary"
+  printf 'authoritative_runtime_state_total_bytes=%s\n' "$runtime_state_total_bytes" | tee -a "$summary"
+  printf 'authoritative_runtime_state_manifest=%s\n' "$runtime_state_manifest" | tee -a "$summary"
+else
+  rmdir "$runtime_state_dir" 2>/dev/null || true
+  printf 'authoritative_runtime_state_status=missing\n' | tee -a "$summary"
+  printf 'authoritative_runtime_state_file_count=0\n' | tee -a "$summary"
+  printf 'authoritative_runtime_state_total_bytes=0\n' | tee -a "$summary"
+fi
+if [[ -f "$(dirname "$0")/tools/validate_runtime_evidence.py" ]]; then
+  python3 "$(dirname "$0")/tools/validate_runtime_evidence.py" "$runtime_state_dir" \
+    | tee -a "$summary" || true
+else
+  printf 'runtime_evidence_validation_status=validator_unavailable\n' | tee -a "$summary"
+fi
+
+python3 - "$evidence_dir" \
+  "$(dirname "$0")/Atria/Atria/HistoricalArchive.swift" \
+  "$(dirname "$0")/Atria/Atria/AtriaStrapCalibrationArchive.swift" \
+  "$(dirname "$0")/tools/summarize_step_calibration_preflight.py" \
+  "$bundle_id" <<'PY' | tee -a "$summary"
+import csv
 import datetime as dt
+import hashlib
+import importlib.util
 import json
 import math
 import plistlib
+import re
 import struct
 import sys
 import time
 from pathlib import Path
 
 evidence = Path(sys.argv[1])
+historical_archive_source = Path(sys.argv[2])
+strap_calibration_archive_source = Path(sys.argv[3])
+step_preflight_source = Path(sys.argv[4])
+bundle_id = sys.argv[5]
+try:
+    step_preflight_spec = importlib.util.spec_from_file_location(
+        "summarize_step_calibration_preflight", step_preflight_source
+    )
+    if step_preflight_spec is None or step_preflight_spec.loader is None:
+        raise ImportError("missing preflight module loader")
+    step_preflight = importlib.util.module_from_spec(step_preflight_spec)
+    step_preflight_spec.loader.exec_module(step_preflight)
+except Exception:
+    step_preflight = None
 apple_epoch = dt.datetime(2001, 1, 1, tzinfo=dt.timezone.utc)
 ist = dt.timezone(dt.timedelta(hours=5, minutes=30), "IST")
 
@@ -288,6 +396,224 @@ def emit_historical_archive_rotation_summary():
             base_index_rows = 0
     print(f"historical_archive_aggregate_index_rows={base_index_rows + total_rows}")
 
+def emit_step_calibration_archive_summary():
+    archive_path = evidence / "atria-step-calibration"
+    csv_paths = sorted(
+        path for path in archive_path.rglob("*")
+        if path.is_file() and path.suffix.lower() == ".csv"
+    ) if archive_path.is_dir() else []
+    if not csv_paths:
+        print("step_calibration_archive_summary_status=missing")
+        print("step_calibration_archive_file_count=0")
+        print("step_calibration_archive_row_count=0")
+        print("step_calibration_archive_earliest_received_at_iso_utc=missing")
+        print("step_calibration_archive_latest_received_at_iso_utc=missing")
+        print("step_calibration_archive_total_bytes=0")
+        print("step_calibration_archive_packet_types=missing")
+        print("step_calibration_archive_record_types=missing")
+        emit_step_calibration_retention_forecast([], 0, 0, 0)
+        return
+
+    total_bytes = 0
+    total_rows = 0
+    earliest_received_at = None
+    latest_received_at = None
+    read_errors = 0
+    invalid_timestamp_rows = 0
+    retention_observations = []
+    packet_type_counts = {}
+    record_type_counts = {}
+
+    class ByteCountingIterator:
+        def __init__(self, handle):
+            self.handle = handle
+            self.bytes_read = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            line = next(self.handle)
+            self.bytes_read += len(line.encode("utf-8"))
+            return line
+
+    for path in csv_paths:
+        try:
+            total_bytes += path.stat().st_size
+            with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
+                header_line = handle.readline()
+                fieldnames = next(csv.reader([header_line]), [])
+                counting_lines = ByteCountingIterator(handle)
+                reader = csv.DictReader(counting_lines, fieldnames=fieldnames)
+                while True:
+                    bytes_before_row = counting_lines.bytes_read
+                    try:
+                        row = next(reader)
+                    except StopIteration:
+                        break
+                    row_bytes = counting_lines.bytes_read - bytes_before_row
+                    total_rows += 1
+                    packet_type = (row.get("packet_type") or "legacy").strip().lower()
+                    record_type = (row.get("record_type") or "legacy").strip().lower()
+                    packet_type_counts[packet_type] = packet_type_counts.get(packet_type, 0) + 1
+                    record_type_counts[record_type] = record_type_counts.get(record_type, 0) + 1
+                    raw_received_at = row.get("received_at_unix_ms")
+                    try:
+                        unix_ms = float(raw_received_at)
+                        if not math.isfinite(unix_ms):
+                            raise ValueError("non-finite timestamp")
+                        received_at = dt.datetime.fromtimestamp(unix_ms / 1_000, tz=dt.timezone.utc)
+                    except (TypeError, ValueError, OverflowError, OSError):
+                        invalid_timestamp_rows += 1
+                        continue
+                    retention_observations.append((unix_ms, row_bytes))
+                    earliest_received_at = min(earliest_received_at, received_at) if earliest_received_at else received_at
+                    latest_received_at = max(latest_received_at, received_at) if latest_received_at else received_at
+        except (OSError, csv.Error):
+            read_errors += 1
+
+    def iso_utc(value):
+        return value.isoformat(timespec="milliseconds").replace("+00:00", "Z") if value else "missing"
+
+    print(f"step_calibration_archive_summary_status={'partial' if read_errors else 'ok'}")
+    print(f"step_calibration_archive_file_count={len(csv_paths)}")
+    print(f"step_calibration_archive_row_count={total_rows}")
+    print(f"step_calibration_archive_earliest_received_at_iso_utc={iso_utc(earliest_received_at)}")
+    print(f"step_calibration_archive_latest_received_at_iso_utc={iso_utc(latest_received_at)}")
+    print(f"step_calibration_archive_total_bytes={total_bytes}")
+    print("step_calibration_archive_packet_types=" + ",".join(
+        f"{key}:{packet_type_counts[key]}" for key in sorted(packet_type_counts)
+    ))
+    print("step_calibration_archive_record_types=" + ",".join(
+        f"{key}:{record_type_counts[key]}" for key in sorted(record_type_counts)
+    ))
+    emit_step_calibration_retention_forecast(
+        retention_observations,
+        total_bytes,
+        read_errors,
+        invalid_timestamp_rows,
+    )
+
+def emit_step_calibration_retention_forecast(observations, total_bytes, read_errors, invalid_timestamp_rows):
+    if step_preflight is None:
+        forecast = {
+            "step_calibration_archive_retention_capacity_status": "unknown",
+            "step_calibration_archive_retention_capacity_bytes": "-1",
+            "step_calibration_archive_retention_maximum_file_bytes": "-1",
+            "step_calibration_archive_retention_total_bytes": str(total_bytes),
+            "step_calibration_archive_retention_capacity_used_percent": "-1.000",
+            "step_calibration_archive_retention_recent_window_hours": "0.000",
+            "step_calibration_archive_retention_recent_rows": "0",
+            "step_calibration_archive_retention_recent_bytes": "0",
+            "step_calibration_archive_recent_ingress_bytes_per_hour": "-1.000",
+            "step_calibration_archive_recent_ingress_basis": "peak_rolling_1h_within_latest_6h",
+            "step_calibration_archive_estimated_retained_hours": "-1.000",
+            "step_calibration_archive_required_delayed_pull_hours": "2.000",
+            "step_calibration_archive_retention_forecast_status": "insufficient_evidence",
+            "step_calibration_archive_retention_evidence_reason": "preflight_tool_unavailable",
+            "step_calibration_archive_retention_risk": "retention_cannot_be_proven",
+            "step_calibration_archive_retention_action": "pull_now_and_restore_preflight_tool",
+        }
+    else:
+        try:
+            archive_source = strap_calibration_archive_source.read_text(encoding="utf-8")
+        except OSError:
+            archive_source = ""
+        forecast = step_preflight.retention_forecast(
+            observations,
+            total_archive_bytes=total_bytes,
+            archive_source=archive_source,
+            read_errors=read_errors,
+            invalid_timestamp_rows=invalid_timestamp_rows,
+        )
+    for key, value in forecast.items():
+        print(f"{key}={value}")
+
+def emit_step_calibration_capture_preferences():
+    prefs_path = evidence / "preferences.plist"
+    if not prefs_path.exists():
+        print("step_calibration_capture_status=missing_preferences")
+        print("step_calibration_capture_armed=0")
+        return
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception as exc:
+        print(f"step_calibration_capture_status=error:{type(exc).__name__}:{exc}")
+        print("step_calibration_capture_armed=0")
+        return
+    raw_until = pref(prefs, "strapStepCalibration.captureUntil")
+    now = time.time()
+    if not isinstance(raw_until, (int, float)) or not math.isfinite(float(raw_until)):
+        print("step_calibration_capture_status=missing")
+        print("step_calibration_capture_armed=0")
+        print("step_calibration_capture_until_unix_s=-1")
+        print("step_calibration_capture_remaining_s=-1")
+        return
+    capture_until = float(raw_until)
+    remaining = capture_until - now
+    capture_date = dt.datetime.fromtimestamp(capture_until, tz=dt.timezone.utc)
+    print("step_calibration_capture_status=armed" if remaining > 0 else "step_calibration_capture_status=expired")
+    print(f"step_calibration_capture_namespace={pref_namespace(prefs, 'strapStepCalibration.captureUntil')}")
+    print(f"step_calibration_capture_armed={bool_int(remaining > 0)}")
+    print(f"step_calibration_capture_until_unix_s={capture_until:.3f}")
+    print("step_calibration_capture_until_iso_utc=" + capture_date.isoformat(timespec="milliseconds").replace("+00:00", "Z"))
+    print(f"step_calibration_capture_remaining_s={max(0.0, remaining):.1f}")
+
+def emit_step_calibration_sequence_preferences():
+    unknown = {
+        "step_calibration_sequence_state": "unknown_preferences",
+        "step_calibration_sequence_completed_window_count": "-1",
+        "step_calibration_sequence_total_window_count": "6",
+        "step_calibration_sequence_active": "0",
+        "step_calibration_sequence_finishing": "0",
+        "step_calibration_sequence_complete": "0",
+        "step_calibration_sequence_state_source": "preferences_unavailable",
+        "step_calibration_sequence_ui_visibility_proven": "0",
+        "step_calibration_sequence_interpretation": "preferences_state_only_not_ui_visibility",
+    }
+    prefs_path = evidence / "preferences.plist"
+    raw_state = None
+    if not prefs_path.exists() or step_preflight is None:
+        summary = unknown
+    else:
+        try:
+            with prefs_path.open("rb") as handle:
+                prefs = plistlib.load(handle)
+            raw_state = prefs.get("atria.stepCalibration.sequence.v1")
+            summary = step_preflight.sequence_summary(raw_state)
+        except Exception:
+            summary = unknown
+    for key, value in summary.items():
+        print(f"{key}={value}")
+
+    manifest_path = evidence / "step-calibration-manifest.json"
+    manifest_path.unlink(missing_ok=True)
+    state = summary.get("step_calibration_sequence_state")
+    if state == "complete" and step_preflight is not None:
+        try:
+            manifest = step_preflight.completed_sequence_manifest(raw_state)
+            payload = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
+            manifest_path.write_bytes(payload)
+            print("step_calibration_manifest_status=ok")
+            print("step_calibration_manifest_source=Library/Preferences/"
+                  f"{bundle_id}.plist#atria.stepCalibration.sequence.v1")
+            print(f"step_calibration_manifest_file={manifest_path}")
+            print(f"step_calibration_manifest_sha256={hashlib.sha256(payload).hexdigest()}")
+            print(f"step_calibration_manifest_window_count={len(manifest['windows'])}")
+        except Exception:
+            print("step_calibration_manifest_status=corrupt")
+            print("step_calibration_manifest_window_count=-1")
+    elif state == "corrupt":
+        print("step_calibration_manifest_status=corrupt")
+        print("step_calibration_manifest_window_count=-1")
+    elif state in {"not_started", "ready", "active", "finishing"}:
+        print("step_calibration_manifest_status=not_complete")
+        print("step_calibration_manifest_window_count=0")
+    else:
+        print("step_calibration_manifest_status=unavailable")
+        print("step_calibration_manifest_window_count=-1")
+
 def app_time(value):
     if isinstance(value, (int, float)):
         return apple_epoch + dt.timedelta(seconds=float(value))
@@ -326,8 +652,10 @@ def emit_offline_sync_preferences():
     now = time.time()
     requested_at = pref(prefs, "offlineSync.rangeLossBackfillRequestedAt")
     started_at = pref(prefs, "offlineSync.rangeLossBackfillStartedAt")
+    raw_archived_at = pref(prefs, "offlineSync.rawArchivedGapAt.v1")
     requested_age = max(0.0, now - float(requested_at)) if isinstance(requested_at, (int, float)) and requested_at > 0 else -1.0
     started_age = max(0.0, now - float(started_at)) if isinstance(started_at, (int, float)) and started_at > 0 else -1.0
+    raw_archived_age = max(0.0, now - float(raw_archived_at)) if isinstance(raw_archived_at, (int, float)) and raw_archived_at > 0 else -1.0
     print(f"offline_sync_namespace={pref_namespace(prefs, 'offlineSync.lastStatus')}")
     print(f"offline_sync_enabled={bool_int(pref(prefs, 'offlineSync.enabled'))}")
     print(f"offline_sync_attempts={int(pref(prefs, 'offlineSync.attempts', 0) or 0)}")
@@ -337,6 +665,63 @@ def emit_offline_sync_preferences():
     print(f"offline_range_loss_backfill_reason={pref(prefs, 'offlineSync.rangeLossBackfillReason', 'none') or 'none'}")
     print(f"offline_range_loss_backfill_requested_age_s={requested_age:.1f}")
     print(f"offline_range_loss_backfill_started_age_s={started_age:.1f}")
+    print(f"offline_raw_gap_archived={bool_int(pref(prefs, 'offlineSync.rawArchivedGapFingerprint.v1'))}")
+    print(f"offline_raw_gap_archived_age_s={raw_archived_age:.1f}")
+    radio_standard_only = bool(pref(prefs, "radio.standardHROnly", False))
+    radio_user_selected = bool(pref(prefs, "radio.standardHROnlyUserSelected", False))
+    step_full_protocol_migrated = bool(pref(prefs, "capture.strapStepFullProtocolMigrated", False))
+    passive_r10_status = str(pref(prefs, "radio.passiveR10Status", "none") or "none")
+    clean_owner = str(pref(prefs, "protectedR10.cleanOwner", "legacy") or "legacy")
+    clean_owner_state = str(pref(prefs, "protectedR10.cleanOwnerState", "none") or "none")
+    clean_owner_failure = str(pref(prefs, "protectedR10.cleanOwnerFailureReason", "none") or "none")
+    passive_r10_last_valid_at = pref(prefs, "radio.passiveR10LastValidAt")
+    passive_r10_age = (
+        now - float(passive_r10_last_valid_at)
+        if isinstance(passive_r10_last_valid_at, (int, float)) and passive_r10_last_valid_at > 0
+        else -1.0
+    )
+    passive_r10_is_fresh = 0.0 <= passive_r10_age <= 15.0
+    protected_r10_active = (
+        radio_standard_only
+        and not radio_user_selected
+        and passive_r10_status in ("receiving_crc_valid", "receiving_crc_valid_passive")
+        and passive_r10_is_fresh
+    )
+    # `standardHROnly` is a legacy key name. Production-safe mode now keeps
+    # 2A37 HR plus the isolated stream-5 R10 motion subscription, so a true key
+    # is not itself evidence that strap steps need migration repair.
+    legacy_radio_repair_needed = (
+        radio_standard_only
+        and not radio_user_selected
+        and not step_full_protocol_migrated
+        and not protected_r10_active
+    )
+    recorded_runtime_mode = pref(prefs, "radio.mode", "none") or "none"
+    if protected_r10_active:
+        effective_radio_mode = "protected_hr_plus_r10"
+    elif recorded_runtime_mode in ("full_protocol", "standard_hr_only"):
+        effective_radio_mode = recorded_runtime_mode
+    else:
+        effective_radio_mode = "standard_hr_only" if radio_standard_only else "full_protocol"
+    print(f"radio_namespace={pref_namespace(prefs, 'radio.standardHROnly')}")
+    print(f"radio_standard_hr_only={bool_int(radio_standard_only)}")
+    print(f"radio_standard_hr_only_user_selected={bool_int(radio_user_selected)}")
+    print(f"radio_step_full_protocol_migrated={bool_int(step_full_protocol_migrated)}")
+    print(f"radio_legacy_automatic_repair_needed={bool_int(legacy_radio_repair_needed)}")
+    print(f"radio_recorded_runtime_mode={recorded_runtime_mode}")
+    print(f"radio_effective_mode={effective_radio_mode}")
+    print(f"radio_protected_r10_active={bool_int(protected_r10_active)}")
+    print(f"radio_passive_r10_status={passive_r10_status}")
+    print(f"radio_passive_r10_age_s={passive_r10_age:.1f}")
+    print(f"radio_clean_owner={clean_owner}")
+    print(f"radio_clean_owner_state={clean_owner_state}")
+    print(f"radio_clean_owner_failure={clean_owner_failure}")
+    print(f"protocol_packets={int(pref(prefs, 'protocol.packets', 0) or 0)}")
+    print(f"protocol_imu_frames={int(pref(prefs, 'protocol.imuFrames', 0) or 0)}")
+    print(f"protocol_last_packet_type={pref(prefs, 'protocol.lastPacketType', 'none') or 'none'}")
+    print(f"protocol_last_packet_kind={pref(prefs, 'protocol.lastPacketKind', 'none') or 'none'}")
+    print(f"step_source=strap_r10_imu")
+    print("phone_step_fallback=0")
     print(f"link_namespace={pref_namespace(prefs, 'link.lastAutoSaveStatus')}")
     link_auto_save_status = pref(prefs, "link.lastAutoSaveStatus", "none") or "none"
     link_auto_save_samples = int(pref(prefs, "link.lastAutoSaveSamples", 0) or 0)
@@ -375,7 +760,28 @@ def emit_battery_preferences():
     drop_delta = int(pref(prefs, "battery.dropDelta", 0) or 0)
     drop_at = pref(prefs, "battery.dropAt")
     drop_age = max(0.0, now - float(drop_at)) if isinstance(drop_at, (int, float)) and drop_at > 0 else -1.0
-    usable = isinstance(level, int) and level >= 0 and 0 <= age <= 86_400 and (charge_status == "levelOnly" or 0 <= charge_age <= 86_400)
+    # Match the app's fail-closed presentation contract. The raw level packet
+    # is fresh for ten minutes. Beyond that, a mid-range value remains usable
+    # only while this running connection is actively renewing its proven 2A19
+    # notification lease; the lease never rescues restoration sentinels.
+    requires_fresh = bool(pref(prefs, "battery.requiresFreshConfirmation", False))
+    lease_at = pref(prefs, "battery.notificationLeaseAt")
+    lease_age = max(0.0, now - float(lease_at)) if isinstance(lease_at, (int, float)) and lease_at > 0 else -1.0
+    confirmed_at = pref(prefs, "battery.notificationConfirmedAt")
+    confirmed_age = max(0.0, now - float(confirmed_at)) if isinstance(confirmed_at, (int, float)) and confirmed_at > 0 else -1.0
+    raw_fresh = isinstance(level, int) and 11 <= level <= 99 and 0 <= age <= 10 * 60
+    active_notification_lease = (
+        isinstance(level, int)
+        and 11 <= level <= 99
+        and source in ("live_2A19", "live_battery_event")
+        and not requires_fresh
+        and 0 <= lease_age <= 10 * 60
+        and 0 <= confirmed_age <= 60 * 60
+    )
+    usable = raw_fresh or active_notification_lease
+    projection_basis = "fresh_level_packet" if raw_fresh else (
+        "active_notification_lease" if active_notification_lease else "none"
+    )
     recent_drop = drop_delta > 0 and 0 <= drop_age <= 6 * 60 * 60
     charging = charge_status in ("charging", "full")
     print(f"battery_namespace={pref_namespace(prefs, 'battery.level')}")
@@ -386,9 +792,86 @@ def emit_battery_preferences():
     print(f"battery_charge_age_s={charge_age:.1f}")
     print(f"battery_is_charging={bool_int(charging)}")
     print(f"battery_usable={bool_int(usable)}")
+    print(f"battery_projection_basis={projection_basis}")
+    print(f"battery_notification_lease_age_s={lease_age:.1f}")
+    print(f"battery_effective_level={int(level) if usable else -1}")
+    print(f"battery_effective_status={'live' if usable else 'pending'}")
     print(f"battery_drop_recent={bool_int(recent_drop)}")
     print(f"battery_drop_delta={drop_delta}")
     print(f"battery_drop_age_s={drop_age:.1f}")
+
+def emit_motion_context_preferences():
+    prefs_path = evidence / "preferences.plist"
+    if not prefs_path.exists():
+        print("motion_context_summary_status=missing_preferences")
+        print("motion_context_effective_gate_decision=abstain")
+        print("motion_context_effective_gate_reason=missing_preferences")
+        return
+    try:
+        with prefs_path.open("rb") as handle:
+            prefs = plistlib.load(handle)
+    except Exception as exc:
+        print(f"motion_context_summary_status=error:{type(exc).__name__}:{exc}")
+        return
+
+    payload = pref(prefs, "motionContext.diagnostics")
+    if not isinstance(payload, dict):
+        print("motion_context_summary_status=missing")
+        print("motion_context_effective_gate_decision=abstain")
+        print("motion_context_effective_gate_reason=no_snapshot")
+        return
+
+    now = time.time()
+    def age(key):
+        value = payload.get(key)
+        if not isinstance(value, (int, float)) or not math.isfinite(float(value)) or value <= 0:
+            return -1.0
+        return max(0.0, now - float(value))
+
+    authorization = str(payload.get("authorization") or "missing")
+    monitor_state = str(payload.get("monitorState") or "missing")
+    kind = str(payload.get("kind") or "missing")
+    confidence = str(payload.get("confidence") or "missing")
+    recorded_decision = str(payload.get("decision") or "missing")
+    observed_value = payload.get("observedAt")
+    observed_age = age("observedAt")
+    observed_future_skew = (
+        float(observed_value) - now
+        if isinstance(observed_value, (int, float)) and math.isfinite(float(observed_value))
+        else -1.0
+    )
+    evidence_fresh = (
+        authorization == "authorized"
+        and monitor_state == "running"
+        and observed_age >= 0
+        and observed_age <= 45
+        and observed_future_skew <= 5
+    )
+    if evidence_fresh:
+        effective_decision = recorded_decision
+        stale_reason = "none"
+    else:
+        effective_decision = "abstain"
+        if authorization != "authorized": stale_reason = "authorization"
+        elif monitor_state != "running": stale_reason = "monitor_not_running"
+        elif observed_age < 0: stale_reason = "observation_missing_or_future"
+        else: stale_reason = "observation_stale"
+
+    print("motion_context_summary_status=ok")
+    print(f"motion_context_namespace={pref_namespace(prefs, 'motionContext.diagnostics')}")
+    print(f"motion_context_schema_version={int(payload.get('schemaVersion') or 0)}")
+    print(f"motion_context_authorization={authorization}")
+    print(f"motion_context_monitor_state={monitor_state}")
+    print(f"motion_context_latest_kind={kind}")
+    print(f"motion_context_latest_confidence={confidence}")
+    print(f"motion_context_started_age_s={age('startedAt'):.1f}")
+    print(f"motion_context_observed_age_s={observed_age:.1f}")
+    print(f"motion_context_evidence_fresh={bool_int(evidence_fresh)}")
+    print(f"motion_context_recorded_gate_decision={recorded_decision}")
+    print(f"motion_context_effective_gate_decision={effective_decision}")
+    print(f"motion_context_effective_gate_reason={stale_reason}")
+    print(f"motion_context_decision_age_s={age('decisionAt'):.1f}")
+    print(f"motion_context_persisted_age_s={age('persistedAt'):.1f}")
 
 def emit_hr_broadcast_preferences():
     prefs_path = evidence / "preferences.plist"
@@ -753,6 +1236,28 @@ def emit_confirmed_workout_preferences():
     )
     print("confirmed_workout_summary_status=ok")
     print(f"confirmed_workouts_count={len(workouts)}")
+    coverage_rows = [
+        row for row in workouts
+        if isinstance(row, dict) and isinstance(row.get("streamCoveragePercent"), (int, float))
+    ]
+    incomplete = [row for row in coverage_rows if float(row.get("streamCoveragePercent", 0)) < 75]
+    lowest_coverage = min(
+        coverage_rows,
+        key=lambda row: float(row.get("streamCoveragePercent", 0)),
+        default=None,
+    )
+    print(f"confirmed_workouts_incomplete_coverage_count={len(incomplete)}")
+    if lowest_coverage:
+        print(f"lowest_coverage_workout_id={lowest_coverage.get('id', 'missing') or 'missing'}")
+        print(f"lowest_coverage_workout_label={lowest_coverage.get('label', 'missing') or 'missing'}")
+        print(f"lowest_coverage_workout_start={workout_time(lowest_coverage, 'start')}")
+        print(f"lowest_coverage_workout_end={workout_time(lowest_coverage, 'end')}")
+        print(f"lowest_coverage_workout_percent={int(lowest_coverage.get('streamCoveragePercent', 0) or 0)}")
+        print(f"lowest_coverage_workout_samples={int(lowest_coverage.get('samples', 0) or 0)}")
+        print(f"lowest_coverage_workout_observed_s={float(lowest_coverage.get('observedDuration', 0) or 0):.1f}")
+        print(f"lowest_coverage_workout_strain={float(lowest_coverage.get('strain', 0) or 0):.3f}")
+    else:
+        print("lowest_coverage_workout_id=none")
     if latest:
         print(f"latest_confirmed_workout_id={latest.get('id', 'missing') or 'missing'}")
         print(f"latest_confirmed_workout_label={latest.get('label', 'missing') or 'missing'}")
@@ -761,7 +1266,7 @@ def emit_confirmed_workout_preferences():
         print(f"latest_confirmed_workout_start={workout_time(latest, 'start')}")
         print(f"latest_confirmed_workout_end={workout_time(latest, 'end')}")
         print(f"latest_confirmed_workout_created={workout_time(latest, 'createdAt')}")
-        print(f"latest_confirmed_workout_peak={int(latest.get('peak', 0) or 0)}")
+        print(f"latest_confirmed_workout_peak={int(latest.get('peakHR', latest.get('peak', 0)) or 0)}")
         print(f"latest_confirmed_workout_samples={int(latest.get('samples', 0) or 0)}")
     else:
         print("latest_confirmed_workout_id=none")
@@ -825,6 +1330,7 @@ def emit_daily_rollups_summary():
 
 emit_offline_sync_preferences()
 emit_battery_preferences()
+emit_motion_context_preferences()
 emit_hr_broadcast_preferences()
 emit_ble_link_preferences()
 emit_duty_cycle_and_compaction_preferences()
@@ -840,6 +1346,9 @@ emit_confirmed_workout_preferences()
 emit_daily_rollups_summary()
 emit_historical_archive_index_summary()
 emit_historical_archive_rotation_summary()
+emit_step_calibration_capture_preferences()
+emit_step_calibration_sequence_preferences()
+emit_step_calibration_archive_summary()
 
 def decode_historical_gravity(payload_hex):
     try:
@@ -880,6 +1389,7 @@ def historical_current_session_usable(row):
 
 def emit_historical_archive_summary():
     archive_path = evidence / "historical-archive.jsonl"
+    partial_copy = (evidence / "historical-archive.jsonl.partial").exists()
     if not archive_path.exists():
         print("historical_archive_summary_status=missing")
         print("historical_archive_metric_ready=0")
@@ -908,6 +1418,18 @@ def emit_historical_archive_summary():
     gravity_min = None
     gravity_max = None
     hist_versions = set()
+    validated_layout_versions = set()
+    try:
+        source_text = historical_archive_source.read_text(encoding="utf-8")
+        declaration = re.search(
+            r"validatedMetricLayoutVersions:\s*Set<String>\s*=\s*\[([^\]]*)\]",
+            source_text,
+            re.S,
+        )
+        if declaration:
+            validated_layout_versions = set(re.findall(r'"([^"]+)"', declaration.group(1)))
+    except Exception:
+        validated_layout_versions = set()
     with archive_path.open("r", encoding="utf-8", errors="replace") as handle:
         for line in handle:
             if not line.strip():
@@ -952,11 +1474,26 @@ def emit_historical_archive_summary():
                     gravity_max = magnitude if gravity_max is None else max(gravity_max, magnitude)
                     if valid:
                         gravity_validated_rows += 1
-    metric_ready = parse_errors == 0 and rows > 0 and metric_usable_rows > 0 and current_usable_rows > 0
-    if parse_errors:
+    validated_layout_rows_present = bool(layouts.intersection(validated_layout_versions))
+    metric_ready = (not partial_copy and parse_errors == 0 and rows > 0
+                    and metric_usable_rows > 0 and current_usable_rows > 0
+                    and validated_layout_rows_present)
+    if partial_copy:
+        interpretation = "partial_local_copy"
+        metric_gate = "copy_incomplete"
+        user_action = "rerun_pull_or_use_bounded_archive_export"
+    elif parse_errors:
         interpretation = "parse_errors"
         metric_gate = "repair_needed"
         user_action = "archive_needs_repair"
+    elif not validated_layout_versions:
+        interpretation = "archive_persisted_decoder_validation_required"
+        metric_gate = "layout_not_reference_validated"
+        user_action = "capture_synchronized_live_hr_rr_reference_before_metric_use"
+    elif not validated_layout_rows_present:
+        interpretation = "archive_layout_not_whitelisted"
+        metric_gate = "archive_layout_not_validated"
+        user_action = "validate_exact_archived_layout_before_metric_use"
     elif metric_ready:
         interpretation = "metric_ready"
         metric_gate = "metric_ready"
@@ -973,11 +1510,12 @@ def emit_historical_archive_summary():
         interpretation = "empty_archive"
         metric_gate = "waiting"
         user_action = "wait_for_missed_data_after_reconnect"
-    print("historical_archive_summary_status=ok")
+    print(f"historical_archive_summary_status={'partial_copy' if partial_copy else 'ok'}")
     print(f"historical_archive_rows={rows}")
     print(f"historical_archive_parse_errors={parse_errors}")
     print(f"historical_archive_schemas={','.join(sorted(schemas)) if schemas else 'none'}")
     print(f"historical_archive_layouts={','.join(sorted(layouts)) if layouts else 'none'}")
+    print(f"historical_archive_validated_metric_layouts={','.join(sorted(validated_layout_versions)) if validated_layout_versions else 'none'}")
     print(f"historical_archive_payload_lengths={','.join(map(str, sorted(payload_lengths))) if payload_lengths else 'none'}")
     print(f"historical_archive_raw_payload_rows={raw_payload_rows}")
     print(f"historical_archive_undecodable_rows={undecodable_rows}")
@@ -1176,9 +1714,12 @@ def stage_breakdown(segments):
 def confirmed_sleep_is_nap(record):
     source = str(record.get("source", ""))
     duration = float(record.get("duration") or 0)
-    if source in ("manual_nap", "nap_candidate", "hr_only_nap"):
+    if source in ("manual_nap", "auto_nap", "nap_candidate", "hr_only_nap", "user_adjusted_nap"):
         return True
-    if source in ("manual_sleep", "aggregate_sleep", "sleep_window", "validated_sleep_window", "overnight_sleep", "sleep_candidate", "single_session_sleep_candidate", "incomplete_fragmented_sleep"):
+    if source in ("manual_sleep", "auto_sleep", "auto_confirmed_sleep", "auto_confirmed_sleep_hr_only",
+                  "aggregate_sleep", "sleep_window", "validated_sleep_window", "overnight_sleep",
+                  "sleep_candidate", "single_session_sleep_candidate", "incomplete_fragmented_sleep",
+                  "user_adjusted_sleep"):
         return False
     return duration <= 3 * 60 * 60
 

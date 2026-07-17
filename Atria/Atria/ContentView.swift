@@ -5,21 +5,17 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     let ble: AtriaBLEManager
     let store: SessionStore
+    let workoutRouteRecorder: AtriaWorkoutRouteRecorder
     @State private var showOnboarding = false
     @State private var onboardingStage: OnboardingStage = .flow
     @State private var showOnboardingConsentSheet = false
 
-    /// The post-profile personalization steps (nickname, ring picker, cycle
-    /// tracking opt-in) and the anonymous research-sharing choice are their
-    /// own stages, shown after the athlete-profile flow finishes and before
-    /// the app opens (docs/24 §14.3 phase 2 — opt-out, default on, revocable
-    /// in Settings; personalization steps are all skippable with sensible
-    /// defaults, matching Settings/Customize behavior).
+    /// Keep first launch bounded: the four core pages are followed only by the
+    /// explicit research-sharing choice. Nickname, ring layout, and cycle
+    /// tracking remain available from Customize/Settings instead of blocking
+    /// entry with three additional full-screen steps.
     private enum OnboardingStage {
         case flow
-        case nickname(AthleteProfile)
-        case ringPicker(AthleteProfile)
-        case womensHealth(AthleteProfile)
         case sharingChoice(AthleteProfile)
     }
 
@@ -35,9 +31,12 @@ struct ContentView: View {
     /// onAppear-assigned value were both always `.flow`. Computing both in
     /// `init` sidesteps the whole class of bug: the very first render already
     /// reflects the right stage.
-    init(ble: AtriaBLEManager, store: SessionStore) {
+    init(ble: AtriaBLEManager,
+         store: SessionStore,
+         workoutRouteRecorder: AtriaWorkoutRouteRecorder) {
         self.ble = ble
         self.store = store
+        self.workoutRouteRecorder = workoutRouteRecorder
         let debugOnboardingStep = Self.debugOnboardingStepArgument()
         let debugCompletesOnboarding = AtriaDeveloperMode.isEnabled
             && ProcessInfo.processInfo.arguments.contains("--atria-complete-onboarding")
@@ -46,7 +45,9 @@ struct ContentView: View {
     }
 
     var body: some View {
-        AtriaHomeContainer(ble: ble, store: store)
+        AtriaHomeContainer(ble: ble,
+                           store: store,
+                           workoutRouteRecorder: workoutRouteRecorder)
             .equatable()
             .fullScreenCover(isPresented: $showOnboarding) {
                 switch onboardingStage {
@@ -55,25 +56,10 @@ struct ContentView: View {
                                         ble: ble,
                                         debugInitialStep: Self.debugOnboardingStepArgument(),
                                         onRestoreBackup: { url in
-                                            guard store.restoreSessionBackup(from: url) else { return false }
+                                            guard await store.restoreSessionBackup(from: url) else { return false }
                                             showOnboarding = !store.profile.hasCompletedOnboarding
                                             return true
                                         }) { profile in
-                        onboardingStage = .nickname(profile)
-                    }
-                    .interactiveDismissDisabled()
-                case .nickname(let profile):
-                    AtriaOnboardingNicknameStep {
-                        onboardingStage = .ringPicker(profile)
-                    }
-                    .interactiveDismissDisabled()
-                case .ringPicker(let profile):
-                    AtriaOnboardingRingPickerStep {
-                        onboardingStage = .womensHealth(profile)
-                    }
-                    .interactiveDismissDisabled()
-                case .womensHealth(let profile):
-                    AtriaOnboardingWomensHealthStep {
                         onboardingStage = .sharingChoice(profile)
                     }
                     .interactiveDismissDisabled()
@@ -116,18 +102,11 @@ struct ContentView: View {
 #endif
     }
 
-    /// Maps `--atria-ui-onboarding-step <name>` to the post-flow personalization
-    /// stages too, so each one is independently screenshot-able in DEBUG builds
-    /// without walking the whole athlete-profile flow first. Names that belong
-    /// to `AtriaOnboardingFlow`'s own internal steps (welcome/strap/you/
-    /// expectations) — or that match nothing — fall through to `.flow`, which
-    /// keeps forwarding the raw string to `debugInitialStep` unchanged.
+    /// The only post-flow mandatory choice is research sharing. Retired
+    /// personalization debug names fall through to the core flow.
     private static func initialOnboardingStage(debugStepName: String?, profile: AthleteProfile) -> OnboardingStage {
 #if DEBUG
         switch debugStepName?.lowercased() {
-        case "nickname": return .nickname(profile)
-        case "rings", "ring-picker", "ringpicker": return .ringPicker(profile)
-        case "womens-health", "womenshealth", "cycle", "cycle-tracking": return .womensHealth(profile)
         case "sharing", "sharing-choice", "sharingchoice": return .sharingChoice(profile)
         default: return .flow
         }
@@ -445,10 +424,13 @@ struct AtriaOnboardingWomensHealthStep: View {
                         .padding(18)
                         .atriaCard(emphasis: .soft)
 
-                        Text("Off by default. Turn it on any time from the Journal tab if phase-aware notes would help — always labeled as an estimate, never a diagnosis.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        DisclosureGroup("How it works") {
+                            Text("Turn it on any time from Journal. Phase-aware notes are estimates, never a diagnosis.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .font(.subheadline.weight(.semibold))
                     }
                     .padding(.horizontal, 20)
                     .padding(.top, 24)
@@ -490,14 +472,14 @@ struct AtriaOnboardingSharingChoiceStep: View {
                 AtriaDashboardBackdrop()
                     .ignoresSafeArea()
                 ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 14) {
                         Image(systemName: "shippingbox")
-                            .font(.system(size: 42, weight: .semibold))
+                            .font(.system(size: 36, weight: .semibold))
                             .foregroundStyle(.blue)
                             .symbolRenderingMode(.hierarchical)
                         Text("Help improve Atria")
-                            .font(.system(size: 34, weight: .bold, design: .rounded))
-                        Text("Share anonymized heart-rate, sleep and workout series, daily scores, and journal answers to improve Atria. No identity, no location — and you can inspect the exact bundle before agreeing.")
+                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                        Text("Anonymous data only. No identity or location. Review the bundle before sharing.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -505,13 +487,17 @@ struct AtriaOnboardingSharingChoiceStep: View {
                         Toggle(isOn: $sharingEnabled) {
                             Label("Share anonymously with developers", systemImage: "shippingbox")
                         }
-                        .padding(18)
+                        .padding(14)
                         .atriaCard(emphasis: .soft)
+                        .accessibilityHint("Includes heart rate, sleep, workouts, daily scores, and journal answers after you inspect the bundle.")
 
-                        Text("On by default. Bundles are prepared nightly during your sleep window and queue on this phone until a server is configured — identified only by a random code, never your name, exact dates, or location. Turn it off any time in Settings, with no effect on how Atria works.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        DisclosureGroup("Privacy details") {
+                            Text("Nightly bundles use a random code and scrambled dates. They stay on this phone until a server is configured. Turn sharing off anytime.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .font(.subheadline.weight(.semibold))
                     }
                     .padding(.horizontal, 20)
                     .padding(.top, 24)
@@ -607,15 +593,10 @@ struct OnboardingConnectionStatusView: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.headline)
-                Text(subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Text(title)
+                .font(.headline)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
 
             Spacer(minLength: 8)
 
@@ -631,10 +612,13 @@ struct OnboardingConnectionStatusView: View {
                 .transition(.opacity)
             }
         }
-        .padding(18)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .atriaCard(emphasis: .soft)
         .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: ble.status)
         .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: ble.hasContact)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title). \(subtitle)")
     }
 
     private var isSearching: Bool {
@@ -738,5 +722,7 @@ private struct SparklineShape: Shape, Equatable {
 }
 
 #Preview {
-    ContentView(ble: AtriaBLEManager(), store: SessionStore())
+    ContentView(ble: AtriaBLEManager(),
+                store: SessionStore(),
+                workoutRouteRecorder: AtriaWorkoutRouteRecorder())
 }

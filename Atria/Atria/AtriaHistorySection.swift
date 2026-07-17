@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 // MARK: - Value model
 
@@ -81,15 +82,37 @@ struct AtriaHistoryModel: Equatable {
                       workouts: [UserConfirmedWorkout],
                       sleeps: [UserConfirmedSleep],
                       calendar: Calendar = .current) -> AtriaHistoryModel {
-        let workoutsByDay = Dictionary(grouping: workouts) { calendar.startOfDay(for: $0.start) }
-        let sleepsByDay = Dictionary(grouping: sleeps) { calendar.startOfDay(for: $0.start) }
+        let rollupsByDay = Dictionary(grouping: rollups) {
+            calendar.startOfDay(for: $0.day)
+        }.compactMapValues(\.first)
+        let workoutsByDay = Dictionary(grouping: workouts) {
+            EventCivilTime.day(containing: $0.start,
+                               eventTimeZoneIdentifier: $0.eventTimeZoneIdentifier,
+                               outputCalendar: calendar)
+        }
+        // A main sleep belongs to the morning it completed, matching recovery,
+        // Sleep History and the physiological wake boundary. Grouping it by
+        // bedtime made a successfully saved overnight disappear from today's
+        // Activity Center (and appear on yesterday only after a rollup existed).
+        let sleepsByDay = Dictionary(grouping: sleeps) {
+            EventCivilTime.day(containing: $0.end,
+                               eventTimeZoneIdentifier: $0.eventTimeZoneIdentifier,
+                               outputCalendar: calendar)
+        }
+        // Saved activity is authoritative even before the asynchronous metric
+        // rollup is minted. Build the list from the union so Save immediately
+        // produces an editable Activity day instead of an apparently empty tab.
+        let activityDays = Set(rollupsByDay.keys)
+            .union(workoutsByDay.keys)
+            .union(sleepsByDay.keys)
 
-        let days: [AtriaHistoryDay] = rollups.map { rollup in
-            let dayWorkouts = workoutsByDay[rollup.day] ?? []
-            let daySleeps = sleepsByDay[rollup.day] ?? []
+        let days: [AtriaHistoryDay] = activityDays.sorted(by: >).map { day in
+            let rollup = rollupsByDay[day]
+            let dayWorkouts = workoutsByDay[day] ?? []
+            let daySleeps = sleepsByDay[day] ?? []
             let confirmedWorkoutCount = dayWorkouts.count
             let confirmedSleepCount = daySleeps.count
-            let reviewPending = 0
+            let reviewPending = reviewPendingCount(for: day)
 
             let state: AtriaHistoryDay.DayState
             if confirmedWorkoutCount > 0 {
@@ -102,13 +125,16 @@ struct AtriaHistoryModel: Equatable {
                 state = .none
             }
 
-            return AtriaHistoryDay(date: rollup.day,
-                                    strain: rollup.strain,
-                                    recovery: rollup.recovery,
-                                    rhrInt: rollup.rhr,
-                                    hrvMs: rollup.lnRMSSD.map(exp),
-                                    sleepSeconds: rollup.sleepSeconds,
-                                    sleepPerformance: rollup.sleepPerformance,
+            let confirmedSleepSeconds = daySleeps.reduce(0) { $0 + $1.duration }
+            return AtriaHistoryDay(date: day,
+                                    strain: rollup?.strain,
+                                    recovery: rollup?.recovery,
+                                    rhrInt: rollup?.rhr,
+                                    hrvMs: rollup?.lnRMSSD.map(exp),
+                                    sleepSeconds: confirmedSleepSeconds > 0
+                                        ? confirmedSleepSeconds
+                                        : rollup?.sleepSeconds,
+                                    sleepPerformance: rollup?.sleepPerformance,
                                     confirmedWorkoutCount: confirmedWorkoutCount,
                                     confirmedSleepCount: confirmedSleepCount,
                                     savedDurationSeconds: dayWorkouts.reduce(0) { $0 + $1.duration },
@@ -127,6 +153,11 @@ struct AtriaHistoryModel: Equatable {
                                   detections: detections)
     }
 
+    private static func reviewPendingCount(for _: Date) -> Int {
+        // Honest placeholder (2026-07-05): 0 until a real review-queue signal exists.
+        0
+    }
+
     /// Trailing 14 calendar days ending on (and including) `day`.
     func medianWindow(around day: AtriaHistoryDay, calendar: Calendar = .current) -> AtriaHistoryMedians {
         guard let start = calendar.date(byAdding: .day, value: -13, to: day.date) else { return .empty }
@@ -142,48 +173,103 @@ struct AtriaHistoryModel: Equatable {
     }
 }
 
+struct AtriaHistoryRevisionKey: Equatable, Hashable, Sendable {
+    let rollup: Int
+    let workouts: Int
+    let sleep: Int
+    let detections: Int
+}
+
+struct AtriaHistoryProjectionInput: @unchecked Sendable {
+    let key: AtriaHistoryRevisionKey
+    let rollups: [DailyRollupStoreEntry]
+    let workouts: [UserConfirmedWorkout]
+    let sleeps: [UserConfirmedSleep]
+}
+
+struct AtriaHistoryProjection: Equatable {
+    let key: AtriaHistoryRevisionKey?
+    let model: AtriaHistoryModel
+
+    static let empty = AtriaHistoryProjection(key: nil, model: .empty)
+}
+
+/// Builds the immutable History value model away from SwiftUI's render path.
+/// A requested revision never clears the published projection, so the section
+/// keeps rendering its previous complete model until the replacement is ready.
+@MainActor
+final class AtriaVitalsHistoryProjectionStore: ObservableObject {
+    @Published private(set) var projection: AtriaHistoryProjection
+
+    private var requestedKey: AtriaHistoryRevisionKey?
+
+    init(projection: AtriaHistoryProjection = .empty) {
+        self.projection = projection
+    }
+
+    func refresh(from input: AtriaHistoryProjectionInput) async {
+        guard begin(input.key) else { return }
+
+        let preparation = Task.detached(priority: .utility) {
+            AtriaHistoryModel.make(rollups: input.rollups,
+                                   workouts: input.workouts,
+                                   sleeps: input.sleeps)
+        }
+        let model = await withTaskCancellationHandler {
+            await preparation.value
+        } onCancel: {
+            preparation.cancel()
+        }
+
+        guard !Task.isCancelled else {
+            cancel(input.key)
+            return
+        }
+        _ = accept(model, for: input.key)
+    }
+
+    @discardableResult
+    func begin(_ key: AtriaHistoryRevisionKey) -> Bool {
+        guard key != requestedKey, key != projection.key else { return false }
+        requestedKey = key
+        return true
+    }
+
+    @discardableResult
+    func accept(_ model: AtriaHistoryModel, for key: AtriaHistoryRevisionKey) -> Bool {
+        guard requestedKey == key else { return false }
+        projection = AtriaHistoryProjection(key: key, model: model)
+        return true
+    }
+
+    func cancel(_ key: AtriaHistoryRevisionKey) {
+        guard requestedKey == key, projection.key != key else { return }
+        requestedKey = nil
+    }
+}
+
 // MARK: - Inline section (memoized subtree)
 
 /// The compact, inline History card shown in the Vitals tab: hero stat chips,
 /// a 14-day activity-rhythm strip, and the last 14 tappable rollup rows, with
 /// a push to the full ≤400-row history list.
 ///
-/// `.equatable()` at the call site plus the revision-only `==` below means
-/// live-pulse re-renders of the surrounding Vitals tree never rebuild this
-/// subtree -- only an actual rollup or confirmed-workout write does (mirrors
-/// the `dailyRollupHistoryRevision` memoization pattern used by
-/// AtriaTodayScreen, measured-perf pass 2026-07-05).
+/// The parent supplies an immutable, off-main projection. Equality follows the
+/// published revision (not an in-flight request), keeping the previous subtree
+/// unchanged until its replacement is complete.
 struct AtriaHistorySection: View, Equatable {
-    let rollups: [DailyRollupStoreEntry]
-    let rollupRevision: Int
-    let workouts: [UserConfirmedWorkout]
-    let sleeps: [UserConfirmedSleep]
-    let workoutsRevision: Int
-    let detectionsRevision: Int
+    let model: AtriaHistoryModel
+    let revisionKey: AtriaHistoryRevisionKey?
 
-    @State private var model = AtriaHistoryModel.empty
     @State private var selectedDay: AtriaHistoryDay?
     @State private var showAllDetections = false
-    // Perf (handoff #5): the LazyVStack that hosts this section evicts it
-    // off-screen, so `.onAppear` re-fires `rebuild()` on every scroll-in —
-    // re-decoding DetectionEventLog + rebuilding ~400 day rows. Skip the rebuild
-    // when the revisions it depends on are unchanged (same key as `==`).
-    @State private var builtKey: BuiltKey?
-
-    private struct BuiltKey: Equatable {
-        let rollup: Int
-        let workouts: Int
-        let detections: Int
-    }
 
     /// Store access for the detections inbox's Adjust routing only —
     /// deliberately NOT part of ==, which memoizes on the revisions.
     let store: SessionStore
 
     static func == (lhs: AtriaHistorySection, rhs: AtriaHistorySection) -> Bool {
-        lhs.rollupRevision == rhs.rollupRevision
-            && lhs.workoutsRevision == rhs.workoutsRevision
-            && lhs.detectionsRevision == rhs.detectionsRevision
+        lhs.revisionKey == rhs.revisionKey
     }
 
     var body: some View {
@@ -199,10 +285,6 @@ struct AtriaHistorySection: View, Equatable {
                 recentRowsCard
             }
         }
-        .onAppear { rebuild() }
-        .onChange(of: rollupRevision) { _, _ in rebuild() }
-        .onChange(of: workoutsRevision) { _, _ in rebuild() }
-        .onChange(of: detectionsRevision) { _, _ in rebuild() }
         .sheet(item: $selectedDay) { day in
             AtriaHistoryDayDetailSheet(day: day, medians: model.medianWindow(around: day))
                 .presentationDetents([.medium, .large])
@@ -213,17 +295,6 @@ struct AtriaHistorySection: View, Equatable {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
-    }
-
-    private func rebuild() {
-        // Skip the rebuild when inputs are unchanged (scroll-in re-appear). The
-        // onChange handlers only fire when a revision actually changed, so the key
-        // differs and the rebuild proceeds; a bare re-appear with the same data is
-        // skipped.
-        let key = BuiltKey(rollup: rollupRevision, workouts: workoutsRevision, detections: detectionsRevision)
-        guard builtKey != key else { return }
-        builtKey = key
-        model = .make(rollups: rollups, workouts: workouts, sleeps: sleeps)
     }
 
     private var historyHeroCard: some View {
@@ -439,7 +510,7 @@ struct AtriaHistoryDayRow: View, Equatable {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: day.confirmedWorkoutCount > 0 ? "figure.run" : "calendar")
+            Image(systemName: day.confirmedWorkoutCount > 0 ? "figure.mixed.cardio" : "calendar")
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(day.state.tint)
                 .frame(width: 30, height: 30)
@@ -633,13 +704,14 @@ struct AtriaDetectionsListSheet: View {
                                           evidenceNight: night,
                                           evidencePerformancePercent: store.sleepHistorySnapshot.sleepPerformancePercent(for: night,
                                                                                                                          baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
-                        let saved = store.adjustSleepNight(originalStart: night.start,
-                                                           originalEnd: night.end,
-                                                           newStart: start,
-                                                           newEnd: end,
-                                                           isNap: isNap,
-                                                           rest: store.baseline.restingInt ?? 60,
-                                                           source: "detections_inbox_adjust") != nil
+                        let saved = store.saveSleepReviewNightForUI(
+                            night,
+                            start: start,
+                            end: end,
+                            isNap: isNap,
+                            rest: store.baseline.restingInt ?? 60,
+                            source: "detections_inbox_adjust"
+                        ) != nil
                         if saved { adjustmentNight = nil }
                         return saved
                     }
@@ -667,13 +739,343 @@ struct AtriaDetectionsListSheet: View {
 
     private func uniqueNight(for event: DetectionEvent) -> SleepHistorySnapshot.Night? {
         guard let store, event.kind == "sleepAutoConfirmed" else { return nil }
-        let matches = store.sleepHistorySnapshot.nights.filter { night in
+        let snapshot = store.sleepHistorySnapshot
+        let allSleepsByID = (snapshot.nights + snapshot.additionalMainNights + snapshot.napNights)
+            .reduce(into: [String: SleepHistorySnapshot.Night]()) { result, night in
+                result[night.id] = night
+            }
+        let matches = allSleepsByID.values.filter { night in
             guard let end = night.end else { return false }
             let delta = event.date.timeIntervalSince(end)
             return delta >= -3_600 && delta <= 12 * 3_600
         }
         return matches.count == 1 ? matches[0] : nil
     }
+}
+
+// MARK: - Detected activities (unconfirmed review candidates + dismissed undo)
+
+/// Slow-moving snapshot for the history "Detected activities" surface: the
+/// qualifying unconfirmed review windows plus the dismissed-window tombstones
+/// (for visible, reversible dismissal). Values come straight from
+/// SessionStore's fail-closed review cache — nothing here is recomputed or
+/// embellished at the view layer.
+struct AtriaDetectedActivitiesState: Equatable {
+    let candidates: [WorkoutReviewCandidate]
+    let dismissedWindows: [AtriaDismissedWorkoutCandidate]
+
+    static let empty = AtriaDetectedActivitiesState(candidates: [], dismissedWindows: [])
+
+    var isEmpty: Bool { candidates.isEmpty && dismissedWindows.isEmpty }
+}
+
+/// Narrow observation boundary for the Detected activities card. Vitals
+/// deliberately never observes SessionStore at its root (see
+/// AtriaVitalsSessionProjectionStore); this store subscribes only to
+/// `dashboardRevision` — which the review cache bumps on publish and the
+/// dismiss/restore actions bump on write — and republishes only when the
+/// rendered snapshot actually changed.
+@MainActor
+final class AtriaDetectedActivitiesProjectionStore: ObservableObject {
+    @Published private(set) var state: AtriaDetectedActivitiesState = .empty
+
+    private let store: SessionStore
+    /// Same resting-HR source Home uses for its review banner so both
+    /// surfaces request the identical review-cache key (a mismatch would make
+    /// the two surfaces endlessly invalidate each other's cache).
+    private let restingHeartRateFallback: () -> Int
+    private var cancellables = Set<AnyCancellable>()
+    private var refreshScheduled = false
+
+    init(store: SessionStore, restingHeartRateFallback: @escaping () -> Int) {
+        self.store = store
+        self.restingHeartRateFallback = restingHeartRateFallback
+
+        // @Published sends during willSet; coalesce one main-runloop turn so
+        // the refresh reads committed store values.
+        store.$dashboardRevision
+            .dropFirst()
+            .sink { [weak self] _ in self?.scheduleRefresh() }
+            .store(in: &cancellables)
+        refresh()
+    }
+
+    @discardableResult
+    func refresh() -> Bool {
+        let rest = store.baseline.restingInt ?? restingHeartRateFallback()
+        let next = AtriaDetectedActivitiesState(
+            candidates: store.workoutReviewCandidatesForUI(rest: rest,
+                                                           maxHR: store.profile.maxHR),
+            dismissedWindows: store.dismissedWorkoutCandidatesForUI
+        )
+        guard next != state else { return false }
+        state = next
+        return true
+    }
+
+    private func scheduleRefresh() {
+        guard !refreshScheduled else { return }
+        refreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.refreshScheduled = false
+            self.refresh()
+        }
+    }
+}
+
+/// Owns the projection store so AtriaHealthScreen's chart-heavy body never
+/// observes candidate publications directly (AtriaHealthMonitorLiveHost idiom).
+struct AtriaDetectedActivitiesHost: View {
+    @StateObject private var projectionStore: AtriaDetectedActivitiesProjectionStore
+    private let store: SessionStore
+
+    init(store: SessionStore, restingHeartRateFallback: @escaping () -> Int) {
+        _projectionStore = StateObject(wrappedValue: AtriaDetectedActivitiesProjectionStore(
+            store: store,
+            restingHeartRateFallback: restingHeartRateFallback
+        ))
+        self.store = store
+    }
+
+    var body: some View {
+        AtriaDetectedActivitiesSection(state: debugFixtureState ?? projectionStore.state,
+                                       store: store)
+            .onAppear { projectionStore.refresh() }
+    }
+
+    #if DEBUG
+    private var debugFixtureState: AtriaDetectedActivitiesState? {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return nil }
+        let valueIndex = arguments.index(after: fixtureIndex)
+        guard arguments.indices.contains(valueIndex),
+              arguments[valueIndex] == "detected-activities" else { return nil }
+        let now = Date()
+        let morningEnd = now.addingTimeInterval(-9 * 3600)
+        let eveningEnd = now.addingTimeInterval(-40 * 60)
+        return AtriaDetectedActivitiesState(
+            candidates: [
+                WorkoutReviewCandidate(id: "debug-detected-evening",
+                                       start: eveningEnd.addingTimeInterval(-52 * 60),
+                                       end: eveningEnd,
+                                       kind: .activityCandidate,
+                                       confidence: .medium,
+                                       duration: 52 * 60,
+                                       avgHR: 132,
+                                       peakHR: 161,
+                                       streamCoveragePercent: 92,
+                                       observedDuration: 48 * 60,
+                                       droppedGapSeconds: 4 * 60,
+                                       maxSampleGap: 90,
+                                       gapCount: 1,
+                                       reason: "sustained_elevated_hr"),
+                WorkoutReviewCandidate(id: "debug-detected-morning",
+                                       start: morningEnd.addingTimeInterval(-38 * 60),
+                                       end: morningEnd,
+                                       kind: .activityCandidate,
+                                       confidence: .low,
+                                       duration: 38 * 60,
+                                       avgHR: 116,
+                                       peakHR: 141,
+                                       streamCoveragePercent: 54,
+                                       observedDuration: 21 * 60,
+                                       droppedGapSeconds: 17 * 60,
+                                       maxSampleGap: 6 * 60,
+                                       gapCount: 3,
+                                       reason: "elevated_seconds_below_required")
+            ],
+            dismissedWindows: [
+                AtriaDismissedWorkoutCandidate(start: now.addingTimeInterval(-20 * 3600),
+                                               end: now.addingTimeInterval(-19 * 3600))
+            ]
+        )
+    }
+    #else
+    private var debugFixtureState: AtriaDetectedActivitiesState? { nil }
+    #endif
+}
+
+/// Compact "Detected activities" card for the history area. HONEST copy only:
+/// an HR-only window is an "Activity candidate", never a found workout; the
+/// row shows the real coverage/avg/peak/duration evidence and the pipeline's
+/// own reason code when confidence is low. No strain, calories, or steps are
+/// synthesized for these windows. Dismissals are visible and reversible via
+/// the "Dismissed detections" list below the candidates.
+struct AtriaDetectedActivitiesSection: View {
+    let state: AtriaDetectedActivitiesState
+    /// Store access for actions only (dismiss/restore + review routing); every
+    /// rendered value comes from the immutable `state` snapshot.
+    var store: SessionStore? = nil
+
+    @State private var showDismissed = false
+
+    var body: some View {
+        if !state.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                AtriaPanelSectionHeader(title: "Detected activities",
+                                        subtitle: "Heart-rate windows Atria noticed but has not counted. Confirm what happened, or dismiss.")
+                if state.candidates.isEmpty {
+                    Text("No unconfirmed detections right now")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(spacing: 8) {
+                        ForEach(state.candidates, id: \.id) { candidate in
+                            candidateRow(candidate)
+                        }
+                    }
+                }
+                if !state.dismissedWindows.isEmpty {
+                    dismissedList
+                }
+            }
+            .padding(16)
+            .atriaCard(cornerRadius: 24, emphasis: .soft)
+        }
+    }
+
+    private func candidateRow(_ candidate: WorkoutReviewCandidate) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Image(systemName: "waveform.path.ecg")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.cyan)
+                    .frame(width: 30, height: 30)
+                    .background(Color.cyan.opacity(0.12), in: Circle())
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Activity candidate")
+                        .font(.subheadline.weight(.semibold))
+                    Text("\(Self.timeRangeText(start: candidate.start, end: candidate.end)) · \(SleepHistorySnapshot.formatDuration(candidate.duration)) from strap HR")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.82)
+                }
+                Spacer(minLength: 8)
+            }
+
+            Text("Coverage \(candidate.streamCoveragePercent)% · Avg \(candidate.avgHR) · Peak \(candidate.peakHR) bpm")
+                .font(.caption2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+
+            if candidate.confidence == .low {
+                Text("Low confidence: \(Self.reasonText(candidate.reason))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    requestReview(candidate)
+                } label: {
+                    Text("Confirm type")
+                        .font(.caption.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 32)
+                }
+                .atriaCardAction(prominent: false, tint: .cyan)
+
+                Button {
+                    _ = store?.dismissWorkoutCandidate(start: candidate.start,
+                                                       end: candidate.end)
+                } label: {
+                    Text("Dismiss")
+                        .font(.caption.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 32)
+                }
+                .atriaCardAction(prominent: false, tint: .secondary)
+            }
+        }
+        .padding(12)
+        .atriaInsetCard(cornerRadius: 16, tint: Color.cyan.opacity(0.4))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Activity candidate, \(Self.timeRangeText(start: candidate.start, end: candidate.end)), \(SleepHistorySnapshot.formatDuration(candidate.duration)) from strap heart rate. Coverage \(candidate.streamCoveragePercent) percent, average \(candidate.avgHR), peak \(candidate.peakHR) beats per minute. Confirm the type before it counts.")
+    }
+
+    /// Visible, reversible dismissal (2026-07-17): an accidental dismiss no
+    /// longer buries a detection forever. Restoring removes the durable
+    /// window tombstone so the deterministic generator may offer it again.
+    private var dismissedList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                showDismissed.toggle()
+            } label: {
+                HStack {
+                    Text("Dismissed detections (\(state.dismissedWindows.count))")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer(minLength: 0)
+                    Image(systemName: showDismissed ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                }
+                .foregroundStyle(.primary)
+            }
+            .buttonStyle(.plain)
+
+            if showDismissed {
+                ForEach(Array(state.dismissedWindows.enumerated()), id: \.offset) { _, window in
+                    HStack(spacing: 12) {
+                        Image(systemName: "bolt.slash")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(Self.timeRangeText(start: window.start, end: window.end))
+                                .font(.caption.weight(.semibold))
+                            Text("Dismissed — Atria will not offer this window")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 8)
+                        Button("Restore") {
+                            _ = store?.restoreDismissedWorkoutCandidate(start: window.start,
+                                                                        end: window.end)
+                        }
+                        .font(.caption.weight(.semibold))
+                        .buttonStyle(.bordered)
+                        .tint(.cyan)
+                    }
+                    .padding(10)
+                    .atriaInsetCard(cornerRadius: 14, tint: Color.secondary.opacity(0.2))
+                }
+                Text("Restoring lets Atria offer the window for review again. Nothing is saved until you confirm it.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func requestReview(_ candidate: WorkoutReviewCandidate) {
+        NotificationCenter.default.post(
+            name: SessionStore.workoutReviewCandidateReviewRequestedNotification,
+            object: nil,
+            userInfo: [SessionStore.workoutReviewCandidateUserInfoKey: candidate]
+        )
+    }
+
+    static func timeRangeText(start: Date, end: Date) -> String {
+        let day = start.formatted(.dateTime.month(.abbreviated).day())
+        let startTime = start.formatted(date: .omitted, time: .shortened)
+        let endTime = end.formatted(date: .omitted, time: .shortened)
+        return "\(day) · \(startTime)–\(endTime)"
+    }
+
+    /// Presentation-only rewording of the detector's own reason codes. Codes
+    /// without a mapping render as-is (never invent a reason the pipeline did
+    /// not produce — same rule as DetectionReasonCopy).
+    static func reasonText(_ code: String) -> String {
+        if let mapped = reasonCopyByCode[code] { return mapped }
+        return code.replacingOccurrences(of: "_", with: " ")
+    }
+
+    private static let reasonCopyByCode: [String: String] = [
+        "sustained_elevated_hr": "sustained elevated heart rate",
+        "elevated_seconds_below_required": "not enough time at elevated heart rate",
+        "elevated_bout_below_required": "no long enough continuous elevated stretch",
+        "duration_below_10m": "under 10 minutes observed",
+        "observed_duration_below_10m_stream_gaps": "under 10 minutes observed after stream gaps",
+        "detector_not_workout": "heart rate alone did not meet the workout bar"
+    ]
 }
 
 // MARK: - Full history (pushed, pinned-month list)
@@ -701,11 +1103,19 @@ struct AtriaHistoryFullScreen: View {
         return formatter
     }()
 
-    private var monthGroups: [MonthGroup] {
+    private let monthGroups: [MonthGroup]
+
+    init(model: AtriaHistoryModel, onSelect: @escaping (AtriaHistoryDay) -> Void) {
+        self.model = model
+        self.onSelect = onSelect
+        self.monthGroups = Self.makeMonthGroups(days: model.days)
+    }
+
+    private static func makeMonthGroups(days: [AtriaHistoryDay]) -> [MonthGroup] {
         let calendar = Calendar.current
         var order: [String] = []
         var buckets: [String: [AtriaHistoryDay]] = [:]
-        for day in model.days {
+        for day in days {
             let comps = calendar.dateComponents([.year, .month], from: day.date)
             let key = "\(comps.year ?? 0)-\(comps.month ?? 0)"
             if buckets[key] == nil {

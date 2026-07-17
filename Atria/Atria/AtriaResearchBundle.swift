@@ -131,6 +131,20 @@ enum AtriaResearchBundleBuilder {
         let payload: AtriaResearchBundlePayload
     }
 
+    /// Immutable references captured from the main-actor SessionStore before a
+    /// research build. Swift arrays are copy-on-write, so this handoff is O(1):
+    /// expanding every stored HR/RR point happens only after the detached task
+    /// starts. The store never mutates these value snapshots off actor.
+    struct BuildInput: @unchecked Sendable {
+        let manifest: AtriaResearchBundlePayload.Manifest
+        let sessions: [SavedSession]
+        let sleeps: [UserConfirmedSleep]
+        let workouts: [UserConfirmedWorkout]
+        let days: [SavedDailyMetric]
+        let journalAnswers: [AtriaJournalAnswer]
+        let calendar: Calendar
+    }
+
     static func ageBand(yearOfBirth: Int?, now: Date = Date()) -> String {
         guard let yearOfBirth, yearOfBirth > 1900 else { return "unknown" }
         let age = Calendar.current.component(.year, from: now) - yearOfBirth
@@ -151,20 +165,6 @@ enum AtriaResearchBundleBuilder {
         guard AtriaResearchSharing.isOptedIn,
               let pseudonym = AtriaResearchSharing.pseudonym else { return nil }
         let calendar = Calendar.current
-        let sessions = store.sessions
-        var allDates: [Date] = sessions.map { $0.start }
-        allDates.append(contentsOf: store.confirmedSleeps.map { $0.start })
-        allDates.append(contentsOf: store.dailyMetricHistory.map { $0.day })
-        guard let earliest = allDates.min() else { return nil }
-        let epoch0 = calendar.startOfDay(for: earliest)
-
-        func rel(_ date: Date) -> Double {
-            (date.timeIntervalSince(epoch0) * 10).rounded() / 10
-        }
-        func dayIndex(_ date: Date) -> Int {
-            calendar.dateComponents([.day], from: epoch0, to: calendar.startOfDay(for: date)).day ?? 0
-        }
-
         let profile = store.profile
         let manifest = AtriaResearchBundlePayload.Manifest(
             schema: AtriaResearchSharing.schemaVersion,
@@ -174,10 +174,49 @@ enum AtriaResearchBundleBuilder {
             weightBandKg: band(profile.weightKg, width: 5, unit: "kg"),
             heightBandCm: band(profile.heightCm, width: 5, unit: "cm"),
             biologicalSex: profile.biologicalSex.rawValue)
+        store.journalAnswers.loadIfNeeded()
+        let input = BuildInput(
+            manifest: manifest,
+            sessions: store.sessions,
+            sleeps: store.confirmedSleeps,
+            workouts: store.confirmedWorkouts,
+            days: store.dailyMetricHistory,
+            journalAnswers: store.journalAnswers.answers,
+            calendar: calendar
+        )
+
+        // Session history can contain hundreds of thousands of points. The
+        // previous implementation performed the complete nested-array build on
+        // MainActor and detached only JSON encoding, which could freeze the UI
+        // when foreground catch-up started after an app switch.
+        return await Task.detached(priority: .utility) {
+            guard let payload = makePayload(input: input) else { return nil }
+            let bundleDays = payload.days
+            return finishBuild(payload: payload,
+                               pseudonym: pseudonym,
+                               bundleDays: bundleDays)
+        }.value
+    }
+
+    nonisolated static func makePayload(input: BuildInput) -> AtriaResearchBundlePayload? {
+        var allDates: [Date] = input.sessions.map(\.start)
+        allDates.append(contentsOf: input.sleeps.map(\.start))
+        allDates.append(contentsOf: input.days.map(\.day))
+        guard let earliest = allDates.min() else { return nil }
+        let epoch0 = input.calendar.startOfDay(for: earliest)
+
+        func rel(_ date: Date) -> Double {
+            (date.timeIntervalSince(epoch0) * 10).rounded() / 10
+        }
+        func dayIndex(_ date: Date) -> Int {
+            input.calendar.dateComponents([.day],
+                                          from: epoch0,
+                                          to: input.calendar.startOfDay(for: date)).day ?? 0
+        }
 
         var bundleSessions: [AtriaResearchBundlePayload.Session] = []
-        bundleSessions.reserveCapacity(sessions.count)
-        for session in sessions {
+        bundleSessions.reserveCapacity(input.sessions.count)
+        for session in input.sessions {
             var hrPoints: [[Double]] = []
             hrPoints.reserveCapacity(session.points.count)
             for point in session.points {
@@ -185,6 +224,7 @@ enum AtriaResearchBundleBuilder {
                 hrPoints.append([tRel, Double(point.bpm)])
             }
             var rrPoints: [[Double]] = []
+            rrPoints.reserveCapacity(session.rrPoints?.count ?? 0)
             for point in session.rrPoints ?? [] {
                 let tRel: Double = (point.t * 10).rounded() / 10
                 rrPoints.append([tRel, Double(point.ms)])
@@ -198,7 +238,7 @@ enum AtriaResearchBundleBuilder {
                 restingStable: session.restingStable,
                 hrv: session.hrv))
         }
-        let bundleSleeps = store.confirmedSleeps.map { sleep in
+        let bundleSleeps = input.sleeps.map { sleep in
             var stages: [String: Double] = [:]
             for segment in sleep.stageSegments ?? [] {
                 stages[segment.stage.rawValue, default: 0] += segment.end.timeIntervalSince(segment.start)
@@ -209,14 +249,14 @@ enum AtriaResearchBundleBuilder {
                                                     confidence: sleep.confidence,
                                                     stageSeconds: stages)
         }
-        let bundleWorkouts = store.confirmedWorkouts.map { workout in
+        let bundleWorkouts = input.workouts.map { workout in
             AtriaResearchBundlePayload.Workout(startRel: rel(workout.start),
                                                endRel: rel(workout.end),
                                                label: workout.label,
                                                avgHR: workout.avgHR,
                                                peakHR: workout.peakHR)
         }
-        let bundleDays = store.dailyMetricHistory.map { metric in
+        let bundleDays = input.days.map { metric in
             AtriaResearchBundlePayload.Day(dayIndex: dayIndex(metric.day),
                                            recoveryPercent: metric.recoveryPercent,
                                            strain: metric.strain,
@@ -224,8 +264,7 @@ enum AtriaResearchBundleBuilder {
                                            restingHR: metric.restingHR,
                                            hrv: metric.hrv)
         }
-        store.journalAnswers.loadIfNeeded()
-        let bundleJournal = store.journalAnswers.answers.map { answer -> AtriaResearchBundlePayload.JournalAnswer in
+        let bundleJournal = input.journalAnswers.map { answer -> AtriaResearchBundlePayload.JournalAnswer in
             let kind: String
             let value: Double?
             switch answer.value {
@@ -241,16 +280,12 @@ enum AtriaResearchBundleBuilder {
                                                             value: value)
         }
 
-        let payload = AtriaResearchBundlePayload(manifest: manifest,
-                                                 sessions: bundleSessions,
-                                                 sleeps: bundleSleeps,
-                                                 workouts: bundleWorkouts,
-                                                 days: bundleDays,
-                                                 journal: bundleJournal)
-        // Encode + gzip + digest of a multi-MB payload must not block the UI.
-        return await Task.detached(priority: .userInitiated) {
-            finishBuild(payload: payload, pseudonym: pseudonym, bundleDays: bundleDays)
-        }.value
+        return AtriaResearchBundlePayload(manifest: input.manifest,
+                                          sessions: bundleSessions,
+                                          sleeps: bundleSleeps,
+                                          workouts: bundleWorkouts,
+                                          days: bundleDays,
+                                          journal: bundleJournal)
     }
 
     private nonisolated static func finishBuild(payload: AtriaResearchBundlePayload,
@@ -710,7 +745,7 @@ struct AtriaResearchConsentSheet: View {
 /// Settings section: the toggle, the share row, and the receipts line.
 struct AtriaResearchSharingSection: View {
     let buildBundle: () async -> AtriaResearchBundleBuilder.Built?
-    @AppStorage(AtriaResearchSharing.optInKey) private var optedIn = false
+    @AtriaDefault(AtriaResearchSharing.optInKey) private var optedIn = false
     @State private var showConsent = false
     @State private var shareURL: URL?
     @State private var isSendingNow = false
@@ -731,6 +766,7 @@ struct AtriaResearchSharingSection: View {
                 Label("Share anonymously with developers", systemImage: "shippingbox")
             }
             .font(.subheadline)
+            .accessibilityHint(researchSharingAccessibilityHint)
 
             if optedIn {
                 Button {
@@ -777,9 +813,7 @@ struct AtriaResearchSharingSection: View {
         } header: {
             Text("Anonymous research sharing")
         } footer: {
-            Text(optedIn
-                 ? "Uploads nightly during your sleep window. \(scheduleFooter)"
-                 : "On by default at onboarding. Sharing is a gift: an anonymized, date-scrambled copy of your recordings, inspectable before anything leaves this phone. You can decline any time.")
+            Text(researchSharingFooter)
         }
         .onAppear { outboxStats = AtriaResearchUploadQueue.outboxStats() }
         .sheet(isPresented: $showConsent) {
@@ -792,10 +826,17 @@ struct AtriaResearchSharingSection: View {
         }
     }
 
-    private var scheduleFooter: String {
-        AtriaResearchUploadQueue.isEndpointConfigured
-            ? "Identified only by a random code. Turning this off destroys the code — future shares cannot be linked to past ones."
-            : "Endpoint not configured yet — bundles queue on device until a server exists."
+    private var researchSharingFooter: String {
+        guard optedIn else { return "Optional · date-scrambled · inspect before sharing." }
+        return AtriaResearchUploadQueue.isEndpointConfigured
+            ? "Nightly · random ID · turn off anytime."
+            : "No server yet · bundles stay on this phone."
+    }
+
+    private var researchSharingAccessibilityHint: String {
+        optedIn
+            ? "Uploads nightly during your sleep window using a random code. Turning sharing off destroys that code."
+            : "Shares anonymized, date-scrambled recordings only after you inspect and consent."
     }
 
     private var outboxSummary: String {
@@ -836,4 +877,3 @@ private struct AtriaResearchShareSheetHost: View {
         .presentationDetents([.medium])
     }
 }
-

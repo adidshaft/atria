@@ -12,6 +12,14 @@ enum AtriaSleepWakeResearch {
         let bpm: Int
     }
 
+    /// Test-visible accounting for the sparse-data fallback. `sampleVisits`
+    /// counts values consumed by the fallback's statistics, making its
+    /// range-bounded work shape verifiable without timing-sensitive tests.
+    struct FallbackStageDiagnostics: Equatable {
+        let segments: [SleepStageSegment]
+        let sampleVisits: Int
+    }
+
     private struct EpochFeature: Equatable {
         let start: Date
         let end: Date
@@ -128,14 +136,16 @@ enum AtriaSleepWakeResearch {
             let epochStart = start.addingTimeInterval(Double(index) * epoch)
             let epochEnd = index == epochCount - 1 ? end : min(end, epochStart.addingTimeInterval(epoch))
             let center = epochStart.addingTimeInterval(epochEnd.timeIntervalSince(epochStart) / 2)
-            let epochSamples = samples.filter { $0.t >= epochStart && $0.t <= epochEnd }
-            let nearby = samples.filter { abs($0.t.timeIntervalSince(center)) <= 5 * 60 }
-            let source = epochSamples.isEmpty ? nearby : epochSamples
-            guard !source.isEmpty else { return nil }
-            let averageHR = average(source.map { Double($0.bpm) }) ?? 0
+            let epochRange = sampleRange(in: samples, from: epochStart, through: epochEnd)
+            let nearbyRange = sampleRange(in: samples,
+                                          from: center.addingTimeInterval(-5 * 60),
+                                          through: center.addingTimeInterval(5 * 60))
+            let sourceRange = epochRange.isEmpty ? nearbyRange : epochRange
+            guard !sourceRange.isEmpty else { return nil }
+            let averageHR = averageHeartRate(in: samples, range: sourceRange) ?? 0
             let shortSmoothHR = gaussianSmoothedHR(samples: samples, center: center, sigma: 120) ?? averageHR
             let longSmoothHR = gaussianSmoothedHR(samples: samples, center: center, sigma: 600) ?? shortSmoothHR
-            let variability = standardDeviation(nearby.map { Double($0.bpm) })
+            let variability = heartRateStandardDeviation(in: samples, range: nearbyRange)
             let progress = epochStart.timeIntervalSince(start) / duration
             let motionStillnessPrior = motionValidated ? 1.0 : 0.55
             return EpochFeature(start: epochStart,
@@ -181,7 +191,8 @@ enum AtriaSleepWakeResearch {
                                             end: Date,
                                             restingHR: Int,
                                             isNap: Bool,
-                                            motionValidated: Bool) -> [SleepStageSegment] {
+                                            motionValidated: Bool,
+                                            sampleVisits: inout Int) -> [SleepStageSegment] {
         let duration = end.timeIntervalSince(start)
         guard duration >= 20 * 60, !samples.isEmpty else { return [] }
         let epoch: TimeInterval = isNap ? 5 * 60 : 10 * 60
@@ -191,10 +202,13 @@ enum AtriaSleepWakeResearch {
             let epochEnd = index == epochCount - 1 ? end : min(end, epochStart.addingTimeInterval(epoch))
             let center = epochStart.addingTimeInterval(epochEnd.timeIntervalSince(epochStart) / 2)
             let window: TimeInterval = isNap ? 12 * 60 : 20 * 60
-            let nearby = samples.filter { abs($0.t.timeIntervalSince(center)) <= window }
-            guard !nearby.isEmpty else { return nil }
-            let averageHR = average(nearby.map { Double($0.bpm) }) ?? 0
-            let variability = standardDeviation(nearby.map { Double($0.bpm) })
+            let nearbyRange = sampleRange(in: samples,
+                                          from: center.addingTimeInterval(-window),
+                                          through: center.addingTimeInterval(window))
+            guard !nearbyRange.isEmpty else { return nil }
+            sampleVisits += nearbyRange.count * 3
+            let averageHR = averageHeartRate(in: samples, range: nearbyRange) ?? 0
+            let variability = heartRateStandardDeviation(in: samples, range: nearbyRange)
             let progress = epochStart.timeIntervalSince(start) / max(1, duration)
             let feature = EpochFeature(start: epochStart,
                                        end: epochEnd,
@@ -220,25 +234,43 @@ enum AtriaSleepWakeResearch {
                                               restingHR: Int,
                                               isNap: Bool,
                                               motionValidated: Bool) -> [SleepStageSegment] {
+        fallbackStageDiagnostics(samples: samples,
+                                 start: start,
+                                 end: end,
+                                 restingHR: restingHR,
+                                 isNap: isNap,
+                                 motionValidated: motionValidated).segments
+    }
+
+    static func fallbackStageDiagnostics(samples: [HeartSample],
+                                         start: Date,
+                                         end: Date,
+                                         restingHR: Int,
+                                         isNap: Bool,
+                                         motionValidated: Bool) -> FallbackStageDiagnostics {
+        var sampleVisits = 0
         let coarse = coarseStageSegments(samples: samples,
                                          start: start,
                                          end: end,
                                          restingHR: restingHR,
                                          isNap: isNap,
-                                         motionValidated: motionValidated)
+                                         motionValidated: motionValidated,
+                                         sampleVisits: &sampleVisits)
         let duration = end.timeIntervalSince(start)
         let covered = coarse.reduce(0) { $0 + max(0, $1.duration) }
         let nonAwake = coarse.reduce(0) { $0 + ($1.stage == .awake ? 0 : max(0, $1.duration)) }
         guard covered < duration * 0.85 || (!motionValidated && nonAwake <= 0) else {
-            return coarse
+            return FallbackStageDiagnostics(segments: coarse, sampleVisits: sampleVisits)
         }
         let full = fullCoverageHRStageSegments(samples: samples,
                                                start: start,
                                                end: end,
                                                restingHR: restingHR,
                                                isNap: isNap,
-                                               motionValidated: motionValidated)
-        return full.isEmpty ? coarse : full
+                                               motionValidated: motionValidated,
+                                               sampleVisits: &sampleVisits)
+        return FallbackStageDiagnostics(segments: full.isEmpty ? coarse : full,
+                                        sampleVisits: sampleVisits)
     }
 
     private static func fullCoverageHRStageSegments(samples: [HeartSample],
@@ -246,25 +278,36 @@ enum AtriaSleepWakeResearch {
                                                     end: Date,
                                                     restingHR: Int,
                                                     isNap: Bool,
-                                                    motionValidated: Bool) -> [SleepStageSegment] {
+                                                    motionValidated: Bool,
+                                                    sampleVisits: inout Int) -> [SleepStageSegment] {
         let duration = end.timeIntervalSince(start)
         guard duration >= 20 * 60, !samples.isEmpty else { return [] }
         let epoch: TimeInterval = isNap ? 5 * 60 : 10 * 60
         let epochCount = max(1, Int(ceil(duration / epoch)))
-        let allValues = samples.map { Double($0.bpm) }
-        let globalAverage = average(allValues) ?? Double(restingHR)
-        let globalVariability = standardDeviation(allValues)
+        let allRange = samples.indices
+        sampleVisits += allRange.count * 3
+        let globalAverage = averageHeartRate(in: samples, range: allRange) ?? Double(restingHR)
+        let globalVariability = heartRateStandardDeviation(in: samples, range: allRange)
         let staged: [(start: Date, end: Date, stage: SleepStageKind)] = (0..<epochCount).map { index in
             let epochStart = start.addingTimeInterval(Double(index) * epoch)
             let epochEnd = index == epochCount - 1 ? end : min(end, epochStart.addingTimeInterval(epoch))
             let center = epochStart.addingTimeInterval(epochEnd.timeIntervalSince(epochStart) / 2)
-            let direct = samples.filter { $0.t >= epochStart && $0.t <= epochEnd }
-            let nearby = direct.isEmpty
-                ? samples.filter { abs($0.t.timeIntervalSince(center)) <= (isNap ? 20 * 60 : 45 * 60) }
-                : direct
-            let source = nearby.isEmpty ? samples : nearby
-            let averageHR = average(source.map { Double($0.bpm) }) ?? globalAverage
-            let variability = nearby.isEmpty ? globalVariability : standardDeviation(source.map { Double($0.bpm) })
+            let directRange = sampleRange(in: samples, from: epochStart, through: epochEnd)
+            let nearbyRange = directRange.isEmpty
+                ? sampleRange(in: samples,
+                              from: center.addingTimeInterval(-(isNap ? 20 * 60 : 45 * 60)),
+                              through: center.addingTimeInterval(isNap ? 20 * 60 : 45 * 60))
+                : directRange
+            let sourceRange = nearbyRange.isEmpty ? allRange : nearbyRange
+            sampleVisits += sourceRange.count
+            let averageHR = averageHeartRate(in: samples, range: sourceRange) ?? globalAverage
+            let variability: Double
+            if nearbyRange.isEmpty {
+                variability = globalVariability
+            } else {
+                sampleVisits += sourceRange.count * 2
+                variability = heartRateStandardDeviation(in: samples, range: sourceRange)
+            }
             let progress = epochStart.timeIntervalSince(start) / max(1, duration)
             let stage = hrOnlyStage(averageHR: averageHR,
                                     variability: variability,
@@ -318,17 +361,71 @@ enum AtriaSleepWakeResearch {
                                            center: Date,
                                            sigma: TimeInterval) -> Double? {
         guard sigma > 0 else { return nil }
+        let radius = sigma * 3
+        let range = sampleRange(in: samples,
+                                from: center.addingTimeInterval(-radius),
+                                through: center.addingTimeInterval(radius))
+        guard !range.isEmpty else { return nil }
         var weighted = 0.0
         var weights = 0.0
-        for sample in samples {
+        for index in range {
+            let sample = samples[index]
             let distance = sample.t.timeIntervalSince(center)
-            guard abs(distance) <= sigma * 3 else { continue }
             let weight = exp(-0.5 * pow(distance / sigma, 2))
             weighted += Double(sample.bpm) * weight
             weights += weight
         }
         guard weights > 0 else { return nil }
         return weighted / weights
+    }
+
+    private static func sampleRange(in samples: [HeartSample],
+                                    from start: Date,
+                                    through end: Date) -> Range<Int> {
+        var lowerLow = 0
+        var lowerHigh = samples.count
+        while lowerLow < lowerHigh {
+            let middle = (lowerLow + lowerHigh) / 2
+            if samples[middle].t < start {
+                lowerLow = middle + 1
+            } else {
+                lowerHigh = middle
+            }
+        }
+
+        var upperLow = lowerLow
+        var upperHigh = samples.count
+        while upperLow < upperHigh {
+            let middle = (upperLow + upperHigh) / 2
+            if samples[middle].t <= end {
+                upperLow = middle + 1
+            } else {
+                upperHigh = middle
+            }
+        }
+        return lowerLow..<upperLow
+    }
+
+    private static func averageHeartRate(in samples: [HeartSample],
+                                         range: Range<Int>) -> Double? {
+        guard !range.isEmpty else { return nil }
+        var total = 0.0
+        for index in range {
+            total += Double(samples[index].bpm)
+        }
+        return total / Double(range.count)
+    }
+
+    private static func heartRateStandardDeviation(in samples: [HeartSample],
+                                                   range: Range<Int>) -> Double {
+        guard range.count >= 2,
+              let mean = averageHeartRate(in: samples, range: range) else { return 0 }
+        var squaredDeltaTotal = 0.0
+        for index in range {
+            let delta = Double(samples[index].bpm) - mean
+            squaredDeltaTotal += delta * delta
+        }
+        return sqrt(squaredDeltaTotal / Double(range.count))
     }
 
     private static func average(_ values: [Double]) -> Double? {

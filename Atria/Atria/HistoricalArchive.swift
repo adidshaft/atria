@@ -4,6 +4,12 @@ enum HistoricalArchive {
     static let didUpdateNotification = Notification.Name("AtriaHistoricalArchiveDidUpdate")
     static let schema = 3
     static let layoutVersion = "strap4_v24_hr_rr_gravity_clock_diagnostic"
+    // Empty until a generation-specific fixed layout passes an independent
+    // HR/RR reference validation. Diagnostic layouts must never feed metrics.
+    static let validatedMetricLayoutVersions: Set<String> = []
+    static var hasValidatedMetricLayout: Bool {
+        !validatedMetricLayoutVersions.isEmpty
+    }
     static let relativePath = "Documents/atria-historical/historical-archive.jsonl"
     private static let diagnosticsIndexFilename = "historical-archive.diagnostics.json"
     private static let rotationManifestFilename = "historical-archive.manifest.json"
@@ -12,7 +18,15 @@ enum HistoricalArchive {
     private static let segmentsDirectoryName = "segments"
     private static let promotionLock = NSLock()
     private static let diagnosticsIndexLock = NSLock()
+    private static let recentGravityCacheLock = NSLock()
+#if DEBUG
+    private static let fullGravityInstrumentationLock = NSLock()
+    private static var fullGravityLoadCount = 0
+#endif
     private static let archiveDateFormatter = ISO8601DateFormatter()
+    private static var recentGravityCache: RecentGravityCache?
+    private static var recentGravityLoadInFlight = false
+    private static var recentGravityLoadGeneration: UInt64 = 0
 
     struct Diagnostics {
         let exists: Bool
@@ -85,19 +99,39 @@ enum HistoricalArchive {
         let lowMotionReady: Bool
     }
 
+    struct MotionArchiveSnapshot {
+        fileprivate let samples: [GravitySample]
+
+        func diagnostics(start: Date, end: Date) -> MotionWindowDiagnostics {
+            HistoricalArchive.motionWindowDiagnostics(start: start,
+                                                       end: end,
+                                                       records: samples)
+        }
+    }
+
     struct MotionFeatureSummary: Equatable {
         let stillnessRatio: Double
         let movementIntensity: Double
         let rows: Int
         let validatedRows: Int
+        let coverageSeconds: Int
+        let maximumGapSeconds: Int
+        let firstUnix: Int
+        let lastUnix: Int
         let reason: String
 
         var lowMotionReady: Bool {
-            stillnessRatio >= 0.72 && movementIntensity <= 0.18
+            let validatedRatio = rows > 0 ? Double(validatedRows) / Double(rows) : 0
+            return validatedRows >= 300
+                && validatedRatio >= 0.95
+                && coverageSeconds >= 30 * 60
+                && maximumGapSeconds <= 5 * 60
+                && stillnessRatio >= 0.72
+                && movementIntensity <= 0.18
         }
     }
 
-    struct HeartRatePoint: Equatable {
+    struct HeartRatePoint: Equatable, Sendable {
         let t: Date
         let bpm: Int
     }
@@ -185,6 +219,20 @@ enum HistoricalArchive {
                                      metricUsable: false,
                                      usabilityReason: reason)
         return try appendJSONLine(frame)
+    }
+
+    /// Establishes the durability boundary used by the strap-history ACK.
+    /// Individual frames are appended serially; synchronizing once at the end
+    /// of a transmitted batch keeps the hot path cheap while ensuring the
+    /// strap is never told to trim data that exists only in the OS write cache.
+    static func synchronizeDurableStorage() throws {
+        promotionLock.lock()
+        defer { promotionLock.unlock() }
+        let url = try writableFileURL()
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.synchronize()
     }
 
     static func diagnostics() -> Diagnostics {
@@ -318,11 +366,10 @@ enum HistoricalArchive {
                 lineBuffer.removeSubrange(..<newlineRange.upperBound)
                 guard !line.isEmpty else { continue }
                 rowsScanned += 1
-                if line.contains("\"metricUsable\":true") || line.contains("\"metricUsable\": true") {
-                    metricRows += 1
-                }
-                if line.contains("\"currentSessionUsable\":true") || line.contains("\"currentSessionUsable\": true") {
-                    currentRows += 1
+                if let data = line.data(using: .utf8),
+                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    if metricUsable(object: object) { metricRows += 1 }
+                    if object["currentSessionUsable"] as? Bool == true { currentRows += 1 }
                 }
                 if metricRows > 0 {
                     return MetricReadinessProbe(ready: true,
@@ -336,11 +383,10 @@ enum HistoricalArchive {
 
         if rowsScanned < maxRows, !lineBuffer.isEmpty {
             rowsScanned += 1
-            if lineBuffer.contains("\"metricUsable\":true") || lineBuffer.contains("\"metricUsable\": true") {
-                metricRows += 1
-            }
-            if lineBuffer.contains("\"currentSessionUsable\":true") || lineBuffer.contains("\"currentSessionUsable\": true") {
-                currentRows += 1
+            if let data = lineBuffer.data(using: .utf8),
+               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if metricUsable(object: object) { metricRows += 1 }
+                if object["currentSessionUsable"] as? Bool == true { currentRows += 1 }
             }
         }
 
@@ -372,7 +418,7 @@ enum HistoricalArchive {
                     continue
                 }
                 if object["metricUsable"] as? Bool != true,
-                   metricUsable(object: object) {
+                   metricEvidenceValidated(object: object) {
                     object["metricUsable"] = true
                     object["usabilityReason"] = "metric_ready_clock_gravity_rr"
                     updated += 1
@@ -411,12 +457,22 @@ enum HistoricalArchive {
         return directRRCount > 0 || candidateRRCount >= 2
     }
 
+    static func metricLayoutValidated(_ layoutVersion: String) -> Bool {
+        validatedMetricLayoutVersions.contains(layoutVersion)
+    }
+
     private static func metricUsable(object: [String: Any]) -> Bool {
+        guard object["metricUsable"] as? Bool == true else { return false }
+        return metricEvidenceValidated(object: object)
+    }
+
+    private static func metricEvidenceValidated(object: [String: Any]) -> Bool {
+        guard let layoutVersion = object["layoutVersion"] as? String,
+              metricLayoutValidated(layoutVersion) else { return false }
         guard object["clockCorrectionStatus"] as? String == "clock_ref_present" else { return false }
         guard object["gravityValidated"] as? Bool == true else { return false }
         return rrValues(object["whoofRR19"]).contains { (300...2000).contains($0) }
             || rrValues(object["kRR64"]).contains { (300...2000).contains($0) }
-            || ((object["candidateRR"] as? [Any])?.count ?? 0) >= 2
     }
 
     private static func rrValues(_ value: Any?) -> [Int] {
@@ -429,12 +485,40 @@ enum HistoricalArchive {
     }
 
     static func motionWindowDiagnostics(start: Date, end: Date) -> MotionWindowDiagnostics {
+        guard !Thread.isMainThread else {
+            return emptyMotionWindow(status: "learning", reason: "full_archive_requires_background")
+        }
+        return makeMotionArchiveSnapshot().diagnostics(start: start, end: end)
+    }
+
+    static func makeMotionArchiveSnapshot() -> MotionArchiveSnapshot {
+        precondition(!Thread.isMainThread, "Full historical motion decoding must run off the main thread")
+        return MotionArchiveSnapshot(samples: loadGravitySamples())
+    }
+
+#if DEBUG
+    static func resetFullGravityLoadCountForTesting() {
+        fullGravityInstrumentationLock.lock()
+        fullGravityLoadCount = 0
+        fullGravityInstrumentationLock.unlock()
+    }
+
+    static var fullGravityLoadCountForTesting: Int {
+        fullGravityInstrumentationLock.lock()
+        let count = fullGravityLoadCount
+        fullGravityInstrumentationLock.unlock()
+        return count
+    }
+#endif
+
+    private static func motionWindowDiagnostics(start: Date,
+                                                end: Date,
+                                                records: [GravitySample]) -> MotionWindowDiagnostics {
         guard end > start else {
             return emptyMotionWindow(status: "learning", reason: "invalid_window")
         }
         let windowStart = start.timeIntervalSince1970
         let windowEnd = end.timeIntervalSince1970
-        let records = loadGravitySamples()
         guard !records.isEmpty else {
             return emptyMotionWindow(status: "learning", reason: "no_historical_gravity")
         }
@@ -544,10 +628,11 @@ enum HistoricalArchive {
                 return $0.sequence < $1.sequence
             }
         guard overlapping.count >= 30 else { return nil }
+        let validated = overlapping.filter(\.validated)
         var stillRows = 0
         var deltas: [Double] = []
         var previous: GravitySample?
-        for sample in overlapping {
+        for sample in validated {
             let delta: Double
             if let previous {
                 let dx = sample.x - previous.x
@@ -558,36 +643,62 @@ enum HistoricalArchive {
             } else {
                 delta = 0
             }
-            if sample.validated && delta <= 0.05 {
+            if delta <= 0.05 {
                 stillRows += 1
             }
             previous = sample
         }
         let movementIntensity = mean(deltas) ?? 0
-        return MotionFeatureSummary(stillnessRatio: Double(stillRows) / Double(overlapping.count),
+        let timestamps = validated.map(\.timestamp)
+        let gaps = zip(timestamps, timestamps.dropFirst()).map { max(0, $1 - $0) }
+        let coverage = coverageSeconds(for: timestamps)
+        let maximumGap = Int((gaps.max() ?? 0).rounded())
+        let validatedRatio = Double(validated.count) / Double(overlapping.count)
+        let ready = validated.count >= 300
+            && validatedRatio >= 0.95
+            && coverage >= 30 * 60
+            && maximumGap <= 5 * 60
+            && Double(stillRows) / Double(max(validated.count, 1)) >= 0.72
+            && movementIntensity <= 0.18
+        let reason: String
+        if validated.count < 300 || coverage < 30 * 60 {
+            reason = "bounded_recent_insufficient_overlap_coverage"
+        } else if validatedRatio < 0.95 {
+            reason = "bounded_recent_unvalidated_rows"
+        } else if maximumGap > 5 * 60 {
+            reason = "bounded_recent_internal_gap"
+        } else if !ready {
+            reason = "bounded_recent_motion_high"
+        } else {
+            reason = "bounded_recent_timestamp_aligned_low_motion"
+        }
+        return MotionFeatureSummary(stillnessRatio: Double(stillRows) / Double(max(validated.count, 1)),
                                     movementIntensity: movementIntensity,
                                     rows: overlapping.count,
-                                    validatedRows: overlapping.filter(\.validated).count,
-                                    reason: "historical_gravity_overlap")
+                                    validatedRows: validated.count,
+                                    coverageSeconds: coverage,
+                                    maximumGapSeconds: maximumGap,
+                                    firstUnix: Int((timestamps.first ?? 0).rounded()),
+                                    lastUnix: Int((timestamps.last ?? 0).rounded()),
+                                    reason: reason)
     }
 
     static func boundedMotionWindowDiagnostics(start: Date, end: Date) -> MotionWindowDiagnostics {
         guard let summary = motionFeatureSummary(start: start, end: end) else {
             return emptyMotionWindow(status: "missing", reason: "bounded_recent_no_overlap")
         }
-        let coverageSeconds = max(0, Int(end.timeIntervalSince(start).rounded()))
         return MotionWindowDiagnostics(status: summary.lowMotionReady ? "ready" : "insufficient_motion",
                                        reason: summary.reason,
                                        rows: summary.rows,
                                        validatedRows: summary.validatedRows,
-                                       coverageSeconds: coverageSeconds,
-                                       spanSeconds: coverageSeconds,
+                                       coverageSeconds: summary.coverageSeconds,
+                                       spanSeconds: max(0, Int(end.timeIntervalSince(start).rounded())),
                                        meanVectorDelta: summary.movementIntensity,
                                        p95VectorDelta: nil,
                                        magnitudeMean: nil,
                                        magnitudeStdDev: nil,
-                                       archiveFirstUnix: 0,
-                                       archiveLastUnix: 0,
+                                       archiveFirstUnix: summary.firstUnix,
+                                       archiveLastUnix: summary.lastUnix,
                                        nearestSeparationSeconds: 0,
                                        lowMotionReady: summary.lowMotionReady)
     }
@@ -909,7 +1020,7 @@ enum HistoricalArchive {
                 index.undecodableRows += 1
             }
         }
-        if object["metricUsable"] as? Bool == true || metricUsable(object: object) {
+        if metricUsable(object: object) {
             index.metricUsableRows += 1
         }
         if object["currentSessionUsable"] as? Bool == true || currentSessionUsable(object: object) {
@@ -977,7 +1088,7 @@ enum HistoricalArchive {
         }
     }
 
-    private struct GravitySample {
+    fileprivate struct GravitySample {
         let timestamp: TimeInterval
         let sequence: Int
         let x: Double
@@ -987,6 +1098,13 @@ enum HistoricalArchive {
         let validated: Bool
     }
 
+    private struct RecentGravityCache {
+        let loadedAt: Date
+        let targetBytes: UInt64
+        let samples: [GravitySample]
+        let latestTimestamp: TimeInterval?
+    }
+
     private struct GravityRecord {
         let record: Record
         let unix: UInt32
@@ -994,6 +1112,11 @@ enum HistoricalArchive {
     }
 
     private static func loadGravitySamples() -> [GravitySample] {
+#if DEBUG
+        fullGravityInstrumentationLock.lock()
+        fullGravityLoadCount += 1
+        fullGravityInstrumentationLock.unlock()
+#endif
         let url = readableFileURL
         guard FileManager.default.fileExists(atPath: url.path),
               let content = try? String(contentsOf: url, encoding: .utf8) else { return [] }
@@ -1005,6 +1128,80 @@ enum HistoricalArchive {
         let spanSeconds = max(1, end.timeIntervalSince(start))
         let estimatedRows = Int((spanSeconds / 2.0).rounded(.up)) + 720
         let targetBytes = UInt64(max(4_194_304, min(33_554_432, estimatedRows * 1_024)))
+
+        recentGravityCacheLock.lock()
+        if let cache = recentGravityCache,
+           cache.targetBytes >= targetBytes,
+           recentGravityCacheCovers(cache, end: end) {
+            let samples = cache.samples
+            recentGravityCacheLock.unlock()
+            return samples
+        }
+        if recentGravityLoadInFlight {
+            recentGravityCacheLock.unlock()
+            return []
+        }
+        recentGravityLoadInFlight = true
+        let loadGeneration = recentGravityLoadGeneration
+        recentGravityCacheLock.unlock()
+
+        // Never decode archive JSON from a UI update. Main-thread callers fail
+        // closed for this pass while a single utility task prepares the cache.
+        if Thread.isMainThread {
+            DispatchQueue.global(qos: .utility).async {
+                let samples = loadRecentGravitySamplesUncached(targetBytes: targetBytes)
+                publishRecentGravityCache(samples: samples,
+                                          targetBytes: targetBytes,
+                                          generation: loadGeneration)
+            }
+            return []
+        }
+
+        let samples = loadRecentGravitySamplesUncached(targetBytes: targetBytes)
+        publishRecentGravityCache(samples: samples,
+                                  targetBytes: targetBytes,
+                                  generation: loadGeneration)
+        return samples
+    }
+
+    private static func recentGravityCacheCovers(_ cache: RecentGravityCache, end: Date) -> Bool {
+        if cache.samples.isEmpty {
+            return Date().timeIntervalSince(cache.loadedAt) < 60
+        }
+        guard let latestTimestamp = cache.latestTimestamp else { return false }
+        // A small tolerance covers the normal archive write/clock cadence. A
+        // newer live window triggers a refresh and remains unvalidated until it
+        // lands, rather than trusting stale motion evidence.
+        return latestTimestamp >= end.timeIntervalSince1970 - 120
+    }
+
+    private static func publishRecentGravityCache(samples: [GravitySample],
+                                                  targetBytes: UInt64,
+                                                  generation: UInt64) {
+        recentGravityCacheLock.lock()
+        guard generation == recentGravityLoadGeneration else {
+            recentGravityCacheLock.unlock()
+            return
+        }
+        recentGravityCache = RecentGravityCache(loadedAt: Date(),
+                                                targetBytes: targetBytes,
+                                                samples: samples,
+                                                latestTimestamp: samples.last?.timestamp)
+        recentGravityLoadInFlight = false
+        recentGravityCacheLock.unlock()
+    }
+
+#if DEBUG
+    static func resetRecentGravityCacheForTesting() {
+        recentGravityCacheLock.lock()
+        recentGravityLoadGeneration &+= 1
+        recentGravityCache = nil
+        recentGravityLoadInFlight = false
+        recentGravityCacheLock.unlock()
+    }
+#endif
+
+    private static func loadRecentGravitySamplesUncached(targetBytes: UInt64) -> [GravitySample] {
         var samples: [GravitySample] = []
         for url in recentReadableFileURLs().reversed() {
             guard let content = tailContent(from: url, targetBytes: targetBytes) else { continue }
@@ -1082,7 +1279,7 @@ enum HistoricalArchive {
             guard !line.isEmpty,
                   let data = line.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  object["metricUsable"] as? Bool == true,
+                  metricUsable(object: object),
                   let bpmNumber = object["whoofHR17"] as? NSNumber else { continue }
             let bpm = bpmNumber.intValue
             guard (35...240).contains(bpm) else { continue }
@@ -1193,7 +1390,7 @@ enum HistoricalArchive {
         guard !line.isEmpty,
               let data = line.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object["metricUsable"] as? Bool == true,
+              metricUsable(object: object),
               let bpmNumber = object["whoofHR17"] as? NSNumber else { return nil }
         let bpm = bpmNumber.intValue
         guard (35...240).contains(bpm) else { return nil }

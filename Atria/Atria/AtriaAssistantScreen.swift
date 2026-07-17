@@ -10,14 +10,13 @@ import SwiftUI
 /// 2. The existing provider-backed coach card (off by default, local/cloud
 ///    opt-in with fabrication-flag auditing) for free-form summaries.
 struct AtriaAssistantScreen: View {
-    @ObservedObject var store: SessionStore
+    let store: SessionStore
     let context: AtriaCoachContext
     let coachPayload: AtriaCoachPayload?
     let aiCoachSettings: AtriaAICoachSettings
     let aiCoachHasAPIKey: Bool
-    let onAICoachSettingsChange: (AtriaAICoachSettings) -> Void
-    let onSaveAICoachAPIKey: (String) -> Void
-    let onDeleteAICoachAPIKey: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @AtriaDefault("atria.sleepPlanner.goal") private var plannerGoalRaw: String = AtriaSleepPlannerGoal.peak.rawValue
     @AtriaDefault(AtriaWakeAlarmStore.wakeByMinutesKey) private var wakeByMinutes: Int = AtriaWakeAlarmPlan.defaultPlan.wakeByMinutes
@@ -32,20 +31,21 @@ struct AtriaAssistantScreen: View {
     private struct Prompt: Identifiable {
         let id: String
         let question: String
+        let compactTitle: String
     }
 
     @State private var exchanges: [Exchange] = []
 
     private static let prompts: [Prompt] = [
-        Prompt(id: "recovery", question: "Why is my recovery where it is?"),
-        Prompt(id: "sleep", question: "How much sleep do I need tonight?"),
-        Prompt(id: "typical", question: "What's typical for me?"),
-        Prompt(id: "behaviors", question: "What's been moving my recovery?"),
-        Prompt(id: "week", question: "How was my past week?"),
+        Prompt(id: "recovery", question: "Why is my recovery where it is?", compactTitle: "My recovery"),
+        Prompt(id: "sleep", question: "How much sleep do I need tonight?", compactTitle: "Tonight's sleep"),
+        Prompt(id: "typical", question: "What's typical for me?", compactTitle: "My baseline"),
+        Prompt(id: "behaviors", question: "What's been moving my recovery?", compactTitle: "Recovery drivers"),
+        Prompt(id: "week", question: "How was my past week?", compactTitle: "Past week"),
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             introBubble
 
             ForEach(exchanges) { exchange in
@@ -54,23 +54,15 @@ struct AtriaAssistantScreen: View {
 
             promptChips
 
-            Divider()
-                .padding(.vertical, 4)
-
-            Text("FREE-FORM (OPTIONAL)")
-                .font(.caption2.weight(.black))
-                .foregroundStyle(.tertiary)
-                .kerning(0.8)
-            AtriaAICoachCard(context: context,
-                             preparedPayload: coachPayload,
-                             settings: aiCoachSettings,
-                             hasAPIKey: aiCoachHasAPIKey,
-                             onSettingsChange: onAICoachSettingsChange,
-                             onSaveAPIKey: onSaveAICoachAPIKey,
-                             onDeleteAPIKey: onDeleteAICoachAPIKey)
+            if aiCoachSettings.mode != .off {
+                AtriaAICoachCard(context: context,
+                                 preparedPayload: coachPayload,
+                                 settings: aiCoachSettings,
+                                 hasAPIKey: aiCoachHasAPIKey)
+            }
         }
         .padding(16)
-        .animation(.snappy(duration: 0.25), value: exchanges)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: exchanges)
     }
 
     #if DEBUG
@@ -78,23 +70,21 @@ struct AtriaAssistantScreen: View {
     /// without going through a tap. Lets unit tests lock down the honesty
     /// guarantee that every answer fails closed when the data isn't ready.
     func debugAnswer(promptID: String) -> (answer: String, provenance: String) {
-        let exchange = answer(for: Prompt(id: promptID, question: ""))
+        let exchange = answer(for: Prompt(id: promptID, question: "", compactTitle: ""))
         return (exchange.answer, exchange.provenance)
     }
     #endif
 
     private var introBubble: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Ask about your data")
+        Label {
+            Text("Ask Atria")
                 .font(.headline.weight(.bold))
-            Text("These answers come straight from your own recorded data on this phone \u{2014} the same math behind every screen, nothing generated.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: "lock.shield.fill")
+                .foregroundStyle(.cyan)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .atriaInsetCard(tint: .cyan)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Quick answers use on-device data and Atria calculations, not generated text.")
     }
 
     private func exchangeBubbles(_ exchange: Exchange) -> some View {
@@ -112,6 +102,7 @@ struct AtriaAssistantScreen: View {
                 Text(exchange.provenance)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+                    .accessibilityLabel("Source: \(exchange.provenance)")
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -121,27 +112,39 @@ struct AtriaAssistantScreen: View {
     }
 
     private var promptChips: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        LazyVGrid(columns: promptColumns,
+                  alignment: .leading,
+                  spacing: 8) {
             ForEach(Self.prompts.filter { prompt in !exchanges.contains { $0.question == prompt.question } }) { prompt in
                 Button {
                     exchanges.append(answer(for: prompt))
                 } label: {
-                    HStack {
-                        Text(prompt.question)
+                    HStack(spacing: 8) {
+                        Text(prompt.compactTitle)
                             .font(.subheadline.weight(.semibold))
-                        Spacer(minLength: 8)
+                            .multilineTextAlignment(.leading)
+                            .lineLimit(2)
+                        Spacer(minLength: 0)
                         Image(systemName: "arrow.up.circle.fill")
                             .foregroundStyle(.tint)
                     }
-                    .padding(.horizontal, 14)
-                    .frame(minHeight: 44)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
                     .background(Color(uiColor: .secondarySystemGroupedBackground),
-                                in: Capsule(style: .continuous))
-                    .contentShape(Capsule())
+                                in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(prompt.question)
+                .accessibilityHint("Shows an answer from your recorded data.")
             }
         }
+    }
+
+    private var promptColumns: [GridItem] {
+        let column = GridItem(.flexible(minimum: 0), spacing: 8, alignment: .topLeading)
+        return dynamicTypeSize.isAccessibilitySize ? [column] : [column, column]
     }
 
     // MARK: deterministic answers
@@ -166,15 +169,15 @@ struct AtriaAssistantScreen: View {
             ? "Your recovery is still learning \u{2014} it needs overnight baselines before it can score a morning."
             : "Recovery is \(context.recoveryText). \(headline). Day strain so far is \(String(format: "%.1f", context.strain)) and HRV reads \(context.hrvText)."
         return Exchange(question: prompt.question, answer: answer,
-                        provenance: "From today's recovery estimate and coach guidance.")
+                        provenance: "Today's recovery and coach guidance.")
     }
 
     private func sleepAnswer(_ prompt: Prompt) -> Exchange {
         let snapshot = store.sleepHistorySnapshot
-        guard let latest = snapshot.latest else {
+        guard let latest = snapshot.latestMainSleep else {
             return Exchange(question: prompt.question,
                             answer: "No confirmed nights yet \u{2014} once Atria has a night of sleep, it can plan tonight.",
-                            provenance: "Sleep planner (needs at least one confirmed night).")
+                            provenance: "Sleep planner · awaiting a confirmed night.")
         }
         let baseNeed = SessionStore.configuredSleepBaseNeedHours()
         let need = snapshot.sleepNeedHours(for: latest, baseNeedHours: baseNeed, yesterdayStrain: nil)
@@ -183,7 +186,7 @@ struct AtriaAssistantScreen: View {
                                           nightEfficiencies: snapshot.nights.filter(\.confirmed).compactMap(\.sleepEfficiency))
         return Exchange(question: prompt.question,
                         answer: "Tonight's need is about \(AtriaMetricFormat.sleepHours(need)). For your \(goal.title) goal, aim to be in bed by \(plan.inBedByText) to get \(AtriaMetricFormat.sleepHours(plan.targetSleepHours)) asleep before your \(String(format: "%d:%02d", wakeByMinutes / 60, wakeByMinutes % 60)) wake-by time.",
-                        provenance: "Sleep planner: your need ledger, wake alarm, and \(plan.efficiencyIsDefault ? "a typical-population efficiency (still learning yours)" : "your own typical efficiency").")
+                        provenance: "Sleep need, wake time, and \(plan.efficiencyIsDefault ? "typical efficiency while yours is learned" : "your typical efficiency").")
     }
 
     private func typicalAnswer(_ prompt: Prompt) -> Exchange {
@@ -193,12 +196,12 @@ struct AtriaAssistantScreen: View {
         guard !lines.isEmpty else {
             return Exchange(question: prompt.question,
                             answer: "Your personal baselines are still building \u{2014} they firm up after 14 nights of data.",
-                            provenance: "Personal baseline (learning).")
+                            provenance: "Personal overnight baseline · learning.")
         }
         let trusted = store.baseline.hasTrustedRestingBaseline()
         return Exchange(question: prompt.question,
                         answer: "Typically for you: \(lines.joined(separator: ", ")).\(trusted ? "" : " These are still settling \u{2014} trusted after 14 nights.")",
-                        provenance: "Your personal baseline, learned from your own nights.")
+                        provenance: "Your personal overnight baseline.")
     }
 
     private func behaviorsAnswer(_ prompt: Prompt) -> Exchange {
@@ -206,12 +209,12 @@ struct AtriaAssistantScreen: View {
         guard !impacts.isEmpty else {
             return Exchange(question: prompt.question,
                             answer: "Nothing has cleared the statistical bar yet. Log journal tags on more days \u{2014} a behavior needs 5+ logged days and a real, unlikely-by-chance effect before it shows here.",
-                            provenance: "Behavior impact engine (no qualifying behaviors yet).")
+                            provenance: "Journal impact analysis · no qualified behaviors.")
         }
         let lines = impacts.map { "\($0.tag.label): \($0.valueText) across \($0.nightsText)" }
         return Exchange(question: prompt.question,
                         answer: lines.joined(separator: "\n"),
-                        provenance: "Your journal tags vs next-day recovery over 90 days. Association, not proof of cause.")
+                        provenance: "90-day journal associations · not proof of cause.")
     }
 
     private func weekAnswer(_ prompt: Prompt) -> Exchange {
@@ -226,10 +229,10 @@ struct AtriaAssistantScreen: View {
         guard !parts.isEmpty else {
             return Exchange(question: prompt.question,
                             answer: "Not enough recorded days this week to summarize yet.",
-                            provenance: "Weekly report (building).")
+                            provenance: "Weekly report · building.")
         }
         return Exchange(question: prompt.question,
                         answer: "This week: \(parts.joined(separator: "; ")).",
-                        provenance: "Your weekly report, computed from daily rollups.")
+                        provenance: "Weekly report from daily rollups.")
     }
 }

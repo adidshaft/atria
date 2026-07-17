@@ -12,6 +12,11 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    from tools import verify_physical_qualification
+except ImportError:  # Direct `python3 tools/audit_handoff_status.py` execution.
+    import verify_physical_qualification
+
 
 LOCAL_CHECK_FILES = [
     Path("test_handoff_static_checks.sh"),
@@ -24,6 +29,8 @@ LOCAL_CHECK_FILES = [
     Path("tools/capture_dashboard_scroll_performance.sh"),
     Path("tools/monitor_long_wear.py"),
     Path("tools/prepare_accessibility_performance_evidence.py"),
+    Path("tools/verify_physical_qualification.py"),
+    Path("test_physical_qualification.py"),
 ]
 
 REQUIRED_SOURCE_FILES = [
@@ -42,6 +49,7 @@ ACCESSIBILITY_PERFORMANCE_REQUIRED_CHECKS = [
 ]
 DEFAULT_ACCESSIBILITY_PERFORMANCE_SUMMARY = Path("docs/evidence/accessibility-performance/summary.json")
 DEFAULT_ACCESSIBILITY_PERFORMANCE_DRAFT = Path("docs/evidence/accessibility-performance/summary.draft.json")
+DEFAULT_PHYSICAL_QUALIFICATION_SUMMARY = verify_physical_qualification.DEFAULT_REPORT
 DEFAULT_DEVICE_PULL_ROOT = Path("tmp/diag")
 DEFAULT_DEVICE_PULL_ROOTS = (
     DEFAULT_DEVICE_PULL_ROOT,
@@ -831,6 +839,7 @@ def evaluate(
     defer_accessibility_performance: bool = False,
     accessibility_performance_path: Path | None = None,
     device_pull_path: Path | None = None,
+    physical_qualification_path: Path | None = None,
 ) -> dict[str, object]:
     missing_local = [str(path) for path in LOCAL_CHECK_FILES if not (repo / path).exists()]
     missing_source = [str(path) for path in REQUIRED_SOURCE_FILES if not (repo / path).exists()]
@@ -853,10 +862,17 @@ def evaluate(
         blockers.extend(str(item) for item in physical.get("audit_blockers", []))
     accessibility_performance = evaluate_accessibility_performance(repo, accessibility_performance_path)
     latest_device_pull = evaluate_latest_device_pull(repo, device_pull_path)
+    physical_qualification = verify_physical_qualification.verify_report(
+        repo,
+        physical_qualification_path or DEFAULT_PHYSICAL_QUALIFICATION_SUMMARY,
+    )
     if accessibility_performance["status"] != "pass" and not defer_accessibility_performance:
         blockers.append("accessibility_performance_proof")
     if not defer_accessibility_performance:
         blockers.extend(str(item) for item in accessibility_performance.get("blockers", []))
+    if physical_qualification["status"] != "pass":
+        blockers.append("physical_qualification_proof")
+        blockers.extend(str(item) for item in physical_qualification.get("blockers", []))
     if not skip_external_reference:
         blockers.append("external_reference_validation")
 
@@ -868,6 +884,7 @@ def evaluate(
         "physical_long_wear": physical,
         "latest_device_pull": latest_device_pull,
         "accessibility_performance": accessibility_performance,
+        "physical_qualification": physical_qualification,
         "external_reference_status": "skipped" if skip_external_reference else "required",
         "deferred_gates": sorted(deferred_gates),
         "blockers": sorted(set(blockers)),
@@ -912,6 +929,12 @@ def next_evidence_items(report: dict[str, object]) -> list[str]:
         )
     if "external_reference_validation" in blocker_set:
         items.append("Provide the deferred independent external reference validation, or continue auditing with `--skip-external-reference`.")
+    if "physical_qualification_proof" in blocker_set:
+        items.append(
+            "Complete every build-bound physical checkpoint and run "
+            "`tools/verify_physical_qualification.py docs/evidence/physical-qualification/summary.json`; "
+            "the completion audit requires its strict report to pass."
+        )
     if "missing_accessibility_performance_summary" in blocker_set and accessibility_draft.get("status") in {"present", "draft"}:
         trace = accessibility_draft.get("instruments_trace", "the draft Instruments trace")
         items.append(
@@ -930,7 +953,13 @@ def markdown_summary(report: dict[str, object]) -> str:
     physical = report["physical_long_wear"]
     latest_device_pull = report["latest_device_pull"]
     accessibility = report["accessibility_performance"]
-    if not isinstance(physical, dict) or not isinstance(latest_device_pull, dict) or not isinstance(accessibility, dict):
+    qualification = report.get("physical_qualification", {
+        "status": "missing",
+        "summary": str(DEFAULT_PHYSICAL_QUALIFICATION_SUMMARY),
+        "blockers": ["missing_physical_qualification_summary"],
+    })
+    if (not isinstance(physical, dict) or not isinstance(latest_device_pull, dict)
+            or not isinstance(accessibility, dict) or not isinstance(qualification, dict)):
         raise ValueError("audit report did not contain expected sections")
 
     blockers = report.get("blockers", [])
@@ -945,6 +974,7 @@ def markdown_summary(report: dict[str, object]) -> str:
         f"- Physical long-wear: `{physical['status']}` (`{physical['acceptance_status']}`)",
         f"- Latest device pull: `{latest_device_pull['status']}`",
         f"- Accessibility/performance: `{accessibility['status']}`",
+        f"- Physical qualification: `{qualification['status']}`",
         f"- External reference: `{report['external_reference_status']}`",
         f"- Deferred gates: `{', '.join(report.get('deferred_gates', [])) or 'none'}`",
         "",
@@ -1026,6 +1056,15 @@ def markdown_summary(report: dict[str, object]) -> str:
             lines.append(f"- `{name}`: {detail}")
 
     lines.extend([
+        "",
+        "## Physical Qualification",
+        f"- Summary: `{qualification.get('summary', 'missing')}`",
+        f"- Status: `{qualification.get('status', 'missing')}`",
+        f"- Qualification ID: `{qualification.get('qualification_id', 'missing')}`",
+        f"- Installed binary SHA-256: `{qualification.get('binary_sha256', 'missing')}`",
+        f"- Verified artifacts: `{qualification.get('artifact_count', 0)}`",
+        f"- Passed checkpoints: `{qualification.get('checkpoint_count', 0)}`",
+        f"- Blockers: `{format_diagnostic_value(qualification.get('blockers', []))}`",
         "",
         "## Latest Device Pull",
         f"- Summary: `{latest_device_pull['summary']}`",
@@ -1117,6 +1156,12 @@ def main() -> int:
         default=None,
         help="Specific non-disruptive device pull summary to show as current physical state.",
     )
+    parser.add_argument(
+        "--physical-qualification",
+        type=Path,
+        default=None,
+        help="Specific strict build-bound physical qualification summary JSON.",
+    )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     parser.add_argument("--markdown", action="store_true", help="Print a Markdown handoff status summary.")
     args = parser.parse_args()
@@ -1129,6 +1174,7 @@ def main() -> int:
         defer_accessibility_performance=args.defer_accessibility_performance,
         accessibility_performance_path=args.accessibility_performance,
         device_pull_path=args.pull_summary,
+        physical_qualification_path=args.physical_qualification,
     )
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
@@ -1144,6 +1190,7 @@ def main() -> int:
             f"acceptance_status={physical['acceptance_status']} "
             f"acceptance_blockers={','.join(physical['acceptance_blockers']) or 'none'} "
             f"accessibility_performance_status={report['accessibility_performance']['status']} "
+            f"physical_qualification_status={report['physical_qualification']['status']} "
             f"external_reference_status={report['external_reference_status']} "
             f"deferred_gates={','.join(report['deferred_gates']) or 'none'} "
             f"blockers={','.join(report['blockers']) or 'none'} "
