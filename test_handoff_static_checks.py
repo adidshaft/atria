@@ -6541,11 +6541,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "includeSleepReviewDecisions: Bool",
             "includeWorkoutReviewDecisions: Bool",
             "if includeSleepReviewDecisions {",
-            "decisions.append(makeSleepReviewDecision(store: store))",
+            "decisions.append(await makeSleepReviewDecision(store: store))",
             "if includeWorkoutReviewDecisions {",
             "decisions.append(makeWorkoutReviewDecision(store: store, ble: ble))",
-            "private static func makeSleepReviewDecision(store: SessionStore) -> NotificationDecision {",
-            "let latestReviewNight = store.latestSleepReviewNightForUI(rest: store.baseline.restingInt ?? 60,",
+            "private static func makeSleepReviewDecision(store: SessionStore) async -> NotificationDecision {",
+            "switch store.sleepReviewResolutionForUI(rest: rest,",
+            "try? await Task.sleep(for: .milliseconds(20))",
             # 2026-07-12: review flow explicitly consumes the reviewable record.
             "let reviewableSnapshotNight = snapshot.latestReviewable?.confirmed == false ? snapshot.latestReviewable : nil",
             "guard let latest = latestReviewNight ?? reviewableSnapshotNight,",
@@ -14632,11 +14633,11 @@ class HandoffStaticChecks(unittest.TestCase):
         projection = sessions[projection_start:projection_end]
         for needle in [
             ".filter { $0.confirmed && !$0.isNapEvidence }",
-            "let sleepDuration = night.map(\\.duration) ?? rollup.sleepDuration",
+            "let sleepDuration = night.map(\\.duration)",
             "fallbackRMSSD: hrv",
             "sleepDuration: sleepDuration",
-            "sleepStart: night?.start ?? rollup.sleepStart",
-            "sleepEnd: night?.end ?? rollup.sleepEnd",
+            "sleepStart: night?.start",
+            "sleepEnd: night?.end",
         ]:
             assert_contains(self, projection, needle)
 

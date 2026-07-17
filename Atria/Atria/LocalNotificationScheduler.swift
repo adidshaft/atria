@@ -3,6 +3,22 @@ import UserNotifications
 
 @MainActor
 enum LocalNotificationScheduler {
+    struct LaunchDecisionScope: Equatable {
+        let productionCadence: Bool
+        let includeSleepReviewDecisions: Bool
+        let includeWorkoutReviewDecisions: Bool
+    }
+
+    nonisolated static func launchDecisionScope(arguments: [String]) -> LaunchDecisionScope {
+        let debugMetricRequest = arguments.contains("--atria-schedule-notifications")
+        let debugDiagnosticRequest = arguments.contains("--atria-test-notification")
+        let debugHealthDeviationRequest = arguments.contains("--atria-test-health-deviation-notification")
+        let productionCadence = !debugMetricRequest && !debugDiagnosticRequest && !debugHealthDeviationRequest
+        return LaunchDecisionScope(productionCadence: productionCadence,
+                                   includeSleepReviewDecisions: productionCadence || debugMetricRequest,
+                                   includeWorkoutReviewDecisions: productionCadence || debugMetricRequest)
+    }
+
     private nonisolated static let actionableBatteryThreshold = 25
     private static let actionableDiagnosisCooldown: TimeInterval = 6 * 60 * 60
     private static let actionableDiagnosisLastScheduledPrefix = "atria.notification.actionableDiagnosis.lastScheduled."
@@ -404,9 +420,10 @@ enum LocalNotificationScheduler {
         let debugMetricRequest = arguments.contains("--atria-schedule-notifications")
         let debugDiagnosticRequest = arguments.contains("--atria-test-notification")
         let debugHealthDeviationRequest = arguments.contains("--atria-test-health-deviation-notification")
-        let productionCadence = !debugMetricRequest && !debugDiagnosticRequest && !debugHealthDeviationRequest
-        let includeSleepReviewDecisions = productionCadence || debugMetricRequest
-        let includeWorkoutReviewDecisions = productionCadence || debugMetricRequest
+        let scope = launchDecisionScope(arguments: arguments)
+        let productionCadence = scope.productionCadence
+        let includeSleepReviewDecisions = scope.includeSleepReviewDecisions
+        let includeWorkoutReviewDecisions = scope.includeWorkoutReviewDecisions
         let delay = launchDelay(arguments: arguments)
         AtriaDebugLog("ATRIADBG notification_schedule requested=1 mode=%@ delay_s=%.1f",
               productionCadence ? "production" : "debug",
@@ -861,7 +878,7 @@ enum LocalNotificationScheduler {
             decisions.append(contentsOf: makeMetricDecisions(store: store, ble: ble))
         }
         if includeSleepReviewDecisions {
-            decisions.append(makeSleepReviewDecision(store: store))
+            decisions.append(await makeSleepReviewDecision(store: store))
         }
         if includeWorkoutReviewDecisions {
             decisions.append(makeWorkoutReviewDecision(store: store, ble: ble))
@@ -1177,11 +1194,25 @@ enum LocalNotificationScheduler {
         return [batteryDecision, bluetoothDecision]
     }
 
-    private static func makeSleepReviewDecision(store: SessionStore) -> NotificationDecision {
+    private static func makeSleepReviewDecision(store: SessionStore) async -> NotificationDecision {
         let snapshot = store.sleepHistorySnapshot
         let defaults = UserDefaults.standard
-        let latestReviewNight = store.latestSleepReviewNightForUI(rest: store.baseline.restingInt ?? 60,
-                                                                  source: "notification_sleep_review")
+        let rest = store.baseline.restingInt ?? 60
+        var latestReviewNight: SleepHistorySnapshot.Night?
+        for attempt in 0..<250 {
+            switch store.sleepReviewResolutionForUI(rest: rest,
+                                                    source: "notification_sleep_review") {
+            case .ready(let night):
+                latestReviewNight = night
+                break
+            case .loading:
+                if attempt < 249 {
+                    try? await Task.sleep(for: .milliseconds(20))
+                }
+                continue
+            }
+            break
+        }
 
         let reviewableSnapshotNight = snapshot.latestReviewable?.confirmed == false ? snapshot.latestReviewable : nil
         guard let latest = latestReviewNight ?? reviewableSnapshotNight,

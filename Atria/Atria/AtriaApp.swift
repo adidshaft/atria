@@ -134,6 +134,7 @@ struct AtriaApp: App {
     @State private var didScheduleLaunchWork = false
     @State private var inactiveFlushTask: Task<Void, Never>?
     @State private var foregroundBLETransitionTask: Task<Void, Never>?
+    @State private var notificationMaintenanceTask: Task<Void, Never>?
     private let launchStartedAt = Date()
 
     private var ble: AtriaBLEManager { dependencies.ble }
@@ -240,6 +241,7 @@ struct AtriaApp: App {
                     case .active:
                         recordScenePhase("active", reason: "scene_active")
                         dependencies.workoutRuntime.schedulePendingActionReplay()
+                        scheduleProductionNotificationMaintenance(reason: "scene_active")
                         inactiveFlushTask?.cancel()
                         inactiveFlushTask = nil
                         foregroundBLETransitionTask?.cancel()
@@ -457,7 +459,25 @@ struct AtriaApp: App {
         LocalNotificationScheduler.scheduleFastLaunchWeeklyReportDebugFixtureIfRequested(arguments: arguments)
         LocalNotificationScheduler.scheduleFastLaunchMorningSummaryDebugFixtureIfRequested(arguments: arguments)
         store.generateWeeklyReportProductionFixtureFromLaunchIfRequested(arguments: arguments)
+        scheduleProductionNotificationMaintenance(reason: fastLaunchReason, arguments: arguments)
         logLaunchTiming(event: "fast_launch_complete")
+    }
+
+    @MainActor
+    private func scheduleProductionNotificationMaintenance(
+        reason: String,
+        arguments: [String] = ProcessInfo.processInfo.arguments
+    ) {
+        notificationMaintenanceTask?.cancel()
+        notificationMaintenanceTask = Task { @MainActor in
+            await store.waitForDeferredSessionLoadIfNeeded()
+            guard !Task.isCancelled, !store.restoreInitializationBlocked else { return }
+            AtriaDebugLog("ATRIADBG notification_maintenance reason=%@", reason)
+            LocalNotificationScheduler.scheduleFromLaunchIfRequested(store: store,
+                                                                      ble: ble,
+                                                                      arguments: arguments)
+            notificationMaintenanceTask = nil
+        }
     }
 
     private func isInteractiveForegroundLaunch() -> Bool {

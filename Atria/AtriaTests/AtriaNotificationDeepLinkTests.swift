@@ -123,6 +123,25 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
         XCTAssertTrue(source.contains("LocalNotificationScheduler.configureForApplicationLaunch()"))
     }
 
+    @MainActor
+    func testOrdinaryProductionLaunchIncludesReviewDecisions() {
+        let scope = LocalNotificationScheduler.launchDecisionScope(arguments: [])
+        XCTAssertTrue(scope.productionCadence)
+        XCTAssertTrue(scope.includeSleepReviewDecisions)
+        XCTAssertTrue(scope.includeWorkoutReviewDecisions)
+    }
+
+    func testOrdinaryAppLifecycleReachesProductionNotificationMaintenance() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaApp.swift"), encoding: .utf8)
+
+        XCTAssertTrue(source.contains("scheduleProductionNotificationMaintenance(reason: fastLaunchReason"))
+        XCTAssertTrue(source.contains("scheduleProductionNotificationMaintenance(reason: \"scene_active\")"))
+        XCTAssertTrue(source.contains("await store.waitForDeferredSessionLoadIfNeeded()"))
+        XCTAssertTrue(source.contains("LocalNotificationScheduler.scheduleFromLaunchIfRequested(store: store,"))
+    }
+
     func testNotificationResponseDoesNotWaitForMainActorBeforeReturning() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
