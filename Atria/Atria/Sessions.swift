@@ -25481,6 +25481,7 @@ struct SleepHistorySnapshot: Equatable {
 
     init(nights: [Night], confirmedCount: Int, candidateCount: Int) {
         let baselineValues = nights
+            .filter(\.confirmed)
             .dropFirst()
             .compactMap(\.respiratoryRate)
             .filter { $0 > 0 }
@@ -25606,6 +25607,7 @@ struct SleepHistorySnapshot: Equatable {
         let sorted = nightsByDay.values.sorted { $0.day > $1.day }
         let clippedNights = Array(sorted.prefix(PersonalBaseline.trustedMinimumSamples + 1))
         let baselineValues = clippedNights
+            .filter(\.confirmed)
             .dropFirst()
             .compactMap(\.respiratoryRate)
             .filter { $0 > 0 }
@@ -25688,7 +25690,7 @@ struct SleepHistorySnapshot: Equatable {
     /// Newest overnight/main-sleep record. Naps never replace the night that
     /// drives recovery, sleep need, or overnight vitals.
     var latestMainSleep: Night? {
-        nights.first { !$0.isNapEvidence }
+        nights.first { $0.confirmed && !$0.isNapEvidence }
     }
 
     /// Newest nap record, whether it is still a candidate in `nights` or has
@@ -25745,8 +25747,9 @@ struct SleepHistorySnapshot: Equatable {
     }
 
     private static func makeAverageDurationText(_ nights: [Night]) -> String {
-        guard !nights.isEmpty else { return "--" }
-        let average = nights.reduce(0) { $0 + $1.duration } / Double(nights.count)
+        let confirmed = nights.filter(\.confirmed)
+        guard !confirmed.isEmpty else { return "--" }
+        let average = confirmed.reduce(0) { $0 + $1.duration } / Double(confirmed.count)
         return Self.formatDuration(average)
     }
 
@@ -25763,7 +25766,7 @@ struct SleepHistorySnapshot: Equatable {
     }
 
     private static func recentSleepNights(_ nights: [Night]) -> [Night] {
-        nights.filter { !$0.isNapEvidence }
+        nights.filter { $0.confirmed && !$0.isNapEvidence }
     }
 
     func sleepBudgetDebtHours(baseNeedHours: Double, excluding excludedNightID: String? = nil) -> Double {

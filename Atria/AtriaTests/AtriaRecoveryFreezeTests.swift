@@ -470,7 +470,7 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
         XCTAssertEqual(resolved?.score, 79)
     }
 
-    func testAllNighterRecoveryFailsClosedInsteadOfReusingPriorHRV() {
+    func testMissingConfirmedSleepFailsClosedInsteadOfClaimingAllNighterRecovery() {
         let cycle = AtriaPhysiologicalCycle(start: at(24),
                                             boundaryKind: .noSleepFallback,
                                             anchorSleepID: "prior-night",
@@ -483,10 +483,11 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
             physiologicalCycle: cycle
         )
 
-        XCTAssertEqual(resolved.percent, 1)
+        XCTAssertNil(resolved.percent)
         XCTAssertEqual(resolved.confidence, .unverified)
         XCTAssertFalse(resolved.usesHRV)
-        XCTAssertEqual(resolved.contributors.first?.kind, .sleep)
+        XCTAssertTrue(resolved.contributors.isEmpty)
+        XCTAssertTrue(resolved.detail.contains("No confirmed main sleep"))
     }
 
     func testInitialWearFallbackCanUseCurrentLiveEstimate() {
