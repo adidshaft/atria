@@ -5359,4 +5359,39 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "governor acquisition must precede the per-connection bring-up gate")
     }
 
+
+    // MARK: Background link audit (BGTask recovery window)
+
+    func testBackgroundTaskAuditsLinkBeforeDurableFlush() throws {
+        let appURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaApp.swift")
+        let source = try String(contentsOf: appURL, encoding: .utf8)
+        let handler = try XCTUnwrap(source.range(
+            of: "private static func handleBackgroundTask"
+        ))
+        let body = String(source[handler.lowerBound...].prefix(3_000))
+        let audit = try XCTUnwrap(body.range(of: "performBackgroundLinkAudit(reason: reason)"))
+        let flush = try XCTUnwrap(body.range(of: "flushActiveSessionJournal(reason: reason)"))
+        XCTAssertLessThan(audit.lowerBound, flush.lowerBound,
+                          "The BG window must audit the link before spending its budget on flushes")
+    }
+
+    func testBackgroundLinkAuditOnlyRoutesThroughAuditedPolicies() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(of: "func performBackgroundLinkAudit"))
+        let end = try XCTUnwrap(source.range(
+            of: "private func evaluateR10Liveness",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("evaluateR10Liveness"))
+        XCTAssertTrue(body.contains("performHRContinuityWatchdogAction"))
+        XCTAssertFalse(body.contains("setNotifyValue"))
+        XCTAssertFalse(body.contains("cancelPeripheralConnection"))
+        XCTAssertFalse(body.contains("writeValue"))
+        XCTAssertFalse(body.contains("connect("))
+    }
+
 }

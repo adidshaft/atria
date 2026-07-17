@@ -320,6 +320,10 @@ struct AtriaApp: App {
         scheduleBackgroundProcessing(reason: "\(reason)_reschedule")
         let completion = AtriaBackgroundTaskCompletionGate()
         let work = Task { @MainActor in
+            // A suspended app on a stable-but-idle link gets no BLE wakes, so
+            // this window is the only chance to notice a silent stream or a
+            // stale HR subscription before the user next opens the app.
+            ble.performBackgroundLinkAudit(reason: reason)
             ble.flushActiveSessionJournal(reason: reason)
             // Settlement and durable state come first. BGAppRefresh may receive
             // only a short execution window, so it must never wait on backfill

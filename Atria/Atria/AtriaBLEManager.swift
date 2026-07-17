@@ -15300,6 +15300,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       Int(sequence))
     }
 
+    /// One bounded link-health audit inside a BGTask execution window. A
+    /// suspended app on a stable-but-idle link receives no BLE wakes (the
+    /// post-install locked-phone stall, 2026-07-17), so a background wake is
+    /// the only recovery opportunity between user foregrounds. It re-adopts
+    /// the persisted motion lease, runs one R10 liveness evaluation, and
+    /// routes a stale standard-HR subscription through the existing watchdog
+    /// action. It never toggles a CCCD, reconnects, or resets an epoch
+    /// itself — those decisions stay with the audited policies.
+    func performBackgroundLinkAudit(reason: String) {
+        evaluateR10Liveness(reason: "\(reason)_bg_audit")
+        guard longWearModeEnabled, standardHROnlyMode, status == .connected else { return }
+        let now = Date()
+        guard let reference = Self.latestLinkActivity([lastRawHRNotificationAt,
+                                                       lastAcceptedHRAt,
+                                                       connectedAt]) else { return }
+        let rawGap = now.timeIntervalSince(reference)
+        let timeout = Self.hrContinuityWatchdogTimeout(acceptedHRTimeout: 45)
+        guard rawGap >= timeout else { return }
+        performHRContinuityWatchdogAction(status: "bg_task_stale",
+                                          rawGap: rawGap,
+                                          acceptedGap: lastAcceptedHRAt.map { now.timeIntervalSince($0) },
+                                          timeout: timeout,
+                                          label: captureLabel.isEmpty ? "All-day wear" : captureLabel)
+    }
+
     private func evaluateR10Liveness(now: Date = Date(), reason: String) {
         // The 60 s cadence doubles as the lease's lifecycle safety net: it
         // re-adopts a persisted workout lease after foreground/background or
