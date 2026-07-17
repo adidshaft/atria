@@ -303,8 +303,9 @@ enum DailyRecoveryResolver {
 
     /// One source of truth for non-interactive consumers such as widgets and
     /// notifications. Main-sleep cycles prefer the frozen morning result;
-    /// all-nighter fallback cycles fail closed to red rather than reusing a
-    /// live HRV estimate from the prior physiological day.
+    /// fallback cycles fail closed to unknown rather than reusing a live HRV
+    /// estimate from the prior physiological day. Absence of a confirmed sleep
+    /// record is not proof that the wearer stayed awake all night.
     static func currentEstimate(liveEstimate: Metrics.RecoveryEstimate,
                                 rollups: [DailyRollupStoreEntry],
                                 metrics: [SavedDailyMetric],
@@ -342,18 +343,11 @@ enum DailyRecoveryResolver {
 
     static var noSleepEstimate: Metrics.RecoveryEstimate {
         Metrics.RecoveryEstimate(
-            percent: 1,
+            percent: nil,
             confidence: .unverified,
             usesHRV: false,
-            detail: "No main sleep was recorded for this physiological cycle. Recovery stays red until a main sleep is confirmed.",
-            contributors: [
-                Metrics.RecoveryEstimate.Contributor(kind: .sleep,
-                                                     zScore: -3,
-                                                     weight: 1,
-                                                     detail: "No main sleep recorded",
-                                                     displayValue: "0h",
-                                                     direction: -1)
-            ]
+            detail: "No confirmed main sleep was recorded for this physiological cycle, so recovery is unavailable.",
+            contributors: []
         )
     }
 
