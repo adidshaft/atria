@@ -9900,6 +9900,7 @@ class HandoffStaticChecks(unittest.TestCase):
     def test_developer_only_surfaces_are_hidden_by_default(self):
         developer_mode = source(ROOT / "Atria" / "Atria" / "AtriaDeveloperMode.swift")
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
+        settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
         collection = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
         content = source(ROOT / "Atria" / "Atria" / "ContentView.swift")
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
@@ -9907,18 +9908,29 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "enum AtriaDeveloperMode",
             "defaultsKey = \"atria.developerMode.enabled\"",
+            "expiryDefaultsKey = \"atria.developerMode.expiresAt\"",
             "launchArgument = \"--atria-developer-mode\"",
-            "let enabledByLaunchArgument = ProcessInfo.processInfo.arguments.contains(launchArgument)",
-            "UserDefaults.standard.removeObject(forKey: defaultsKey)",
-            "return enabledByLaunchArgument",
+            "static let leaseDuration: TimeInterval = 7 * 24 * 60 * 60",
+            "defaults.set(now.addingTimeInterval(leaseDuration), forKey: expiryDefaultsKey)",
+            "expiresAt > now",
+            "static func disable(defaults: UserDefaults = .standard)",
         ]:
             assert_contains(self, developer_mode, needle)
 
         for needle in [
             "@State private var developerModeEnabled = AtriaDeveloperMode.isEnabled",
             "developerModeEnabled: developerModeEnabled",
+            "AtriaDeveloperMode.disable()",
+            "developerModeEnabled = false",
         ]:
             assert_contains(self, home, needle)
+
+        for needle in [
+            "Button(\"Exit developer mode\", role: .destructive)",
+            "onExitDeveloperMode()",
+            "navigationPath = NavigationPath()",
+        ]:
+            assert_contains(self, settings, needle)
 
         for needle in [
             "let developerModeEnabled: Bool",

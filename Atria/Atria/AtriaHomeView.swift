@@ -1464,7 +1464,11 @@ struct AtriaHomeView: View {
                               onForgetStrap: { ble.forgetSavedStrap(reason: "user_settings") },
                               researchValidationContent: developerModeEnabled ? {
                                   AnyView(researchValidationContent)
-                              } : nil))
+                              } : nil,
+                              onExitDeveloperMode: {
+                                  AtriaDeveloperMode.disable()
+                                  developerModeEnabled = false
+                              }))
         }
         .equatable()
     }
