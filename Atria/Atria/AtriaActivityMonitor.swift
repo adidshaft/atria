@@ -1648,11 +1648,13 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                         if let steps = completedWorkoutStepsText {
                             statTile("Steps", steps, tint: .mint)
                         }
-                        if workout.samples > 0 {
+                        if AtriaWorkoutMetricPresentation.hasHeartRateData(workout) {
                             statTile("Avg HR",
                                      AtriaWorkoutMetricPresentation.averageHeartRateText(workout),
                                      tint: .pink)
-                            statTile("Peak HR", "\(workout.peakHR)", tint: .red)
+                            statTile("Peak HR",
+                                     AtriaWorkoutMetricPresentation.peakHeartRateText(workout),
+                                     tint: .red)
                         }
                         if let calories = workout.activeEnergyKilocalories {
                             statTile("Calories",

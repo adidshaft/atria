@@ -9653,9 +9653,7 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
     }
 
     private var heartRateText: String {
-        AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout)
-            ? "\(workout.streamCoveragePercent)% HR · \(workout.peakHR) peak"
-            : "\(workout.avgHR) avg · \(workout.peakHR) peak"
+        AtriaWorkoutMetricPresentation.heartRateSummaryText(workout)
     }
 
     private var zoneSegments: [(key: String, label: String, tint: Color, seconds: TimeInterval)] {
