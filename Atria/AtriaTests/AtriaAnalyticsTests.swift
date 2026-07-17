@@ -4286,6 +4286,24 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(paused.timeInZone(maxHR: 190).values.reduce(0, +),
                        expectedZoneSeconds,
                        accuracy: 0.0001)
+
+        let sleep = SavedSession(id: UUID(),
+                                 start: start,
+                                 end: start.addingTimeInterval(9 * 60),
+                                 label: "Sleep",
+                                 points: points,
+                                 sleepWakeResearchState: "sleep_research")
+        let breathwork = SavedSession(id: UUID(),
+                                      start: start,
+                                      end: start.addingTimeInterval(9 * 60),
+                                      label: "Breathwork",
+                                      points: points,
+                                      kind: "breathwork")
+        let interval = DateInterval(start: start, end: start.addingTimeInterval(9 * 60))
+        XCTAssertNil(sleep.activeCalories(rest: 60, profile: profile))
+        XCTAssertNil(sleep.activeCalories(rest: 60, profile: profile, within: interval))
+        XCTAssertNil(breathwork.activeCalories(rest: 60, profile: profile))
+        XCTAssertNil(breathwork.activeCalories(rest: 60, profile: profile, within: interval))
     }
 
     func testStrainValidationSplitsCrossMidnightSessionByCivilDay() throws {

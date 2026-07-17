@@ -933,6 +933,7 @@ struct SavedSession: Codable, Identifiable {
     }
 
     func activeCalories(rest: Int, profile: AthleteProfile) -> Double? {
+        guard !isBreathwork, sleepWakeResearchState != "sleep_research" else { return nil }
         let samples = points.map { point in
             HRSample(t: start.addingTimeInterval(max(0, point.t)), bpm: point.bpm)
         }
@@ -953,7 +954,9 @@ struct SavedSession: Codable, Identifiable {
     func activeCalories(rest: Int,
                         profile: AthleteProfile,
                         within interval: DateInterval) -> Double? {
-        guard profile.hasEnergyProfile,
+        guard !isBreathwork,
+              sleepWakeResearchState != "sleep_research",
+              profile.hasEnergyProfile,
               interval.end > interval.start,
               end > interval.start,
               start < interval.end else { return nil }
@@ -4454,7 +4457,10 @@ extension SavedSession {
     }
 
     func detectedActivity(rest: Int, maxHR: Int, calendar: Calendar = .current) -> ActivityDetection? {
-        guard duration >= Self.restReviewMinimumDuration, !points.isEmpty else { return nil }
+        guard !isBreathwork,
+              sleepWakeResearchState != "sleep_research",
+              duration >= Self.restReviewMinimumDuration,
+              !points.isEmpty else { return nil }
 
         let eventCalendar = EventCivilTime.eventCalendar(timeZoneIdentifier: eventTimeZoneIdentifier,
                                                          fallback: calendar)
@@ -12641,7 +12647,11 @@ final class SessionStore: ObservableObject {
     nonisolated static func workoutReviewSessionsWithinHorizon(_ sessions: [SavedSession],
                                                                now: Date) -> [SavedSession] {
         let cutoff = now.addingTimeInterval(-workoutReviewStaleAfter)
-        return sessions.filter { $0.end >= cutoff }
+        return sessions.filter {
+            $0.end >= cutoff
+                && !$0.isBreathwork
+                && $0.sleepWakeResearchState != "sleep_research"
+        }
     }
 
     nonisolated static func shouldPublishWorkoutReviewCache(completedGeneration: Int,
