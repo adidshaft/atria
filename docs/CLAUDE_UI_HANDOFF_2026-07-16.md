@@ -33,22 +33,27 @@ UI/consistency focus, plus the screen inventory for design work.
    around the island during workouts.
 
 ## Detected-workout review flow (user-demanded, 2026-07-17)
-The auto-detection prompt appears, then vanishes if untouched; the evaluated
-candidates are silently rejected with reasons and never surfaced again. The
-user explicitly wants: "if the workout was detected and I hadn't confirmed,
-I should have an option to review the workout and add it."
-- Data already exists: `atria.confirmedWorkouts.v1` (UserDefaults, JSON)
-  keeps every evaluated window with `activityType`, `start`/`end`,
-  `reason` (e.g. `duration_below_10m_and_hr_below_threshold`,
-  `no_strap_hr_samples`), `streamCoveragePercent`, `avgHR/peakHR/strain`.
-- Build a "Detected activity" review row (history/sessions area): show the
-  window, type guess, and HONEST quality (coverage %, HR presence); allow
-  one-tap "Add as workout" (attaches journal HR for the window) or dismiss.
-- Honesty: a candidate with `no_strap_hr_samples` or low coverage must say
-  so and must NOT show strain/calories; adding it creates a workout with
-  whatever evidence exists, never synthesized values.
-- The live prompt should not silently disappear: on timeout it becomes a
-  review row instead of vanishing.
+CORRECTED after code reading — the machinery is stronger than first
+described. `makeWorkoutReviewCandidateForCache` (Sessions.swift ~12600)
+already recomputes the review candidate deterministically from saved journal
+sessions over a 24 h horizon (`workoutReviewStaleAfter`), excluding
+confirmed (`atria.confirmedWorkouts.v1` — that store holds CONFIRMED
+workouts with quality annotations, NOT rejected candidates) and dismissed
+windows. The 2026-07-16 "vanished" prompt was the transport collapse
+starving the window of HR samples (fixed at the transport layer), not an
+expiry bug. What is actually missing:
+1. SINGLE-candidate ceiling: only `bestSource` surfaces. A day with two
+   unconfirmed efforts (e.g. morning run + evening gym) can only ever offer
+   one. Needs a small variant returning all qualifying windows, and a
+   "Detected activities" list row in history feeding the existing review
+   sheet (`AtriaWorkoutReviewDraft` in AtriaHomeView.swift).
+2. Dismissal is irreversible and invisible: `dismissedWorkoutCandidates`
+   has no UI to view/undo. An accidental swipe permanently buries a workout.
+3. Discoverability: the candidate renders only on the Home surface; nothing
+   in history hints an unconfirmed detection exists.
+- Honesty rules for any UI: HR-only windows are "activity candidates", never
+  "Workout found" (see the comment block at Sessions.swift ~12643); no
+  synthesized strain/calories for windows without evidence.
 
 ## Not yet implemented (product scope)
 - Step counts in production UI: blocked on the guided calibration + fitter
