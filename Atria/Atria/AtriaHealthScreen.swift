@@ -229,7 +229,10 @@ struct AtriaHealthScreen: View {
     @State private var latestRollupCache = LatestRollupCache()
     @StateObject private var historyProjectionStore = AtriaVitalsHistoryProjectionStore()
     @State private var debugArchiveRefreshGate = AtriaVitalsActivityGate()
-    @State private var scope: Scope = .live
+    // The detected-activities fixture lives in the Trends scope; opening
+    // there directly keeps the sim screenshot loop honest (simctl cannot tap
+    // the segmented picker). DEBUG-only launch-argument routing.
+    @State private var scope: Scope = Self.debugOpensTrendsScope(arguments: ProcessInfo.processInfo.arguments) ? .trends : .live
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init(isActive: Bool,
@@ -330,6 +333,15 @@ struct AtriaHealthScreen: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityHint("Opens Healthspan details")
+                        // Detected-workout review discoverability (2026-07-17):
+                        // unconfirmed activity candidates and the reversible
+                        // dismissed-detections list live with History. The host
+                        // owns its own narrow observation, keeping candidate
+                        // publications outside this chart-heavy hierarchy.
+                        AtriaDetectedActivitiesHost(store: store,
+                                                    restingHeartRateFallback: { [heroStore] in
+                                                        heroStore.state.restingHeartRate
+                                                    })
                         AtriaHistorySection(model: historyProjection.model,
                                             revisionKey: historyProjection.key,
                                             store: store)
@@ -718,6 +730,17 @@ struct AtriaHealthScreen: View {
     }
     #else
     private static func debugOpensHeartRateTimeline(arguments: [String]) -> Bool { false }
+    #endif
+
+    #if DEBUG
+    private static func debugOpensTrendsScope(arguments: [String]) -> Bool {
+        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
+        let valueIndex = arguments.index(after: fixtureIndex)
+        guard valueIndex < arguments.endIndex else { return false }
+        return arguments[valueIndex] == "detected-activities"
+    }
+    #else
+    private static func debugOpensTrendsScope(arguments: [String]) -> Bool { false }
     #endif
 
     private func monitorGroupKicker(_ title: String) -> some View {

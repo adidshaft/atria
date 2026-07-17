@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 // MARK: - Value model
 
@@ -750,6 +751,331 @@ struct AtriaDetectionsListSheet: View {
         }
         return matches.count == 1 ? matches[0] : nil
     }
+}
+
+// MARK: - Detected activities (unconfirmed review candidates + dismissed undo)
+
+/// Slow-moving snapshot for the history "Detected activities" surface: the
+/// qualifying unconfirmed review windows plus the dismissed-window tombstones
+/// (for visible, reversible dismissal). Values come straight from
+/// SessionStore's fail-closed review cache — nothing here is recomputed or
+/// embellished at the view layer.
+struct AtriaDetectedActivitiesState: Equatable {
+    let candidates: [WorkoutReviewCandidate]
+    let dismissedWindows: [AtriaDismissedWorkoutCandidate]
+
+    static let empty = AtriaDetectedActivitiesState(candidates: [], dismissedWindows: [])
+
+    var isEmpty: Bool { candidates.isEmpty && dismissedWindows.isEmpty }
+}
+
+/// Narrow observation boundary for the Detected activities card. Vitals
+/// deliberately never observes SessionStore at its root (see
+/// AtriaVitalsSessionProjectionStore); this store subscribes only to
+/// `dashboardRevision` — which the review cache bumps on publish and the
+/// dismiss/restore actions bump on write — and republishes only when the
+/// rendered snapshot actually changed.
+@MainActor
+final class AtriaDetectedActivitiesProjectionStore: ObservableObject {
+    @Published private(set) var state: AtriaDetectedActivitiesState = .empty
+
+    private let store: SessionStore
+    /// Same resting-HR source Home uses for its review banner so both
+    /// surfaces request the identical review-cache key (a mismatch would make
+    /// the two surfaces endlessly invalidate each other's cache).
+    private let restingHeartRateFallback: () -> Int
+    private var cancellables = Set<AnyCancellable>()
+    private var refreshScheduled = false
+
+    init(store: SessionStore, restingHeartRateFallback: @escaping () -> Int) {
+        self.store = store
+        self.restingHeartRateFallback = restingHeartRateFallback
+
+        // @Published sends during willSet; coalesce one main-runloop turn so
+        // the refresh reads committed store values.
+        store.$dashboardRevision
+            .dropFirst()
+            .sink { [weak self] _ in self?.scheduleRefresh() }
+            .store(in: &cancellables)
+        refresh()
+    }
+
+    @discardableResult
+    func refresh() -> Bool {
+        let rest = store.baseline.restingInt ?? restingHeartRateFallback()
+        let next = AtriaDetectedActivitiesState(
+            candidates: store.workoutReviewCandidatesForUI(rest: rest,
+                                                           maxHR: store.profile.maxHR),
+            dismissedWindows: store.dismissedWorkoutCandidatesForUI
+        )
+        guard next != state else { return false }
+        state = next
+        return true
+    }
+
+    private func scheduleRefresh() {
+        guard !refreshScheduled else { return }
+        refreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.refreshScheduled = false
+            self.refresh()
+        }
+    }
+}
+
+/// Owns the projection store so AtriaHealthScreen's chart-heavy body never
+/// observes candidate publications directly (AtriaHealthMonitorLiveHost idiom).
+struct AtriaDetectedActivitiesHost: View {
+    @StateObject private var projectionStore: AtriaDetectedActivitiesProjectionStore
+    private let store: SessionStore
+
+    init(store: SessionStore, restingHeartRateFallback: @escaping () -> Int) {
+        _projectionStore = StateObject(wrappedValue: AtriaDetectedActivitiesProjectionStore(
+            store: store,
+            restingHeartRateFallback: restingHeartRateFallback
+        ))
+        self.store = store
+    }
+
+    var body: some View {
+        AtriaDetectedActivitiesSection(state: debugFixtureState ?? projectionStore.state,
+                                       store: store)
+            .onAppear { projectionStore.refresh() }
+    }
+
+    #if DEBUG
+    private var debugFixtureState: AtriaDetectedActivitiesState? {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return nil }
+        let valueIndex = arguments.index(after: fixtureIndex)
+        guard arguments.indices.contains(valueIndex),
+              arguments[valueIndex] == "detected-activities" else { return nil }
+        let now = Date()
+        let morningEnd = now.addingTimeInterval(-9 * 3600)
+        let eveningEnd = now.addingTimeInterval(-40 * 60)
+        return AtriaDetectedActivitiesState(
+            candidates: [
+                WorkoutReviewCandidate(id: "debug-detected-evening",
+                                       start: eveningEnd.addingTimeInterval(-52 * 60),
+                                       end: eveningEnd,
+                                       kind: .activityCandidate,
+                                       confidence: .medium,
+                                       duration: 52 * 60,
+                                       avgHR: 132,
+                                       peakHR: 161,
+                                       streamCoveragePercent: 92,
+                                       observedDuration: 48 * 60,
+                                       droppedGapSeconds: 4 * 60,
+                                       maxSampleGap: 90,
+                                       gapCount: 1,
+                                       reason: "sustained_elevated_hr"),
+                WorkoutReviewCandidate(id: "debug-detected-morning",
+                                       start: morningEnd.addingTimeInterval(-38 * 60),
+                                       end: morningEnd,
+                                       kind: .activityCandidate,
+                                       confidence: .low,
+                                       duration: 38 * 60,
+                                       avgHR: 116,
+                                       peakHR: 141,
+                                       streamCoveragePercent: 54,
+                                       observedDuration: 21 * 60,
+                                       droppedGapSeconds: 17 * 60,
+                                       maxSampleGap: 6 * 60,
+                                       gapCount: 3,
+                                       reason: "elevated_seconds_below_required")
+            ],
+            dismissedWindows: [
+                AtriaDismissedWorkoutCandidate(start: now.addingTimeInterval(-20 * 3600),
+                                               end: now.addingTimeInterval(-19 * 3600))
+            ]
+        )
+    }
+    #else
+    private var debugFixtureState: AtriaDetectedActivitiesState? { nil }
+    #endif
+}
+
+/// Compact "Detected activities" card for the history area. HONEST copy only:
+/// an HR-only window is an "Activity candidate", never a found workout; the
+/// row shows the real coverage/avg/peak/duration evidence and the pipeline's
+/// own reason code when confidence is low. No strain, calories, or steps are
+/// synthesized for these windows. Dismissals are visible and reversible via
+/// the "Dismissed detections" list below the candidates.
+struct AtriaDetectedActivitiesSection: View {
+    let state: AtriaDetectedActivitiesState
+    /// Store access for actions only (dismiss/restore + review routing); every
+    /// rendered value comes from the immutable `state` snapshot.
+    var store: SessionStore? = nil
+
+    @State private var showDismissed = false
+
+    var body: some View {
+        if !state.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                AtriaPanelSectionHeader(title: "Detected activities",
+                                        subtitle: "Heart-rate windows Atria noticed but has not counted. Confirm what happened, or dismiss.")
+                if state.candidates.isEmpty {
+                    Text("No unconfirmed detections right now")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(spacing: 8) {
+                        ForEach(state.candidates, id: \.id) { candidate in
+                            candidateRow(candidate)
+                        }
+                    }
+                }
+                if !state.dismissedWindows.isEmpty {
+                    dismissedList
+                }
+            }
+            .padding(16)
+            .atriaCard(cornerRadius: 24, emphasis: .soft)
+        }
+    }
+
+    private func candidateRow(_ candidate: WorkoutReviewCandidate) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Image(systemName: "waveform.path.ecg")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.cyan)
+                    .frame(width: 30, height: 30)
+                    .background(Color.cyan.opacity(0.12), in: Circle())
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Activity candidate")
+                        .font(.subheadline.weight(.semibold))
+                    Text("\(Self.timeRangeText(start: candidate.start, end: candidate.end)) · \(SleepHistorySnapshot.formatDuration(candidate.duration)) from strap HR")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.82)
+                }
+                Spacer(minLength: 8)
+            }
+
+            Text("Coverage \(candidate.streamCoveragePercent)% · Avg \(candidate.avgHR) · Peak \(candidate.peakHR) bpm")
+                .font(.caption2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+
+            if candidate.confidence == .low {
+                Text("Low confidence: \(Self.reasonText(candidate.reason))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    requestReview(candidate)
+                } label: {
+                    Text("Confirm type")
+                        .font(.caption.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 32)
+                }
+                .atriaCardAction(prominent: false, tint: .cyan)
+
+                Button {
+                    _ = store?.dismissWorkoutCandidate(start: candidate.start,
+                                                       end: candidate.end)
+                } label: {
+                    Text("Dismiss")
+                        .font(.caption.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 32)
+                }
+                .atriaCardAction(prominent: false, tint: .secondary)
+            }
+        }
+        .padding(12)
+        .atriaInsetCard(cornerRadius: 16, tint: Color.cyan.opacity(0.4))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Activity candidate, \(Self.timeRangeText(start: candidate.start, end: candidate.end)), \(SleepHistorySnapshot.formatDuration(candidate.duration)) from strap heart rate. Coverage \(candidate.streamCoveragePercent) percent, average \(candidate.avgHR), peak \(candidate.peakHR) beats per minute. Confirm the type before it counts.")
+    }
+
+    /// Visible, reversible dismissal (2026-07-17): an accidental dismiss no
+    /// longer buries a detection forever. Restoring removes the durable
+    /// window tombstone so the deterministic generator may offer it again.
+    private var dismissedList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                showDismissed.toggle()
+            } label: {
+                HStack {
+                    Text("Dismissed detections (\(state.dismissedWindows.count))")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer(minLength: 0)
+                    Image(systemName: showDismissed ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                }
+                .foregroundStyle(.primary)
+            }
+            .buttonStyle(.plain)
+
+            if showDismissed {
+                ForEach(Array(state.dismissedWindows.enumerated()), id: \.offset) { _, window in
+                    HStack(spacing: 12) {
+                        Image(systemName: "bolt.slash")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(Self.timeRangeText(start: window.start, end: window.end))
+                                .font(.caption.weight(.semibold))
+                            Text("Dismissed — Atria will not offer this window")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 8)
+                        Button("Restore") {
+                            _ = store?.restoreDismissedWorkoutCandidate(start: window.start,
+                                                                        end: window.end)
+                        }
+                        .font(.caption.weight(.semibold))
+                        .buttonStyle(.bordered)
+                        .tint(.cyan)
+                    }
+                    .padding(10)
+                    .atriaInsetCard(cornerRadius: 14, tint: Color.secondary.opacity(0.2))
+                }
+                Text("Restoring lets Atria offer the window for review again. Nothing is saved until you confirm it.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func requestReview(_ candidate: WorkoutReviewCandidate) {
+        NotificationCenter.default.post(
+            name: SessionStore.workoutReviewCandidateReviewRequestedNotification,
+            object: nil,
+            userInfo: [SessionStore.workoutReviewCandidateUserInfoKey: candidate]
+        )
+    }
+
+    static func timeRangeText(start: Date, end: Date) -> String {
+        let day = start.formatted(.dateTime.month(.abbreviated).day())
+        let startTime = start.formatted(date: .omitted, time: .shortened)
+        let endTime = end.formatted(date: .omitted, time: .shortened)
+        return "\(day) · \(startTime)–\(endTime)"
+    }
+
+    /// Presentation-only rewording of the detector's own reason codes. Codes
+    /// without a mapping render as-is (never invent a reason the pipeline did
+    /// not produce — same rule as DetectionReasonCopy).
+    static func reasonText(_ code: String) -> String {
+        if let mapped = reasonCopyByCode[code] { return mapped }
+        return code.replacingOccurrences(of: "_", with: " ")
+    }
+
+    private static let reasonCopyByCode: [String: String] = [
+        "sustained_elevated_hr": "sustained elevated heart rate",
+        "elevated_seconds_below_required": "not enough time at elevated heart rate",
+        "elevated_bout_below_required": "no long enough continuous elevated stretch",
+        "duration_below_10m": "under 10 minutes observed",
+        "observed_duration_below_10m_stream_gaps": "under 10 minutes observed after stream gaps",
+        "detector_not_workout": "heart rate alone did not meet the workout bar"
+    ]
 }
 
 // MARK: - Full history (pushed, pinned-month list)

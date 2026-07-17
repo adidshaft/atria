@@ -4727,6 +4727,13 @@ extension SavedSession {
 final class SessionStore: ObservableObject {
     static let historicalRecoveryNeededNotification = Notification.Name("AtriaHistoricalRecoveryNeeded")
     static let historicalRecoveryResolvedNotification = Notification.Name("AtriaHistoricalRecoveryResolved")
+    /// Posted by the history "Detected activities" surface (2026-07-17) so the
+    /// Home shell — which owns the guided review sheet — can present the
+    /// existing `AtriaWorkoutReviewDraft` flow for a chosen candidate.
+    /// userInfo carries the `WorkoutReviewCandidate` under
+    /// `workoutReviewCandidateUserInfoKey`.
+    static let workoutReviewCandidateReviewRequestedNotification = Notification.Name("AtriaWorkoutReviewCandidateReviewRequested")
+    static let workoutReviewCandidateUserInfoKey = "workoutReviewCandidate"
     /// Injectable only so launch-order tests can exercise a real SessionStore
     /// reinitialization against an isolated transaction marker. Production uses
     /// `live`, which preserves the exact app paths and UserDefaults behavior.
@@ -5757,6 +5764,10 @@ final class SessionStore: ObservableObject {
     private var pendingWorkoutReviewCacheKey: WorkoutReviewCacheKey?
     private var pendingWorkoutReviewCacheWorkItem: DispatchWorkItem?
     private var cachedWorkoutReviewCandidate: WorkoutReviewCandidate?
+    /// All qualifying unconfirmed windows for the same cache key, newest
+    /// first — computed in the same refresh pass as the single candidate
+    /// above so the two can never disagree (2026-07-17).
+    private var cachedWorkoutReviewCandidates: [WorkoutReviewCandidate] = []
     private var cachedHomeDashboardDiagnostics: HomeDashboardDiagnostics?
     private var cachedHomeSavedAggregate: HomeSavedAggregate?
     private var recoveryProjectionCache = RecoveryProjectionCache()
@@ -8279,6 +8290,7 @@ final class SessionStore: ObservableObject {
         self.cachedLatestLocalRMSSDSource = nil
         self.cachedCanonicalSessions = []
         self.cachedWorkoutReviewCandidate = nil
+        self.cachedWorkoutReviewCandidates = []
         self.cachedHomeDashboardDiagnostics = nil
         self.cachedHomeSavedAggregate = nil
         self.cachedCurrentCollectionStatus = nil
@@ -12529,6 +12541,29 @@ final class SessionStore: ObservableObject {
         return Self.freshWorkoutReviewCandidate(cachedWorkoutReviewCandidate, now: now)
     }
 
+    /// All qualifying unconfirmed windows (newest first) for the history
+    /// surface. Same cache and fail-closed rules as
+    /// `latestWorkoutReviewCandidate`: nothing is served while the deferred
+    /// load or a cache refresh is outstanding, and every window must be past
+    /// the post-end settle delay and inside the 24 h horizon.
+    func workoutReviewCandidatesForUI(rest: Int,
+                                      maxHR: Int,
+                                      source: String = "history_ui",
+                                      now: Date = Date()) -> [WorkoutReviewCandidate] {
+        guard hasCompletedDeferredSessionLoad else { return [] }
+        let requestedKey = workoutReviewKey(rest: rest, maxHR: maxHR)
+        if workoutReviewCacheKey != requestedKey {
+            scheduleWorkoutReviewCacheRefresh(rest: rest,
+                                              maxHR: maxHR,
+                                              now: now,
+                                              source: source)
+            return []
+        }
+        return cachedWorkoutReviewCandidates.compactMap {
+            Self.freshWorkoutReviewCandidate($0, now: now)
+        }
+    }
+
     private func workoutReviewKey(rest: Int, maxHR: Int) -> WorkoutReviewCacheKey {
         WorkoutReviewCacheKey(canonicalSessionsRevision: canonicalSessionsRevision,
                               confirmedWorkoutsRevision: confirmedWorkoutsRevision,
@@ -12555,6 +12590,11 @@ final class SessionStore: ObservableObject {
                                                                     dismissedCandidates: dismissedCandidates,
                                                                     rest: rest,
                                                                     maxHR: maxHR)
+            let candidates = Self.makeWorkoutReviewCandidatesForCache(sessions: horizonSessions,
+                                                                      confirmedWorkouts: confirmedWorkouts,
+                                                                      dismissedCandidates: dismissedCandidates,
+                                                                      rest: rest,
+                                                                      maxHR: maxHR)
             DispatchQueue.main.async { [weak self] in
                 guard let self,
                       Self.shouldPublishWorkoutReviewCache(completedGeneration: generation,
@@ -12562,14 +12602,16 @@ final class SessionStore: ObservableObject {
                       requestedKey == self.workoutReviewKey(rest: rest, maxHR: maxHR) else { return }
                 self.workoutReviewCacheKey = requestedKey
                 self.cachedWorkoutReviewCandidate = candidate
+                self.cachedWorkoutReviewCandidates = candidates
                 self.pendingWorkoutReviewCacheKey = nil
                 self.pendingWorkoutReviewCacheWorkItem = nil
                 self.dashboardRevision &+= 1
-                AtriaDebugLog("ATRIADBG workout_review_cache status=published source=%@ generation=%d sessions=%d has_candidate=%d",
+                AtriaDebugLog("ATRIADBG workout_review_cache status=published source=%@ generation=%d sessions=%d has_candidate=%d candidate_windows=%d",
                               source,
                               generation,
                               horizonSessions.count,
-                              candidate == nil ? 0 : 1)
+                              candidate == nil ? 0 : 1,
+                              candidates.count)
             }
         }
         pendingWorkoutReviewCacheKey = requestedKey
@@ -12659,6 +12701,123 @@ final class SessionStore: ObservableObject {
                                       maxSampleGap: summary.bestMaxSampleGap,
                                       gapCount: summary.bestGapCount,
                                       reason: summary.readySessions > 0 ? summary.bestReason : summary.bestPrimaryBlocker)
+    }
+
+    /// All qualifying unconfirmed review windows in the horizon, newest first.
+    /// Lifts the single-candidate ceiling (2026-07-17): a day with a morning
+    /// run and an evening gym session offers both. Every window clears the
+    /// same fail-closed bars as the single-candidate path — review-worthy on
+    /// its own evidence (`bestReviewWorthyCandidate` is already true for a
+    /// detector-ready window), never contact-compromised, and neither
+    /// confirmed nor dismissed. Overlapping windows (a session and the
+    /// stitched aggregate containing it) collapse to the single strongest
+    /// window so one physical effort is never offered twice.
+    nonisolated static func makeWorkoutReviewCandidatesForCache(sessions: [SavedSession],
+                                                                confirmedWorkouts: [UserConfirmedWorkout],
+                                                                dismissedCandidates: [AtriaDismissedWorkoutCandidate] = [],
+                                                                rest: Int,
+                                                                maxHR: Int) -> [WorkoutReviewCandidate] {
+        let windowSummaries = workoutReplayWindowSummaries(in: sessions,
+                                                           rawSessionCount: sessions.count,
+                                                           rest: rest,
+                                                           maxHR: maxHR)
+        var remaining = windowSummaries.filter { summary in
+            guard summary.bestSource != "none",
+                  let start = summary.bestStart,
+                  let end = summary.bestEnd,
+                  end > start,
+                  summary.bestReviewWorthyCandidate,
+                  !summary.bestContactCompromised else { return false }
+            return true
+        }
+        // Greedy strongest-first selection: the same ranking the single-best
+        // replay uses, then drop any weaker window overlapping a kept one.
+        var selectedSummaries: [WorkoutReplaySummary] = []
+        while !remaining.isEmpty {
+            var bestIndex = remaining.startIndex
+            for index in remaining.indices.dropFirst()
+                where isBetterWorkoutReplaySummary(remaining[index], than: remaining[bestIndex]) {
+                bestIndex = index
+            }
+            let summary = remaining.remove(at: bestIndex)
+            guard let start = summary.bestStart, let end = summary.bestEnd else { continue }
+            let window = AtriaDismissedWorkoutCandidate(start: start, end: end)
+            let overlapsSelected = selectedSummaries.contains { selected in
+                guard let selectedStart = selected.bestStart,
+                      let selectedEnd = selected.bestEnd else { return false }
+                return window.overlaps(start: selectedStart, end: selectedEnd)
+            }
+            if !overlapsSelected {
+                selectedSummaries.append(summary)
+            }
+        }
+        return selectedSummaries
+            .compactMap { summary in
+                workoutReviewCandidate(fromQualifiedWindow: summary,
+                                       sessions: sessions,
+                                       confirmedWorkouts: confirmedWorkouts,
+                                       dismissedCandidates: dismissedCandidates,
+                                       rest: rest,
+                                       maxHR: maxHR)
+            }
+            .sorted { $0.end > $1.end }
+    }
+
+    /// Shared per-window candidate construction for the multi-candidate list.
+    /// Mirrors `makeWorkoutReviewCandidateForCache` exactly, including its
+    /// honesty rule: a saved strap-HR window can establish sustained effort
+    /// but never *what happened*, so every window stays an
+    /// `.activityCandidate` (never "Workout found") until the user confirms
+    /// its type — see the comment block in `makeWorkoutReviewCandidateForCache`.
+    private nonisolated static func workoutReviewCandidate(fromQualifiedWindow summary: WorkoutReplaySummary,
+                                                           sessions: [SavedSession],
+                                                           confirmedWorkouts: [UserConfirmedWorkout],
+                                                           dismissedCandidates: [AtriaDismissedWorkoutCandidate],
+                                                           rest: Int,
+                                                           maxHR: Int) -> WorkoutReviewCandidate? {
+        guard let start = summary.bestStart,
+              let end = summary.bestEnd,
+              end > start else { return nil }
+        // Identity stays on the untrimmed window (same rule as the single
+        // path) so a dismissed/confirmed effort never resurfaces under a new id.
+        let id = confirmedWorkoutIDForReview(start: start, end: end, source: summary.bestSource)
+        let alreadyConfirmed = confirmedWorkouts.contains { workout in
+            if workout.id == id { return true }
+            let rawOverlap = min(workout.end, end).timeIntervalSince(max(workout.start, start))
+            return rawOverlap >= workoutReviewConfirmedOverlapSuppressSeconds
+                || workoutOverlapRatioForReview(workout: workout, start: start, end: end) >= 0.70
+        }
+        guard !alreadyConfirmed else { return nil }
+        guard !dismissedCandidates.contains(where: { $0.overlaps(start: start, end: end) }) else {
+            return nil
+        }
+
+        let displayStart = sustainedWorkoutOnsetStart(in: sessions,
+                                                      start: start,
+                                                      end: end,
+                                                      rest: rest,
+                                                      maxHR: maxHR) ?? start
+        let reviewStats = displayStart != start
+            ? workoutWindowHRStats(in: sessions, start: displayStart, end: end)
+            : nil
+        let windowIsReady = summary.bestStatus == "ready"
+        let reviewConfidence: ActivityDetection.Confidence = windowIsReady
+            ? .medium
+            : (summary.strengthCandidate || summary.nearMiss ? .medium : .low)
+        return WorkoutReviewCandidate(id: id,
+                                      start: displayStart,
+                                      end: end,
+                                      kind: .activityCandidate,
+                                      confidence: reviewConfidence,
+                                      duration: end.timeIntervalSince(displayStart),
+                                      avgHR: reviewStats?.avgHR ?? summary.bestAvgHR,
+                                      peakHR: reviewStats?.peakHR ?? summary.bestPeakHR,
+                                      streamCoveragePercent: reviewStats?.streamCoveragePercent ?? summary.bestStreamCoveragePercent,
+                                      observedDuration: reviewStats?.observedDuration ?? summary.bestObservedDuration,
+                                      droppedGapSeconds: summary.bestDroppedGapSeconds,
+                                      maxSampleGap: summary.bestMaxSampleGap,
+                                      gapCount: summary.bestGapCount,
+                                      reason: windowIsReady ? summary.bestReason : summary.bestPrimaryBlocker)
     }
 
     private nonisolated static func confirmedWorkoutIDForReview(start: Date,
@@ -14013,6 +14172,75 @@ final class SessionStore: ObservableObject {
         return true
     }
 
+    /// Dismissed detector windows, newest first, for the history surface's
+    /// "Dismissed detections" affordance. A read-only projection of the
+    /// durable tombstone store — rendering it never mutates suppression.
+    var dismissedWorkoutCandidatesForUI: [AtriaDismissedWorkoutCandidate] {
+        dismissedWorkoutCandidates.sorted { $0.end > $1.end }
+    }
+
+    /// Undo for `dismissWorkoutCandidate` (2026-07-17): removes the
+    /// overlapping tombstone(s) so the deterministic generator may offer the
+    /// window again. Also clears the Home banner's candidate-ID suppression
+    /// for the same window; without that, a restored candidate would reappear
+    /// in history yet stay silently hidden on the Home surface.
+    @discardableResult
+    func restoreDismissedWorkoutCandidate(start: Date, end: Date) -> Bool {
+        guard end > start else { return false }
+        let previousCount = dismissedWorkoutCandidates.count
+        dismissedWorkoutCandidates.removeAll { $0.overlaps(start: start, end: end) }
+        guard dismissedWorkoutCandidates.count != previousCount else { return false }
+        AtriaDismissedWorkoutCandidateStore.save(dismissedWorkoutCandidates)
+        Self.purgeWorkoutReviewDismissedIDSuppression(overlappingStart: start, end: end)
+        invalidateWorkoutReviewCache()
+        dashboardRevision &+= 1
+        AtriaDebugLog("ATRIADBG workout_review_candidate restored start=%.0f end=%.0f retained_tombstones=%d",
+                      start.timeIntervalSince1970,
+                      end.timeIntervalSince1970,
+                      dismissedWorkoutCandidates.count)
+        return true
+    }
+
+    /// Review-candidate IDs encode their untrimmed window as
+    /// "<startSeconds>-<endSeconds>-<source>" (see
+    /// `confirmedWorkoutIDForReview`). Restoring a window must drop IDs whose
+    /// encoded window overlaps the restored interval; IDs that do not parse
+    /// are kept untouched (fail closed — never widen an unrelated dismissal).
+    nonisolated static func workoutReviewDismissedIDs(_ ids: [String],
+                                                      removingOverlapWithStart start: Date,
+                                                      end: Date) -> [String] {
+        ids.filter { id in
+            let parts = id.split(separator: "-", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count >= 2,
+                  let startSeconds = TimeInterval(parts[0]),
+                  let endSeconds = TimeInterval(parts[1]),
+                  endSeconds > startSeconds else { return true }
+            let window = AtriaDismissedWorkoutCandidate(start: Date(timeIntervalSince1970: startSeconds),
+                                                        end: Date(timeIntervalSince1970: endSeconds))
+            return !window.overlaps(start: start, end: end)
+        }
+    }
+
+    /// Keys owned by AtriaHomeView's banner-level ID suppression. The window
+    /// tombstone (above) is the authoritative suppression; these IDs are the
+    /// belt-and-braces same-frame guard the banner keeps, so restore has to
+    /// clear both or the undo is only half real.
+    private nonisolated static func purgeWorkoutReviewDismissedIDSuppression(overlappingStart start: Date,
+                                                                             end: Date,
+                                                                             defaults: UserDefaults = .standard) {
+        let idsKey = "atria.workoutReview.dismissedIDs"
+        let legacyIDKey = "atria.workoutReview.dismissedID"
+        let ids = defaults.stringArray(forKey: idsKey) ?? []
+        let kept = workoutReviewDismissedIDs(ids, removingOverlapWithStart: start, end: end)
+        if kept.count != ids.count {
+            defaults.set(kept, forKey: idsKey)
+        }
+        if let legacyID = defaults.string(forKey: legacyIDKey),
+           workoutReviewDismissedIDs([legacyID], removingOverlapWithStart: start, end: end).isEmpty {
+            defaults.removeObject(forKey: legacyIDKey)
+        }
+    }
+
     /// UI projection for the generic detector inbox. Keep the underlying
     /// history snapshot intact because its detections also contribute to
     /// physiological rollups; dismissal is a presentation/lifecycle choice,
@@ -14075,6 +14303,7 @@ final class SessionStore: ObservableObject {
         pendingWorkoutReviewCacheWorkItem = nil
         pendingWorkoutReviewCacheKey = nil
         cachedWorkoutReviewCandidate = nil
+        cachedWorkoutReviewCandidates = []
         workoutReviewCacheKey = nil
     }
 
@@ -17583,7 +17812,37 @@ final class SessionStore: ObservableObject {
                                                                 thresholdFraction: Double = 0.50,
                                                                 limitSessions: Int? = nil,
                                                                 includeAggregates: Bool = true) -> WorkoutReplaySummary {
+        let windowSummaries = workoutReplayWindowSummaries(in: sourceSessions,
+                                                           rawSessionCount: rawSessionCount,
+                                                           rest: rest,
+                                                           maxHR: maxHR,
+                                                           thresholdFraction: thresholdFraction,
+                                                           limitSessions: limitSessions,
+                                                           includeAggregates: includeAggregates)
+        guard !windowSummaries.isEmpty else {
+            return .empty(rest: rest, maxHR: maxHR)
+        }
         var best = WorkoutReplaySummary.empty(rest: rest, maxHR: maxHR)
+        for candidate in windowSummaries where isBetterWorkoutReplaySummary(candidate, than: best) {
+            best = candidate
+        }
+        return best
+    }
+
+    /// One `WorkoutReplaySummary` per evaluated window: each single session
+    /// plus each stitched aggregate candidate, in evaluation order. The
+    /// single-best replay above reduces over exactly this list, so a
+    /// per-window consumer (the multi-candidate review list) can never
+    /// disagree with the aggregated summary about which windows exist.
+    /// Extracted 2026-07-17 to lift the single-candidate ceiling without
+    /// duplicating the replay logic.
+    private nonisolated static func workoutReplayWindowSummaries(in sourceSessions: [SavedSession],
+                                                                 rawSessionCount: Int,
+                                                                 rest: Int,
+                                                                 maxHR: Int,
+                                                                 thresholdFraction: Double = 0.50,
+                                                                 limitSessions: Int? = nil,
+                                                                 includeAggregates: Bool = true) -> [WorkoutReplaySummary] {
         var replaySessions = sourceSessions
         if let limitSessions {
             replaySessions.sort {
@@ -17614,6 +17873,8 @@ final class SessionStore: ObservableObject {
         let readySessions = sessionReadiness.filter { $0.readiness.ready }.count
             + aggregateCandidates.filter { $0.readiness.ready }.count
         let evaluated = replaySessions.count + aggregateCandidates.count
+        var windowSummaries: [WorkoutReplaySummary] = []
+        windowSummaries.reserveCapacity(evaluated)
         for (session, readiness) in sessionReadiness {
             let candidate = WorkoutReplaySummary(rawSessions: rawSessionCount,
                                                  canonicalSessions: replaySessions.count,
@@ -17667,9 +17928,7 @@ final class SessionStore: ObservableObject {
                                                  bestRRDisagreement: readiness.rrDisagreement,
                                                  restHR: rest,
                                                  maxHR: maxHR)
-            if isBetterWorkoutReplaySummary(candidate, than: best) {
-                best = candidate
-            }
+            windowSummaries.append(candidate)
         }
         for aggregate in aggregateCandidates {
             let readiness = aggregate.readiness
@@ -17725,14 +17984,9 @@ final class SessionStore: ObservableObject {
                                                  bestRRDisagreement: readiness.rrDisagreement,
                                                  restHR: rest,
                                                  maxHR: maxHR)
-            if isBetterWorkoutReplaySummary(candidate, than: best) {
-                best = candidate
-            }
+            windowSummaries.append(candidate)
         }
-        if replaySessions.isEmpty && aggregateCandidates.isEmpty {
-            return .empty(rest: rest, maxHR: maxHR)
-        }
-        return best
+        return windowSummaries
     }
 
     private nonisolated static func isBetterWorkoutReplaySummary(_ lhs: WorkoutReplaySummary, than rhs: WorkoutReplaySummary) -> Bool {

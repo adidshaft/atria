@@ -1008,6 +1008,16 @@ struct AtriaHomeView: View {
         .onReceive(NotificationCenter.default.publisher(for: .atriaWorkoutRuntimeDidApplyCommand)) { _ in
             synchronizeWorkoutUIWithCanonicalIntent()
         }
+        .onReceive(NotificationCenter.default.publisher(for: SessionStore.workoutReviewCandidateReviewRequestedNotification)) { note in
+            // History's "Detected activities" rows route into the SAME guided
+            // review flow the Home banner uses (2026-07-17): confirm-type or
+            // dismiss, never a parallel save path. Fail closed during a live
+            // workout — the review sheet must not stack over an active session.
+            guard workoutSession == nil,
+                  workoutReviewDraft == nil,
+                  let candidate = note.userInfo?[SessionStore.workoutReviewCandidateUserInfoKey] as? WorkoutReviewCandidate else { return }
+            presentWorkoutReview(candidate: candidate)
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIDevice.batteryStateDidChangeNotification)) { _ in
             batteryState = UIDevice.current.batteryState
         }
