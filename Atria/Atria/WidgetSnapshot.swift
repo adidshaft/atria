@@ -624,9 +624,9 @@ enum WidgetSnapshotPublisher {
         // sensor lane above. Presence and semantic transitions stay immediate.
         parts.append(snapshot.steps == nil ? "steps_absent" : "steps_present")
         parts.append(snapshot.stepsCapturedAt == nil ? "motion_clock_absent" : "motion_clock_present")
-        parts.append(snapshot.stepsAreEstimated == true ? "estimated" : "validated")
+        parts.append(snapshot.stepsAreEstimated == false ? "validated" : "estimated")
         parts.append(snapshot.dailyStepGoal.map(String.init) ?? "-")
-        let exactDailyStepGoalReached = snapshot.stepsAreEstimated != true
+        let exactDailyStepGoalReached = snapshot.stepsAreEstimated == false
             && snapshot.dailyStepGoal.map { goal in
                 goal > 0 && (snapshot.steps ?? 0) >= goal
             } == true

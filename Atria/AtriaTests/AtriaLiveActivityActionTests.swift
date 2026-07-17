@@ -803,7 +803,8 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(source.contains("case .reconnecting: return \"Reconnecting\""))
         XCTAssertTrue(source.contains("case .stale: return \"HR stale\""))
         XCTAssertTrue(source.contains("case .unavailable: return \"Unavailable\""))
-        XCTAssertTrue(source.contains("state.stepsAreEstimated ?? false"))
+        XCTAssertTrue(source.contains("state.stepsAreEstimated != false"),
+                      "missing workout-step provenance must fail closed as estimated")
         XCTAssertTrue(source.contains("let capturedAt = state.stepsCapturedAt"))
         XCTAssertTrue(source.contains("now.timeIntervalSince(capturedAt) <= atriaStepFreshness"))
         XCTAssertTrue(source.contains("labelText: \"Steps reconnecting\""))
@@ -826,7 +827,8 @@ final class AtriaLiveActivityActionTests: XCTestCase {
                        "timer and HR writes must not renew battery evidence")
         XCTAssertTrue(source.contains("ProgressView(value: liveActivityStrainProgressFraction(for: context.state))"))
         XCTAssertTrue(source.contains("liveActivityDailyStepGoalPresentation(for: context.state)"))
-        XCTAssertTrue(source.contains("state.dailyStepsAreEstimated ?? false"))
+        XCTAssertTrue(source.contains("state.dailyStepsAreEstimated != false"),
+                      "missing daily-step provenance must fail closed as estimated")
         XCTAssertTrue(source.contains("reached && !estimated"),
                       "preliminary steps must never claim an exact goal completion")
         XCTAssertTrue(source.contains("liveActivitySensorStatusText"))
