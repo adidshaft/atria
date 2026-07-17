@@ -128,12 +128,18 @@ enum Metrics {
     typealias RecoveryEstimate = AtriaAnalytics.Recovery.Estimate
 
     /// HR-only recovery: at/below baseline reads high; elevated resting reads low.
+    /// Deprecated: returns a bare percent with no confidence tier or honesty
+    /// gating. Production surfaces must use `recoveryV2`, which fails closed
+    /// on missing baselines and labels every estimate's confidence.
+    @available(*, deprecated, message: "Use recoveryV2 — this legacy path has no confidence tier or honesty gating")
     static func recovery(restingNow: Int, baseline: Int) -> Int {
         AtriaAnalytics.Recovery.restingOnly(restingNow: restingNow, baseline: baseline)
     }
 
     /// HRV-driven recovery (the primary signal), blended with resting HR.
     /// HRV above your norm → high recovery; elevated resting HR penalizes it.
+    /// Deprecated: same ungated-legacy caveat as `recovery(restingNow:baseline:)`.
+    @available(*, deprecated, message: "Use recoveryV2 — this legacy path has no confidence tier or honesty gating")
     static func recovery(hrvNow: Int, hrvBaseline: Int, restingNow: Int, restingBaseline: Int) -> Int {
         AtriaAnalytics.Recovery.estimate(hrvNow: hrvNow,
                                          hrvBaseline: hrvBaseline,
