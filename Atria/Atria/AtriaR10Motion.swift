@@ -467,6 +467,152 @@ enum AtriaGyroCadenceResearchPedometer {
     }
 }
 
+/// RESEARCH-ONLY all-day shadow accumulator for
+/// `AtriaGyroCadenceResearchPedometer`. It never feeds a user-facing count;
+/// its total exists solely so that every future counted ground truth
+/// automatically doubles as validation evidence for the gyro-cadence family.
+///
+/// The batch detector is only defined over physically contiguous
+/// rotation-magnitude segments, so this accumulator buffers samples per
+/// contiguous device-time span and reruns the batch function over each span
+/// when it closes. A span closes on:
+/// - any device-timestamp discontinuity (delta != 1, including the isolated
+///   missing second: concatenating across even a one-second hole would
+///   fabricate motion evidence for the spectral windows straddling it), or
+/// - the memory bound (`maxSpanSamples`), in which case only a prefix is
+///   scored and the contiguous tail (`carrySamples`) is carried into the next
+///   scoring pass so an in-progress bout can still extend. Carried samples
+///   are excluded from the scored prefix — no sample is ever counted twice.
+///
+/// Bout logic therefore always sees complete bouts except at the rare
+/// size-bound cut, where a bout spanning the cut may be split (an honest
+/// undercount, never an overcount by fabricated continuity).
+final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
+    struct Snapshot: Equatable, Sendable {
+        /// Fractional research steps summed over all closed/scored spans.
+        let totalSteps: Double
+        let closedSpans: Int
+    }
+
+    /// Per-span buffer bound: 10 minutes of 100 Hz rotation magnitudes.
+    static let maxSpanSamples = 60_000
+    /// Contiguous tail (30 s) carried unscored into the next pass after a
+    /// size-bound close.
+    static let carrySamples = 3_000
+
+    enum SpanContinuity: Equatable, Sendable {
+        case appendToCurrentSpan
+        case closeSpanThenStartNew
+        case dropFrame
+    }
+
+    /// Continuity policy for one decoded R10 frame. A zero device timestamp
+    /// cannot prove contiguity, so the frame is dropped; the next valid
+    /// frame's own delta then decides whether the open span really continued
+    /// (delta 1) or must close (delta >= 2). Duplicate/stale timestamps are
+    /// dropped without disturbing the open span, mirroring the production
+    /// pipeline's replay rejection.
+    nonisolated static func spanContinuity(
+        previousDeviceTimestamp: UInt32?,
+        frameDeviceTimestamp: UInt32
+    ) -> SpanContinuity {
+        guard frameDeviceTimestamp > 0 else { return .dropFrame }
+        guard let previousDeviceTimestamp else { return .appendToCurrentSpan }
+        guard let delta = AtriaR10MotionPipeline.forwardDeviceTimestampDelta(
+            from: previousDeviceTimestamp,
+            to: frameDeviceTimestamp
+        ) else { return .dropFrame }
+        return delta == 1 ? .appendToCurrentSpan : .closeSpanThenStartNew
+    }
+
+    /// Number of leading span samples to score when the buffer reaches the
+    /// memory bound, or nil while the span may keep growing.
+    nonisolated static func sizeBoundScoredPrefix(
+        spanSampleCount: Int,
+        maxSpanSamples: Int = AtriaGyroCadenceResearchShadow.maxSpanSamples,
+        carrySamples: Int = AtriaGyroCadenceResearchShadow.carrySamples
+    ) -> Int? {
+        guard spanSampleCount >= maxSpanSamples else { return nil }
+        return max(0, spanSampleCount - min(carrySamples, maxSpanSamples))
+    }
+
+    private let queue = DispatchQueue(
+        label: "com.adidshaft.atria.gyro-cadence-research-shadow",
+        qos: .utility
+    )
+    private var spanMagnitudes: [Double] = []
+    private var lastDeviceTimestamp: UInt32?
+    private var totalSteps = 0.0
+    private var closedSpans = 0
+
+    /// Feeds one decoded R10 frame's rotation magnitudes. `onUpdate` fires
+    /// only when a span was scored (total may have advanced).
+    func ingest(deviceTimestamp: UInt32,
+                rotationMagnitudes: [Double],
+                onUpdate: @escaping @Sendable (Snapshot) -> Void) {
+        queue.async { [self] in
+            var scored = false
+            switch Self.spanContinuity(previousDeviceTimestamp: lastDeviceTimestamp,
+                                       frameDeviceTimestamp: deviceTimestamp) {
+            case .dropFrame:
+                return
+            case .closeSpanThenStartNew:
+                closeOpenSpanLocked()
+                scored = true
+            case .appendToCurrentSpan:
+                break
+            }
+            lastDeviceTimestamp = deviceTimestamp
+            spanMagnitudes.append(contentsOf: rotationMagnitudes)
+            if let prefix = Self.sizeBoundScoredPrefix(spanSampleCount: spanMagnitudes.count) {
+                scoreLocked(Array(spanMagnitudes[..<prefix]))
+                spanMagnitudes.removeFirst(prefix)
+                closedSpans += 1
+                scored = true
+            }
+            if scored {
+                onUpdate(snapshotLocked())
+            }
+        }
+    }
+
+    /// Scores and releases the open span (e.g., at a session boundary or in
+    /// tests). The next accepted frame starts a fresh span; its delta check
+    /// still runs against the last accepted device second.
+    @discardableResult
+    func closeOpenSpanSynchronously() -> Snapshot {
+        queue.sync { [self] in
+            closeOpenSpanLocked()
+            return snapshotLocked()
+        }
+    }
+
+    func snapshotSynchronously() -> Snapshot {
+        queue.sync { snapshotLocked() }
+    }
+
+    func openSpanSampleCountForTesting() -> Int {
+        queue.sync { spanMagnitudes.count }
+    }
+
+    private func closeOpenSpanLocked() {
+        guard !spanMagnitudes.isEmpty else { return }
+        scoreLocked(spanMagnitudes)
+        spanMagnitudes.removeAll(keepingCapacity: false)
+        closedSpans += 1
+    }
+
+    private func scoreLocked(_ samples: [Double]) {
+        totalSteps += AtriaGyroCadenceResearchPedometer.steps(
+            contiguousRotationMagnitudes: samples
+        )
+    }
+
+    private func snapshotLocked() -> Snapshot {
+        Snapshot(totalSteps: totalSteps, closedSpans: closedSpans)
+    }
+}
+
 /// A strap-only gait classifier that can shadow the production pedometer
 /// without changing its published count. The challenger deliberately waits
 /// for four seconds of evidence after each candidate step, then releases or
