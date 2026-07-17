@@ -319,6 +319,124 @@ enum AtriaStrapPedometer {
     }
 }
 
+/// RESEARCH-ONLY gyroscope-cadence pedometer. Never feeds a production count.
+///
+/// Physical basis (2026-07-17 card session, exact counted truth): during
+/// walking, the wrist's rotation-rate MAGNITUDE oscillates at the true step
+/// rate, while acceleration magnitude and individual gyro axes oscillate at
+/// the stride rate (half cadence — one arm swing per two steps). Every
+/// accelerometer-peak detector in the production family therefore undercounts
+/// near 50% at normal/brisk pace. At rest, rotation energy concentrates below
+/// ~0.9 Hz (posture sway), which this detector rejects spectrally.
+///
+/// Algorithm: over each physically contiguous segment, slide a Hann-windowed
+/// DFT along the rotation-magnitude signal; windows whose dominant in-band
+/// (step band) component is prominent and not sway-dominated become cadence
+/// anchors. Consecutive active windows form a bout; a bout containing at
+/// least `minAnchorWindows` anchors contributes activeDuration × median
+/// anchor cadence (steps continue through turns even when periodicity breaks,
+/// proven by the shuttle-walk truth). Bouts without anchors contribute zero,
+/// which is what keeps rest-stage transients (wrist adjustments) at exactly
+/// zero steps.
+///
+/// Offline evaluation, never promoted without the full fitter gates:
+/// card session (shuttle, 0/100/100/100/200/0 truth): 0 / 107 / 105 / 110 /
+/// 218 / 0 → mean walk error 7.8%, max 10.0%, rest false steps 0. Treadmill
+/// whole-window direction check: −13.8% vs coverage-scaled 500-step truth.
+enum AtriaGyroCadenceResearchPedometer {
+    static let sampleRateHz = 100
+    static let windowSeconds = 4.0
+    static let hopSeconds = 0.5
+    static let stepBandLoHz = 1.3
+    static let stepBandHiHz = 3.0
+    static let spectrumFloorHz = 0.3
+    static let spectrumCeilingHz = 4.0
+    static let rotationLevelGate = 35.0
+    static let prominenceGate = 1.6
+    static let swayRatio = 1.4
+    static let minAnchorWindows = 2
+
+    /// Steps for ONE physically contiguous rotation-magnitude segment.
+    /// Callers must split at device-time discontinuities; concatenating
+    /// across a gap would fabricate motion evidence.
+    static func steps(contiguousRotationMagnitudes samples: [Double],
+                      sampleRateHz: Int = sampleRateHz) -> Double {
+        let win = Int(windowSeconds * Double(sampleRateHz))
+        let hop = Int(hopSeconds * Double(sampleRateHz))
+        guard samples.count >= win, win > 0, hop > 0 else { return 0 }
+
+        struct WindowVerdict {
+            let active: Bool
+            let anchorCadenceHz: Double?
+        }
+        var verdicts: [WindowVerdict] = []
+        var start = 0
+        let hann = (0..<win).map { i in
+            0.5 * (1 - cos(2 * Double.pi * Double(i) / Double(win - 1)))
+        }
+        while start + win <= samples.count {
+            let window = Array(samples[start..<(start + win)])
+            let mean = window.reduce(0, +) / Double(win)
+            guard mean >= rotationLevelGate else {
+                verdicts.append(WindowVerdict(active: false, anchorCadenceHz: nil))
+                start += hop
+                continue
+            }
+            let tapered = (0..<win).map { (window[$0] - mean) * hann[$0] }
+            let binHz = Double(sampleRateHz) / Double(win)
+            let floorBin = Int((spectrumFloorHz / binHz).rounded(.up))
+            let ceilBin = Int((spectrumCeilingHz / binHz).rounded(.down))
+            var magnitudesByBin: [Int: Double] = [:]
+            for bin in floorBin...ceilBin {
+                var real = 0.0, imag = 0.0
+                let omega = -2 * Double.pi * Double(bin) / Double(win)
+                for n in 0..<win {
+                    let angle = omega * Double(n)
+                    real += tapered[n] * cos(angle)
+                    imag += tapered[n] * sin(angle)
+                }
+                magnitudesByBin[bin] = (real * real + imag * imag).squareRoot()
+            }
+            let inBand = magnitudesByBin.filter {
+                let f = Double($0.key) * binHz
+                return f >= stepBandLoHz && f <= stepBandHiHz
+            }
+            let belowBand = magnitudesByBin.filter {
+                let f = Double($0.key) * binHz
+                return f > spectrumFloorHz && f < stepBandLoHz
+            }
+            let sortedAll = magnitudesByBin.values.sorted()
+            let median = sortedAll.isEmpty ? 0 : sortedAll[sortedAll.count / 2]
+            guard let peak = inBand.max(by: { $0.value < $1.value }),
+                  median > 0,
+                  peak.value / median >= prominenceGate,
+                  (belowBand.values.max() ?? 0) <= swayRatio * peak.value else {
+                verdicts.append(WindowVerdict(active: true, anchorCadenceHz: nil))
+                start += hop
+                continue
+            }
+            verdicts.append(WindowVerdict(active: true,
+                                          anchorCadenceHz: Double(peak.key) * binHz))
+            start += hop
+        }
+
+        var total = 0.0
+        var index = 0
+        while index < verdicts.count {
+            guard verdicts[index].active else { index += 1; continue }
+            var end = index
+            while end < verdicts.count, verdicts[end].active { end += 1 }
+            let anchors = verdicts[index..<end].compactMap(\.anchorCadenceHz).sorted()
+            if anchors.count >= minAnchorWindows {
+                let medianCadence = anchors[anchors.count / 2]
+                total += Double(end - index) * hopSeconds * medianCadence
+            }
+            index = end
+        }
+        return total
+    }
+}
+
 /// A strap-only gait classifier that can shadow the production pedometer
 /// without changing its published count. The challenger deliberately waits
 /// for four seconds of evidence after each candidate step, then releases or

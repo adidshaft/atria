@@ -789,7 +789,10 @@ final class AtriaStrainConsistencyTests: XCTestCase {
                                                                now: now)
         XCTAssertEqual(reconnecting.availability, .reconnecting)
         XCTAssertNil(reconnecting.liveCount)
-        XCTAssertEqual(reconnecting.hudText, "reconnecting")
+        // 2026-07-17: copy aligned with the Live Activity ("Syncing") and made
+        // truncation-proof at XXXL type. Still fails closed to a qualifier —
+        // never a frozen count rendered as live.
+        XCTAssertEqual(reconnecting.hudText, "syncing")
     }
 
     func testWorkoutStepProjectionFreezesDuringPauseAndExcludesPausedStepsAfterResume() {

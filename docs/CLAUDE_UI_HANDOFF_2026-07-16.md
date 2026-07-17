@@ -32,6 +32,24 @@ UI/consistency focus, plus the screen inventory for design work.
 4. **Dynamic Island creative space** — user invites bolder use of the area
    around the island during workouts.
 
+## Detected-workout review flow (user-demanded, 2026-07-17)
+The auto-detection prompt appears, then vanishes if untouched; the evaluated
+candidates are silently rejected with reasons and never surfaced again. The
+user explicitly wants: "if the workout was detected and I hadn't confirmed,
+I should have an option to review the workout and add it."
+- Data already exists: `atria.confirmedWorkouts.v1` (UserDefaults, JSON)
+  keeps every evaluated window with `activityType`, `start`/`end`,
+  `reason` (e.g. `duration_below_10m_and_hr_below_threshold`,
+  `no_strap_hr_samples`), `streamCoveragePercent`, `avgHR/peakHR/strain`.
+- Build a "Detected activity" review row (history/sessions area): show the
+  window, type guess, and HONEST quality (coverage %, HR presence); allow
+  one-tap "Add as workout" (attaches journal HR for the window) or dismiss.
+- Honesty: a candidate with `no_strap_hr_samples` or low coverage must say
+  so and must NOT show strain/calories; adding it creates a workout with
+  whatever evidence exists, never synthesized values.
+- The live prompt should not silently disappear: on timeout it becomes a
+  review row instead of vanishing.
+
 ## Not yet implemented (product scope)
 - Step counts in production UI: blocked on the guided calibration + fitter
   gates (see goal file). UI must keep research labels until a tuple passes.

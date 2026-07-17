@@ -1111,4 +1111,70 @@ final class AtriaR10MotionTests: XCTestCase {
         bytes[offset] = UInt8(raw & 0xFF)
         bytes[offset + 1] = UInt8((raw >> 8) & 0xFF)
     }
+
+    // MARK: - Gyro-cadence research pedometer (research-only, never production)
+
+    private func syntheticRotationMagnitudes(seconds: Double,
+                                             cadenceHz: Double,
+                                             level: Double,
+                                             swing: Double) -> [Double] {
+        let sr = Double(AtriaGyroCadenceResearchPedometer.sampleRateHz)
+        return (0..<Int(seconds * sr)).map { i in
+            let t = Double(i) / sr
+            // Rectified-swing shape: |rotation| oscillates at the step rate
+            // around a positive mean while walking.
+            return max(0, level + swing * sin(2 * .pi * cadenceHz * t))
+        }
+    }
+
+    func testGyroCadenceResearchPedometerCountsSteadyGaitByCadence() {
+        let cadence = 1.75
+        let seconds = 40.0
+        let samples = syntheticRotationMagnitudes(seconds: seconds,
+                                                  cadenceHz: cadence,
+                                                  level: 90,
+                                                  swing: 45)
+        let steps = AtriaGyroCadenceResearchPedometer.steps(
+            contiguousRotationMagnitudes: samples
+        )
+        // Bout integration covers the hop-quantized active span; allow the
+        // window-edge loss but demand cadence-accurate counting inside it.
+        let expected = seconds * cadence
+        XCTAssertGreaterThan(steps, expected * 0.85)
+        XCTAssertLessThan(steps, expected * 1.05)
+    }
+
+    func testGyroCadenceResearchPedometerRejectsRestAndSway() {
+        // Below the rotation level gate: dead still.
+        let still = [Double](repeating: 6, count: 6_000)
+        XCTAssertEqual(AtriaGyroCadenceResearchPedometer.steps(
+            contiguousRotationMagnitudes: still
+        ), 0)
+        // Posture sway: energetic but sub-band (0.5 Hz) rotation must not
+        // count — the 2026-07-17 rest stages recorded exactly this shape.
+        let sway = syntheticRotationMagnitudes(seconds: 40,
+                                               cadenceHz: 0.5,
+                                               level: 60,
+                                               swing: 40)
+        XCTAssertEqual(AtriaGyroCadenceResearchPedometer.steps(
+            contiguousRotationMagnitudes: sway
+        ), 0)
+    }
+
+    func testGyroCadenceResearchPedometerIsolatedTransientCountsZero() {
+        // A brief wrist adjustment (1 s of motion inside stillness) dilutes
+        // below the window-mean rotation gate and must contribute exactly
+        // zero — the rest negative-control property the card session
+        // verified. (A SUSTAINED clean in-band periodic rotation counts by
+        // design: it is physically indistinguishable from stepping.)
+        var samples = [Double](repeating: 5, count: 2_000)
+        samples += syntheticRotationMagnitudes(seconds: 1,
+                                               cadenceHz: 2.0,
+                                               level: 80,
+                                               swing: 40)
+        samples += [Double](repeating: 5, count: 2_000)
+        XCTAssertEqual(AtriaGyroCadenceResearchPedometer.steps(
+            contiguousRotationMagnitudes: samples
+        ), 0)
+    }
 }
