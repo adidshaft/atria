@@ -5,6 +5,14 @@ import XCTest
 /// shared under/optimal/over zone tints and the daily HR-zone tile text.
 final class AtriaTodayTileLogicTests: XCTestCase {
 
+    func testRingAchievementTintChangesOnlyWithRealProgress() {
+        XCTAssertEqual(Metrics.ringAchievementTint(fill: nil), .secondary)
+        XCTAssertEqual(Metrics.ringAchievementTint(fill: 0.25), .orange)
+        XCTAssertEqual(Metrics.ringAchievementTint(fill: 0.60), .yellow)
+        XCTAssertEqual(Metrics.ringAchievementTint(fill: 0.999), .green)
+        XCTAssertEqual(Metrics.ringAchievementTint(fill: 1.20), .green)
+    }
+
     // MARK: zoneTint bands
 
     func testSleepZoneBands() {
