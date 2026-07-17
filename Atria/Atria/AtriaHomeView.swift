@@ -7964,6 +7964,7 @@ final class AtriaHomeModel {
         let baselineSamples: Int
         let confirmedWorkouts: Int
         let confirmedSleeps: Int
+        let savedTodayObservedSeconds: TimeInterval
     }
 
     private struct DeferredDetails: Equatable {
@@ -8936,14 +8937,68 @@ final class AtriaHomeModel {
                                               maxHRSource: AthleteProfile.HRMaxSource,
                                               hasLoadEvidence: Bool,
                                               resolvedRest: Int,
-                                              maxHR: Int) -> String {
+                                              maxHR: Int,
+                                              wearCoverageFraction: Double? = nil) -> String {
         guard hasRestingHeartRateEvidence,
               hasLoadEvidence,
               resolvedRest > 0,
               maxHR > resolvedRest else { return "learning" }
-        return maxHRSource == .measured
+        let base = maxHRSource == .measured
             ? "local"
             : "provisional · age-estimated max HR"
+        // A sparsely-worn day integrates real but under-representative TRIMP.
+        // Disclose partial evidence instead of presenting it as the whole day.
+        if let wearCoverageFraction, wearCoverageFraction < 0.5 {
+            return base + " · partial-day wear"
+        }
+        return base
+    }
+
+    /// Union length in seconds of session intervals clipped to the window.
+    /// Sessions can overlap (historic workout checkpoints overlapped the
+    /// all-day roll), so summing raw durations would double-count wear.
+    nonisolated static func observedWearUnionSeconds(
+        intervals: [(start: Date, end: Date)],
+        windowStart: Date,
+        windowEnd: Date
+    ) -> TimeInterval {
+        guard windowEnd > windowStart else { return 0 }
+        let clipped: [(Double, Double)] = intervals.compactMap { interval in
+            let start = Swift.max(interval.start.timeIntervalSinceReferenceDate,
+                                  windowStart.timeIntervalSinceReferenceDate)
+            let end = Swift.min(interval.end.timeIntervalSinceReferenceDate,
+                                windowEnd.timeIntervalSinceReferenceDate)
+            return end > start ? (start, end) : nil
+        }.sorted { $0.0 < $1.0 }
+        var total = 0.0
+        var openStart: Double?
+        var openEnd = 0.0
+        for (start, end) in clipped {
+            if openStart != nil, start <= openEnd {
+                openEnd = Swift.max(openEnd, end)
+                continue
+            }
+            if let currentStart = openStart {
+                total += openEnd - currentStart
+            }
+            openStart = start
+            openEnd = end
+        }
+        if let currentStart = openStart {
+            total += openEnd - currentStart
+        }
+        return total
+    }
+
+    /// Coverage fraction of the physiological day that has HR evidence, or
+    /// nil while the day is too young for the fraction to be meaningful.
+    nonisolated static func dayWearCoverageFraction(
+        observedSeconds: TimeInterval,
+        dayElapsedSeconds: TimeInterval,
+        minimumEvaluationWindow: TimeInterval = 3 * 3600
+    ) -> Double? {
+        guard dayElapsedSeconds >= minimumEvaluationWindow else { return nil }
+        return Swift.min(1, Swift.max(0, observedSeconds / dayElapsedSeconds))
     }
 
     private static func makeCoreLiveState(ble: AtriaBLEManager,
@@ -9180,12 +9235,20 @@ final class AtriaHomeModel {
         let strain = Metrics.strain(fromTRIMP: totalTRIMP)
         let load = store.trainingLoadSummarySnapshot
         let hasRestEvidence = restingContext.hasEvidence
+        // Live samples arrive at ~1 Hz, so the live count approximates seconds
+        // of current-session evidence not yet checkpointed into saved records.
+        let wearCoverage = Self.dayWearCoverageFraction(
+            observedSeconds: savedAggregate.savedTodayObservedSeconds
+                + Double(live.sessionSampleCount),
+            dayElapsedSeconds: now.timeIntervalSince(savedAggregate.cycleStart)
+        )
         let strainConfidence = strainConfidence(
             hasRestingHeartRateEvidence: hasRestEvidence,
             maxHRSource: store.profile.maxHRSource,
             hasLoadEvidence: savedAggregate.hasSavedToday || live.sessionSampleCount >= 60,
             resolvedRest: rest,
-            maxHR: maxHR
+            maxHR: maxHR,
+            wearCoverageFraction: wearCoverage
         )
 
         let recoveryIsAttributedToCurrentDay = physiologicalCycle.boundaryKind == .noSleepFallback
@@ -9638,7 +9701,14 @@ final class AtriaHomeModel {
                               sessionsCount: aggregate.sessionsCount,
                               baselineSamples: store.baseline.freshHRVSampleCount(),
                               confirmedWorkouts: store.confirmedWorkouts.count,
-                              confirmedSleeps: store.confirmedSleeps.count)
+                              confirmedSleeps: store.confirmedSleeps.count,
+                              savedTodayObservedSeconds: observedWearUnionSeconds(
+                                  intervals: store.sessions
+                                      .filter { $0.end > aggregate.day }
+                                      .map { (start: $0.start, end: $0.end) },
+                                  windowStart: aggregate.day,
+                                  windowEnd: Date()
+                              ))
     }
 
     private static func makeDeferredDetails(ble: AtriaBLEManager,
