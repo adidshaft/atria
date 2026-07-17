@@ -169,7 +169,13 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
                                                                 now: date(3, 5),
                                                                 calendar: calendar)
 
-        XCTAssertNil(metric)
+        // Civil midnight may retain an honest wear/activity row, but cannot
+        // mint a second sleep/recovery cycle before another confirmed wake.
+        XCTAssertEqual(metric?.restingHR, 52)
+        XCTAssertNil(metric?.hrv)
+        XCTAssertNil(metric?.sleepDuration)
+        XCTAssertNil(metric?.sleepEnd)
+        XCTAssertNil(metric?.recoveryPercent)
     }
 
     func testSplitResumedConfirmedSleepKeepsLatestWakeAsSingleCycleBoundary() {
