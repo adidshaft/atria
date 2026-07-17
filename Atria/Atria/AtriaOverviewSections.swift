@@ -3193,14 +3193,23 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var triRingStrainMetric: AtriaTriRingMetric {
-        let target = hero.guidance.target ?? 21
-        let fill = min(max(hero.strain / max(target, 0.1), 0), 1.2)
+        let pending = metricIsPending(hero.strainValue)
+        let fill = AtriaRingMetricProjection.strainFill(strain: hero.strain,
+                                                        isPending: pending)
+        let targetProgress = AtriaRingMetricProjection.strainTargetProgress(
+            strain: hero.strain,
+            target: hero.guidance.target
+        )
         return AtriaTriRingMetric(title: "Strain",
                                   value: hero.strainValue,
                                   detail: targetValueText,
                                   systemImage: AtriaTodayMetric.strain.systemImage,
-                                  tint: Metrics.ringAchievementTint(fill: metricIsPending(hero.strainValue) ? nil : fill),
-                                  fill: metricIsPending(hero.strainValue) ? nil : fill)
+                                  tint: Metrics.ringAchievementTint(fill: pending ? nil : targetProgress),
+                                  fill: fill,
+                                  stateTint: pending ? nil : targetProgress.map {
+                                    AtriaTriRing.zoneTint(.strain, percent: $0 * 100)
+                                  },
+                                  targetFraction: pending ? nil : AtriaRingMetricProjection.strainTargetFraction(hero.guidance.target))
     }
 
     private var triRingCenterValue: String {

@@ -11316,12 +11316,11 @@ class HandoffStaticChecks(unittest.TestCase):
             # former strain/target math now driving the ring's target marker instead
             # (targetFraction) -- see AtriaTriRing.swift's always-colorful-rings +
             # target-marker work landing alongside this pin update.
-            # Ring-geometry-v2 + color-coherence pass (2026-07-05): the 0-21 WHOOP
-            # scale was replaced by a clean 0-20 scale (100% ring == strain 20), so
-            # the ring's fill/target-marker fractions divide by 20.0, not 21.0 --
-            # see AtriaTriRing.swift/AtriaTodayScreen.swift's ring-geometry-v2 pass.
-            "fill: incomplete ? nil : min(max(displayHero.strain / 20.0, 0), 1)",
-            "targetFraction: incomplete ? nil : target.map { min(max($0 / 20.0, 0), 1) }",
+            # 2026-07-18: shared truth projection restores the canonical 0-21
+            # strain scale; the actual value owns fill while only a real target
+            # owns achievement color and the marker.
+            "let fill = AtriaRingMetricProjection.strainFill(",
+            "targetFraction: incomplete ? nil : AtriaRingMetricProjection.strainTargetFraction(target)",
             "AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(",
             "tint: displayHero.guidance.color",
         ]:

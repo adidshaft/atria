@@ -32,6 +32,45 @@ struct AtriaTriRingMetric: Equatable {
     var suppressesValue: Bool = false
 }
 
+/// Pure ring math shared by Today and Overview. Actual strain owns the arc;
+/// achievement and target markers exist only when a real target exists.
+enum AtriaRingMetricProjection {
+    static func strainFill(strain: Double, isPending: Bool = false) -> Double? {
+        guard !isPending, strain.isFinite else { return nil }
+        return min(max(strain / 21, 0), 1)
+    }
+
+    static func strainTargetProgress(strain: Double, target: Double?) -> Double? {
+        guard strain.isFinite, let target, target.isFinite, target > 0 else { return nil }
+        return min(max(strain / target, 0), 1.2)
+    }
+
+    static func strainTargetFraction(_ target: Double?) -> Double? {
+        guard let target, target.isFinite, target > 0 else { return nil }
+        return min(max(target / 21, 0), 1)
+    }
+
+    static func higherIsBetterProgress(value: Int?,
+                                       baseline: Int?,
+                                       baselineIsTrusted: Bool,
+                                       goalMultiplier: Double = 1.15) -> Double? {
+        guard baselineIsTrusted,
+              let value, value > 0,
+              let baseline, baseline > 0,
+              goalMultiplier.isFinite, goalMultiplier > 0 else { return nil }
+        return min(max(Double(value) / (Double(baseline) * goalMultiplier), 0), 1.15)
+    }
+
+    static func lowerIsBetterProgress(value: Int?,
+                                      baseline: Int?,
+                                      baselineIsTrusted: Bool) -> Double? {
+        guard baselineIsTrusted,
+              let value, value > 0,
+              let baseline, baseline > 0 else { return nil }
+        return min(max(Double(baseline) / Double(value), 0), 1.15)
+    }
+}
+
 /// Which ring band (outer/middle/inner) a slot draws on, AND -- since the
 /// ring-metric-picker migration -- which of the five supported metrics a
 /// slot can carry. A slot's position only decides paint/hit-test priority
