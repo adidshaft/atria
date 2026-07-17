@@ -1003,7 +1003,7 @@ enum LocalNotificationScheduler {
         }?.recovery
         let attributedRecovery: Int?
         if physiologicalCycle.boundaryKind == .noSleepFallback {
-            attributedRecovery = 1
+            attributedRecovery = nil
         } else {
             attributedRecovery = storedCycleRecovery
                 ?? (latestSleep.map { ($0.end ?? $0.day) == physiologicalCycle.start } == true
@@ -1014,6 +1014,7 @@ enum LocalNotificationScheduler {
                                                                load: store.trainingLoadSummarySnapshot,
                                                                recoveryIsAttributedToCurrentDay: attributedRecovery != nil,
                                                                loadIsPrepared: store.hasLoadedSavedSessions && store.trainingLoadSummaryIsPrepared,
+                                                               cycleStart: physiologicalCycle.start,
                                                                now: now,
                                                                calendar: calendar)
         let guideRecovery = attributedRecovery ?? frozenTarget?.recovery

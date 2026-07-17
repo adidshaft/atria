@@ -9263,6 +9263,7 @@ final class AtriaHomeModel {
                                                                load: load,
                                                                recoveryIsAttributedToCurrentDay: recoveryIsAttributedToCurrentDay,
                                                                loadIsPrepared: loadIsPrepared,
+                                                               cycleStart: physiologicalCycle.start,
                                                                now: now,
                                                                calendar: calendar)
         let guidance = Coach.guide(recovery: recovery,
