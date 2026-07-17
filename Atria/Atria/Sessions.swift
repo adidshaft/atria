@@ -4608,22 +4608,6 @@ extension SavedSession {
                                   calendar: Calendar,
                                   localRMSSD: Int?) -> BaselineLearningEvidence {
         let restingEvidence = restingHRForBaseline(rest: rest, maxHR: maxHR, calendar: calendar)
-        if restingEvidence.source == "hr_only_sleep_candidate_5th_percentile" {
-            return BaselineLearningEvidence(value: restingEvidence.value,
-                                            source: restingEvidence.source,
-                                            accepted: true,
-                                            reason: "sleep_candidate")
-        }
-        if localRMSSD != nil && duration >= 5 * 60 {
-            return BaselineLearningEvidence(value: restingEvidence.value,
-                                            source: hrvReferenceValidated == true
-                                                ? "validated_hrv_window_10th_percentile"
-                                                : "local_hrv_window_10th_percentile",
-                                            accepted: true,
-                                            reason: hrvReferenceValidated == true
-                                                ? "validated_hrv_window"
-                                                : "local_hrv_window")
-        }
         // Duration floor lowered 20min -> 5min (2026-07-08, device-reported
         // "1/14 RHR" after 3 days). All-day wear, fragmented by frequent BLE
         // drops into sub-20-min segments, was silently discarding genuinely
@@ -4649,6 +4633,25 @@ extension SavedSession {
                                             source: restingEvidence.source,
                                             accepted: false,
                                             reason: "peak_hr_above_rest_window")
+        }
+        // RR provenance proves the interval measurement, not that the wearer
+        // was resting. It may refine the source only after the same low-HR
+        // duration/shape gates every resting sample must clear.
+        if localRMSSD != nil {
+            return BaselineLearningEvidence(value: restingEvidence.value,
+                                            source: hrvReferenceValidated == true
+                                                ? "validated_hrv_window_10th_percentile"
+                                                : "local_hrv_window_10th_percentile",
+                                            accepted: true,
+                                            reason: hrvReferenceValidated == true
+                                                ? "validated_hrv_window"
+                                                : "local_hrv_window")
+        }
+        if restingEvidence.source == "hr_only_sleep_candidate_5th_percentile" {
+            return BaselineLearningEvidence(value: restingEvidence.value,
+                                            source: restingEvidence.source,
+                                            accepted: true,
+                                            reason: "sleep_candidate")
         }
         return BaselineLearningEvidence(value: restingEvidence.value,
                                         source: "session_10th_percentile_low_hr_window",
@@ -10617,7 +10620,19 @@ final class SessionStore: ObservableObject {
     }
 
     private func learnBaselineIfEligible(from session: SavedSession, reason: String) {
-        let evidence = session.baselineLearningEvidence(rest: baseline.restingInt ?? session.restingStable,
+        let bootstrapFromConfirmedSleep = cachedConfirmedSleeps.contains { sleep in
+            !Self.confirmedSleepSourceIsNap(source: sleep.source, duration: sleep.duration)
+                && session.start < sleep.end
+                && session.end > sleep.start
+        }
+        guard let referenceRest = baseline.restingInt
+                ?? (bootstrapFromConfirmedSleep ? session.restingStable : nil) else {
+            AtriaDebugLog("ATRIADBG resting_baseline_sample status=skipped reason=missing_external_rest_reference label=%@ trigger=%@",
+                          session.label,
+                          reason)
+            return
+        }
+        let evidence = session.baselineLearningEvidence(rest: referenceRest,
                                                         maxHR: profile.maxHR)
         guard evidence.accepted else {
             AtriaDebugLog("ATRIADBG resting_baseline_sample status=skipped reason=%@ value=%d source=%@ label=%@ duration_s=%.0f avg_hr=%d peak_hr=%d hrv_validated=%d trigger=%@",
@@ -10662,7 +10677,17 @@ final class SessionStore: ObservableObject {
         var accepted = 0
         var skipped = 0
         for session in sessions.sorted(by: { $0.start < $1.start }) {
-            let rest = rebuilt.restingInt ?? previousRest ?? session.restingStable
+            let bootstrapFromConfirmedSleep = cachedConfirmedSleeps.contains { sleep in
+                !Self.confirmedSleepSourceIsNap(source: sleep.source, duration: sleep.duration)
+                    && session.start < sleep.end
+                    && session.end > sleep.start
+            }
+            guard let rest = rebuilt.restingInt
+                    ?? previousRest
+                    ?? (bootstrapFromConfirmedSleep ? session.restingStable : nil) else {
+                skipped += 1
+                continue
+            }
             let evidence = session.baselineLearningEvidence(rest: rest, maxHR: profile.maxHR)
             if evidence.accepted {
                 rebuilt.learn(fromResting: evidence.value,
@@ -17395,6 +17420,10 @@ final class SessionStore: ObservableObject {
             return false
         }
         setCachedConfirmedSleeps(sorted)
+        // Confirmed main sleep is the only safe first baseline anchor when no
+        // external resting reference exists. Rebuild now so the newly saved
+        // evidence can seed learning without letting a session compare to itself.
+        rebuildBaselineFromEligibleSessions(reason: "confirmed-sleep-change")
         // User actions should update Activity/Overview immediately. The full
         // history rebuild still runs off-main below and restores candidates,
         // trends, and session-derived detail when ready.

@@ -58,4 +58,31 @@ final class AtriaBaselineEvidenceTests: XCTestCase {
         XCTAssertFalse(evidence.accepted)
         XCTAssertEqual(evidence.reason, "duration_below_5m")
     }
+
+    func testQualifiedRRCannotBypassElevatedRestingGate() {
+        let start = DateComponents(calendar: calendar, year: 2026, month: 7, day: 2,
+                                   hour: 1, minute: 0).date!
+        let duration = 16 * 60.0
+        let rr = stride(from: 1.0, through: duration, by: 1.0).map { offset in
+            SavedSession.RRPoint(t: offset,
+                                 ms: Int(offset).isMultiple(of: 2) ? 980 : 1_020,
+                                 source: .standardHeartRateMeasurement2A37)
+        }
+        let elevated = SavedSession(id: UUID(),
+                                    start: start,
+                                    end: start.addingTimeInterval(duration),
+                                    label: "Elevated RR window",
+                                    points: stride(from: 0.0, through: duration, by: 10).map {
+                                        SavedSession.Point(t: $0, bpm: 92)
+                                    },
+                                    hrv: 42,
+                                    rrPoints: rr)
+
+        XCTAssertNotNil(elevated.localRMSSD)
+        let evidence = elevated.baselineLearningEvidence(rest: 60,
+                                                         maxHR: 190,
+                                                         calendar: calendar)
+        XCTAssertFalse(evidence.accepted)
+        XCTAssertEqual(evidence.reason, "avg_hr_above_rest_window")
+    }
 }
