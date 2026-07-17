@@ -6457,11 +6457,7 @@ final class SessionStore: ObservableObject {
                                                                      preparedAt: Date,
                                                                      invalidatedDays: Set<Date> = [],
                                                                      calendar: Calendar = .current) -> DailyMetricRollupPreparation {
-        var napHoursByDay: [Date: Double] = [:]
-        for nap in sleep.napNights {
-            let day = calendar.startOfDay(for: nap.day)
-            napHoursByDay[day, default: 0] += nap.durationHours
-        }
+        let napHoursByDay = napHoursByMorningDay(sleep: sleep, calendar: calendar)
         let rest = baseline.restingInt ?? 60
         let respiratoryPreparation = makeDailyRespiratoryRatePreparation(sessions: sessions,
                                                                          rest: rest,
@@ -6505,6 +6501,23 @@ final class SessionStore: ObservableObject {
                                             preparedAt: preparedAt,
                                             activeCycleStart: cycle.start,
                                             activeCycleStrain: activeCycleStrain)
+    }
+
+    /// Attributes a nap to the next confirmed main sleep's physiological
+    /// wake-to-bed interval. Civil-day bucketing gives Tuesday afternoon's nap
+    /// to Tuesday morning and can retroactively credit a post-wake nap; neither
+    /// reflects the sleep need that the nap actually reduced.
+    nonisolated static func napHoursByMorningDay(
+        sleep: SleepHistorySnapshot,
+        calendar: Calendar = .current
+    ) -> [Date: Double] {
+        var result: [Date: Double] = [:]
+        for night in sleep.nights where night.confirmed && !night.isNapEvidence {
+            let hours = sleep.sameDayNapHours(for: night, calendar: calendar)
+            guard hours > 0 else { continue }
+            result[calendar.startOfDay(for: night.day)] = hours
+        }
+        return result
     }
 
     private func refreshNutritionRollupFromHealthIfEnabled(for day: Date,
