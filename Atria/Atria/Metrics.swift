@@ -199,7 +199,7 @@ enum Metrics {
     /// which uses the same green, so an all-good day shows three green rings.
     static func ringAchievementTint(fill: Double?) -> Color {
         guard let fill else { return .secondary }
-        if fill >= 0.999 { return .green }
+        if fill >= 1 { return .green }
         if fill >= 0.6 { return .yellow }
         return .orange
     }

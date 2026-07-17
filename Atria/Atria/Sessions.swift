@@ -7609,15 +7609,14 @@ final class SessionStore: ObservableObject {
                 // belongs to this morning. Project the confirmed record onto its
                 // morning day before scoring and persistence; candidates and naps
                 // remain evidence-only and can never mint recovery history.
-                let hrv = night?.hrv.flatMap { $0 > 0 ? $0 : nil } ?? rollup.avgHRV
-                let restingHR = night?.restingHR.flatMap { $0 > 0 ? $0 : nil } ?? rollup.restingHR
+                let hrv = night?.hrv.flatMap { $0 > 0 ? $0 : nil }
+                let restingHR = night?.restingHR.flatMap { $0 > 0 ? $0 : nil }
                 let respiratoryRate = night?.respiratoryRate.flatMap { $0 > 0 ? $0 : nil }
-                    ?? rollup.avgRespiratoryRate
-                let sleepDuration = night.map(\.duration) ?? rollup.sleepDuration
+                let sleepDuration = night.map(\.duration)
                 let sleepSpan = night.flatMap { night -> TimeInterval? in
                     guard let start = night.start, let end = night.end, end > start else { return nil }
                     return end.timeIntervalSince(start)
-                } ?? rollup.sleepSpan
+                }
                 let recovery = Metrics.recoveryV2(hrvSnapshot: nil,
                                                   fallbackRMSSD: hrv,
                                                   restingNow: restingHR,
@@ -7635,10 +7634,10 @@ final class SessionStore: ObservableObject {
                                         respiratoryRate: respiratoryRate,
                                         sleepDuration: sleepDuration,
                                         sleepSpan: sleepSpan,
-                                        sleepStart: night?.start ?? rollup.sleepStart,
-                                        sleepEnd: night?.end ?? rollup.sleepEnd,
-                                        sleepSource: night?.source ?? rollup.sleepSource,
-                                        sleepStageSegments: night?.displayStageSegments ?? rollup.sleepStageSegments,
+                                        sleepStart: night?.start,
+                                        sleepEnd: night?.end,
+                                        sleepSource: night?.source,
+                                        sleepStageSegments: night?.displayStageSegments ?? [],
                                         sleepConsistencyPercent: sleep.sleepConsistencyPercent,
                                         strain: rollup.strain > 0 ? rollup.strain : nil,
                                         skinTemperatureDeviationCelsius: resolvedSkinTemperatureDeviationByDay[day])

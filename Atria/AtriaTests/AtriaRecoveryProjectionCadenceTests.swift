@@ -79,7 +79,7 @@ final class AtriaRecoveryProjectionCadenceTests: XCTestCase {
             provisional: evaluate()
         )
 
-        XCTAssertEqual(projected.percent, 1)
+        XCTAssertNil(projected.percent)
         XCTAssertEqual(projected.confidence, .unverified)
         XCTAssertFalse(projected.usesHRV)
         XCTAssertEqual(evaluations, 0)

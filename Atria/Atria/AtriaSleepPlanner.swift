@@ -72,7 +72,10 @@ enum AtriaSleepPlanner {
         guard usable.count >= minimumNightsForLearnedEfficiency else {
             return (defaultEfficiency, true)
         }
-        let median = usable[usable.count / 2]
+        let upperMiddle = usable.count / 2
+        let median = usable.count.isMultiple(of: 2)
+            ? (usable[upperMiddle - 1] + usable[upperMiddle]) / 2
+            : usable[upperMiddle]
         return (median, false)
     }
 

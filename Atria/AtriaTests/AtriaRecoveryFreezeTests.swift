@@ -79,7 +79,10 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
         let confirmed = night(day: day, start: start, end: end)
         let sleep = SleepHistorySnapshot(nights: [confirmed], confirmedCount: 1, candidateCount: 0)
 
-        let projected = try XCTUnwrap(SessionStore.makeSavedDailyMetrics(rollups: [rollup(day: day)],
+        let projected = try XCTUnwrap(SessionStore.makeSavedDailyMetrics(rollups: [rollup(day: day,
+                                                                                         hrv: 88,
+                                                                                         restingHR: 41,
+                                                                                         sleepDuration: 9 * 3_600)],
                                                                          sleep: sleep,
                                                                          baseline: PersonalBaseline(),
                                                                          calendar: calendar).first)
@@ -116,6 +119,7 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
         XCTAssertNil(projected.sleepStart)
         XCTAssertNil(projected.sleepEnd)
         XCTAssertNil(projected.recoveryPercent)
+        XCTAssertEqual(projected.strain, 6)
     }
 
     func testCurrentDayWithoutConfirmedSleepKeepsActivityButNotRecovery() throws {

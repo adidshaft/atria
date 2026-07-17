@@ -9,7 +9,8 @@ final class AtriaTodayTileLogicTests: XCTestCase {
         XCTAssertEqual(Metrics.ringAchievementTint(fill: nil), .secondary)
         XCTAssertEqual(Metrics.ringAchievementTint(fill: 0.25), .orange)
         XCTAssertEqual(Metrics.ringAchievementTint(fill: 0.60), .yellow)
-        XCTAssertEqual(Metrics.ringAchievementTint(fill: 0.999), .green)
+        XCTAssertEqual(Metrics.ringAchievementTint(fill: 0.999), .yellow)
+        XCTAssertEqual(Metrics.ringAchievementTint(fill: 1.0), .green)
         XCTAssertEqual(Metrics.ringAchievementTint(fill: 1.20), .green)
     }
 
