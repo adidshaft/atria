@@ -51,6 +51,20 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
         XCTAssertEqual(cycle.anchorSleepID, main.id)
     }
 
+    func testUnambiguousHROnlyAutomaticSleepStartsMainSleepCycle() {
+        let automatic = sleep(id: "hr-only-main",
+                              start: date(1, 23),
+                              end: date(2, 7),
+                              source: "auto_confirmed_sleep_hr_only")
+        let cycle = AtriaPhysiologicalCycle.current(now: date(2, 18),
+                                                   confirmedSleeps: [automatic],
+                                                   calendar: calendar)
+
+        XCTAssertEqual(cycle.start, automatic.end)
+        XCTAssertEqual(cycle.boundaryKind, .mainSleep)
+        XCTAssertEqual(cycle.anchorSleepID, automatic.id)
+    }
+
     func testNapDoesNotSplitMainSleepCycle() {
         let main = sleep(id: "main", start: date(1, 23), end: date(2, 7))
         let nap = sleep(id: "nap", start: date(2, 14), end: date(2, 15), source: "manual_nap")
