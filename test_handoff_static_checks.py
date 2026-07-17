@@ -14580,6 +14580,45 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, manager, "protectedR10StabilityTask")
         assert_contains(self, manager, "stable_window_complete")
 
+    def test_20260718_hr_first_dense_bring_up_is_epoch_bounded_and_convergent(self):
+        manager = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
+
+        # 2026-07-18: the failed gym trace proved connected+s5=0 must escalate,
+        # while 2A37 and the connection epoch must exist before motion bring-up.
+        for needle in [
+            "case missingConnectionEpoch",
+            "case awaitHeartRate",
+            "case beginBringUp",
+            "private func beginConnectionEpoch(peripheral: CBPeripheral",
+            "private func beginHRFirstDenseBringUpIfNeeded(peripheral: CBPeripheral",
+            "private func beginProtectedR10BringUpForCurrentEpoch(peripheral: CBPeripheral",
+            "forKey: WorkoutMotionDefaults.activationConnectionAt",
+            "reason: \"state_restore_connected\"",
+            "reason: \"did_connect\"",
+            "denseStreamFresh: denseStreamFresh",
+            "acceptedHeartRateGap: acceptedGap",
+            "|| (denseFresh && acceptedGap >= config.hrContinuityTimeout)",
+            "status=stale_disconnect_ignored",
+            "status=stale_connect_failure_ignored",
+            "scheduleWorkoutMotionLeaseEvaluation(reason: \"activation_followup\")",
+        ]:
+            assert_contains(self, manager, needle)
+
+        coordinator_start = manager.index(
+            "private func beginHRFirstDenseBringUpIfNeeded(peripheral: CBPeripheral"
+        )
+        coordinator_end = manager.index(
+            "private let minimumEventDrivenCheckpointInterval",
+            coordinator_start,
+        )
+        coordinator = manager[coordinator_start:coordinator_end]
+        self.assertLess(coordinator.index("heartRateCharacteristic?.isNotifying == true"),
+                        coordinator.index("discoverServices([Self.UUIDs.strapService])"))
+        self.assertNotIn("setNotifyValue(false", coordinator)
+        assert_contains(self, manager, "protectedR10ResponseEventDataNotifyOrder")
+        assert_contains(self, manager, "Cmd.sendR10R11Realtime, 0x01")
+        assert_contains(self, manager, "Cmd.toggleIMUMode, 0x01")
+
 
 if __name__ == "__main__":
     unittest.main()

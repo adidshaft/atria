@@ -471,10 +471,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         hasHeartRateCharacteristic: Bool,
         heartRateIsNotifying: Bool,
         canReadHeartRate: Bool,
-        canNotifyHeartRate: Bool
+        canNotifyHeartRate: Bool,
+        denseStreamFresh: Bool = false,
+        acceptedHeartRateGap: TimeInterval? = nil
     ) -> HeartRateContinuityRecoveryDisposition {
         guard peripheralConnected else { return .reconnectKnownPeripheral }
-        guard rawHeartRateGap >= max(0, adaptiveTimeout) else { return .observe }
+        let timeout = max(0, adaptiveTimeout)
+        let acceptedHeartRateIsStale = acceptedHeartRateGap.map { $0 >= timeout } ?? false
+        guard rawHeartRateGap >= timeout
+                || (denseStreamFresh && acceptedHeartRateIsStale) else { return .observe }
 
         // One hard rebuild is reserved for a genuinely silent connection. R10,
         // battery or any other recent characteristic value keeps this false.
@@ -488,9 +493,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return .enableHeartRateNotifications
         }
         if heartRateIsNotifying {
-            return canReadHeartRate ? .readHeartRate : .observe
+            if canReadHeartRate { return .readHeartRate }
+            // 2026-07-18: fresh CRC-valid R10 with stale accepted HR proves the
+            // link is alive but 2A37 is not delivering useful samples. That is
+            // actionable even when the characteristic cannot be read; restart
+            // discovery without ever disabling an active HR CCCD.
+            return denseStreamFresh && acceptedHeartRateIsStale
+                ? .rediscoverHeartRateService
+                : .observe
         }
-        return canReadHeartRate ? .readHeartRate : .observe
+        if canReadHeartRate { return .readHeartRate }
+        return denseStreamFresh && acceptedHeartRateIsStale
+            ? .rediscoverHeartRateService
+            : .observe
     }
 
     nonisolated static func mergedRecoveryIntent(_ current: AutomaticRecoveryIntent,
@@ -2421,7 +2436,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let protectedR10RollbackRetryMaximumDelay: TimeInterval = 6 * 60 * 60
     nonisolated private static let protectedR10RollbackRetryStableHRDuration: TimeInterval = 60
     nonisolated private static let protectedR10PassiveReprobeTimeout: TimeInterval = 150
-    nonisolated static let protectedR10StandardDiscoveryDelay: TimeInterval = 15
     nonisolated static let protectedR10CommandPacingDelay: TimeInterval = 0.120
 
     enum ProtectedR10CleanOwner: String, Equatable {
@@ -2961,12 +2975,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
            !historyOnlyProbeMode,
            !protectedR10StreamSuppressed,
            protectedR10CleanOwner == .protectedV9,
-           (protectedR10CleanOwnerState == .protectedLaunchPending
+           denseBringUpIsWanted,
+           (protectedR10CleanOwnerState == .qualified
+            || protectedR10CleanOwnerState == .protectedLaunchPending
             || protectedR10CleanOwnerState == .proving) {
-            // Match the physically successful proof: establish the proprietary
-            // response/event/data profile first. HR and battery are discovered
-            // by a separate task fifteen seconds after the command pair.
-            return [Self.UUIDs.strapService]
+            // 2026-07-18: every connection epoch establishes standard 2A37
+            // before the ordered proprietary profile. The HR notification
+            // callback releases the dense bring-up gate below.
+            return [Self.UUIDs.heartRateService]
         }
         if standardHROnlyMode, !historyOnlyProbeMode {
             return Self.protectedStandardHRServices(
@@ -2974,6 +2990,115 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
         }
         return Self.UUIDs.discoveryServices
+    }
+
+    /// Establishes the one trustworthy epoch fence before any lease, cached
+    /// frame, or lifecycle evaluation can observe this connection.
+    private func beginConnectionEpoch(peripheral: CBPeripheral,
+                                      reason: String,
+                                      now: Date = Date()) {
+        connectedAt = now
+        UserDefaults.standard.set(now.timeIntervalSince1970,
+                                  forKey: "atria.ble.connectionEpochAt")
+        UserDefaults.standard.set(reason, forKey: "atria.ble.connectionEpochReason")
+        AtriaDebugLog("ATRIADBG ble_epoch status=established reason=%@ connAt=%d peripheral=%@",
+                      reason,
+                      Int(now.timeIntervalSince1970),
+                      peripheral.identifier.uuidString)
+    }
+
+    private var denseBringUpIsWanted: Bool {
+        workoutMotionOwnerStartedAt != nil
+            || UserDefaults.standard.object(forKey: WorkoutMotionDefaults.ownerStartedAt) != nil
+            || workoutMotionCalibrationHoldUntil.map { Date() < $0 } == true
+            || allDayMotionGovernorWantsHold()
+    }
+
+    /// One coordinator owns normal connects, state restoration, and an
+    /// already-connected lease escalation. It always makes 2A37 active first;
+    /// only then may the proven ordered strap profile start.
+    private func beginHRFirstDenseBringUpIfNeeded(peripheral: CBPeripheral,
+                                                   reason: String) {
+        guard self.peripheral?.identifier == peripheral.identifier,
+              peripheral.state == .connected,
+              denseBringUpIsWanted,
+              standardHROnlyMode,
+              !historyOnlyProbeMode,
+              !protectedR10StreamSuppressed,
+              protectedR10CleanOwner == .protectedV9 else { return }
+        if heartRateCharacteristic?.isNotifying == true {
+            beginProtectedR10BringUpForCurrentEpoch(peripheral: peripheral,
+                                                     reason: reason)
+            return
+        }
+        protectedR10StandardDiscoveryStarted = true
+        if let service = peripheral.services?.first(where: {
+            $0.uuid == Self.UUIDs.heartRateService
+        }) {
+            peripheral.discoverCharacteristics([Self.UUIDs.heartRateMeasure], for: service)
+        } else {
+            peripheral.discoverServices([Self.UUIDs.heartRateService])
+        }
+        scheduleWorkoutMotionLeaseEvaluation(reason: "hr_first_wait", delay: 3)
+        AtriaDebugLog("ATRIADBG protected_r10 status=hr_first_requested reason=%@ action=discover_2a37_before_motion",
+                      reason)
+    }
+
+    private func beginProtectedR10BringUpForCurrentEpoch(peripheral: CBPeripheral,
+                                                          reason: String) {
+        guard self.peripheral?.identifier == peripheral.identifier,
+              peripheral.state == .connected,
+              heartRateCharacteristic?.isNotifying == true,
+              denseBringUpIsWanted,
+              let connectedAt else { return }
+        guard r10SessionBoundaryID == nil else {
+            scheduleWorkoutMotionLeaseEvaluation(reason: "boundary_deferred", delay: 1)
+            return
+        }
+        let defaults = UserDefaults.standard
+        if let attempted = defaults.object(
+            forKey: WorkoutMotionDefaults.activationConnectionAt
+        ) as? Double,
+           abs(attempted - connectedAt.timeIntervalSince1970) < 0.001 {
+            return
+        }
+        guard protectedR10CleanOwner == .protectedV9,
+              protectedR10CleanOwnerState == .qualified
+                || protectedR10CleanOwnerState == .protectedLaunchPending else { return }
+
+        // Persist before asynchronous discovery so repeated lifecycle or
+        // foreground evaluations cannot spend another attempt this epoch.
+        defaults.set(connectedAt.timeIntervalSince1970,
+                     forKey: WorkoutMotionDefaults.activationConnectionAt)
+        defaults.set(Date().timeIntervalSince1970,
+                     forKey: WorkoutMotionDefaults.activationAttemptAt)
+        defaults.set(defaults.integer(forKey: WorkoutMotionDefaults.activationAttempts) + 1,
+                     forKey: WorkoutMotionDefaults.activationAttempts)
+        defaults.set(ProtectedR10CleanOwnerState.protectedLaunchPending.rawValue,
+                     forKey: Self.protectedR10CleanOwnerStateKey)
+        defaults.set(false, forKey: Self.protectedR10ResponseEventDataSequenceSentKey)
+        protectedR10InitialProfilePeripheralID = peripheral.identifier
+        protectedR10InitialProfileNotificationRequested = false
+        workoutMotionLeaseProfileArmed = true
+        setWorkoutMotionStatus("bring_up_started", at: Date())
+
+        if let service = peripheral.services?.first(where: {
+            $0.uuid == Self.UUIDs.strapService
+        }) {
+            peripheral.discoverCharacteristics(
+                Self.protectedStandardHRCharacteristics(
+                    for: Self.UUIDs.strapService,
+                    streamSuppressed: protectedR10StreamSuppressed,
+                    cleanOwner: protectedR10CleanOwner
+                ),
+                for: service
+            )
+        } else {
+            peripheral.discoverServices([Self.UUIDs.strapService])
+        }
+        AtriaDebugLog("ATRIADBG protected_r10 status=bring_up_started reason=%@ connAt=%d action=ordered_profile_once_per_epoch",
+                      reason,
+                      Int(connectedAt.timeIntervalSince1970))
     }
     private let minimumEventDrivenCheckpointInterval: TimeInterval = 180
     private var lastCanonicalCheckpointAt: Date?
@@ -7015,7 +7140,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         protectedR10ActivationSent = true
         protectedR10ActivationAt = startedAt
         protectedR10FramesAfterActivation = 0
-        scheduleProtectedR10StandardDiscovery(peripheral: peripheral)
+        scheduleProtectedR10BatteryDiscovery(peripheral: peripheral)
 
         protectedR10CommandSequenceTask = Task { @MainActor [weak self, weak peripheral] in
             guard let self, let peripheral, !Task.isCancelled,
@@ -7080,17 +7205,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
 
-    private func scheduleProtectedR10StandardDiscovery(peripheral: CBPeripheral) {
+    private func scheduleProtectedR10BatteryDiscovery(peripheral: CBPeripheral) {
         guard protectedR10StandardDiscoveryTask == nil else { return }
         protectedR10StandardDiscoveryTask = Task { @MainActor [weak self, weak peripheral] in
-            try? await Task.sleep(for: .seconds(Self.protectedR10StandardDiscoveryDelay))
             guard let self, let peripheral, !Task.isCancelled,
                   peripheral.state == .connected,
                   self.protectedR10ResponseEventDataProofIsActive else { return }
             self.protectedR10StandardDiscoveryStarted = true
-            peripheral.discoverServices([Self.UUIDs.heartRateService,
-                                         Self.UUIDs.batteryService])
-            AtriaDebugLog("ATRIADBG protected_r10 status=standard_services_requested owner=v9 delay_s=15 services=hr,battery action=single_delayed_discovery")
+            peripheral.discoverServices([Self.UUIDs.batteryService])
+            AtriaDebugLog("ATRIADBG protected_r10 status=battery_service_requested owner=v9 services=battery action=after_hr_first_motion_start")
             self.protectedR10StandardDiscoveryTask = nil
         }
     }
@@ -10717,16 +10840,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     }
                 }
 
-                if let reference = Self.latestLinkActivity([lastRawHRNotificationAt,
-                                                            lastAcceptedHRAt,
-                                                            connectedAt]) {
-                    let rawGap = now.timeIntervalSince(reference)
-                    if rawGap >= config.hrContinuityTimeout,
+                if let rawReference = lastRawHRNotificationAt ?? connectedAt,
+                   let acceptedReference = lastAcceptedHRAt ?? connectedAt {
+                    let rawGap = max(0, now.timeIntervalSince(rawReference))
+                    let acceptedGap = max(0, now.timeIntervalSince(acceptedReference))
+                    let denseFresh = lastR10MotionFrameAt.map {
+                        Self.protectedR10FrameBelongsToCurrentConnection(
+                            lastFrameAt: $0,
+                            connectedAt: connectedAt
+                        ) && now.timeIntervalSince($0) >= 0 && now.timeIntervalSince($0) <= 10
+                    } == true
+                    if (rawGap >= config.hrContinuityTimeout
+                            || (denseFresh && acceptedGap >= config.hrContinuityTimeout)),
                        lastHRContinuityActionAt.map({ now.timeIntervalSince($0) >= config.hrContinuityTimeout * cadenceMultiplier }) ?? true {
                         lastHRContinuityActionAt = now
                         performHRContinuityWatchdogAction(status: "stale",
                                                           rawGap: rawGap,
-                                                          acceptedGap: lastAcceptedHRAt.map { now.timeIntervalSince($0) },
+                                                          acceptedGap: acceptedGap,
                                                           timeout: config.hrContinuityTimeout,
                                                           label: config.label)
                     }
@@ -11127,11 +11257,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 guard longWearModeEnabled, standardHROnlyMode else { continue }
                 guard status == .connected else { continue }
                 let now = Date()
-                guard let reference = Self.latestLinkActivity([lastRawHRNotificationAt,
-                                                               lastAcceptedHRAt,
-                                                               connectedAt]) else { continue }
-                let rawGap = now.timeIntervalSince(reference)
-                guard rawGap >= timeout else { continue }
+                guard let rawReference = lastRawHRNotificationAt ?? connectedAt,
+                      let acceptedReference = lastAcceptedHRAt ?? connectedAt else { continue }
+                let rawGap = max(0, now.timeIntervalSince(rawReference))
+                let acceptedGap = max(0, now.timeIntervalSince(acceptedReference))
+                let denseFresh = lastR10MotionFrameAt.map {
+                    Self.protectedR10FrameBelongsToCurrentConnection(
+                        lastFrameAt: $0,
+                        connectedAt: connectedAt
+                    ) && now.timeIntervalSince($0) >= 0 && now.timeIntervalSince($0) <= 10
+                } == true
+                guard rawGap >= timeout || (denseFresh && acceptedGap >= timeout) else { continue }
                 if let lastNudgeAt, now.timeIntervalSince(lastNudgeAt) < timeout {
                     continue
                 }
@@ -11139,7 +11275,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
                 performHRContinuityWatchdogAction(status: "stale",
                                                   rawGap: rawGap,
-                                                  acceptedGap: lastAcceptedHRAt.map { now.timeIntervalSince($0) },
+                                                  acceptedGap: acceptedGap,
                                                   timeout: timeout,
                                                   label: label)
             }
@@ -11277,7 +11413,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                                    acceptedGap: TimeInterval?,
                                                    timeout: TimeInterval,
                                                    label: String) {
-        if dutyCycleState == .sparseSentinel {
+        let now = Date()
+        let denseStreamFresh = Self.workoutMotionStream5IsProven(
+            notifyConfirmed: strapStream5NotifyConfirmed,
+            lastFrameAt: lastR10MotionFrameAt,
+            connectedAt: connectedAt
+        ) && lastR10MotionFrameAt.map {
+            let age = now.timeIntervalSince($0)
+            return age >= 0 && age <= 10
+        } == true
+        if dutyCycleState == .sparseSentinel && !denseBringUpIsWanted {
             AtriaDebugLog("ATRIADBG hr_continuity_watchdog status=sparse_expected_silence action=suppressed_duty_cycle")
             return
         }
@@ -11331,7 +11476,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                   label)
             return
         }
-        let now = Date()
         let usefulGattReference = Self.latestLinkActivity([lastGattActivityAt, connectedAt])
         let usefulGattGap = usefulGattReference.map { max(0, now.timeIntervalSince($0)) }
             ?? max(0, rawGap)
@@ -11344,7 +11488,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             hasHeartRateCharacteristic: characteristic != nil,
             heartRateIsNotifying: characteristic?.isNotifying == true,
             canReadHeartRate: characteristic?.properties.contains(.read) == true,
-            canNotifyHeartRate: characteristic?.properties.contains(.notify) == true
+            canNotifyHeartRate: characteristic?.properties.contains(.notify) == true,
+            denseStreamFresh: denseStreamFresh,
+            acceptedHeartRateGap: acceptedGap
         )
 
         if disposition == .observe {
@@ -15312,15 +15458,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         evaluateR10Liveness(reason: "\(reason)_bg_audit")
         guard longWearModeEnabled, standardHROnlyMode, status == .connected else { return }
         let now = Date()
-        guard let reference = Self.latestLinkActivity([lastRawHRNotificationAt,
-                                                       lastAcceptedHRAt,
-                                                       connectedAt]) else { return }
-        let rawGap = now.timeIntervalSince(reference)
+        guard let rawReference = lastRawHRNotificationAt ?? connectedAt,
+              let acceptedReference = lastAcceptedHRAt ?? connectedAt else { return }
+        let rawGap = max(0, now.timeIntervalSince(rawReference))
+        let acceptedGap = max(0, now.timeIntervalSince(acceptedReference))
         let timeout = Self.hrContinuityWatchdogTimeout(acceptedHRTimeout: 45)
-        guard rawGap >= timeout else { return }
+        let denseFresh = lastR10MotionFrameAt.map {
+            Self.protectedR10FrameBelongsToCurrentConnection(
+                lastFrameAt: $0,
+                connectedAt: connectedAt
+            ) && now.timeIntervalSince($0) >= 0 && now.timeIntervalSince($0) <= 10
+        } == true
+        guard rawGap >= timeout || (denseFresh && acceptedGap >= timeout) else { return }
         performHRContinuityWatchdogAction(status: "bg_task_stale",
                                           rawGap: rawGap,
-                                          acceptedGap: lastAcceptedHRAt.map { now.timeIntervalSince($0) },
+                                          acceptedGap: acceptedGap,
                                           timeout: timeout,
                                           label: captureLabel.isEmpty ? "All-day wear" : captureLabel)
     }
@@ -15368,6 +15520,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     enum WorkoutMotionLeaseAction: Equatable {
         case none
+        case missingConnectionEpoch
+        case awaitHeartRate
+        case beginBringUp
         case markLive
         case awaitGrace
         case activate
@@ -15419,14 +15574,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         denseFrameThreshold: Int = workoutMotionDenseFrameThreshold,
         now: Date
     ) -> WorkoutMotionLeaseAction {
-        guard let leaseStartedAt, connected, let connectedAt,
-              stream5Confirmed, hrNotifying else { return .none }
+        guard let leaseStartedAt, connected else { return .none }
+        guard let connectedAt else { return .missingConnectionEpoch }
+        guard hrNotifying else { return .awaitHeartRate }
         if let lastFrameAt,
            lastFrameAt >= connectedAt,
            now.timeIntervalSince(lastFrameAt) >= 0,
            now.timeIntervalSince(lastFrameAt) <= freshFrameWindow,
            denseFrameCount >= denseFrameThreshold {
             return .markLive
+        }
+        if !stream5Confirmed {
+            if let lastActivationConnectionAt,
+               abs(lastActivationConnectionAt.timeIntervalSince(connectedAt)) < 0.001 {
+                return .alreadyAttempted
+            }
+            return .beginBringUp
         }
         // Grace is measured from the lease (workout) start only. Measuring it
         // per-connection deadlocks under link churn: on 2026-07-16 00:21 IST
@@ -15741,6 +15904,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         switch action {
         case .none:
             markWorkoutMotionGapIfNeeded(now: now, reason: "\(reason)_transport_unavailable")
+        case .missingConnectionEpoch:
+            defaults.set("missing_connected_at", forKey: "atria.workoutMotion.invariantFailure")
+            defaults.set(now.timeIntervalSince1970,
+                         forKey: "atria.workoutMotion.invariantFailureAt")
+            if let peripheral, peripheral.state == .connected {
+                beginConnectionEpoch(peripheral: peripheral,
+                                     reason: "lease_invariant_repair",
+                                     now: now)
+                beginHRFirstDenseBringUpIfNeeded(peripheral: peripheral,
+                                                 reason: "lease_invariant_repair")
+            }
+            markWorkoutMotionGapIfNeeded(now: now, reason: "missing_connection_epoch")
+        case .awaitHeartRate:
+            if let peripheral, peripheral.state == .connected {
+                beginHRFirstDenseBringUpIfNeeded(peripheral: peripheral,
+                                                 reason: "lease_await_hr")
+            }
+            markWorkoutMotionGapIfNeeded(now: now, reason: "\(reason)_await_hr")
+            scheduleWorkoutMotionLeaseEvaluation(reason: "hr_first_wait", delay: 3)
+        case .beginBringUp:
+            if let peripheral, peripheral.state == .connected {
+                beginProtectedR10BringUpForCurrentEpoch(peripheral: peripheral,
+                                                        reason: "lease_stream5_unconfirmed")
+            }
         case .markLive:
             recordWorkoutMotionGapClosureIfNeeded(
                 endedAt: lastR10MotionFrameAt ?? now,
@@ -15844,7 +16031,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG workout_motion status=activation_pair_complete cmd=6a data=01 seq=%d pacing_ms=120 reason=%@",
                           Int(imuSequence), reason)
         }
-        scheduleWorkoutMotionLeaseEvaluation(reason: "\(reason)_post_activation")
+        scheduleWorkoutMotionLeaseEvaluation(reason: "activation_followup")
     }
 
     /// Every CRC-valid R10 frame belonging to the current connection feeds the
@@ -20194,7 +20381,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 self.clearPendingKnownReconnect(reason: "state_restore_connected")
                 self.recomputeConnectionStatus(reason: "event")
                 self.reconnectWatchdogTask?.cancel()
-                self.connectedAt = Date()
+                self.beginConnectionEpoch(peripheral: restoredPeripheral,
+                                          reason: "state_restore_connected")
                 self.protectedR10ActivationGraceTask?.cancel()
                 self.protectedR10ActivationGraceTask = nil
                 self.protectedR10ActivationSent = false
@@ -20232,7 +20420,14 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     self.recordMotionHandshakeEvidence(event: "restored_connected")
                     restoredPeripheral.discoverServices([Self.UUIDs.strapService])
                 } else {
-                    restoredPeripheral.discoverServices(self.discoveryServicesForCurrentMode)
+                    if self.denseBringUpIsWanted {
+                        self.beginHRFirstDenseBringUpIfNeeded(
+                            peripheral: restoredPeripheral,
+                            reason: "state_restore_connected"
+                        )
+                    } else {
+                        restoredPeripheral.discoverServices(self.discoveryServicesForCurrentMode)
+                    }
                     self.resumeProtectedR10FromRestoredCache(restoredPeripheral)
                 }
                 AtriaDebugLog("ATRIADBG ble_restore status=connected name=%@", self.deviceName)
@@ -20340,7 +20535,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             assignIfChanged(\.batteryIsCharging, false)
             assignIfChanged(\.batteryChargeStatus, .levelOnly)
             recordBatteryChargeEvidence(batteryChargeStatus, reason: "did_connect")
-            connectedAt = Date()
+            beginConnectionEpoch(peripheral: peripheral, reason: "did_connect", now: now)
             motionHandshakeCommandSequenceTask?.cancel()
             motionHandshakeCommandSequenceTask = nil
             motionHandshakeProfileCharacteristics.removeAll()
@@ -20391,17 +20586,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                protectedR10CleanOwner == .protectedV9,
                protectedR10CleanOwnerState == .qualified,
                !protectedR10StreamSuppressed {
-                let leaseDefaults = UserDefaults.standard
-                leaseDefaults.set(
-                    ProtectedR10CleanOwnerState.protectedLaunchPending.rawValue,
-                    forKey: Self.protectedR10CleanOwnerStateKey
-                )
-                leaseDefaults.set(
-                    false,
-                    forKey: Self.protectedR10ResponseEventDataSequenceSentKey
-                )
                 workoutMotionLeaseProfileArmed = true
-                AtriaDebugLog("ATRIADBG workout_motion status=lease_full_bring_up_armed action=launch_style_profile_per_connection")
+                AtriaDebugLog("ATRIADBG workout_motion status=lease_full_bring_up_armed action=hr_first_then_launch_style_profile_per_connection")
             }
             dbgMTU = mtu
             recordLinkConnected(peripheral: peripheral)
@@ -20413,7 +20599,12 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                                               detail: "discover_stream5_service_only")
                 peripheral.discoverServices([Self.UUIDs.strapService])
             } else {
-                peripheral.discoverServices(discoveryServicesForCurrentMode)
+                if denseBringUpIsWanted {
+                    beginHRFirstDenseBringUpIfNeeded(peripheral: peripheral,
+                                                     reason: "did_connect")
+                } else {
+                    peripheral.discoverServices(discoveryServicesForCurrentMode)
+                }
             }
         }
     }
@@ -20422,6 +20613,11 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                         didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         proprietaryFrameReassembler.reset()
         Task { @MainActor in
+            guard self.peripheral?.identifier == peripheral.identifier else {
+                AtriaDebugLog("ATRIADBG ble_epoch status=stale_disconnect_ignored peripheral=%@",
+                              peripheral.identifier.uuidString)
+                return
+            }
             self.heartRateNotificationEnableGate.reset()
             self.batteryConnectionRestoredSamePeripheral = false
             self.recentReconnectBatteryBaselineProjectionPublished = false
@@ -20730,6 +20926,11 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                         error: Error?) {
         proprietaryFrameReassembler.reset()
         Task { @MainActor in
+            guard self.peripheral?.identifier == peripheral.identifier else {
+                AtriaDebugLog("ATRIADBG ble_epoch status=stale_connect_failure_ignored peripheral=%@",
+                              peripheral.identifier.uuidString)
+                return
+            }
             reconnectWatchdogTask?.cancel()
             freshScanFallbackTask?.cancel()
             freshScanFallbackTask = nil
@@ -21090,6 +21291,18 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     self.heartRateCharacteristic = heartRateCharacteristic
                     self.lastMissingHeartRateDiscoveryAt = nil
                     self.scheduleDebugMissingHeartRateCharacteristicAfterDiscoveryIfNeeded()
+                    if heartRateCharacteristic.isNotifying {
+                        self.beginProtectedR10BringUpForCurrentEpoch(
+                            peripheral: peripheral,
+                            reason: "2a37_already_active"
+                        )
+                    } else if self.denseBringUpIsWanted {
+                        _ = self.requestHeartRateNotificationEnableIfNeeded(
+                            peripheral: peripheral,
+                            characteristic: heartRateCharacteristic,
+                            reason: "dense_hr_first_characteristic_discovered"
+                        )
+                    }
                 }
                 if usedStandardHROnly {
                     self.dbgLast = "standard hr only"
@@ -21178,6 +21391,19 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 AtriaDebugLog("ATRIADBG ble_notify_enable status=settled notifying=%d error=%@",
                               notifying ? 1 : 0,
                               err ?? "nil")
+                if err == nil, notifying,
+                   self.peripheral?.identifier == peripheral.identifier {
+                    self.heartRateCharacteristic = characteristic
+                    self.beginProtectedR10BringUpForCurrentEpoch(
+                        peripheral: peripheral,
+                        reason: "2a37_notify_confirmed"
+                    )
+                } else if self.denseBringUpIsWanted {
+                    self.scheduleWorkoutMotionLeaseEvaluation(
+                        reason: "hr_notify_retry",
+                        delay: 3
+                    )
+                }
             }
             if characteristic.uuid == Self.UUIDs.batteryLevel {
                 let defaults = UserDefaults.standard
