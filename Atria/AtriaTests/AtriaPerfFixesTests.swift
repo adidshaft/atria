@@ -1714,4 +1714,88 @@ final class AtriaPerfFixesTests: XCTestCase {
 
         XCTAssertEqual(computeCount, 2)
     }
+
+    func testStrainConfidenceDisclosesPartialDayWear() {
+        // Half-worn day keeps the base label; below half discloses.
+        XCTAssertEqual(AtriaHomeModel.strainConfidence(
+            hasRestingHeartRateEvidence: true,
+            maxHRSource: .measured,
+            hasLoadEvidence: true,
+            resolvedRest: 58,
+            maxHR: 192,
+            wearCoverageFraction: 0.5
+        ), "local")
+        XCTAssertEqual(AtriaHomeModel.strainConfidence(
+            hasRestingHeartRateEvidence: true,
+            maxHRSource: .measured,
+            hasLoadEvidence: true,
+            resolvedRest: 58,
+            maxHR: 192,
+            wearCoverageFraction: 0.2
+        ), "local · partial-day wear")
+        XCTAssertEqual(AtriaHomeModel.strainConfidence(
+            hasRestingHeartRateEvidence: true,
+            maxHRSource: .ageEstimate,
+            hasLoadEvidence: true,
+            resolvedRest: 58,
+            maxHR: 187,
+            wearCoverageFraction: 0.1
+        ), "provisional · age-estimated max HR · partial-day wear")
+        // Unknown coverage and learning states are unchanged.
+        XCTAssertEqual(AtriaHomeModel.strainConfidence(
+            hasRestingHeartRateEvidence: true,
+            maxHRSource: .measured,
+            hasLoadEvidence: true,
+            resolvedRest: 58,
+            maxHR: 192,
+            wearCoverageFraction: nil
+        ), "local")
+        XCTAssertEqual(AtriaHomeModel.strainConfidence(
+            hasRestingHeartRateEvidence: false,
+            maxHRSource: .measured,
+            hasLoadEvidence: true,
+            resolvedRest: 58,
+            maxHR: 192,
+            wearCoverageFraction: 0.1
+        ), "learning")
+    }
+
+    func testObservedWearUnionMergesOverlappingSessionsWithoutDoubleCounting() {
+        let dayStart = Date(timeIntervalSince1970: 1_800_000_000)
+        let intervals = [
+            // All-day segment 08:00-12:00.
+            (start: dayStart, end: dayStart.addingTimeInterval(4 * 3600)),
+            // Workout checkpoint fully inside it (would double-count if summed).
+            (start: dayStart.addingTimeInterval(3600),
+             end: dayStart.addingTimeInterval(2 * 3600)),
+            // Detached evening segment, partially clipped by the window end.
+            (start: dayStart.addingTimeInterval(8 * 3600),
+             end: dayStart.addingTimeInterval(11 * 3600)),
+            // Entirely before the window: ignored.
+            (start: dayStart.addingTimeInterval(-3600), end: dayStart),
+        ]
+        let union = AtriaHomeModel.observedWearUnionSeconds(
+            intervals: intervals,
+            windowStart: dayStart,
+            windowEnd: dayStart.addingTimeInterval(10 * 3600)
+        )
+        XCTAssertEqual(union, 6 * 3600, accuracy: 1)
+    }
+
+    func testDayWearCoverageWithholdsJudgementOnAYoungDay() {
+        XCTAssertNil(AtriaHomeModel.dayWearCoverageFraction(
+            observedSeconds: 600,
+            dayElapsedSeconds: 3600
+        ))
+        XCTAssertEqual(AtriaHomeModel.dayWearCoverageFraction(
+            observedSeconds: 2 * 3600,
+            dayElapsedSeconds: 8 * 3600
+        ) ?? -1, 0.25, accuracy: 0.001)
+        // Overlap approximations can exceed elapsed time; clamp to 1.
+        XCTAssertEqual(AtriaHomeModel.dayWearCoverageFraction(
+            observedSeconds: 12 * 3600,
+            dayElapsedSeconds: 8 * 3600
+        ) ?? -1, 1.0, accuracy: 0.001)
+    }
+
 }
