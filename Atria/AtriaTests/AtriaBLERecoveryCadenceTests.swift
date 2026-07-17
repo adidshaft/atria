@@ -77,6 +77,21 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), .enableHeartRateNotifications)
     }
 
+    func testDenseFreshWithAcceptedHRStaleAlwaysProducesRepairAction() {
+        XCTAssertEqual(AtriaBLEManager.heartRateContinuityRecoveryDisposition(
+            rawHeartRateGap: 5,
+            usefulGattGap: 1,
+            adaptiveTimeout: 30,
+            peripheralConnected: true,
+            hasHeartRateCharacteristic: true,
+            heartRateIsNotifying: true,
+            canReadHeartRate: false,
+            canNotifyHeartRate: true,
+            denseStreamFresh: true,
+            acceptedHeartRateGap: 60
+        ), .rediscoverHeartRateService)
+    }
+
     func testFreshR10EvidencePreventsTeardownDuringSixtySecondHRGap() {
         XCTAssertEqual(AtriaBLEManager.heartRateContinuityRecoveryDisposition(
             rawHeartRateGap: 60,
@@ -382,7 +397,6 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertEqual(AtriaBLEManager.protectedR10CommandPacingDelay,
                        0.120,
                        accuracy: 0.000_1)
-        XCTAssertEqual(AtriaBLEManager.protectedR10StandardDiscoveryDelay, 15)
         XCTAssertEqual(
             AtriaBLEManager.protectedStandardHRStrapCharacteristics(
                 streamSuppressed: false,
@@ -905,7 +919,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             of: "private func sendProtectedR10ResponseEventDataSequenceIfReady"
         ))
         let sequenceEnd = try XCTUnwrap(source.range(
-            of: "private func scheduleProtectedR10StandardDiscovery",
+            of: "private func scheduleProtectedR10BatteryDiscovery",
             range: sequenceStart.upperBound..<source.endIndex
         ))
         let sequenceBody = String(source[sequenceStart.lowerBound..<sequenceEnd.lowerBound])
@@ -5025,7 +5039,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), .awaitGrace)
     }
 
-    func testLeaseRequiresLiveStandardHeartRateAndConfirmedStream() {
+    func testLeaseRequiresLiveStandardHeartRateBeforeDenseBringUp() {
         let connectedAt = Date(timeIntervalSince1970: 1_000)
         let leaseStartedAt = Date(timeIntervalSince1970: 1_010)
         let now = leaseStartedAt.addingTimeInterval(60)
@@ -5039,7 +5053,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             denseFrameCount: 1,
             lastActivationConnectionAt: nil,
             now: now
-        ), .none)
+        ), .awaitHeartRate)
         XCTAssertEqual(AtriaBLEManager.workoutMotionLeaseAction(
             leaseStartedAt: leaseStartedAt,
             connected: false,
@@ -5062,6 +5076,90 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             lastActivationConnectionAt: nil,
             now: now
         ), .none)
+    }
+
+    func testUnconfirmedStreamEscalatesExactlyOncePerConnectionEpoch() {
+        let leaseStartedAt = Date(timeIntervalSince1970: 900)
+        let firstConnection = Date(timeIntervalSince1970: 1_000)
+        let secondConnection = Date(timeIntervalSince1970: 2_000)
+
+        XCTAssertEqual(AtriaBLEManager.workoutMotionLeaseAction(
+            leaseStartedAt: leaseStartedAt,
+            connected: true,
+            connectedAt: firstConnection,
+            stream5Confirmed: false,
+            hrNotifying: true,
+            lastFrameAt: nil,
+            denseFrameCount: 0,
+            lastActivationConnectionAt: nil,
+            now: firstConnection.addingTimeInterval(1)
+        ), .beginBringUp)
+        XCTAssertEqual(AtriaBLEManager.workoutMotionLeaseAction(
+            leaseStartedAt: leaseStartedAt,
+            connected: true,
+            connectedAt: firstConnection,
+            stream5Confirmed: false,
+            hrNotifying: true,
+            lastFrameAt: nil,
+            denseFrameCount: 0,
+            lastActivationConnectionAt: firstConnection,
+            now: firstConnection.addingTimeInterval(30)
+        ), .alreadyAttempted)
+        XCTAssertEqual(AtriaBLEManager.workoutMotionLeaseAction(
+            leaseStartedAt: leaseStartedAt,
+            connected: true,
+            connectedAt: secondConnection,
+            stream5Confirmed: false,
+            hrNotifying: true,
+            lastFrameAt: nil,
+            denseFrameCount: 0,
+            lastActivationConnectionAt: firstConnection,
+            now: secondConnection.addingTimeInterval(1)
+        ), .beginBringUp)
+    }
+
+    func testConnectedLeaseWithoutEpochIsHardInvariantFailure() {
+        XCTAssertEqual(AtriaBLEManager.workoutMotionLeaseAction(
+            leaseStartedAt: Date(timeIntervalSince1970: 900),
+            connected: true,
+            connectedAt: nil,
+            stream5Confirmed: false,
+            hrNotifying: true,
+            lastFrameAt: nil,
+            denseFrameCount: 0,
+            lastActivationConnectionAt: nil,
+            now: Date(timeIntervalSince1970: 1_000)
+        ), .missingConnectionEpoch)
+    }
+
+    func testConnectAndRestoreUseCommonHRFirstEpochCoordinator() throws {
+        let source = try leaseManagerSource()
+        let restore = try XCTUnwrap(source.range(of: "state_restore_connected"))
+        let restoreBody = String(source[restore.lowerBound...].prefix(7_000))
+        let restoreEpoch = try XCTUnwrap(restoreBody.range(of: "beginConnectionEpoch"))
+        let restoreBringUp = try XCTUnwrap(restoreBody.range(of: "beginHRFirstDenseBringUpIfNeeded"))
+        XCTAssertLessThan(restoreEpoch.lowerBound, restoreBringUp.lowerBound)
+
+        let connect = try XCTUnwrap(source.range(of: "didConnect peripheral: CBPeripheral"))
+        let connectBody = String(source[connect.lowerBound...].prefix(10_000))
+        let connectEpoch = try XCTUnwrap(connectBody.range(of: "beginConnectionEpoch"))
+        let connectBringUp = try XCTUnwrap(connectBody.range(of: "beginHRFirstDenseBringUpIfNeeded"))
+        XCTAssertLessThan(connectEpoch.lowerBound, connectBringUp.lowerBound)
+
+        let coordinator = try XCTUnwrap(source.range(of: "private func beginHRFirstDenseBringUpIfNeeded"))
+        let orderedProfile = try XCTUnwrap(source.range(of: "private func beginProtectedR10BringUpForCurrentEpoch",
+                                                        range: coordinator.upperBound..<source.endIndex))
+        let hrFirstBody = String(source[coordinator.lowerBound..<orderedProfile.lowerBound])
+        XCTAssertTrue(hrFirstBody.contains("heartRateCharacteristic?.isNotifying == true"))
+        XCTAssertTrue(hrFirstBody.contains("heartRateService"))
+        XCTAssertFalse(hrFirstBody.contains("setNotifyValue(false"))
+    }
+
+    func testStaleLinkCallbacksCannotClearCurrentEpoch() throws {
+        let source = try leaseManagerSource()
+        XCTAssertTrue(source.contains("status=stale_disconnect_ignored"))
+        XCTAssertTrue(source.contains("status=stale_connect_failure_ignored"))
+        XCTAssertTrue(source.contains("guard self.peripheral?.identifier == peripheral.identifier"))
     }
 
     func testProtectedWatchdogObserveBranchConsultsWorkoutLease() throws {
