@@ -6,6 +6,12 @@ import Foundation
 enum AtriaWorkoutMetricPresentation {
     static let minimumNumericCoveragePercent = 25
 
+    enum HeartRatePresentationState: Equatable {
+        case unavailable
+        case incomplete
+        case complete
+    }
+
     struct ShareMetrics: Equatable {
         let strain: String
         let peakHeartRate: String
@@ -13,10 +19,22 @@ enum AtriaWorkoutMetricPresentation {
         let includesZoneMinutes: Bool
     }
 
+    static func heartRateState(_ workout: UserConfirmedWorkout) -> HeartRatePresentationState {
+        guard workout.samples > 0, workout.avgHR > 0 else { return .unavailable }
+        guard workout.samples >= 2,
+              workout.peakHR > 0,
+              workout.streamCoveragePercent >= minimumNumericCoveragePercent else {
+            return .incomplete
+        }
+        return .complete
+    }
+
+    static func hasHeartRateData(_ workout: UserConfirmedWorkout) -> Bool {
+        heartRateState(workout) != .unavailable
+    }
+
     static func metricsAreIncomplete(_ workout: UserConfirmedWorkout) -> Bool {
-        workout.samples < 2
-            || workout.avgHR <= 0
-            || workout.streamCoveragePercent < minimumNumericCoveragePercent
+        heartRateState(workout) != .complete
     }
 
     static func dayStrainIsIncomplete(day: Date,
@@ -42,7 +60,27 @@ enum AtriaWorkoutMetricPresentation {
     }
 
     static func averageHeartRateText(_ workout: UserConfirmedWorkout) -> String {
-        metricsAreIncomplete(workout) ? "Incomplete" : "\(workout.avgHR)"
+        switch heartRateState(workout) {
+        case .unavailable: return "No HR data"
+        case .incomplete: return "Incomplete"
+        case .complete: return "\(workout.avgHR)"
+        }
+    }
+
+    static func peakHeartRateText(_ workout: UserConfirmedWorkout) -> String {
+        switch heartRateState(workout) {
+        case .unavailable: return "No HR data"
+        case .incomplete: return "Incomplete"
+        case .complete: return "\(workout.peakHR)"
+        }
+    }
+
+    static func heartRateSummaryText(_ workout: UserConfirmedWorkout) -> String {
+        switch heartRateState(workout) {
+        case .unavailable: return "No HR data"
+        case .incomplete: return "\(workout.streamCoveragePercent)% HR · Incomplete"
+        case .complete: return "\(workout.avgHR) avg · \(workout.peakHR) peak"
+        }
     }
 
     static func energyText(_ workout: UserConfirmedWorkout) -> String {
@@ -51,7 +89,11 @@ enum AtriaWorkoutMetricPresentation {
     }
 
     static func compactStatus(_ workout: UserConfirmedWorkout) -> String {
-        "\(workout.streamCoveragePercent)% HR · Incomplete"
+        switch heartRateState(workout) {
+        case .unavailable: return "No HR data"
+        case .incomplete: return "\(workout.streamCoveragePercent)% HR · Incomplete"
+        case .complete: return "\(workout.streamCoveragePercent)% HR"
+        }
     }
 
     static func shareMetrics(_ workout: UserConfirmedWorkout) -> ShareMetrics {

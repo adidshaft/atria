@@ -39,6 +39,7 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
 
     private func workout(samples: Int = 177,
                          avgHR: Int = 86,
+                         peakHR: Int = 100,
                          strain: Double? = 0.051,
                          coverage: Int = 100) -> UserConfirmedWorkout {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
@@ -52,7 +53,7 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                                     sessions: 1,
                                     samples: samples,
                                     avgHR: avgHR,
-                                    peakHR: 100,
+                                    peakHR: peakHR,
                                     p95HR: 96,
                                     p99HR: 99,
                                     thresholdHR: 124,
@@ -85,6 +86,9 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertEqual(AtriaWorkoutMetricPresentation.strainText(sparse), "Incomplete")
         XCTAssertEqual(AtriaWorkoutMetricPresentation.averageHeartRateText(sparse), "Incomplete")
         XCTAssertEqual(AtriaWorkoutMetricPresentation.energyText(sparse), "Incomplete")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateSummaryText(sparse),
+                       "3% HR · Incomplete")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.peakHeartRateText(sparse), "Incomplete")
         XCTAssertEqual(AtriaWorkoutMetricPresentation.shareMetrics(sparse),
                        .init(strain: "Incomplete",
                              peakHeartRate: "--",
@@ -92,11 +96,31 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                              includesZoneMinutes: false))
 
         let complete = workout(samples: 1_200, avgHR: 126, strain: 5.4, coverage: 92)
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateSummaryText(complete),
+                       "126 avg · 100 peak")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.peakHeartRateText(complete), "100")
         XCTAssertEqual(AtriaWorkoutMetricPresentation.shareMetrics(complete),
                        .init(strain: "5.4",
                              peakHeartRate: "100",
                              averageHeartRate: "126",
                              includesZoneMinutes: true))
+    }
+
+    func testUnavailableAndOneSampleHeartRateNeverExposeNumericPeak() {
+        let unavailable = workout(samples: 0, avgHR: 0, peakHR: 0)
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateState(unavailable), .unavailable)
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateSummaryText(unavailable), "No HR data")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.peakHeartRateText(unavailable), "No HR data")
+
+        let oneSample = workout(samples: 1, avgHR: 126, peakHR: 150, coverage: 100)
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateState(oneSample), .incomplete)
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.averageHeartRateText(oneSample), "Incomplete")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.peakHeartRateText(oneSample), "Incomplete")
+
+        let corruptPeak = workout(samples: 200, avgHR: 126, peakHR: 0, coverage: 92)
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateState(corruptPeak), .incomplete)
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateSummaryText(corruptPeak),
+                       "92% HR · Incomplete")
     }
 
     func testTinyDayStrainIsIncompleteOnlyWhenAllSameDayWorkoutsAreSeverelySparse() {
