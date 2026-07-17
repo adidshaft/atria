@@ -209,8 +209,28 @@ final class AtriaWorkoutRuntime {
             }
             _ = await self.replayPendingActions()
             self.pendingActionReplayTask = nil
+            await self.recoverAbandonedWorkoutIntentIfNeeded()
             self.scheduleTerminalWorkoutRecovery()
         }
+    }
+
+    /// A workout the user never ended must not run forever. Past the 24 h
+    /// continuity bound the intent is finalized at the capped end and handed
+    /// to the normal terminal-recovery worker: the workout saves with stats
+    /// from its actual samples (coverage discloses real wear), the motion
+    /// lease releases, and the result is visible in history where the user
+    /// can adjust or delete it.
+    private func recoverAbandonedWorkoutIntentIfNeeded() async {
+        guard let intent = AtriaPendingWorkoutIntent.load(),
+              let cappedEnd = AtriaPendingWorkoutIntent.abandonedRecoveryEndDate(
+                  intent: intent
+              ) else { return }
+        var terminal = intent
+        terminal.endedAt = cappedEnd
+        guard await terminal.persistTerminal() != nil else { return }
+        AtriaDebugLog("ATRIADBG workout_recovery status=abandoned_intent_finalized started_unix=%d capped_end_unix=%d action=terminal_recovery_owns_completion",
+                      Int(intent.startedAt.timeIntervalSince1970),
+                      Int(cappedEnd.timeIntervalSince1970))
     }
 
     /// App-lifetime completion owner for an ended workout intent. Failed sensor,
