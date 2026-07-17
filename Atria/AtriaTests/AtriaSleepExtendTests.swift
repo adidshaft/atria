@@ -16,7 +16,8 @@ final class AtriaSleepExtendTests: XCTestCase {
         AggregateSleepCandidate(
             kind: kind, day: start, eventTimeZoneIdentifier: "UTC", sessions: 1, start: start, end: end,
             duration: creditedDuration ?? end.timeIntervalSince(start), span: end.timeIntervalSince(start),
-            maxGap: 0, samples: 100, avgHR: 55, peakHR: 70, hrStandardDeviation: 3,
+            maxGap: 0, samples: 100, hrObservedCoverageFraction: 1,
+            maximumHRSampleGap: 60, avgHR: 55, peakHR: 70, hrStandardDeviation: 3,
             medianHR: 55, hrP90: 62, elevatedSampleFraction: 0.01,
             baselineRestingHR: 52, restingHR: 52,
             confidence: .high, reason: "test", motionHintCount: 0, motionHintKinds: "",
