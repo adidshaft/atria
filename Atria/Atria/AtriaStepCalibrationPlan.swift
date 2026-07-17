@@ -275,9 +275,16 @@ struct AtriaStepCalibrationSequenceCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
+            stageProgressRail
 
             if let stage = plan.currentStage {
                 currentStageCard(stage)
+                if !plan.isRunning {
+                    Text("For a valid fit, walk on a treadmill at a steady belt speed (or one long straight path). Short back-and-forth laps fail calibration.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             } else {
                 Label("Sequence complete", systemImage: "checkmark.seal.fill")
                     .font(.headline.weight(.semibold))
@@ -288,18 +295,24 @@ struct AtriaStepCalibrationSequenceCard: View {
             }
 
             if let failureText = validationMessage {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 10) {
                     Label(failureText, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
+                        .font(.subheadline.weight(.medium))
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityLabel("Calibration stage failed. \(failureText)")
-                    Button("Retry stage", role: .destructive) {
+                    Button {
                         plan.retryCurrentStage()
                         validationMessage = nil
+                    } label: {
+                        Label("Retry stage", systemImage: "arrow.counterclockwise")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity, minHeight: 44)
                     }
-                    .font(.caption.weight(.semibold))
+                    .atriaCardAction(prominent: false, tint: .orange)
                 }
+                .padding(12)
+                .atriaInsetCard(tint: .orange)
             }
 
             completedStages
@@ -340,35 +353,101 @@ struct AtriaStepCalibrationSequenceCard: View {
         }
     }
 
+    private var stageProgressRail: some View {
+        HStack(spacing: 6) {
+            ForEach(Array(AtriaStepCalibrationPlanStore.stages.enumerated()),
+                    id: \.element.id) { index, stage in
+                let isDone = index < plan.completedStageCount
+                let isCurrent = index == plan.completedStageCount
+                VStack(spacing: 4) {
+                    Image(systemName: isDone ? "checkmark.circle.fill" : stage.systemImage)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(isDone ? .green : (isCurrent ? .indigo : .secondary))
+                    Text(stage.expectedSteps == 0 ? "Rest" : "\(stage.expectedSteps)")
+                        .font(.caption2.weight(isCurrent ? .bold : .regular).monospacedDigit())
+                        .foregroundStyle(isCurrent ? .primary : .secondary)
+                    Capsule()
+                        .fill(isDone ? Color.green : (isCurrent ? Color.indigo : Color.secondary.opacity(0.25)))
+                        .frame(height: 3)
+                }
+                .frame(maxWidth: .infinity)
+                .accessibilityLabel("\(stage.label): \(isDone ? "complete" : (isCurrent ? "current" : "upcoming"))")
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Large glanceable state line for treadmill use: the phone sits on the
+    /// console, so the current obligation (wait / GO + target / hold-still
+    /// countdown) must be readable at arm's length.
+    private func stageStateHeadline(_ stage: AtriaStepCalibrationStage,
+                                    referenceDate: Date) -> some View {
+        let nowMS = Int64((referenceDate.timeIntervalSince1970 * 1_000).rounded())
+        let text: String
+        let tint: Color
+        if let fixedEndMS = plan.fixedCaptureEndMS {
+            let remaining = max(0, Int(ceil(Double(fixedEndMS - nowMS) / 1_000)))
+            text = remaining > 0 ? "HOLD STILL · \(remaining)s" : "Ready to validate"
+            tint = remaining > 0 ? .orange : .green
+        } else if plan.isRunning, stage.kind == .walk {
+            if plan.canBeginCountedMotion(at: referenceDate) {
+                text = "GO · \(stage.expectedSteps) steps"
+                tint = .green
+            } else {
+                text = "GET SET…"
+                tint = .orange
+            }
+        } else if plan.isRunning, let startMS = plan.state.activeStageStartMS {
+            let requiredMS = max(stage.minimumDurationMS,
+                                 AtriaStepCalibrationPlanStore.boundaryGuardDurationMS)
+            let remaining = max(0, Int(ceil(Double(requiredMS - (nowMS - startMS)) / 1_000)))
+            text = remaining > 0 ? "REST · \(remaining)s left" : "Rest done"
+            tint = remaining > 0 ? .cyan : .green
+        } else {
+            text = stage.expectedSteps == 0
+                ? "Rest · keep wrist still"
+                : "Next: \(stage.expectedSteps) steps"
+            tint = .secondary
+        }
+        return Text(text)
+            .font(.title2.weight(.bold).monospacedDigit())
+            .foregroundStyle(tint)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentTransition(.numericText())
+    }
+
     private func currentStageCard(_ stage: AtriaStepCalibrationStage) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
                 Image(systemName: stage.systemImage)
-                    .font(.title3.weight(.semibold))
+                    .font(.title2.weight(.semibold))
                     .foregroundStyle(stage.kind == .rest ? .cyan : .indigo)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Stage \(plan.completedStageCount + 1) · \(stage.label)")
-                        .font(.subheadline.weight(.semibold))
-                    if plan.isRunning, let startMS = plan.state.activeStageStartMS {
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
-                            Text(elapsedText(since: startMS, now: context.date))
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
-                    } else {
-                        Text(stage.kind == .walk ? "Expected: \(stage.expectedSteps) steps" : "Expected: 0 steps")
-                            .font(.caption)
+                    Text("Stage \(plan.completedStageCount + 1) of \(plan.totalStageCount)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                    Text(stage.label)
+                        .font(.title3.weight(.bold))
+                }
+                Spacer(minLength: 0)
+                if plan.isRunning, let startMS = plan.state.activeStageStartMS {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(elapsedText(since: startMS, now: context.date))
+                            .font(.title3.weight(.semibold).monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
                 }
-                Spacer(minLength: 0)
             }
 
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                Text(stageInstruction(stage, referenceDate: context.date))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 8) {
+                    stageStateHeadline(stage, referenceDate: context.date)
+                    Text(stageInstruction(stage, referenceDate: context.date))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             if plan.isRunning {
@@ -379,7 +458,8 @@ struct AtriaStepCalibrationSequenceCard: View {
                 stageControl(stage, referenceDate: Date())
             }
         }
-        .padding(14)
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .atriaInsetCard(tint: stage.kind == .rest ? .cyan : .indigo)
     }
 
@@ -390,8 +470,8 @@ struct AtriaStepCalibrationSequenceCard: View {
             handleStageControl(referenceDate: referenceDate)
         } label: {
             Label(controlTitle(stage: stage, referenceDate: referenceDate), systemImage: controlSystemImage)
-                .font(.subheadline.weight(.semibold))
-                .frame(maxWidth: .infinity, minHeight: 42)
+                .font(.headline.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: 56)
         }
         .atriaCardAction(prominent: true, tint: plan.isRunning ? .red : .indigo)
         .disabled((plan.isRunning && !(plan.isFinishing ? validationIsReady : finishIsReady))
@@ -486,7 +566,7 @@ struct AtriaStepCalibrationSequenceCard: View {
             return "Keep the strap wrist still. Begin only when GO appears."
         }
         if plan.isRunning, stage.kind == .walk {
-            return "GO · Count exactly \(stage.expectedSteps) steps, then tap Steps complete."
+            return "Count exactly \(stage.expectedSteps) steps at this pace, then tap Steps complete."
         }
         return stage.instruction
     }
