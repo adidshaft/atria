@@ -1326,6 +1326,7 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
     let sleepConsistencyPercent: Int?
     let strain: Double?
     let skinTemperatureDeviationCelsius: Double?
+    let recoverySummary: FrozenRecoverySummary?
 
     var id: Date { day }
 
@@ -1343,10 +1344,16 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
          sleepStageSegments: [SleepStageSegment],
          sleepConsistencyPercent: Int?,
          strain: Double?,
-         skinTemperatureDeviationCelsius: Double? = nil) {
+         skinTemperatureDeviationCelsius: Double? = nil,
+         recoverySummary: FrozenRecoverySummary? = nil) {
+        let coherentSummary = recoverySummary.flatMap { summary in
+            recoveryPercent == nil || summary.score == recoveryPercent
+                ? summary.replacingScoredDay(day)
+                : nil
+        }
         self.day = day
-        self.recoveryPercent = recoveryPercent
-        self.recoveryConfidence = recoveryConfidence
+        self.recoveryPercent = coherentSummary?.score ?? recoveryPercent
+        self.recoveryConfidence = coherentSummary?.confidence ?? recoveryConfidence
         self.hrv = hrv
         self.restingHR = restingHR
         self.respiratoryRate = respiratoryRate
@@ -1359,6 +1366,7 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
         self.sleepConsistencyPercent = sleepConsistencyPercent
         self.strain = strain
         self.skinTemperatureDeviationCelsius = skinTemperatureDeviationCelsius
+        self.recoverySummary = coherentSummary
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -1379,6 +1387,7 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
         case sleepConsistencyPercent
         case strain
         case skinTemperatureDeviationCelsius
+        case recoverySummary
     }
 
     init(from decoder: Decoder) throws {
@@ -1391,8 +1400,8 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
         } else {
             day = legacyDay
         }
-        recoveryPercent = try container.decodeIfPresent(Int.self, forKey: .recoveryPercent)
-        recoveryConfidence = try container.decode(String.self, forKey: .recoveryConfidence)
+        let decodedRecoveryPercent = try container.decodeIfPresent(Int.self, forKey: .recoveryPercent)
+        let decodedRecoveryConfidence = try container.decode(String.self, forKey: .recoveryConfidence)
         hrv = try container.decodeIfPresent(Int.self, forKey: .hrv)
         restingHR = try container.decodeIfPresent(Int.self, forKey: .restingHR)
         respiratoryRate = try container.decodeIfPresent(Double.self, forKey: .respiratoryRate)
@@ -1408,6 +1417,17 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
             Double.self,
             forKey: .skinTemperatureDeviationCelsius
         )
+        let decodedSummary = try container.decodeIfPresent(FrozenRecoverySummary.self,
+                                                           forKey: .recoverySummary)
+        let materializedDay = day
+        let coherentSummary = decodedSummary.flatMap { summary in
+            decodedRecoveryPercent == nil || summary.score == decodedRecoveryPercent
+                ? summary.replacingScoredDay(materializedDay)
+                : nil
+        }
+        recoverySummary = coherentSummary
+        recoveryPercent = coherentSummary?.score ?? decodedRecoveryPercent
+        recoveryConfidence = coherentSummary?.confidence ?? decodedRecoveryConfidence
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1432,6 +1452,7 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
         try container.encodeIfPresent(strain, forKey: .strain)
         try container.encodeIfPresent(skinTemperatureDeviationCelsius,
                                       forKey: .skinTemperatureDeviationCelsius)
+        try container.encodeIfPresent(recoverySummary, forKey: .recoverySummary)
     }
 
     static func civilDay(for date: Date, calendar: Calendar) -> String {
@@ -6386,7 +6407,8 @@ final class SessionStore: ObservableObject {
                                     sleepStageSegments: metric.sleepStageSegments,
                                     sleepConsistencyPercent: metric.sleepConsistencyPercent,
                                     strain: strain,
-                                    skinTemperatureDeviationCelsius: metric.skinTemperatureDeviationCelsius)
+                                    skinTemperatureDeviationCelsius: metric.skinTemperatureDeviationCelsius,
+                                    recoverySummary: metric.recoverySummary)
         }
     }
 
@@ -7682,7 +7704,8 @@ final class SessionStore: ObservableObject {
                                         sleepStageSegments: night?.displayStageSegments ?? [],
                                         sleepConsistencyPercent: sleep.sleepConsistencyPercent,
                                         strain: rollup.strain > 0 ? rollup.strain : nil,
-                                        skinTemperatureDeviationCelsius: resolvedSkinTemperatureDeviationByDay[day])
+                                        skinTemperatureDeviationCelsius: resolvedSkinTemperatureDeviationByDay[day],
+                                        recoverySummary: FrozenRecoverySummary(estimate: recovery, scoredDay: day))
             }
     }
 
@@ -7794,7 +7817,8 @@ final class SessionStore: ObservableObject {
                                              strain: freshToday?.strain ?? base.strain,
                                              skinTemperatureDeviationCelsius: todayIsAuthoritative
                                                 ? freshMorning?.skinTemperatureDeviationCelsius
-                                                : (freshToday?.skinTemperatureDeviationCelsius ?? base.skinTemperatureDeviationCelsius))
+                                                : (freshToday?.skinTemperatureDeviationCelsius ?? base.skinTemperatureDeviationCelsius),
+                                             recoverySummary: base.recoverySummary)
         } else if let settledMorning = makeMorningFrozenDailyMetric(for: today,
                                                                     computed: computed,
                                                                     sessions: sessions,
@@ -7848,6 +7872,7 @@ final class SessionStore: ObservableObject {
             let sameDayNapHours = napHoursByDay[calendar.startOfDay(for: metric.day)] ?? 0
             return DailyRollupStoreEntry(day: metric.day,
                                          recovery: metric.recoveryPercent,
+                                         recoverySummary: metric.recoverySummary,
                                          lnRMSSD: hrvMilliseconds.map(log),
                                          rhr: metric.restingHR,
                                          sleepSeconds: metric.sleepDuration,
@@ -8079,7 +8104,8 @@ final class SessionStore: ObservableObject {
                                 sleepStageSegments: sleepSegments,
                                 sleepConsistencyPercent: sleepConsistencyPercent,
                                 strain: strain,
-                                skinTemperatureDeviationCelsius: skinTemperatureDeviation)
+                                skinTemperatureDeviationCelsius: skinTemperatureDeviation,
+                                recoverySummary: FrozenRecoverySummary(estimate: recovery, scoredDay: day))
     }
 
     private nonisolated static func morningMetricDay(for night: SleepHistorySnapshot.Night,
