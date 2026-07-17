@@ -102,10 +102,7 @@ struct AtriaPhysiologicalCycle: Equatable {
         confirmedSleeps
             .filter { sleep in
                 sleep.end <= now
-                    && sleep.end > sleep.start
-                    && sleep.duration >= minimumMainSleepDuration
-                    && !SessionStore.confirmedSleepSourceIsNap(source: sleep.source,
-                                                               duration: sleep.duration)
+                    && SessionStore.confirmedSleepIsPhysiologicalMainSleep(sleep)
             }
             .max { $0.end < $1.end }
     }
@@ -116,10 +113,7 @@ struct AtriaPhysiologicalCycle: Equatable {
         let mainSleeps = confirmedSleeps
             .filter { sleep in
                 sleep.end <= now
-                    && sleep.end > sleep.start
-                    && sleep.duration >= minimumMainSleepDuration
-                    && !SessionStore.confirmedSleepSourceIsNap(source: sleep.source,
-                                                               duration: sleep.duration)
+                    && SessionStore.confirmedSleepIsPhysiologicalMainSleep(sleep)
             }
             .sorted { $0.end < $1.end }
         let expected = learnedInterval(from: mainSleeps.map(\.end))
@@ -10620,8 +10614,12 @@ final class SessionStore: ObservableObject {
     }
 
     private func learnBaselineIfEligible(from session: SavedSession, reason: String) {
+        if baseline.hrvQualificationVersion < PersonalBaseline.currentHRVQualificationVersion {
+            rebuildBaselineFromEligibleSessions(reason: "\(reason)-hrv-qualification-migration")
+            return
+        }
         let bootstrapFromConfirmedSleep = cachedConfirmedSleeps.contains { sleep in
-            !Self.confirmedSleepSourceIsNap(source: sleep.source, duration: sleep.duration)
+            Self.confirmedSleepIsPhysiologicalMainSleep(sleep)
                 && session.start < sleep.end
                 && session.end > sleep.start
         }
@@ -10647,10 +10645,12 @@ final class SessionStore: ObservableObject {
                   reason)
             return
         }
+        let sleepHRV = Self.confirmedMainSleepHRVEvidence(for: session,
+                                                          confirmedSleeps: cachedConfirmedSleeps)
         baseline.learn(fromResting: evidence.value,
-                       hrv: session.localRMSSD ?? 0,
-                       at: session.end,
-                       overnight: session.isOvernightHRVWindow())
+                       hrv: sleepHRV?.value ?? 0,
+                       at: sleepHRV?.sleepEnd ?? session.end,
+                       overnight: sleepHRV != nil)
         if canonicalMutationAllowed { baseline.save() }
         refreshHomeDashboardDiagnosticsCache()
         refreshHistorySnapshotCache(deferred: true)
@@ -10678,7 +10678,7 @@ final class SessionStore: ObservableObject {
         var skipped = 0
         for session in sessions.sorted(by: { $0.start < $1.start }) {
             let bootstrapFromConfirmedSleep = cachedConfirmedSleeps.contains { sleep in
-                !Self.confirmedSleepSourceIsNap(source: sleep.source, duration: sleep.duration)
+                Self.confirmedSleepIsPhysiologicalMainSleep(sleep)
                     && session.start < sleep.end
                     && session.end > sleep.start
             }
@@ -10690,10 +10690,12 @@ final class SessionStore: ObservableObject {
             }
             let evidence = session.baselineLearningEvidence(rest: rest, maxHR: profile.maxHR)
             if evidence.accepted {
+                let sleepHRV = Self.confirmedMainSleepHRVEvidence(for: session,
+                                                                  confirmedSleeps: cachedConfirmedSleeps)
                 rebuilt.learn(fromResting: evidence.value,
-                              hrv: session.localRMSSD ?? 0,
-                              at: session.end,
-                              overnight: session.isOvernightHRVWindow())
+                              hrv: sleepHRV?.value ?? 0,
+                              at: sleepHRV?.sleepEnd ?? session.end,
+                              overnight: sleepHRV != nil)
                 accepted += 1
             } else {
                 skipped += 1
@@ -17403,6 +17405,47 @@ final class SessionStore: ObservableObject {
         return duration <= AggregateSleepCandidate.napMaximumSpan
     }
 
+    nonisolated static func confirmedSleepIsPhysiologicalMainSleep(_ sleep: UserConfirmedSleep) -> Bool {
+        sleep.end > sleep.start
+            && sleep.duration >= AtriaPhysiologicalCycle.minimumMainSleepDuration
+            && !confirmedSleepSourceIsNap(source: sleep.source, duration: sleep.duration)
+    }
+
+    struct ConfirmedMainSleepHRVEvidence: Equatable {
+        let value: Int
+        let windowCount: Int
+        let sleepID: String
+        let sleepEnd: Date
+    }
+
+    /// Measurement provenance and physiological provenance are separate gates:
+    /// `localRMSSD(in:end:)` requires an all-standard 2A37 stream and at least
+    /// three qualified five-minute windows, while this wrapper additionally
+    /// requires those exact RR samples to fall inside a confirmed main sleep.
+    nonisolated static func confirmedMainSleepHRVEvidence(
+        for session: SavedSession,
+        confirmedSleeps: [UserConfirmedSleep]
+    ) -> ConfirmedMainSleepHRVEvidence? {
+        guard session.hasQualifiedStandardRRProvenance else { return nil }
+        return confirmedSleeps
+            .filter {
+                confirmedSleepIsPhysiologicalMainSleep($0)
+                    && session.start < $0.end
+                    && session.end > $0.start
+            }
+            .compactMap { sleep -> ConfirmedMainSleepHRVEvidence? in
+                let windowCount = session.localHRVWindowCount(in: sleep.start, end: sleep.end)
+                guard windowCount >= 3,
+                      let value = session.localRMSSD(in: sleep.start, end: sleep.end),
+                      value > 0 else { return nil }
+                return ConfirmedMainSleepHRVEvidence(value: value,
+                                                     windowCount: windowCount,
+                                                     sleepID: sleep.id,
+                                                     sleepEnd: sleep.end)
+            }
+            .max { $0.sleepEnd < $1.sleepEnd }
+    }
+
     @discardableResult
     private func saveConfirmedSleeps(_ sleeps: [UserConfirmedSleep]) -> Bool {
         guard canonicalMutationAllowed else {
@@ -23081,7 +23124,8 @@ final class SessionStore: ObservableObject {
                                                              backup: envelope.profile)
             let restoredBaseline = rebuildBaseline(from: restoredSessions,
                                                    previousBaseline: snapshot.baseline,
-                                                   profile: restoredProfile)
+                                                   profile: restoredProfile,
+                                                   confirmedSleeps: restoredSleeps)
             let digest = makeBackupContentDigest(sessions: restoredSessions,
                                                  baseline: restoredBaseline,
                                                  profile: restoredProfile,
@@ -24370,13 +24414,14 @@ final class SessionStore: ObservableObject {
         let coldURL = coldSessionsURL
         let currentBaseline = baseline
         let currentProfile = profile
+        let currentConfirmedSleeps = cachedConfirmedSleeps
         // Launch time-to-content fix (2026-07-05): this decode feeds the first
         // real render of History/Vitals/Journal now that the full-screen
         // "Preparing…" skeleton gate is gone, so it can no longer sit behind
         // other .utility-QoS background work. .userInitiated keeps it ahead of
         // that without touching the main actor before the decode is ready to
         // hop back.
-        Task.detached(priority: .userInitiated) { [sourceURL, coldURL, currentBaseline, currentProfile] in
+        Task.detached(priority: .userInitiated) { [sourceURL, coldURL, currentBaseline, currentProfile, currentConfirmedSleeps] in
             let startedAt = CFAbsoluteTimeGetCurrent()
             guard let data = try? Data(contentsOf: sourceURL),
                   var decoded = try? JSONDecoder().decode([SavedSession].self, from: data) else {
@@ -24411,6 +24456,7 @@ final class SessionStore: ObservableObject {
             let preparation = Self.prepareDeferredLoad(decoded: loadedSessions,
                                                        baseline: currentBaseline,
                                                        profile: currentProfile,
+                                                       confirmedSleeps: currentConfirmedSleeps,
                                                        sessionFileURL: sourceURL,
                                                        prunedShortLongWearFragments: 0)
             let elapsedMS = Int(((CFAbsoluteTimeGetCurrent() - startedAt) * 1000).rounded())
@@ -24481,6 +24527,7 @@ final class SessionStore: ObservableObject {
             : Self.prepareDeferredLoad(decoded: merged,
                                        baseline: baseline,
                                        profile: profile,
+                                       confirmedSleeps: cachedConfirmedSleeps,
                                        sessionFileURL: url,
                                        prunedShortLongWearFragments: preparation.prunedShortLongWearFragments)
         sessions = merged
@@ -24745,11 +24792,15 @@ final class SessionStore: ObservableObject {
     private nonisolated static func prepareDeferredLoad(decoded: [SavedSession],
                                                         baseline: PersonalBaseline,
                                                         profile: AthleteProfile,
+                                                        confirmedSleeps: [UserConfirmedSleep],
                                                         sessionFileURL: URL,
                                                         prunedShortLongWearFragments: Int = 0) -> DeferredLoadPreparation {
         let shouldRebuildBaseline = shouldRebuildBaselineAfterLoading(decoded, baseline: baseline)
         let preparedBaseline = shouldRebuildBaseline
-            ? rebuildBaseline(from: decoded, previousBaseline: baseline, profile: profile)
+            ? rebuildBaseline(from: decoded,
+                              previousBaseline: baseline,
+                              profile: profile,
+                              confirmedSleeps: confirmedSleeps)
             : baseline
         let latestReferenceSource = latestReferenceValidatedHRVSource(in: decoded)
         let latestLocalSource = latestLocalRMSSDSource(in: decoded)
@@ -24768,6 +24819,9 @@ final class SessionStore: ObservableObject {
     private nonisolated static func shouldRebuildBaselineAfterLoading(_ decoded: [SavedSession],
                                                                       baseline: PersonalBaseline) -> Bool {
         guard !decoded.isEmpty else { return false }
+        if baseline.hrvQualificationVersion < PersonalBaseline.currentHRVQualificationVersion {
+            return true
+        }
         if baseline.updated == nil || baseline.restingSampleCount == 0 {
             return true
         }
@@ -24778,19 +24832,31 @@ final class SessionStore: ObservableObject {
         return false
     }
 
-    private nonisolated static func rebuildBaseline(from sessions: [SavedSession],
-                                                    previousBaseline: PersonalBaseline,
-                                                    profile: AthleteProfile) -> PersonalBaseline {
+    nonisolated static func rebuildBaseline(from sessions: [SavedSession],
+                                            previousBaseline: PersonalBaseline,
+                                            profile: AthleteProfile,
+                                            confirmedSleeps: [UserConfirmedSleep]) -> PersonalBaseline {
         let previousRest = previousBaseline.restingInt
         var rebuilt = PersonalBaseline()
         for session in sessions.sorted(by: { $0.start < $1.start }) {
-            let rest = rebuilt.restingInt ?? previousRest ?? session.restingStable
+            let bootstrapFromConfirmedSleep = confirmedSleeps.contains { sleep in
+                confirmedSleepIsPhysiologicalMainSleep(sleep)
+                    && session.start < sleep.end
+                    && session.end > sleep.start
+            }
+            guard let rest = rebuilt.restingInt
+                    ?? previousRest
+                    ?? (bootstrapFromConfirmedSleep ? session.restingStable : nil) else {
+                continue
+            }
             let evidence = session.baselineLearningEvidence(rest: rest, maxHR: profile.maxHR)
             guard evidence.accepted else { continue }
+            let sleepHRV = confirmedMainSleepHRVEvidence(for: session,
+                                                         confirmedSleeps: confirmedSleeps)
             rebuilt.learn(fromResting: evidence.value,
-                          hrv: session.localRMSSD ?? 0,
-                          at: session.end,
-                          overnight: session.isOvernightHRVWindow())
+                          hrv: sleepHRV?.value ?? 0,
+                          at: sleepHRV?.sleepEnd ?? session.end,
+                          overnight: sleepHRV != nil)
         }
         return rebuilt
     }
