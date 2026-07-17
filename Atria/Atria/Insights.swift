@@ -4,11 +4,18 @@ import SwiftUI
 /// its stable resting HR into an exponential moving average, so "your normal"
 /// adapts to you instead of being a fixed guess. Persisted in UserDefaults.
 struct PersonalBaseline: Codable {
+    /// Version 1 means every HRV-bearing sample was admitted only from
+    /// qualified standard 2A37 RR inside a confirmed main-sleep window.
+    /// Older persisted baselines used a clock-only "overnight" heuristic and
+    /// must fail closed until SessionStore rebuilds them from durable evidence.
+    static let currentHRVQualificationVersion = 1
+
     var restingHR: Double?      // learned resting baseline (EMA)
     var hrvEMA: Double?         // learned HRV baseline (EMA, ms)
     var sessions: Int = 0
     var updated: Date?
     var samples: [BaselineSample] = []
+    var hrvQualificationVersion: Int = Self.currentHRVQualificationVersion
 
     private static let alpha = 0.1    // weight on the newest session
     /// One anomalous night must not yank "your normal": per-sample EMA movement
@@ -28,8 +35,10 @@ struct PersonalBaseline: Codable {
         let date: Date
         let restingHR: Double
         let rmssd: Double?
-        /// True when this sample came from an overnight/sleep window. Optional so
-        /// pre-existing persisted samples (no field) decode as nil = unknown/daytime.
+        /// Version-1 semantics: true only when this sample's qualified standard
+        /// 2A37 RR came from inside a confirmed main-sleep window. The optional
+        /// representation keeps old payloads decodable, but version-0 values are
+        /// never trusted as confirmed-sleep evidence.
         var overnight: Bool?
 
         var lnRMSSD: Double? {
@@ -41,25 +50,44 @@ struct PersonalBaseline: Codable {
     }
 
     init(restingHR: Double? = nil, hrvEMA: Double? = nil, sessions: Int = 0,
-         updated: Date? = nil, samples: [BaselineSample] = []) {
+         updated: Date? = nil, samples: [BaselineSample] = [],
+         hrvQualificationVersion: Int = Self.currentHRVQualificationVersion) {
         self.restingHR = restingHR
         self.hrvEMA = hrvEMA
         self.sessions = sessions
         self.updated = updated
         self.samples = samples
+        self.hrvQualificationVersion = hrvQualificationVersion
     }
 
     enum CodingKeys: String, CodingKey {
-        case restingHR, hrvEMA, sessions, updated, samples
+        case restingHR, hrvEMA, sessions, updated, samples, hrvQualificationVersion
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         restingHR = try c.decodeIfPresent(Double.self, forKey: .restingHR)
-        hrvEMA = try c.decodeIfPresent(Double.self, forKey: .hrvEMA)
+        let decodedQualificationVersion = try c.decodeIfPresent(Int.self,
+                                                                 forKey: .hrvQualificationVersion) ?? 0
+        hrvQualificationVersion = decodedQualificationVersion
+        hrvEMA = decodedQualificationVersion >= Self.currentHRVQualificationVersion
+            ? try c.decodeIfPresent(Double.self, forKey: .hrvEMA)
+            : nil
         sessions = try c.decodeIfPresent(Int.self, forKey: .sessions) ?? 0
         updated = try c.decodeIfPresent(Date.self, forKey: .updated)
-        samples = try c.decodeIfPresent([BaselineSample].self, forKey: .samples) ?? []
+        let decodedSamples = try c.decodeIfPresent([BaselineSample].self, forKey: .samples) ?? []
+        if decodedQualificationVersion >= Self.currentHRVQualificationVersion {
+            samples = decodedSamples
+        } else {
+            // Retain trustworthy resting-HR history, but strip HRV whose old
+            // clock-only provenance cannot prove confirmed main sleep.
+            samples = decodedSamples.map {
+                BaselineSample(date: $0.date,
+                               restingHR: $0.restingHR,
+                               rmssd: nil,
+                               overnight: false)
+            }
+        }
     }
 
     mutating func learn(fromResting resting: Int, hrv: Int, at observedAt: Date = Date(), overnight: Bool = false) {
@@ -93,8 +121,14 @@ struct PersonalBaseline: Codable {
     }
 
     var restingInt: Int? { restingHR.map { Int($0.rounded()) } }
-    var hrvInt: Int? { hrvEMA.map { Int($0.rounded()) } }
-    var hrvSampleCount: Int { samples.compactMap(\.lnRMSSD).count }
+    var hrvInt: Int? {
+        guard hrvQualificationVersion >= Self.currentHRVQualificationVersion else { return nil }
+        return hrvEMA.map { Int($0.rounded()) }
+    }
+    var hrvSampleCount: Int {
+        guard hrvQualificationVersion >= Self.currentHRVQualificationVersion else { return 0 }
+        return samples.compactMap(\.lnRMSSD).count
+    }
     var restingSampleCount: Int { samples.count }
 
     func freshSamples(now: Date = Date()) -> [BaselineSample] {
@@ -111,7 +145,8 @@ struct PersonalBaseline: Codable {
     }
 
     func freshHRVSampleCount(now: Date = Date()) -> Int {
-        Self.distinctDayCount(freshSamples(now: now).filter {
+        guard hrvQualificationVersion >= Self.currentHRVQualificationVersion else { return 0 }
+        return Self.distinctDayCount(freshSamples(now: now).filter {
             $0.lnRMSSD != nil && $0.isOvernightSample
         })
     }
@@ -147,7 +182,8 @@ struct PersonalBaseline: Codable {
 
     /// Fresh HRV samples that came from an overnight/sleep window.
     func freshOvernightHRVSampleCount(now: Date = Date()) -> Int {
-        freshSamples(now: now).filter { $0.isOvernightSample }.compactMap(\.lnRMSSD).count
+        guard hrvQualificationVersion >= Self.currentHRVQualificationVersion else { return 0 }
+        return freshSamples(now: now).filter { $0.isOvernightSample }.compactMap(\.lnRMSSD).count
     }
 
     func isStale(now: Date = Date()) -> Bool {
@@ -182,6 +218,7 @@ struct PersonalBaseline: Codable {
 
     /// Testable variant with an explicit `now` for deterministic calibration.
     func lnRMSSDStats(now: Date) -> (mean: Double, sd: Double, count: Int)? {
+        guard hrvQualificationVersion >= Self.currentHRVQualificationVersion else { return nil }
         let fresh = freshSamples(now: now)
         let overnight = fresh.filter { $0.isOvernightSample }.compactMap(\.lnRMSSD)
         if overnight.count >= Self.overnightHRVPreferenceMinimum {

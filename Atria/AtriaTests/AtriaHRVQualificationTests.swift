@@ -33,34 +33,65 @@ final class AtriaHRVQualificationTests: XCTestCase {
                             rrPoints: rrPoints)
     }
 
-    func testOnlyQualifiedStandardRRAccruesDistinctHRVDay() {
+    private func confirmedMainSleep(for session: SavedSession,
+                                    start: Date? = nil,
+                                    end: Date? = nil,
+                                    id: String = UUID().uuidString) -> UserConfirmedSleep {
+        let sleepStart = start ?? session.start
+        let sleepEnd = end ?? session.end
+        return UserConfirmedSleep(id: id,
+                                  createdAt: sleepEnd,
+                                  start: sleepStart,
+                                  end: sleepEnd,
+                                  source: "manual_sleep",
+                                  confidence: "user_confirmed_hr_only",
+                                  sessions: 1,
+                                  samples: session.points.count,
+                                  avgHR: session.avg,
+                                  peakHR: session.peak,
+                                  restingHR: session.restingStable,
+                                  hrv: nil,
+                                  hrvWindowCount: nil,
+                                  duration: sleepEnd.timeIntervalSince(sleepStart),
+                                  span: sleepEnd.timeIntervalSince(sleepStart),
+                                  reason: "test",
+                                  motionSource: "user_review",
+                                  motionValidated: false,
+                                  stageSegments: nil,
+                                  eventTimeZoneIdentifier: "UTC")
+    }
+
+    private func rebuiltBaseline(sessions: [SavedSession],
+                                 confirmedSleeps: [UserConfirmedSleep]) -> PersonalBaseline {
+        SessionStore.rebuildBaseline(from: sessions,
+                                     previousBaseline: PersonalBaseline(restingHR: 52),
+                                     profile: AthleteProfile(age: 30,
+                                                             measuredMaxHR: 190,
+                                                             maxHRSource: .measured,
+                                                             updated: nil,
+                                                             hasCompletedOnboarding: true),
+                                     confirmedSleeps: confirmedSleeps)
+    }
+
+    func testOnlyQualifiedStandardRRInsideConfirmedMainSleepAccruesDistinctHRVDay() {
         let standard = session(dayOffset: 0, source: .standardHeartRateMeasurement2A37)
         let legacy = session(dayOffset: 1, source: nil)
-        var baseline = PersonalBaseline()
-
-        for session in [standard, legacy] {
-            baseline.learn(fromResting: session.restingStable,
-                           hrv: session.localRMSSD ?? 0,
-                           at: session.end,
-                           overnight: session.isOvernightHRVWindow(calendar: calendar))
-        }
+        let standardSleep = confirmedMainSleep(for: standard)
+        let legacySleep = confirmedMainSleep(for: legacy)
+        let baseline = rebuiltBaseline(sessions: [standard, legacy],
+                                       confirmedSleeps: [standardSleep, legacySleep])
 
         XCTAssertEqual(standard.localRMSSD, 42)
         XCTAssertNil(legacy.localRMSSD)
         XCTAssertEqual(baseline.freshHRVSampleCount(now: legacy.end), 1)
+        XCTAssertEqual(baseline.hrvSampleCount, 1)
     }
 
     func testMultipleQualifiedWindowsOnOneDayCountOnce() {
         let first = session(dayOffset: 0, source: .standardHeartRateMeasurement2A37)
         let second = session(dayOffset: 0, source: .standardHeartRateMeasurement2A37)
-        var baseline = PersonalBaseline()
-
-        for session in [first, second] {
-            baseline.learn(fromResting: session.restingStable,
-                           hrv: session.localRMSSD ?? 0,
-                           at: session.end,
-                           overnight: true)
-        }
+        let sleep = confirmedMainSleep(for: first)
+        let baseline = rebuiltBaseline(sessions: [first, second], confirmedSleeps: [sleep])
 
         XCTAssertEqual(baseline.freshHRVSampleCount(now: second.end), 1)
     }
@@ -79,15 +110,80 @@ final class AtriaHRVQualificationTests: XCTestCase {
         let daytime = session(dayOffset: 0,
                               source: .standardHeartRateMeasurement2A37,
                               hour: 13)
-        var baseline = PersonalBaseline()
-
-        baseline.learn(fromResting: daytime.restingStable,
-                       hrv: daytime.localRMSSD ?? 0,
-                       at: daytime.end,
-                       overnight: daytime.isOvernightHRVWindow(calendar: calendar))
+        let baseline = rebuiltBaseline(sessions: [daytime], confirmedSleeps: [])
 
         XCTAssertEqual(daytime.localRMSSD, 42)
         XCTAssertFalse(daytime.isOvernightHRVWindow(calendar: calendar))
         XCTAssertEqual(baseline.freshHRVSampleCount(now: daytime.end), 0)
+    }
+
+    func testClockOvernightQualifiedRRWithoutConfirmedSleepDoesNotAdvanceHRVDay() {
+        let overnight = session(dayOffset: 0,
+                                source: .standardHeartRateMeasurement2A37)
+        let baseline = rebuiltBaseline(sessions: [overnight], confirmedSleeps: [])
+
+        XCTAssertTrue(overnight.isOvernightHRVWindow(calendar: calendar))
+        XCTAssertEqual(overnight.localRMSSD, 42)
+        XCTAssertEqual(baseline.hrvSampleCount, 0)
+        XCTAssertEqual(baseline.freshHRVSampleCount(now: overnight.end), 0)
+    }
+
+    func testQualifiedRRMustFallInsideConfirmedMainSleepWindow() {
+        let overnight = session(dayOffset: 0,
+                                source: .standardHeartRateMeasurement2A37)
+        // The qualified RR fixture occupies only the first 16 minutes. This
+        // confirmed main sleep starts an hour later, so session overlap alone
+        // must not launder the out-of-window RR into overnight HRV.
+        let sleep = confirmedMainSleep(for: overnight,
+                                       start: overnight.start.addingTimeInterval(60 * 60),
+                                       end: overnight.end)
+        let baseline = rebuiltBaseline(sessions: [overnight], confirmedSleeps: [sleep])
+
+        XCTAssertNil(SessionStore.confirmedMainSleepHRVEvidence(
+            for: overnight,
+            confirmedSleeps: [sleep]
+        ))
+        XCTAssertEqual(baseline.freshHRVSampleCount(now: overnight.end), 0)
+    }
+
+    func testShortConfirmedRestCannotQualifyAsMainSleepHRV() {
+        let overnight = session(dayOffset: 0,
+                                source: .standardHeartRateMeasurement2A37)
+        let shortRest = confirmedMainSleep(for: overnight,
+                                           end: overnight.start.addingTimeInterval(2 * 60 * 60))
+
+        XCTAssertFalse(SessionStore.confirmedSleepIsPhysiologicalMainSleep(shortRest))
+        XCTAssertNil(SessionStore.confirmedMainSleepHRVEvidence(
+            for: overnight,
+            confirmedSleeps: [shortRest]
+        ))
+        XCTAssertEqual(rebuiltBaseline(sessions: [overnight], confirmedSleeps: [shortRest])
+            .freshHRVSampleCount(now: overnight.end), 0)
+    }
+
+    func testLegacyClockOnlyBaselineDecodesWithoutTrustedHRV() throws {
+        let overnight = session(dayOffset: 0,
+                                source: .standardHeartRateMeasurement2A37)
+        let legacy = PersonalBaseline(restingHR: 52,
+                                      hrvEMA: 42,
+                                      sessions: 1,
+                                      updated: overnight.end,
+                                      samples: [
+                                        .init(date: overnight.end,
+                                              restingHR: 52,
+                                              rmssd: 42,
+                                              overnight: true)
+                                      ])
+        let encoded = try JSONEncoder().encode(legacy)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "hrvQualificationVersion")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(PersonalBaseline.self, from: legacyData)
+
+        XCTAssertEqual(decoded.restingInt, 52)
+        XCTAssertNil(decoded.hrvInt)
+        XCTAssertEqual(decoded.hrvSampleCount, 0)
+        XCTAssertEqual(decoded.freshHRVSampleCount(now: overnight.end), 0)
+        XCTAssertFalse(decoded.hasTrustedHRVBaseline(now: overnight.end))
     }
 }
