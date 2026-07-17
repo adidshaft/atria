@@ -212,13 +212,76 @@ Insights.swift) can EVER be satisfied while lnRMSSD is never persisted. Report
 the user's actual distinct-day baseline counts and the honest ETA to
 `.personalBaseline`/`.validated` — do not quietly relax any trust gate.
 
+### D2/D3 REFINED — from the full 40-line evening trace (authoritative)
+
+After writing D2/D3 above I decoded the entire evening
+`atria.workoutMotion.evaluationTrace` (preserved as `EVENING_TRACE_DECODED.txt`
+in the pull). It supersedes the speculative mechanism in D2/D3. The trace is
+shared by the all-day dense governor (default-on background lease) and the
+workout lease, so every line is a bring-up decision on the live link:
+
+```
+21:40:39 state_restore_connected connAt 21:40:18  s5=0 dense=0  action=none
+21:51:29 did_connect             connAt 21:51:09  s5=1 dense=16 action=markLive   bring-up WORKED
+21:53:55 did_connect             connAt 21:53:35  s5=0 dense=0  action=none        bring-up FAILED; link held ~42 min
+         (WALK 21:58-22:06 ran on this s5=0 link; lease action=none => 0/460 frames)
+22:36:15 did_connect             connAt ~epoch0   s5=0 dense=0  action=none        reconnect; connectedAt UNSET; HR dead 56 min
+23:07-23:09 five reconnects, s5 flaps 1->0->1, reason accretes _post_activation
+23:09:53 did_connect             connAt 23:09:33  s5=1 dense=16 action=markLive    stabilizes once home/foregrounded
+```
+
+Confirmed conclusions (these are the real defects to fix):
+
+- **C1 — bring-up is non-deterministic and non-convergent.** `did_connect`
+  sometimes confirms stream-5 (21:51, 23:06, 23:09) and sometimes stalls before
+  it and never retries (21:53 held `s5=0` for 42 minutes on a perfectly stable
+  link). `state_restore_connected` frequently comes up `s5=0`. Crucially, once a
+  stable connection is up WITHOUT dense, **nothing re-attempts bring-up** — both
+  the governor lease and the workout lease return `action=none` on
+  `stream5Confirmed=false` instead of escalating to the launch-style bring-up.
+  The walk's 0/460 frames is this, not "the lease only arms new connections"
+  (`did_connect` DID fire at 21:53 and still failed). `AtriaBLEManager.swift`
+  ~line 6759 (`beginProtectedR10ResponseEventDataProfile`, guarded by
+  `protectedLaunchPending` + `protectedR10InitialProfilePeripheralID`) and the
+  ordered CCCD subscribe `[strapRX, strapStream4, strapStream5]` (~2345) have a
+  failure mode where stream-5 confirmation never lands and there is no retry.
+- **C2 — standard 2A37 HR is not reliably re-subscribed on reconnect/restore.**
+  The 22:36 reconnect left accepted HR dead 22:35:41→23:31:24 (56 min) while
+  dense R10 flowed. `heartRateNotificationEnableGate` / the 2A37 notify
+  re-enable did not complete on that path.
+- **C3 — `connectedAt` (connection epoch) is not always set on the
+  reconnect/restore path** (`connAt≈epoch-0` at 22:36), which corrupts
+  `protectedR10FrameBelongsToCurrentConnection` and the lease's
+  `lastFrameAt >= connectedAt` freshness test (everything passes when
+  `connectedAt≈0`, so stale frames can read as live).
+
+Required remedy (one connection-lifecycle subsystem, fix and desk-verify as one):
+
+- **R1 — make bring-up convergent.** Whenever dense is wanted (governor on,
+  active workout lease, or calibration) and stream-5 is unconfirmed on the live
+  connection, re-attempt the proven launch-style bring-up on that connection,
+  bounded and backed-off, on BOTH `did_connect` AND `state_restore_connected`,
+  until dense is established or the link drops. The lease/governor must ESCALATE
+  to bring-up on `s5=0`, never `action=none`. Cap attempts per connection epoch
+  so churn cannot spam activations (the accreting `_post_activation` reason is
+  that smell).
+- **R2 — HR first.** Re-establish standard 2A37 HR on every connect/restore,
+  independent of and before dense bring-up; never let the armed motion profile
+  displace it. Add an HR-continuity watchdog action for "dense fresh + accepted
+  HR stale on a connected link" (today it may observe when the link looks
+  healthy).
+- **R3 — always set `connectedAt`** on every connect/restore path; treat
+  `connAt≈0` as a hard bug and add a regression guard.
+
 ## 4. Priorities
 
 - **P0a (D1)** durable developer mode with expiry + explicit exit; migrate pins.
-- **P0b (D2+D3 together)** lease bring-up on pre-connected links AND
-  HR-preserving bring-up on lease-armed reconnects. These are one subsystem;
-  fix and physically verify them as one change with the desk repro
-  (forced disconnect + already-connected start) before any gym retry.
+- **P0b (C1+C2+C3 / R1+R2+R3 together)** convergent dense bring-up on every
+  connect and restore, HR re-subscribed first, `connectedAt` always set. These
+  are one connection-lifecycle subsystem; fix and physically verify them as one
+  change with the desk repro (already-connected workout start that comes up
+  `s5=0`, plus a forced disconnect mid-workout) before any gym retry. See the
+  "D2/D3 REFINED" section — it is the authority over the earlier D2/D3 text.
 - **P1 (D4)** rollup/sleep/recovery persistence investigation and fix.
 - **P2** re-verify downstream honesty after P0/P1: auto-detection surfaces the
   next HR-covered strength session; strain reflects HR-covered work; recovery
