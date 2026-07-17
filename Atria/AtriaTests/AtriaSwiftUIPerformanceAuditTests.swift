@@ -317,9 +317,14 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
 
         XCTAssertTrue(workout.contains("private struct AtriaLiveWorkoutRouteMetricsHost: View"))
         XCTAssertTrue(workout.contains("private struct AtriaLiveWorkoutStrainGuidanceHost: View"))
+        // 2026-07-17: pin migrated 2 -> 3. The strap-motion transport status
+        // indicator ships as its own narrow leaf host (see the dated comment on
+        // AtriaLiveWorkoutMotionStatusHost), which is exactly the isolation this
+        // audit enforces — the root still never observes the store.
+        XCTAssertTrue(workout.contains("private struct AtriaLiveWorkoutMotionStatusHost: View"))
         XCTAssertEqual(workout.components(separatedBy: "@ObservedObject var metricStore: AtriaLiveWorkoutMetricStore").count - 1,
-                       2,
-                       "Exactly the route HUD and stationary guidance hosts should observe rapid metrics")
+                       3,
+                       "Exactly the route HUD, stationary guidance, and motion status hosts should observe rapid metrics")
     }
 
     func testHealthMonitorLiveMetricsUseDeduplicatedLeafProjection() throws {

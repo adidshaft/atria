@@ -110,7 +110,10 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
     func testOverviewDynamicRowsUseDomainIdentityInsteadOfMutableOffsets() throws {
         let source = try source("AtriaOverviewSections.swift")
 
-        XCTAssertTrue(source.contains("id: \\.element.title) { index, companion in"))
+        // 2026-07-17: the companions ForEach pin was retired — commit 824a411e
+        // refactored companion rows into scrub-context text, so neither the
+        // domain-identity loop nor the offset anti-pattern exists for them.
+        // The remaining loops must still use domain identity, never offsets.
         XCTAssertTrue(source.contains("id: \\.element.label) { _, band in"))
         XCTAssertTrue(source.contains("id: \\.element) { index, item in"))
         XCTAssertFalse(source.contains("ForEach(Array(companions.enumerated()), id: \\.offset)"))

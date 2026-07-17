@@ -205,7 +205,6 @@ struct AtriaSettingsView: View {
     @State private var nameDraft: String
     @State private var heartRateBroadcast: Bool
     @State private var batterySaver: Bool
-    @AppStorage("atria.allDayMotion.enabled") private var allDayMotionEnabled = true
     @State private var coachSettings: AtriaAICoachSettings
     @State private var coachHasAPIKey: Bool
     @State private var coachAPIKeyDraft = ""
@@ -591,22 +590,27 @@ struct AtriaSettingsView: View {
     @ViewBuilder
     private var strapSettingsContent: some View {
         radioModeSection
-        allDayMotionSection
+        // The all-day motion default is destination-only: its observer lives
+        // in a scope on the Strap page, never on the Settings hub frame.
+        AtriaStrapMotionDefaultsScope { allDayMotionEnabled in
+            allDayMotionSection(allDayMotionEnabled: allDayMotionEnabled)
+        }
         heartRateBroadcastSection
         deviceSection
         sensorAvailabilitySection
     }
 
-    private var allDayMotionSection: some View {
-        Section {
-            Toggle(isOn: $allDayMotionEnabled) {
+    private func allDayMotionSection(allDayMotionEnabled: Binding<Bool>) -> some View {
+        let isEnabled = allDayMotionEnabled.wrappedValue
+        return Section {
+            Toggle(isOn: allDayMotionEnabled) {
                 Label("All-day step capture", systemImage: "figure.walk.motion")
             }
             .accessibilityHint("Uses more strap battery. Pauses automatically when the strap battery is low.")
-            settingsInfoRow(icon: allDayMotionEnabled ? "battery.75percent" : "figure.run",
-                            tint: allDayMotionEnabled ? .green : .secondary,
-                            title: allDayMotionEnabled ? "Dense motion all day" : "Workouts only",
-                            detail: allDayMotionEnabled
+            settingsInfoRow(icon: isEnabled ? "battery.75percent" : "figure.run",
+                            tint: isEnabled ? .green : .secondary,
+                            title: isEnabled ? "Dense motion all day" : "Workouts only",
+                            detail: isEnabled
                                 ? "Keeps the strap's dense motion stream on between workouts so movement is captured all day. Pauses below 25% strap battery and resumes when charging or recovered. Workouts always take priority."
                                 : "The dense motion stream runs only during workouts and step calibration.")
         } header: {
@@ -1505,6 +1509,22 @@ private struct AtriaDataSettingsDefaultsScope<Content: View>: View {
 /// Personal > Advanced targets. Keeping these DynamicProperty boxes out of
 /// AtriaSettingsView prevents the Settings gear from constructing and
 /// registering an off-screen observation graph on the presentation frame.
+/// Destination-only scope for the all-day motion default: the observer
+/// registers when the Strap page appears, never on the Settings hub frame.
+private struct AtriaStrapMotionDefaultsScope<Content: View>: View {
+    @AppStorage("atria.allDayMotion.enabled") private var allDayMotionEnabled = true
+
+    private let content: (Binding<Bool>) -> Content
+
+    init(@ViewBuilder content: @escaping (Binding<Bool>) -> Content) {
+        self.content = content
+    }
+
+    var body: some View {
+        content($allDayMotionEnabled)
+    }
+}
+
 private struct AtriaAdvancedTargetsSettingsView: View {
     @AtriaDefault("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
     @AtriaDefault("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
