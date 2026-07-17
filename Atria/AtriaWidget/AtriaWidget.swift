@@ -1182,7 +1182,7 @@ private func liveActivityStepsPresentation(
                                                   accessibilityText: "Strap steps unavailable")
     }
     if sourceAvailability == .live, let steps = state.steps {
-        let estimated = state.stepsAreEstimated ?? false
+        let estimated = state.stepsAreEstimated != false
         let value = estimated ? "~\(steps)" : "\(steps)"
         return AtriaLiveActivityStepsPresentation(
             compactText: value,
@@ -1238,7 +1238,7 @@ private func liveActivityDailyStepGoalPresentation(
                                                  fraction: nil,
                                                  accessibilityText: "Daily strap step goal stale")
     }
-    let estimated = state.dailyStepsAreEstimated ?? false
+    let estimated = state.dailyStepsAreEstimated != false
     let prefix = estimated ? "~" : ""
     let reached = steps >= goal
     let text = reached && !estimated
@@ -1662,7 +1662,7 @@ enum AtriaWidgetMetric: String, Identifiable {
                                                           freshness: atriaStaticStepFreshness,
                                                           now: now) else { return "--" }
             let value = steps >= 1000 ? String(format: "%.1fk", Double(steps) / 1000) : "\(steps)"
-            return s.stepsAreEstimated == true ? "~\(value)" : value
+            return s.stepsAreEstimated == false ? value : "~\(value)"
         case .strain:
             // This is accumulated day load, independent of the live-HR clock,
             // but it still belongs to one bounded physiological cycle.
@@ -1695,12 +1695,12 @@ enum AtriaWidgetMetric: String, Identifiable {
                                                            now: now) else {
                 return "Step stale · last \(atriaCaptureTimeText(capturedAt))"
             }
-            let accuracy = snapshot.stepsAreEstimated == true ? "Estimated" : "Confirmed"
+            let accuracy = snapshot.stepsAreEstimated == false ? "Confirmed" : "Estimated"
             let captured = atriaCaptureTimeText(capturedAt)
             guard let goal = snapshot.dailyStepGoal, goal > 0 else {
                 return "\(accuracy) · \(captured)"
             }
-            if steps >= goal, snapshot.stepsAreEstimated != true {
+            if steps >= goal, snapshot.stepsAreEstimated == false {
                 return "Goal ✓ · confirmed · \(captured)"
             }
             let percent = min(999, max(0, Int((Double(steps) / Double(goal) * 100).rounded())))

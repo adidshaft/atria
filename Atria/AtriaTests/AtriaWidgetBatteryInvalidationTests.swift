@@ -389,8 +389,10 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("AtriaWidget/AtriaWidget.swift"), encoding: .utf8)
 
-        XCTAssertTrue(widgetSource.contains("return s.stepsAreEstimated == true ? \"~\\(value)\" : value"))
-        XCTAssertTrue(widgetSource.contains("let accuracy = snapshot.stepsAreEstimated == true ? \"Estimated\" : \"Confirmed\""))
+        XCTAssertTrue(widgetSource.contains("return s.stepsAreEstimated == false ? value : \"~\\(value)\""))
+        XCTAssertTrue(widgetSource.contains("let accuracy = snapshot.stepsAreEstimated == false ? \"Confirmed\" : \"Estimated\""))
+        XCTAssertTrue(widgetSource.contains("snapshot.stepsAreEstimated == false"),
+                      "only explicit validated provenance may claim exact steps or goal completion")
         XCTAssertTrue(widgetSource.contains("return \"Goal ✓ · confirmed · \\(captured)\""))
         XCTAssertTrue(widgetSource.contains("return \"\\(accuracy) · \\(percent)% goal · \\(captured)\""))
     }
@@ -514,6 +516,32 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             snapshot: goalReached,
             now: reloadedAt.addingTimeInterval(2)
         ), 0)
+    }
+
+    func testMissingStepProvenanceTransitionsIntoEstimatedLane() {
+        let reloadedAt = Date(timeIntervalSince1970: 45_000)
+        let validated = deliverySnapshot(steps: 2_400,
+                                         stepsCapturedAt: reloadedAt,
+                                         heartRate: 90,
+                                         heartRateCapturedAt: reloadedAt)
+        var missing = validated
+        missing.stepsAreEstimated = nil
+
+        XCTAssertEqual(WidgetSnapshotPublisher.timelineReloadDelay(
+            previous: validated,
+            lastReloadAt: reloadedAt,
+            snapshot: missing,
+            now: reloadedAt.addingTimeInterval(1)
+        ), 0, "losing explicit validation must immediately remove exact-step claims")
+
+        var estimated = missing
+        estimated.stepsAreEstimated = true
+        XCTAssertNil(WidgetSnapshotPublisher.timelineReloadDelay(
+            previous: missing,
+            lastReloadAt: reloadedAt,
+            snapshot: estimated,
+            now: reloadedAt.addingTimeInterval(1)
+        ), "nil and true both belong to the same fail-closed estimated lane")
     }
 
     private func deliverySnapshot(steps: Int?,
