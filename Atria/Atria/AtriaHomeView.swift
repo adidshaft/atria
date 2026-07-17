@@ -5695,7 +5695,7 @@ private struct AtriaWorkoutReviewFlow: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Label("Workout found", systemImage: "waveform.path.ecg")
+            Label("Review effort", systemImage: "waveform.path.ecg")
                 .font(.headline.weight(.bold))
                 .foregroundStyle(.primary)
 

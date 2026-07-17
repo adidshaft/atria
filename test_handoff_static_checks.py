@@ -3343,7 +3343,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "case type",
             "case exercises",
             "case summary",
-            "Label(\"Workout found\", systemImage: \"waveform.path.ecg\")",
+            "Label(\"Review effort\", systemImage: \"waveform.path.ecg\")",
             "workoutReceiptBoard",
             "private var workoutReceiptBoard: some View",
             "workoutReceiptTile(title: \"Time\"",
