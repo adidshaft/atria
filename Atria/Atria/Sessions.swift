@@ -7580,7 +7580,7 @@ final class SessionStore: ObservableObject {
         return deviations
     }
 
-    private nonisolated static func makeSavedDailyMetrics(rollups: [DailyRollup],
+    nonisolated static func makeSavedDailyMetrics(rollups: [DailyRollup],
                                                           sleep: SleepHistorySnapshot,
                                                           baseline: PersonalBaseline,
                                                           sessions: [SavedSession] = [],
@@ -7593,7 +7593,7 @@ final class SessionStore: ObservableObject {
         // this filter, a correctly detected recent nap can replace the night's
         // sleep in the daily rollup simply because it shares the same civil day.
         let sleepByDay = Dictionary(uniqueKeysWithValues: sleep.nights
-            .filter { !$0.isNapEvidence }
+            .filter { $0.confirmed && !$0.isNapEvidence }
             .map { (calendar.startOfDay(for: $0.day), $0) })
         let resolvedSkinTemperatureDeviationByDay = skinTemperatureDeviationByDay
             ?? finalizedSkinTemperatureDeviationByMorningDay(sessions: sessions,
@@ -7604,26 +7604,41 @@ final class SessionStore: ObservableObject {
             .map { rollup in
                 let day = calendar.startOfDay(for: rollup.day)
                 let night = sleepByDay[day]
+                // Confirmed main sleep is the authoritative historical source.
+                // DailyRollup is session-start-day based and can legitimately
+                // lack the sleep/HRV fields for an overnight session whose wake
+                // belongs to this morning. Project the confirmed record onto its
+                // morning day before scoring and persistence; candidates and naps
+                // remain evidence-only and can never mint recovery history.
+                let hrv = night?.hrv.flatMap { $0 > 0 ? $0 : nil } ?? rollup.avgHRV
+                let restingHR = night?.restingHR.flatMap { $0 > 0 ? $0 : nil } ?? rollup.restingHR
+                let respiratoryRate = night?.respiratoryRate.flatMap { $0 > 0 ? $0 : nil }
+                    ?? rollup.avgRespiratoryRate
+                let sleepDuration = night.map(\.duration) ?? rollup.sleepDuration
+                let sleepSpan = night.flatMap { night -> TimeInterval? in
+                    guard let start = night.start, let end = night.end, end > start else { return nil }
+                    return end.timeIntervalSince(start)
+                } ?? rollup.sleepSpan
                 let recovery = Metrics.recoveryV2(hrvSnapshot: nil,
-                                                  fallbackRMSSD: rollup.avgHRV,
-                                                  restingNow: rollup.restingHR,
+                                                  fallbackRMSSD: hrv,
+                                                  restingNow: restingHR,
                                                   baseline: baseline,
                                                   hrvReferenceValidated: false,
                                                   sleepEfficiency: night?.sleepEfficiency,
-                                                  sleepDurationHours: night?.durationHours,
-                                                  respiratoryRate: rollup.avgRespiratoryRate,
+                                                  sleepDurationHours: sleepDuration.map { $0 / 3_600 },
+                                                  respiratoryRate: respiratoryRate,
                                                   respiratoryBaseline: sleep.respiratoryBaselineStats)
                 return SavedDailyMetric(day: day,
                                         recoveryPercent: recovery.percent,
                                         recoveryConfidence: recovery.confidence.rawValue,
-                                        hrv: rollup.avgHRV,
-                                        restingHR: rollup.restingHR,
-                                        respiratoryRate: rollup.avgRespiratoryRate,
-                                        sleepDuration: rollup.sleepDuration,
-                                        sleepSpan: rollup.sleepSpan,
-                                        sleepStart: rollup.sleepStart,
-                                        sleepEnd: rollup.sleepEnd,
-                                        sleepSource: rollup.sleepSource,
+                                        hrv: hrv,
+                                        restingHR: restingHR,
+                                        respiratoryRate: respiratoryRate,
+                                        sleepDuration: sleepDuration,
+                                        sleepSpan: sleepSpan,
+                                        sleepStart: night?.start ?? rollup.sleepStart,
+                                        sleepEnd: night?.end ?? rollup.sleepEnd,
+                                        sleepSource: night?.source ?? rollup.sleepSource,
                                         sleepStageSegments: night?.displayStageSegments ?? rollup.sleepStageSegments,
                                         sleepConsistencyPercent: sleep.sleepConsistencyPercent,
                                         strain: rollup.strain > 0 ? rollup.strain : nil,
@@ -7759,7 +7774,7 @@ final class SessionStore: ObservableObject {
         return merged.values.sorted { $0.day > $1.day }
     }
 
-    private nonisolated static func makeDailyRollupStoreEntries(metrics: [SavedDailyMetric],
+    nonisolated static func makeDailyRollupStoreEntries(metrics: [SavedDailyMetric],
                                                                 sessions: [SavedSession] = [],
                                                                 rest: Int = 60,
                                                                 maxHR: Int = 190,
@@ -7908,7 +7923,7 @@ final class SessionStore: ObservableObject {
         // exists anywhere yet; it cannot mint a second civil-day recovery while
         // the previous physiological cycle is still active.
         let hasAnyConfirmedMainSleep = sleep.nights.contains { $0.confirmed && !$0.isNapEvidence }
-        guard confirmedMainSleep != nil || (!hasAnyConfirmedMainSleep && hour >= 4) else { return nil }
+        guard confirmedMainSleep != nil || hasAnyConfirmedMainSleep || hour >= 4 else { return nil }
 
         let sleepAnchoredSession = confirmedMainSleep.flatMap { confirmedSleep in
             sessions.first {
@@ -7953,8 +7968,14 @@ final class SessionStore: ObservableObject {
         // `latestLocalRecoveryHRV`: missing sleep-window HRV stays missing.
         let hrv: Int? = if let confirmedMainSleep {
             confirmedMainSleep.hrv.flatMap { $0 > 0 ? $0 : nil }
-        } else {
+        } else if !hasAnyConfirmedMainSleep {
             overnightSession?.localRMSSD ?? computedToday?.hrv
+        } else {
+            // Once confirmed sleep history exists, an unconfirmed current-day
+            // overnight candidate must not create a second readiness cycle.
+            // Preserve honest activity/RHR/strain below, but keep sleep, HRV,
+            // and recovery absent until this morning's main sleep is confirmed.
+            nil
         }
         let restingHR = confirmedMainSleep?.restingHR
             ?? overnightSession?.sleepCandidateRestingHR
