@@ -79,11 +79,12 @@ struct FrozenRecoverySummary: Codable, Equatable {
         self.contributors = contributors
     }
 
-    init(estimate: Metrics.RecoveryEstimate,
+    init?(estimate: Metrics.RecoveryEstimate,
          scoredDay: Date,
          source: String = FrozenRecoverySummary.recoveryV2Source,
          model: String? = "recovery_v2") {
-        self.init(score: estimate.percent ?? 0,
+        guard let score = estimate.percent else { return nil }
+        self.init(score: score,
                   confidence: estimate.confidence.rawValue,
                   source: source,
                   model: model,
@@ -102,6 +103,11 @@ struct FrozenRecoverySummary: Codable, Equatable {
 
     init?(metric: SavedDailyMetric) {
         guard let score = metric.recoveryPercent else { return nil }
+        if let summary = metric.recoverySummary,
+           summary.score == score {
+            self = summary.replacingScoredDay(metric.day)
+            return
+        }
         var values: [Contributor] = []
         if let hrv = metric.hrv {
             values.append(Contributor(kind: "hrv", value: Double(hrv), unit: "ms"))

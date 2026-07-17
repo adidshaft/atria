@@ -363,8 +363,8 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
                                             boundaryKind: .mainSleep,
                                             anchorSleepID: "shift-sleep",
                                             expectedInterval: 24 * 3_600)
-        let frozen = FrozenRecoverySummary(estimate: recoveryEstimate(percent: 72),
-                                           scoredDay: wakeDay)
+        let frozen = try XCTUnwrap(FrozenRecoverySummary(estimate: recoveryEstimate(percent: 72),
+                                                        scoredDay: wakeDay))
         let rollup = DailyRollupStoreEntry(day: wakeDay,
                                            recoverySummary: frozen,
                                            calendar: calendar)
@@ -400,8 +400,8 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
                                             boundaryKind: .mainSleep,
                                             anchorSleepID: anchor.id,
                                             expectedInterval: 24 * 3_600)
-        let frozen = FrozenRecoverySummary(estimate: recoveryEstimate(percent: 79),
-                                           scoredDay: day)
+        let frozen = try XCTUnwrap(FrozenRecoverySummary(estimate: recoveryEstimate(percent: 79),
+                                                        scoredDay: day))
         let rollup = DailyRollupStoreEntry(day: day,
                                            recoverySummary: frozen,
                                            calendar: calendar)
@@ -452,8 +452,8 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
                                             boundaryKind: .mainSleep,
                                             anchorSleepID: anchor.id,
                                             expectedInterval: 24 * 3_600)
-        let frozen = FrozenRecoverySummary(estimate: recoveryEstimate(percent: 79),
-                                           scoredDay: day)
+        let frozen = try XCTUnwrap(FrozenRecoverySummary(estimate: recoveryEstimate(percent: 79),
+                                                        scoredDay: day))
         let rollup = DailyRollupStoreEntry(day: day,
                                            recoverySummary: frozen,
                                            calendar: calendar)
@@ -506,6 +506,66 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
                                                               metrics: [],
                                                               physiologicalCycle: cycle),
                        live)
+    }
+
+    func testRecoveryProvenanceSurvivesMetricAndRollupJSONRoundTrip() throws {
+        let day = at(24)
+        let estimate = Metrics.RecoveryEstimate(
+            percent: 74,
+            confidence: .personalBaseline,
+            usesHRV: true,
+            detail: "HRV above baseline",
+            contributors: [
+                .init(kind: .hrv,
+                      zScore: 1.25,
+                      weight: 0.55,
+                      detail: "overnight RMSSD",
+                      displayValue: "62 ms",
+                      direction: 1)
+            ]
+        )
+        let summary = try XCTUnwrap(FrozenRecoverySummary(estimate: estimate, scoredDay: day))
+        let metric = SavedDailyMetric(day: day,
+                                      recoveryPercent: 74,
+                                      recoveryConfidence: "legacy-placeholder",
+                                      hrv: 62,
+                                      restingHR: 51,
+                                      respiratoryRate: 13.8,
+                                      sleepDuration: 7.5 * 3_600,
+                                      sleepSpan: 8 * 3_600,
+                                      sleepStart: day.addingTimeInterval(-8 * 3_600),
+                                      sleepEnd: day,
+                                      sleepSource: "sleep_window",
+                                      sleepStageSegments: [],
+                                      sleepConsistencyPercent: 88,
+                                      strain: 5.2,
+                                      recoverySummary: summary)
+
+        let metricData = try JSONEncoder().encode(metric)
+        let decodedMetric = try JSONDecoder().decode(SavedDailyMetric.self, from: metricData)
+        let normalizedSummary = summary.replacingScoredDay(decodedMetric.day)
+        XCTAssertEqual(decodedMetric.recoverySummary, normalizedSummary)
+        XCTAssertEqual(decodedMetric.recoveryConfidence, summary.confidence)
+
+        let rollup = try XCTUnwrap(SessionStore.makeDailyRollupStoreEntries(
+            metrics: [decodedMetric], sessions: []
+        ).first)
+        let decodedRollup = try JSONDecoder().decode(
+            DailyRollupStoreEntry.self,
+            from: JSONEncoder().encode(rollup)
+        )
+        let resolved = try XCTUnwrap(decodedRollup.resolvedRecoverySummary(matching: decodedMetric))
+        XCTAssertEqual(resolved, normalizedSummary)
+        XCTAssertEqual(resolved.recoveryEstimate, estimate)
+    }
+
+    func testLearningEstimateCannotFreezeAsZero() {
+        let estimate = Metrics.RecoveryEstimate(percent: nil,
+                                                confidence: .learning,
+                                                usesHRV: false,
+                                                detail: "learning",
+                                                contributors: [])
+        XCTAssertNil(FrozenRecoverySummary(estimate: estimate, scoredDay: at(24)))
     }
 
     private func recoveryEstimate(percent: Int) -> Metrics.RecoveryEstimate {
