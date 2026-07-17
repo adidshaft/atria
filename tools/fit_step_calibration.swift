@@ -43,6 +43,7 @@ private struct WindowEvidence {
     let decodedFrames: Int
     let deviceTimestampsMS: [Int64]
     let magnitudes: [Double]
+    let rotationMagnitudes: [Double]
 
     var durationSeconds: Double {
         Double(max(0, manifest.endMS - manifest.startMS)) / 1_000
@@ -88,6 +89,28 @@ private struct CandidateResult {
 
     var score: Double {
         meanWalkError + maxWalkError * 0.75 + Double(restFalseSteps) * 0.25
+    }
+
+    var passes: Bool {
+        restFalseSteps == 0 && meanWalkError <= 0.03 && maxWalkError <= 0.05
+    }
+}
+
+private struct GyroCandidate {
+    let rotationLevelGate: Double
+    let prominenceGate: Double
+    let turnWindowDiscount: Double
+}
+
+private struct GyroCandidateResult {
+    let candidate: GyroCandidate
+    let counts: [Double]
+    let meanWalkError: Double
+    let maxWalkError: Double
+    let restFalseSteps: Double
+
+    var score: Double {
+        meanWalkError + maxWalkError * 0.75 + restFalseSteps * 0.25
     }
 
     var passes: Bool {
@@ -186,19 +209,73 @@ enum FitStepCalibration {
                          counts))
         }
 
-        guard let best = results.first, best.passes else {
-            fail("no calibration candidate met <=3% mean walk error, <=5% per-walk error, and zero rest steps")
+        // Second detector family: gyro-cadence (rotation-rate magnitude
+        // oscillates at the true step rate; see
+        // AtriaGyroCadenceResearchPedometer). Swept under identical gates so
+        // one guided session can arbitrate both families.
+        var gyroResults: [GyroCandidateResult] = []
+        for levelGate in [25.0, 30.0, 35.0, 40.0, 45.0] {
+            for prominence in [1.4, 1.6, 1.8, 2.0, 2.2] {
+                for discountTwentieths in 8...20 {
+                    let candidate = GyroCandidate(
+                        rotationLevelGate: levelGate,
+                        prominenceGate: prominence,
+                        turnWindowDiscount: Double(discountTwentieths) / 20
+                    )
+                    gyroResults.append(evaluateGyro(candidate: candidate,
+                                                    evidence: evidence))
+                }
+            }
         }
-        print(String(format: "\nselected filter=%d peak=%d sensitivity=%.2f confirmation=%d gain=%.4f",
-                     best.candidate.filterLength,
-                     best.candidate.peakWindow,
-                     best.candidate.sensitivityG,
-                     best.candidate.confirmationSteps,
-                     best.gain))
+        gyroResults.sort {
+            if $0.passes != $1.passes { return $0.passes && !$1.passes }
+            if $0.score != $1.score { return $0.score < $1.score }
+            if $0.restFalseSteps != $1.restFalseSteps { return $0.restFalseSteps < $1.restFalseSteps }
+            return $0.maxWalkError < $1.maxWalkError
+        }
+        print("\nranked_gyro_candidates")
+        for (rank, result) in gyroResults.prefix(10).enumerated() {
+            let counts = zip(evidence, result.counts)
+                .map { String(format: "%@=%.1f", $0.manifest.label, $1) }
+                .joined(separator: ",")
+            print(String(format: "%02d pass=%d level=%.0f prominence=%.1f turn_discount=%.2f mean_walk_error=%.2f%% max_walk_error=%.2f%% rest_false_steps=%.1f score=%.4f counts=%@",
+                         rank + 1,
+                         result.passes ? 1 : 0,
+                         result.candidate.rotationLevelGate,
+                         result.candidate.prominenceGate,
+                         result.candidate.turnWindowDiscount,
+                         result.meanWalkError * 100,
+                         result.maxWalkError * 100,
+                         result.restFalseSteps,
+                         result.score,
+                         counts))
+        }
+
+        let accelBest = results.first.flatMap { $0.passes ? $0 : nil }
+        let gyroBest = gyroResults.first.flatMap { $0.passes ? $0 : nil }
+        if let best = accelBest {
+            print(String(format: "\nselected filter=%d peak=%d sensitivity=%.2f confirmation=%d gain=%.4f",
+                         best.candidate.filterLength,
+                         best.candidate.peakWindow,
+                         best.candidate.sensitivityG,
+                         best.candidate.confirmationSteps,
+                         best.gain))
+        }
+        if let best = gyroBest {
+            print(String(format: "%@selected_gyro level=%.0f prominence=%.1f turn_discount=%.2f",
+                         accelBest == nil ? "\n" : "",
+                         best.candidate.rotationLevelGate,
+                         best.candidate.prominenceGate,
+                         best.candidate.turnWindowDiscount))
+        }
+        guard accelBest != nil || gyroBest != nil else {
+            fail("no calibration candidate in either family met <=3% mean walk error, <=5% per-walk error, and zero rest steps")
+        }
 
         // Holdout evidence is deliberately decoded and scored only after the
-        // training candidate and its gain are frozen. It therefore cannot
-        // influence parameter ranking or silently re-fit the gain.
+        // training candidates and gains are frozen. It therefore cannot
+        // influence parameter ranking or silently re-fit anything. Every
+        // family that passed training must also pass its holdouts.
         if let holdoutManifestURL = arguments.holdoutManifestURL {
             let holdoutManifest = try JSONDecoder().decode(
                 CalibrationManifest.self,
@@ -210,9 +287,15 @@ enum FitStepCalibration {
                 windows: holdoutManifest.windows,
                 heading: "holdout_evidence"
             )
-            validateHoldouts(candidate: best.candidate,
-                             gain: best.gain,
-                             evidence: holdoutEvidence)
+            if let best = accelBest {
+                validateHoldouts(candidate: best.candidate,
+                                 gain: best.gain,
+                                 evidence: holdoutEvidence)
+            }
+            if let best = gyroBest {
+                validateGyroHoldouts(candidate: best.candidate,
+                                     evidence: holdoutEvidence)
+            }
         } else {
             print("holdout_validation=not_provided")
         }
@@ -410,6 +493,7 @@ enum FitStepCalibration {
 
         return windows.indices.map { index in
             var magnitudes: [Double] = []
+            var rotationMagnitudes: [Double] = []
             var decodedFrames = 0
             var seenTimestamps = Set<UInt32>()
             var deviceTimestampsMS: [Int64] = []
@@ -425,11 +509,13 @@ enum FitStepCalibration {
                 decodedFrames += 1
                 deviceTimestampsMS.append(Int64(decoded.deviceTimestamp) * 1_000)
                 magnitudes.append(contentsOf: decoded.acceleration.map(\.magnitude))
+                rotationMagnitudes.append(contentsOf: decoded.rotationRate.map(\.magnitude))
             }
             return WindowEvidence(manifest: windows[index],
                                   decodedFrames: decodedFrames,
                                   deviceTimestampsMS: deviceTimestampsMS,
-                                  magnitudes: magnitudes)
+                                  magnitudes: magnitudes,
+                                  rotationMagnitudes: rotationMagnitudes)
         }
     }
 
@@ -467,6 +553,73 @@ enum FitStepCalibration {
                                meanWalkError: walkErrors.reduce(0, +) / Double(max(1, walkErrors.count)),
                                maxWalkError: walkErrors.max() ?? 1,
                                restFalseSteps: restFalseSteps)
+    }
+
+    private static func evaluateGyro(candidate: GyroCandidate,
+                                     evidence: [WindowEvidence]) -> GyroCandidateResult {
+        // Windows entering the fitter are contiguity-verified upstream, so
+        // each rotation series is a single physical segment.
+        let counts = evidence.map {
+            AtriaGyroCadenceResearchPedometer.steps(
+                contiguousRotationMagnitudes: $0.rotationMagnitudes,
+                rotationLevelGate: candidate.rotationLevelGate,
+                prominenceGate: candidate.prominenceGate,
+                turnWindowDiscount: candidate.turnWindowDiscount
+            )
+        }
+        let walkErrors = zip(evidence, counts).compactMap { window, count -> Double? in
+            guard window.manifest.kind == .walk else { return nil }
+            return abs(count - Double(window.manifest.expectedSteps))
+                / Double(window.manifest.expectedSteps)
+        }
+        let restFalseSteps = zip(evidence, counts)
+            .filter { $0.0.manifest.kind == .rest }
+            .reduce(0.0) { $0 + max(0, $1.1) }
+        return GyroCandidateResult(candidate: candidate,
+                                   counts: counts,
+                                   meanWalkError: walkErrors.reduce(0, +) / Double(max(1, walkErrors.count)),
+                                   maxWalkError: walkErrors.max() ?? 1,
+                                   restFalseSteps: restFalseSteps)
+    }
+
+    private static func validateGyroHoldouts(candidate: GyroCandidate,
+                                             evidence: [WindowEvidence]) {
+        print("\ngyro_holdout_results")
+        var failures = 0
+        for window in evidence {
+            let steps = AtriaGyroCadenceResearchPedometer.steps(
+                contiguousRotationMagnitudes: window.rotationMagnitudes,
+                rotationLevelGate: candidate.rotationLevelGate,
+                prominenceGate: candidate.prominenceGate,
+                turnWindowDiscount: candidate.turnWindowDiscount
+            )
+            let passes: Bool
+            if window.manifest.kind.expectsSteps {
+                let error = abs(steps - Double(window.manifest.expectedSteps))
+                    / Double(window.manifest.expectedSteps)
+                passes = error <= 0.05
+                print(String(format: "%@ kind=%@ expected=%d steps=%.1f error=%.2f%% pass=%d",
+                             window.manifest.label,
+                             window.manifest.kind.rawValue,
+                             window.manifest.expectedSteps,
+                             steps,
+                             error * 100,
+                             passes ? 1 : 0))
+            } else {
+                passes = steps == 0
+                print(String(format: "%@ kind=%@ expected=0 steps=%.1f false_steps=%.1f pass=%d",
+                             window.manifest.label,
+                             window.manifest.kind.rawValue,
+                             steps,
+                             steps,
+                             passes ? 1 : 0))
+            }
+            if !passes { failures += 1 }
+        }
+        print("gyro_holdout_summary windows=\(evidence.count) passed=\(evidence.count - failures) failed=\(failures) pass=\(failures == 0 ? 1 : 0)")
+        guard failures == 0 else {
+            fail("selected gyro candidate failed independent holdout validation")
+        }
     }
 
     private static func rawStepCount(magnitudes: [Double],

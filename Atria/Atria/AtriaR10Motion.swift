@@ -370,9 +370,14 @@ enum AtriaGyroCadenceResearchPedometer {
 
     /// Steps for ONE physically contiguous rotation-magnitude segment.
     /// Callers must split at device-time discontinuities; concatenating
-    /// across a gap would fabricate motion evidence.
+    /// across a gap would fabricate motion evidence. The gate parameters are
+    /// exposed so the strict fitter can sweep this family against a guided
+    /// manifest under the same promotion gates as the production family.
     static func steps(contiguousRotationMagnitudes samples: [Double],
-                      sampleRateHz: Int = sampleRateHz) -> Double {
+                      sampleRateHz: Int = sampleRateHz,
+                      rotationLevelGate: Double = rotationLevelGate,
+                      prominenceGate: Double = prominenceGate,
+                      turnWindowDiscount: Double = turnWindowDiscount) -> Double {
         let win = Int(windowSeconds * Double(sampleRateHz))
         let hop = Int(hopSeconds * Double(sampleRateHz))
         guard samples.count >= win, win > 0, hop > 0 else { return 0 }
