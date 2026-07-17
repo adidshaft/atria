@@ -90,6 +90,7 @@ enum AtriaAnalytics {
         static func inferredIsNap(start: Date,
                                   end: Date,
                                   currentSelection: Bool,
+                                  eventTimeZoneIdentifier: String? = nil,
                                   calendar: Calendar = .current) -> Bool {
             guard end > start else { return currentSelection }
             let duration = end.timeIntervalSince(start)
@@ -100,10 +101,14 @@ enum AtriaAnalytics {
                   duration <= AggregateSleepCandidate.napMaximumSpan else {
                 return currentSelection
             }
-            let startHour = calendar.component(.hour, from: start)
-            let endHour = calendar.component(.hour, from: end)
+            let startHour = EventCivilTime.localHour(of: start,
+                                                     eventTimeZoneIdentifier: eventTimeZoneIdentifier,
+                                                     fallback: calendar)
+            let endHour = EventCivilTime.localHour(of: end,
+                                                   eventTimeZoneIdentifier: eventTimeZoneIdentifier,
+                                                   fallback: calendar)
             let daytimeWindow = startHour >= 11 && endHour <= 20
-            return daytimeWindow || duration < AggregateSleepCandidate.strictMinimumDuration
+            return daytimeWindow
         }
     }
 
@@ -457,8 +462,11 @@ enum AtriaAnalytics {
 
         static func skinTemperatureDeviation(_ summary: IMUAuditSummary.SkinTemperatureDeviationSummary,
                                              greenDelta: Double = 0.5,
-                                             yellowDelta: Double = 1.0) -> AtriaMetricZone? {
-            guard summary.isReady, let delta = summary.latestDeltaCelsius else { return nil }
+                                             yellowDelta: Double = 1.0,
+                                             decoderAvailable: Bool = AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable) -> AtriaMetricZone? {
+            guard decoderAvailable,
+                  summary.isReady,
+                  let delta = summary.latestDeltaCelsius else { return nil }
             let absDelta = abs(delta)
             let safeGreenDelta = min(max(greenDelta, 0.2), 2.0)
             let safeYellowDelta = min(max(yellowDelta, safeGreenDelta + 0.1), 4.0)
@@ -564,8 +572,11 @@ enum AtriaAnalytics {
             let resting = energyKcalPerMinute(heartRate: rest, profile: profile)
             var total = 0.0
             for index in 1..<samples.count {
-                let dtMin = samples[index].t.timeIntervalSince(samples[index - 1].t) / 60.0
-                guard dtMin > 0, dtMin < 5, samples[index].bpm > 0 else { continue }
+                let dtSeconds = samples[index].t.timeIntervalSince(samples[index - 1].t)
+                guard dtSeconds > 0,
+                      dtSeconds <= Strain.maximumLoadEvidenceGap,
+                      samples[index].bpm > 0 else { continue }
+                let dtMin = dtSeconds / 60.0
                 let gross = energyKcalPerMinute(heartRate: samples[index].bpm, profile: profile)
                 total += max(0, gross - resting) * dtMin
             }
@@ -588,6 +599,13 @@ enum AtriaAnalytics {
     }
 
     enum Strain {
+        /// Shared evidence boundary for every cardiovascular-load integrator.
+        /// This matches `SavedSession.workoutContinuityGapLimit`: standard
+        /// 2A37 packets may arrive in short bursts, but a longer absence must
+        /// not become strain, zone time, or calories. Validated archive rows
+        /// are integrated from their own timestamps, not held across a gap.
+        static let maximumLoadEvidenceGap: TimeInterval = 15
+
         struct MaxHeartRateZoneSeconds: Equatable {
             let rest: TimeInterval
             let warmup: TimeInterval
@@ -630,6 +648,16 @@ enum AtriaAnalytics {
                 case 5: return max
                 default: return 0
                 }
+            }
+
+            static func + (lhs: Self, rhs: Self) -> Self {
+                Self(rest: lhs.rest + rhs.rest,
+                     warmup: lhs.warmup + rhs.warmup,
+                     fatBurn: lhs.fatBurn + rhs.fatBurn,
+                     aerobic: lhs.aerobic + rhs.aerobic,
+                     anaerobic: lhs.anaerobic + rhs.anaerobic,
+                     max: lhs.max + rhs.max,
+                     droppedGapSeconds: lhs.droppedGapSeconds + rhs.droppedGapSeconds)
             }
         }
 
@@ -706,9 +734,15 @@ enum AtriaAnalytics {
             let safeCoefficient = Swift.min(Swift.max(coefficient, 1.0), 2.5)
             var total = 0.0
             for index in 1..<series.count {
-                let dtMin = (series[index].t - series[index - 1].t) / 60.0
-                guard dtMin > 0, dtMin < 5 else { continue }
-                let hrr = Swift.min(Swift.max((Double(series[index].bpm) - Double(rest)) / span, 0), 1)
+                let dtSeconds = series[index].t - series[index - 1].t
+                // Do not turn an ordinary telemetry gap into several minutes
+                // of high effort by holding the later BPM backward in time.
+                // Short gaps use a trapezoidal HR estimate; longer gaps carry
+                // no defensible exertion evidence and are excluded.
+                guard dtSeconds > 0, dtSeconds <= maximumLoadEvidenceGap else { continue }
+                let dtMin = dtSeconds / 60.0
+                let meanBPM = (Double(series[index - 1].bpm) + Double(series[index].bpm)) / 2
+                let hrr = Swift.min(Swift.max((meanBPM - Double(rest)) / span, 0), 1)
                 total += dtMin * hrr * 0.64 * exp(safeCoefficient * hrr)
             }
             return total
@@ -719,7 +753,7 @@ enum AtriaAnalytics {
         /// aerobic 70-80%, anaerobic 80-90%, max >=90% of configured max HR.
         static func maxHeartRateZoneSeconds(_ series: [(t: Double, bpm: Int)],
                                             maxHR: Int,
-                                            maxGap: TimeInterval = 5 * 60) -> MaxHeartRateZoneSeconds {
+                                            maxGap: TimeInterval = maximumLoadEvidenceGap) -> MaxHeartRateZoneSeconds {
             guard series.count > 1, maxHR > 0 else { return .empty }
             var rest = 0.0
             var warmup = 0.0
@@ -732,7 +766,7 @@ enum AtriaAnalytics {
             for index in 1..<series.count {
                 let dt = series[index].t - series[index - 1].t
                 guard dt > 0 else { continue }
-                if dt >= maxGap {
+                if dt > maxGap {
                     dropped += dt
                     continue
                 }
@@ -780,10 +814,15 @@ enum AtriaAnalytics {
         static func edwardsLoad(_ series: [(t: Double, bpm: Int)], rest: Int, max: Int) -> Double {
             guard series.count > 1, max > rest else { return 0 }
             let span = Double(max - rest)
+            // maximumLoadEvidenceGap is expressed in SECONDS (shared with the
+            // TRIMP/zone integrators, which compare in seconds); this
+            // integrator works in minutes, so convert once and by name.
+            let maximumGapMinutes = maximumLoadEvidenceGap / 60
             var total = 0.0
             for index in 1..<series.count {
                 let dtMin = (series[index].t - series[index - 1].t) / 60.0
-                guard dtMin > 0, dtMin < 5 else { continue }
+                guard dtMin > 0,
+                      dtMin <= maximumGapMinutes else { continue }
                 let reserve = Swift.min(Swift.max((Double(series[index].bpm) - Double(rest)) / span, 0), 1)
                 total += dtMin * Double(edwardsWeight(forHRReserve: reserve))
             }
@@ -813,6 +852,73 @@ enum AtriaAnalytics {
                               profile: profile)
         }
 
+        /// Removes explicit pause windows while preserving their boundaries.
+        /// Returning one array of surviving samples is not sufficient: a short
+        /// pause can leave the pre/post samples within the normal telemetry-gap
+        /// tolerance, which would integrate the excluded time back into TRIMP,
+        /// zone seconds, and energy. Each returned segment must be integrated
+        /// independently, then the scalar results may be summed.
+        static func contiguousSegments(_ samples: [HRSample],
+                                       excluding excludedIntervals: [ExcludedInterval]?) -> [[HRSample]] {
+            guard !samples.isEmpty else { return [] }
+            let intervals = normalizedExcludedIntervals(excludedIntervals)
+            guard !intervals.isEmpty else { return [samples] }
+
+            var result: [[HRSample]] = []
+            var current: [HRSample] = []
+            var intervalIndex = 0
+
+            func finishCurrent() {
+                guard !current.isEmpty else { return }
+                result.append(current)
+                current.removeAll(keepingCapacity: true)
+            }
+
+            for sample in samples {
+                while intervalIndex < intervals.count,
+                      sample.t > intervals[intervalIndex].end {
+                    // Crossing a known pause boundary always ends the previous
+                    // integration segment, even when no sample landed inside it.
+                    finishCurrent()
+                    intervalIndex += 1
+                }
+
+                if intervalIndex < intervals.count {
+                    let interval = intervals[intervalIndex]
+                    if sample.t >= interval.start, sample.t <= interval.end {
+                        finishCurrent()
+                        continue
+                    }
+                }
+                current.append(sample)
+            }
+            finishCurrent()
+            return result
+        }
+
+        private static func normalizedExcludedIntervals(
+            _ intervals: [ExcludedInterval]?
+        ) -> [ExcludedInterval] {
+            let ordered = (intervals ?? [])
+                .filter { $0.end > $0.start }
+                .sorted { lhs, rhs in
+                    lhs.start == rhs.start ? lhs.end < rhs.end : lhs.start < rhs.start
+                }
+            guard var current = ordered.first else { return [] }
+            var merged: [ExcludedInterval] = []
+            for interval in ordered.dropFirst() {
+                if interval.start <= current.end {
+                    current = ExcludedInterval(start: current.start,
+                                               end: max(current.end, interval.end))
+                } else {
+                    merged.append(current)
+                    current = interval
+                }
+            }
+            merged.append(current)
+            return merged
+        }
+
         /// HR-reserve zone seconds for auditing Strain behavior across rest to max.
         /// Buckets: z0 <30%, z1 30-50%, z2 50-70%, z3 70-85%, z4 >=85% HR reserve.
         static func zoneSummary(_ series: [(t: Double, bpm: Int)], rest: Int, max: Int) -> ZoneSummary {
@@ -826,9 +932,7 @@ enum AtriaAnalytics {
             for index in 1..<series.count {
                 let dt = series[index].t - series[index - 1].t
                 guard dt > 0 else { continue }
-                // Match trimp()/maxHeartRateZoneSeconds: a gap is >=5 minutes, not
-                // >=5 seconds — low-rate long-wear streams are usable, not dropped.
-                if dt >= 5 * 60 {
+                if dt > maximumLoadEvidenceGap {
                     dropped += dt
                     continue
                 }
@@ -1013,7 +1117,7 @@ enum AtriaAnalytics {
             let restingZ = zScore(Double(restingNow), mean: restingStats.mean, sd: restingStats.sd, minSD: 1.0)
             let rmssdNow = hrvSnapshot?.isReady == true
                 ? hrvSnapshot?.rmssd
-                : (fallbackRMSSD.map(Double.init) ?? baseline.hrvEMA)
+                : fallbackRMSSD.map(Double.init)
             guard let rmssdNow, rmssdNow > 0 else {
                 return Estimate(percent: nil, confidence: .learning,
                                 usesHRV: false,
@@ -1061,7 +1165,10 @@ enum AtriaAnalytics {
                 Estimate.Contributor(kind: .sleep,
                                      zScore: sleepZ,
                                      weight: 0.15,
-                                     detail: String(format: "Sleep %.1fσ", sleepZ),
+                                     // Unlike HRV/RHR, the sleep z is anchored
+                                     // to population norms (7 h, 85% eff), not
+                                     // a personal baseline — disclose that.
+                                     detail: String(format: "Sleep %.1fσ vs 7h·85%% norm", sleepZ),
                                      displayValue: sleepDurationHours.map { "\(AtriaMetricFormat.sleepHours($0)) ✓" } ?? String(format: "Sleep %+.1fσ", sleepZ)),
                 Estimate.Contributor(kind: .respiration,
                                      zScore: respirationZ,
@@ -1099,7 +1206,7 @@ enum AtriaAnalytics {
                   hrvStats.count >= PersonalBaseline.trustedMinimumSamples else { return nil }
             let rmssdNow = hrvSnapshot?.isReady == true
                 ? hrvSnapshot?.rmssd
-                : (fallbackRMSSD.map(Double.init) ?? baseline.hrvEMA)
+                : fallbackRMSSD.map(Double.init)
             guard let rmssdNow, rmssdNow > 0 else { return nil }
 
             let restingZ = zScore(Double(restingNow), mean: restingStats.mean, sd: restingStats.sd, minSD: 1.0)
@@ -1471,7 +1578,9 @@ enum AtriaAnalytics {
             guard maxHR > rest else { return .learning }
             var trimpByDay: [Date: Double] = [:]
             for session in sessions where session.points.count >= 2 {
-                let day = calendar.startOfDay(for: session.start)
+                let day = EventCivilTime.day(containing: session.start,
+                                             eventTimeZoneIdentifier: session.eventTimeZoneIdentifier,
+                                             outputCalendar: calendar)
                 trimpByDay[day, default: 0] += session.trimp(rest: rest, max: maxHR)
             }
             let dailyStrains = trimpByDay

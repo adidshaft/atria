@@ -245,6 +245,132 @@ enum AtriaStressMonitor {
     }
 }
 
+struct AtriaStressDistribution: Codable, Equatable {
+    var calmSamples: Int
+    var mediumSamples: Int
+    var highSamples: Int
+
+    static let empty = AtriaStressDistribution(calmSamples: 0,
+                                                mediumSamples: 0,
+                                                highSamples: 0)
+
+    var sampleCount: Int { calmSamples + mediumSamples + highSamples }
+
+    var fractions: (calm: Double, medium: Double, high: Double)? {
+        guard sampleCount > 0 else { return nil }
+        let total = Double(sampleCount)
+        return (Double(calmSamples) / total,
+                Double(mediumSamples) / total,
+                Double(highSamples) / total)
+    }
+
+    mutating func record(_ level: AtriaStressLevel) {
+        switch level {
+        case .calm, .low: calmSamples += 1
+        case .medium: mediumSamples += 1
+        case .high: highSamples += 1
+        }
+    }
+
+    mutating func add(_ other: AtriaStressDistribution) {
+        calmSamples += other.calmSamples
+        mediumSamples += other.mediumSamples
+        highSamples += other.highSamples
+    }
+}
+
+struct AtriaStressDistributionComparison: Equatable {
+    let today: AtriaStressDistribution
+    /// Nil until at least three matching weekday/weekend days contain enough
+    /// measured samples. The UI must not render a "typical" bar before then.
+    let typical: AtriaStressDistribution?
+    let comparisonDayCount: Int
+}
+
+struct AtriaStressDistributionArchive: Codable, Equatable {
+    struct Day: Codable, Equatable {
+        var day: Date
+        var distribution: AtriaStressDistribution
+        var lastSampleAt: Date
+    }
+
+    private(set) var days: [Day]
+
+    private static let defaultsKey = "atria.stress.distribution.v1"
+    private static let retentionDays = 35
+    private static let minimumSamplesPerDay = 10
+    private static let minimumTypicalDays = 3
+
+    init(days: [Day] = []) {
+        self.days = days.sorted { $0.day < $1.day }
+    }
+
+    @discardableResult
+    mutating func record(level: AtriaStressLevel,
+                         at date: Date,
+                         calendar: Calendar = .current) -> Bool {
+        let normalizedDay = calendar.startOfDay(for: date)
+        if let index = days.firstIndex(where: { calendar.isDate($0.day, inSameDayAs: normalizedDay) }) {
+            // Guards restoration/replay from counting a sample that was already
+            // summarized before this store instance was rebuilt.
+            guard date > days[index].lastSampleAt else { return false }
+            days[index].distribution.record(level)
+            days[index].lastSampleAt = date
+        } else {
+            var distribution = AtriaStressDistribution.empty
+            distribution.record(level)
+            days.append(Day(day: normalizedDay,
+                            distribution: distribution,
+                            lastSampleAt: date))
+        }
+
+        let cutoff = calendar.date(byAdding: .day,
+                                   value: -Self.retentionDays,
+                                   to: normalizedDay) ?? normalizedDay
+        days.removeAll { $0.day < cutoff }
+        days.sort { $0.day < $1.day }
+        return true
+    }
+
+    func comparison(at date: Date,
+                    calendar: Calendar = .current) -> AtriaStressDistributionComparison? {
+        let today = calendar.startOfDay(for: date)
+        guard let current = days.first(where: { calendar.isDate($0.day, inSameDayAs: today) }),
+              current.distribution.sampleCount > 0 else { return nil }
+
+        let todayIsWeekend = calendar.isDateInWeekend(today)
+        let comparable = days.filter {
+            $0.day < today
+                && calendar.isDateInWeekend($0.day) == todayIsWeekend
+                && $0.distribution.sampleCount >= Self.minimumSamplesPerDay
+        }
+        let typical: AtriaStressDistribution?
+        if comparable.count >= Self.minimumTypicalDays {
+            typical = comparable.reduce(into: .empty) { result, day in
+                result.add(day.distribution)
+            }
+        } else {
+            typical = nil
+        }
+        return AtriaStressDistributionComparison(today: current.distribution,
+                                                 typical: typical,
+                                                 comparisonDayCount: comparable.count)
+    }
+
+    static func load(defaults: UserDefaults = .standard) -> AtriaStressDistributionArchive {
+        guard let data = defaults.data(forKey: defaultsKey),
+              let archive = try? JSONDecoder().decode(AtriaStressDistributionArchive.self, from: data) else {
+            return AtriaStressDistributionArchive()
+        }
+        return archive
+    }
+
+    func save(defaults: UserDefaults = .standard) {
+        guard let data = try? JSONEncoder().encode(self) else { return }
+        defaults.set(data, forKey: Self.defaultsKey)
+    }
+}
+
 /// Thin store that owns the rolling buffers, activation EMA, hysteresis, and
 /// post-workout cooldown; recomputes `AtriaStressMonitor.score(...)` on each
 /// pulse update. All the actual scoring logic lives in the pure function above
@@ -255,7 +381,17 @@ final class AtriaStressMonitorStore: ObservableObject {
     /// Scored readings from this app session (thinned to ~1 per 30s, capped
     /// at 12h). In-memory only — the history chart shows real gaps for any
     /// stretch the strap wasn't read, never interpolation.
-    @Published private(set) var history: [StressHistoryPoint] = []
+    private(set) var history: [StressHistoryPoint] = []
+    /// Cheap change token for SwiftUI observers. The Health screen reads
+    /// `history` for data, but watches this integer so live updates never
+    /// compare the full rolling array.
+    @Published private(set) var historyRevision = 0
+    /// Persisted, measured stress-band counts. This is deliberately a compact
+    /// aggregate rather than a second high-frequency sample archive: it can
+    /// answer "today versus a typical weekday" without inventing values across
+    /// gaps or turning a 30-second live signal into an unbounded disk stream.
+    private var distributionArchive = AtriaStressDistributionArchive.load()
+    @Published private(set) var distributionRevision = 0
 
     struct StressHistoryPoint: Identifiable, Equatable {
         let t: Date
@@ -275,12 +411,26 @@ final class AtriaStressMonitorStore: ObservableObject {
     private var lastEmittedLevel: AtriaStressLevel?
     private var candidateLevel: AtriaStressLevel?
     private var candidateStreak = 0
+    private var unsavedDistributionSamples = 0
 
     private static let hrWindowSeconds: TimeInterval = 60
     private static let rrWindowSeconds: TimeInterval = 180
     private static let activationEMAAlpha = 0.2
     private static let hysteresisMargin = 0.05
     private static let hysteresisHoldTicks = 2
+    nonisolated static let unchangedInputEvaluationInterval: TimeInterval = 30
+
+    nonisolated static func shouldEvaluateStressInput(force: Bool,
+                                                       inputChanged: Bool,
+                                                       isNoSignal: Bool,
+                                                       lastEvaluatedAt: Date?,
+                                                       now: Date,
+                                                       minimumInterval: TimeInterval = unchangedInputEvaluationInterval) -> Bool {
+        if force || inputChanged { return true }
+        guard let lastEvaluatedAt else { return true }
+        if isNoSignal { return false }
+        return now.timeIntervalSince(lastEvaluatedAt) >= minimumInterval
+    }
 
     private func recordHistory(now: Date) {
         guard case .scored = state.kind, let level = state.level,
@@ -288,6 +438,24 @@ final class AtriaStressMonitorStore: ObservableObject {
         if let last = history.last, now.timeIntervalSince(last.t) < 30 { return }
         history.append(StressHistoryPoint(t: now, activation: activation, level: level))
         history.removeAll { now.timeIntervalSince($0.t) > 12 * 3600 }
+        historyRevision &+= 1
+
+        if distributionArchive.record(level: level, at: now) {
+            distributionRevision &+= 1
+            unsavedDistributionSamples += 1
+            // At the 30-second history cadence this writes at most every five
+            // minutes. A process interruption can lose only the small pending
+            // tail; previously persisted evidence is never reconstructed.
+            if unsavedDistributionSamples >= 10 {
+                distributionArchive.save()
+                unsavedDistributionSamples = 0
+            }
+        }
+    }
+
+    func distributionComparison(now: Date = Date(),
+                                calendar: Calendar = .current) -> AtriaStressDistributionComparison? {
+        distributionArchive.comparison(at: now, calendar: calendar)
     }
 
     /// Feed one pulse tick in. Safe to call as often as ~every 5s (or on every
@@ -319,8 +487,14 @@ final class AtriaStressMonitorStore: ObservableObject {
         hrBuffer.removeAll { now.timeIntervalSince($0.t) > Self.hrWindowSeconds }
 
         let rrWindow = recentRRSamples
-            .filter { now.timeIntervalSince($0.date) <= Self.rrWindowSeconds }
-            .map(\.ms)
+            .filter {
+                let age = now.timeIntervalSince($0.date)
+                return age >= -5 && age <= Self.rrWindowSeconds
+            }
+        let validatedShortWindowRMSSD = AtriaShortWindowRMSSD.value(
+            samples: rrWindow.map { (date: $0.date, ms: Double($0.ms)) },
+            minimumCoverageSeconds: AtriaStressMonitor.minimumHRVWindowSeconds
+        )
 
         let smoothedHR: Int
         if hrBuffer.isEmpty {
@@ -332,11 +506,16 @@ final class AtriaStressMonitorStore: ObservableObject {
 
         let contactAge = contactStartedAt.map { now.timeIntervalSince($0) } ?? 0
         let cooldownActive = lastWorkoutEndAt.map { now.timeIntervalSince($0) < AtriaStressMonitor.postWorkoutCooldownSeconds } ?? false
-        let hrvFallback: Double? = (hrvSnapshot?.isReady == true) ? hrvSnapshot?.rmssd : nil
+        let hrvFallback: Double? = validatedShortWindowRMSSD
+            ?? ((hrvSnapshot?.isLiveStressEligible(on: now) == true) ? hrvSnapshot?.rmssd : nil)
 
         let raw = AtriaStressMonitor.score(hrNow: smoothedHR,
                                            hrWindow: hrBuffer.map(\.bpm),
-                                           rrWindowMs: rrWindow,
+                                           // The timestamped path above is authoritative in
+                                           // production. An empty raw array prevents the pure
+                                           // compatibility scorer from bridging disconnected
+                                           // RR islands when strict evidence is unavailable.
+                                           rrWindowMs: [],
                                            hrvFallbackRMSSD: hrvFallback,
                                            baseline: baseline,
                                            restingMaxHR: restingMaxHR,

@@ -7,7 +7,7 @@ import SwiftUI
 /// since the card sits deep inside the Vitals tab navigation stack.
 @MainActor
 final class AtriaDetectionsRenderTests: XCTestCase {
-    func testDetectionsListSheetRendersNonEmptyRowsForSampleEvents() {
+    func testDetectionsListSheetRendersNonEmptyRowsForSampleEvents() throws {
         // Covers all four kinds in a single hosted render (a per-kind loop of
         // separate `UIHostingController`s proved flaky under the simulator's
         // window-management on CI; one window with a heterogeneous list is
@@ -18,7 +18,11 @@ final class AtriaDetectionsRenderTests: XCTestCase {
             DetectionEvent(kind: "workoutDetected", detail: "peak_over_rest=55, observed 900s, coverage 82%"),
             DetectionEvent(kind: "sleepCandidateSkipped", reason: "no_strong_candidate", detail: "No sleep candidates found")
         ]
-        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        let windowScene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        )
+        let window = UIWindow(windowScene: windowScene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
         let host = UIHostingController(rootView: AtriaDetectionsListSheet(detections: events))
         window.rootViewController = host
         window.makeKeyAndVisible()

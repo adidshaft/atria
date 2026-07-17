@@ -137,9 +137,19 @@ struct AtriaLoadingPanel: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(.quaternary)
-                .frame(width: 144, height: 18)
+            HStack(spacing: 9) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+            }
+            if !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(.quaternary)
                 .frame(height: 58)
@@ -154,7 +164,8 @@ struct AtriaLoadingPanel: View, Equatable {
         }
         .padding(18)
         .atriaCard(emphasis: .soft)
-        .accessibilityLabel(title)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(subtitle.isEmpty ? title : "\(title). \(subtitle)")
     }
 }
 
@@ -475,6 +486,7 @@ struct AtriaMetricTile: View, Equatable {
     var calibratingDay: Int? = nil
     var calibratingTotal: Int = 4
     var calibratingUnit: String = "Day"
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showingZoneInfo = false
     @State private var editingTargetMetric: AtriaTodayMetric?
 
@@ -552,8 +564,8 @@ struct AtriaMetricTile: View, Equatable {
                     Text(displayValue)
                         .font(.system(size: 29, weight: .bold, design: .rounded))
                         .monospacedDigit()
-                        .contentTransition(.numericText())
-                        .animation(.snappy(duration: 0.3), value: displayValue)
+                        .contentTransition(reduceMotion ? .identity : .numericText())
+                        .animation(reduceMotion ? nil : .snappy(duration: 0.3), value: displayValue)
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                 }

@@ -1,5 +1,114 @@
 import SwiftUI
 
+struct AtriaFrozenDailyStrainTarget: Codable, Equatable {
+    static let currentSchemaVersion = 1
+
+    let schemaVersion: Int
+    let day: Date
+    let timeZoneIdentifier: String
+    let recovery: Int
+    let target: Double
+    let loadAdjustment: Double
+    let loadProvenance: String
+    let createdAt: Date
+
+    init(day: Date,
+         timeZoneIdentifier: String,
+         recovery: Int,
+         target: Double,
+         loadAdjustment: Double,
+         loadProvenance: String,
+         createdAt: Date) {
+        self.schemaVersion = Self.currentSchemaVersion
+        self.day = day
+        self.timeZoneIdentifier = timeZoneIdentifier
+        self.recovery = recovery
+        self.target = target
+        self.loadAdjustment = loadAdjustment
+        self.loadProvenance = loadProvenance
+        self.createdAt = createdAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, day, timeZoneIdentifier, recovery, target
+        case loadAdjustment, loadProvenance, createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+        day = try values.decode(Date.self, forKey: .day)
+        timeZoneIdentifier = try values.decodeIfPresent(String.self, forKey: .timeZoneIdentifier) ?? "legacy"
+        recovery = try values.decode(Int.self, forKey: .recovery)
+        target = try values.decode(Double.self, forKey: .target)
+        loadAdjustment = try values.decodeIfPresent(Double.self, forKey: .loadAdjustment) ?? 0
+        loadProvenance = try values.decodeIfPresent(String.self, forKey: .loadProvenance) ?? "legacy"
+        createdAt = try values.decodeIfPresent(Date.self, forKey: .createdAt) ?? day
+    }
+}
+
+enum AtriaDailyStrainTargetStore {
+    static let storageKey = "atria.coach.frozenDailyStrainTarget.v1"
+
+    static func resolve(recovery: Int?,
+                        load: TrainingLoadSummary?,
+                        recoveryIsAttributedToCurrentDay: Bool = true,
+                        loadIsPrepared: Bool = true,
+                        now: Date = Date(),
+                        calendar: Calendar = .current,
+                        defaults: UserDefaults = .standard) -> AtriaFrozenDailyStrainTarget? {
+        if let existing = loadSnapshot(defaults: defaults),
+           existing.target.isFinite,
+           (0...21).contains(existing.target),
+           calendar.isDate(existing.day, inSameDayAs: now) {
+            return existing
+        }
+
+        guard recoveryIsAttributedToCurrentDay,
+              loadIsPrepared,
+              let recovery else {
+            return nil
+        }
+
+        let base = Coach.baseStrainTarget(recovery: recovery)
+        let adjustment: Double
+        let provenance: String
+        if let load, load.confidence != "learning", let ratio = load.ratio {
+            if ratio > 1.30 {
+                adjustment = -2
+                provenance = "load_high"
+            } else if ratio < 0.80 {
+                adjustment = 1
+                provenance = "load_low"
+            } else {
+                adjustment = 0
+                provenance = "load_aligned"
+            }
+        } else {
+            adjustment = 0
+            provenance = "load_learning_at_mint"
+        }
+        let snapshot = AtriaFrozenDailyStrainTarget(
+            day: calendar.startOfDay(for: now),
+            timeZoneIdentifier: calendar.timeZone.identifier,
+            recovery: recovery,
+            target: min(max(base + adjustment, 4), 21),
+            loadAdjustment: adjustment,
+            loadProvenance: provenance,
+            createdAt: now
+        )
+        if let data = try? JSONEncoder().encode(snapshot) {
+            defaults.set(data, forKey: storageKey)
+        }
+        return snapshot
+    }
+
+    static func loadSnapshot(defaults: UserDefaults = .standard) -> AtriaFrozenDailyStrainTarget? {
+        guard let data = defaults.data(forKey: storageKey) else { return nil }
+        return try? JSONDecoder().decode(AtriaFrozenDailyStrainTarget.self, from: data)
+    }
+}
+
 /// The core daily loop: recovery sets an "optimal strain" target for the day,
 /// and we tell you whether to push, hold, or rest based on where today's strain
 /// sits relative to that target.
@@ -19,9 +128,13 @@ enum Coach {
     }
 
     static func liveStrainTarget(recovery: Int, accumulatedStrain strain: Double) -> Double {
-        let base = baseStrainTarget(recovery: recovery)
-        let decay = min(max(strain, 0), 16) * 0.10
-        return max(4, base - decay)
+        // A daily goal must not move backward as the user makes progress.
+        // Recovery (and, in the overload below, training load) establishes the
+        // target; accumulated strain only determines progress and guidance
+        // state. Keep the argument for source compatibility with existing
+        // callers while making the target stable for the civil day.
+        _ = strain
+        return baseStrainTarget(recovery: recovery)
     }
 
     struct Guidance: Equatable {
@@ -80,8 +193,10 @@ enum Coach {
 
     static func guide(recovery estimate: Metrics.RecoveryEstimate,
                       strain: Double,
-                      load: TrainingLoadSummary? = nil) -> Guidance {
-        guard let percent = estimate.percent else {
+                      load: TrainingLoadSummary? = nil,
+                      frozenTarget: Double? = nil,
+                      frozenRecovery: Int? = nil) -> Guidance {
+        guard let percent = estimate.percent ?? frozenRecovery else {
             // estimate.detail is an internal "learning: <reason>" status string;
             // strip the redundant "learning:" prefix (the headline already says
             // "Guidance learning") so the sentence doesn't read the awkward
@@ -94,6 +209,9 @@ enum Coach {
                             target: nil,
                             state: "learning",
                             reason: "recovery_\(estimate.confidence.rawValue)_not_ready")
+        }
+        if let frozenTarget {
+            return guide(recovery: percent, strain: strain, frozenTarget: frozenTarget)
         }
         var guidance = guide(recovery: percent, strain: strain)
         guard let load, load.confidence != "learning", let ratio = load.ratio else {
@@ -140,6 +258,32 @@ enum Coach {
                                 reason: "\(guidance.reason)_\(loadReason)")
         }
         return guidance
+    }
+
+    static func guide(recovery: Int, strain: Double, frozenTarget target: Double) -> Guidance {
+        let safeTarget = min(max(target, 0), 21)
+        if recovery < 34 {
+            return Guidance(headline: "Prioritize recovery",
+                            detail: "Recovery is low; keep strain light and let your body rebuild.",
+                            color: .red, target: safeTarget,
+                            state: "ready", reason: "low_recovery_frozen_daily_target")
+        }
+        if strain > safeTarget + 2 {
+            return Guidance(headline: "Ease off",
+                            detail: "You are past today's strain target.",
+                            color: .orange, target: safeTarget,
+                            state: "ready", reason: "strain_above_frozen_daily_target")
+        }
+        if strain < safeTarget - 2 {
+            return Guidance(headline: "Room to push",
+                            detail: "You can safely add strain toward today's target.",
+                            color: .green, target: safeTarget,
+                            state: "ready", reason: "strain_below_frozen_daily_target")
+        }
+        return Guidance(headline: "On target",
+                        detail: "Your strain matches today's target.",
+                        color: .blue, target: safeTarget,
+                        state: "ready", reason: "strain_on_frozen_daily_target")
     }
 }
 

@@ -3,7 +3,7 @@ import UserNotifications
 
 @MainActor
 enum LocalNotificationScheduler {
-    private static let actionableBatteryThreshold = 25
+    private nonisolated static let actionableBatteryThreshold = 25
     private static let actionableDiagnosisCooldown: TimeInterval = 6 * 60 * 60
     private static let actionableDiagnosisLastScheduledPrefix = "atria.notification.actionableDiagnosis.lastScheduled."
     private static let batteryWarningDrainCycleScheduledKey = "atria.notification.battery.warningDrainCycleScheduled"
@@ -568,11 +568,33 @@ enum LocalNotificationScheduler {
             }
 
             let defaults = UserDefaults.standard
-            if decision.kind == "battery",
-               batteryDrainCycleAlreadyScheduled(title: decision.title, defaults: defaults) {
-                AtriaDebugLog("ATRIADBG notification_skip kind=battery reason=drain_cycle_already_scheduled title=%@",
-                              decision.title)
-                return
+            if decision.kind == "battery" {
+                // Authorization/pending-request checks are asynchronous. The
+                // battery value that created this decision may have been
+                // quarantined while they were in flight, so revalidate against
+                // the latest accepted cache immediately before scheduling.
+                let current = AtriaBLEManager.cachedBattery(
+                    maxAge: 10 * 60,
+                    permitActiveNotificationLease: true
+                )
+                let charging = current.chargeStatus == .charging || current.chargeStatus == .full
+                guard Self.batteryAlertStillValid(level: current.level,
+                                                  usable: current.usable,
+                                                  isCharging: charging) else {
+                    invalidateDisputedBatterySideEffects(reason: "stale_async_battery_decision",
+                                                         defaults: defaults,
+                                                         center: center)
+                    AtriaDebugLog("ATRIADBG notification_skip kind=battery reason=stale_async_decision level=%d usable=%d charge=%@",
+                                  current.level,
+                                  current.usable ? 1 : 0,
+                                  current.chargeStatus.rawValue)
+                    return
+                }
+                if batteryDrainCycleAlreadyScheduled(title: decision.title, defaults: defaults) {
+                    AtriaDebugLog("ATRIADBG notification_skip kind=battery reason=drain_cycle_already_scheduled title=%@",
+                                  decision.title)
+                    return
+                }
             }
             let cooldownKey = actionableDiagnosisLastScheduledPrefix + decision.identifier
             let last = defaults.double(forKey: cooldownKey)
@@ -593,6 +615,12 @@ enum LocalNotificationScheduler {
                               String(describing: error))
             }
         }
+    }
+
+    nonisolated static func batteryAlertStillValid(level: Int,
+                                                    usable: Bool,
+                                                    isCharging: Bool) -> Bool {
+        usable && level >= 0 && level <= actionableBatteryThreshold && !isCharging
     }
 
     static func cancelActionableConnectionDiagnosis(title: String? = nil, reason: String) {
@@ -765,6 +793,14 @@ enum LocalNotificationScheduler {
 
     private static var categoriesRegistered = false
 
+    /// Notification responses can arrive during a cold launch, before the
+    /// SwiftUI hierarchy has rendered or subscribed to its route publisher.
+    /// Install the delegate from `UIApplicationDelegate` instead of waiting
+    /// for a later scheduling pass, so the user's tap is never dropped.
+    static func configureForApplicationLaunch() {
+        configureDeliveryLogger()
+    }
+
     private static func configureDeliveryLogger() {
         UNUserNotificationCenter.current().delegate = NotificationDeliveryLogger.shared
         registerNotificationCategoriesIfNeeded()
@@ -881,17 +917,18 @@ enum LocalNotificationScheduler {
 
     private static func makeMetricDecisions(store: SessionStore,
                                             ble: AtriaBLEManager) -> [NotificationDecision] {
-        let validatedHRV = store.latestReferenceValidatedHRV
-        let latestSleep = store.sleepHistorySnapshot.latest
-        let recovery = Metrics.recoveryV2(hrvSnapshot: ble.recoveryHRVSnapshot,
-                                          fallbackRMSSD: validatedHRV ?? store.latestLocalRMSSD,
-                                          restingNow: ble.restingHR ?? store.sessions.first?.restingStable,
-                                          baseline: store.baseline,
-                                          hrvReferenceValidated: validatedHRV != nil,
-                                          sleepEfficiency: latestSleep?.sleepEfficiency,
-                                          sleepDurationHours: latestSleep?.durationHours,
-                                          respiratoryRate: latestSleep?.respiratoryRate,
-                                          respiratoryBaseline: store.sleepHistorySnapshot.respiratoryBaselineStats)
+        let now = Date()
+        let calendar = Calendar.current
+        let latestSleep = store.currentPhysiologicalMainSleep(on: now)
+        let physiologicalCycle = AtriaPhysiologicalCycle.current(now: now,
+                                                                 confirmedSleeps: store.confirmedSleeps,
+                                                                 calendar: calendar)
+        let recovery = store.recoveryProjection(
+            now: now,
+            calendar: calendar,
+            initialFallbackHRVSnapshot: ble.recoveryHRVSnapshot,
+            liveRestingHeartRate: ble.restingHR
+        )
         let recoveryDecision: NotificationDecision
         if let percent = recovery.percent {
             recoveryDecision = NotificationDecision(
@@ -921,18 +958,55 @@ enum LocalNotificationScheduler {
         }
 
         let rest = store.baseline.restingInt ?? ble.restingHR ?? store.sessions.first?.restingStable ?? 60
-        let savedTRIMP = store.todayTRIMP(rest: rest, max: store.profile.maxHR)
+        let savedTRIMP = store.homeSavedAggregate(rest: rest,
+                                                   maxHR: store.profile.maxHR,
+                                                   activeSessionID: ble.currentLiveSessionID)
         // Perf (2026-07-08 audit): reuse the incremental accumulator (integrates
         // only NEW samples) instead of re-mapping + re-integrating the whole
         // live session (up to ~80k samples) on every notification evaluation.
         // Same TRIMP math (consecutive dt is identical); both are @MainActor.
         let liveTRIMP = WidgetSnapshotPublisher.incrementalLiveTRIMP(samples: ble.session,
                                                                      rest: rest,
-                                                                     max: store.profile.maxHR)
-        let strain = Metrics.strain(fromTRIMP: savedTRIMP + liveTRIMP)
-        let guide = Coach.guide(recovery: recovery.percent, strain: strain)
+                                                                     max: store.profile.maxHR,
+                                                                     sex: store.profile.biologicalSex,
+                                                                     cycleStart: savedTRIMP.day)
+        let totalTRIMP = SessionStore.mergedTodayTRIMP(
+            savedToday: savedTRIMP.savedTodayTRIMP,
+            savedActiveSession: savedTRIMP.savedActiveSessionTRIMP,
+            liveActiveSession: liveTRIMP
+        )
+        let strain = Metrics.strain(fromTRIMP: totalTRIMP)
+        // Notifications must use the same sleep-to-sleep attribution as Home
+        // and widgets. Civil-date matching made late/shift sleepers receive a
+        // target derived from a different recovery than the ring displayed.
+        let storedCycleRecovery = store.dailyRollupHistory.first {
+            physiologicalCycle.boundaryKind == .mainSleep
+                && calendar.isDate($0.day, inSameDayAs: physiologicalCycle.start)
+                && $0.recovery != nil
+        }?.recovery
+        let attributedRecovery: Int?
+        if physiologicalCycle.boundaryKind == .noSleepFallback {
+            attributedRecovery = 1
+        } else {
+            attributedRecovery = storedCycleRecovery
+                ?? (latestSleep.map { ($0.end ?? $0.day) == physiologicalCycle.start } == true
+                    ? recovery.percent
+                    : nil)
+        }
+        let frozenTarget = AtriaDailyStrainTargetStore.resolve(recovery: attributedRecovery,
+                                                               load: store.trainingLoadSummarySnapshot,
+                                                               recoveryIsAttributedToCurrentDay: attributedRecovery != nil,
+                                                               loadIsPrepared: store.hasLoadedSavedSessions && store.trainingLoadSummaryIsPrepared,
+                                                               now: now,
+                                                               calendar: calendar)
+        let guideRecovery = attributedRecovery ?? frozenTarget?.recovery
+        let guide = guideRecovery.map {
+            Coach.guide(recovery: $0,
+                        strain: strain,
+                        frozenTarget: frozenTarget?.target ?? Coach.baseStrainTarget(recovery: $0))
+        }
         let strainDecision: NotificationDecision
-        if recovery.percent == nil {
+        if guideRecovery == nil {
             strainDecision = NotificationDecision(
                 kind: "strain",
                 identifier: Identifier.strain,
@@ -942,7 +1016,7 @@ enum LocalNotificationScheduler {
                 shouldSchedule: false,
                 delay: 0
             )
-        } else if let target = guide.target, strain >= target {
+        } else if let target = guide?.target, strain >= target {
             strainDecision = NotificationDecision(
                 kind: "strain",
                 identifier: Identifier.strain,
@@ -1040,6 +1114,9 @@ enum LocalNotificationScheduler {
         }
 
         let battery = batterySnapshot(liveLevel: ble.batteryLevel, liveChargeStatus: ble.batteryChargeStatus)
+        if !battery.usable, battery.source == "disputed_rapid_transition" {
+            invalidateDisputedBatterySideEffects(reason: "disputed_rapid_transition")
+        }
         let effectiveChargeStatus = battery.chargeStatus
         let batteryIsCharging = effectiveChargeStatus == .charging || effectiveChargeStatus == .full
         if battery.usable,
@@ -1106,7 +1183,7 @@ enum LocalNotificationScheduler {
         let latestReviewNight = store.latestSleepReviewNightForUI(rest: store.baseline.restingInt ?? 60,
                                                                   source: "notification_sleep_review")
 
-        let reviewableSnapshotNight = snapshot.latest?.confirmed == false ? snapshot.latest : nil
+        let reviewableSnapshotNight = snapshot.latestReviewable?.confirmed == false ? snapshot.latestReviewable : nil
         guard let latest = latestReviewNight ?? reviewableSnapshotNight,
               latest.confirmed == false else {
             let reason = sleepReviewUnavailableReason(snapshot: snapshot, store: store)
@@ -1410,18 +1487,48 @@ enum LocalNotificationScheduler {
                       hadDrainCycle ? 1 : 0)
     }
 
-    private static func batterySnapshot(liveLevel: Int,
-        liveChargeStatus: AtriaBLEManager.BatteryChargeStatus) -> (level: Int, source: String, age: TimeInterval, chargeStatus: AtriaBLEManager.BatteryChargeStatus, usable: Bool, recentDrop: Bool) {
+    /// A quarantined battery transition is not merely "unknown"—any alert
+    /// derived from it is false evidence. Remove pending/delivered warnings and
+    /// reset the drain-cycle cooldown so a later genuinely low stable series
+    /// can notify normally.
+    static func invalidateDisputedBatterySideEffects(
+        reason: String,
+        defaults: UserDefaults = .standard,
+        center: UNUserNotificationCenter = .current()
+    ) {
+        clearBatteryDrainCycleState(reason: reason, defaults: defaults)
+        let identifiers = [Identifier.battery, Identifier.strapChargeReminder]
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
+        defaults.removeObject(forKey: strapChargeReminderLastScheduledKey)
+        AtriaDebugLog("ATRIADBG notification_battery_disputed action=cancel_all reason=%@", reason)
+    }
+
+    static func batterySnapshot(liveLevel: Int,
+        liveChargeStatus: AtriaBLEManager.BatteryChargeStatus,
+        defaults: UserDefaults = .standard,
+        now: Date = Date()) -> (level: Int, source: String, age: TimeInterval, chargeStatus: AtriaBLEManager.BatteryChargeStatus, usable: Bool, recentDrop: Bool) {
         let drop = AtriaBLEManager.cachedBatteryDrop()
-        if liveLevel >= 0 {
-            let cached = AtriaBLEManager.cachedBattery(maxAge: 10 * 60)
-            let chargeStatus = liveChargeStatus == .levelOnly && cached.usable ? cached.chargeStatus : liveChargeStatus
-            let source = chargeStatus == liveChargeStatus ? "live_2A19" : "live_2A19_cached_charge"
-            return (liveLevel, source, 0, chargeStatus, true, drop.recent)
-        }
-        let cached = AtriaBLEManager.cachedBattery()
+        let cached = AtriaBLEManager.cachedBattery(
+            maxAge: AtriaBLEManager.batteryDisplayFreshnessLimit,
+            defaults: defaults,
+            now: now,
+            permitActiveNotificationLease: true
+        )
         if cached.usable {
-            return (cached.level, cached.source, cached.age, cached.chargeStatus, true, drop.recent)
+            let liveMatchesAcceptedProjection = liveLevel == cached.level
+            let chargeStatus = liveMatchesAcceptedProjection && liveChargeStatus != .levelOnly
+                ? liveChargeStatus
+                : cached.chargeStatus
+            let source: String
+            if liveMatchesAcceptedProjection {
+                source = cached.age <= AtriaBLEManager.batteryDisplayFreshnessLimit
+                    ? "live_2A19_fresh"
+                    : "live_2A19_active_lease"
+            } else {
+                source = cached.source
+            }
+            return (cached.level, source, cached.age, chargeStatus, true, drop.recent)
         }
         return (cached.level, cached.source == "none" ? "learning" : "\(cached.source)_stale", cached.age, cached.chargeStatus, false, false)
     }
@@ -1690,6 +1797,87 @@ enum LocalNotificationScheduler {
     }
 }
 
+/// A one-item, thread-safe inbox bridges UIKit notification responses into the
+/// SwiftUI tab shell. `NotificationCenter` alone is not sufficient here: its
+/// delivery is transient, so a cold-launch response posted before Home mounts
+/// disappears. Retaining the route until Home consumes it makes foreground,
+/// background and cold-launch delivery follow the same idempotent path.
+///
+/// This deliberately does not require the main actor. UIKit waits for the
+/// notification-response delegate to return, and a cold launch can otherwise
+/// block on the first (and most expensive) SwiftUI mount before it records the
+/// route. The notification used to wake an already-mounted Home view is posted
+/// asynchronously on the main actor; the durable inbox mutation is immediate.
+final class AtriaNotificationDeepLinkInbox: @unchecked Sendable {
+    static let shared = AtriaNotificationDeepLinkInbox()
+    static let didEnqueueNotification = NotificationDeliveryLogger.deepLinkNotification
+    private static let retainedResponseKeyLimit = 64
+
+    private let notificationCenter: NotificationCenter
+    private let lock = NSLock()
+    private var pendingURL: URL?
+    // Notification response delegates can be replayed around scene restoration.
+    // Remember more than only the last response: A, B, then a replay of A must
+    // still be idempotent. The bounded FIFO keeps that protection for a whole
+    // burst without turning a long-running process into an unbounded log.
+    private var retainedResponseKeys: [String] = []
+    private var retainedResponseKeySet: Set<String> = []
+
+    init(notificationCenter: NotificationCenter = .default) {
+        self.notificationCenter = notificationCenter
+    }
+
+    @discardableResult
+    func enqueue(_ url: URL, responseKey: String) -> Bool {
+        guard url.scheme?.lowercased() == "atria" else { return false }
+        lock.lock()
+        guard !retainedResponseKeySet.contains(responseKey) else {
+            lock.unlock()
+            return false
+        }
+        retainedResponseKeys.append(responseKey)
+        retainedResponseKeySet.insert(responseKey)
+        if retainedResponseKeys.count > Self.retainedResponseKeyLimit {
+            let expiredKey = retainedResponseKeys.removeFirst()
+            retainedResponseKeySet.remove(expiredKey)
+        }
+        pendingURL = url
+        lock.unlock()
+
+        Task { @MainActor [notificationCenter] in
+            notificationCenter.post(name: Self.didEnqueueNotification, object: url)
+        }
+        return true
+    }
+
+    func consume() -> URL? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let pendingURL else { return nil }
+        self.pendingURL = nil
+        return pendingURL
+    }
+
+    /// The route stays durable while UIKit/SwiftUI is still transitioning the
+    /// scene. Consuming only once the scene is active avoids changing the root
+    /// TabView in the launch transaction that previously produced a blank view.
+    func consume(sceneIsActive: Bool) -> URL? {
+        guard AtriaNotificationDeepLinkActivationPolicy.shouldConsume(
+            sceneIsActive: sceneIsActive
+        ) else { return nil }
+        return consume()
+    }
+}
+
+enum AtriaNotificationDeepLinkActivationPolicy {
+    /// Navigation changes during the background-to-active handoff can race the
+    /// root TabView's first transaction and leave a blank presentation. Keep
+    /// the retained URL in the inbox until Home is actually interactive.
+    static func shouldConsume(sceneIsActive: Bool) -> Bool {
+        sceneIsActive
+    }
+}
+
 final class NotificationDeliveryLogger: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationDeliveryLogger()
     static let deepLinkNotification = Notification.Name("atria.notification.deepLink")
@@ -1730,20 +1918,46 @@ final class NotificationDeliveryLogger: NSObject, UNUserNotificationCenterDelega
         // notification as an action button, not a second notification — the
         // default tap still goes to atria://overview (via `deepLink` above),
         // but this action overrides the destination to the journal.
-        let resolvedDeepLink = response.actionIdentifier == "atria.action.logJournal" ? "atria://journal" : deepLink
+        let resolvedDeepLink = Self.resolvedDeepLink(deepLink: deepLink,
+                                                     actionIdentifier: response.actionIdentifier,
+                                                     requestIdentifier: request.identifier)
         AtriaDebugLog("ATRIADBG notification_response kind=%@ id=%@ action=%@",
               kind(for: request.identifier),
               request.identifier,
               response.actionIdentifier)
-        if let deepLink = resolvedDeepLink,
-           let url = URL(string: deepLink) {
+        if let url = resolvedDeepLink {
             AtriaDebugLog("ATRIADBG notification_deeplink status=posted kind=%@ url=%@",
                           kind(for: request.identifier),
-                          deepLink)
-            await MainActor.run {
-                NotificationCenter.default.post(name: Self.deepLinkNotification, object: url)
-            }
+                          url.absoluteString)
+            // Do not await the main actor here. UIKit keeps the notification
+            // launch transaction open until this delegate returns, so waiting
+            // behind the initial SwiftUI mount can present as a black screen.
+            // `enqueue` is thread-safe and wakes Home on the main actor after
+            // the route is already durable.
+            _ = AtriaNotificationDeepLinkInbox.shared.enqueue(
+                url,
+                responseKey: "\(request.identifier)|\(response.notification.date.timeIntervalSince1970)|\(response.actionIdentifier)"
+            )
         }
+    }
+
+    static func resolvedDeepLink(deepLink: String?,
+                                 actionIdentifier: String,
+                                 requestIdentifier: String = "") -> URL? {
+        let isJournalReminder = requestIdentifier.hasPrefix("atria.morningJournal.")
+            || requestIdentifier.hasPrefix("atria.eveningJournal.")
+        let destination: String?
+        if actionIdentifier == "atria.action.logJournal" || isJournalReminder {
+            // Identifier fallback keeps already-pending reminders actionable
+            // even if an older installed build omitted or malformed userInfo.
+            destination = "atria://journal"
+        } else {
+            destination = deepLink
+        }
+        guard let destination,
+              let url = URL(string: destination),
+              url.scheme?.lowercased() == "atria" else { return nil }
+        return url
     }
 
     private func kind(for identifier: String) -> String {

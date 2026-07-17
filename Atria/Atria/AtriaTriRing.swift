@@ -55,6 +55,20 @@ enum AtriaTriRingSlot: String, CaseIterable, Equatable {
         case .rhr: return "RHR"
         }
     }
+
+    /// Compact, language-independent glance mark used only in the pinned
+    /// Today summary. The full ring and VoiceOver continue to carry the
+    /// metric name, so this can stay as the tiny emoji + number treatment the
+    /// user requested without squeezing another label into the top-right rail.
+    var compactEmoji: String {
+        switch self {
+        case .sleep: return "🌙"
+        case .recovery: return "❤️"
+        case .strain: return "🔥"
+        case .hrv: return "📈"
+        case .rhr: return "💓"
+        }
+    }
 }
 
 /// One ring position's fully-resolved content: which metric fills it. This
@@ -233,6 +247,21 @@ struct AtriaTriRing: View, Equatable {
     var body: some View {
         VStack(spacing: 14) {
             ZStack {
+                if let recovery = slots.first(where: { $0.slot == .recovery })?.metric,
+                   recovery.fill != nil,
+                   actions[.recovery] != nil {
+                    Circle()
+                        .stroke(recovery.tint.opacity(0.22), lineWidth: 1.5)
+                        .frame(width: Self.outerDiameter + 12, height: Self.outerDiameter + 12)
+                        // Keep the overview quiescent after its one-time value
+                        // reveal. A SwiftUI repeatForever halo kept the display
+                        // link and async renderer awake indefinitely on the
+                        // app's most common idle screen for decoration alone.
+                        .opacity(0.28)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+
                 // Visual layer: purely decorative rendering, in outer-to-inner
                 // paint order so the front-most (smallest) ring's shadow reads
                 // correctly against the ones behind it.
@@ -270,7 +299,9 @@ struct AtriaTriRing: View, Equatable {
             }
         }
         .frame(maxWidth: .infinity)
-        .onAppear(perform: animateToFinalValues)
+        .onAppear {
+            animateToFinalValues()
+        }
         .onChange(of: fillSignature) { _, _ in animateToFinalValues() }
     }
 
@@ -416,6 +447,8 @@ struct AtriaTriRing: View, Equatable {
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .allowsTightening(true)
                     // Value line suppressed when the ring center owns this
                     // metric's numeral (dedup audit 2026-07-07).
                     if !metric.suppressesValue {
@@ -435,7 +468,8 @@ struct AtriaTriRing: View, Equatable {
                             .foregroundStyle(metric.tint)
                             .contentTransition(reduceMotion ? .identity : .numericText())
                             .lineLimit(1)
-                            .minimumScaleFactor(0.80)
+                            .minimumScaleFactor(0.6)
+                            .allowsTightening(true)
                     }
                     }
                     // The name line above already says it -- don't repeat
@@ -445,7 +479,8 @@ struct AtriaTriRing: View, Equatable {
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                            .minimumScaleFactor(0.80)
+                            .minimumScaleFactor(0.6)
+                            .allowsTightening(true)
                     }
                 }
             }

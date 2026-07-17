@@ -1,18 +1,118 @@
 import Foundation
 
 enum AtriaResearchProbe {
-    enum Source: String {
+    // SpO2 candidate offsets are discovery evidence only. This stays false
+    // until a generation-specific layout passes an external reference maneuver.
+    static let validatedSpO2DecoderAvailable = false
+    static var validatedSkinTemperatureDecoderAvailable: Bool {
+        productionSkinTemperatureDecoder != nil
+    }
+
+    enum Source: String, Codable, Sendable {
         case metadata = "0x31"
         case historical = "0x2f"
         case diagnostic = "61080007"
     }
 
-    enum ModelGeneration: String, Equatable {
+    enum ModelGeneration: String, Codable, Equatable, Sendable {
         case unknown
         case strap3
         case strap4
         case strap5
         case strapMG
+    }
+
+    enum SkinTemperatureCalibrationProvenance: String, Codable, Equatable, Sendable {
+        /// Reserved for a decoder calibrated and checked against an external
+        /// temperature reference on its declared strap generation.
+        case externalReferenceValidated = "external_reference_validated"
+        /// Test-only evidence supplied after conversion, never derived from a
+        /// raw candidate word inside production aggregation.
+        case calibratedFixture = "calibrated_fixture"
+    }
+
+    struct SkinTemperatureDecoderIdentity: Codable, Equatable, Sendable {
+        let modelGeneration: ModelGeneration
+        let version: String
+        let source: Source
+        let calibrationProvenance: SkinTemperatureCalibrationProvenance
+
+        init?(modelGeneration: ModelGeneration,
+              version: String,
+              source: Source,
+              calibrationProvenance: SkinTemperatureCalibrationProvenance) {
+            let normalizedVersion = version.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard modelGeneration != .unknown, !normalizedVersion.isEmpty else { return nil }
+            self.modelGeneration = modelGeneration
+            self.version = normalizedVersion
+            self.source = source
+            self.calibrationProvenance = calibrationProvenance
+        }
+    }
+
+    /// A unit-safe value that has already passed a generation-specific,
+    /// versioned conversion. Raw research candidates cannot initialize this
+    /// type without explicitly supplying calibrated Celsius and provenance.
+    struct DecodedSkinTemperatureCelsius: Codable, Equatable, Sendable {
+        let celsius: Double
+        let decoder: SkinTemperatureDecoderIdentity
+
+        var isAggregationEligible: Bool {
+            guard celsius.isFinite,
+                  decoder.modelGeneration != .unknown,
+                  !decoder.version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return false
+            }
+            switch decoder.calibrationProvenance {
+            case .externalReferenceValidated:
+                // A decodable identity stored on disk is not proof by itself.
+                // Production aggregation requires the exact decoder identity
+                // compiled into this build after external-reference validation.
+                return decoder == AtriaResearchProbe.productionSkinTemperatureDecoder
+            case .calibratedFixture:
+#if DEBUG
+                // Algorithm tests use already-converted values; Release builds
+                // must never aggregate this test-only provenance.
+                return true
+#else
+                return false
+#endif
+            }
+        }
+
+        init?(celsius: Double, decoder: SkinTemperatureDecoderIdentity) {
+            guard celsius.isFinite else { return nil }
+            self.celsius = celsius
+            self.decoder = decoder
+        }
+
+        static func calibratedFixture(celsius: Double,
+                                      modelGeneration: ModelGeneration = .strap4,
+                                      decoderVersion: String = "calibrated-fixture-v1",
+                                      source: Source = .historical) -> Self? {
+            guard let decoder = SkinTemperatureDecoderIdentity(
+                modelGeneration: modelGeneration,
+                version: decoderVersion,
+                source: source,
+                calibrationProvenance: .calibratedFixture
+            ) else { return nil }
+            return Self(celsius: celsius, decoder: decoder)
+        }
+    }
+
+    /// No production conversion is available yet. Promotion requires adding a
+    /// concrete generation/version identity and a decoder that returns the
+    /// typed Celsius value above after external-reference validation.
+    static let productionSkinTemperatureDecoder: SkinTemperatureDecoderIdentity? = nil
+
+    static func decodeSkinTemperatureCelsius(payload: [UInt8],
+                                             source: Source,
+                                             modelGeneration: ModelGeneration)
+        -> DecodedSkinTemperatureCelsius? {
+        _ = payload
+        _ = source
+        _ = modelGeneration
+        return nil
     }
 
     struct Candidate: Equatable {
@@ -37,6 +137,10 @@ enum AtriaResearchProbe {
             modelGeneration != .unknown
         }
 
+        var hasSensorCandidate: Bool {
+            !oxygenByteCandidates.isEmpty || !temperatureWordCandidates.isEmpty
+        }
+
         func allowsGenerationSpecificDecode(strapAllowsGenerationSpecificDecode: Bool) -> Bool {
             hasExplicitGeneration && strapAllowsGenerationSpecificDecode
         }
@@ -58,9 +162,33 @@ enum AtriaResearchProbe {
         }
     }
 
+    struct GenerationGate {
+        private(set) var authoritativeGeneration: ModelGeneration = .unknown
+
+        mutating func acceptsForCandidateCounting(_ summary: Summary) -> Bool {
+            if summary.source == .metadata {
+                if summary.hasExplicitGeneration {
+                    authoritativeGeneration = summary.modelGeneration
+                }
+                return false
+            }
+
+            guard summary.hasSensorCandidate else { return false }
+            switch authoritativeGeneration {
+            case .strap4, .strap5, .strapMG:
+                return true
+            case .unknown, .strap3:
+                return false
+            }
+        }
+    }
+
     static func analyze(payload: [UInt8], source: Source) -> Summary {
-        let oxygen = oxygenCandidates(in: payload)
-        let temperature = temperatureCandidates(in: payload)
+        let fixedHistoricalOffsets = source == .historical
+            ? historicalFixedOffsetCandidates(in: payload)
+            : nil
+        let oxygen = fixedHistoricalOffsets?.oxygenHypotheses ?? oxygenCandidates(in: payload)
+        let temperature = fixedHistoricalOffsets?.temperatureHypotheses ?? temperatureCandidates(in: payload)
         let model = modelGeneration(in: payload)
         return Summary(source: source,
                        payloadLength: payload.count,
@@ -69,6 +197,36 @@ enum AtriaResearchProbe {
                        modelGeneration: model.generation,
                        modelEvidence: model.evidence,
                        layoutHead: payload.prefix(12).map { String(format: "%02x", $0) }.joined())
+    }
+
+    /// Historical records v12/v24 have changing u16 words at fixed offsets.
+    /// Their sensor meaning and generation ownership are not established. Keep
+    /// them as replay hypotheses only: they are not red/IR proof, an SpO2
+    /// percentage, a temperature register, or a Celsius conversion.
+    private static func historicalFixedOffsetCandidates(
+        in payload: [UInt8]
+    ) -> (oxygenHypotheses: [Candidate], temperatureHypotheses: [Candidate])? {
+        let supportedVersions: Set<UInt8> = [12, 24]
+        guard payload.count >= 70,
+              payload[0] == 0x2f,
+              supportedVersions.contains(payload[1]) else { return nil }
+
+        let raw64 = u16LE(payload, offset: 64)
+        let raw66 = u16LE(payload, offset: 66)
+        let raw68 = u16LE(payload, offset: 68)
+        let oxygenHypotheses: [Candidate] = [(64, raw64), (66, raw66)].compactMap { pair in
+            let (offset, value) = pair
+            guard value > 0, value < Int(UInt16.max) else { return nil as Candidate? }
+            return Candidate(offset: offset, value: value)
+        }
+        let temperatureHypotheses = (raw68 > 0 && raw68 < Int(UInt16.max))
+            ? [Candidate(offset: 68, value: raw68)]
+            : []
+        return (oxygenHypotheses, temperatureHypotheses)
+    }
+
+    private static func u16LE(_ payload: [UInt8], offset: Int) -> Int {
+        Int(UInt16(payload[offset]) | (UInt16(payload[offset + 1]) << 8))
     }
 
     private static func oxygenCandidates(in payload: [UInt8]) -> [Candidate] {

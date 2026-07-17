@@ -21,8 +21,8 @@ struct AtriaHomeLayoutConfig: Codable, Equatable {
     }
 
     static let storageKey = "atria.home.layout.v1"
-    // Raised 8 -> 14 (2026-07-05): the user reads hidden metrics as missing;
-    // the default deck now surfaces the full essentials set.
+    // Custom layouts can expose the full catalog; the default remains focused
+    // enough to scan without turning Today into a second Vitals screen.
     static let maxTodayCards = 14
 
     var glanceMetrics: [String]
@@ -36,11 +36,7 @@ struct AtriaHomeLayoutConfig: Codable, Equatable {
     var accent: Accent
 
     static var `default`: AtriaHomeLayoutConfig {
-        // Visibility/IA fix (2026-07-05): the default deck used to ship only 12
-        // of the 14-card cap, hiding two metrics (sleep efficiency, fitness age)
-        // that are fully computed today. Filled the deck to the cap so nothing
-        // real is hidden behind Customize by default.
-        AtriaHomeLayoutConfig(glanceMetrics: ["hrv", "rhr", "stress", "respiratoryRate", "steps", "hrZones", "workouts", "strainCompare", "vo2max", "bodyTemp", "sleepHistory", "trend", "sleepEfficiency", "bioAge"],
+        AtriaHomeLayoutConfig(glanceMetrics: ["hrv", "rhr", "stress", "steps", "hrZones", "workouts", "sleepEfficiency", "bioAge"],
                               sizeOverrides: [:],
                               showLiveStrip: true,
                               showHighlights: true,
@@ -72,6 +68,31 @@ struct AtriaHomeLayoutConfig: Codable, Equatable {
                                      ringCenterMetric: ringCenterMetric,
                                      legendStatStyle: legendStatStyle,
                                      accent: accent)
+    }
+
+    /// Reorders presentation keys only. Metric values and their live stores are
+    /// never moved or copied; the persisted layout continues to reference each
+    /// card by its stable catalog identifier.
+    mutating func moveGlanceMetric(_ draggedKey: String, before targetKey: String) {
+        var keys = validated().glanceMetrics
+        guard draggedKey != targetKey,
+              let draggedIndex = keys.firstIndex(of: draggedKey),
+              keys.contains(targetKey) else { return }
+        keys.remove(at: draggedIndex)
+        guard let targetIndex = keys.firstIndex(of: targetKey) else { return }
+        keys.insert(draggedKey, at: targetIndex)
+        glanceMetrics = keys
+    }
+
+    /// VoiceOver counterpart to drag/drop. Boundaries are deliberate no-ops so
+    /// repeated accessibility actions cannot corrupt or wrap the saved order.
+    mutating func shiftGlanceMetric(_ key: String, direction: Int) {
+        var keys = validated().glanceMetrics
+        guard let index = keys.firstIndex(of: key) else { return }
+        let destination = index + direction
+        guard keys.indices.contains(destination) else { return }
+        keys.swapAt(index, destination)
+        glanceMetrics = keys
     }
 
     func encodedData(encoder: JSONEncoder = AtriaHomeLayoutCatalog.encoder()) throws -> Data {

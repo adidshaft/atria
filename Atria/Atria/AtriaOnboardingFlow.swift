@@ -4,15 +4,20 @@ import UniformTypeIdentifiers
 
 struct AtriaOnboardingFlow: View {
     @State private var draft: AthleteProfile
-    @ObservedObject var ble: AtriaBLEManager
+    let ble: AtriaBLEManager
     let onComplete: (AthleteProfile) -> Void
-    let onRestoreBackup: ((URL) -> Bool)?
+    let onRestoreBackup: ((URL) async -> Bool)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var step: Step = .whatThisIs
     @State private var focusMetric: OnboardingFocusMetric = .recovery
-    @State private var didDebugCompleteFromConnectedStrap = false
     @State private var backupImportPresented = false
     @State private var restoreMessage: String?
+    @State private var restoreInProgress = false
+    // Which journal behaviors the user wants to track. Shared key with the deck
+    // and the Settings picker (see AtriaTrackedBehaviors); empty falls back to
+    // the default set, so skipping this step keeps the proven default check-in.
+    @AtriaDefault(AtriaTrackedBehaviors.storageKey) private var trackedBehaviorsRaw: String = ""
 
     private enum OnboardingFocusMetric: String, CaseIterable, Identifiable {
         case recovery
@@ -66,6 +71,7 @@ struct AtriaOnboardingFlow: View {
         case whatThisIs
         case strap
         case you
+        case behaviors
         case expectations
 
         var isFirst: Bool { self == .whatThisIs }
@@ -77,16 +83,67 @@ struct AtriaOnboardingFlow: View {
             case "welcome", "what-this-is", "what": self = .whatThisIs
             case "strap", "connect": self = .strap
             case "you", "profile": self = .you
+            case "behaviors", "track", "tracking": self = .behaviors
             case "expectations", "expect", "tomorrow": self = .expectations
             default: return nil
             }
         }
     }
 
+    private struct PrimaryActionButton: View {
+        @ObservedObject var ble: AtriaBLEManager
+        let step: Step
+        let action: () -> Void
+
+        var body: some View {
+            Button(action: action) {
+                Text(title)
+                    .font(.headline.weight(.bold))
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: 30)
+            }
+            .controlSize(.large)
+            .atriaCardAction(tint: step == .strap && ble.status != .connected ? .blue : .green)
+        }
+
+        private var title: String {
+            switch step {
+            case .whatThisIs: return "Get started"
+            case .strap: return ble.status == .connected ? "Continue" : "Connect"
+            case .you: return "Continue"
+            case .behaviors: return "Continue"
+            case .expectations: return "Start using Atria"
+            }
+        }
+    }
+
+    private struct ConnectedDebugObserver: View {
+        @ObservedObject var ble: AtriaBLEManager
+        let onConnected: () -> Void
+        @State private var didComplete = false
+
+        var body: some View {
+            Color.clear
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+                .task(id: ble.status) {
+#if DEBUG
+                    guard ProcessInfo.processInfo.arguments.contains("--atria-ui-onboarding-complete-connected-strap") else { return }
+                    guard ble.status == .connected, !didComplete else { return }
+                    didComplete = true
+                    AtriaDebugLog("ATRIADBG onboarding status=debug_complete_connected_strap action=complete")
+                    try? await Task.sleep(nanoseconds: 700_000_000)
+                    guard !Task.isCancelled else { return }
+                    onConnected()
+#endif
+                }
+        }
+    }
+
     init(profile: AthleteProfile,
          ble: AtriaBLEManager,
          debugInitialStep: String? = nil,
-         onRestoreBackup: ((URL) -> Bool)? = nil,
+         onRestoreBackup: ((URL) async -> Bool)? = nil,
          onComplete: @escaping (AthleteProfile) -> Void) {
         _draft = State(initialValue: profile)
         _step = State(initialValue: Step(debugName: debugInitialStep) ?? .whatThisIs)
@@ -108,6 +165,8 @@ struct AtriaOnboardingFlow: View {
                         .tag(Step.strap)
                     page { youPage }
                         .tag(Step.you)
+                    page { behaviorsPage }
+                        .tag(Step.behaviors)
                     page { expectationsPage }
                         .tag(Step.expectations)
                 }
@@ -130,36 +189,26 @@ struct AtriaOnboardingFlow: View {
                 handleBackupImport(result)
             }
             .safeAreaBar(edge: .bottom) {
-                VStack(spacing: 14) {
+                VStack(spacing: 8) {
                     progressDots
-                    Button {
-                        if step.isLast {
+                    PrimaryActionButton(ble: ble, step: step) {
+                        if step == .strap, ble.status != .connected {
+                            // “Connect” must be an honest action. Advancing to
+                            // profile setup while the status card still said
+                            // Searching made first-run setup look successful
+                            // even though no sensor source existed.
+                            ble.startScan(reason: "onboarding_primary_connect")
+                        } else if step.isLast {
                             onComplete(draft)
                         } else {
                             move(to: Step(rawValue: step.rawValue + 1) ?? .expectations)
                         }
-                    } label: {
-                        Text(primaryTitle)
-                            .font(.headline.weight(.bold))
-                            .frame(maxWidth: .infinity)
-                            .frame(minHeight: 30)
                     }
-                    .controlSize(.large)
-                    .atriaCardAction(tint: step == .strap && ble.status != .connected ? .blue : .green)
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
                 .padding(.bottom, 16)
             }
-        }
-    }
-
-    private var primaryTitle: String {
-        switch step {
-        case .whatThisIs: return "Get started"
-        case .strap: return ble.status == .connected ? "Continue" : "Connect"
-        case .you: return "Continue"
-        case .expectations: return "Start using Atria"
         }
     }
 
@@ -173,62 +222,45 @@ struct AtriaOnboardingFlow: View {
 
     private func page<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 12) {
                 content()
             }
             .padding(.horizontal, 20)
-            .padding(.top, 24)
-            .padding(.bottom, 124)
+            .padding(.top, 16)
+            .padding(.bottom, 116)
         }
     }
 
     private var whatThisIsPage: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("Your WHOOP strap, no subscription. Data stays on your phone.")
-                .font(.system(size: 34, weight: .bold, design: .rounded))
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Your strap. Your data.")
+                .font(.system(size: 28, weight: .bold, design: .rounded))
                 .fixedSize(horizontal: false, vertical: true)
+                .accessibilityHint("WHOOP insights without the subscription.")
             onboardingRingCard
-            VStack(alignment: .leading, spacing: 12) {
-                Text("SHOW IN THE CENTER")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .tracking(0.6)
+            Picker("Center metric", selection: $focusMetric) {
                 ForEach(OnboardingFocusMetric.allCases) { metric in
-                    let isSelected = metric == focusMetric
-                    Button {
-                        moveFocus(to: metric)
-                    } label: {
-                        HStack(spacing: 12) {
-                            featureRow(icon: metric.icon,
-                                       tint: metric.tint,
-                                       title: metric.title,
-                                       detail: metric.detail)
-                            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                                .font(.body)
-                                .foregroundStyle(isSelected ? metric.tint : Color.secondary.opacity(0.4))
-                        }
-                        .padding(12)
-                        .background(isSelected ? metric.tint.opacity(0.12) : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .strokeBorder(isSelected ? metric.tint.opacity(0.35) : Color.clear, lineWidth: 1)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+                    Text(metric.title).tag(metric)
                 }
             }
-            .padding(18)
-            .atriaCard(emphasis: .soft)
+            .pickerStyle(.segmented)
+            .accessibilityHint("Selects the metric shown in the center of the ring")
             if onRestoreBackup != nil {
                 Button {
                     backupImportPresented = true
                 } label: {
-                    Label("Restore backup from Files", systemImage: "tray.and.arrow.down")
-                        .frame(maxWidth: .infinity)
+                    HStack(spacing: 8) {
+                        if restoreInProgress {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Label(restoreInProgress ? "Restoring…" : "Restore backup from Files",
+                              systemImage: "tray.and.arrow.down")
+                    }
+                    .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.glass)
+                .disabled(restoreInProgress)
                 if let restoreMessage {
                     Text(restoreMessage)
                         .font(.footnote.weight(.semibold))
@@ -239,51 +271,27 @@ struct AtriaOnboardingFlow: View {
     }
 
     private var strapPage: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            onboardingIcon("battery.100percent.bolt", tint: .blue)
-            Text("Connect your strap")
-                .font(.system(size: 34, weight: .bold, design: .rounded))
-            Text("Atria auto-detects the strap. There is no generation picker.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            StrapChargeIllustration()
-            VStack(alignment: .leading, spacing: 14) {
-                numberedStep(1, title: "Charge the strap", detail: "Snap on the battery pack before first use.")
-                numberedStep(2, title: "Close the official WHOOP app", detail: "Only one app can own the strap connection.")
-                numberedStep(3, title: "Allow Bluetooth", detail: "Atria uses Bluetooth to scan and connect locally.")
+        VStack(alignment: .leading, spacing: 12) {
+            onboardingHeader("Connect your strap",
+                             systemImage: "battery.100percent.bolt",
+                             tint: .blue)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
+                setupStepTile(1, title: "Charge strap", systemImage: "battery.100percent")
+                setupStepTile(2, title: "Close WHOOP", systemImage: "xmark.app")
+                setupStepTile(3, title: "Allow Bluetooth", systemImage: "antenna.radiowaves.left.and.right")
             }
-            .padding(18)
-            .atriaCard(emphasis: .soft)
             OnboardingConnectionStatusView(ble: ble)
+            ConnectedDebugObserver(ble: ble) {
+                onComplete(draft)
+            }
         }
         .onAppear { ble.startScan(reason: "onboarding_strap") }
-        .task(id: ble.status) {
-            await debugCompleteFromConnectedStrapIfRequested()
-        }
-    }
-
-    @MainActor
-    private func debugCompleteFromConnectedStrapIfRequested() async {
-#if DEBUG
-        guard ProcessInfo.processInfo.arguments.contains("--atria-ui-onboarding-complete-connected-strap") else { return }
-        guard step == .strap, ble.status == .connected, !didDebugCompleteFromConnectedStrap else { return }
-        didDebugCompleteFromConnectedStrap = true
-        AtriaDebugLog("ATRIADBG onboarding status=debug_complete_connected_strap action=complete")
-        try? await Task.sleep(nanoseconds: 700_000_000)
-        onComplete(draft)
-#endif
     }
 
     private var youPage: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            onboardingIcon("person.crop.circle.fill", tint: .purple)
-            Text("You")
-                .font(.system(size: 34, weight: .bold, design: .rounded))
-            Text("A few basics help Atria tune calories and heart-rate zones.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
+            onboardingHeader("You", systemImage: "person.crop.circle.fill", tint: .purple)
+            VStack(alignment: .leading, spacing: 12) {
                 numericProfileField("Age", value: ageBinding, suffix: "years")
                 Picker("Sex", selection: $draft.biologicalSex) {
                     ForEach(AthleteProfile.BiologicalSex.allCases) { sex in
@@ -294,15 +302,96 @@ struct AtriaOnboardingFlow: View {
                 numericProfileField("Height", value: heightBinding, suffix: "cm")
                 numericProfileField("Weight", value: weightBinding, suffix: "kg")
             }
-            .padding(18)
+            .padding(14)
             .atriaCard(emphasis: .soft)
-            // Footer used to repeat the header ("...calories and heart-rate
-            // zones") verbatim; now it adds the genuinely useful fact that these
-            // are optional and editable later instead of duplicating.
-            Text("Optional — you can update these anytime in Settings.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
         }
+    }
+
+    private var behaviorsPage: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            onboardingHeader("What to track", systemImage: "checklist", tint: .cyan)
+            Text("Pick the behaviors you want to log each morning. Your check-in shows only these — you can add or remove them anytime in Settings.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            ForEach(behaviorGroups, id: \.title) { group in
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(group.title.uppercased())
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.tertiary)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)],
+                              alignment: .leading, spacing: 8) {
+                        ForEach(group.tags) { tag in
+                            behaviorChip(tag)
+                        }
+                    }
+                }
+                .padding(14)
+                .atriaCard(emphasis: .soft)
+            }
+        }
+    }
+
+    private var trackedBehaviorSet: Set<BehaviorJournalEntry.Tag> {
+        Set(AtriaTrackedBehaviors.parse(trackedBehaviorsRaw))
+    }
+
+    private var behaviorGroups: [(title: String, tags: [BehaviorJournalEntry.Tag])] {
+        [
+            ("Sleep & recovery", [.sleep, .consistentBedtime, .nap, .melatonin, .sharedBed,
+                                  .warmRoom, .screenInBed, .readBeforeBed, .sauna, .coldExposure,
+                                  .massage, .stretching, .soreness]),
+            ("Activity & nutrition", [.training, .activeDay, .protein, .hydration, .vegetables,
+                                      .bigMeal, .addedSugar, .lateMeal, .fasted, .caffeine,
+                                      .supplements, .medication]),
+            ("Substances", [.alcohol, .nicotine, .cannabis]),
+            ("Mind & lifestyle", [.stress, .anxious, .meditation, .gratitude, .socialTime,
+                                  .morningLight, .outdoors, .travel, .unwell]),
+            ("Intimacy", [.sexualActivity, .selfPleasure])
+        ]
+    }
+
+    private func behaviorChip(_ tag: BehaviorJournalEntry.Tag) -> some View {
+        let selected = trackedBehaviorSet.contains(tag)
+        return Button {
+            toggleTrackedBehavior(tag)
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: tag.symbolName)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(selected ? .cyan : .secondary)
+                    .frame(width: 18)
+                Text(tag.label)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(selected ? .primary : .secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Spacer(minLength: 0)
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.caption)
+                    .foregroundStyle(selected ? Color.cyan : Color.secondary.opacity(0.45))
+            }
+            .padding(.horizontal, 10)
+            .frame(minHeight: 40)
+            .frame(maxWidth: .infinity)
+            .background(selected ? Color.cyan.opacity(0.12) : Color.secondary.opacity(0.06),
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(selected ? Color.cyan.opacity(0.4) : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(tag.label)
+        .accessibilityValue(selected ? "Tracked" : "Not tracked")
+    }
+
+    private func toggleTrackedBehavior(_ tag: BehaviorJournalEntry.Tag) {
+        var set = trackedBehaviorSet
+        if set.contains(tag) { set.remove(tag) } else { set.insert(tag) }
+        // Never persist an empty set — parse() treats empty as "use defaults".
+        if set.isEmpty { set = [.sleep] }
+        let ordered = BehaviorJournalEntry.Tag.allCases.filter { set.contains($0) }
+        trackedBehaviorsRaw = AtriaTrackedBehaviors.serialize(ordered)
     }
 
     // Ring preview only. The focus selector lives in the metric list below
@@ -319,9 +408,9 @@ struct AtriaOnboardingFlow: View {
                         .recovery: { moveFocus(to: .recovery) },
                         .strain: { moveFocus(to: .strain) }
                      ])
-            .frame(maxWidth: 300)
+            .frame(maxWidth: 260)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
+            .padding(.vertical, 4)
             .padding(.horizontal, 12)
             .atriaCard(emphasis: .soft)
     }
@@ -347,18 +436,22 @@ struct AtriaOnboardingFlow: View {
     }
 
     private var expectationsPage: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            onboardingIcon("moon.stars.fill", tint: .indigo)
-            Text("Wear it tonight — first sleep tomorrow morning. Recovery calibrates over your first 3–4 nights.")
-                .font(.system(size: 34, weight: .bold, design: .rounded))
-                .fixedSize(horizontal: false, vertical: true)
-            VStack(alignment: .leading, spacing: 12) {
-                featureRow(icon: "checkmark.seal.fill", tint: .green, title: "Tonight", detail: "Keep the strap on your wrist while you sleep.")
-                featureRow(icon: "sunrise.fill", tint: .orange, title: "Tomorrow", detail: "Open Atria to review your first sleep.")
-                featureRow(icon: "chart.line.uptrend.xyaxis", tint: .blue, title: "First week", detail: "Recovery confidence improves after several nights.")
+        VStack(alignment: .leading, spacing: 12) {
+            onboardingHeader("Wear it tonight", systemImage: "moon.stars.fill", tint: .indigo)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
+                expectationPill(icon: "moon.fill",
+                                title: "Wear",
+                                hint: "Wear your strap tonight.",
+                                tint: .indigo)
+                expectationPill(icon: "sunrise.fill",
+                                title: "Sleep",
+                                hint: "Review your first sleep tomorrow.",
+                                tint: .orange)
+                expectationPill(icon: "chart.line.uptrend.xyaxis",
+                                title: "Recovery",
+                                hint: "Recovery begins after 3–4 nights.",
+                                tint: .green)
             }
-            .padding(18)
-            .atriaCard(emphasis: .soft)
         }
     }
 
@@ -411,9 +504,23 @@ struct AtriaOnboardingFlow: View {
 
     private func onboardingIcon(_ systemName: String, tint: Color) -> some View {
         Image(systemName: systemName)
-            .font(.system(size: 42, weight: .semibold))
+            .font(.system(size: 34, weight: .semibold))
             .foregroundStyle(tint)
             .symbolRenderingMode(.hierarchical)
+    }
+
+    private func onboardingHeader(_ title: String,
+                                  systemImage: String,
+                                  tint: Color) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            onboardingIcon(systemImage, tint: tint)
+                .frame(width: 40)
+                .accessibilityHidden(true)
+            Text(title)
+                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private var backupArchiveTypes: [UTType] {
@@ -427,123 +534,125 @@ struct AtriaOnboardingFlow: View {
     private func handleBackupImport(_ result: Result<[URL], Error>) {
         switch result {
         case .success(let urls):
-            guard let url = urls.first, let onRestoreBackup else { return }
-            let didAccess = url.startAccessingSecurityScopedResource()
-            defer {
-                if didAccess { url.stopAccessingSecurityScopedResource() }
-            }
-            if onRestoreBackup(url) {
-                restoreMessage = "Backup restored."
-            } else {
-                restoreMessage = "Restore failed. Choose an Atria .json or .json.gz archive."
+            guard let url = urls.first, let onRestoreBackup, !restoreInProgress else { return }
+            restoreInProgress = true
+            restoreMessage = nil
+            Task { @MainActor in
+                // Keep the scope alive through the worker's full archive read,
+                // safety-backup write and canonical apply.
+                let didAccess = url.startAccessingSecurityScopedResource()
+                defer {
+                    if didAccess { url.stopAccessingSecurityScopedResource() }
+                    restoreInProgress = false
+                }
+                if await onRestoreBackup(url) {
+                    restoreMessage = "Backup restored."
+                } else {
+                    restoreMessage = "Restore failed. Choose an Atria .json or .json.gz archive."
+                }
             }
         case .failure:
             restoreMessage = "Restore canceled."
         }
     }
 
-    private func rowLabel(_ title: String, value: String) -> some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Text(value)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-        }
-    }
-
     private func numericProfileField(_ title: String, value: Binding<Int>, suffix: String) -> some View {
-        HStack(spacing: 12) {
-            Text(title)
-            Spacer()
+        profileFieldLayout(title: title, suffix: suffix) {
             TextField(title, value: value, format: .number)
                 .keyboardType(.numberPad)
                 .multilineTextAlignment(.trailing)
                 .monospacedDigit()
-                .frame(minWidth: 74)
-                .fixedSize()
+                .frame(minWidth: 88, idealWidth: 96, maxWidth: 132)
+                .frame(minHeight: 44)
                 .textFieldStyle(.roundedBorder)
-            Text(suffix)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
         }
     }
 
     private func numericProfileField(_ title: String, value: Binding<Double>, suffix: String) -> some View {
-        HStack(spacing: 12) {
-            Text(title)
-            Spacer()
+        profileFieldLayout(title: title, suffix: suffix) {
             TextField(title, value: value, format: .number.precision(.fractionLength(0)))
                 .keyboardType(.numberPad)
                 .multilineTextAlignment(.trailing)
                 .monospacedDigit()
-                .frame(minWidth: 74)
-                .fixedSize()
+                .frame(minWidth: 88, idealWidth: 96, maxWidth: 132)
+                .frame(minHeight: 44)
                 .textFieldStyle(.roundedBorder)
-            Text(suffix)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
         }
     }
 
-    private func featureRow(icon: String, tint: Color, title: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: 14) {
+    @ViewBuilder
+    private func profileFieldLayout<Editor: View>(
+        title: String,
+        suffix: String,
+        @ViewBuilder editor: () -> Editor
+    ) -> some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline)
+                HStack(spacing: 8) {
+                    editor()
+                    Text(suffix)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        } else {
+            HStack(spacing: 12) {
+                Text(title)
+                Spacer(minLength: 8)
+                editor()
+                Text(suffix)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(minHeight: 44)
+        }
+    }
+
+    private func setupStepTile(_ number: Int, title: String, systemImage: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("\(number)")
+                    .font(.caption.weight(.bold).monospacedDigit())
+                    .foregroundStyle(.blue)
+                Spacer(minLength: 4)
+                Image(systemName: systemImage)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.blue)
+                    .accessibilityHidden(true)
+            }
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
+        .padding(10)
+        .atriaInsetCard(tint: .blue)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Step \(number), \(title)")
+    }
+
+    private func expectationPill(icon: String,
+                                 title: String,
+                                 hint: String,
+                                 tint: Color) -> some View {
+        VStack(spacing: 6) {
             Image(systemName: icon)
-                .font(.title2)
+                .font(.headline)
                 .foregroundStyle(tint)
-                .frame(width: 34)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                Text(detail)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
+            Text(title)
+                .font(.caption.weight(.bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
         }
-    }
-
-    private func numberedStep(_ number: Int, title: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: 14) {
-            Text("\(number)")
-                .font(.subheadline.weight(.bold).monospacedDigit())
-                .foregroundStyle(Color.white)
-                .frame(width: 28, height: 28)
-                .background(Circle().fill(Color.accentColor))
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                Text(detail)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
-        }
-    }
-}
-
-private struct StrapChargeIllustration: View {
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .fill(Color.secondary.opacity(0.10))
-            Capsule()
-                .strokeBorder(Color.primary.opacity(0.22), lineWidth: 5)
-                .frame(width: 210, height: 58)
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.blue.opacity(0.75))
-                .frame(width: 72, height: 42)
-                .offset(x: 22)
-            Image(systemName: "bolt.fill")
-                .font(.title2.weight(.bold))
-                .foregroundStyle(.white)
-                .offset(x: 22)
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: 150)
-        .atriaCard(emphasis: .soft)
-        .accessibilityLabel("WHOOP strap charging illustration")
+        .frame(maxWidth: .infinity, minHeight: 58)
+        .padding(.horizontal, 6)
+        .atriaInsetCard(tint: tint)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint(hint)
     }
 }

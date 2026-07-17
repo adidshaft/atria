@@ -1,23 +1,158 @@
+import Combine
 import SwiftUI
+
+struct AtriaJournalProjectionState: Equatable {
+    let behaviorJournalRevision: Int
+    let journalAnswersRevision: Int
+    let typedInsights: [JournalInsight]
+    let dailyRollupHistoryRevision: Int
+    let localDay: Date
+}
+
+struct AtriaJournalDeckSizing: Equatable {
+    // Large, focal swipe cards (2026-07-16): the morning check-in is the primary
+    // action of the Journal tab, so the deck fills most of the leftover area
+    // rather than sitting as a small 250pt tile. The glass surface reads far
+    // better at this scale. Accessibility sizes still grow past this floor.
+    static let standardHeight: CGFloat = 460
+
+    let minimumHeight: CGFloat
+    let maximumHeight: CGFloat?
+    let clipsContent: Bool
+
+    init(dynamicTypeSize: DynamicTypeSize) {
+        minimumHeight = Self.standardHeight
+        maximumHeight = dynamicTypeSize.isAccessibilitySize ? nil : Self.standardHeight
+        clipsContent = !dynamicTypeSize.isAccessibilitySize
+    }
+}
+
+/// Single source of truth for which behaviors a user has chosen to track. The
+/// catalog (`BehaviorJournalEntry.Tag`) is WHOOP-scale, but the daily check-in
+/// and the impact section only ever show this opted-in subset — an empty/unset
+/// preference falls back to the original proven default set, so nothing changes
+/// for anyone who never opens the picker. Stored as a CSV of raw values under
+/// one shared key so the deck, Settings picker, and onboarding stay in sync via
+/// UserDefaults change notifications (see AtriaDefault).
+enum AtriaTrackedBehaviors {
+    static let storageKey = "atria.journal.trackedBehaviors"
+
+    static func parse(_ raw: String) -> [BehaviorJournalEntry.Tag] {
+        let stored = Set(raw.split(separator: ",").map(String.init))
+        // Preserve canonical catalog order regardless of stored order.
+        let picked = BehaviorJournalEntry.Tag.allCases.filter { stored.contains($0.rawValue) }
+        return picked.isEmpty ? BehaviorJournalEntry.Tag.defaultTracked : picked
+    }
+
+    static func serialize(_ tags: [BehaviorJournalEntry.Tag]) -> String {
+        tags.map(\.rawValue).joined(separator: ",")
+    }
+}
+
+/// Equality-gated bridge between the retained Journal tab and SessionStore.
+/// It may hear a broad dashboard revision, but the Journal root only invalidates
+/// when one of its own value-semantic inputs actually changes.
+@MainActor
+final class AtriaJournalProjectionStore: ObservableObject {
+    @Published private(set) var state: AtriaJournalProjectionState
+
+    private var cancellables = Set<AnyCancellable>()
+
+    init(state: AtriaJournalProjectionState) {
+        self.state = state
+    }
+
+    convenience init(store: SessionStore, now: Date = Date(), calendar: Calendar = .current) {
+        self.init(state: Self.makeState(store: store, now: now, calendar: calendar))
+        bind(to: store)
+    }
+
+    @discardableResult
+    func refresh(_ next: AtriaJournalProjectionState) -> Bool {
+        guard next != state else { return false }
+        state = next
+        return true
+    }
+
+    private func bind(to store: SessionStore) {
+        Publishers.MergeMany([
+            store.$dashboardRevision.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            store.$journalAnswersRevision.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            store.$journalInsightsCache.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            store.$dailyRollupHistory.dropFirst().map { _ in () }.eraseToAnyPublisher()
+        ])
+        // @Published emits before assignment. Coalescing onto the next run-loop
+        // turn guarantees revisions and their backing snapshots agree.
+        .debounce(for: .milliseconds(1), scheduler: RunLoop.main)
+        .sink { [weak self, weak store] in
+            guard let self, let store else { return }
+            self.refresh(Self.makeState(store: store))
+        }
+        .store(in: &cancellables)
+    }
+
+    private static func makeState(store: SessionStore,
+                                  now: Date = Date(),
+                                  calendar: Calendar = .current) -> AtriaJournalProjectionState {
+        AtriaJournalProjectionState(
+            behaviorJournalRevision: store.behaviorJournalRevision,
+            journalAnswersRevision: store.journalAnswersRevision,
+            typedInsights: Array(store.journalInsightsCache.prefix(3)),
+            dailyRollupHistoryRevision: store.dailyRollupHistoryRevision,
+            localDay: calendar.startOfDay(for: now)
+        )
+    }
+
+    @discardableResult
+    func refreshDayIfNeeded(now: Date = Date(), calendar: Calendar = .current) -> Bool {
+        let localDay = calendar.startOfDay(for: now)
+        guard localDay != state.localDay else { return false }
+        state = AtriaJournalProjectionState(
+            behaviorJournalRevision: state.behaviorJournalRevision,
+            journalAnswersRevision: state.journalAnswersRevision,
+            typedInsights: state.typedInsights,
+            dailyRollupHistoryRevision: state.dailyRollupHistoryRevision,
+            localDay: localDay
+        )
+        return true
+    }
+}
 
 /// Journal tab (phase 1): a sub-30-second morning check-in over the existing
 /// behavior tags, a "same as yesterday" shortcut, a 90-day logging heat strip,
 /// and the shared behavior-impact section. Strictly additive: reads and writes
 /// go through the existing BehaviorJournalEntry store APIs only.
 struct AtriaJournalTab: View {
-    @ObservedObject var store: SessionStore
+    /// Retained only for actions and snapshot reads. Root observation is narrowed
+    /// to `projectionStore`, so live BLE/session publishes cannot redraw the root,
+    /// check-in deck, or typed-pattern section.
+    let store: SessionStore
+    @StateObject private var projectionStore: AtriaJournalProjectionStore
+
+    init(store: SessionStore) {
+        self.store = store
+        _projectionStore = StateObject(wrappedValue: AtriaJournalProjectionStore(store: store))
+    }
 
     var body: some View {
         let _ = AtriaBodyEvalProbe.tick("AtriaJournalTab")
+        let projection = projectionStore.state
+        let localDay = projection.localDay
         Group {
-            AtriaJournalCheckInDeck(store: store)
-            AtriaJournalTypedInsightsSection(store: store)
+            AtriaJournalCheckInDeck(store: store, projection: projection)
+            AtriaJournalTypedInsightsSection(insights: projection.typedInsights)
             AtriaOverviewBehaviorJournalSection(store: store)
             // Heat strip rides directly under the behavior-impact section it
             // visualizes (UX audit 2026-07-07) instead of orphaned mid-stack.
-            AtriaJournalHeatStrip(entries: store.behaviorJournalEntries)
+            AtriaJournalHeatStrip(entries: store.behaviorJournalEntries,
+                                  revision: projection.behaviorJournalRevision,
+                                  localDay: localDay)
+                .equatable()
             AtriaRoutineCard(store: store)
             AtriaJournalCycleCard(sessionStore: store)
+        }
+        .onAppear {
+            projectionStore.refreshDayIfNeeded()
         }
     }
 }
@@ -38,6 +173,7 @@ private struct AtriaJournalCycleCard: View {
     @AtriaDefault(AtriaCycleTracking.enabledKey) private var isEnabled: Bool = false
     @StateObject private var store = AtriaCycleTrackingStore()
     @State private var showLogSheet = false
+    @State private var phasePatternMemo = AtriaJournalPhasePatternMemo()
 
     /// Cycle-phase patterns (design backlog item 10): average recovery per
     /// estimated phase over the trailing 90 days. Gated on a PERSONALIZED
@@ -45,8 +181,12 @@ private struct AtriaJournalCycleCard: View {
     /// always labeled an estimate/association per the honesty rules.
     @ViewBuilder
     private var phasePatternRows: some View {
-        let patterns = store.recoveryPatternsByPhase(
-            days: sessionStore.dailyRollupHistory.map { (day: $0.day, recovery: $0.recovery) })
+        let localDay = Calendar.current.startOfDay(for: Date())
+        let patterns = phasePatternMemo.patterns(rollupRevision: sessionStore.dailyRollupHistoryRevision,
+                                                 localDay: localDay,
+                                                 cycleEntriesRevision: store.entriesRevision,
+                                                 cycleStore: store,
+                                                 rollups: sessionStore.dailyRollupHistory)
         if !patterns.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Text("RECOVERY BY PHASE (ESTIMATE)")
@@ -66,7 +206,7 @@ private struct AtriaJournalCycleCard: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Text("Averages across your last 90 days, grouped by estimated phase. An association from your logs, not a prediction.")
+                Text("90-day association from logged dates; not a prediction.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -95,14 +235,7 @@ private struct AtriaJournalCycleCard: View {
     }
 
     private var disabledContent: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Log period dates to see a phase-aware note alongside your recovery and strain — menstrual, follicular, ovulatory, luteal.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("Optional. Stays on this phone. Not in research bundles.")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
             Button {
                 isEnabled = true
             } label: {
@@ -111,6 +244,7 @@ private struct AtriaJournalCycleCard: View {
                     .frame(maxWidth: .infinity)
             }
             .atriaCardAction(tint: .pink)
+            .accessibilityHint("Optional phase estimates stay on this phone and are excluded from research.")
         }
     }
 
@@ -136,14 +270,14 @@ private struct AtriaJournalCycleCard: View {
                     Spacer(minLength: 0)
                 }
             } else {
-                Text("No period logged yet. Log your first start date to begin estimating your phase.")
+                Text("Log a first period to begin phase estimates.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             if store.completedCycleCount < 2 {
-                Text("Estimating from calendar averages until 2 cycles are logged (\(store.completedCycleCount)/2 so far). Not medical advice.")
+                Text("Calendar estimate · \(store.completedCycleCount)/2 cycles · not medical advice")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -186,6 +320,39 @@ private struct AtriaJournalCycleCard: View {
         case .estimating: return "Estimating \u{2014} calendar average, not yet personalized"
         case .personalized: return "Personalized to your logged cycles"
         }
+    }
+}
+
+private final class AtriaJournalPhasePatternMemo {
+    private var rollupRevision: Int?
+    private var localDay: Date?
+    private var cycleEntriesRevision: Int?
+    private var cachedRows: [(phase: AtriaCyclePhase, averageRecovery: Int, dayCount: Int)] = []
+
+    func patterns(rollupRevision: Int,
+                  localDay: Date,
+                  cycleEntriesRevision: Int,
+                  cycleStore: AtriaCycleTrackingStore,
+                  rollups: [DailyRollupStoreEntry],
+                  calendar: Calendar = .current) -> [(phase: AtriaCyclePhase, averageRecovery: Int, dayCount: Int)] {
+        if self.rollupRevision == rollupRevision,
+           self.localDay == localDay,
+           self.cycleEntriesRevision == cycleEntriesRevision {
+            return cachedRows
+        }
+
+        let windowStart = calendar.date(byAdding: .day, value: -90, to: localDay) ?? localDay
+        let trailingDays = rollups
+            .prefix { $0.day >= windowStart }
+            .map { (day: $0.day, recovery: $0.recovery) }
+        let rows = cycleStore.recoveryPatternsByPhase(days: trailingDays,
+                                                       now: localDay,
+                                                       calendar: calendar)
+        self.rollupRevision = rollupRevision
+        self.localDay = localDay
+        self.cycleEntriesRevision = cycleEntriesRevision
+        cachedRows = rows
+        return rows
     }
 }
 
@@ -242,10 +409,9 @@ private struct AtriaCyclePeriodLogSheet: View {
 /// Insight-engine v2 results (threshold splits, dose-response). Reads the
 /// precomputed cache only — never computes in body.
 private struct AtriaJournalTypedInsightsSection: View {
-    @ObservedObject var store: SessionStore
+    let insights: [JournalInsight]
 
     var body: some View {
-        let insights = Array(store.journalInsightsCache.prefix(3))
         VStack(alignment: .leading, spacing: 12) {
             AtriaPanelSectionHeader(title: "Patterns",
                                     subtitle: "From your typed answers")
@@ -253,23 +419,23 @@ private struct AtriaJournalTypedInsightsSection: View {
             if insights.isEmpty {
                 // Locked treatment (2026-07-07 design handoff): dashed card,
                 // lock tile, explicit title -- same honest copy as before.
-                VStack(spacing: 8) {
+                HStack(spacing: 10) {
                     Image(systemName: "lock.fill")
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(.secondary)
                         .frame(width: 34, height: 34)
                         .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    Text("Patterns are locked")
-                        .font(.subheadline.weight(.bold))
-                    Text("Keep answering the detail questions (times, amounts, mood). Patterns like \u{201C}caffeine after 2:30 PM\u{201D} unlock once enough days exist on both sides — usually 2\u{2013}3 weeks.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Patterns are locked")
+                            .font(.subheadline.weight(.bold))
+                        Text("About 2–3 weeks of answers")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .padding(.horizontal, 10)
+                .padding(12)
                 .overlay {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .stroke(.quaternary, style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
@@ -299,7 +465,10 @@ private struct AtriaJournalTypedInsightsSection: View {
 /// Skip = simply not answering — an unanswered tag stays absent, matching the
 /// existing journal semantics (empty entries are dropped on save).
 private struct AtriaJournalCheckInDeck: View {
-    @ObservedObject var store: SessionStore
+    /// Unobserved action dependency. `projection` carries the only values that
+    /// can cause this retained subtree to refresh.
+    let store: SessionStore
+    let projection: AtriaJournalProjectionState
     @State private var deckIndex: Int = 0
     // Follow-up values are held locally and committed on "Set" — recording on
     // every wheel/stepper tick would fire a full insights recompute per tick.
@@ -310,32 +479,46 @@ private struct AtriaJournalCheckInDeck: View {
     // independent of the existing deckIndex-driven selection tick.
     @State private var dragOffset: CGSize = .zero
     @State private var swipeHapticTick: Int = 0
+    @State private var entryMemo = AtriaJournalEntryMemo()
+    @State private var answerMemo = AtriaJournalTodayAnswerMemo()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private enum SwipeDirection {
         case yes
         case no
     }
 
-    private static let cardHeight: CGFloat = 250
+    private var deckSizing: AtriaJournalDeckSizing {
+        AtriaJournalDeckSizing(dynamicTypeSize: dynamicTypeSize)
+    }
 
     private var todayEntry: BehaviorJournalEntry {
-        store.behaviorJournalEntry(for: Date())
+        journalEntrySnapshot.today
     }
 
     private var yesterdayEntry: BehaviorJournalEntry? {
-        guard let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Date()) else { return nil }
-        let entry = store.behaviorJournalEntry(for: yesterday)
-        return entry.tags.isEmpty ? nil : entry
+        journalEntrySnapshot.yesterday
     }
 
-    private var tags: [BehaviorJournalEntry.Tag] { BehaviorJournalEntry.Tag.allCases }
+    private var journalEntrySnapshot: AtriaJournalEntrySnapshot {
+        entryMemo.snapshot(revision: projection.behaviorJournalRevision,
+                           store: store)
+    }
+
+    @AtriaDefault(AtriaTrackedBehaviors.storageKey) private var trackedBehaviorsRaw: String = ""
+    private var tags: [BehaviorJournalEntry.Tag] { AtriaTrackedBehaviors.parse(trackedBehaviorsRaw) }
     /// Standalone typed cards appended after the boolean tags.
     private var scaleQuestions: [AtriaJournalTypedQuestion] { [.moodScale, .stressScale, .energyScale, .focusScale, .windDownScale] }
     private var cardCount: Int { tags.count + scaleQuestions.count }
     private var answeredCount: Int { answeredTagCount + answeredScaleCount }
+    private var todayAnswersByQuestion: [String: AtriaJournalAnswer] {
+        answerMemo.answers(revision: projection.journalAnswersRevision,
+                           store: store.journalAnswers)
+    }
     private var answeredScaleCount: Int {
-        scaleQuestions.filter { store.journalAnswers.answer(questionID: $0.rawValue, day: Date()) != nil }.count
+        let answers = todayAnswersByQuestion
+        return scaleQuestions.filter { answers[$0.rawValue] != nil }.count
     }
     private var deckComplete: Bool { deckIndex >= cardCount }
 
@@ -397,7 +580,7 @@ private struct AtriaJournalCheckInDeck: View {
             return index
         }
         for (index, question) in scaleQuestions.enumerated()
-        where store.journalAnswers.answer(questionID: question.rawValue, day: Date()) == nil {
+        where todayAnswersByQuestion[question.rawValue] == nil {
             return tags.count + index
         }
         return cardCount
@@ -409,7 +592,7 @@ private struct AtriaJournalCheckInDeck: View {
 
     private func tagAnswered(_ tag: BehaviorJournalEntry.Tag) -> Bool {
         todayEntry.tags.contains(tag)
-            || store.journalAnswers.answer(questionID: Self.booleanQuestionID(for: tag), day: Date()) != nil
+            || todayAnswersByQuestion[Self.booleanQuestionID(for: tag)] != nil
     }
 
     private var answeredTagCount: Int {
@@ -433,24 +616,35 @@ private struct AtriaJournalCheckInDeck: View {
 
     @ViewBuilder
     private func card(at index: Int) -> some View {
-        Group {
-            if index < tags.count {
-                questionCard(for: tags[index])
-            } else if index < cardCount {
-                scaleCard(for: scaleQuestions[index - tags.count])
-            } else {
-                completedCard
+        sizedCard(
+            Group {
+                if index < tags.count {
+                    questionCard(for: tags[index])
+                } else if index < cardCount {
+                    scaleCard(for: scaleQuestions[index - tags.count])
+                } else {
+                    completedCard
+                }
             }
-        }
-        // Clamp every card to the deck's fixed height (a plain ZStack, unlike
-        // TabView, won't do this for us) so the peeking card behind is mostly
-        // covered by the front card instead of both showing full content.
-        .frame(maxWidth: .infinity, minHeight: Self.cardHeight, maxHeight: Self.cardHeight)
-        .clipped()
+        )
         // Each card needs its own opaque surface — the deck stacks the next
         // card behind the current one in a ZStack, and without a background
         // here the "peeking" card would show straight through the front card.
         .atriaInsetCard(cornerRadius: 20, tint: .cyan)
+    }
+
+    @ViewBuilder
+    private func sizedCard<Content: View>(_ content: Content) -> some View {
+        if deckSizing.clipsContent {
+            content
+                .frame(maxWidth: .infinity,
+                       minHeight: deckSizing.minimumHeight,
+                       maxHeight: deckSizing.maximumHeight)
+                .clipped()
+        } else {
+            content
+                .frame(maxWidth: .infinity, minHeight: deckSizing.minimumHeight)
+        }
     }
 
     private var swipeDeck: some View {
@@ -467,7 +661,9 @@ private struct AtriaJournalCheckInDeck: View {
                         RoundedRectangle(cornerRadius: 20, style: .continuous)
                             .stroke(Color.cyan.opacity(0.16), lineWidth: 1)
                     }
-                    .frame(maxWidth: .infinity, minHeight: Self.cardHeight, maxHeight: Self.cardHeight)
+                    .frame(maxWidth: .infinity,
+                           minHeight: deckSizing.minimumHeight,
+                           maxHeight: deckSizing.maximumHeight)
                     .scaleEffect(0.94)
                     .offset(y: 14)
                     .allowsHitTesting(false)
@@ -496,7 +692,8 @@ private struct AtriaJournalCheckInDeck: View {
                 }
             }
         }
-        .frame(height: Self.cardHeight)
+        .frame(minHeight: deckSizing.minimumHeight,
+               maxHeight: deckSizing.maximumHeight)
     }
 
     private func swipeBadge(text: String, tint: Color) -> some View {
@@ -602,13 +799,16 @@ private struct AtriaJournalCheckInDeck: View {
         let answeredYes = todayEntry.tags.contains(tag)
         let isAutoTag = todayEntry.healthAutoTags.contains(tag)
         let followUp = AtriaJournalTypedQuestion.allCases.first { $0.linkedTag == tag }
-        return VStack(spacing: 12) {
+        return VStack(spacing: 16) {
+            Spacer(minLength: 8)
+
             Image(systemName: tag.symbolName)
-                .font(.system(size: 28, weight: .medium))
+                .font(.system(size: 40, weight: .medium))
                 .foregroundStyle(.cyan)
+                .symbolRenderingMode(.hierarchical)
 
             Text(question(for: tag))
-                .font(.headline)
+                .font(.title2.weight(.semibold))
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -616,14 +816,16 @@ private struct AtriaJournalCheckInDeck: View {
                 AtriaStatusChip(text: "from Health", systemImage: "heart.fill", tint: .pink)
             }
 
-            HStack(spacing: 10) {
+            Spacer(minLength: 8)
+
+            HStack(spacing: 12) {
                 Button {
                     recordYes(tag: tag)
                     if followUp == nil { advance() }
                 } label: {
                     Text("Yes")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
+                        .font(.body.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 30)
                 }
                 .atriaCardAction(tint: answeredYes ? .cyan : .accentColor)
 
@@ -632,8 +834,8 @@ private struct AtriaJournalCheckInDeck: View {
                     advance()
                 } label: {
                     Text("No")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
+                        .font(.body.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 30)
                 }
                 .atriaCardAction(prominent: false, tint: .secondary)
             }
@@ -645,10 +847,11 @@ private struct AtriaJournalCheckInDeck: View {
             Button("Skip") {
                 advance()
             }
-            .font(.caption.weight(.medium))
+            .font(.subheadline.weight(.medium))
             .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 18)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 26)
         .frame(maxWidth: .infinity)
     }
 
@@ -688,8 +891,7 @@ private struct AtriaJournalCheckInDeck: View {
                 .atriaCardAction(prominent: false, tint: .cyan)
             }
             .onAppear {
-                if let existing = store.journalAnswers.answer(questionID: question.rawValue, day: Date())?
-                    .value.timeOfDayMinutes {
+                if let existing = todayAnswersByQuestion[question.rawValue]?.value.timeOfDayMinutes {
                     pendingCaffeineMinutes = existing
                 }
             }
@@ -714,8 +916,7 @@ private struct AtriaJournalCheckInDeck: View {
                 .atriaCardAction(prominent: false, tint: .cyan)
             }
             .onAppear {
-                if let existing = store.journalAnswers.answer(questionID: question.rawValue, day: Date())?
-                    .value.quantityValue {
+                if let existing = todayAnswersByQuestion[question.rawValue]?.value.quantityValue {
                     pendingDrinks = existing
                 }
             }
@@ -727,7 +928,7 @@ private struct AtriaJournalCheckInDeck: View {
     private static let scaleEmoji = ["😖", "😕", "😐", "🙂", "😄"]
 
     private func scaleCard(for question: AtriaJournalTypedQuestion) -> some View {
-        let existing = store.journalAnswers.answer(questionID: question.rawValue, day: Date())?.value.scaleValue
+        let existing = todayAnswersByQuestion[question.rawValue]?.value.scaleValue
         return VStack(spacing: 14) {
             Image(systemName: question.symbolName)
                 .font(.system(size: 28, weight: .medium))
@@ -766,7 +967,7 @@ private struct AtriaJournalCheckInDeck: View {
     }
 
     private func scaleDotColor(index: Int, question: AtriaJournalTypedQuestion) -> Color {
-        if store.journalAnswers.answer(questionID: question.rawValue, day: Date()) != nil { return .cyan }
+        if todayAnswersByQuestion[question.rawValue] != nil { return .cyan }
         if index == deckIndex { return .primary.opacity(0.65) }
         return .primary.opacity(0.18)
     }
@@ -778,19 +979,17 @@ private struct AtriaJournalCheckInDeck: View {
                 .foregroundStyle(.cyan)
             Text("Check-in done")
                 .font(.headline)
-            Text("Answers feed your local behavior impacts below. Skipped questions stay unanswered — a skipped day never counts as a \u{201C}no\u{201D}.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
             if answeredCount > 0 {
                 Button("Review answers") {
-                    withAnimation(.snappy) { deckIndex = 0 }
+                    withAnimation(reduceMotion ? nil : .snappy) { deckIndex = 0 }
                 }
                 .font(.caption.weight(.semibold))
             }
         }
         .padding(.horizontal, 18)
         .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Check-in done. Skipped questions stay unanswered.")
     }
 
     private func question(for tag: BehaviorJournalEntry.Tag) -> String {
@@ -801,11 +1000,44 @@ private struct AtriaJournalCheckInDeck: View {
         case .protein: return "Did you hit your protein target yesterday?"
         case .training: return "Did you train yesterday?"
         case .stress: return "Was yesterday unusually stressful?"
+        case .hydration: return "Did you stay well hydrated yesterday?"
+        case .lateMeal: return "Did you eat within two hours of bed?"
+        case .morningLight: return "Did you get outdoor light yesterday morning?"
+        case .meditation: return "Did you meditate or do breathwork yesterday?"
+        case .nicotine: return "Any nicotine yesterday?"
+        case .cannabis: return "Any cannabis yesterday?"
+        case .bigMeal: return "A large or heavy meal yesterday?"
+        case .addedSugar: return "A lot of added sugar yesterday?"
+        case .vegetables: return "Plenty of vegetables yesterday?"
+        case .fasted: return "Did you fast for a long stretch yesterday?"
+        case .supplements: return "Took your supplements yesterday?"
+        case .melatonin: return "Melatonin or a sleep aid last night?"
+        case .medication: return "Took your medication yesterday?"
+        case .sauna: return "Sauna or heat session yesterday?"
+        case .coldExposure: return "Cold plunge or cold shower yesterday?"
+        case .stretching: return "Did you stretch or do mobility yesterday?"
+        case .massage: return "Massage or bodywork yesterday?"
+        case .soreness: return "Waking up sore today?"
+        case .activeDay: return "Were you active on your feet yesterday?"
+        case .nap: return "Did you nap yesterday?"
+        case .screenInBed: return "Screens in bed last night?"
+        case .readBeforeBed: return "Did you read before bed?"
+        case .sharedBed: return "Shared your bed (partner or pet) last night?"
+        case .warmRoom: return "Was your room too warm last night?"
+        case .consistentBedtime: return "A consistent bedtime last night?"
+        case .socialTime: return "Meaningful social time yesterday?"
+        case .anxious: return "Feeling anxious yesterday?"
+        case .gratitude: return "Practice gratitude or journaling yesterday?"
+        case .outdoors: return "Time outdoors in nature yesterday?"
+        case .travel: return "Travel or a time-zone change yesterday?"
+        case .unwell: return "Feeling unwell or run down today?"
+        case .sexualActivity: return "Sexual activity yesterday?"
+        case .selfPleasure: return "Self-pleasure yesterday?"
         }
     }
 
     private func advance() {
-        withAnimation(.snappy) {
+        withAnimation(reduceMotion ? nil : .snappy) {
             deckIndex = min(deckIndex + 1, cardCount)
         }
     }
@@ -821,7 +1053,69 @@ private struct AtriaJournalCheckInDeck: View {
         }
         // Jump to the scale cards — mood/stress are about TODAY and cannot be
         // copied from yesterday.
-        withAnimation(.snappy) { deckIndex = tags.count }
+        withAnimation(reduceMotion ? nil : .snappy) { deckIndex = tags.count }
+    }
+}
+
+private struct AtriaJournalEntrySnapshot {
+    let today: BehaviorJournalEntry
+    let yesterday: BehaviorJournalEntry?
+}
+
+private final class AtriaJournalEntryMemo {
+    private var revision: Int?
+    private var day: Date?
+    private var value: AtriaJournalEntrySnapshot?
+
+    @MainActor
+    func snapshot(revision: Int,
+                  store: SessionStore,
+                  now: Date = Date(),
+                  calendar: Calendar = .current) -> AtriaJournalEntrySnapshot {
+        let today = calendar.startOfDay(for: now)
+        if self.revision == revision,
+           day == today,
+           let value {
+            return value
+        }
+
+        let todayEntry = store.behaviorJournalEntry(for: today, calendar: calendar)
+        let yesterdayEntry: BehaviorJournalEntry?
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: today) {
+            let entry = store.behaviorJournalEntry(for: yesterday, calendar: calendar)
+            yesterdayEntry = entry.tags.isEmpty ? nil : entry
+        } else {
+            yesterdayEntry = nil
+        }
+        let snapshot = AtriaJournalEntrySnapshot(today: todayEntry,
+                                                 yesterday: yesterdayEntry)
+        self.revision = revision
+        day = today
+        value = snapshot
+        return snapshot
+    }
+}
+
+private final class AtriaJournalTodayAnswerMemo {
+    private var revision: Int?
+    private var day: Date?
+    private var value: [String: AtriaJournalAnswer] = [:]
+
+    func answers(revision: Int,
+                 store: AtriaJournalAnswerStore,
+                 now: Date = Date(),
+                 calendar: Calendar = .current) -> [String: AtriaJournalAnswer] {
+        let today = calendar.startOfDay(for: now)
+        if self.revision == revision,
+           day == today {
+            return value
+        }
+
+        let next = store.answersByQuestion(for: today, calendar: calendar)
+        self.revision = revision
+        day = today
+        value = next
+        return next
     }
 }
 
@@ -829,94 +1123,130 @@ private struct AtriaJournalCheckInDeck: View {
 // Internal (was private) so the empty-vs-full history modes are render-testable.
 struct AtriaJournalHeatStrip: View, Equatable {
     let entries: [BehaviorJournalEntry]
+    let revision: Int
+    let localDay: Date
+
+    @State private var heatMemo = HeatMemo()
 
     static func == (lhs: AtriaJournalHeatStrip, rhs: AtriaJournalHeatStrip) -> Bool {
-        lhs.entries.count == rhs.entries.count
+        lhs.revision == rhs.revision
+            && lhs.localDay == rhs.localDay
+            && lhs.entries.count == rhs.entries.count
             && lhs.entries.first?.day == rhs.entries.first?.day
             && lhs.entries.first?.tags.count == rhs.entries.first?.tags.count
     }
 
     private static let dayCount = 90
-
-    private var countsByDay: [Date: Int] {
-        let calendar = Calendar.current
-        var counts: [Date: Int] = [:]
-        for entry in entries {
-            counts[calendar.startOfDay(for: entry.day)] = entry.tags.count
-        }
-        return counts
-    }
-
-    private var days: [Date] {
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
-        return (0..<Self.dayCount).compactMap {
-            calendar.date(byAdding: .day, value: -(Self.dayCount - 1 - $0), to: today)
-        }
-    }
-
-    private var loggedDayCount: Int {
-        let counts = countsByDay
-        return days.filter { (counts[$0] ?? 0) > 0 }.count
-    }
-
     /// The full 90-day grid only earns its space once there's enough history to
     /// show a pattern; before that it's ~88 empty cells advertising emptiness
     /// (UX audit 2026-07-08). Until ~3 weeks of history, show a 2-week strip.
     private static let compactDayCount = 14
-    private var hasEnoughHistoryForFullGrid: Bool {
-        guard let earliest = entries.map({ Calendar.current.startOfDay(for: $0.day) }).min() else { return false }
-        let span = Calendar.current.dateComponents([.day], from: earliest,
-                                                    to: Calendar.current.startOfDay(for: Date())).day ?? 0
-        return span >= 21
+
+    private struct HeatKey: Equatable {
+        let revision: Int
+        let localDay: Date
+        let entryCount: Int
+        let newestEntryDay: Date?
+        let newestEntryTagCount: Int?
     }
 
-    private var recentDays: [Date] {
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
-        return (0..<Self.compactDayCount).compactMap {
-            calendar.date(byAdding: .day, value: -(Self.compactDayCount - 1 - $0), to: today)
+    private struct HeatModel {
+        let countsByDay: [Date: Int]
+        let fullDays: [Date]
+        let recentDays: [Date]
+        let usesFullGrid: Bool
+        let loggedDayCount: Int
+
+        var shownDays: [Date] {
+            usesFullGrid ? fullDays : recentDays
+        }
+
+        var visibleDayCount: Int {
+            usesFullGrid ? AtriaJournalHeatStrip.dayCount : AtriaJournalHeatStrip.compactDayCount
+        }
+    }
+
+    private final class HeatMemo {
+        private var key: HeatKey?
+        private var cached: HeatModel?
+
+        func model(entries: [BehaviorJournalEntry],
+                   revision: Int,
+                   localDay: Date,
+                   calendar: Calendar = .current) -> HeatModel {
+            let key = HeatKey(revision: revision,
+                              localDay: localDay,
+                              entryCount: entries.count,
+                              newestEntryDay: entries.first?.day,
+                              newestEntryTagCount: entries.first?.tags.count)
+            if self.key == key, let cached {
+                return cached
+            }
+
+            var counts: [Date: Int] = [:]
+            var earliest: Date?
+            for entry in entries {
+                let day = calendar.startOfDay(for: entry.day)
+                counts[day] = entry.tags.count
+                if earliest.map({ day < $0 }) ?? true {
+                    earliest = day
+                }
+            }
+
+            let fullDays = Self.days(endingAt: localDay, count: AtriaJournalHeatStrip.dayCount, calendar: calendar)
+            let recentDays = Self.days(endingAt: localDay, count: AtriaJournalHeatStrip.compactDayCount, calendar: calendar)
+            let span = earliest.map {
+                calendar.dateComponents([.day], from: $0, to: localDay).day ?? 0
+            } ?? 0
+            let model = HeatModel(countsByDay: counts,
+                                  fullDays: fullDays,
+                                  recentDays: recentDays,
+                                  usesFullGrid: earliest != nil && span >= 21,
+                                  loggedDayCount: fullDays.filter { (counts[$0] ?? 0) > 0 }.count)
+            self.key = key
+            cached = model
+            return model
+        }
+
+        private static func days(endingAt localDay: Date, count: Int, calendar: Calendar) -> [Date] {
+            (0..<count).compactMap {
+                calendar.date(byAdding: .day, value: -(count - 1 - $0), to: localDay)
+            }
         }
     }
 
     var body: some View {
-        let counts = countsByDay
-        let fullGrid = hasEnoughHistoryForFullGrid
-        let shownDays = fullGrid ? days : recentDays
-        let columnCount = fullGrid ? 30 : Self.compactDayCount
+        let model = heatMemo.model(entries: entries, revision: revision, localDay: localDay)
+        let columnCount = model.usesFullGrid ? 30 : Self.compactDayCount
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
                 AtriaPanelSectionHeader(title: "Logging history",
-                                        subtitle: fullGrid ? "Last 90 days" : "Last 2 weeks")
+                                        subtitle: model.usesFullGrid ? "Last 90 days" : "Last 2 weeks")
 
                 Spacer(minLength: 0)
 
-                AtriaStatusChip(text: "\(loggedDayCount)d logged",
+                AtriaStatusChip(text: "\(model.loggedDayCount)d logged",
                                 systemImage: "square.and.pencil",
                                 tint: .cyan)
             }
 
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 3), count: columnCount),
                       spacing: 3) {
-                ForEach(shownDays, id: \.self) { day in
+                ForEach(model.shownDays, id: \.self) { day in
                     RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                        .fill(cellColor(count: counts[day] ?? 0))
+                        .fill(cellColor(count: model.countsByDay[day] ?? 0))
                         .aspectRatio(1, contentMode: .fit)
                 }
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Journal logging history: \(loggedDayCount) of the last \(fullGrid ? Self.dayCount : Self.compactDayCount) days logged.")
+            .accessibilityLabel("Journal logging history: \(model.loggedDayCount) of the last \(model.visibleDayCount) days logged.")
 
-            if !fullGrid {
-                Text(loggedDayCount == 0
-                     ? "Log today to start your pattern — the full 90-day view builds as history grows."
-                     : "Your full 90-day pattern unlocks as history builds.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
         .padding(16)
         .atriaCard(emphasis: .soft)
+        .accessibilityHint(model.usesFullGrid
+                           ? "Shows the last 90 days."
+                           : "The full 90-day pattern appears as logging history grows.")
     }
 
     private func cellColor(count: Int) -> Color {

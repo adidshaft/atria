@@ -1,7 +1,7 @@
 import XCTest
 @testable import Atria
 
-/// HR-timeline time-window zoom (2026-07-07, user request: 12h default, zoom
+/// HR-timeline time-window zoom (2026-07-10, user request: 6h default, zoom
 /// in to 1 min, out to 24h). Locks the windowing math and that the merge no
 /// longer pre-downsamples away the resolution the tight zoom needs.
 final class AtriaHeartRateTimelineWindowTests: XCTestCase {
@@ -13,11 +13,126 @@ final class AtriaHeartRateTimelineWindowTests: XCTestCase {
         }
     }
 
-    func testDefaultWindowIsTwelveHours() {
-        XCTAssertEqual(AtriaVitalsHeartRateTimeline.Window.defaultWindow, .hour12)
+    func testDefaultWindowIsSixHours() {
+        XCTAssertEqual(AtriaVitalsHeartRateTimeline.Window.defaultWindow, .hour6)
+        XCTAssertEqual(AtriaVitalsHeartRateTimeline.Window.hour6.seconds, 6 * 3600, accuracy: 0.5)
         XCTAssertEqual(AtriaVitalsHeartRateTimeline.Window.hour12.seconds, 12 * 3600, accuracy: 0.5)
         XCTAssertEqual(AtriaVitalsHeartRateTimeline.Window.min1.seconds, 60, accuracy: 0.5)
         XCTAssertEqual(AtriaVitalsHeartRateTimeline.Window.hour24.seconds, 24 * 3600, accuracy: 0.5)
+    }
+
+    func testExpandedChartAnchorsLatestSampleAtRightEdge() {
+        let latest = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(AtriaHeartRateExplorer.leadingScrollPosition(latest: latest,
+                                                                    visibleDomain: 6 * 3_600),
+                       latest.addingTimeInterval(-6 * 3_600))
+    }
+
+    func testExpandedChartDoesNotForceSixHourScrollOnShortSeries() {
+        let end = Date(timeIntervalSince1970: 1_800_000_000)
+        let short = points(spanHours: 0.1, count: 20, endingAt: end)
+        let long = points(spanHours: 12, count: 20, endingAt: end)
+
+        XCTAssertFalse(AtriaHeartRateAxisChart.shouldEnableHorizontalScrolling(
+            points: short,
+            visibleDomain: 6 * 3_600
+        ))
+        XCTAssertTrue(AtriaHeartRateAxisChart.shouldEnableHorizontalScrolling(
+            points: long,
+            visibleDomain: 6 * 3_600
+        ))
+    }
+
+    func testExplorerLandscapeLayoutKeepsMostWidthForChart() {
+        let layout = AtriaHeartRateExplorerLayout(size: CGSize(width: 852, height: 393))
+
+        XCTAssertTrue(layout.isLandscape)
+        XCTAssertLessThanOrEqual(layout.controlRailHeight, 48)
+        XCTAssertGreaterThan(layout.estimatedChartWidth, 820)
+        XCTAssertGreaterThan(layout.estimatedChartWidth / 852, 0.96)
+        XCTAssertGreaterThanOrEqual(layout.minimumChartHeight, 300)
+    }
+
+    func testExplorerPortraitFallbackUsesRenderedGeometry() {
+        let layout = AtriaHeartRateExplorerLayout(size: CGSize(width: 393, height: 852))
+
+        XCTAssertFalse(layout.isLandscape)
+        XCTAssertEqual(layout.estimatedChartWidth, 369, accuracy: 0.01)
+        XCTAssertGreaterThanOrEqual(layout.minimumChartHeight, 400)
+    }
+
+    func testExplorerPresentationHasOneLandscapeOrientationContract() {
+        XCTAssertEqual(AtriaHeartRateExplorerOrientationPolicy.transitionMask, .allButUpsideDown)
+        XCTAssertEqual(AtriaHeartRateExplorerOrientationPolicy.presentedMask, .landscape)
+        XCTAssertEqual(AtriaHeartRateExplorerOrientationPolicy.preferredOrientation, .landscapeRight)
+    }
+
+    func testExplorerUsesSwappedLandscapeStageWhenPortraitWindowCannotRotate() {
+        let stage = AtriaHeartRateExplorerStageLayout(
+            containerSize: CGSize(width: 393, height: 852),
+            usesRotatedPortraitFallback: true
+        )
+
+        XCTAssertEqual(stage.mode, .rotatedLandscapeFallback)
+        XCTAssertEqual(stage.stageSize, CGSize(width: 852, height: 393))
+        XCTAssertEqual(stage.rotationDegrees, 90)
+        XCTAssertTrue(AtriaHeartRateExplorerLayout(size: stage.stageSize).isLandscape)
+    }
+
+    func testExplorerNeverDoubleRotatesAnActualLandscapeWindow() {
+        let stage = AtriaHeartRateExplorerStageLayout(
+            containerSize: CGSize(width: 852, height: 393),
+            usesRotatedPortraitFallback: true
+        )
+
+        XCTAssertEqual(stage.mode, .landscape)
+        XCTAssertEqual(stage.stageSize, CGSize(width: 852, height: 393))
+        XCTAssertEqual(stage.rotationDegrees, 0)
+    }
+
+    func testExplorerRequestsLandscapeGeometryAndUsesOneGlassCloseCircle() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaVitalsCollectionSections.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("AtriaHeartRateOrientation.ensureLandscapeAfterPresentation()"))
+        XCTAssertTrue(source.contains("requestSceneOrientation(AtriaHeartRateExplorerOrientationPolicy.presentedMask"))
+        XCTAssertTrue(source.contains("AtriaHeartRateOrientation.landscapeFallbackNotification"))
+        XCTAssertTrue(source.contains("case .rotatedLandscapeFallback:"))
+        XCTAssertTrue(source.contains(".rotationEffect(.degrees(stage.rotationDegrees))"))
+        XCTAssertTrue(source.contains("nsError.code == 101"))
+
+        let closeStart = try XCTUnwrap(source.range(of: "private var closeButton: some View"))
+        let closeEnd = try XCTUnwrap(source.range(of: "private var selectionSummary: some View",
+                                                  range: closeStart.upperBound..<source.endIndex))
+        let close = String(source[closeStart.lowerBound..<closeEnd.lowerBound])
+        XCTAssertEqual(close.components(separatedBy: ".glassEffect(").count - 1, 1)
+        XCTAssertTrue(close.contains(".buttonStyle(.plain)"))
+        XCTAssertFalse(close.contains(".atriaGlassIconAction"))
+        XCTAssertFalse(close.contains(".buttonStyle(.glass)"))
+    }
+
+    func testExplorerLandscapeUsesFullWidthPlotBelowCompactControls() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaVitalsCollectionSections.swift"),
+            encoding: .utf8
+        )
+
+        let contentStart = try XCTUnwrap(source.range(of: "private func landscapeContent"))
+        let contentEnd = try XCTUnwrap(source.range(of: "private func portraitContent",
+                                                    range: contentStart.upperBound..<source.endIndex))
+        let content = String(source[contentStart.lowerBound..<contentEnd.lowerBound])
+        XCTAssertTrue(content.contains("VStack"))
+        XCTAssertTrue(content.contains("landscapeControlRail"))
+        XCTAssertTrue(content.contains("heartRateChart"))
+        XCTAssertFalse(content.contains("inspector("))
     }
 
     func testWindowedKeepsOnlyLastTwelveHoursOfDay() {
@@ -44,6 +159,21 @@ final class AtriaHeartRateTimelineWindowTests: XCTestCase {
         XCTAssertEqual(AtriaVitalsHeartRateTimeline.windowed(pts, window: .hour12, displayBudget: 200).count, 200)
     }
 
+    func testWindowedLargeSortedInputMatchesFilterSemantics() {
+        let end = Date(timeIntervalSince1970: 1_800_000_000)
+        let pts = points(spanHours: 24, count: 6000, endingAt: end)
+        let cutoff = end.addingTimeInterval(-12 * 3600)
+        let visible = pts.filter { $0.t >= cutoff }
+
+        let exact = AtriaVitalsHeartRateTimeline.windowed(pts, window: .hour12, displayBudget: 10_000)
+        XCTAssertEqual(exact, visible)
+
+        let downsampled = AtriaVitalsHeartRateTimeline.windowed(pts, window: .hour12, displayBudget: 200)
+        XCTAssertEqual(downsampled.count, 200)
+        XCTAssertEqual(downsampled.first, visible.first)
+        XCTAssertEqual(downsampled.last, visible.last)
+    }
+
     func testMergedKeepsFullResolution() {
         let end = Date(timeIntervalSince1970: 1_800_000_000)
         let historical = points(spanHours: 12, count: 720, endingAt: end.addingTimeInterval(-3600))
@@ -52,6 +182,118 @@ final class AtriaHeartRateTimelineWindowTests: XCTestCase {
         XCTAssertGreaterThan(merged.count, 180, "must not pre-downsample to 180 or the 1-min zoom loses detail")
         XCTAssertEqual(merged, merged.sorted { $0.t < $1.t })
     }
+
+    func testSortedMergePreservesRoundedSecondDeduplicationAndLivePrecedence() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let historical = [
+            AtriaHomeModel.HeartRateChartPoint(t: start.addingTimeInterval(0.1), bpm: 60),
+            AtriaHomeModel.HeartRateChartPoint(t: start.addingTimeInterval(0.4), bpm: 61),
+            AtriaHomeModel.HeartRateChartPoint(t: start.addingTimeInterval(1.1), bpm: 62),
+            AtriaHomeModel.HeartRateChartPoint(t: start.addingTimeInterval(2.1), bpm: 0),
+        ]
+        let live = [
+            AtriaHomeModel.HeartRateChartPoint(t: start.addingTimeInterval(0.2), bpm: 90),
+            AtriaHomeModel.HeartRateChartPoint(t: start.addingTimeInterval(1.4), bpm: 91),
+            AtriaHomeModel.HeartRateChartPoint(t: start.addingTimeInterval(3), bpm: 92),
+        ]
+
+        let merged = AtriaVitalsHeartRateTimeline.mergedHeartRatePoints(live: live,
+                                                                        historical: historical)
+
+        XCTAssertEqual(merged.map(\.bpm), [90, 91, 92])
+        XCTAssertEqual(merged.map(\.t), [live[0].t, live[1].t, live[2].t])
+    }
+
+    func testUnsortedMergeRetainsDictionaryFallbackSemantics() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let historical = [
+            AtriaHomeModel.HeartRateChartPoint(t: start.addingTimeInterval(2), bpm: 62),
+            AtriaHomeModel.HeartRateChartPoint(t: start, bpm: 60),
+        ]
+        let live = [
+            AtriaHomeModel.HeartRateChartPoint(t: start.addingTimeInterval(1), bpm: 91),
+            AtriaHomeModel.HeartRateChartPoint(t: start.addingTimeInterval(2.1), bpm: 92),
+        ]
+
+        let merged = AtriaVitalsHeartRateTimeline.mergedHeartRatePoints(live: live,
+                                                                        historical: historical)
+
+        XCTAssertEqual(merged.map(\.bpm), [60, 91, 92])
+        XCTAssertEqual(merged, merged.sorted { $0.t < $1.t })
+    }
+
+    func testPulsePresentationIgnoresUnusedRRSamples() {
+        let state = AtriaHomeModel.PulseLiveState(heartRate: 72,
+                                                  hasContact: true,
+                                                  sensorHasContact: true,
+                                                  averageHeartRate: 68,
+                                                  peakHeartRate: 104,
+                                                  heartRateZone: nil)
+        var rrOnlyChange = state
+        rrOnlyChange.recentRRSamples = [
+            AtriaBreathworkSession.RRSample(date: Date(timeIntervalSince1970: 1_800_000_000),
+                                            ms: 833),
+        ]
+
+        XCTAssertNotEqual(state, rrOnlyChange, "the source state still carries RR data for breathwork")
+        XCTAssertEqual(AtriaVitalsPulsePresentationState(state),
+                       AtriaVitalsPulsePresentationState(rrOnlyChange))
+    }
+
+    func testPulsePresentationTracksRenderedValueChanges() {
+        let state = AtriaHomeModel.PulseLiveState(heartRate: 72,
+                                                  hasContact: true,
+                                                  sensorHasContact: true,
+                                                  averageHeartRate: 68,
+                                                  peakHeartRate: 104,
+                                                  heartRateZone: nil)
+        var changed = state
+        changed.averageHeartRate = 69
+
+        XCTAssertNotEqual(AtriaVitalsPulsePresentationState(state),
+                          AtriaVitalsPulsePresentationState(changed))
+    }
+
+    func testChartSeriesPrecomputesDenseSmoothingBuckets() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let dense = (0..<180).map { index in
+            AtriaHomeModel.HeartRateChartPoint(t: start.addingTimeInterval(TimeInterval(index)),
+                                               bpm: 60 + index)
+        }
+
+        let buckets = try XCTUnwrap(AtriaHeartRateChartSeries.smoothedBuckets(points: dense, targetBuckets: 3))
+
+        XCTAssertEqual(buckets.count, 3)
+        XCTAssertEqual(buckets[0].minBPM, 60)
+        XCTAssertEqual(buckets[0].maxBPM, 119)
+        XCTAssertEqual(buckets[0].average, 89.5, accuracy: 1e-9)
+        XCTAssertEqual(buckets[1].minBPM, 120)
+        XCTAssertEqual(buckets[1].maxBPM, 179)
+        XCTAssertEqual(buckets[1].average, 149.5, accuracy: 1e-9)
+        XCTAssertEqual(buckets[2].minBPM, 180)
+        XCTAssertEqual(buckets[2].maxBPM, 239)
+        XCTAssertEqual(buckets[2].average, 209.5, accuracy: 1e-9)
+        XCTAssertNil(AtriaHeartRateChartSeries.smoothedBuckets(points: Array(dense.prefix(150)), targetBuckets: 3))
+    }
+
+    func testRangeSummaryUsesOnlySamplesInsideSelection() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let points = [60, 70, 90, 80].enumerated().map { index, bpm in
+            AtriaHomeModel.HeartRateChartPoint(t: start.addingTimeInterval(Double(index * 60)), bpm: bpm)
+        }
+
+        let summary = try XCTUnwrap(AtriaHeartRateRangeSummary.make(
+            points: points,
+            range: start.addingTimeInterval(60)...start.addingTimeInterval(180)
+        ))
+
+        XCTAssertEqual(summary.average, 80)
+        XCTAssertEqual(summary.minimum, 70)
+        XCTAssertEqual(summary.maximum, 90)
+        XCTAssertEqual(summary.change, 10)
+        XCTAssertEqual(summary.durationText, "2 min")
+    }
+
     func testPinchOutZoomsIn() {
         // anchor 12h (index 7), pinch out 2x -> ~2 steps shorter window (6h, index 5).
         let idx = AtriaVitalsHeartRateTimeline.windowIndex(fromPinchAnchor: 7, magnification: 2, maxIndex: 8)
@@ -106,4 +348,3 @@ final class AtriaHeartRateTimelineWindowTests: XCTestCase {
         XCTAssertGreaterThan(windowed.count, 200)
     }
 }
-

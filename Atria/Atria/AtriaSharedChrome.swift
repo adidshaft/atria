@@ -4,12 +4,30 @@ struct AtriaSegmentButtonStyle: ButtonStyle {
     let selected: Bool
     var tint: Color = .blue
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 18, style: .continuous) }
 
     func makeBody(configuration: Configuration) -> some View {
         Group {
-            if selected {
+            if reduceTransparency {
+                configuration.label
+                    .foregroundStyle(selected ? Color.primary : Color.secondary)
+                    .background(
+                        selected
+                            ? AtriaDesignTokens.Surface.card(isDark: colorScheme == .dark, emphasis: .strong)
+                            : AtriaDesignTokens.Surface.inset(isDark: colorScheme == .dark),
+                        in: shape
+                    )
+                    .overlay {
+                        shape.stroke(selected ? tint.opacity(0.58)
+                                              : (colorScheme == .dark
+                                                 ? Color.white.opacity(0.14)
+                                                 : Color.black.opacity(0.14)),
+                                     lineWidth: 1)
+                    }
+            } else if selected {
                 // Selected: a real tinted Liquid Glass capsule, not an opaque fill.
                 configuration.label
                     .foregroundStyle(Color.primary.opacity(colorScheme == .dark ? 0.98 : 0.96))
@@ -33,7 +51,7 @@ struct AtriaSegmentButtonStyle: ButtonStyle {
             }
         }
         .scaleEffect(configuration.isPressed ? 0.97 : 1)
-        .animation(.snappy(duration: 0.14), value: selected)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.14), value: selected)
         // Haptics deliberately NOT here: a feedback modifier inside a reusable
         // ButtonStyle registers an engine observer per rendered segment. Owners
         // fire .selection once at their segment-change handler instead.
@@ -42,13 +60,13 @@ struct AtriaSegmentButtonStyle: ButtonStyle {
 
 struct AtriaGlassIconButtonStyle: ButtonStyle {
     var tint: Color = .blue
-    // HIG-compliant default (2026-07-05): 44pt is the minimum tap target. Every
-    // current call site passes an explicit size, so this only governs future
-    // buttons — the existing sub-44 sizes are intentional in tight rows and need
-    // per-screen visual review before changing, not a blind global bump.
+    // `size` is the visual glass diameter. The outer interaction frame remains
+    // at least 44pt, so compact 28–38pt chrome does not create undersized taps.
     var size: CGFloat = 44
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
+        let hitSize = max(size, 44)
         // Native Liquid Glass: a real translucent glass circle with a clearly
         // legible icon. No opaque white fill underneath — that turned the glass into
         // a flat white disc and hid the icon entirely.
@@ -57,9 +75,10 @@ struct AtriaGlassIconButtonStyle: ButtonStyle {
             .foregroundStyle(foreground)
             .frame(width: size, height: size)
             .glassEffect(.regular.interactive(), in: .circle)
+            .frame(width: hitSize, height: hitSize)
             .contentShape(Circle())
             .scaleEffect(configuration.isPressed ? 0.94 : 1)
-            .animation(.snappy(duration: 0.12), value: configuration.isPressed)
+            .animation(reduceMotion ? nil : .snappy(duration: 0.12), value: configuration.isPressed)
     }
 
     private var foreground: Color {
@@ -303,8 +322,8 @@ extension View {
     }
 
     @ViewBuilder
-    func atriaChromeCapsule(tint: Color) -> some View {
-        self.background(AtriaCapsuleChromeBackground(tint: tint))
+    func atriaChromeCapsule(tint: Color, interactive: Bool = false) -> some View {
+        self.background(AtriaCapsuleChromeBackground(tint: tint, interactive: interactive))
     }
 
     func atriaChromeIcon() -> some View {
@@ -345,34 +364,15 @@ extension View {
 
 private struct AtriaCapsuleChromeBackground: View {
     let tint: Color
-
-    @Environment(\.colorScheme) private var colorScheme
+    let interactive: Bool
 
     var body: some View {
-        // Keep this to compact chrome only. Large content cards still use static
-        // material fills so scrolling stays smooth while controls feel native.
+        // Native Liquid Glass supplies its own adaptive material. A custom
+        // opaque fill below it flattens the refraction and adds overdraw.
         Capsule(style: .continuous)
-            .fill(fillColor)
-            .glassEffect(.regular.tint(tint.opacity(0.10)), in: Capsule(style: .continuous))
-            .overlay(stroke)
-    }
-
-    private var fillColor: Color {
-        colorScheme == .dark
-            ? effectiveTint.opacity(0.16)
-            : tint.opacity(0.14)
-    }
-
-    private var stroke: some View {
-        Capsule(style: .continuous)
-            .stroke(colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.12), lineWidth: 1)
-    }
-
-    private var effectiveTint: Color {
-        if tint == .gray {
-            return Color.white
-        }
-        return tint
+            .fill(.clear)
+            .glassEffect(.regular.tint(tint.opacity(0.10)).interactive(interactive),
+                         in: Capsule(style: .continuous))
     }
 }
 

@@ -78,7 +78,7 @@ struct AtriaCustomizeSheet: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") {
+                    Button("Save") {
                         onCommit(draft.validated())
                         dismiss()
                     }
@@ -135,7 +135,7 @@ struct AtriaCustomizeSheet: View {
     private var metricsSection: some View {
         Section {
             ForEach(selectedMetrics) { metric in
-                Label(metric.label, systemImage: metric.systemImage)
+                metricOrderRow(metric)
             }
             .onMove(perform: moveSelectedMetrics)
         } header: {
@@ -148,10 +148,34 @@ struct AtriaCustomizeSheet: View {
                 EditButton()
                     .textCase(nil)
                     .font(.footnote.weight(.semibold))
+                    .accessibilityLabel("Reorder metric cards")
             }
         } footer: {
-            Text("Tap Edit, then drag by the handle to reorder your Today cards.")
+            Text("Tap Edit and drag by the handle. VoiceOver also offers Move Up and Move Down actions.")
         }
+    }
+
+    private func metricOrderRow(_ metric: AtriaTodayMetric) -> some View {
+        Label(metric.label, systemImage: metric.systemImage)
+            // A stable domain payload supplements List's native edit handles and
+            // supports direct drop without exposing array offsets as identity.
+            .draggable(metric.dragPayload)
+            .dropDestination(for: String.self) { payloads, _ in
+                guard let payload = payloads.first,
+                      let dragged = AtriaTodayMetric.draggedMetric(from: payload),
+                      selectedMetrics.contains(dragged) else { return false }
+                withAnimation(.snappy(duration: 0.2)) {
+                    draft.moveGlanceMetric(dragged.rawValue, before: metric.rawValue)
+                }
+                return true
+            }
+            .accessibilityAction(named: Text("Move \(metric.label) up")) {
+                draft.shiftGlanceMetric(metric.rawValue, direction: -1)
+            }
+            .accessibilityAction(named: Text("Move \(metric.label) down")) {
+                draft.shiftGlanceMetric(metric.rawValue, direction: 1)
+            }
+            .accessibilityHint("Reorders this card in Today at a glance.")
     }
 
     private var metricToggleSection: some View {
@@ -456,8 +480,7 @@ private struct AtriaCustomizePreview: View {
         case .calories: return "520"
         case .vo2max: return "42"
         case .bioAge: return "31"
-        case .bloodOxygen: return "98%"
-        case .bodyTemp: return "+0.1"
+        case .bloodOxygen, .bodyTemp: return "--"
         case .trend: return "Steady"
         case .insights: return "2"
         case nil: return "On"

@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 // MARK: - Model
@@ -188,7 +189,7 @@ enum AtriaRoutineComputer {
     private static func systemImage(for kind: AtriaRoutineTarget.Kind) -> String {
         switch kind {
         case .bedtime: return "moon.zzz.fill"
-        case .workout: return "figure.run"
+        case .workout: return "figure.mixed.cardio"
         case .journal: return "square.and.pencil"
         }
     }
@@ -214,10 +215,25 @@ enum AtriaRoutineComputer {
                                       calendar: Calendar,
                                       onOrBefore today: Date,
                                       count: Int) -> [DailyRollupStoreEntry] {
-        Array(rollups
-            .filter { calendar.startOfDay(for: $0.day) <= today }
-            .sorted { $0.day > $1.day }
-            .prefix(count))
+        guard count > 0 else { return [] }
+        var recent: [DailyRollupStoreEntry] = []
+
+        for entry in rollups where calendar.startOfDay(for: entry.day) <= today {
+            if recent.count < count {
+                insertRecentEntry(entry, into: &recent)
+            } else if let oldest = recent.last, entry.day > oldest.day {
+                recent.removeLast()
+                insertRecentEntry(entry, into: &recent)
+            }
+        }
+
+        return recent
+    }
+
+    private static func insertRecentEntry(_ entry: DailyRollupStoreEntry,
+                                          into recent: inout [DailyRollupStoreEntry]) {
+        let index = recent.firstIndex { $0.day < entry.day } ?? recent.endIndex
+        recent.insert(entry, at: index)
     }
 
     private static func bedtimeTargetMinute(recentRollups: [DailyRollupStoreEntry]) -> Int {
@@ -261,11 +277,16 @@ enum AtriaRoutineComputer {
 /// No new tracking, no new stores. Mounted in the Journal tab near the cycle
 /// card.
 struct AtriaRoutineCard: View {
-    @ObservedObject var store: SessionStore
+    let store: SessionStore
+    @StateObject private var projectionStore: AtriaRoutineProjectionStore
+
+    init(store: SessionStore) {
+        self.store = store
+        _projectionStore = StateObject(wrappedValue: AtriaRoutineProjectionStore(store: store))
+    }
 
     var body: some View {
-        let summary = AtriaRoutineComputer.summary(rollups: store.dailyRollupHistory,
-                                                   journalEntries: store.behaviorJournalEntries)
+        let summary = projectionStore.summary
         VStack(alignment: .leading, spacing: 14) {
             AtriaPanelSectionHeader(title: "Routine",
                                     subtitle: "This week \u{00B7} W\(summary.isoWeek)")
@@ -289,6 +310,88 @@ struct AtriaRoutineCard: View {
             .font(.footnote)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// Card-local bridge that keeps the retained Journal hierarchy insulated from
+/// unrelated SessionStore publishes. Dashboard changes are only inspected when
+/// the journal revision advanced, and equal rendered summaries never publish.
+@MainActor
+final class AtriaRoutineProjectionStore: ObservableObject {
+    @Published private(set) var summary: AtriaRoutineSummary
+
+    private weak var store: SessionStore?
+    private var journalRevision: Int
+    private var cancellables = Set<AnyCancellable>()
+
+    init(store: SessionStore) {
+        self.store = store
+        journalRevision = store.behaviorJournalRevision
+        summary = AtriaRoutineComputer.summary(rollups: store.dailyRollupHistory,
+                                               journalEntries: store.behaviorJournalEntries)
+        bind(to: store)
+    }
+
+    init(summary: AtriaRoutineSummary) {
+        self.summary = summary
+        journalRevision = 0
+    }
+
+    @discardableResult
+    func refresh(rollups: [DailyRollupStoreEntry],
+                 journalEntries: [BehaviorJournalEntry],
+                 now: Date = Date()) -> Bool {
+        refresh(AtriaRoutineComputer.summary(rollups: rollups,
+                                             journalEntries: journalEntries,
+                                             now: now))
+    }
+
+    @discardableResult
+    func refresh(_ next: AtriaRoutineSummary) -> Bool {
+        guard next != summary else { return false }
+        summary = next
+        return true
+    }
+
+    @discardableResult
+    func refreshForJournalRevision(_ revision: Int,
+                                   rollups: [DailyRollupStoreEntry],
+                                   journalEntries: [BehaviorJournalEntry],
+                                   now: Date = Date()) -> Bool {
+        guard revision != journalRevision else { return false }
+        journalRevision = revision
+        return refresh(rollups: rollups,
+                       journalEntries: journalEntries,
+                       now: now)
+    }
+
+    private func bind(to store: SessionStore) {
+        store.$dailyRollupHistory
+            .dropFirst()
+            .sink { [weak self, weak store] rollups in
+                guard let self, let store else { return }
+                self.refresh(rollups: rollups,
+                             journalEntries: store.behaviorJournalEntries)
+            }
+            .store(in: &cancellables)
+
+        store.$dashboardRevision
+            .dropFirst()
+            .sink { [weak self, weak store] _ in
+                guard let self, let store else { return }
+                self.refreshForJournalRevision(store.behaviorJournalRevision,
+                                               rollups: store.dailyRollupHistory,
+                                               journalEntries: store.behaviorJournalEntries)
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .NSCalendarDayChanged)
+            .sink { [weak self] _ in
+                guard let self, let store = self.store else { return }
+                self.refresh(rollups: store.dailyRollupHistory,
+                             journalEntries: store.behaviorJournalEntries)
+            }
+            .store(in: &cancellables)
     }
 }
 

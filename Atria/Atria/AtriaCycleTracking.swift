@@ -122,6 +122,7 @@ final class AtriaCycleTrackingStore: ObservableObject {
     static let fileName = "atria-cycle-tracking.json"
 
     @Published private(set) var entries: [AtriaCyclePeriodEntry] = []
+    private(set) var entriesRevision = 0
     private var loaded = false
     private let url: URL
 
@@ -141,6 +142,7 @@ final class AtriaCycleTrackingStore: ObservableObject {
             return
         }
         entries = decoded.sorted { $0.start < $1.start }
+        entriesRevision &+= 1
     }
 
     var completedCycleCount: Int {
@@ -173,6 +175,7 @@ final class AtriaCycleTrackingStore: ObservableObject {
         entries.append(AtriaCyclePeriodEntry(start: day, end: nil))
         entries.sort { $0.start < $1.start }
         persist()
+        entriesRevision &+= 1
         AtriaDebugLog("ATRIADBG cycle_tracking status=period_start entries=%d", entries.count)
         return entries.last!
     }
@@ -185,6 +188,7 @@ final class AtriaCycleTrackingStore: ObservableObject {
         let day = calendar.startOfDay(for: date)
         entries[lastIndex].end = max(day, entries[lastIndex].start)
         persist()
+        entriesRevision &+= 1
         AtriaDebugLog("ATRIADBG cycle_tracking status=period_end")
     }
 
@@ -192,6 +196,7 @@ final class AtriaCycleTrackingStore: ObservableObject {
         loadIfNeeded()
         entries.removeAll { $0.id == entry.id }
         persist()
+        entriesRevision &+= 1
     }
 
     /// Deletes all logged dates. Used from the disable affordance's "also
@@ -201,6 +206,7 @@ final class AtriaCycleTrackingStore: ObservableObject {
         loadIfNeeded()
         entries.removeAll()
         persist()
+        entriesRevision &+= 1
         AtriaDebugLog("ATRIADBG cycle_tracking status=history_cleared")
     }
 
