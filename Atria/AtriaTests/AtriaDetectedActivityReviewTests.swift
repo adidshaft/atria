@@ -326,6 +326,7 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
 
     func testDetectedActivitiesHistorySurfaceKeepsHonestCopy() throws {
         let source = try projectSource("Atria/AtriaHistorySection.swift")
+        let reviewSource = try projectSource("Atria/AtriaHomeView.swift")
 
         let sectionStart = try XCTUnwrap(source.range(of: "struct AtriaDetectedActivitiesSection: View"))
         let sectionEnd = try XCTUnwrap(source.range(of: "// MARK: - Full history",
@@ -336,6 +337,10 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
                       "an HR-only window is an activity candidate, never a found workout")
         XCTAssertFalse(source.contains("Workout found"),
                        "the history surface must never claim a workout was found from HR alone")
+        XCTAssertTrue(reviewSource.contains("Label(\"Review effort\", systemImage: \"waveform.path.ecg\")"),
+                      "opening an HR-only candidate must keep neutral review copy")
+        XCTAssertFalse(reviewSource.contains("Label(\"Workout found\", systemImage: \"waveform.path.ecg\")"),
+                       "the review flow must not upgrade an HR-only effort into a found workout")
         XCTAssertTrue(section.contains("Coverage \\(candidate.streamCoveragePercent)% · Avg \\(candidate.avgHR) · Peak \\(candidate.peakHR) bpm"),
                       "rows show the real evidence: coverage, average and peak HR")
         XCTAssertTrue(section.contains("if candidate.confidence == .medium"),
