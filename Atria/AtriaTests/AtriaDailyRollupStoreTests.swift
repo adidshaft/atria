@@ -12,6 +12,32 @@ final class AtriaDailyRollupStoreTests: XCTestCase {
         return calendar
     }()
 
+    func testProjectedConfirmedSleepPersistsSleepAndLnRMSSD() throws {
+        let day = try XCTUnwrap(Self.calendar.date(from: DateComponents(year: 2027, month: 1, day: 16)))
+        let metric = SavedDailyMetric(day: day,
+                                      recoveryPercent: 74,
+                                      recoveryConfidence: "local",
+                                      hrv: 63,
+                                      restingHR: 49,
+                                      respiratoryRate: 14.2,
+                                      sleepDuration: 7 * 3_600,
+                                      sleepSpan: 8 * 3_600,
+                                      sleepStart: day.addingTimeInterval(-8 * 3_600),
+                                      sleepEnd: day,
+                                      sleepSource: "manual_sleep",
+                                      sleepStageSegments: [],
+                                      sleepConsistencyPercent: nil,
+                                      strain: 6)
+
+        let entry = try XCTUnwrap(SessionStore.makeDailyRollupStoreEntries(metrics: [metric],
+                                                                           calendar: Self.calendar).first)
+
+        XCTAssertEqual(entry.recovery, 74)
+        XCTAssertEqual(entry.sleepSeconds, 7 * 3_600)
+        XCTAssertEqual(entry.lnRMSSD ?? 0, log(63), accuracy: 0.000_001)
+        XCTAssertEqual(entry.rhr, 49)
+    }
+
     func testDailyRollupEntryDecodesLegacyJSONWithoutFitnessAgeDelta() throws {
         // Snapshot of a rollup row as persisted before fitnessAgeDelta existed —
         // no "fitnessAgeDelta" key present at all.

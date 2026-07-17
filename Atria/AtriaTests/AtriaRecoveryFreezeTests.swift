@@ -24,6 +24,148 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
                          sleepStageSegments: [], sleepConsistencyPercent: nil, strain: strain)
     }
 
+    private func rollup(day: Date,
+                        hrv: Int? = nil,
+                        restingHR: Int? = nil,
+                        sleepDuration: TimeInterval? = nil,
+                        strain: Double = 6) -> DailyRollup {
+        DailyRollup(day: day,
+                    sessions: 1,
+                    activityCandidates: 0,
+                    workouts: 0,
+                    confirmedWorkouts: 0,
+                    restCandidates: 0,
+                    sleepReady: 0,
+                    sleepCandidates: 0,
+                    duration: 3_600,
+                    sleepDuration: sleepDuration,
+                    sleepSpan: sleepDuration,
+                    sleepStart: nil,
+                    sleepEnd: nil,
+                    sleepSource: nil,
+                    sleepStageSegments: [],
+                    strain: strain,
+                    avgHRV: hrv,
+                    restingHR: restingHR,
+                    avgRespiratoryRate: nil)
+    }
+
+    private func night(day: Date,
+                       start: Date,
+                       end: Date,
+                       confirmed: Bool = true,
+                       source: String = "manual_sleep") -> SleepHistorySnapshot.Night {
+        SleepHistorySnapshot.Night(id: "night-\(day.timeIntervalSince1970)-\(confirmed)",
+                                   day: day,
+                                   start: start,
+                                   end: end,
+                                   duration: 7 * 3_600,
+                                   restingHR: 49,
+                                   hrv: 63,
+                                   respiratoryRate: 14.2,
+                                   sleepEfficiency: 0.91,
+                                   confidence: confirmed ? "manual_user_entered" : "review_needed",
+                                   source: source,
+                                   confirmed: confirmed,
+                                   stageSegments: [])
+    }
+
+    func testHistoricalConfirmedMainSleepProjectsOntoOtherwiseSparseRollup() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2027, month: 1, day: 16)))
+        let start = day.addingTimeInterval(-8 * 3_600)
+        let end = day.addingTimeInterval(7 * 3_600)
+        let confirmed = night(day: day, start: start, end: end)
+        let sleep = SleepHistorySnapshot(nights: [confirmed], confirmedCount: 1, candidateCount: 0)
+
+        let projected = try XCTUnwrap(SessionStore.makeSavedDailyMetrics(rollups: [rollup(day: day)],
+                                                                         sleep: sleep,
+                                                                         baseline: PersonalBaseline(),
+                                                                         calendar: calendar).first)
+
+        XCTAssertEqual(projected.hrv, 63)
+        XCTAssertEqual(projected.restingHR, 49)
+        XCTAssertEqual(projected.respiratoryRate, 14.2)
+        XCTAssertEqual(projected.sleepDuration, 7 * 3_600)
+        XCTAssertEqual(projected.sleepSpan, 15 * 3_600)
+        XCTAssertEqual(projected.sleepStart, start)
+        XCTAssertEqual(projected.sleepEnd, end)
+        XCTAssertEqual(projected.sleepSource, "manual_sleep")
+    }
+
+    func testUnconfirmedSleepCandidateCannotProjectHistoricalRecoveryInputs() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2027, month: 1, day: 16)))
+        let candidate = night(day: day,
+                              start: day.addingTimeInterval(-8 * 3_600),
+                              end: day.addingTimeInterval(7 * 3_600),
+                              confirmed: false,
+                              source: "sleep_candidate")
+        let sleep = SleepHistorySnapshot(nights: [candidate], confirmedCount: 0, candidateCount: 1)
+
+        let projected = try XCTUnwrap(SessionStore.makeSavedDailyMetrics(rollups: [rollup(day: day)],
+                                                                         sleep: sleep,
+                                                                         baseline: PersonalBaseline(),
+                                                                         calendar: calendar).first)
+
+        XCTAssertNil(projected.hrv)
+        XCTAssertNil(projected.restingHR)
+        XCTAssertNil(projected.sleepDuration)
+        XCTAssertNil(projected.sleepStart)
+        XCTAssertNil(projected.sleepEnd)
+        XCTAssertNil(projected.recoveryPercent)
+    }
+
+    func testCurrentDayWithoutConfirmedSleepKeepsActivityButNotRecovery() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let today = try XCTUnwrap(calendar.date(from: DateComponents(year: 2027, month: 1, day: 16)))
+        let yesterday = try XCTUnwrap(calendar.date(byAdding: .day, value: -1, to: today))
+        let historical = night(day: yesterday,
+                               start: yesterday.addingTimeInterval(-8 * 3_600),
+                               end: yesterday.addingTimeInterval(7 * 3_600))
+        let sleep = SleepHistorySnapshot(nights: [historical], confirmedCount: 1, candidateCount: 0)
+        let activity = metric(sleepDuration: nil,
+                              sleepSpan: nil,
+                              hrv: 71,
+                              restingHR: 55,
+                              respiratoryRate: nil,
+                              recoveryPercent: 80,
+                              strain: 8)
+        let computedToday = SavedDailyMetric(day: today,
+                                             recoveryPercent: activity.recoveryPercent,
+                                             recoveryConfidence: activity.recoveryConfidence,
+                                             hrv: activity.hrv,
+                                             restingHR: activity.restingHR,
+                                             respiratoryRate: activity.respiratoryRate,
+                                             sleepDuration: nil,
+                                             sleepSpan: nil,
+                                             sleepStart: nil,
+                                             sleepEnd: nil,
+                                             sleepSource: nil,
+                                             sleepStageSegments: [],
+                                             sleepConsistencyPercent: nil,
+                                             strain: activity.strain)
+
+        let merged = SessionStore.mergeDailyMetricHistory(existing: [],
+                                                          computed: [computedToday],
+                                                          sessions: [],
+                                                          sleep: sleep,
+                                                          baseline: PersonalBaseline(),
+                                                          maxHR: 190,
+                                                          now: today.addingTimeInterval(12 * 3_600),
+                                                          calendar: calendar)
+        let retained = try XCTUnwrap(merged.first { calendar.isDate($0.day, inSameDayAs: today) })
+
+        XCTAssertEqual(retained.restingHR, 55)
+        XCTAssertEqual(retained.strain, 8)
+        XCTAssertNil(retained.hrv)
+        XCTAssertNil(retained.sleepDuration)
+        XCTAssertNil(retained.recoveryPercent)
+    }
+
     func testUnchangedNightIsNotAChange() {
         let a = metric(sleepEnd: at(6))
         XCTAssertFalse(SessionStore.dailyRecoveryInputsChanged(frozen: a, fresh: a))

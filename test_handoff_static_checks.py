@@ -808,7 +808,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "skinTemperatureDeviationByDay: [Date: Double]? = nil",
             "let skinTemperatureDeviationByDay = finalizedSkinTemperatureDeviationByMorningDay(sessions: history.sessions,",
             "resolvedSkinTemperatureDeviationByDay",
-            "private nonisolated static func makeSavedDailyMetrics(",
+            "nonisolated static func makeSavedDailyMetrics(",
             "private nonisolated static func makeDailyMetricSparklines(from history: [SavedDailyMetric]) -> DailyMetricSparklineCache",
             # 2026-07-05: mergeDailyMetricHistory and makeMorningFrozenDailyMetric
             # dropped `private` (now plain `nonisolated static func`) so the
@@ -823,7 +823,7 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, sessions, needle)
         skin_temp_start = sessions.index("nonisolated static func finalizedSkinTemperatureDeviationByMorningDay")
-        skin_temp_end = sessions.index("private nonisolated static func makeSavedDailyMetrics", skin_temp_start)
+        skin_temp_end = sessions.index("nonisolated static func makeSavedDailyMetrics", skin_temp_start)
         skin_temp_source = sessions[skin_temp_start:skin_temp_end]
         assert_not_contains(self, skin_temp_source, "dayMeans[..<index]")
         assert_not_contains(self, skin_temp_source, "baseline.reduce")
@@ -14618,6 +14618,37 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, manager, "protectedR10ResponseEventDataNotifyOrder")
         assert_contains(self, manager, "Cmd.sendR10R11Realtime, 0x01")
         assert_contains(self, manager, "Cmd.toggleIMUMode, 0x01")
+
+    def test_20260718_confirmed_sleep_projects_into_durable_daily_history(self):
+        sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
+
+        # Confirmed main sleep is the only authoritative overlay for historical
+        # sleep/recovery inputs; candidates and naps remain evidence-only.
+        projection_start = sessions.index("static func makeSavedDailyMetrics(rollups:")
+        projection_end = sessions.index("static func dailyRecoveryInputsChanged(", projection_start)
+        projection = sessions[projection_start:projection_end]
+        for needle in [
+            ".filter { $0.confirmed && !$0.isNapEvidence }",
+            "let sleepDuration = night.map(\\.duration) ?? rollup.sleepDuration",
+            "fallbackRMSSD: hrv",
+            "sleepDuration: sleepDuration",
+            "sleepStart: night?.start ?? rollup.sleepStart",
+            "sleepEnd: night?.end ?? rollup.sleepEnd",
+        ]:
+            assert_contains(self, projection, needle)
+
+        morning_start = sessions.index("static func makeMorningFrozenDailyMetric(for day:")
+        morning_end = sessions.index("static func morningMetricDay(for night:", morning_start)
+        morning = sessions[morning_start:morning_end]
+        assert_contains(self, morning, "confirmedMainSleep != nil || hasAnyConfirmedMainSleep || hour >= 4")
+        assert_contains(self, morning, "} else if !hasAnyConfirmedMainSleep {")
+        assert_contains(self, morning, "Preserve honest activity/RHR/strain")
+
+        persistence_start = sessions.index("static func makeDailyRollupStoreEntries(metrics:")
+        persistence_end = sessions.index("static func makeDailyRespiratoryRatePreparation(", persistence_start)
+        persistence = sessions[persistence_start:persistence_end]
+        assert_contains(self, persistence, "lnRMSSD: hrvMilliseconds.map(log)")
+        assert_contains(self, persistence, "sleepSeconds: metric.sleepDuration")
 
 
 if __name__ == "__main__":
