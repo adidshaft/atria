@@ -453,8 +453,10 @@ struct SavedSession: Codable, Identifiable {
     }
     var localRMSSD: Int? {
         guard hasQualifiedStandardRRProvenance else { return nil }
+        let summary = localHRVSummary()
+        guard summary.windowCount >= 3 else { return nil }
         if let hrv, hrv > 0 { return hrv }
-        return localHRVSummary().rmssd
+        return summary.rmssd
     }
 
     var localHRVWindowCount: Int {
