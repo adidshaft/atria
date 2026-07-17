@@ -40,6 +40,30 @@ final class AtriaTodayTileLogicTests: XCTestCase {
         XCTAssertEqual(AtriaTriRing.zoneTint(.recovery, percent: 80), Metrics.recoveryColor(80))
     }
 
+    func testRingProgressRequiresRealTargetAndUsesDisplayedEvidence() {
+        XCTAssertEqual(AtriaRingMetricProjection.strainFill(strain: 8) ?? -1,
+                       8.0 / 21.0,
+                       accuracy: 0.0001)
+        XCTAssertNil(AtriaRingMetricProjection.strainFill(strain: 8, isPending: true))
+        XCTAssertNil(AtriaRingMetricProjection.strainTargetProgress(strain: 8, target: nil))
+        XCTAssertEqual(AtriaRingMetricProjection.strainTargetProgress(strain: 8, target: 10), 0.8)
+        XCTAssertEqual(AtriaRingMetricProjection.strainTargetProgress(strain: 12, target: 10), 1.2)
+        XCTAssertNil(AtriaRingMetricProjection.strainTargetFraction(nil))
+        XCTAssertEqual(AtriaRingMetricProjection.strainTargetFraction(10) ?? -1,
+                       10.0 / 21.0,
+                       accuracy: 0.0001)
+
+        XCTAssertEqual(AtriaRingMetricProjection.higherIsBetterProgress(
+            value: 46, baseline: 40, baselineIsTrusted: true
+        ) ?? -1, 1.0, accuracy: 0.0001)
+        XCTAssertNil(AtriaRingMetricProjection.higherIsBetterProgress(
+            value: 46, baseline: 40, baselineIsTrusted: false
+        ))
+        XCTAssertEqual(AtriaRingMetricProjection.lowerIsBetterProgress(
+            value: 50, baseline: 55, baselineIsTrusted: true
+        ) ?? -1, 1.1, accuracy: 0.0001)
+    }
+
     // MARK: TodayHRZoneMinutes text
 
     func testHRZonesNoWearIsHonest() {

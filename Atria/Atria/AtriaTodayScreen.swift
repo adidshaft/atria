@@ -1330,7 +1330,7 @@ struct AtriaTodayScreen: View {
                                   // green over 0-100), so `tint` itself stays zone-graded. Falls
                                   // back to identity heart-green, never `.secondary` gray, while
                                   // learning. `stateTint` stays nil -- the dot would be redundant.
-                                  tint: display.percent.map { AtriaTriRing.zoneTint(.recovery, percent: Double($0)) } ?? Metrics.electricGreen,
+                                  tint: display.percent.map { AtriaTriRing.zoneTint(.recovery, percent: Double($0)) } ?? .secondary,
                                   fill: display.percent.map { Double($0) / 100.0 })
                                   // No target marker: recovery has no separate "target" of its
                                   // own -- its value is already the 0-100 scale it's graded on.
@@ -1347,32 +1347,27 @@ struct AtriaTodayScreen: View {
     private var userSetStrainTarget: Double? { nil }
 
     private var strainMetric: AtriaTriRingMetric {
-        // Strain-ring-semantics pass (2026-07-05): the ring FILL is
-        // absolute strain against a clean 0-20 scale (never target-relative
-        // -- a 12 strain always fills the same 60% of the ring no matter
-        // today's target), so the ring reads as "how much strain today",
-        // while the TARGET MARKER below is the separate "recommended by
-        // ATRIA based on recovery" cue the strain-relative math used to be
-        // folded into. Zone tinting (under/optimal/over) still compares
-        // strain against the target, unchanged, but is routed to
-        // `stateTint` only -- color-coherence pass (2026-07-05): the fill/
-        // track hue always stays strain's one cool electric blue, matching
-        // the glance tile below it.
+        // The arc is actual strain on the canonical 0–21 scale. Achievement
+        // color and the marker are separate and require a real frozen target.
         let target = userSetStrainTarget ?? displayHero.guidance.target
-        let percentOfTarget = target.map { displayHero.strain / $0 * 100 }
         let incomplete = dayStrainIsIncomplete
+        let fill = AtriaRingMetricProjection.strainFill(
+            strain: displayHero.strain,
+            isPending: incomplete
+        )
+        let targetProgress = AtriaRingMetricProjection.strainTargetProgress(
+            strain: displayHero.strain,
+            target: target
+        )
         return AtriaTriRingMetric(title: "Strain",
                                   value: incomplete ? "Incomplete" : displayHero.strainValue,
                                   detail: incomplete ? "Sparse HR" : (target.map { String(format: "of %.1f", $0) } ?? "Strain"),
                                   systemImage: "flame.fill",
-                                  // Achievement coloring (2026-07-08): green once strain reaches
-                                  // the day's target (color by % of target, not absolute fill).
-                                  tint: Metrics.ringAchievementTint(fill: percentOfTarget.map { $0 / 100 }),
-                                  fill: incomplete ? nil : min(max(displayHero.strain / 20.0, 0), 1),
-                                  stateTint: incomplete ? nil : percentOfTarget.map { AtriaTriRing.zoneTint(.strain, percent: $0) },
-                                  // Honest: no marker unless there's a real target (a real
-                                  // user-set value, or the coach's recovery-based recommendation).
-                                  targetFraction: incomplete ? nil : target.map { min(max($0 / 20.0, 0), 1) })
+                                  // Achievement coloring turns green only when the real target is met.
+                                  tint: Metrics.ringAchievementTint(fill: targetProgress),
+                                  fill: fill,
+                                  stateTint: targetProgress.map { AtriaTriRing.zoneTint(.strain, percent: $0 * 100) },
+                                  targetFraction: incomplete ? nil : AtriaRingMetricProjection.strainTargetFraction(target))
     }
 
     /// The ring, compact header, accessibility summary and glance grid all ask
@@ -1405,18 +1400,17 @@ struct AtriaTodayScreen: View {
     /// better, so fill climbs toward/above the trusted baseline.
     private var hrvMetric: AtriaTriRingMetric {
         let baseline = AtriaBaselineTargetSnapshot(sessionProjectionStore.state.baseline)
-        let current = Int(displayHero.hrvValue)
-        let fill: Double?
-        if let current, let base = baseline.hrvBaseline, baseline.hrvTrusted, base > 0 {
-            fill = min(max(Double(current) / (Double(base) * 1.15), 0), 1.15)
-        } else {
-            fill = nil
-        }
+        let current = Int(displaySettledHRV.value)
+        let fill = AtriaRingMetricProjection.higherIsBetterProgress(
+            value: current,
+            baseline: baseline.hrvBaseline,
+            baselineIsTrusted: baseline.hrvTrusted
+        )
         return AtriaTriRingMetric(title: "HRV",
                                   // Settled-first (2026-07-09): show the SAME frozen morning HRV the
                                   // glance tile + detail sheet read, not the live BLE/fallback reading,
                                   // so a ring chip can't disagree with the tile for the same metric.
-                                  // Fill stays live (baseline ratio) — only the shown number settles.
+                                  // The settled shown number owns the baseline-ratio arc.
                                   value: displaySettledHRV.value,
                                   detail: legendDetail(displaySettledHRV.detail),
                                   systemImage: "waveform.path.ecg",
@@ -1431,18 +1425,17 @@ struct AtriaTodayScreen: View {
     /// higher bpm.
     private var restingHeartRateMetric: AtriaTriRingMetric {
         let baseline = AtriaBaselineTargetSnapshot(sessionProjectionStore.state.baseline)
-        let current = displayHero.restingHeartRate
-        let fill: Double?
-        if current > 0, let base = baseline.restingBaseline, baseline.restingTrusted, base > 0 {
-            fill = min(max(Double(base) / Double(current), 0), 1.15)
-        } else {
-            fill = nil
-        }
+        let current = Int(displaySettledRHR.value) ?? 0
+        let fill = AtriaRingMetricProjection.lowerIsBetterProgress(
+            value: current,
+            baseline: baseline.restingBaseline,
+            baselineIsTrusted: baseline.restingTrusted
+        )
         return AtriaTriRingMetric(title: "RHR",
                                   // Settled-first (2026-07-09): the SAME frozen morning RHR the glance
                                   // tile + detail sheet read (falls back to restingHeartRateText, which
                                   // is "Learning" until a real reading — never the fabricated 60), so the
-                                  // ring chip agrees with the tile and Vitals row. Fill stays live.
+                                  // ring chip agrees with the tile and Vitals row, including its arc.
                                   value: displaySettledRHR.value,
                                   detail: legendDetail(displaySettledRHR.detail),
                                   systemImage: "heart.fill",
