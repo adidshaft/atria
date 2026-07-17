@@ -325,27 +325,19 @@ struct AtriaHealthScreen: View {
                     case .sleep:
                         sleepDetailCard
                     case .trends:
-                        trendsCard
-                        Button {
-                            showHealthspanDetail = true
-                        } label: {
-                            AtriaHealthFitnessAgeCardHost(profileMetricsStore: profileMetricsStore)
+                        // The screenshot fixture hoists the detected-activities
+                        // section above the fold: simctl cannot scroll, and the
+                        // verification target is the section's own layout.
+                        // Production order is unchanged (fixture is DEBUG-only).
+                        if Self.debugOpensTrendsScope(arguments: ProcessInfo.processInfo.arguments) {
+                            detectedActivitiesAndHistory(historyProjection: historyProjection)
+                            trendsCard
+                            fitnessAgeCard
+                        } else {
+                            trendsCard
+                            fitnessAgeCard
+                            detectedActivitiesAndHistory(historyProjection: historyProjection)
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityHint("Opens Healthspan details")
-                        // Detected-workout review discoverability (2026-07-17):
-                        // unconfirmed activity candidates and the reversible
-                        // dismissed-detections list live with History. The host
-                        // owns its own narrow observation, keeping candidate
-                        // publications outside this chart-heavy hierarchy.
-                        AtriaDetectedActivitiesHost(store: store,
-                                                    restingHeartRateFallback: { [heroStore] in
-                                                        heroStore.state.restingHeartRate
-                                                    })
-                        AtriaHistorySection(model: historyProjection.model,
-                                            revisionKey: historyProjection.key,
-                                            store: store)
-                            .equatable()
                     }
                 }
             }
@@ -487,6 +479,34 @@ struct AtriaHealthScreen: View {
     /// Mounts the multi-metric trend chart (resting HR / strain / HRV, with
     /// its own range picker) that previously rendered nowhere in the live
     /// app -- the single highest-leverage fix in the visibility audit.
+    private var fitnessAgeCard: some View {
+        Button {
+            showHealthspanDetail = true
+        } label: {
+            AtriaHealthFitnessAgeCardHost(profileMetricsStore: profileMetricsStore)
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens Healthspan details")
+    }
+
+    // Detected-workout review discoverability (2026-07-17): unconfirmed
+    // activity candidates and the reversible dismissed-detections list live
+    // with History. The host owns its own narrow observation, keeping
+    // candidate publications outside this chart-heavy hierarchy.
+    @ViewBuilder
+    private func detectedActivitiesAndHistory(
+        historyProjection: AtriaHistoryProjection
+    ) -> some View {
+        AtriaDetectedActivitiesHost(store: store,
+                                    restingHeartRateFallback: { [heroStore] in
+                                        heroStore.state.restingHeartRate
+                                    })
+        AtriaHistorySection(model: historyProjection.model,
+                            revisionKey: historyProjection.key,
+                            store: store)
+            .equatable()
+    }
+
     private var trendsCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Trends")

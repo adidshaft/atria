@@ -747,7 +747,12 @@ struct AtriaHomeView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @AppStorage("atriaAppearanceMode") private var appearanceMode = "system"
     @State private var model: AtriaHomeModel
-    @State private var selectedTab: HomeTab = .overview
+    // The detected-activities fixture lives in the Health screen's Trends
+    // scope under the Vitals tab; simctl cannot tap the tab bar, so the
+    // screenshot loop needs the root tab routed too. DEBUG-only.
+    @State private var selectedTab: HomeTab = Self.debugInitialHomeTab(
+        arguments: ProcessInfo.processInfo.arguments
+    )
     @State private var showRRImporter = false
     @State private var showHRImporter = false
     @State private var rrShareURL: URL?
@@ -2527,6 +2532,15 @@ struct AtriaHomeView: View {
 #else
         return nil
 #endif
+    }
+
+    private static func debugInitialHomeTab(arguments: [String]) -> HomeTab {
+        #if DEBUG
+        if debugLaunchFixtureValue(arguments: arguments) == "detected-activities" {
+            return .vitals
+        }
+        #endif
+        return .overview
     }
 
     #if DEBUG
