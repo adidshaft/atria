@@ -195,6 +195,7 @@ struct AtriaSettingsView: View {
     /// its large observation graph while the Settings sheet is animating can
     /// miss the scene watchdog on a device with a live strap stream.
     let researchValidationContent: (() -> AnyView)?
+    let onExitDeveloperMode: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var showForgetConfirm = false
@@ -257,7 +258,8 @@ struct AtriaSettingsView: View {
          onVerifyBackup: (() async -> SessionBackupStatus)? = nil,
          onRestoreBackup: ((URL) async -> SessionBackupStatus?)? = nil,
          onForgetStrap: (() -> Void)? = nil,
-         researchValidationContent: (() -> AnyView)? = nil) {
+         researchValidationContent: (() -> AnyView)? = nil,
+         onExitDeveloperMode: @escaping () -> Void = {}) {
         self.profile = profile
         self.restingBaseline = restingBaseline
         self.myWeeklyRecovery = myWeeklyRecovery
@@ -291,6 +293,7 @@ struct AtriaSettingsView: View {
         self.onRestoreBackup = onRestoreBackup
         self.onForgetStrap = onForgetStrap
         self.researchValidationContent = researchValidationContent
+        self.onExitDeveloperMode = onExitDeveloperMode
         _draft = State(initialValue: profile)
         _haptics = State(initialValue: hapticSettings)
         _nameDraft = State(initialValue: strapName)
@@ -658,6 +661,14 @@ struct AtriaSettingsView: View {
     private var developerSettingsPage: some View {
         compactSettingsForm(title: "Developer") {
             researchValidationSection
+            Section {
+                Button("Exit developer mode", role: .destructive) {
+                    onExitDeveloperMode()
+                    navigationPath = NavigationPath()
+                }
+            } footer: {
+                Text("Developer mode also expires automatically seven days after its most recent developer launch.")
+            }
         }
     }
 
