@@ -2469,6 +2469,41 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case resuppress
     }
 
+    enum ProtectedR10ProofDisconnectDecision: Equatable {
+        case none
+        case retryFreshConnection
+        case fallbackToPureHR
+    }
+
+    /// A short, CRC-valid burst proves that the profile reached the strap, but
+    /// an aging BLE link can still hit its supervision timeout before the
+    /// 90-second density window completes. Retry only on a genuinely fresh
+    /// physical connection and retain the hard fuse: the third interrupted
+    /// proof falls back to pure HR without claiming motion qualification.
+    nonisolated static func protectedR10ProofDisconnectDecision(
+        proofWasActive: Bool,
+        cleanOwner: ProtectedR10CleanOwner,
+        activationWasSent: Bool,
+        framesAfterActivation: Int,
+        proofDuration: TimeInterval,
+        userRequestedDisconnect: Bool,
+        atriaOwnedOfflineSyncDisconnect: Bool,
+        previousInterruptedProofs: Int,
+        fallbackThreshold: Int = protectedR10ProofChurnFallbackThreshold
+    ) -> ProtectedR10ProofDisconnectDecision {
+        guard proofWasActive,
+              cleanOwner == .protectedV9,
+              activationWasSent,
+              framesAfterActivation > 0,
+              proofDuration > 0,
+              proofDuration <= protectedR10EarlyDisconnectWindow,
+              !userRequestedDisconnect,
+              !atriaOwnedOfflineSyncDisconnect else { return .none }
+        return previousInterruptedProofs + 1 < max(1, fallbackThreshold)
+            ? .retryFreshConnection
+            : .fallbackToPureHR
+    }
+
     /// Pure proof policy for the clean v7 owner. Stream 5 must be part of the
     /// initial connection profile; this policy never enables, disables,
     /// rediscovers or reconnects it on an established link.
@@ -20779,6 +20814,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             let wasRealtimeArmedAtDisconnect = realtimeArmed
             let wasR10RetryActiveAtDisconnect = r10ArmRetryTask != nil
             let protectedActivationWasSent = protectedR10ActivationSent
+            let protectedActivationStartedAt = protectedR10ActivationAt
             let protectedFrames = protectedR10FramesAfterActivation
             let cleanOwnerProofWasActive = protectedR10CleanOwnerProofIsActive
             let pureHRV10CutoverWasPending = protectedR10CleanOwner == .pureHRV10
@@ -20858,7 +20894,47 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             let atriaOwnedOfflineSyncDisconnect = offlineHistoricalSyncInProgress
                 || historyOnlyProbeEnabled
                 || historyOnlyProbeMode
-            if cleanOwnerProofWasActive || pureHRV10CutoverWasPending {
+            let previousProofInterruptions = defaults.integer(
+                forKey: Self.protectedR10ProofChurnFailureCountKey
+            )
+            let proofDisconnectDecision = Self.protectedR10ProofDisconnectDecision(
+                proofWasActive: cleanOwnerProofWasActive,
+                cleanOwner: protectedR10CleanOwner,
+                activationWasSent: protectedActivationWasSent,
+                framesAfterActivation: protectedFrames,
+                proofDuration: protectedActivationStartedAt.map {
+                    disconnectNow.timeIntervalSince($0)
+                } ?? -1,
+                userRequestedDisconnect: wasUserRequestedDisconnect,
+                atriaOwnedOfflineSyncDisconnect: atriaOwnedOfflineSyncDisconnect,
+                previousInterruptedProofs: previousProofInterruptions
+            )
+            let retryProtectedProofOnFreshConnection =
+                proofDisconnectDecision == .retryFreshConnection
+            if retryProtectedProofOnFreshConnection {
+                let interruptedProofs = previousProofInterruptions + 1
+                defaults.set(interruptedProofs,
+                             forKey: Self.protectedR10ProofChurnFailureCountKey)
+                defaults.set(ProtectedR10CleanOwnerState.protectedLaunchPending.rawValue,
+                             forKey: Self.protectedR10CleanOwnerStateKey)
+                defaults.set(false, forKey: Self.protectedR10StableTransportKey)
+                defaults.set(false,
+                             forKey: Self.protectedR10ResponseEventDataSequenceSentKey)
+                defaults.removeObject(forKey: Self.protectedR10CleanOwnerProofStartedAtKey)
+                defaults.set("clean_owner_proof_interrupted_retry_\(interruptedProofs)",
+                             forKey: Self.protectedR10CleanOwnerFailureReasonKey)
+                defaults.set("clean_owner_v9_fresh_connection_retry_\(interruptedProofs)",
+                             forKey: RadioDefaults.passiveR10Status)
+                workoutMotionLeaseProfileArmed = true
+                AtriaDebugLog("ATRIADBG protected_r10 status=proof_interrupted retry=%d limit=%d frames=%d action=fresh_connection_no_false_qualification",
+                              interruptedProofs,
+                              Self.protectedR10ProofChurnFallbackThreshold,
+                              protectedFrames)
+            } else if cleanOwnerProofWasActive || pureHRV10CutoverWasPending {
+                if proofDisconnectDecision == .fallbackToPureHR {
+                    defaults.set(previousProofInterruptions + 1,
+                                 forKey: Self.protectedR10ProofChurnFailureCountKey)
+                }
                 persistProtectedR10CleanOwnerFallback(
                     reason: "clean_owner_proof_disconnect"
                 )
@@ -21018,7 +21094,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 AtriaDebugLog("ATRIADBG ble_link status=disconnected reason=user_disconnect action=stay_disconnected")
                 return
             }
-            if cleanOwnerProofWasActive {
+            if cleanOwnerProofWasActive && !retryProtectedProofOnFreshConnection {
                 // The failed physical link is now fully down. Replace its v9
                 // central exactly once with the fresh v10 pure-HR namespace;
                 // never reconnect or replay commands through the failed owner.

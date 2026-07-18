@@ -714,6 +714,127 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testInterruptedV9ProofRetriesFreshTwiceThenFallsBack() {
+        for previous in 0...1 {
+            XCTAssertEqual(
+                AtriaBLEManager.protectedR10ProofDisconnectDecision(
+                    proofWasActive: true,
+                    cleanOwner: .protectedV9,
+                    activationWasSent: true,
+                    framesAfterActivation: 2,
+                    proofDuration: 10,
+                    userRequestedDisconnect: false,
+                    atriaOwnedOfflineSyncDisconnect: false,
+                    previousInterruptedProofs: previous
+                ),
+                .retryFreshConnection
+            )
+        }
+        XCTAssertEqual(
+            AtriaBLEManager.protectedR10ProofDisconnectDecision(
+                proofWasActive: true,
+                cleanOwner: .protectedV9,
+                activationWasSent: true,
+                framesAfterActivation: 2,
+                proofDuration: 10,
+                userRequestedDisconnect: false,
+                atriaOwnedOfflineSyncDisconnect: false,
+                previousInterruptedProofs: 2
+            ),
+            .fallbackToPureHR
+        )
+    }
+
+    func testV9ProofDisconnectRetryNeverConsumesUserOrOfflineDisconnect() {
+        XCTAssertEqual(
+            AtriaBLEManager.protectedR10ProofDisconnectDecision(
+                proofWasActive: true,
+                cleanOwner: .protectedV9,
+                activationWasSent: true,
+                framesAfterActivation: 2,
+                proofDuration: 10,
+                userRequestedDisconnect: true,
+                atriaOwnedOfflineSyncDisconnect: false,
+                previousInterruptedProofs: 0
+            ),
+            .none
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.protectedR10ProofDisconnectDecision(
+                proofWasActive: true,
+                cleanOwner: .protectedV9,
+                activationWasSent: true,
+                framesAfterActivation: 2,
+                proofDuration: 10,
+                userRequestedDisconnect: false,
+                atriaOwnedOfflineSyncDisconnect: true,
+                previousInterruptedProofs: 0
+            ),
+            .none
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.protectedR10ProofDisconnectDecision(
+                proofWasActive: false,
+                cleanOwner: .protectedV9,
+                activationWasSent: true,
+                framesAfterActivation: 2,
+                proofDuration: 10,
+                userRequestedDisconnect: false,
+                atriaOwnedOfflineSyncDisconnect: false,
+                previousInterruptedProofs: 0
+            ),
+            .none
+        )
+    }
+
+    func testV9ProofDisconnectRetryRequiresCurrentCrcBurstOnShortV9Link() {
+        let invalid: [(AtriaBLEManager.ProtectedR10CleanOwner, Bool, Int, TimeInterval)] = [
+            (.protectedV7, true, 2, 42),
+            (.protectedV9, false, 2, 42),
+            (.protectedV9, true, 0, 42),
+            (.protectedV9, true, 2, 0),
+            (.protectedV9, true, 2, 91),
+        ]
+        for (owner, activationSent, frames, duration) in invalid {
+            XCTAssertEqual(
+                AtriaBLEManager.protectedR10ProofDisconnectDecision(
+                    proofWasActive: true,
+                    cleanOwner: owner,
+                    activationWasSent: activationSent,
+                    framesAfterActivation: frames,
+                    proofDuration: duration,
+                    userRequestedDisconnect: false,
+                    atriaOwnedOfflineSyncDisconnect: false,
+                    previousInterruptedProofs: 0
+                ),
+                .none
+            )
+        }
+    }
+
+    func testV9ProofDisconnectHandlerPinsFreshRetryAndFuseWiring() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(of: "didDisconnectPeripheral peripheral"))
+        let body = String(source[start.lowerBound...].prefix(18_000))
+        XCTAssertTrue(body.contains("let protectedActivationStartedAt = protectedR10ActivationAt"))
+        XCTAssertTrue(body.contains("proofDuration: protectedActivationStartedAt.map"))
+        XCTAssertTrue(body.contains("ProtectedR10CleanOwnerState.protectedLaunchPending.rawValue"))
+        XCTAssertTrue(body.contains("protectedR10ResponseEventDataSequenceSentKey"))
+        XCTAssertTrue(body.contains("removeObject(forKey: Self.protectedR10CleanOwnerProofStartedAtKey)"))
+        XCTAssertTrue(body.contains("previousProofInterruptions + 1"),
+                      "both retry and fuse paths must persist their interruption count")
+        XCTAssertTrue(body.contains("cleanOwnerProofWasActive && !retryProtectedProofOnFreshConnection"),
+                      "only the bounded retry may bypass the pure-HR v10 cutover")
+        XCTAssertTrue(body.contains("central.connect(peripheral, options: nil)"),
+                      "the retry must reach the existing fresh physical reconnect")
+
+        let qualify = try XCTUnwrap(source.range(of: "private func qualifyProtectedR10RecoveryIfNeeded"))
+        let qualifyBody = String(source[qualify.lowerBound...].prefix(2_500))
+        XCTAssertTrue(qualifyBody.contains("protectedR10ProofChurnFailureCountKey"))
+        XCTAssertTrue(qualifyBody.contains("defaults.set(0"),
+                      "only an evidence-qualified window clears proof churn")
+    }
+
     func testV9ShortBurstGetsOneBoundedSameConnectionRetry() {
         let connectedAt = Date(timeIntervalSince1970: 1_000)
         XCTAssertTrue(AtriaBLEManager.shouldRetryProtectedR10ShortBurst(
