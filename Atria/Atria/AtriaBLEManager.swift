@@ -2416,6 +2416,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let protectedR10FallbackAtKey = "atria.protectedR10.fallbackAt"
     nonisolated private static let protectedR10RequalifyAttemptAtKey = "atria.protectedR10.requalifyAttemptAt"
     nonisolated private static let protectedR10ProofChurnFailureCountKey = "atria.protectedR10.proofChurnFailures"
+    nonisolated private static let protectedR10ProcessProofRetryMigrationKey = "atria.protectedR10.processProofRetryMigrationV1"
     nonisolated private static let protectedR10ShortBurstRetryConnectionAtKey = "atria.protectedR10.shortBurstRetryConnectionAt"
     /// Consecutive interrupted proofs tolerated while a motion lease is held
     /// before honoring the pure-HR fallback. One mid-proof disconnect on a
@@ -2486,6 +2487,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         activationWasSent: Bool,
         framesAfterActivation: Int,
         proofDuration: TimeInterval,
+        lastFrameAge: TimeInterval,
         userRequestedDisconnect: Bool,
         atriaOwnedOfflineSyncDisconnect: Bool,
         previousInterruptedProofs: Int,
@@ -2497,6 +2499,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               framesAfterActivation > 0,
               proofDuration > 0,
               proofDuration <= protectedR10EarlyDisconnectWindow,
+              lastFrameAge >= 0,
+              lastFrameAge <= protectedR10MissingFrameTimeout,
               !userRequestedDisconnect,
               !atriaOwnedOfflineSyncDisconnect else { return .none }
         return previousInterruptedProofs + 1 < max(1, fallbackThreshold)
@@ -2723,6 +2727,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case migratedPureHRV8ToProtectedV9
         case activatedPureHRV10Fallback
         case requalifiedProtectedV9FromFallback
+        case resumedProtectedV9Proof
     }
 
     /// Whether a pure-HR fallback may attempt to requalify the physically
@@ -2832,6 +2837,36 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
 
         if owner == .pureHRV10 {
+            // V1 repairs the exact false fallback produced when iOS killed a
+            // CRC-valid v9 proof between 0 and 90 seconds. The old launch path
+            // demoted that partial proof immediately even though the ordinary
+            // disconnect path now grants bounded fresh-link retries.
+            let interruptedProofs = defaults.integer(
+                forKey: protectedR10ProofChurnFailureCountKey
+            )
+            let failureReason = defaults.string(
+                forKey: protectedR10CleanOwnerFailureReasonKey
+            ) ?? ""
+            if !defaults.bool(forKey: protectedR10ProcessProofRetryMigrationKey),
+               failureReason.hasPrefix("clean_owner_proof_interrupted_retry_"),
+               interruptedProofs > 0,
+               interruptedProofs < protectedR10ProofChurnFallbackThreshold,
+               defaults.object(forKey: protectedR10StableTransportQualifiedAtKey) != nil {
+                defaults.set(true, forKey: protectedR10ProcessProofRetryMigrationKey)
+                defaults.set(ProtectedR10CleanOwner.protectedV9.rawValue,
+                             forKey: protectedR10CleanOwnerKey)
+                defaults.set(ProtectedR10CleanOwnerState.protectedLaunchPending.rawValue,
+                             forKey: protectedR10CleanOwnerStateKey)
+                defaults.set(false, forKey: protectedR10StreamSuppressedKey)
+                defaults.set(false, forKey: protectedR10RollbackKey)
+                defaults.set(false, forKey: protectedR10StableTransportKey)
+                defaults.set(false, forKey: protectedR10ResponseEventDataSequenceSentKey)
+                defaults.set(false, forKey: protectedR10PureHRV10InProcessCutoverKey)
+                defaults.removeObject(forKey: protectedR10CleanOwnerProofStartedAtKey)
+                defaults.set("clean_owner_v9_process_retry_migration",
+                             forKey: RadioDefaults.passiveR10Status)
+                return .resumedProtectedV9Proof
+            }
             // A fallback that holds a prior physical qualification is a
             // recoverable degradation, not a terminal one: after a cooldown,
             // re-enter the full launch-style bring-up exactly once per
@@ -2884,10 +2919,62 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return .none
         }
 
-        // A v9 proof that lost its process after the command pair began must
-        // never replay that pair. Move it to the fresh pure-HR namespace on the
-        // next launch instead of resuming a half-known device state.
+        // A process death is also a physical connection boundary. If the
+        // interrupted v9 process had a fresh CRC-valid short burst, grant the
+        // same bounded fresh-link retry as didDisconnect. Never qualify the
+        // partial burst itself and never replay on a restored established link.
         if owner == .protectedV9, state == .proving {
+            let activationAt = defaults.object(
+                forKey: protectedR10ActivationSentAtKey
+            ) as? Double
+            let lastFrameAt = defaults.object(
+                forKey: RadioDefaults.passiveR10LastValidAt
+            ) as? Double
+            let previousInterruptions = defaults.integer(
+                forKey: protectedR10ProofChurnFailureCountKey
+            )
+            let currentFrameCount: Int
+            if let activationAt, let lastFrameAt, lastFrameAt >= activationAt {
+                currentFrameCount = 1
+            } else {
+                currentFrameCount = 0
+            }
+            let decision = protectedR10ProofDisconnectDecision(
+                proofWasActive: true,
+                cleanOwner: .protectedV9,
+                activationWasSent: defaults.bool(
+                    forKey: protectedR10ResponseEventDataSequenceSentKey
+                ),
+                framesAfterActivation: currentFrameCount,
+                proofDuration: activationAt.map {
+                    now.timeIntervalSince1970 - $0
+                } ?? -1,
+                lastFrameAge: lastFrameAt.map {
+                    now.timeIntervalSince1970 - $0
+                } ?? -1,
+                userRequestedDisconnect: false,
+                atriaOwnedOfflineSyncDisconnect: false,
+                previousInterruptedProofs: previousInterruptions
+            )
+            if decision == .retryFreshConnection {
+                let interruptions = previousInterruptions + 1
+                defaults.set(interruptions,
+                             forKey: protectedR10ProofChurnFailureCountKey)
+                defaults.set(ProtectedR10CleanOwnerState.protectedLaunchPending.rawValue,
+                             forKey: protectedR10CleanOwnerStateKey)
+                defaults.set(false, forKey: protectedR10StableTransportKey)
+                defaults.set(false, forKey: protectedR10ResponseEventDataSequenceSentKey)
+                defaults.removeObject(forKey: protectedR10CleanOwnerProofStartedAtKey)
+                defaults.set("clean_owner_process_interrupted_retry_\(interruptions)",
+                             forKey: protectedR10CleanOwnerFailureReasonKey)
+                defaults.set("clean_owner_v9_process_retry_\(interruptions)",
+                             forKey: RadioDefaults.passiveR10Status)
+                return .resumedProtectedV9Proof
+            }
+            if decision == .fallbackToPureHR {
+                defaults.set(previousInterruptions + 1,
+                             forKey: protectedR10ProofChurnFailureCountKey)
+            }
             defaults.set(ProtectedR10CleanOwner.pureHRV10.rawValue,
                          forKey: protectedR10CleanOwnerKey)
             defaults.set(ProtectedR10CleanOwnerState.fallbackActive.rawValue,
@@ -20903,6 +20990,9 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 activationWasSent: protectedActivationWasSent,
                 framesAfterActivation: protectedFrames,
                 proofDuration: protectedActivationStartedAt.map {
+                    disconnectNow.timeIntervalSince($0)
+                } ?? -1,
+                lastFrameAge: lastR10MotionFrameAt.map {
                     disconnectNow.timeIntervalSince($0)
                 } ?? -1,
                 userRequestedDisconnect: wasUserRequestedDisconnect,

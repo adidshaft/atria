@@ -723,6 +723,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                     activationWasSent: true,
                     framesAfterActivation: 2,
                     proofDuration: 10,
+                    lastFrameAge: 7,
                     userRequestedDisconnect: false,
                     atriaOwnedOfflineSyncDisconnect: false,
                     previousInterruptedProofs: previous
@@ -737,6 +738,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 activationWasSent: true,
                 framesAfterActivation: 2,
                 proofDuration: 10,
+                lastFrameAge: 7,
                 userRequestedDisconnect: false,
                 atriaOwnedOfflineSyncDisconnect: false,
                 previousInterruptedProofs: 2
@@ -753,6 +755,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 activationWasSent: true,
                 framesAfterActivation: 2,
                 proofDuration: 10,
+                lastFrameAge: 7,
                 userRequestedDisconnect: true,
                 atriaOwnedOfflineSyncDisconnect: false,
                 previousInterruptedProofs: 0
@@ -766,6 +769,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 activationWasSent: true,
                 framesAfterActivation: 2,
                 proofDuration: 10,
+                lastFrameAge: 7,
                 userRequestedDisconnect: false,
                 atriaOwnedOfflineSyncDisconnect: true,
                 previousInterruptedProofs: 0
@@ -779,6 +783,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 activationWasSent: true,
                 framesAfterActivation: 2,
                 proofDuration: 10,
+                lastFrameAge: 7,
                 userRequestedDisconnect: false,
                 atriaOwnedOfflineSyncDisconnect: false,
                 previousInterruptedProofs: 0
@@ -803,6 +808,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                     activationWasSent: activationSent,
                     framesAfterActivation: frames,
                     proofDuration: duration,
+                    lastFrameAge: 7,
                     userRequestedDisconnect: false,
                     atriaOwnedOfflineSyncDisconnect: false,
                     previousInterruptedProofs: 0
@@ -810,6 +816,91 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 .none
             )
         }
+        XCTAssertEqual(
+            AtriaBLEManager.protectedR10ProofDisconnectDecision(
+                proofWasActive: true,
+                cleanOwner: .protectedV9,
+                activationWasSent: true,
+                framesAfterActivation: 2,
+                proofDuration: 40,
+                lastFrameAge: 21,
+                userRequestedDisconnect: false,
+                atriaOwnedOfflineSyncDisconnect: false,
+                previousInterruptedProofs: 0
+            ),
+            .none,
+            "a stale historical frame cannot authorize command replay"
+        )
+    }
+
+    func testInterruptedV9ProcessWithFreshCrcBurstGetsBoundedFreshLaunchRetry() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.processRetry.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        defaults.set(true, forKey: "atria.protectedR10.responseEventDataMigrationV9")
+        defaults.set(true, forKey: "atria.protectedR10.cleanOwnerMigrationV7")
+        defaults.set("protected_redp_v9", forKey: "atria.protectedR10.cleanOwner")
+        defaults.set("proving", forKey: "atria.protectedR10.cleanOwnerState")
+        defaults.set(true, forKey: "atria.protectedR10.responseEventDataSequenceSentV9")
+        defaults.set(now.timeIntervalSince1970 - 40,
+                     forKey: "atria.protectedR10.activationSentAt")
+        defaults.set(now.timeIntervalSince1970 - 5,
+                     forKey: "atria.radio.passiveR10LastValidAt")
+        defaults.set(1, forKey: "atria.protectedR10.proofChurnFailures")
+
+        XCTAssertEqual(
+            AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(
+                defaults: defaults, now: now
+            ),
+            .resumedProtectedV9Proof
+        )
+        XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwner"),
+                       "protected_redp_v9")
+        XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwnerState"),
+                       "protected_launch_pending")
+        XCTAssertEqual(defaults.integer(forKey: "atria.protectedR10.proofChurnFailures"), 2)
+        XCTAssertFalse(defaults.bool(forKey: "atria.protectedR10.responseEventDataSequenceSentV9"))
+        XCTAssertFalse(defaults.bool(forKey: "atria.protectedR10.stableTransport"))
+    }
+
+    func testFalseProcessFallbackMigrationRestoresOneBoundedV9Attempt() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.processRetryMigration.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        defaults.set(true, forKey: "atria.protectedR10.responseEventDataMigrationV9")
+        defaults.set(true, forKey: "atria.protectedR10.cleanOwnerMigrationV7")
+        defaults.set("pure_hr_v10", forKey: "atria.protectedR10.cleanOwner")
+        defaults.set("fallback_active", forKey: "atria.protectedR10.cleanOwnerState")
+        defaults.set("clean_owner_proof_interrupted_retry_1",
+                     forKey: "atria.protectedR10.cleanOwnerFailureReason")
+        defaults.set(1, forKey: "atria.protectedR10.proofChurnFailures")
+        defaults.set(now.timeIntervalSince1970 - 86_400,
+                     forKey: "atria.protectedR10.stableTransportQualifiedAt")
+
+        XCTAssertEqual(
+            AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(
+                defaults: defaults, now: now
+            ),
+            .resumedProtectedV9Proof
+        )
+        XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwner"),
+                       "protected_redp_v9")
+        XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwnerState"),
+                       "protected_launch_pending")
+        XCTAssertFalse(defaults.bool(forKey: "atria.protectedR10.streamSuppressed"))
+        XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.processProofRetryMigrationV1"))
+
+        defaults.set("pure_hr_v10", forKey: "atria.protectedR10.cleanOwner")
+        defaults.set("fallback_active", forKey: "atria.protectedR10.cleanOwnerState")
+        XCTAssertNotEqual(
+            AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(
+                defaults: defaults, now: now.addingTimeInterval(1)
+            ),
+            .resumedProtectedV9Proof,
+            "the upgrade repair must be one-shot"
+        )
     }
 
     func testV9ProofDisconnectHandlerPinsFreshRetryAndFuseWiring() throws {
