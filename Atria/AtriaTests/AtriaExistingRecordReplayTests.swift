@@ -169,6 +169,85 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
         return try XCTUnwrap(dictionary["atria.confirmedSleeps.v1"] as? Data)
     }
 
+    private func capturedOvernightSessions(endingYear year: Int,
+                                           month: Int,
+                                           day: Int) throws -> [SavedSession] {
+        let data = try Data(contentsOf: pulledSessionsURL)
+        let all = try JSONDecoder().decode([SavedSession].self, from: data)
+        let localNoon = try XCTUnwrap(calendar.date(from: DateComponents(year: year,
+                                                                         month: month,
+                                                                         day: day,
+                                                                         hour: 12)))
+        let previousEvening = try XCTUnwrap(calendar.date(byAdding: .hour,
+                                                         value: -18,
+                                                         to: localNoon))
+        // Use only complete, authoritative records contained by the evening-to-noon
+        // audit interval. Do not clip a session at either edge, because doing so
+        // would manufacture a record shape that was never persisted on the phone.
+        return all.filter { $0.start >= previousEvening && $0.end <= localNoon }
+    }
+
+    private func assertHonestRejectedNight(year: Int,
+                                           month: Int,
+                                           day: Int,
+                                           expectedSessionCount: Int,
+                                           expectedStandardRRPointCount: Int,
+                                           expectedLegacyRRPointCount: Int,
+                                           expectedQualifiedStandardRRSessionCount: Int,
+                                           expectedLocallyQualifiedHRVSessionCount: Int,
+                                           expectedMorningHRV: Int?,
+                                           file: StaticString = #filePath,
+                                           line: UInt = #line) throws {
+        let sessions = try capturedOvernightSessions(endingYear: year, month: month, day: day)
+        XCTAssertEqual(sessions.count, expectedSessionCount, file: file, line: line)
+        XCTAssertTrue(sessions.allSatisfy { $0.motionEvidenceValidated != true },
+                      "the pulled night contains no validated motion evidence",
+                      file: file,
+                      line: line)
+
+        let rrPoints = sessions.flatMap { $0.rrPoints ?? [] }
+        XCTAssertEqual(rrPoints.filter {
+            $0.source == .standardHeartRateMeasurement2A37
+        }.count, expectedStandardRRPointCount, file: file, line: line)
+        XCTAssertEqual(rrPoints.filter { $0.source == nil }.count,
+                       expectedLegacyRRPointCount,
+                       file: file,
+                       line: line)
+
+        let result = try AtriaExistingRecordReplay.run(
+            sessionsJSON: JSONEncoder().encode(sessions),
+            restingBaseline: 54,
+            maxHR: 190,
+            now: try XCTUnwrap(sessions.map(\.end).max()).addingTimeInterval(60 * 60),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(result.decodedSessionCount, expectedSessionCount, file: file, line: line)
+        XCTAssertFalse(result.usedPersistedConfirmation, file: file, line: line)
+        XCTAssertNil(result.confirmedSleep,
+                     "recorded evidence must not be promoted into confirmed sleep",
+                     file: file,
+                     line: line)
+        XCTAssertNotEqual(result.physiologicalCycle.boundaryKind, .mainSleep,
+                          file: file,
+                          line: line)
+        XCTAssertNil(result.morningMetric?.sleepDuration, file: file, line: line)
+        XCTAssertEqual(result.morningMetric?.hrv, expectedMorningHRV, file: file, line: line)
+        XCTAssertNil(result.morningMetric?.recoveryPercent, file: file, line: line)
+        XCTAssertEqual(result.baseline.hrvSampleCount, 0,
+                       "qualified RR outside confirmed main sleep cannot advance the overnight HRV baseline",
+                       file: file,
+                       line: line)
+        XCTAssertEqual(result.qualifiedStandardRRSessionCount,
+                       expectedQualifiedStandardRRSessionCount,
+                       file: file,
+                       line: line)
+        XCTAssertEqual(result.locallyQualifiedHRVSessionCount,
+                       expectedLocallyQualifiedHRVSessionCount,
+                       file: file,
+                       line: line)
+    }
+
     func testPulledArchiveReplaysDeterministicallyWithoutExternalMotion() throws {
         let data = try Data(contentsOf: pulledSessionsURL)
         let sessions = try JSONDecoder().decode([SavedSession].self, from: data)
@@ -288,5 +367,53 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
         XCTAssertGreaterThan(result.qualifiedStandardRRSessionCount, 0)
         XCTAssertGreaterThan(result.locallyQualifiedHRVSessionCount, 0,
                              "real July 17/18 2A37 RR must pass local HRV qualification without becoming sleep")
+    }
+
+    func testJuly15CapturedNightCannotRecoverFromLegacyRRAndUnvalidatedMotion() throws {
+        try assertHonestRejectedNight(year: 2026,
+                                      month: 7,
+                                      day: 15,
+                                      expectedSessionCount: 6,
+                                      expectedStandardRRPointCount: 0,
+                                      expectedLegacyRRPointCount: 19_515,
+                                      expectedQualifiedStandardRRSessionCount: 0,
+                                      expectedLocallyQualifiedHRVSessionCount: 0,
+                                      expectedMorningHRV: nil)
+    }
+
+    func testJuly16CapturedNightDoesNotPromoteSparseQualifiedRRWithoutSleepEvidence() throws {
+        try assertHonestRejectedNight(year: 2026,
+                                      month: 7,
+                                      day: 16,
+                                      expectedSessionCount: 8,
+                                      expectedStandardRRPointCount: 168,
+                                      expectedLegacyRRPointCount: 0,
+                                      expectedQualifiedStandardRRSessionCount: 6,
+                                      expectedLocallyQualifiedHRVSessionCount: 0,
+                                      expectedMorningHRV: nil)
+    }
+
+    func testJuly17CapturedNightKeepsQualifiedHRVSeparateFromRejectedSleep() throws {
+        try assertHonestRejectedNight(year: 2026,
+                                      month: 7,
+                                      day: 17,
+                                      expectedSessionCount: 9,
+                                      expectedStandardRRPointCount: 14_029,
+                                      expectedLegacyRRPointCount: 0,
+                                      expectedQualifiedStandardRRSessionCount: 9,
+                                      expectedLocallyQualifiedHRVSessionCount: 2,
+                                      expectedMorningHRV: nil)
+    }
+
+    func testJuly18CapturedNightKeepsQualifiedHRVSeparateFromFragmentedWear() throws {
+        try assertHonestRejectedNight(year: 2026,
+                                      month: 7,
+                                      day: 18,
+                                      expectedSessionCount: 6,
+                                      expectedStandardRRPointCount: 4_424,
+                                      expectedLegacyRRPointCount: 0,
+                                      expectedQualifiedStandardRRSessionCount: 5,
+                                      expectedLocallyQualifiedHRVSessionCount: 1,
+                                      expectedMorningHRV: 74)
     }
 }
