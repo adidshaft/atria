@@ -4334,7 +4334,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "&& session.avg <= rest + 22",
             "&& sessionP90 <= rest + 45",
             "&& elevatedFraction <= 0.18",
-            "return ((overnight && lowHR) || longOvernightReviewLike || napLike || shortLowHRNapLike) && notWorkout",
+            "let longStableHROnlyMainSleepLike = session.duration >= AggregateSleepCandidate.minimumAutoConfirmMainSleepDuration",
+            "|| longStableHROnlyMainSleepLike",
             "let strictDurationReady = totalDuration >= AggregateSleepCandidate.strictMinimumDuration",
             "let fragmentedFallbackReady = cluster.count > 1",
             "private nonisolated static func isStrapOnlyMainSleepReviewCandidate(_ candidate: AggregateSleepCandidate) -> Bool",
@@ -4672,6 +4673,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "duration >= AggregateSleepCandidate.strictMinimumDuration",
             "let daytimeWindow = startHour >= 11 && endHour <= 20",
             "return daytimeWindow",
+            # 2026-07-18: five-hour trusted HR-only admission is physiological,
+            # so shift-worker sleep is not discarded by the candidate builder.
+            "let longStableHROnlyMainSleepLike = session.duration >= AggregateSleepCandidate.minimumAutoConfirmMainSleepDuration",
+            "|| longStableHROnlyMainSleepLike",
         ]:
             assert_contains(self, sessions + vitals + manual_sheet + sleep_research + analytics + healthkit, needle)
         self.assertEqual(
