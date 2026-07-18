@@ -720,6 +720,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             proofActive: true,
             connected: true,
             heartRateNotifying: true,
+            priorPhysicalQualification: false,
             framesAfterActivation: 2,
             lastFrameAge: 21,
             connectedAt: connectedAt,
@@ -729,6 +730,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             proofActive: true,
             connected: true,
             heartRateNotifying: true,
+            priorPhysicalQualification: false,
             framesAfterActivation: 2,
             lastFrameAge: 21,
             connectedAt: connectedAt,
@@ -738,6 +740,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             proofActive: true,
             connected: true,
             heartRateNotifying: true,
+            priorPhysicalQualification: false,
             framesAfterActivation: 2,
             lastFrameAge: 21,
             connectedAt: connectedAt.addingTimeInterval(60),
@@ -752,6 +755,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 proofActive: true,
                 connected: true,
                 heartRateNotifying: true,
+                priorPhysicalQualification: false,
                 framesAfterActivation: frames,
                 lastFrameAge: age,
                 connectedAt: connectedAt,
@@ -762,11 +766,46 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             proofActive: true,
             connected: true,
             heartRateNotifying: false,
+            priorPhysicalQualification: false,
             framesAfterActivation: 2,
             lastFrameAge: 30,
             connectedAt: connectedAt,
             retryConnectionAt: nil
         ), "motion recovery must never take priority over standard HR/RR")
+    }
+
+    func testPriorQualifiedV9ZeroFrameProofGetsOneBoundedRecovery() {
+        let connectedAt = Date(timeIntervalSince1970: 3_000)
+        XCTAssertTrue(AtriaBLEManager.shouldRetryProtectedR10ShortBurst(
+            proofActive: true,
+            connected: true,
+            heartRateNotifying: true,
+            priorPhysicalQualification: true,
+            framesAfterActivation: 0,
+            lastFrameAge: nil,
+            connectedAt: connectedAt,
+            retryConnectionAt: nil
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldRetryProtectedR10ShortBurst(
+            proofActive: true,
+            connected: true,
+            heartRateNotifying: true,
+            priorPhysicalQualification: false,
+            framesAfterActivation: 0,
+            lastFrameAge: nil,
+            connectedAt: connectedAt,
+            retryConnectionAt: nil
+        ), "zero frames from a never-qualified owner prove no safe retry profile")
+        XCTAssertFalse(AtriaBLEManager.shouldRetryProtectedR10ShortBurst(
+            proofActive: true,
+            connected: true,
+            heartRateNotifying: true,
+            priorPhysicalQualification: true,
+            framesAfterActivation: 0,
+            lastFrameAge: nil,
+            connectedAt: connectedAt,
+            retryConnectionAt: connectedAt
+        ), "the zero-frame recovery shares the persisted once-per-connection guard")
     }
 
     func testV9ShortBurstRetryReceivesAReachableFullDensityWindow() throws {

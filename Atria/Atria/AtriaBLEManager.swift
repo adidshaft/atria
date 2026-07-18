@@ -2946,12 +2946,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// A CRC-valid short burst proves the profile and decoder are correct but
     /// not that motion is sustained. Permit exactly one command-only recovery
     /// on that same connection after the stream is observably stale. Zero-frame
-    /// failures use the ordinary fallback (the profile itself is unproven), and
-    /// the original 90-second density bar still decides qualification.
+    /// zero-frame proof may use the same recovery only when this v9 owner has a
+    /// persisted prior physical qualification; a never-proven owner still
+    /// fails closed. The fresh 90-second density bar decides qualification.
     nonisolated static func shouldRetryProtectedR10ShortBurst(
         proofActive: Bool,
         connected: Bool,
         heartRateNotifying: Bool,
+        priorPhysicalQualification: Bool,
         framesAfterActivation: Int,
         lastFrameAge: TimeInterval?,
         connectedAt: Date?,
@@ -2961,11 +2963,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard proofActive,
               connected,
               heartRateNotifying,
-              framesAfterActivation > 0,
               framesAfterActivation < 75,
-              let lastFrameAge,
-              lastFrameAge >= staleInterval,
               let connectedAt else { return false }
+        if framesAfterActivation == 0 {
+            guard priorPhysicalQualification else { return false }
+        } else {
+            guard let lastFrameAge, lastFrameAge >= staleInterval else { return false }
+        }
         guard let retryConnectionAt else { return true }
         return abs(retryConnectionAt.timeIntervalSince(connectedAt)) >= 0.001
     }
@@ -7225,9 +7229,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             guard let self, !Task.isCancelled,
                   self.protectedR10ResponseEventDataProofIsActive else { return }
             if self.protectedR10FramesAfterActivation == 0 {
-                self.persistProtectedR10CleanOwnerFallback(
-                    reason: "response_event_data_missing_r10_frames"
+                let retried = self.retryProtectedR10ShortBurstIfEligible(
+                    now: Date(),
+                    reason: "prior_qualified_zero_frame_proof"
                 )
+                if !retried {
+                    self.persistProtectedR10CleanOwnerFallback(
+                        reason: "response_event_data_missing_r10_frames"
+                    )
+                }
             } else {
                 self.retryProtectedR10ShortBurstIfEligible(
                     now: Date(),
@@ -15473,7 +15483,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// This never mutates a CCCD or connection epoch and never pauses 2A37.
     /// The persisted connection stamp makes lifecycle/watchdog replays
     /// idempotent; the original density task remains the sole qualifier.
-    private func retryProtectedR10ShortBurstIfEligible(now: Date, reason: String) {
+    @discardableResult
+    private func retryProtectedR10ShortBurstIfEligible(now: Date, reason: String) -> Bool {
         let defaults = UserDefaults.standard
         let retryConnectionAt = (defaults.object(
             forKey: Self.protectedR10ShortBurstRetryConnectionAtKey
@@ -15482,6 +15493,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             proofActive: protectedR10ResponseEventDataProofIsActive,
             connected: peripheral?.state == .connected,
             heartRateNotifying: heartRateCharacteristic?.isNotifying == true,
+            priorPhysicalQualification: defaults.object(
+                forKey: Self.protectedR10StableTransportQualifiedAtKey
+            ) != nil,
             framesAfterActivation: protectedR10FramesAfterActivation,
             lastFrameAge: lastR10MotionFrameAt.map { now.timeIntervalSince($0) },
             connectedAt: connectedAt,
@@ -15490,7 +15504,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
            let peripheral,
            let txCharacteristic,
            txCharacteristic.properties.contains(.writeWithoutResponse),
-           protectedR10CommandSequenceTask == nil else { return }
+           protectedR10CommandSequenceTask == nil else { return false }
 
         // Persist before the async write so foreground/background and periodic
         // watchdog races cannot spend a second retry on this connection.
@@ -15552,6 +15566,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           reason,
                           self.protectedR10FramesAfterActivation)
         }
+        return true
     }
 
     /// One bounded link-health audit inside a BGTask execution window. A
