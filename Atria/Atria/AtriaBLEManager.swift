@@ -2438,6 +2438,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let protectedR10RollbackRetryStableHRDuration: TimeInterval = 60
     nonisolated private static let protectedR10PassiveReprobeTimeout: TimeInterval = 150
     nonisolated static let protectedR10CommandPacingDelay: TimeInterval = 0.120
+    /// The dense isolated proof left the proprietary response/event/data
+    /// profile alone for 60 seconds after 3F/01 + 6A/01 before adding another
+    /// GATT discovery. Production already has 2A37 HR/RR active, so defer only
+    /// battery discovery while the strap settles into dense R10 delivery.
+    nonisolated static let protectedR10PostCommandStandardDiscoveryDelay: TimeInterval = 60
 
     enum ProtectedR10CleanOwner: String, Equatable {
         case legacy
@@ -7194,8 +7199,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         protectedR10ActivationSent = true
         protectedR10ActivationAt = startedAt
         protectedR10FramesAfterActivation = 0
-        scheduleProtectedR10BatteryDiscovery(peripheral: peripheral)
-
         protectedR10CommandSequenceTask = Task { @MainActor [weak self, weak peripheral] in
             guard let self, let peripheral, !Task.isCancelled,
                   peripheral.state == .connected,
@@ -7221,6 +7224,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG protected_r10 status=command_sent owner=v9 cmd=6a data=01 seq=%d pacing_ms=120 action=exactly_once_complete",
                           Int(imuSequence))
             self.protectedR10CommandSequenceTask = nil
+            self.scheduleProtectedR10BatteryDiscovery(peripheral: peripheral)
         }
 
         protectedR10MissingFrameTask?.cancel()
@@ -7274,6 +7278,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func scheduleProtectedR10BatteryDiscovery(peripheral: CBPeripheral) {
         guard protectedR10StandardDiscoveryTask == nil else { return }
         protectedR10StandardDiscoveryTask = Task { @MainActor [weak self, weak peripheral] in
+            try? await Task.sleep(for: .seconds(
+                Self.protectedR10PostCommandStandardDiscoveryDelay
+            ))
             guard let self, let peripheral, !Task.isCancelled,
                   peripheral.state == .connected,
                   self.protectedR10ResponseEventDataProofIsActive else { return }

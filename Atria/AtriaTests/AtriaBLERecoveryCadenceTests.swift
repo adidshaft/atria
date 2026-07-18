@@ -1049,8 +1049,22 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertEqual(sequenceBody.components(separatedBy: "Cmd.sendR10R11Realtime").count - 1, 1)
         XCTAssertEqual(sequenceBody.components(separatedBy: "Cmd.toggleIMUMode").count - 1, 1)
         XCTAssertTrue(sequenceBody.contains("protectedR10CommandPacingDelay"))
+        XCTAssertTrue(sequenceBody.contains("scheduleProtectedR10BatteryDiscovery"))
+        let firstCommand = try XCTUnwrap(sequenceBody.range(of: "Cmd.sendR10R11Realtime"))
+        let secondCommand = try XCTUnwrap(sequenceBody.range(of: "Cmd.toggleIMUMode"))
+        let discovery = try XCTUnwrap(sequenceBody.range(
+            of: "scheduleProtectedR10BatteryDiscovery"
+        ))
+        XCTAssertLessThan(firstCommand.lowerBound, secondCommand.lowerBound)
+        XCTAssertLessThan(secondCommand.lowerBound, discovery.lowerBound)
         XCTAssertFalse(sequenceBody.contains("cancelPeripheralConnection"))
         XCTAssertFalse(sequenceBody.contains("startOfflineHistoricalSync"))
+
+        XCTAssertEqual(AtriaBLEManager.protectedR10ResponseEventDataNotifyOrder,
+                       AtriaBLEManager.motionHandshakeNotifyOrder(
+                        useResponseEventDataProfile: true
+                       ))
+        XCTAssertEqual(AtriaBLEManager.protectedR10PostCommandStandardDiscoveryDelay, 60)
 
         let cutoverStart = try XCTUnwrap(source.range(
             of: "private func beginProtectedR10PureHRV10InProcessCutoverIfNeeded"
