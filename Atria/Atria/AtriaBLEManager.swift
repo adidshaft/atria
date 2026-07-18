@@ -2438,11 +2438,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let protectedR10RollbackRetryStableHRDuration: TimeInterval = 60
     nonisolated private static let protectedR10PassiveReprobeTimeout: TimeInterval = 150
     nonisolated static let protectedR10CommandPacingDelay: TimeInterval = 0.120
-    /// The dense isolated proof left the proprietary response/event/data
-    /// profile alone for 60 seconds after 3F/01 + 6A/01 before adding another
-    /// GATT discovery. Production already has 2A37 HR/RR active, so defer only
-    /// battery discovery while the strap settles into dense R10 delivery.
-    nonisolated static let protectedR10PostCommandStandardDiscoveryDelay: TimeInterval = 60
+    /// Persisted timestamps from the dense isolated proof show 3F/01 + 6A/01
+    /// completed before standard HR discovery, with 2A37 added 15.7s later.
+    /// Keep the bounded production qualification link on that proven order.
+    nonisolated static let protectedR10PostCommandStandardDiscoveryDelay: TimeInterval = 15
 
     enum ProtectedR10CleanOwner: String, Equatable {
         case legacy
@@ -3035,12 +3034,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
            !protectedR10StreamSuppressed,
            protectedR10CleanOwner == .protectedV9,
            denseBringUpIsWanted,
+           protectedR10CleanOwnerState == .protectedLaunchPending {
+            return [Self.UUIDs.strapService]
+        }
+        if standardHROnlyMode,
+           !historyOnlyProbeMode,
+           !protectedR10StreamSuppressed,
+           protectedR10CleanOwner == .protectedV9,
+           denseBringUpIsWanted,
            (protectedR10CleanOwnerState == .qualified
-            || protectedR10CleanOwnerState == .protectedLaunchPending
             || protectedR10CleanOwnerState == .proving) {
-            // 2026-07-18: every connection epoch establishes standard 2A37
-            // before the ordered proprietary profile. The HR notification
-            // callback releases the dense bring-up gate below.
+            // An already-qualified reconnect restores standard 2A37 first.
+            // Fresh qualification above intentionally mirrors the proven
+            // proprietary-first diagnostic ordering.
             return [Self.UUIDs.heartRateService]
         }
         if standardHROnlyMode, !historyOnlyProbeMode {
@@ -3085,6 +3091,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               !historyOnlyProbeMode,
               !protectedR10StreamSuppressed,
               protectedR10CleanOwner == .protectedV9 else { return }
+        if protectedR10CleanOwnerState == .protectedLaunchPending {
+            // The only physically dense qualification used the proprietary
+            // CCCDs + command pair before adding standard HR. Limit that order
+            // to a fresh v9 proof; qualified reconnects retain HR-first repair.
+            beginProtectedR10BringUpForCurrentEpoch(peripheral: peripheral,
+                                                     reason: "\(reason)_diagnostic_order")
+            return
+        }
         if heartRateCharacteristic?.isNotifying == true {
             beginProtectedR10BringUpForCurrentEpoch(peripheral: peripheral,
                                                      reason: reason)
@@ -3107,7 +3121,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                                           reason: String) {
         guard self.peripheral?.identifier == peripheral.identifier,
               peripheral.state == .connected,
-              heartRateCharacteristic?.isNotifying == true,
               denseBringUpIsWanted,
               let connectedAt else { return }
         guard r10SessionBoundaryID == nil else {
@@ -3124,6 +3137,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard protectedR10CleanOwner == .protectedV9,
               protectedR10CleanOwnerState == .qualified
                 || protectedR10CleanOwnerState == .protectedLaunchPending else { return }
+        guard protectedR10CleanOwnerState == .protectedLaunchPending
+                || heartRateCharacteristic?.isNotifying == true else { return }
 
         // Persist before asynchronous discovery so repeated lifecycle or
         // foreground evaluations cannot spend another attempt this epoch.
@@ -7285,8 +7300,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                   peripheral.state == .connected,
                   self.protectedR10ResponseEventDataProofIsActive else { return }
             self.protectedR10StandardDiscoveryStarted = true
-            peripheral.discoverServices([Self.UUIDs.batteryService])
-            AtriaDebugLog("ATRIADBG protected_r10 status=battery_service_requested owner=v9 services=battery action=after_hr_first_motion_start")
+            peripheral.discoverServices([
+                Self.UUIDs.heartRateService,
+                Self.UUIDs.batteryService,
+            ])
+            AtriaDebugLog("ATRIADBG protected_r10 status=standard_services_requested owner=v9 services=heart_rate,battery action=after_diagnostic_order_motion_start")
             self.protectedR10StandardDiscoveryTask = nil
         }
     }

@@ -1064,7 +1064,36 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                        AtriaBLEManager.motionHandshakeNotifyOrder(
                         useResponseEventDataProfile: true
                        ))
-        XCTAssertEqual(AtriaBLEManager.protectedR10PostCommandStandardDiscoveryDelay, 60)
+        XCTAssertEqual(AtriaBLEManager.protectedR10PostCommandStandardDiscoveryDelay, 15)
+
+        let bringUpStart = try XCTUnwrap(source.range(
+            of: "private func beginHRFirstDenseBringUpIfNeeded"
+        ))
+        let bringUpEnd = try XCTUnwrap(source.range(
+            of: "private func beginProtectedR10BringUpForCurrentEpoch",
+            range: bringUpStart.upperBound..<source.endIndex
+        ))
+        let bringUpBody = String(source[bringUpStart.lowerBound..<bringUpEnd.lowerBound])
+        XCTAssertTrue(bringUpBody.contains("protectedR10CleanOwnerState == .protectedLaunchPending"))
+        XCTAssertTrue(bringUpBody.contains("diagnostic_order"))
+        XCTAssertLessThan(
+            try XCTUnwrap(bringUpBody.range(of: "diagnostic_order")).lowerBound,
+            try XCTUnwrap(bringUpBody.range(of: "heartRateCharacteristic?.isNotifying")).lowerBound
+        )
+
+        let standardDiscoveryStart = try XCTUnwrap(source.range(
+            of: "private func scheduleProtectedR10BatteryDiscovery"
+        ))
+        let standardDiscoveryEnd = try XCTUnwrap(source.range(
+            of: "private func sendProtectedR10ActivationIfReady",
+            range: standardDiscoveryStart.upperBound..<source.endIndex
+        ))
+        let standardDiscoveryBody = String(source[
+            standardDiscoveryStart.lowerBound..<standardDiscoveryEnd.lowerBound
+        ])
+        XCTAssertTrue(standardDiscoveryBody.contains("protectedR10PostCommandStandardDiscoveryDelay"))
+        XCTAssertTrue(standardDiscoveryBody.contains("Self.UUIDs.heartRateService"))
+        XCTAssertTrue(standardDiscoveryBody.contains("Self.UUIDs.batteryService"))
 
         let cutoverStart = try XCTUnwrap(source.range(
             of: "private func beginProtectedR10PureHRV10InProcessCutoverIfNeeded"
