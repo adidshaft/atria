@@ -17197,7 +17197,7 @@ final class SessionStore: ObservableObject {
                                          rest: rest)
     }
 
-    private nonisolated static func confirmedSleepWindowMetrics(
+    nonisolated static func confirmedSleepWindowMetrics(
         from sessions: [SavedSession],
         start: Date,
         end: Date,
@@ -19668,6 +19668,10 @@ final class SessionStore: ObservableObject {
     enum HistoricalSleepMotionPolicy {
         case fullArchive
         case boundedRecent
+        /// Deterministic saved-record replay. Only motion provenance embedded in
+        /// the decoded sessions may participate; mutable on-device archives are
+        /// deliberately excluded from the result.
+        case sessionOnly
     }
 
     func aggregateSleepCandidates(rest: Int,
@@ -19698,6 +19702,23 @@ final class SessionStore: ObservableObject {
                 return fullArchiveMotionSnapshot!.diagnostics(start: start, end: end)
             case .boundedRecent:
                 return HistoricalArchive.boundedMotionWindowDiagnostics(start: start, end: end)
+            case .sessionOnly:
+                return HistoricalArchive.MotionWindowDiagnostics(
+                    status: "session_only",
+                    reason: "external motion archive excluded from deterministic replay",
+                    rows: 0,
+                    validatedRows: 0,
+                    coverageSeconds: 0,
+                    spanSeconds: max(0, Int(end.timeIntervalSince(start))),
+                    meanVectorDelta: nil,
+                    p95VectorDelta: nil,
+                    magnitudeMean: nil,
+                    magnitudeStdDev: nil,
+                    archiveFirstUnix: 0,
+                    archiveLastUnix: 0,
+                    nearestSeparationSeconds: 0,
+                    lowMotionReady: false
+                )
             }
         }
         let eligible = sourceSessions.filter { session in
