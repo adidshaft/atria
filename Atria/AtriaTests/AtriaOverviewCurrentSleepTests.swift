@@ -62,4 +62,15 @@ final class AtriaOverviewCurrentSleepTests: XCTestCase {
                                                        now: now,
                                                        calendar: calendar))
     }
+
+    func testActiveTodayRingUsesCurrentCycleResolver() throws {
+        let testsURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let todayURL = testsURL.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaTodayScreen.swift")
+        let source = try String(contentsOf: todayURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("AtriaOverviewCurrentSleep.resolve("))
+        XCTAssertTrue(source.contains("let latest = latestSleep"))
+        XCTAssertFalse(source.contains("let latest = sleepHistory.latestMainSleep"))
+    }
 }

@@ -1097,7 +1097,9 @@ struct AtriaTodayScreen: View {
     #endif
 
     private var latestSleep: SleepHistorySnapshot.Night? {
-        sessionProjectionStore.state.sleepHistorySnapshot.latestMainSleep
+        AtriaOverviewCurrentSleep.resolve(
+            from: sessionProjectionStore.state.sleepHistorySnapshot
+        )
     }
 
     /// Today reads the sleep ring, center caption, and sleep-performance tile
@@ -1106,7 +1108,7 @@ struct AtriaTodayScreen: View {
     /// the existing source revisions instead of rebuilding it on live ticks.
     private var sleepNeedSnapshot: AtriaTodaySleepNeedSnapshot {
         let sleepHistory = sessionProjectionStore.state.sleepHistorySnapshot
-        let latest = sleepHistory.latestMainSleep
+        let latest = latestSleep
         let key = AtriaTodaySleepNeedKey(sleepRevision: sessionProjectionStore.state.sleepHistorySnapshotRevision,
                                          rollupRevision: sessionProjectionStore.state.dailyRollupHistoryRevision,
                                          latestNightID: latest?.id,
