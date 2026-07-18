@@ -3724,6 +3724,64 @@ final class AtriaAnalyticsTests: XCTestCase {
         }
     }
 
+    private func reducedRecoveryWearSession(now: Date,
+                                            bpm: Int,
+                                            rrSeconds: Int,
+                                            mixedProvenance: Bool) -> SavedSession {
+        let start = now.addingTimeInterval(-7 * 3_600)
+        let end = now.addingTimeInterval(-60 * 60)
+        let points = stride(from: 0.0,
+                            through: end.timeIntervalSince(start),
+                            by: 60.0).map {
+            SavedSession.Point(t: $0, bpm: bpm)
+        }
+        let rrPoints: [SavedSession.RRPoint]? = rrSeconds > 0
+            ? (0...rrSeconds).map { second in
+                let source: AtriaRRSourceProvenance = mixedProvenance && second == rrSeconds / 2
+                    ? .validatedProprietaryRealtime
+                    : .standardHeartRateMeasurement2A37
+                return SavedSession.RRPoint(t: Double(second),
+                                            ms: second.isMultiple(of: 2) ? 980 : 1_020,
+                                            source: source)
+            }
+            : nil
+        return SavedSession(id: UUID(),
+                            start: start,
+                            end: end,
+                            label: "Unconfirmed clean wear",
+                            points: points,
+                            rrPoints: rrPoints,
+                            eventTimeZoneIdentifier: utcCalendar.timeZone.identifier)
+    }
+
+    private func priorConfirmedSleepSnapshot(now: Date) -> SleepHistorySnapshot {
+        let end = now.addingTimeInterval(-30 * 3_600)
+        let start = end.addingTimeInterval(-8 * 3_600)
+        let sleep = UserConfirmedSleep(id: "prior-main-sleep",
+                                       createdAt: end,
+                                       start: start,
+                                       end: end,
+                                       source: "manual_sleep",
+                                       confidence: "manual_user_entered",
+                                       sessions: 0,
+                                       samples: 0,
+                                       avgHR: 58,
+                                       peakHR: 62,
+                                       restingHR: 56,
+                                       hrv: 52,
+                                       hrvWindowCount: 3,
+                                       duration: end.timeIntervalSince(start),
+                                       span: end.timeIntervalSince(start),
+                                       reason: "test prior boundary",
+                                       motionSource: "manual",
+                                       motionValidated: false,
+                                       stageSegments: nil,
+                                       eventTimeZoneIdentifier: utcCalendar.timeZone.identifier)
+        return SleepHistorySnapshot(rollups: [],
+                                    confirmedSleeps: [sleep],
+                                    calendar: utcCalendar)
+    }
+
     private func baselineSamples(count: Int, now: Date) -> [PersonalBaseline.BaselineSample] {
         (0..<count).map { index in
             PersonalBaseline.BaselineSample(date: now.addingTimeInterval(Double(-index * 86_400)),
@@ -5078,6 +5136,72 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertNotNil(result, "wear alone should be enough to settle today's morning row")
         XCTAssertNotNil(result?.restingHR)
         XCTAssertNil(result?.sleepDuration, "no confirmed sleep and no dailyRollup sleep evidence exists for today")
+    }
+
+    func testCleanQualifiedUnconfirmedWearYieldsOnlyUnverifiedRecovery() throws {
+        let now = Date()
+        let session = reducedRecoveryWearSession(now: now,
+                                                 bpm: 58,
+                                                 rrSeconds: 1_800,
+                                                 mixedProvenance: false)
+        let baseline = PersonalBaseline(restingHR: 60,
+                                        hrvEMA: 52,
+                                        sessions: PersonalBaseline.trustedMinimumSamples,
+                                        updated: now,
+                                        samples: baselineSamples(count: PersonalBaseline.trustedMinimumSamples,
+                                                                 now: now))
+        let sleep = priorConfirmedSleepSnapshot(now: now)
+        let day = utcCalendar.startOfDay(for: session.end)
+
+        let metric = try XCTUnwrap(SessionStore.makeMorningFrozenDailyMetric(
+            for: day,
+            computed: [],
+            sessions: [session],
+            sleep: sleep,
+            baseline: baseline,
+            maxHR: 190,
+            now: now,
+            calendar: utcCalendar
+        ))
+
+        XCTAssertNotNil(metric.hrv)
+        XCTAssertNotNil(metric.recoveryPercent)
+        XCTAssertEqual(metric.recoveryConfidence,
+                       AtriaAnalytics.Recovery.Estimate.Confidence.unverified.rawValue)
+        XCTAssertNil(metric.sleepDuration, "reduced recovery must never fabricate a sleep record")
+        XCTAssertNil(metric.sleepStart)
+        XCTAssertNil(metric.sleepEnd)
+    }
+
+    func testUnconfirmedRecoveryRejectsMissingMixedSparseAndElevatedEvidence() {
+        let now = Date()
+        let baseline = PersonalBaseline(restingHR: 60,
+                                        hrvEMA: 52,
+                                        sessions: PersonalBaseline.trustedMinimumSamples,
+                                        updated: now,
+                                        samples: baselineSamples(count: PersonalBaseline.trustedMinimumSamples,
+                                                                 now: now))
+        let sleep = priorConfirmedSleepSnapshot(now: now)
+        let fixtures = [
+            reducedRecoveryWearSession(now: now, bpm: 58, rrSeconds: 0, mixedProvenance: false),
+            reducedRecoveryWearSession(now: now, bpm: 58, rrSeconds: 1_800, mixedProvenance: true),
+            reducedRecoveryWearSession(now: now, bpm: 58, rrSeconds: 500, mixedProvenance: false),
+            reducedRecoveryWearSession(now: now, bpm: 82, rrSeconds: 1_800, mixedProvenance: false)
+        ]
+
+        for session in fixtures {
+            let day = utcCalendar.startOfDay(for: session.end)
+            let metric = SessionStore.makeMorningFrozenDailyMetric(for: day,
+                                                                   computed: [],
+                                                                   sessions: [session],
+                                                                   sleep: sleep,
+                                                                   baseline: baseline,
+                                                                   maxHR: 190,
+                                                                   now: now,
+                                                                   calendar: utcCalendar)
+            XCTAssertNil(metric?.hrv)
+            XCTAssertNil(metric?.recoveryPercent)
+        }
     }
 
     /// Same-day wear fallback exercised specifically: a long overnight-shaped

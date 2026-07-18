@@ -36,7 +36,9 @@ final class AtriaHRVQualificationTests: XCTestCase {
     private func confirmedMainSleep(for session: SavedSession,
                                     start: Date? = nil,
                                     end: Date? = nil,
-                                    id: String = UUID().uuidString) -> UserConfirmedSleep {
+                                    id: String = UUID().uuidString,
+                                    persistedHRV: Int? = nil,
+                                    persistedHRVWindowCount: Int? = nil) -> UserConfirmedSleep {
         let sleepStart = start ?? session.start
         let sleepEnd = end ?? session.end
         return UserConfirmedSleep(id: id,
@@ -50,8 +52,8 @@ final class AtriaHRVQualificationTests: XCTestCase {
                                   avgHR: session.avg,
                                   peakHR: session.peak,
                                   restingHR: session.restingStable,
-                                  hrv: nil,
-                                  hrvWindowCount: nil,
+                                  hrv: persistedHRV,
+                                  hrvWindowCount: persistedHRVWindowCount,
                                   duration: sleepEnd.timeIntervalSince(sleepStart),
                                   span: sleepEnd.timeIntervalSince(sleepStart),
                                   reason: "test",
@@ -104,6 +106,51 @@ final class AtriaHRVQualificationTests: XCTestCase {
         XCTAssertTrue(sparse.hasQualifiedStandardRRProvenance)
         XCTAssertNil(sparse.localRMSSD)
         XCTAssertEqual(sparse.localHRVWindowCount, 0)
+    }
+
+    func testPersistedConfirmedSleepHRVIsClearedWithoutQualifiedRawRR() throws {
+        let legacy = session(dayOffset: 0, source: nil)
+        let persisted = confirmedMainSleep(for: legacy,
+                                           id: "legacy-confirmed-sleep",
+                                           persistedHRV: 77,
+                                           persistedHRVWindowCount: 4)
+
+        let requalified = SessionStore.requalifiedConfirmedSleepHRVRecords(
+            [persisted],
+            sessions: [legacy]
+        )
+
+        let updated = try XCTUnwrap(requalified.first)
+        XCTAssertEqual(updated.id, persisted.id)
+        XCTAssertEqual(updated.start, persisted.start)
+        XCTAssertEqual(updated.end, persisted.end)
+        XCTAssertEqual(updated.duration, persisted.duration)
+        XCTAssertEqual(updated.source, persisted.source)
+        XCTAssertNil(updated.hrv)
+        XCTAssertEqual(updated.hrvWindowCount, 0)
+    }
+
+    func testPersistedConfirmedSleepHRVIsReplacedFromExactQualifiedRRWindow() throws {
+        let standard = session(dayOffset: 0,
+                               source: .standardHeartRateMeasurement2A37)
+        let persisted = confirmedMainSleep(for: standard,
+                                           id: "qualified-confirmed-sleep",
+                                           persistedHRV: 99,
+                                           persistedHRVWindowCount: 9)
+
+        let updated = try XCTUnwrap(
+            SessionStore.requalifiedConfirmedSleepHRVRecords(
+                [persisted],
+                sessions: [standard]
+            ).first
+        )
+
+        XCTAssertEqual(updated.hrv, standard.localRMSSD(in: persisted.start,
+                                                        end: persisted.end))
+        XCTAssertEqual(updated.hrvWindowCount,
+                       standard.localHRVWindowCount(in: persisted.start,
+                                                   end: persisted.end))
+        XCTAssertNotEqual(updated.hrv, 99)
     }
 
     func testQualifiedDaytimeRRDoesNotAdvanceOvernightTrustCount() {

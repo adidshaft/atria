@@ -14659,7 +14659,15 @@ class HandoffStaticChecks(unittest.TestCase):
         morning = sessions[morning_start:morning_end]
         assert_contains(self, morning, "confirmedMainSleep != nil || hasAnyConfirmedMainSleep || hour >= 4")
         assert_contains(self, morning, "} else if !hasAnyConfirmedMainSleep {")
-        assert_contains(self, morning, "Preserve honest activity/RHR/strain")
+        # 2026-07-18 P4: the only exception is an exact, all-2A37 clean-wear
+        # input routed through Recovery v2's `.unverified` sleep-missing model.
+        assert_contains(self, morning, "reducedConfidenceUnconfirmedRecoveryInput")
+        assert_contains(self, morning, "reducedConfidenceInput?.hrv")
+        reduced_start = sessions.index("static func reducedConfidenceUnconfirmedRecoveryInput(")
+        reduced_end = sessions.index("static func configuredSleepBaseNeedHours(", reduced_start)
+        reduced = sessions[reduced_start:reduced_end]
+        assert_contains(self, reduced, "contributing.allSatisfy(\\.hasQualifiedStandardRRProvenance)")
+        assert_contains(self, reduced, "metrics.hrvWindowCount >= 3")
 
         persistence_start = sessions.index("static func makeDailyRollupStoreEntries(metrics:")
         persistence_end = sessions.index("static func makeDailyRespiratoryRatePreparation(", persistence_start)

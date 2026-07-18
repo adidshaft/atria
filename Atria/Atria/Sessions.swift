@@ -7942,6 +7942,61 @@ final class SessionStore: ObservableObject {
         return AtriaSleepBudget.performancePercent(slept: sleepDuration / 3_600, needed: need)
     }
 
+    /// The sole no-confirmed-sleep recovery exception. It accepts only a
+    /// settled, unambiguous five-hour low-HR aggregate backed by a mature
+    /// personal RHR+HRV baseline and all-standard-2A37 RR in every contributing
+    /// session. This does not create a sleep boundary or sleep duration; it only
+    /// supplies today's reproducible HRV/RHR inputs to Recovery v2, whose
+    /// sleep-missing path is explicitly capped at `.unverified`.
+    nonisolated static func reducedConfidenceUnconfirmedRecoveryInput(
+        for day: Date,
+        sessions: [SavedSession],
+        baseline: PersonalBaseline,
+        maxHR: Int,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> (hrv: Int, restingHR: Int, respiratoryRate: Double?)? {
+        guard baseline.hasTrustedRestingBaseline(now: now),
+              baseline.hasTrustedHRVBaseline(now: now) else { return nil }
+        let rest = baseline.restingInt ?? 60
+        let candidates = aggregateSleepCandidates(in: sessions,
+                                                   rest: rest,
+                                                   maxHR: maxHR,
+                                                   calendar: calendar,
+                                                   historicalMotionPolicy: .sessionOnly)
+            .filter {
+                calendar.isDate($0.day, inSameDayAs: day)
+                    && $0.end <= now
+                    && sleepCandidateIsSettledForClosedAutoConfirmation(candidateEnd: $0.end,
+                                                                         now: now)
+                    && isUnambiguousHROnlyMainSleepCandidate($0, calendar: calendar)
+            }
+            .sorted { $0.end > $1.end }
+        guard let candidate = candidates.first else { return nil }
+
+        let contributing = sessions.filter {
+            $0.end > candidate.start && $0.start < candidate.end
+        }
+        guard !contributing.isEmpty,
+              contributing.allSatisfy(\.hasQualifiedStandardRRProvenance) else { return nil }
+        let metrics = confirmedSleepWindowMetrics(from: contributing,
+                                                  start: candidate.start,
+                                                  end: candidate.end,
+                                                  rest: rest)
+        guard metrics.hrvWindowCount >= 3,
+              let hrv = metrics.hrv,
+              hrv > 0 else { return nil }
+        let rates = contributing.compactMap {
+            $0.sleepRespiratoryRate(rest: rest, maxHR: maxHR, calendar: calendar)
+        }
+        let respiratoryRate = rates.isEmpty
+            ? nil
+            : rates.reduce(0, +) / Double(rates.count)
+        return (hrv: hrv,
+                restingHR: metrics.restingHR,
+                respiratoryRate: respiratoryRate)
+    }
+
     // Internal since 2026-07-07: sleep-review evidence cards need the same
     // configured base need the rollup path uses.
     nonisolated static func configuredSleepBaseNeedHours(userDefaults: UserDefaults = .standard) -> Double {
@@ -8030,6 +8085,14 @@ final class SessionStore: ObservableObject {
             $0 + $1.trimp(rest: baseline.restingInt ?? 60, max: maxHR)
         }
         let wearStrain = wearStrainTRIMP > 0 ? Metrics.strain(fromTRIMP: wearStrainTRIMP) : nil
+        let reducedConfidenceInput = confirmedMainSleep == nil && hasAnyConfirmedMainSleep
+            ? reducedConfidenceUnconfirmedRecoveryInput(for: day,
+                                                         sessions: sessions,
+                                                         baseline: baseline,
+                                                         maxHR: maxHR,
+                                                         now: now,
+                                                         calendar: calendar)
+            : nil
 
         // A confirmed main sleep owns this cycle's overnight HRV. If that exact
         // sleep window did not produce a qualified value, fail closed instead of
@@ -8041,18 +8104,16 @@ final class SessionStore: ObservableObject {
         } else if !hasAnyConfirmedMainSleep {
             overnightSession?.localRMSSD ?? computedToday?.hrv
         } else {
-            // Once confirmed sleep history exists, an unconfirmed current-day
-            // overnight candidate must not create a second readiness cycle.
-            // Preserve honest activity/RHR/strain below, but keep sleep, HRV,
-            // and recovery absent until this morning's main sleep is confirmed.
-            nil
+            reducedConfidenceInput?.hrv
         }
         let restingHR = confirmedMainSleep?.restingHR
+            ?? reducedConfidenceInput?.restingHR
             ?? overnightSession?.sleepCandidateRestingHR
             ?? overnightSession?.restingStable
             ?? computedToday?.restingHR
             ?? wearRestingHR
         let respiratoryRate = confirmedMainSleep?.respiratoryRate
+            ?? reducedConfidenceInput?.respiratoryRate
             ?? overnightSession?.sleepRespiratoryRate(rest: baseline.restingInt ?? overnightSession?.restingStable ?? 60,
                                                       maxHR: maxHR,
                                                       calendar: calendar)
@@ -17455,6 +17516,50 @@ final class SessionStore: ObservableObject {
             .max { $0.sleepEnd < $1.sleepEnd }
     }
 
+    /// Re-derives persisted sleep HRV from the raw, exact-window standard-2A37
+    /// RR evidence available today. Older confirmed records may carry a scalar
+    /// HRV written before provenance was persisted; retaining that scalar after
+    /// the current trust gate rejects its source would make historical recovery
+    /// look more certain than the underlying record. Keep the user's sleep
+    /// boundary and every non-HRV field, but clear or replace HRV strictly from
+    /// reproducible raw evidence. (2026-07-18 truth migration)
+    nonisolated static func requalifiedConfirmedSleepHRVRecords(
+        _ sleeps: [UserConfirmedSleep],
+        sessions: [SavedSession]
+    ) -> [UserConfirmedSleep] {
+        sleeps.map { sleep in
+            let metrics = confirmedSleepWindowMetrics(from: sessions,
+                                                       start: sleep.start,
+                                                       end: sleep.end,
+                                                       rest: sleep.restingHR)
+            let qualifiedHRV = metrics.hrvWindowCount >= 3 ? metrics.hrv : nil
+            guard sleep.hrv != qualifiedHRV
+                    || sleep.hrvWindowCount != metrics.hrvWindowCount else {
+                return sleep
+            }
+            return UserConfirmedSleep(id: sleep.id,
+                                      createdAt: sleep.createdAt,
+                                      start: sleep.start,
+                                      end: sleep.end,
+                                      source: sleep.source,
+                                      confidence: sleep.confidence,
+                                      sessions: sleep.sessions,
+                                      samples: sleep.samples,
+                                      avgHR: sleep.avgHR,
+                                      peakHR: sleep.peakHR,
+                                      restingHR: sleep.restingHR,
+                                      hrv: qualifiedHRV,
+                                      hrvWindowCount: metrics.hrvWindowCount,
+                                      duration: sleep.duration,
+                                      span: sleep.span,
+                                      reason: sleep.reason,
+                                      motionSource: sleep.motionSource,
+                                      motionValidated: sleep.motionValidated,
+                                      stageSegments: sleep.stageSegments,
+                                      eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier)
+        }
+    }
+
     @discardableResult
     private func saveConfirmedSleeps(_ sleeps: [UserConfirmedSleep]) -> Bool {
         guard canonicalMutationAllowed else {
@@ -24621,7 +24726,12 @@ final class SessionStore: ObservableObject {
         runQueuedSessionBackupAfterDeferredLoadIfNeeded()
         refreshBackupStatusCacheDeferred(reason: "deferred_session_load")
 
-        if finalPreparation.didRebuildBaseline {
+        let didRequalifyConfirmedSleepHRV = requalifyPersistedConfirmedSleepHRVFromSessionsIfNeeded(
+            merged,
+            reason: "deferred_session_load"
+        )
+
+        if finalPreparation.didRebuildBaseline && !didRequalifyConfirmedSleepHRV {
             let preparedBaseline = finalPreparation.baseline
             Task.detached(priority: .utility) {
                 preparedBaseline.save()
@@ -24665,6 +24775,62 @@ final class SessionStore: ObservableObject {
         #if DEBUG
         seedDebugStrengthWorkoutProofIfRequested(arguments: ProcessInfo.processInfo.arguments)
         #endif
+    }
+
+    /// Applies the exact-window HRV truth migration only after the deferred raw
+    /// session store is available. Changed morning days are authoritative: old
+    /// frozen recovery/HRV rows are removed before the ordinary history rebuild
+    /// can recreate sleep/RHR/strain fields from the preserved boundary. A day
+    /// whose RR cannot pass the current 2A37 gate therefore becomes honestly
+    /// nil instead of retaining an unreproducible legacy readiness score.
+    @discardableResult
+    private func requalifyPersistedConfirmedSleepHRVFromSessionsIfNeeded(
+        _ sourceSessions: [SavedSession],
+        reason: String,
+        calendar: Calendar = .current
+    ) -> Bool {
+        let before = cachedConfirmedSleeps
+        let after = Self.requalifiedConfirmedSleepHRVRecords(before,
+                                                              sessions: sourceSessions)
+        guard after != before else { return false }
+
+        let afterByID = Dictionary(uniqueKeysWithValues: after.map { ($0.id, $0) })
+        let changedSleeps = before.filter { old in
+            guard let updated = afterByID[old.id] else { return false }
+            return old.hrv != updated.hrv
+                || old.hrvWindowCount != updated.hrvWindowCount
+        }
+        let changedDays = Set(changedSleeps.map {
+            EventCivilTime.day(containing: $0.end,
+                               eventTimeZoneIdentifier: $0.eventTimeZoneIdentifier,
+                               outputCalendar: calendar)
+        })
+        guard !changedDays.isEmpty else { return false }
+
+        pendingDailyDerivedInvalidationDays.formUnion(changedDays)
+        guard saveConfirmedSleeps(after) else {
+            AtriaDebugLog("ATRIADBG confirmed_sleep_hrv_requalification status=failed reason=%@ changed_records=%d action=retain_derived_rows_until_retry",
+                          reason,
+                          changedSleeps.count)
+            return false
+        }
+
+        let filteredMetrics = dailyMetricHistory.filter { metric in
+            !changedDays.contains(calendar.startOfDay(for: metric.day))
+        }
+        if filteredMetrics != dailyMetricHistory {
+            dailyMetricHistory = filteredMetrics
+            scheduleDailyMetricPersist(reason: "confirmed_sleep_hrv_requalification")
+        }
+        dailyRollupStore.reconcile([], replacingDays: changedDays)
+        dailyRollupHistory = dailyRollupStore.rollups(last: 400)
+        dailyRollupHistoryRevision &+= 1
+        refreshHistorySnapshotCache(deferred: true)
+        AtriaDebugLog("ATRIADBG confirmed_sleep_hrv_requalification status=updated reason=%@ changed_records=%d invalidated_days=%d action=recompute_from_raw_2a37",
+                      reason,
+                      changedSleeps.count,
+                      changedDays.count)
+        return true
     }
 
     #if DEBUG
