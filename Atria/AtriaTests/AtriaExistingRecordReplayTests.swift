@@ -53,7 +53,9 @@ private enum AtriaExistingRecordReplay {
                 )
             }
             .max { $0.end < $1.end }
-        let confirmed = persisted.map { requalified($0, sessions: sessions) }
+        let confirmed = persisted.flatMap {
+            SessionStore.requalifiedConfirmedSleepHRVRecords([$0], sessions: sessions).first
+        }
             ?? candidate.map { autoConfirmed($0, sessions: sessions, now: now) }
         let confirmedSleeps = confirmed.map { [$0] } ?? []
         let baseline = SessionStore.rebuildBaseline(
@@ -122,25 +124,6 @@ private enum AtriaExistingRecordReplay {
         )
     }
 
-    private static func requalified(_ sleep: UserConfirmedSleep,
-                                    sessions: [SavedSession]) -> UserConfirmedSleep {
-        let value = SessionStore.confirmedSleepWindowMetrics(from: sessions,
-                                                             start: sleep.start,
-                                                             end: sleep.end,
-                                                             rest: sleep.restingHR)
-        return UserConfirmedSleep(id: sleep.id, createdAt: sleep.createdAt,
-                                  start: sleep.start, end: sleep.end, source: sleep.source,
-                                  confidence: sleep.confidence, sessions: value.sessions,
-                                  samples: value.samples, avgHR: value.avgHR, peakHR: value.peakHR,
-                                  restingHR: value.restingHR, hrv: value.hrv,
-                                  hrvWindowCount: value.hrvWindowCount, duration: sleep.duration,
-                                  span: sleep.span,
-                                  reason: "deterministic_existing_record_replay; \(sleep.reason)",
-                                  motionSource: sleep.motionSource,
-                                  motionValidated: sleep.motionValidated,
-                                  stageSegments: sleep.stageSegments,
-                                  eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier)
-    }
 }
 
 final class AtriaExistingRecordReplayTests: XCTestCase {
