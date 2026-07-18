@@ -7558,16 +7558,17 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, body, "standard_hr_only_write_blocked")
         assert_contains(self, text, "explicitWorkoutHaptic && command == Cmd.runHapticsPattern")
         assert_contains(self, text, "explicitWorkoutHaptic: true")
-        # Ten tightly-scoped writes intentionally exist outside generic
+        # Twelve tightly-scoped writes intentionally exist outside generic
         # sendCommand: the original explicit diagnostic, the two-write isolated
         # response/event/data R10+IMU diagnostic, the production-protected
         # single 3F/01 R10 activation, the physically-proven production
         # response/event/data 3F/01 -> 6A/01 pair, the full-protocol liveness repair (whose
         # standard-HR branch returns through the protected path), the
         # guarded one-shot battery query, and the workout motion lease's
-        # single per-connection validated 3F/01 -> 6A/01 activation pair.
+        # single per-connection validated 3F/01 -> 6A/01 activation pair, plus
+        # the one-shot same-connection short-burst 3F/01 -> 6A/01 recovery.
         # All ordinary strap writes remain behind the standard-HR guard above.
-        self.assertEqual(text.count("writeValue("), body.count("writeValue(") + 10)
+        self.assertEqual(text.count("writeValue("), body.count("writeValue(") + 12)
         assert_contains(self, text, "--atria-confirm-response-event-data-profile")
         assert_contains(self, text, "--atria-confirm-r10-imu-command-sequence")
         assert_contains(self, text, "Cmd.toggleIMUMode, 0x01")
@@ -7575,6 +7576,9 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, text, "Cmd.sendR10R11Realtime, 0x01")
         assert_contains(self, text, "if standardHROnlyMode {")
         assert_contains(self, text, "status=repair_scheduled mode=protected")
+        assert_contains(self, text, "shouldRetryProtectedR10ShortBurst(")
+        assert_contains(self, text, "shortBurstRetryConnectionAt")
+        assert_contains(self, text, "one_pair_same_connection_no_cccd_no_reconnect")
         self.assertEqual(body.count("writeValue("), 2)
 
     def test_realtime_retry_accepts_any_current_link_transport_evidence(self):
