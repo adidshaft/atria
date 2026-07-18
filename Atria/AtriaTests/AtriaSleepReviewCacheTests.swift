@@ -498,6 +498,46 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
                        "Confirm must never replace the displayed candidate with the physiological main sleep")
     }
 
+    func testTodayAndOverviewConfirmKeepRetryFeedbackWhenPersistenceFails() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaOverviewSections.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        let hostStart = try XCTUnwrap(source.range(of: "private struct AtriaSleepReviewHost: View"))
+        let hostEnd = try XCTUnwrap(source.range(of: "private struct AtriaAutoSleepLoggedBanner: View",
+                                                 range: hostStart.upperBound..<source.endIndex))
+        let host = String(source[hostStart.lowerBound..<hostEnd.lowerBound])
+        XCTAssertTrue(host.contains("store.confirmSleepHistoryNightForUI(night,"))
+        XCTAssertTrue(host.contains("source: \"overview_sleep_review\") != nil"),
+                      "Today must pass canonical persistence success back to the displayed review card")
+
+        let cardStart = try XCTUnwrap(source.range(of: "private struct AtriaSleepReviewCard: View"))
+        let cardEnd = try XCTUnwrap(source.range(of: "struct AtriaTodaySleepReviewSection: View",
+                                                 range: cardStart.upperBound..<source.endIndex))
+        let card = String(source[cardStart.lowerBound..<cardEnd.lowerBound])
+        XCTAssertTrue(card.contains("let onConfirm: () -> Bool"))
+        XCTAssertTrue(card.contains("sleepConfirmationFailed = !onConfirm()"))
+        XCTAssertTrue(card.contains("The suggestion is still here"),
+                      "A failed Today save must remain visible and retryable")
+        XCTAssertTrue(card.contains(".onChange(of: night.id)"),
+                      "Failure feedback must not leak onto the next candidate")
+
+        let journalHostStart = try XCTUnwrap(source.range(of: "struct AtriaOverviewMorningJournalHost: View"))
+        let journalCardEnd = try XCTUnwrap(source.range(of: "private struct AtriaJournalTodayTagStrip: View",
+                                                        range: journalHostStart.upperBound..<source.endIndex))
+        let journal = String(source[journalHostStart.lowerBound..<journalCardEnd.lowerBound])
+        XCTAssertTrue(journal.contains("let onConfirmSleep: () -> Bool"))
+        XCTAssertTrue(journal.contains("source: \"morning_journal\""))
+        XCTAssertTrue(journal.contains(") != nil"),
+                      "Overview morning journal must retain canonical persistence success")
+        XCTAssertTrue(journal.contains("sleepConfirmationFailed = !onConfirmSleep()"))
+        XCTAssertTrue(journal.contains("The suggestion is still here"),
+                      "A failed Overview save must remain visible and retryable")
+        XCTAssertTrue(journal.contains(".onChange(of: latestNight?.id)"))
+    }
+
     func testReviewSaveRoutesUnchangedWindowToConfirmationAndEditedWindowToRederivation() {
         let review = reviewNight(id: "routing")
         let start = review.start!

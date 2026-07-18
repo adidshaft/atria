@@ -744,9 +744,9 @@ private struct AtriaSleepReviewHost: View {
         if let night = pending {
             AtriaSleepReviewCard(night: night,
                                  onConfirm: {
-                                     _ = store.confirmSleepHistoryNightForUI(night,
-                                                                             rest: store.baseline.restingInt ?? 60,
-                                                                             source: "overview_sleep_review")
+                                     store.confirmSleepHistoryNightForUI(night,
+                                                                         rest: store.baseline.restingInt ?? 60,
+                                                                         source: "overview_sleep_review") != nil
                                  },
                                  onAdjust: { adjustmentNight = night },
                                  onDismiss: { _ = store.dismissSleepCandidate(night) })
@@ -1075,9 +1075,10 @@ private struct AtriaSleepSyncNeededCard: View, Equatable {
 
 private struct AtriaSleepReviewCard: View {
     let night: SleepHistorySnapshot.Night
-    let onConfirm: () -> Void
+    let onConfirm: () -> Bool
     let onAdjust: () -> Void
     let onDismiss: () -> Void
+    @State private var sleepConfirmationFailed = false
 
     private var isNap: Bool { night.isNapEvidence }
     private var title: String {
@@ -1159,11 +1160,23 @@ private struct AtriaSleepReviewCard: View {
 
             sleepReviewActionButtons
 
+            if sleepConfirmationFailed {
+                Label("Couldn't save. The suggestion is still here — try again, or tap Adjust to change the window.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Couldn't save sleep. The suggestion remains available. Try again or adjust the detected window.")
+            }
+
             sleepReviewNightArc
         }
         .padding(16)
         .atriaCard(emphasis: .soft)
         .accessibilityElement(children: .contain)
+        .onChange(of: night.id) { _, _ in
+            sleepConfirmationFailed = false
+        }
     }
 
     private var sleepReviewActionButtons: some View {
@@ -1172,7 +1185,9 @@ private struct AtriaSleepReviewCard: View {
         // lines kept); Confirm keeps its icon with a readable scale guard;
         // spacing widened for tap separation.
         HStack(spacing: 10) {
-            Button(action: onConfirm) {
+            Button {
+                sleepConfirmationFailed = !onConfirm()
+            } label: {
                 // "Confirm" alone — the card title already names what is
                 // being confirmed, and the full phrase cropped at a third of
                 // the card width (UX audit follow-up).
@@ -12284,11 +12299,12 @@ struct AtriaOverviewMorningJournalHost: View {
                                             store.toggleBehaviorTag(tag)
                                         },
                                         onConfirmSleep: {
-                                            if let night = sleepHistory.latest {
-                                                _ = store.confirmSleepHistoryNightForUI(night,
-                                                                                       rest: store.baseline.restingInt ?? 60,
-                                                                                       source: "morning_journal")
-                                            }
+                                            guard let night = sleepHistory.latest else { return false }
+                                            return store.confirmSleepHistoryNightForUI(
+                                                night,
+                                                rest: store.baseline.restingInt ?? 60,
+                                                source: "morning_journal"
+                                            ) != nil
                                         },
                                         onAdjustSleep: {
                                             adjustmentNight = sleepHistory.latest
@@ -12446,10 +12462,11 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
     let todayEntry: BehaviorJournalEntry
     let taggedDays: Int
     let onToggleTag: (BehaviorJournalEntry.Tag) -> Void
-    let onConfirmSleep: () -> Void
+    let onConfirmSleep: () -> Bool
     let onAdjustSleep: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showsAllJournalTags = false
+    @State private var sleepConfirmationFailed = false
 
     static func == (lhs: AtriaOverviewMorningJournalCard, rhs: AtriaOverviewMorningJournalCard) -> Bool {
         lhs.snapshot.sleepValue == rhs.snapshot.sleepValue
@@ -12575,7 +12592,9 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
                             }
                             .atriaCardAction(prominent: false, tint: .cyan)
 
-                            Button(action: onConfirmSleep) {
+                            Button {
+                                sleepConfirmationFailed = !onConfirmSleep()
+                            } label: {
                                 Label(latestNight?.isNapEvidence == true ? "Confirm nap" : "Confirm sleep",
                                       systemImage: "checkmark.circle")
                                     .font(.caption.weight(.semibold))
@@ -12583,6 +12602,15 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
                             }
                             .atriaCardAction(tint: .cyan)
                         }
+                    }
+
+                    if sleepConfirmationFailed {
+                        Label("Couldn't save. The suggestion is still here — try again, or tap Adjust to change the window.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityLabel("Couldn't save sleep. The suggestion remains available. Try again or adjust the detected window.")
                     }
                 }
 
@@ -12643,6 +12671,9 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
         }
         .padding(16)
         .atriaCard(emphasis: .soft)
+        .onChange(of: latestNight?.id) { _, _ in
+            sleepConfirmationFailed = false
+        }
     }
 
     private static let tagColumns = [GridItem(.adaptive(minimum: 118), spacing: 8)]
