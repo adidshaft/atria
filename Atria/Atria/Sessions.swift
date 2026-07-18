@@ -7141,6 +7141,7 @@ final class SessionStore: ObservableObject {
                                               confirmedWorkouts: confirmedWorkouts,
                                               archiveHeartRatePoints: archiveHeartRatePoints,
                                               biologicalSex: biologicalSex,
+                                              baselineRestingIsTrusted: baseline.hasTrustedRestingBaseline(now: Date()),
                                               rest: rest,
                                               maxHR: maxHR,
                                               calendar: calendar)
@@ -7187,9 +7188,10 @@ final class SessionStore: ObservableObject {
                                                     confirmedWorkouts: [UserConfirmedWorkout],
                                                     archiveHeartRatePoints: [HistoricalArchive.HeartRatePoint] = [],
                                                     biologicalSex: AthleteProfile.BiologicalSex = .unspecified,
+                                                    baselineRestingIsTrusted: Bool = false,
                                                     rest: Int,
-                                                            maxHR: Int,
-                                                            calendar: Calendar) -> [DailyRollup] {
+                                                    maxHR: Int,
+                                                    calendar: Calendar) -> [DailyRollup] {
         let grouped = Dictionary(grouping: sessions) { session in
             EventCivilTime.day(containing: session.start,
                                eventTimeZoneIdentifier: session.eventTimeZoneIdentifier,
@@ -7248,7 +7250,12 @@ final class SessionStore: ObservableObject {
             let aggregateSleep = aggregateSleeps[day]
             // A rollup is ready only when either the motion-backed gate or the
             // narrow physiological HR-only main-sleep gate can persist it.
-            let aggregateSleepReady = (aggregateSleep.map(Self.isAutoConfirmableMainSleepCandidate) == true) ? 1 : 0
+            let aggregateSleepReady = (aggregateSleep.map {
+                Self.isAutoConfirmableMainSleepCandidate(
+                    $0,
+                    baselineRestingIsTrusted: baselineRestingIsTrusted
+                )
+            } == true) ? 1 : 0
             let sleepStart = aggregateSleep?.start
             let sleepEnd = aggregateSleep?.end
             let sleepStageSegments = aggregateSleep.map { candidate in
@@ -16490,9 +16497,11 @@ final class SessionStore: ObservableObject {
 
     nonisolated static func isUnambiguousHROnlyMainSleepCandidate(_ candidate: AggregateSleepCandidate,
                                                                    calendar: Calendar = .current) -> Bool {
+        _ = calendar
         guard candidate.kind != "nap_candidate",
               candidate.duration >= 5 * 60 * 60,
               candidate.span <= candidate.duration * 1.20,
+              candidate.span <= AggregateSleepCandidate.maximumAutoConfirmMainSleepSpan,
               candidate.maxGap <= AggregateSleepCandidate.briefSleepGapCreditMax,
               Double(candidate.samples) >= candidate.duration / 90,
               candidate.hrObservedCoverageFraction >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction,
@@ -16503,12 +16512,12 @@ final class SessionStore: ObservableObject {
               candidate.hrP90 <= candidate.baselineRestingHR + 18,
               candidate.elevatedSampleFraction < 0.05,
               candidate.elevatedSampleFraction * candidate.duration < 10 * 60 else { return false }
-        let eventCalendar = EventCivilTime.eventCalendar(timeZoneIdentifier: candidate.eventTimeZoneIdentifier,
-                                                         fallback: calendar)
-        // The window establishes that this is a main-sleep-shaped observation;
-        // eligibility itself comes entirely from the physiological shape above,
-        // never from a start/end-hour shortcut.
-        return mainSleepAutoConfirmWindowReady(candidate, calendar: eventCalendar)
+        // This tier is deliberately clock-independent. Trusted personal resting
+        // physiology plus five hours of dense, stable low-HR wear is the
+        // discriminator, so shift-work sleep is treated identically to the same
+        // biological signal at night. Ambiguous HR-only candidates still stop at
+        // the separate review-only tier below. (2026-07-18 P1 truth fix)
+        return true
     }
 
     /// High-specificity HR-only overnight review tier for a fragmented or
@@ -19210,6 +19219,8 @@ final class SessionStore: ObservableObject {
 
     func dailyRollups(rest: Int, maxHR: Int, calendar: Calendar = .current) -> [DailyRollup] {
         let replaySessions = canonicalSessions()
+        let baselineRestingIsTrusted = baseline.restingInt != nil
+            && baseline.hasTrustedRestingBaseline(now: Date())
         let grouped = Dictionary(grouping: replaySessions) { session in
             EventCivilTime.day(containing: session.start,
                                eventTimeZoneIdentifier: session.eventTimeZoneIdentifier,
@@ -19264,7 +19275,12 @@ final class SessionStore: ObservableObject {
             let aggregateSleep = aggregateSleeps[day]
             // A rollup is ready only when either the motion-backed gate or the
             // narrow physiological HR-only main-sleep gate can persist it.
-            let aggregateSleepReady = (aggregateSleep.map(Self.isAutoConfirmableMainSleepCandidate) == true) ? 1 : 0
+            let aggregateSleepReady = (aggregateSleep.map {
+                Self.isAutoConfirmableMainSleepCandidate(
+                    $0,
+                    baselineRestingIsTrusted: baselineRestingIsTrusted
+                )
+            } == true) ? 1 : 0
             let sleepCandidates = max(singleSessionSleepCandidates, aggregateSleep == nil ? 0 : 1)
             let singleSessionSleepDuration = detections
                 .filter { $0.kind == .sleepCandidate }
@@ -19752,8 +19768,24 @@ final class SessionStore: ObservableObject {
                 && session.avg <= rest + 22
                 && sessionP90 <= rest + 45
                 && elevatedFraction <= 0.18
+            // A trusted-baseline auto-confirm decision is made later, but the
+            // candidate builder must not discard the same unmistakably stable
+            // physiology solely because it occurred outside conventional sleep
+            // hours. Keep this admission gate at least as strict as the final
+            // HR-only predicate; dense coverage and span are checked on the
+            // resulting aggregate. (2026-07-18 shift-work truth fix)
+            let longStableHROnlyMainSleepLike = session.duration >= AggregateSleepCandidate.minimumAutoConfirmMainSleepDuration
+                && session.duration <= AggregateSleepCandidate.maximumAutoConfirmMainSleepSpan
+                && session.avg <= rest + 12
+                && standardDeviation(sessionHR.map(Double.init)) <= 9.5
+                && sessionP90 <= rest + 18
+                && elevatedFraction < 0.05
             let notWorkout = !session.workoutReadiness(rest: rest, maxHR: maxHR).ready
-            return ((overnight && lowHR) || longOvernightReviewLike || napLike || shortLowHRNapLike) && notWorkout
+            return ((overnight && lowHR)
+                || longOvernightReviewLike
+                || longStableHROnlyMainSleepLike
+                || napLike
+                || shortLowHRNapLike) && notWorkout
         }
         // Cluster first, then assign the wake-day. Bucketing each fragment first
         // splits a single night when one fragment ends before midnight and the
@@ -19880,8 +19912,9 @@ final class SessionStore: ObservableObject {
                     ? "diagnostic motion observed unvalidated"
                     : "motion not decoded"
                 // Medium confidence is reserved for validated strap
-                // motion/stillness. A physiologically plausible HR-only window is
-                // always low-confidence and review-only.
+                // motion/stillness. HR-only remains low-confidence in the raw
+                // candidate; only the later trusted-personal-baseline predicate
+                // can promote an unambiguous five-hour physiological window.
                 let confidence: ActivityDetection.Confidence = motionValidated ? .medium : .low
                 let motionValidatedMainSleepReady = !napCandidateReady
                     && motionValidated

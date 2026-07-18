@@ -390,6 +390,49 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
                        "auto_confirmed_sleep_hr_only")
     }
 
+    func testStableShiftWorkerHROnlyMainSleepUsesPhysiologyNotClockTime() throws {
+        let shiftSleep = session(start: date(2032, 7, 5, 9, 0),
+                                 end: date(2032, 7, 5, 14, 30),
+                                 bpm: 52)
+
+        let candidate = try XCTUnwrap(candidates([shiftSleep]).first)
+        XCTAssertFalse(candidate.motionEvidenceValidated)
+        XCTAssertTrue(SessionStore.isUnambiguousHROnlyMainSleepCandidate(
+            candidate,
+            calendar: Self.utcCalendar
+        ))
+        XCTAssertTrue(SessionStore.isAutoConfirmableMainSleepCandidate(
+            candidate,
+            baselineRestingIsTrusted: true
+        ), "an identical trusted sleep physiology must not depend on wall-clock hour")
+        XCTAssertFalse(SessionStore.isAutoConfirmableMainSleepCandidate(
+            candidate,
+            baselineRestingIsTrusted: false
+        ), "HR-only auto-confirm still requires a trusted personal resting baseline")
+
+        let trustedRollup = try XCTUnwrap(SessionStore.makeHistoryDailyRollups(
+            sessions: [shiftSleep],
+            detections: [],
+            confirmedWorkouts: [],
+            baselineRestingIsTrusted: true,
+            rest: 50,
+            maxHR: 190,
+            calendar: Self.utcCalendar
+        ).first)
+        XCTAssertEqual(trustedRollup.sleepReady, 1)
+
+        let untrustedRollup = try XCTUnwrap(SessionStore.makeHistoryDailyRollups(
+            sessions: [shiftSleep],
+            detections: [],
+            confirmedWorkouts: [],
+            baselineRestingIsTrusted: false,
+            rest: 50,
+            maxHR: 190,
+            calendar: Self.utcCalendar
+        ).first)
+        XCTAssertEqual(untrustedRollup.sleepReady, 0)
+    }
+
     func testClusteredHRBurstCannotClaimWholeNightCoverage() throws {
         let start = date(2032, 7, 5, 23, 0)
         let end = date(2032, 7, 6, 5, 0)
