@@ -1934,10 +1934,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaGlanceMetricCard(title: \"Sleep eff\"",
             # 2026-07-06: not-ready word standardized "Building" -> "Learning".
             # 2026-07-12: glance sleep metrics are anchored to main sleep.
-            "value: sleepHistory.latestMainSleep?.sleepEfficiencyText ?? \"Learning\"",
+            "value: currentMainSleep?.sleepEfficiencyText ?? \"Learning\"",
             "Duration-based",
             # 2026-07-12: accessibility copy follows the main-night metric.
-            "accessibilityDetail: sleepHistory.latestMainSleep?.sleepEfficiency == nil",
+            "accessibilityDetail: currentMainSleep?.sleepEfficiency == nil",
             "Sleep efficiency is building from saved sleep duration",
             "title: sleepGlanceTitleText",
             "value: sleepGlanceValueText",
@@ -1947,7 +1947,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "zone: sleepGlanceZone",
             "private var sleepGlanceValueText: String",
             # 2026-07-12: the glance is always the main night; naps stay in review.
-            "if let latest = sleepHistory.latestMainSleep",
+            "if let latest = currentMainSleep",
             "return latest.durationText",
             "if sleepHistory.candidateCount > 0",
             "return \"\\(sleepHistory.candidateCount)\"",
@@ -1999,10 +1999,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "snapshot.sleepConsistencyText",
             "snapshot.sleepDebtText(goalHours: sleepGoalHours)",
             "AtriaGlanceMetricCard(title: \"Resp rate\"",
-            "value: sleepHistory.latestMainSleep?.respiratoryRateText ?? \"--\"",
+            "value: currentMainSleep?.respiratoryRateText ?? \"--\"",
             "Sleep signal",
-            "detail: sleepHistory.latestMainSleep?.respiratoryRate == nil ? \"Sleep signal\" : \"Early\"",
-            "accessibilityDetail: sleepHistory.latestMainSleep?.respiratoryRate == nil",
+            "detail: currentMainSleep?.respiratoryRate == nil ? \"Sleep signal\" : \"Early\"",
+            "accessibilityDetail: currentMainSleep?.respiratoryRate == nil",
             "Respiratory rate is building from sleep-only evidence.",
             "AtriaGlanceMetricCard(title: \"Strap steps\"",
             "value: status.tileValue",
@@ -13537,7 +13537,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "yellowDelta: restingYellowDelta",
             "return Metrics.sleepDurationZone(latest.durationHours, goalHours: sleepGoalHours)",
             # 2026-07-12: zone color uses the same main night as the metric.
-            "Metrics.sleepEfficiencyZone(sleepHistory.latestMainSleep?.sleepEfficiency,",
+            "Metrics.sleepEfficiencyZone(currentMainSleep?.sleepEfficiency,",
             "greenLower: sleepEfficiencyGreenLower",
             "yellowLower: sleepEfficiencyYellowLower",
             "Metrics.stepsZone(sensorSummary.strapStepCount, goal: stepsGoal)",
@@ -13550,7 +13550,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "greenOlderDelta: biologicalAgeGreenOlderDelta",
             "yellowOlderDelta: biologicalAgeYellowOlderDelta",
             # 2026-07-12: respiratory target zones use main sleep, not naps.
-            "Metrics.respiratoryRateZone(sleepHistory.latestMainSleep?.respiratoryRate,",
+            "Metrics.respiratoryRateZone(currentMainSleep?.respiratoryRate,",
             "baseline: sleepHistory.respiratoryBaselineMean",
             "baselineSamples: sleepHistory.respiratoryBaselineCount",
             "greenDelta: respiratoryGreenDelta",

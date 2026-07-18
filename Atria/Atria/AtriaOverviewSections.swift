@@ -1550,6 +1550,27 @@ struct AtriaOverviewReadinessProjectionState: Equatable {
     }
 }
 
+/// Resolves the sleep that belongs to the live wake-to-wake cycle. Sleep History
+/// intentionally retains the newest confirmed night indefinitely; Today's
+/// Overview must not present that historical record as if it happened last
+/// night after a no-sleep fallback boundary has passed.
+enum AtriaOverviewCurrentSleep {
+    static func resolve(from snapshot: SleepHistorySnapshot,
+                        now: Date = Date(),
+                        calendar: Calendar = .current) -> SleepHistorySnapshot.Night? {
+        guard let latest = snapshot.latestMainSleep,
+              let wake = latest.end,
+              wake <= now else { return nil }
+        let eventCalendar = EventCivilTime.eventCalendar(
+            timeZoneIdentifier: latest.eventTimeZoneIdentifier,
+            fallback: calendar
+        )
+        guard let noSleepBoundary = eventCalendar.date(byAdding: .day, value: 1, to: wake),
+              noSleepBoundary > now else { return nil }
+        return latest
+    }
+}
+
 /// Retained, equality-gated bridge for the slow SessionStore values rendered by
 /// the readiness section. The host keeps SessionStore only for user actions.
 @MainActor
@@ -3233,7 +3254,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var sleepTriRingDetailText: String {
-        if let latest = sleepHistory.latestMainSleep, latest.confirmed {
+        if let latest = currentMainSleep, latest.confirmed {
             switch sleepGlanceZone?.level {
             case .green: return "Good"
             case .yellow: return "Fair"
@@ -3273,7 +3294,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var sleepFocusProgress: Double? {
-        guard let latest = sleepHistory.latestMainSleep,
+        guard let latest = currentMainSleep,
               latest.confirmed,
               latest.isNapEvidence != true,
               sleepGoalHours.isFinite,
@@ -3650,14 +3671,14 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             sleepHistoryCard
         case .sleepEfficiency:
             AtriaGlanceMetricCard(title: "Sleep eff",
-                                  value: sleepHistory.latestMainSleep?.sleepEfficiencyText ?? "Learning",
-                                  detail: sleepHistory.latestMainSleep?.sleepEfficiency == nil ? "Needs time in bed" : "Duration-based",
+                                  value: currentMainSleep?.sleepEfficiencyText ?? "Learning",
+                                  detail: currentMainSleep?.sleepEfficiency == nil ? "Needs time in bed" : "Duration-based",
                                   systemImage: metric.systemImage,
-                                  tint: sleepEfficiencyZone?.tint ?? (sleepHistory.latestMainSleep?.sleepEfficiency == nil ? .orange : .cyan),
+                                  tint: sleepEfficiencyZone?.tint ?? (currentMainSleep?.sleepEfficiency == nil ? .orange : .cyan),
                                   zone: sleepEfficiencyZone,
-                                  accessibilityDetail: sleepHistory.latestMainSleep?.sleepEfficiency == nil
+                                  accessibilityDetail: currentMainSleep?.sleepEfficiency == nil
                                     ? "Sleep efficiency is building from saved sleep duration."
-                                    : "Sleep efficiency duration-based estimate \(sleepHistory.latestMainSleep?.sleepEfficiencyText ?? "Learning").",
+                                    : "Sleep efficiency duration-based estimate \(currentMainSleep?.sleepEfficiencyText ?? "Learning").",
                                   calibratingDay: sleepEfficiencyCalibratingDay)
         case .sleepPerformance:
             detailButton(.sleepPerformance) {
@@ -3686,14 +3707,14 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             }
         case .respiratoryRate:
             AtriaGlanceMetricCard(title: "Resp rate",
-                                  value: sleepHistory.latestMainSleep?.respiratoryRateText ?? "--",
-                                  detail: sleepHistory.latestMainSleep?.respiratoryRate == nil ? "Sleep signal" : "Early",
+                                  value: currentMainSleep?.respiratoryRateText ?? "--",
+                                  detail: currentMainSleep?.respiratoryRate == nil ? "Sleep signal" : "Early",
                                   systemImage: metric.systemImage,
-                                  tint: respiratoryRateZone?.tint ?? (sleepHistory.latestMainSleep?.respiratoryRate == nil ? .orange : Metrics.electricRespiratory),
+                                  tint: respiratoryRateZone?.tint ?? (currentMainSleep?.respiratoryRate == nil ? .orange : Metrics.electricRespiratory),
                                   zone: respiratoryRateZone,
-                                  accessibilityDetail: sleepHistory.latestMainSleep?.respiratoryRate == nil
+                                  accessibilityDetail: currentMainSleep?.respiratoryRate == nil
                                     ? "Respiratory rate is building from sleep-only evidence."
-                                    : "Respiratory rate early sleep-only signal \(sleepHistory.latestMainSleep?.respiratoryRateText ?? "--") breaths per minute.")
+                                    : "Respiratory rate early sleep-only signal \(currentMainSleep?.respiratoryRateText ?? "--") breaths per minute.")
         case .steps:
             Button { showStrapStepsDetail = true } label: {
                 TimelineView(.periodic(from: .now, by: 30)) { context in
@@ -3793,14 +3814,17 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                             : "Open Vitals. Sleep history average \(sleepHistory.averageDurationText). \(sleepHistory.averageFootnoteText)")
     }
 
+    private var currentMainSleep: SleepHistorySnapshot.Night? {
+        AtriaOverviewCurrentSleep.resolve(from: sleepHistory)
+    }
+
     private var sleepGlanceValueText: String {
-        if let latest = sleepHistory.latestMainSleep {
+        if let latest = currentMainSleep {
             return latest.durationText
         }
         if sleepHistory.candidateCount > 0 {
             return "\(sleepHistory.candidateCount)"
         }
-        if !metricIsPending(snapshot.sleepValue) { return snapshot.sleepValue }
         // Canonical not-ready word. Sleep is available after one night (not a 4-night
         // calibration like recovery), so it shows "Learning", not a "Day X" countdown.
         return "Learning"
@@ -3815,14 +3839,13 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var sleepGlanceDetailText: String {
-        if let latest = sleepHistory.latestMainSleep {
+        if let latest = currentMainSleep {
             if latest.confirmed {
                 return "Last"
             }
             return "Review"
         }
         if sleepHistory.candidateCount > 0 { return "Review" }
-        if !metricIsPending(snapshot.sleepValue) { return snapshot.sleepValue == "Maybe" ? "Review" : "Last" }
         // Canonical not-ready word, and consistent with sleepGlanceValueText above:
         // sleep is available after ONE night (not a 4-night calibration like
         // recovery), so it shows "Learning" — never a "Day X of 4" countdown or the
@@ -3833,7 +3856,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private var sleepGlanceTint: Color {
         // Legacy handoff token retained for static audit context:
         // sleepHistory.candidateCount > 0 ? .cyan : .orange
-        if let latest = sleepHistory.latestMainSleep {
+        if let latest = currentMainSleep {
             if !latest.confirmed {
                 return .cyan
             }
@@ -3977,11 +4000,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var sleepCalibratingDay: Int? {
-        sleepHistory.latestMainSleep == nil ? calibratingDay(sampleCount: sleepHistory.nights.count) : nil
+        currentMainSleep == nil ? calibratingDay(sampleCount: sleepHistory.nights.count) : nil
     }
 
     private var sleepEfficiencyCalibratingDay: Int? {
-        sleepHistory.latestMainSleep?.sleepEfficiency == nil ? calibratingDay(sampleCount: sleepHistory.nights.count) : nil
+        currentMainSleep?.sleepEfficiency == nil ? calibratingDay(sampleCount: sleepHistory.nights.count) : nil
     }
 
     private func calibratingDay(sampleCount: Int) -> Int {
@@ -4121,7 +4144,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var sleepEfficiencyZone: AtriaMetricZone? {
-        Metrics.sleepEfficiencyZone(sleepHistory.latestMainSleep?.sleepEfficiency,
+        Metrics.sleepEfficiencyZone(currentMainSleep?.sleepEfficiency,
                                     greenLower: sleepEfficiencyGreenLower,
                                     yellowLower: sleepEfficiencyYellowLower)
     }
@@ -4130,7 +4153,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         // A nap or unconfirmed review item is not a deficient night — don't grade
         // it against the nightly sleep goal (that turned "24m last nap" into a
         // red alarm before the user had a chance to review it).
-        guard let latest = sleepHistory.latestMainSleep,
+        guard let latest = currentMainSleep,
               latest.confirmed,
               latest.isNapEvidence != true else { return nil }
         // Metrics.sleepDurationZone(sleepHistory.latest?.durationHours, goalHours: sleepGoalHours)
@@ -4181,7 +4204,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var respiratoryRateZone: AtriaMetricZone? {
-        return Metrics.respiratoryRateZone(sleepHistory.latestMainSleep?.respiratoryRate,
+        return Metrics.respiratoryRateZone(currentMainSleep?.respiratoryRate,
                                            baseline: sleepHistory.respiratoryBaselineMean,
                                            baselineSamples: sleepHistory.respiratoryBaselineCount,
                                            greenDelta: respiratoryGreenDelta,
