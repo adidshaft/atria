@@ -691,25 +691,95 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
     }
 
-    func testProofChurnWithLeaseHeldRetainsQualifiedOwnerUpToThreshold() throws {
+    func testInterruptedProofCannotRetainQualifiedOwnerWithoutStableTransport() throws {
         let source = try leaseManagerSource()
         let fb = try XCTUnwrap(source.range(of: "private func persistProtectedR10CleanOwnerFallback"))
         let fbBody = String(source[fb.lowerBound...].prefix(4_500))
-        XCTAssertTrue(fbBody.contains("workoutMotionOwnerStartedAt != nil"),
-                      "an in-memory or persisted motion lease must gate proof-churn tolerance")
-        XCTAssertTrue(fbBody.contains("WorkoutMotionDefaults.ownerStartedAt"))
-        XCTAssertTrue(fbBody.contains("protectedR10StableTransportQualifiedAtKey) != nil"),
-                      "churn tolerance is only honest with a prior physical qualification")
-        XCTAssertTrue(fbBody.contains("protectedR10ProofChurnFailureCountKey"))
-        XCTAssertTrue(fbBody.contains("churnFailures < Self.protectedR10ProofChurnFallbackThreshold"),
-                      "one mid-proof disconnect must never demote the qualified owner (2026-07-16 21:27 IST)")
-        XCTAssertTrue(fbBody.contains("status=proof_churn_tolerated"))
+        XCTAssertTrue(fbBody.contains("pure_hr_fallback_no_false_qualification"))
+        XCTAssertFalse(fbBody.contains("retain_qualified_owner_retry_next_connection"),
+                       "a historical qualification cannot certify a failed current density proof")
         XCTAssertTrue(fbBody.contains("protectedR10FallbackAtKey"),
                       "an honored fallback must stamp its time so requalification is cooldown-bounded")
-        let qualify = try XCTUnwrap(source.range(of: "private func qualifyProtectedR10RecoveryIfNeeded"))
-        let qualifyBody = String(source[qualify.lowerBound...].prefix(1_600))
-        XCTAssertTrue(qualifyBody.contains("set(0, forKey: Self.protectedR10ProofChurnFailureCountKey)"),
-                      "a successful qualification must clear the churn streak")
+        XCTAssertFalse(AtriaBLEManager.protectedR10QualificationIsEvidenceConsistent(
+            cleanOwnerState: .qualified,
+            stableTransportProven: false
+        ))
+        XCTAssertTrue(AtriaBLEManager.protectedR10QualificationIsEvidenceConsistent(
+            cleanOwnerState: .qualified,
+            stableTransportProven: true
+        ))
+        XCTAssertTrue(AtriaBLEManager.protectedR10QualificationIsEvidenceConsistent(
+            cleanOwnerState: .fallbackPending,
+            stableTransportProven: false
+        ))
+    }
+
+    func testV9ShortBurstGetsOneBoundedSameConnectionRetry() {
+        let connectedAt = Date(timeIntervalSince1970: 1_000)
+        XCTAssertTrue(AtriaBLEManager.shouldRetryProtectedR10ShortBurst(
+            proofActive: true,
+            connected: true,
+            heartRateNotifying: true,
+            framesAfterActivation: 2,
+            lastFrameAge: 21,
+            connectedAt: connectedAt,
+            retryConnectionAt: nil
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldRetryProtectedR10ShortBurst(
+            proofActive: true,
+            connected: true,
+            heartRateNotifying: true,
+            framesAfterActivation: 2,
+            lastFrameAge: 21,
+            connectedAt: connectedAt,
+            retryConnectionAt: connectedAt
+        ), "the persisted epoch stamp must make watchdog replays one-shot")
+        XCTAssertTrue(AtriaBLEManager.shouldRetryProtectedR10ShortBurst(
+            proofActive: true,
+            connected: true,
+            heartRateNotifying: true,
+            framesAfterActivation: 2,
+            lastFrameAge: 21,
+            connectedAt: connectedAt.addingTimeInterval(60),
+            retryConnectionAt: connectedAt
+        ), "a later physical connection receives its own bounded recovery")
+    }
+
+    func testV9ShortBurstRetryFailsClosedUntilCrcEvidenceIsStale() {
+        let connectedAt = Date(timeIntervalSince1970: 2_000)
+        for (frames, age) in [(0, 30.0), (2, 19.9), (75, 30.0)] {
+            XCTAssertFalse(AtriaBLEManager.shouldRetryProtectedR10ShortBurst(
+                proofActive: true,
+                connected: true,
+                heartRateNotifying: true,
+                framesAfterActivation: frames,
+                lastFrameAge: age,
+                connectedAt: connectedAt,
+                retryConnectionAt: nil
+            ))
+        }
+        XCTAssertFalse(AtriaBLEManager.shouldRetryProtectedR10ShortBurst(
+            proofActive: true,
+            connected: true,
+            heartRateNotifying: false,
+            framesAfterActivation: 2,
+            lastFrameAge: 30,
+            connectedAt: connectedAt,
+            retryConnectionAt: nil
+        ), "motion recovery must never take priority over standard HR/RR")
+    }
+
+    func testV9ShortBurstRetryReceivesAReachableFullDensityWindow() throws {
+        let source = try leaseManagerSource()
+        let retry = try XCTUnwrap(source.range(
+            of: "private func retryProtectedR10ShortBurstIfEligible"
+        ))
+        let body = String(source[retry.lowerBound...].prefix(6_000))
+        XCTAssertTrue(body.contains("protectedR10StabilityTask?.cancel()"))
+        XCTAssertTrue(body.contains("Self.protectedR10EarlyDisconnectWindow"))
+        XCTAssertTrue(body.contains("protectedR10StabilityWindowIsProven"))
+        XCTAssertTrue(body.contains("response_event_data_short_burst_retry_insufficient_density"))
+        XCTAssertTrue(body.contains("response_event_data_retry_receiving_crc_valid"))
     }
 
     func testInterruptedV9ProofSelectsFreshPureHRV10WithoutReplayingCommands() throws {
@@ -5331,16 +5401,19 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
     }
 
 
-    func testLeaseBringUpNeverDemotesQualifiedOwnerAndReleaseRestoresState() throws {
+    func testLeaseBringUpFailureAndReleaseNeverRestoreFalseQualification() throws {
         let source = try leaseManagerSource()
         let fb = try XCTUnwrap(source.range(of: "private func persistProtectedR10CleanOwnerFallback"))
         let fbBody = String(source[fb.lowerBound...].prefix(1_800))
         XCTAssertTrue(fbBody.contains("if workoutMotionLeaseProfileArmed {"),
-                      "an interrupted lease bring-up must not demote the qualified transport")
-        XCTAssertTrue(fbBody.contains("retain_qualified_owner_retry_next_connection"))
+                      "an interrupted lease bring-up must clear its in-flight ownership")
+        XCTAssertTrue(fbBody.contains("pure_hr_fallback_no_false_qualification"))
+        XCTAssertFalse(fbBody.contains("ProtectedR10CleanOwnerState.qualified.rawValue"))
         let end = try XCTUnwrap(source.range(of: "func endWorkoutMotionLease"))
         let endBody = String(source[end.lowerBound...].prefix(2_200))
         XCTAssertTrue(endBody.contains("workoutMotionLeaseProfileArmed = false"))
+        XCTAssertTrue(endBody.contains("lease_released_before_density_proof"))
+        XCTAssertFalse(endBody.contains("ProtectedR10CleanOwnerState.qualified.rawValue"))
         XCTAssertTrue(source.contains("status=lease_full_bring_up_armed"))
     }
 

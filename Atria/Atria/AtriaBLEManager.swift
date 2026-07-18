@@ -2416,6 +2416,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let protectedR10FallbackAtKey = "atria.protectedR10.fallbackAt"
     nonisolated private static let protectedR10RequalifyAttemptAtKey = "atria.protectedR10.requalifyAttemptAt"
     nonisolated private static let protectedR10ProofChurnFailureCountKey = "atria.protectedR10.proofChurnFailures"
+    nonisolated private static let protectedR10ShortBurstRetryConnectionAtKey = "atria.protectedR10.shortBurstRetryConnectionAt"
     /// Consecutive interrupted proofs tolerated while a motion lease is held
     /// before honoring the pure-HR fallback. One mid-proof disconnect on a
     /// link that churns every 15–25 s demoted the physically qualified owner
@@ -2928,6 +2929,45 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               lastFrameAt >= activationAt,
               lastFrameAt <= now else { return false }
         return now.timeIntervalSince(lastFrameAt) <= maximumLastFrameAge
+    }
+
+    /// `qualified` is a claim about sustained dense transport, not merely the
+    /// identity of the selected CoreBluetooth owner. A per-link proof clears
+    /// `stableTransport` before it starts; if that proof is interrupted or
+    /// produces only a short burst, restoring `qualified` would contradict the
+    /// evidence and strand the liveness watchdog on a silent stream.
+    nonisolated static func protectedR10QualificationIsEvidenceConsistent(
+        cleanOwnerState: ProtectedR10CleanOwnerState,
+        stableTransportProven: Bool
+    ) -> Bool {
+        cleanOwnerState != .qualified || stableTransportProven
+    }
+
+    /// A CRC-valid short burst proves the profile and decoder are correct but
+    /// not that motion is sustained. Permit exactly one command-only recovery
+    /// on that same connection after the stream is observably stale. Zero-frame
+    /// failures use the ordinary fallback (the profile itself is unproven), and
+    /// the original 90-second density bar still decides qualification.
+    nonisolated static func shouldRetryProtectedR10ShortBurst(
+        proofActive: Bool,
+        connected: Bool,
+        heartRateNotifying: Bool,
+        framesAfterActivation: Int,
+        lastFrameAge: TimeInterval?,
+        connectedAt: Date?,
+        retryConnectionAt: Date?,
+        staleInterval: TimeInterval = protectedR10MissingFrameTimeout
+    ) -> Bool {
+        guard proofActive,
+              connected,
+              heartRateNotifying,
+              framesAfterActivation > 0,
+              framesAfterActivation < 75,
+              let lastFrameAge,
+              lastFrameAge >= staleInterval,
+              let connectedAt else { return false }
+        guard let retryConnectionAt else { return true }
+        return abs(retryConnectionAt.timeIntervalSince(connectedAt)) >= 0.001
     }
 
     private var centralRestoreIdentifier: String {
@@ -7183,11 +7223,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         protectedR10MissingFrameTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(Self.protectedR10MissingFrameTimeout))
             guard let self, !Task.isCancelled,
-                  self.protectedR10ResponseEventDataProofIsActive,
-                  self.protectedR10FramesAfterActivation == 0 else { return }
-            self.persistProtectedR10CleanOwnerFallback(
-                reason: "response_event_data_missing_r10_frames"
-            )
+                  self.protectedR10ResponseEventDataProofIsActive else { return }
+            if self.protectedR10FramesAfterActivation == 0 {
+                self.persistProtectedR10CleanOwnerFallback(
+                    reason: "response_event_data_missing_r10_frames"
+                )
+            } else {
+                self.retryProtectedR10ShortBurstIfEligible(
+                    now: Date(),
+                    reason: "initial_proof_short_burst"
+                )
+            }
         }
         protectedR10StabilityTask?.cancel()
         protectedR10StabilityTask = Task { @MainActor [weak self] in
@@ -7494,48 +7540,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func persistProtectedR10CleanOwnerFallback(reason: String) {
         let defaults = UserDefaults.standard
         if workoutMotionLeaseProfileArmed {
-            // A lease-scoped per-connection bring-up on a churning workout
-            // link is expected to be interrupted; that is not evidence against
-            // the physically qualified owner. Restore the qualified state and
-            // let the next connection retry instead of demoting the transport.
+            // The current per-connection proof owns the truth state. It cleared
+            // stableTransport before sending the command pair, so an
+            // interruption or a two-frame burst cannot honestly restore
+            // `qualified` from an older epoch. Continue into pure-HR fallback;
+            // HR/RR remain available while motion is reported unavailable.
             workoutMotionLeaseProfileArmed = false
-            defaults.set(ProtectedR10CleanOwnerState.qualified.rawValue,
-                         forKey: Self.protectedR10CleanOwnerStateKey)
-            defaults.removeObject(forKey: Self.protectedR10CleanOwnerProofStartedAtKey)
-            protectedR10CleanOwnerProofTimeoutTask?.cancel()
-            protectedR10CleanOwnerProofTimeoutTask = nil
-            AtriaDebugLog("ATRIADBG workout_motion status=lease_bring_up_interrupted reason=%@ action=retain_qualified_owner_retry_next_connection",
+            AtriaDebugLog("ATRIADBG workout_motion status=lease_bring_up_failed reason=%@ action=pure_hr_fallback_no_false_qualification",
                           reason)
-            return
-        }
-        let leaseHeld = workoutMotionOwnerStartedAt != nil
-            || defaults.object(forKey: WorkoutMotionDefaults.ownerStartedAt) != nil
-        if leaseHeld,
-           defaults.object(forKey: Self.protectedR10StableTransportQualifiedAtKey) != nil {
-            // A disconnect or timeout on a proof link that churns every
-            // 15–25 s is normal operation, not evidence against an owner this
-            // device has physically qualified (2026-07-16 21:27 IST: one
-            // mid-proof disconnect demoted the transport, put HR in a
-            // next-process limbo for 76 minutes, and ended dense motion for
-            // the night). While any holder owns the motion lease, tolerate a
-            // bounded streak and let each next connection re-enter the proven
-            // launch-style bring-up; only repeated consecutive failures may
-            // fall back to pure HR.
-            let churnFailures = defaults.integer(
-                forKey: Self.protectedR10ProofChurnFailureCountKey
-            ) + 1
-            defaults.set(churnFailures,
-                         forKey: Self.protectedR10ProofChurnFailureCountKey)
-            if churnFailures < Self.protectedR10ProofChurnFallbackThreshold {
-                defaults.set(ProtectedR10CleanOwnerState.qualified.rawValue,
-                             forKey: Self.protectedR10CleanOwnerStateKey)
-                defaults.removeObject(forKey: Self.protectedR10CleanOwnerProofStartedAtKey)
-                protectedR10CleanOwnerProofTimeoutTask?.cancel()
-                protectedR10CleanOwnerProofTimeoutTask = nil
-                AtriaDebugLog("ATRIADBG protected_r10 status=proof_churn_tolerated reason=%@ failures=%d action=retain_qualified_owner_retry_next_connection",
-                              reason, churnFailures)
-                return
-            }
         }
         let failures = defaults.integer(forKey: Self.protectedR10PassiveReprobeFailureCountKey) + 1
         defaults.set(failures, forKey: Self.protectedR10PassiveReprobeFailureCountKey)
@@ -15410,6 +15422,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             if protectedR10CleanOwnerProofIsActive {
                 sendProtectedR10ActivationIfReady()
             }
+            retryProtectedR10ShortBurstIfEligible(now: now, reason: reason)
             // An already-qualified protected owner with a silent stream and an
             // active explicit workout may issue the single validated per-
             // connection activation pair through the workout motion lease. It
@@ -15454,6 +15467,91 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         AtriaDebugLog("ATRIADBG r10_watchdog status=repair_sent mode=full_protocol reason=%@ cmd=3f data=01 seq=%d action=single_leased_write_no_reconnect",
                       reason,
                       Int(sequence))
+    }
+
+    /// One bounded, command-only retry for the observed two-frame v9 stall.
+    /// This never mutates a CCCD or connection epoch and never pauses 2A37.
+    /// The persisted connection stamp makes lifecycle/watchdog replays
+    /// idempotent; the original density task remains the sole qualifier.
+    private func retryProtectedR10ShortBurstIfEligible(now: Date, reason: String) {
+        let defaults = UserDefaults.standard
+        let retryConnectionAt = (defaults.object(
+            forKey: Self.protectedR10ShortBurstRetryConnectionAtKey
+        ) as? Double).map(Date.init(timeIntervalSince1970:))
+        guard Self.shouldRetryProtectedR10ShortBurst(
+            proofActive: protectedR10ResponseEventDataProofIsActive,
+            connected: peripheral?.state == .connected,
+            heartRateNotifying: heartRateCharacteristic?.isNotifying == true,
+            framesAfterActivation: protectedR10FramesAfterActivation,
+            lastFrameAge: lastR10MotionFrameAt.map { now.timeIntervalSince($0) },
+            connectedAt: connectedAt,
+            retryConnectionAt: retryConnectionAt
+        ), let connectedAt,
+           let peripheral,
+           let txCharacteristic,
+           txCharacteristic.properties.contains(.writeWithoutResponse),
+           protectedR10CommandSequenceTask == nil else { return }
+
+        // Persist before the async write so foreground/background and periodic
+        // watchdog races cannot spend a second retry on this connection.
+        defaults.set(connectedAt.timeIntervalSince1970,
+                     forKey: Self.protectedR10ShortBurstRetryConnectionAtKey)
+        defaults.set("short_burst_retry_started", forKey: RadioDefaults.passiveR10Status)
+        // Give the retry its own complete density window. Keeping the original
+        // deadline would leave fewer than 75 possible 1 Hz records after the
+        // stale decision, making successful qualification unreachable.
+        protectedR10StabilityTask?.cancel()
+        protectedR10StabilityTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.protectedR10EarlyDisconnectWindow))
+            guard let self, !Task.isCancelled,
+                  self.protectedR10ResponseEventDataProofIsActive,
+                  self.peripheral?.state == .connected else { return }
+            let verifiedAt = Date()
+            guard Self.protectedR10StabilityWindowIsProven(
+                framesAfterActivation: self.protectedR10FramesAfterActivation,
+                lastFrameAt: self.lastR10MotionFrameAt,
+                connectedAt: self.connectedAt,
+                activationAt: now,
+                now: verifiedAt
+            ) else {
+                self.persistProtectedR10CleanOwnerFallback(
+                    reason: "response_event_data_short_burst_retry_insufficient_density"
+                )
+                return
+            }
+            self.qualifyProtectedR10RecoveryIfNeeded(
+                at: verifiedAt,
+                status: "response_event_data_retry_receiving_crc_valid"
+            )
+        }
+        protectedR10CommandSequenceTask = Task { @MainActor [weak self, weak peripheral] in
+            defer { self?.protectedR10CommandSequenceTask = nil }
+            guard let self, let peripheral, !Task.isCancelled,
+                  peripheral.state == .connected,
+                  self.protectedR10ResponseEventDataProofIsActive,
+                  self.heartRateCharacteristic?.isNotifying == true else { return }
+            let r10Sequence = self.cmdSeq
+            self.cmdSeq &+= 1
+            peripheral.writeValue(
+                encodeFrame([Packet.command, r10Sequence, Cmd.sendR10R11Realtime, 0x01]),
+                for: txCharacteristic,
+                type: .withoutResponse
+            )
+            try? await Task.sleep(for: .seconds(Self.protectedR10CommandPacingDelay))
+            guard !Task.isCancelled, peripheral.state == .connected,
+                  self.protectedR10ResponseEventDataProofIsActive,
+                  self.heartRateCharacteristic?.isNotifying == true else { return }
+            let imuSequence = self.cmdSeq
+            self.cmdSeq &+= 1
+            peripheral.writeValue(
+                encodeFrame([Packet.command, imuSequence, Cmd.toggleIMUMode, 0x01]),
+                for: txCharacteristic,
+                type: .withoutResponse
+            )
+            AtriaDebugLog("ATRIADBG protected_r10 status=short_burst_retry_sent reason=%@ frames=%d action=one_pair_same_connection_no_cccd_no_reconnect",
+                          reason,
+                          self.protectedR10FramesAfterActivation)
+        }
     }
 
     /// One bounded link-health audit inside a BGTask execution window. A
@@ -15778,12 +15876,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         workoutMotionFrameTimestamps.removeAll(keepingCapacity: true)
         let defaults = UserDefaults.standard
         if workoutMotionLeaseProfileArmed {
-            // Never leave a lease-scoped bring-up pending after release: the
-            // qualified owner is the durable, physically proven state.
+            // Never leave a lease-scoped bring-up pending after release. An
+            // unfinished density proof cannot be promoted back to qualified;
+            // preserve HR/RR through the same evidence-honest fallback used by
+            // an explicit proof failure.
             workoutMotionLeaseProfileArmed = false
             if protectedR10CleanOwnerState == .protectedLaunchPending {
-                defaults.set(ProtectedR10CleanOwnerState.qualified.rawValue,
-                             forKey: Self.protectedR10CleanOwnerStateKey)
+                persistProtectedR10CleanOwnerFallback(
+                    reason: "lease_released_before_density_proof"
+                )
             }
         }
         defaults.removeObject(forKey: WorkoutMotionDefaults.ownerStartedAt)
