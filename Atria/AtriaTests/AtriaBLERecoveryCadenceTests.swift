@@ -2,6 +2,20 @@ import XCTest
 @testable import Atria
 
 final class AtriaBLERecoveryCadenceTests: XCTestCase {
+    func testUnexpectedLongWearDisconnectDefersHistoryUntilRealtimeReconnectIsInstalled() {
+        XCTAssertTrue(AtriaBLEManager.shouldDeferAutomaticHistoryUntilAfterRealtimeReconnect(
+            preservesLongWearSession: true,
+            rangeLossBackfillPending: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldDeferAutomaticHistoryUntilAfterRealtimeReconnect(
+            preservesLongWearSession: false,
+            rangeLossBackfillPending: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldDeferAutomaticHistoryUntilAfterRealtimeReconnect(
+            preservesLongWearSession: true,
+            rangeLossBackfillPending: false
+        ))
+    }
     func testR10ReplayWatermarkUsesSerialOrderingIncludingWrap() {
         XCTAssertEqual(AtriaBLEManager.newestR10DeviceTimestamp(existing: nil,
                                                                 incoming: 100), 100)

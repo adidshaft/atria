@@ -2591,6 +2591,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             && lastR10Age <= 5 * 60
     }
 
+    /// Automatic history is loss recovery, not live transport. During an
+    /// unexpected long-wear disconnect the standing CoreBluetooth reconnect
+    /// must be installed before any optional history transaction is attempted.
+    nonisolated static func shouldDeferAutomaticHistoryUntilAfterRealtimeReconnect(
+        preservesLongWearSession: Bool,
+        rangeLossBackfillPending: Bool
+    ) -> Bool {
+        preservesLongWearSession && rangeLossBackfillPending
+    }
+
     /// The first disconnect-storm fuse used the lifetime disconnect diagnostic,
     /// so one ordinary install/relaunch edge could suppress an otherwise
     /// qualified transport. Repair only that exact persisted state. A genuine
@@ -20883,18 +20893,22 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 AtriaDebugLog("ATRIADBG protected_r10 status=proof_disconnect_stopped action=v10_cutover_already_consumed_no_loop_no_history")
                 return
             }
-            if shouldPreserveLongWearSession,
-               !activeExplicitWorkout,
-               defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) {
-                let recoveryReason = defaults.string(
-                    forKey: OfflineSyncDefaults.rangeLossBackfillReason
-                ) ?? "long_wear_range_loss"
-                if requestOfflineHistoricalSyncIfNeeded(reason: recoveryReason) {
-                    recomputeConnectionStatus(reason: "offline_history_first_reconnect")
-                    AtriaDebugLog("ATRIADBG offline_sync status=history_first_reconnect reason=%@ action=own_next_connection_then_restore_protected_hr_r10",
-                                  recoveryReason)
-                    return
-                }
+            if Self.shouldDeferAutomaticHistoryUntilAfterRealtimeReconnect(
+                preservesLongWearSession: shouldPreserveLongWearSession,
+                rangeLossBackfillPending: defaults.bool(
+                    forKey: OfflineSyncDefaults.rangeLossBackfillPending
+                )
+            ) {
+                // A disconnect callback may be the final background execution
+                // window iOS grants for hours. Starting the optional history
+                // worker here used to return before installing CoreBluetooth's
+                // standing reconnect. If that worker was then suspended, neither
+                // realtime HR/RR nor R10 motion had an owner to wake the app.
+                // Keep the exact missing range durable, reconnect realtime first,
+                // and let the already-scheduled foreground/BG maintenance path
+                // perform history recovery only after live continuity is safe.
+                AtriaDebugLog("ATRIADBG offline_sync status=deferred reason=disconnect_realtime_first pending=1 explicit_workout=%d action=install_standing_reconnect",
+                              activeExplicitWorkout ? 1 : 0)
             }
             if useFreshScan {
                 if self.peripheral === peripheral {
