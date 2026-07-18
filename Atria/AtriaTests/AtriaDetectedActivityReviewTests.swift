@@ -7,6 +7,29 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
     private let rest = 55
     private let maxHR = 190
 
+    private var july18MorningEvidenceDirectory: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("logs/live-device/morning-verification-20260718T080323Z")
+    }
+
+    private func july18PulledConfirmedWorkouts() throws -> [UserConfirmedWorkout] {
+        let data = try Data(contentsOf: july18MorningEvidenceDirectory
+            .appendingPathComponent("preferences.plist"))
+        let object = try PropertyListSerialization.propertyList(from: data, format: nil)
+        let dictionary = try XCTUnwrap(object as? [String: Any])
+        let workoutsData = try XCTUnwrap(dictionary["atria.confirmedWorkouts.v1"] as? Data)
+        return try JSONDecoder().decode([UserConfirmedWorkout].self, from: workoutsData)
+    }
+
+    private func july18PulledSessions() throws -> [SavedSession] {
+        let data = try Data(contentsOf: july18MorningEvidenceDirectory
+            .appendingPathComponent("sessions.json"))
+        return try JSONDecoder().decode([SavedSession].self, from: data)
+    }
+
     /// Clean 35-minute effort at `start`: ramp 90->150 over 3 min, 28 min
     /// sustained ~150 bpm, 4 min cool-down; RR agrees with reported HR
     /// throughout (same recipe as testRealWorkoutCandidateSurvivesHardening).
@@ -95,6 +118,97 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
     }
 
     // MARK: - Multi-candidate generator
+
+    @MainActor
+    func testJuly17StrengthArtifactKeepsHonestCoverageAndReviewSuppressionIsReversible() throws {
+        let exactID = "1784307060-1784310660-live_workout_window"
+        let workout = try XCTUnwrap(july18PulledConfirmedWorkouts().first { $0.id == exactID })
+
+        XCTAssertEqual(workout.start.timeIntervalSinceReferenceDate, 805_999_860, accuracy: 0.001)
+        XCTAssertEqual(workout.end.timeIntervalSinceReferenceDate, 806_003_460, accuracy: 0.001)
+        XCTAssertEqual(workout.duration, 3_600, accuracy: 0.001)
+        XCTAssertEqual(workout.label, "Strength")
+        XCTAssertEqual(workout.activityType, "Strength")
+        XCTAssertEqual(workout.source, "live_workout_window")
+        XCTAssertEqual(workout.confidence, "live_window_manual_confirmed")
+        XCTAssertEqual(workout.reason, "stream_gaps")
+        XCTAssertEqual(workout.samples, 920)
+        XCTAssertEqual(workout.avgHR, 136)
+        XCTAssertEqual(workout.peakHR, 164)
+        XCTAssertEqual(workout.p95HR, 160)
+        XCTAssertEqual(workout.p99HR, 163)
+        XCTAssertEqual(workout.observedDuration, 881.8056229352951, accuracy: 0.001)
+        XCTAssertEqual(workout.streamCoveragePercent, 24)
+        XCTAssertEqual(workout.streamCoveragePercent,
+                       Int((workout.observedDuration / workout.duration * 100).rounded(.down)),
+                       "coverage must remain the observed fraction of the real one-hour window")
+
+        let sessions = try july18PulledSessions().filter {
+            $0.start < workout.end && $0.end > workout.start
+        }
+        XCTAssertEqual(sessions.map(\.id.uuidString),
+                       ["E2FD84ED-9E22-4AD8-9571-EFCE58E6BFD5"])
+        let samplesInsideWorkout = sessions.reduce(into: 0) { count, session in
+            count += session.points.filter {
+                let date = session.start.addingTimeInterval($0.t)
+                return date >= workout.start && date <= workout.end
+            }.count
+        }
+        XCTAssertEqual(samplesInsideWorkout, workout.samples,
+                       "the persisted 920-sample claim must reproduce from the pulled session")
+
+        let beforeConfirmation = SessionStore.makeWorkoutReviewCandidatesForCache(
+            sessions: sessions,
+            confirmedWorkouts: [],
+            rest: 60,
+            maxHR: 190
+        )
+        XCTAssertLessThan(workout.observedDuration, 15 * 60)
+        XCTAssertLessThan(workout.streamCoveragePercent, 40)
+        XCTAssertTrue(beforeConfirmation.isEmpty,
+                      "the historical 24%-covered, 14m42s stream must remain below automatic review gates")
+
+        XCTAssertTrue(SessionStore.makeWorkoutReviewCandidatesForCache(
+            sessions: sessions,
+            confirmedWorkouts: [workout],
+            rest: 60,
+            maxHR: 190
+        ).isEmpty, "the exact confirmed Strength window must not be offered twice")
+
+        let previousDismissals = AtriaDismissedWorkoutCandidateStore.load()
+        // Isolate capacity as well as overlap: other tests intentionally write
+        // far-future tombstones, and the bounded newest-64 store would otherwise
+        // evict this real 2026 window before durability can be asserted.
+        AtriaDismissedWorkoutCandidateStore.save([])
+        defer { AtriaDismissedWorkoutCandidateStore.save(previousDismissals) }
+
+        let store = SessionStore()
+        XCTAssertTrue(store.dismissWorkoutCandidate(start: workout.start, end: workout.end))
+        XCTAssertTrue(AtriaDismissedWorkoutCandidateStore.load().contains {
+            $0.overlaps(start: workout.start, end: workout.end)
+        }, "dismissal must survive a store reload as a durable window tombstone")
+        XCTAssertTrue(SessionStore.makeWorkoutReviewCandidatesForCache(
+            sessions: sessions,
+            confirmedWorkouts: [],
+            dismissedCandidates: store.dismissedWorkoutCandidatesForUI,
+            rest: 60,
+            maxHR: 190
+        ).isEmpty)
+
+        XCTAssertTrue(store.restoreDismissedWorkoutCandidate(start: workout.start,
+                                                              end: workout.end))
+        XCTAssertFalse(AtriaDismissedWorkoutCandidateStore.load().contains {
+            $0.overlaps(start: workout.start, end: workout.end)
+        })
+        XCTAssertTrue(SessionStore.makeWorkoutReviewCandidatesForCache(
+            sessions: sessions,
+            confirmedWorkouts: [],
+            dismissedCandidates: store.dismissedWorkoutCandidatesForUI,
+            rest: 60,
+            maxHR: 190
+        ).isEmpty,
+                      "restore removes only the tombstone; it must not fabricate the missing HR coverage")
+    }
 
     func testTwoSeparateEffortsBothSurfaceNewestFirstWhileSinglePathStillReturnsOne() {
         let base = Date(timeIntervalSince1970: 1_800_000_000)
