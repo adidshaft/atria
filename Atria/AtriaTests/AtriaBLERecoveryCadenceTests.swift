@@ -1009,6 +1009,48 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.streamSuppressed"))
     }
 
+    func testV8WorkoutInProcessCutoverRequiresIntentProofAndNewLease() {
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        let allowed = AtriaBLEManager.protectedR10V8WorkoutCutoverMayStart(
+            owner: .pureHRV8,
+            state: .fallbackActive,
+            streamSuppressed: true,
+            manualWorkoutActive: true,
+            priorQualifiedAt: start.timeIntervalSince1970 - 86_400,
+            priorCutoverLeaseAt: nil,
+            workoutStartedAt: start
+        )
+        XCTAssertTrue(allowed)
+
+        XCTAssertFalse(AtriaBLEManager.protectedR10V8WorkoutCutoverMayStart(
+            owner: .pureHRV8,
+            state: .fallbackActive,
+            streamSuppressed: true,
+            manualWorkoutActive: false,
+            priorQualifiedAt: start.timeIntervalSince1970 - 86_400,
+            priorCutoverLeaseAt: nil,
+            workoutStartedAt: start
+        ), "all-day motion must not trigger the fresh-owner cutover")
+        XCTAssertFalse(AtriaBLEManager.protectedR10V8WorkoutCutoverMayStart(
+            owner: .pureHRV8,
+            state: .fallbackActive,
+            streamSuppressed: true,
+            manualWorkoutActive: true,
+            priorQualifiedAt: nil,
+            priorCutoverLeaseAt: nil,
+            workoutStartedAt: start
+        ), "an unqualified fallback must remain pure HR")
+        XCTAssertFalse(AtriaBLEManager.protectedR10V8WorkoutCutoverMayStart(
+            owner: .pureHRV8,
+            state: .fallbackActive,
+            streamSuppressed: true,
+            manualWorkoutActive: true,
+            priorQualifiedAt: start.timeIntervalSince1970 - 86_400,
+            priorCutoverLeaseAt: start.timeIntervalSince1970,
+            workoutStartedAt: start
+        ), "duplicate Start/lifecycle callbacks get no second cutover")
+    }
+
     func testNormalLaunchKeepsPhysicallyQualifiedFallbackOnPureHR() throws {
         let suite = "AtriaBLERecoveryCadenceTests.v10LowBatteryFallback.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

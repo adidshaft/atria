@@ -1995,6 +1995,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let protectedR10ResponseEventDataConnectionCutoverKey = "atria.protectedR10.responseEventDataConnectionCutoverV9"
     nonisolated private static let protectedR10ResponseEventDataSequenceSentKey = "atria.protectedR10.responseEventDataSequenceSentV9"
     nonisolated private static let protectedR10PureHRV10InProcessCutoverKey = "atria.protectedR10.pureHRV10InProcessCutover"
+    /// The workout-start cutover is keyed to the persisted workout start, not
+    /// a process-wide boolean: one explicit workout earns one fresh v9 owner
+    /// attempt, while a later workout may be considered independently.
+    nonisolated private static let protectedR10V8WorkoutInProcessCutoverLeaseKey = "atria.protectedR10.v8WorkoutInProcessCutoverLease"
     nonisolated private static let protectedR10CleanOwnerKey = "atria.protectedR10.cleanOwner"
     nonisolated private static let protectedR10CleanOwnerStateKey = "atria.protectedR10.cleanOwnerState"
     nonisolated private static let protectedR10CleanOwnerProofStartedAtKey = "atria.protectedR10.cleanOwnerProofStartedAt"
@@ -2342,6 +2346,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if let lastAttemptAt, now - lastAttemptAt < cooldown { return false }
         if let fallbackAt, now - fallbackAt < cooldown { return false }
         return true
+    }
+
+    /// The only in-process escalation allowed from the old v8 pure-HR owner.
+    /// It is intentionally more restrictive than normal launch preparation:
+    /// a user must have a durable, active manual workout and a previous dense
+    /// transport qualification. The caller then disconnects the old central
+    /// and creates a new v9 central; it never enables a proprietary CCCD on
+    /// the inherited pure-HR link.
+    nonisolated static func protectedR10V8WorkoutCutoverMayStart(
+        owner: ProtectedR10CleanOwner,
+        state: ProtectedR10CleanOwnerState,
+        streamSuppressed: Bool,
+        manualWorkoutActive: Bool,
+        priorQualifiedAt: Double?,
+        priorCutoverLeaseAt: Double?,
+        workoutStartedAt: Date
+    ) -> Bool {
+        guard owner == .pureHRV8,
+              state == .fallbackActive || state == .fallbackPending,
+              streamSuppressed,
+              manualWorkoutActive,
+              priorQualifiedAt != nil else { return false }
+        guard let priorCutoverLeaseAt else { return true }
+        return abs(priorCutoverLeaseAt - workoutStartedAt.timeIntervalSince1970) > 0.001
     }
 
     /// Moves a previously qualified fallback to the *next process'* bounded
@@ -13673,6 +13701,102 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return true
     }
 
+    /// A user has already made the durable manual-workout commitment, so it is
+    /// unacceptable to require an install/relaunch before offering strap-native
+    /// steps. The legacy v8 fallback cannot be changed on its inherited
+    /// connection: the only safe escalation is one app-owned disconnect, then
+    /// a fresh v9 central whose normal didConnect path installs the profile.
+    ///
+    /// This function performs no proprietary write, service discovery, or CCCD
+    /// mutation. A missing physical qualification keeps pure HR in place.
+    private func beginProtectedR10V8WorkoutCutoverIfNeeded(
+        startedAt: Date,
+        reason: String
+    ) -> Bool {
+        let defaults = UserDefaults.standard
+        let manualWorkoutActive = AtriaPendingWorkoutIntent
+            .isActiveForBLEContinuity(now: Date())
+        let priorQualifiedAt = defaults.object(
+            forKey: Self.protectedR10StableTransportQualifiedAtKey
+        ) as? Double
+        let priorCutoverLeaseAt = defaults.object(
+            forKey: Self.protectedR10V8WorkoutInProcessCutoverLeaseKey
+        ) as? Double
+        guard standardHROnlyMode,
+              !historyOnlyProbeMode,
+              !offlineHistoricalSyncInProgress,
+              let peripheral,
+              peripheral.state == .connected,
+              Self.protectedR10V8WorkoutCutoverMayStart(
+                owner: protectedR10CleanOwner,
+                state: protectedR10CleanOwnerState,
+                streamSuppressed: protectedR10StreamSuppressed,
+                manualWorkoutActive: manualWorkoutActive,
+                priorQualifiedAt: priorQualifiedAt,
+                priorCutoverLeaseAt: priorCutoverLeaseAt,
+                workoutStartedAt: startedAt
+              ) else { return false }
+
+        // Record before cancelling so duplicate Start/lifecycle callbacks
+        // cannot create a cutover loop. The original workout intent and its
+        // range gap remain durable; the next fresh v9 owner gets exactly one
+        // normal launch-style proof.
+        defaults.set(startedAt.timeIntervalSince1970,
+                     forKey: Self.protectedR10V8WorkoutInProcessCutoverLeaseKey)
+        Self.promoteFallbackToProtectedV9ForLaunch(defaults: defaults, now: Date())
+        workoutMotionActivationTask?.cancel()
+        workoutMotionActivationTask = nil
+        workoutMotionCommandTask?.cancel()
+        workoutMotionCommandTask = nil
+        setWorkoutMotionStatus("r10_step_lease_requalifying_fresh_owner", at: Date())
+        backgroundReconnectFence.markAppOwnedCancellation(
+            peripheralID: peripheral.identifier
+        )
+        central.cancelPeripheralConnection(peripheral)
+        AtriaDebugLog("ATRIADBG protected_r10 status=v8_workout_cutover_started reason=%@ workout_start=%d action=single_disconnect_then_fresh_v9_central_no_cccd_no_command_no_history",
+                      reason,
+                      Int(startedAt.timeIntervalSince1970.rounded()))
+        return true
+    }
+
+    /// Completes the v8 manual-workout cutover only after the old pure-HR link
+    /// has emitted its disconnect callback. Replacing the central before that
+    /// edge leaves iOS free to retain the inherited subscription and defeats
+    /// the fresh-owner guarantee.
+    private func completeProtectedR10V8WorkoutCutoverIfNeeded(
+        reason: String
+    ) -> Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.object(
+                forKey: Self.protectedR10V8WorkoutInProcessCutoverLeaseKey
+              ) != nil,
+              protectedR10CleanOwner == .protectedV9,
+              protectedR10CleanOwnerState == .protectedLaunchPending,
+              !protectedR10StreamSuppressed else { return false }
+        standardHROnlyMode = true
+        standardHROnlyEnabled = true
+        isActivelyScanning = false
+        central.stopScan()
+        peripheral = nil
+        central = CBCentralManager(
+            delegate: self,
+            queue: centralQueue,
+            options: [
+                CBCentralManagerOptionRestoreIdentifierKey:
+                    Self.protectedR10CentralRestoreIdentifier(
+                        diagnosticRestoreIdentifier: nil,
+                        cleanOwner: .protectedV9,
+                        streamSuppressed: false
+                    ),
+                CBCentralManagerOptionShowPowerAlertKey: true,
+            ]
+        )
+        recomputeConnectionStatus(reason: "event")
+        AtriaDebugLog("ATRIADBG protected_r10 status=v8_workout_cutover_completed reason=%@ action=fresh_v9_central_pending_connect_no_command_no_history",
+                      reason)
+        return true
+    }
+
     /// A diagnostic restoration identifier can still inherit the physical
     /// connection owned by the previous process. A single run-scoped cutover
     /// guarantees that the response/event/data CCCDs are installed only after
@@ -16531,6 +16655,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         AtriaDebugLog("ATRIADBG workout_motion status=lease_begin reason=%@ started_unix=%d",
                       reason,
                       Int(startedAt.timeIntervalSince1970.rounded()))
+        // A current manual workout must not require an app reinstall to escape
+        // the legacy v8 pure-HR fallback. This only schedules an app-owned
+        // fresh-central cutover; it never touches proprietary CCCDs on the
+        // existing live HR connection.
+        if beginProtectedR10V8WorkoutCutoverIfNeeded(
+            startedAt: startedAt,
+            reason: reason
+        ) {
+            return
+        }
         yieldHistoricalTransportToExplicitWorkoutIfNeeded(reason: reason)
         scheduleWorkoutMotionLeaseEvaluation(reason: reason)
     }
@@ -25652,6 +25786,19 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 }
                 recomputeConnectionStatus(reason: "event")
                 AtriaDebugLog("ATRIADBG ble_link status=disconnected reason=user_disconnect action=stay_disconnected")
+                return
+            }
+            // The explicit-workout v8 escape hatch owns this disconnect. Do
+            // not let ordinary reconnect logic reuse the old pure-HR central:
+            // the fresh v9 manager must establish stream 5 only through its
+            // own didConnect/profile path.
+            if self.peripheral === peripheral {
+                self.peripheral = nil
+            }
+            self.recomputeConnectionStatus(reason: "event")
+            if self.completeProtectedR10V8WorkoutCutoverIfNeeded(
+                reason: "manual_workout_old_owner_disconnected"
+            ) {
                 return
             }
             if cleanOwnerProofWasActive {
