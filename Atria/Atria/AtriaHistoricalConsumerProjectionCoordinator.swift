@@ -114,68 +114,12 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
                 guard prepared.completionGeneration == completion.generation else {
                     throw CoordinatorError.completionChangedDuringPublication
                 }
-                let dailyProof = try makeDailyProof(prepared)
-                let sessionProof = try makeSessionProof(prepared)
-                let settledAt = completion.completedAt
-
-                // Each receipt is immutable. The complete generation becomes
-                // visible only after the ledger atomically advances its
-                // five-artifact set pointer. A crash may leave an audit prefix,
-                // but readers continue to see the prior complete set.
-                var sourcePublished: [AtriaHistoricalConsumerReceiptLedger.Published] = []
-                sourcePublished.append(try AtriaHistoricalActivityProjection.publishReceipt(
+                let sourcePublished = try publishReceiptSet(
                     source: source,
-                    dependencyChunks: prepared.dependencyChunks,
-                    configuration: configuration.activity,
-                    inspectionProof: prepared.inspectionProof,
-                    completionWatermark: prepared.completionWatermark,
-                    ledger: receiptLedger,
-                    settledAt: settledAt
-                ))
-                sourcePublished.append(try AtriaHistoricalDailyConsumerProjection.publishDailyMetricsReceipt(
-                    source: source,
-                    dependencyChunks: prepared.dependencyChunks,
-                    configuration: configuration.daily,
-                    inspectionProof: dailyProof,
-                    completionWatermark: prepared.completionWatermark,
-                    ledger: receiptLedger,
-                    settledAt: settledAt
-                ))
-                sourcePublished.append(try AtriaHistoricalDailyConsumerProjection.publishStepsReceipt(
-                    source: source,
-                    dependencyChunks: prepared.dependencyChunks,
-                    configuration: configuration.daily,
-                    inspectionProof: dailyProof,
-                    completionWatermark: prepared.completionWatermark,
-                    ledger: receiptLedger,
-                    settledAt: settledAt
-                ))
-                sourcePublished.append(try AtriaHistoricalSleepProjection.publishReceipt(
-                    source: source,
-                    dependencyChunks: prepared.dependencyChunks,
-                    configuration: configuration.sleep,
-                    inspectionProof: sessionProof,
-                    completionWatermark: prepared.completionWatermark,
-                    ledger: receiptLedger,
-                    settledAt: settledAt
-                ))
-                sourcePublished.append(try AtriaHistoricalWorkoutProjection.publishReceipt(
-                    source: source,
-                    dependencyChunks: prepared.dependencyChunks,
-                    configuration: configuration.workout,
-                    inspectionProof: sessionProof,
-                    completionWatermark: prepared.completionWatermark,
-                    ledger: receiptLedger,
-                    settledAt: settledAt
-                ))
-                let ledgerSource = AtriaHistoricalConsumerReceiptLedger.Source(
-                    chunkID: source.source.chunkID,
-                    rawSHA256: source.source.rawSHA256,
-                    firstTimestamp: source.source.firstTimestamp,
-                    lastTimestamp: source.source.lastTimestamp
+                    prepared: prepared,
+                    configuration: configuration,
+                    settledAt: completion.completedAt
                 )
-                try receiptLedger.activateCurrentSet(for: ledgerSource,
-                                                     publications: sourcePublished)
                 published.append(contentsOf: sourcePublished)
             } catch {
                 deferred.append(.init(chunkID: source.source.chunkID,
@@ -189,11 +133,135 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
                      deferredSources: deferred)
     }
 
+    /// Settles one previously pending source from the latest independently
+    /// journaled full scan. The persisted source identity and dependency bounds
+    /// must still match the immutable aggregate; only the strap cursor
+    /// watermark can close the future suffix.
+    func publishReceiptSetUsingFullScan(
+        for chunkID: String,
+        expectedRawSHA256: String,
+        requiredStart: Date,
+        requiredEnd: Date,
+        fullScanStore: AtriaHistoricalFullScanCompletionStore,
+        catalogStore: AtriaHistoricalArchiveCatalogStore,
+        aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
+        configuration: Configuration
+    ) throws -> Report {
+        guard !aggregateSnapshot.diagnostics.limitExceeded,
+              aggregateSnapshot.diagnostics.rejectedManifests == 0 else {
+            throw CoordinatorError.rejectedAggregateManifest
+        }
+        guard let source = aggregateSnapshot.aggregates.first(where: {
+            $0.source.chunkID == chunkID
+        }), source.source.rawSHA256 == expectedRawSHA256 else {
+            throw CoordinatorError.sourceIdentityMismatch
+        }
+        let canonicalRange = try requiredRange(
+            for: source,
+            dailyConfiguration: configuration.daily
+        )
+        guard canonicalRange.lowerBound == requiredStart,
+              canonicalRange.upperBound == requiredEnd else {
+            throw CoordinatorError.pendingDependencyMismatch
+        }
+        let scan = try fullScanStore.loadLatest()
+        let prepared = try AtriaHistoricalActivityInspectionProofFactory(
+            completionStore: completionStore
+        ).prepareUsingFullScan(
+            catalogStore: catalogStore,
+            aggregateSnapshot: aggregateSnapshot,
+            scan: scan,
+            requestedStart: requiredStart,
+            requestedEnd: requiredEnd
+        )
+        guard prepared.completionGeneration == scan.generation else {
+            throw CoordinatorError.completionChangedDuringPublication
+        }
+        let published = try publishReceiptSet(
+            source: source,
+            prepared: prepared,
+            configuration: configuration,
+            settledAt: scan.terminalAt
+        )
+        return .init(
+            completionGeneration: scan.generation,
+            inspectedSourceCount: 1,
+            published: published,
+            deferredSources: []
+        )
+    }
+
+    private func publishReceiptSet(
+        source: AtriaHistoricalAggregateChunk,
+        prepared: AtriaHistoricalActivityInspectionProofFactory.Prepared,
+        configuration: Configuration,
+        settledAt: Date
+    ) throws -> [AtriaHistoricalConsumerReceiptLedger.Published] {
+        let dailyProof = try makeDailyProof(prepared)
+        let sessionProof = try makeSessionProof(prepared)
+        var published: [AtriaHistoricalConsumerReceiptLedger.Published] = []
+        published.append(try AtriaHistoricalActivityProjection.publishReceipt(
+            source: source,
+            dependencyChunks: prepared.dependencyChunks,
+            configuration: configuration.activity,
+            inspectionProof: prepared.inspectionProof,
+            completionWatermark: prepared.completionWatermark,
+            ledger: receiptLedger,
+            settledAt: settledAt
+        ))
+        published.append(try AtriaHistoricalDailyConsumerProjection.publishDailyMetricsReceipt(
+            source: source,
+            dependencyChunks: prepared.dependencyChunks,
+            configuration: configuration.daily,
+            inspectionProof: dailyProof,
+            completionWatermark: prepared.completionWatermark,
+            ledger: receiptLedger,
+            settledAt: settledAt
+        ))
+        published.append(try AtriaHistoricalDailyConsumerProjection.publishStepsReceipt(
+            source: source,
+            dependencyChunks: prepared.dependencyChunks,
+            configuration: configuration.daily,
+            inspectionProof: dailyProof,
+            completionWatermark: prepared.completionWatermark,
+            ledger: receiptLedger,
+            settledAt: settledAt
+        ))
+        published.append(try AtriaHistoricalSleepProjection.publishReceipt(
+            source: source,
+            dependencyChunks: prepared.dependencyChunks,
+            configuration: configuration.sleep,
+            inspectionProof: sessionProof,
+            completionWatermark: prepared.completionWatermark,
+            ledger: receiptLedger,
+            settledAt: settledAt
+        ))
+        published.append(try AtriaHistoricalWorkoutProjection.publishReceipt(
+            source: source,
+            dependencyChunks: prepared.dependencyChunks,
+            configuration: configuration.workout,
+            inspectionProof: sessionProof,
+            completionWatermark: prepared.completionWatermark,
+            ledger: receiptLedger,
+            settledAt: settledAt
+        ))
+        let ledgerSource = AtriaHistoricalConsumerReceiptLedger.Source(
+            chunkID: source.source.chunkID,
+            rawSHA256: source.source.rawSHA256,
+            firstTimestamp: source.source.firstTimestamp,
+            lastTimestamp: source.source.lastTimestamp
+        )
+        try receiptLedger.activateCurrentSet(for: ledgerSource, publications: published)
+        return published
+    }
+
     enum CoordinatorError: Error, Equatable {
         case rejectedAggregateManifest
         case invalidDailyTimeZone
         case invalidRequiredRange
         case completionChangedDuringPublication
+        case sourceIdentityMismatch
+        case pendingDependencyMismatch
     }
 
     /// Tells the full-drain authority whether its exact closed interval can

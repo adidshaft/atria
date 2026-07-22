@@ -90,6 +90,7 @@ final class AtriaHistoricalFullScanCompletionStoreTests: XCTestCase {
             sourceRawSHA256: valid.sourceRawSHA256,
             sourceFirstTimestamp: valid.sourceFirstTimestamp,
             sourceLastTimestamp: valid.sourceLastTimestamp,
+            observedArchiveFirstTimestamp: valid.observedArchiveFirstTimestamp,
             catalogGeneration: valid.catalogGeneration,
             catalogSnapshotSHA256: valid.catalogSnapshotSHA256,
             aggregateSnapshotSHA256: valid.aggregateSnapshotSHA256
@@ -112,6 +113,7 @@ final class AtriaHistoricalFullScanCompletionStoreTests: XCTestCase {
             sourceRawSHA256: "not-a-hash",
             sourceFirstTimestamp: valid.sourceFirstTimestamp,
             sourceLastTimestamp: valid.sourceLastTimestamp,
+            observedArchiveFirstTimestamp: valid.observedArchiveFirstTimestamp,
             catalogGeneration: valid.catalogGeneration,
             catalogSnapshotSHA256: valid.catalogSnapshotSHA256,
             aggregateSnapshotSHA256: valid.aggregateSnapshotSHA256
@@ -140,6 +142,7 @@ final class AtriaHistoricalFullScanCompletionStoreTests: XCTestCase {
             sourceRawSHA256: String(repeating: "a", count: 64),
             sourceFirstTimestamp: first,
             sourceLastTimestamp: first.addingTimeInterval(1_800),
+            observedArchiveFirstTimestamp: first.addingTimeInterval(-3_600),
             catalogGeneration: generation,
             catalogSnapshotSHA256: String(repeating: "b", count: 64),
             aggregateSnapshotSHA256: String(repeating: "c", count: 64)

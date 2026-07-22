@@ -318,6 +318,88 @@ struct AtriaHistoricalActivityInspectionProofFactory {
             throw FactoryError.aggregateSnapshotMismatch
         }
 
+        return try Self.prepareVerified(
+            catalog: catalog,
+            catalogData: catalogData,
+            aggregateSnapshot: aggregateSnapshot,
+            requestedStart: requestedStart,
+            requestedEnd: requestedEnd,
+            completionWatermark: completion.requestedEnd,
+            completionGeneration: completion.generation,
+            generationIdentifier: "catalog-\(catalog.generation)-drain-\(completion.generation)"
+        )
+    }
+
+    /// Builds the same five-consumer proof from a later exhaustive scan. The
+    /// matched strap cursor watermark, never local elapsed time, must close the
+    /// dependency suffix; the observed full-scan source must reach back through
+    /// the dependency prefix.
+    func prepareUsingFullScan(
+        catalogStore: AtriaHistoricalArchiveCatalogStore,
+        aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
+        scan: AtriaHistoricalFullScanCompletionStore.Record,
+        requestedStart: Date,
+        requestedEnd: Date
+    ) throws -> Prepared {
+        guard requestedStart.timeIntervalSince1970.isFinite,
+              requestedEnd.timeIntervalSince1970.isFinite,
+              requestedEnd > requestedStart else {
+            throw FactoryError.invalidRequestedRange
+        }
+        guard !aggregateSnapshot.diagnostics.limitExceeded,
+              aggregateSnapshot.diagnostics.rejectedManifests == 0 else {
+            throw FactoryError.rejectedAggregateManifest
+        }
+        let catalog = try catalogStore.snapshotVerifiedAgainstFiles()
+        try catalog.validate()
+        let catalogData = try Self.canonicalCatalogData(catalog)
+        let aggregateData = try Self.canonicalAggregateSnapshotData(aggregateSnapshot)
+        guard aggregateSnapshot.aggregates.contains(where: {
+            $0.source.chunkID == scan.sourceChunkID
+                && $0.source.rawSHA256 == scan.sourceRawSHA256
+                && $0.source.firstTimestamp == scan.sourceFirstTimestamp
+                && $0.source.lastTimestamp == scan.sourceLastTimestamp
+        }) else {
+            throw FactoryError.aggregateCatalogMismatch(scan.sourceChunkID)
+        }
+        guard scan.catalogGeneration == catalog.generation else {
+            throw FactoryError.staleCompletionGeneration
+        }
+        guard scan.observedArchiveFirstTimestamp <= requestedStart,
+              scan.cursorWatermark >= requestedEnd else {
+            throw FactoryError.completionCoverageMismatch
+        }
+        guard scan.catalogSnapshotSHA256
+                == AtriaHistoricalDrainCompletionGenerationStore.sha256(catalogData) else {
+            throw FactoryError.catalogSnapshotMismatch
+        }
+        guard scan.aggregateSnapshotSHA256
+                == AtriaHistoricalDrainCompletionGenerationStore.sha256(aggregateData) else {
+            throw FactoryError.aggregateSnapshotMismatch
+        }
+        return try Self.prepareVerified(
+            catalog: catalog,
+            catalogData: catalogData,
+            aggregateSnapshot: aggregateSnapshot,
+            requestedStart: requestedStart,
+            requestedEnd: requestedEnd,
+            completionWatermark: scan.cursorWatermark,
+            completionGeneration: scan.generation,
+            generationIdentifier: "catalog-\(catalog.generation)-full-scan-\(scan.generation)"
+        )
+    }
+
+    private static func prepareVerified(
+        catalog: AtriaHistoricalArchiveCatalog,
+        catalogData: Data,
+        aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
+        requestedStart: Date,
+        requestedEnd: Date,
+        completionWatermark: Date,
+        completionGeneration: UInt64,
+        generationIdentifier: String
+    ) throws -> Prepared {
+
         let knownChunks = try catalog.chunks.compactMap { chunk -> AtriaHistoricalArchiveCatalog.RawChunk? in
             let hasPayload = chunk.byteCount > 0 || (chunk.rowCount ?? 0) > 0
             guard hasPayload else { return nil }
@@ -377,7 +459,6 @@ struct AtriaHistoricalActivityInspectionProofFactory {
         let intervals = Self.closedCoverageIntervals(catalogChunks: relevantCatalog,
                                                      requestedStart: requestedStart,
                                                      requestedEnd: requestedEnd)
-        let generationIdentifier = "catalog-\(catalog.generation)-drain-\(completion.generation)"
         let proof = try AtriaHistoricalActivityProjection.InspectionProof.make(
             generationIdentifier: generationIdentifier,
             catalogSnapshot: catalogData,
@@ -388,8 +469,8 @@ struct AtriaHistoricalActivityInspectionProofFactory {
                      // The strap terminal certifies the requested history
                      // boundary. Local `completedAt` is audit time only and is
                      // never promoted into alleged no-data coverage.
-                     completionWatermark: completion.requestedEnd,
-                     completionGeneration: completion.generation,
+                     completionWatermark: completionWatermark,
+                     completionGeneration: completionGeneration,
                      catalogSnapshot: catalogData,
                      closedCoverageIntervals: intervals,
                      generationIdentifier: generationIdentifier)

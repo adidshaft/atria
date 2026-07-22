@@ -24,6 +24,9 @@ final class AtriaHistoricalFullScanCompletionStore {
         let sourceRawSHA256: String
         let sourceFirstTimestamp: Date
         let sourceLastTimestamp: Date
+        /// Earliest timestamp present in the exact catalog+aggregate snapshot
+        /// hashed by this terminal scan, including deduplicated prior chunks.
+        let observedArchiveFirstTimestamp: Date
         let catalogGeneration: UInt64
         let catalogSnapshotSHA256: String
         let aggregateSnapshotSHA256: String
@@ -200,6 +203,7 @@ final class AtriaHistoricalFullScanCompletionStore {
         let watermark = record.cursorWatermark.timeIntervalSince1970
         let first = record.sourceFirstTimestamp.timeIntervalSince1970
         let last = record.sourceLastTimestamp.timeIntervalSince1970
+        let observedFirst = record.observedArchiveFirstTimestamp.timeIntervalSince1970
         guard record.version == Record.currentVersion,
               record.generation > 0,
               record.transportGeneration > 0,
@@ -211,7 +215,9 @@ final class AtriaHistoricalFullScanCompletionStore {
               watermark.isFinite,
               first.isFinite,
               last.isFinite,
+              observedFirst.isFinite,
               last >= first,
+              observedFirst <= first,
               watermark >= last,
               terminal >= watermark,
               record.catalogGeneration > 0,
