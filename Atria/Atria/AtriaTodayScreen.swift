@@ -1413,18 +1413,16 @@ struct AtriaTodayScreen: View {
     /// for `strainMetric` during one render. Without this cache each request
     /// filtered the complete workout archive and repeated civil-time conversion.
     /// Below 1.0 strain the result depends only on the workout revision and local
-    /// day; at/above 1.0 the presentation rule is unconditionally complete.
+    /// day and its confirmed-workout revision.
     private var dayStrainIsIncomplete: Bool {
         let calendar = Calendar.current
         let day = calendar.startOfDay(for: Date())
-        let isLowStrain = displayHero.strain < 1
         let key = AtriaTodayDayStrainIncompleteKey(
             confirmedWorkoutsRevision: sessionProjectionStore.state.confirmedWorkoutsRevision,
-            day: day,
-            isLowStrain: isLowStrain
+            day: day
         )
         return glanceMemo.dayStrainIncompleteCache.resolve(key: key) {
-            isLowStrain && AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(
+            AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(
                 day: day,
                 strain: displayHero.strain,
                 workouts: sessionProjectionStore.state.confirmedWorkouts,
@@ -2078,7 +2076,6 @@ struct AtriaTodayScreen: View {
 struct AtriaTodayDayStrainIncompleteKey: Equatable {
     let confirmedWorkoutsRevision: Int
     let day: Date
-    let isLowStrain: Bool
 }
 
 struct AtriaTodayDayStrainIncompleteCache {

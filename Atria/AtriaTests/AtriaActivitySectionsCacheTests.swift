@@ -123,16 +123,16 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                        "92% HR · Incomplete")
     }
 
-    func testTinyDayStrainIsIncompleteOnlyWhenAllSameDayWorkoutsAreSeverelySparse() {
+    func testDayStrainIsIncompleteWhenAllSameDayWorkoutsAreSeverelySparse() {
         let sparse = workout(samples: 58, avgHR: 118, strain: 0.17, coverage: 3)
         let complete = workout(samples: 1_200, avgHR: 126, strain: 5.4, coverage: 92)
 
         XCTAssertTrue(AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(day: sparse.start,
                                                                            strain: 0.17,
                                                                            workouts: [sparse]))
-        XCTAssertFalse(AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(day: sparse.start,
-                                                                            strain: 5.4,
-                                                                            workouts: [sparse]))
+        XCTAssertTrue(AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(day: sparse.start,
+                                                                           strain: 5.4,
+                                                                           workouts: [sparse]))
         XCTAssertFalse(AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(day: sparse.start,
                                                                             strain: 0.17,
                                                                             workouts: [sparse, complete]))
