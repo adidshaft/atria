@@ -2,6 +2,29 @@ import XCTest
 @testable import Atria
 
 final class AtriaStrainTelemetryGapTests: XCTestCase {
+    func testConfirmedStrainAuditPersistsRawInputsWithoutChangingTheirValues() {
+        let suite = "AtriaStrainConfirmationAuditTests.\(UUID().uuidString)"
+        let store = UserDefaults(suiteName: suite)!
+        defer { store.removePersistentDomain(forName: suite) }
+        let recordedAt = Date(timeIntervalSince1970: 1_800_200_000)
+        let record = AtriaStrainConfirmationAuditRecord(
+            workoutID: "workout-1",
+            recordedAt: recordedAt,
+            rawTRIMP: 12.75,
+            integratedObservedSeconds: 840,
+            droppedGapSeconds: 30,
+            restingHR: 58,
+            maxHR: 192,
+            strainScore: 7.4,
+            result: "score_persisted",
+            coveragePercent: 93
+        )
+
+        AtriaStrainConfirmationAuditLog.append(record, store: store)
+
+        XCTAssertEqual(AtriaStrainConfirmationAuditLog.load(store: store), [record])
+    }
+
     func testTRIMPDoesNotBackfillLongTelemetryGapAtLaterHighHeartRate() {
         let result = Metrics.trimp([(t: 0, bpm: 60), (t: 299, bpm: 180)],
                                    rest: 60,
