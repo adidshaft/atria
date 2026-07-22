@@ -4,6 +4,54 @@ import XCTest
 @testable import Atria
 
 final class AtriaWhoop4HistoryAdmissionLedgerTests: XCTestCase {
+    func testIncrementalDurablePrefixesKeepTerminalReceiptCumulative() throws {
+        let fixture = try Fixture()
+        let ledger = try fixture.ledger()
+        let attempt = try ledger.beginAttempt(strapIdentifier: "strap-checkpoint")
+        let frames = (0..<4).map { Data([0x2f, UInt8($0)]) }
+        for frame in frames {
+            _ = try ledger.classify(frame: frame, attempt: attempt)
+        }
+
+        let first = try ledger.markCurrentPrefixArchiveDurableWithReceipt(
+            attempt: attempt,
+            through: 1,
+            archiveReceipt: fixture.archiveReceipt(recordCount: 2)
+        ).receipt
+        XCTAssertEqual(first.recordCount, 2)
+        XCTAssertEqual(first.durableOrdinal, 1)
+
+        let second = try ledger.markCurrentPrefixArchiveDurableWithReceipt(
+            attempt: attempt,
+            through: 3,
+            archiveReceipt: fixture.archiveReceipt(recordCount: 2)
+        ).receipt
+        XCTAssertEqual(second.recordCount, 4)
+        XCTAssertEqual(second.durableOrdinal, 3)
+
+        // A HISTORY_END may follow an incremental checkpoint with no new
+        // rows. Its final seal still advances the receipt chain and retains
+        // the entire durable prefix for strict terminal enumeration.
+        let terminal = try ledger.markCurrentPrefixArchiveDurableWithReceipt(
+            attempt: attempt,
+            through: 3,
+            archiveReceipt: fixture.archiveReceipt(recordCount: 0)
+        ).receipt
+        XCTAssertEqual(terminal.recordCount, 4)
+        XCTAssertEqual(terminal.durableOrdinal, 3)
+
+        var enumerated: [Data] = []
+        let report = try ledger.enumerateDurableFrames(
+            attemptIdentifier: attempt.identifier,
+            strapIdentifier: attempt.strapIdentifier,
+            throughReceipt: terminal
+        ) { _, frame in
+            enumerated.append(frame)
+        }
+        XCTAssertEqual(report.recordCount, 4)
+        XCTAssertEqual(enumerated, frames)
+    }
+
     func testPendingFrameEnumerationCoversInterruptedAttemptPrefixExactly() throws {
         let fixture = try Fixture()
         let ledger = try fixture.ledger()

@@ -896,6 +896,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private nonisolated(unsafe) var realtimePacketDrainScheduled = false
     nonisolated private static let realtimePacketBatchSize = 12
     nonisolated private static let pendingRealtimePacketLimit = 4_096
+    /// A WHOOP full-flash history transfer can contain more than 100k frames.
+    /// This is a bounded transport cushion, not an in-memory archive: durable
+    /// checkpoints seal raw prefixes every 48k frames while this FIFO drains.
+    nonisolated private static let pendingHistoricalTransportEventLimit = 131_072
     private var liveSessionID = UUID()
     private var liveSessionEventTimeZoneIdentifier = TimeZone.current.identifier
     var currentLiveSessionID: UUID { liveSessionID }
@@ -1355,6 +1359,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var historicalAdmissionAttempt: AtriaWhoop4HistoryAdmissionLedger.Attempt?
     private var historicalAdmissionHighestOrdinal: UInt64?
     private var historicalAdmissionFailed = false
+    /// Seals bounded, durable prefixes during a long full-flash transfer.
+    /// This is archive-queue-owned and never authorizes a HISTORY_END ACK.
+    private let historicalCheckpointCoordinator =
+        AtriaWhoop4HistoryCheckpointCoordinator()
     private var selectedFullDrainGap: AtriaHistoricalGapLedger.RecoveryCandidate?
     private var fullDrainTransportNonce: String?
     private var pendingHistoryClockCommandSequence: UInt8?
@@ -1393,7 +1401,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case frame(PendingHistoricalFrameAdmission)
         case metadata([UInt8], AtriaBLEHistoryTransportPhaseFence.Snapshot)
     }
-    private var pendingHistoricalTransportEvents: [PendingHistoricalTransportEvent] = []
+    private var pendingHistoricalTransportEvents =
+        AtriaFIFOBuffer<PendingHistoricalTransportEvent>()
     private var historicalAdmissionBatchInFlight = false
     private var historicalAdmissionBatchScheduled = false
     private var fullDrainHistoryEndPayloads: [String: [UInt8]] = [:]
@@ -8030,6 +8039,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historicalAdmissionAttempt = nil
         historicalAdmissionHighestOrdinal = nil
         historicalAdmissionFailed = false
+        historicalCheckpointCoordinator.begin(generation: syncGeneration)
         let persistedFullDrainAuthority = try? historicalFullDrainCoverageStore.load()
         if let persisted = persistedFullDrainAuthority,
            persisted.status == .draining,
@@ -19997,12 +20007,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             historicalDrainTelemetry.noteProgress()
         }
         guard !historicalAdmissionFailed else { return }
-        guard pendingHistoricalTransportEvents.count < 1_024 else {
+        guard pendingHistoricalTransportEvents.count
+                < Self.pendingHistoricalTransportEventLimit else {
             historicalAdmissionFailed = true
             historicalArchiveWriteFailures += 1
             pendingHistoricalTransportEvents.removeAll(keepingCapacity: false)
-            AtriaDebugLog("ATRIADBG historyAdmission status=failed generation=%llu reason=bounded_callback_buffer_exceeded limit=1024 action=withhold_ack_retain_gap",
-                          generation)
+            AtriaDebugLog("ATRIADBG historyAdmission status=failed generation=%llu reason=bounded_callback_buffer_exceeded limit=%d action=withhold_ack_retain_gap",
+                          generation,
+                          Self.pendingHistoricalTransportEventLimit)
             return
         }
         let clock = historyClockRef
@@ -20050,8 +20062,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           pendingHistoricalTransportEvents.count)
             return
         }
-        if case .metadata(let payload, let phase) = pendingHistoricalTransportEvents[0] {
-            pendingHistoricalTransportEvents.removeFirst()
+        if let first = pendingHistoricalTransportEvents.first,
+           case .metadata(let payload, let phase) = first {
+            _ = pendingHistoricalTransportEvents.popFirst()
             processOrderedHistoryMetadata(payload, historyPhase: phase)
             scheduleHistoricalTransportEventDrain()
             return
@@ -20075,7 +20088,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         while frames.count < 256,
               let first = pendingHistoricalTransportEvents.first {
             guard case .frame(let frame) = first else { break }
-            pendingHistoricalTransportEvents.removeFirst()
+            _ = pendingHistoricalTransportEvents.popFirst()
             frames.append(frame)
         }
         guard !frames.isEmpty,
@@ -20168,6 +20181,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG historicalArchive status=ignored reason=duplicate_or_out_of_phase generation=%llu", generation)
             return
         }
+        // Capture the admission authority on the main actor before crossing to
+        // the serial archive queue. The queue owns persistence order, while
+        // the captured attempt remains immutable for this generation.
+        let checkpointCoordinator = historicalCheckpointCoordinator
+        let checkpointLedger = historicalAdmissionLedger
+        let checkpointAttempt = historicalAdmissionAttempt
         historicalArchiveQueue.async { [weak self] in
             let pipelineClock = frame.clock.map {
                 AtriaWhoop4HistoryArchivePipeline.ClockReference(
@@ -20194,12 +20213,54 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 strapIdentifier: frame.strapIdentifier,
                 generation: generation
             )
+            var checkpointErrorDescription: String?
+            if let checkpoint = checkpointCoordinator.recordPersistence(
+                    generation: generation,
+                    ordinal: classification.ordinal,
+                    succeeded: persistence.succeeded
+                ) {
+                do {
+                    guard let admissionLedger = checkpointLedger,
+                          let admissionAttempt = checkpointAttempt,
+                          admissionAttempt.strapIdentifier == frame.strapIdentifier,
+                          let archiveReceipt = try HistoricalArchive
+                            .synchronizeDurableStorage(generation: generation),
+                          archiveReceipt.isPromotionAuthority else {
+                        throw AtriaBLEHistoryTerminalMaterializationError
+                            .admissionIdentityNotDurable
+                    }
+                    _ = try admissionLedger.markCurrentPrefixArchiveDurableWithReceipt(
+                        attempt: admissionAttempt,
+                        through: checkpoint.throughOrdinal,
+                        archiveReceipt: archiveReceipt
+                    )
+                    checkpointCoordinator.checkpointCompleted(
+                        generation: generation,
+                        succeeded: true
+                    )
+                    AtriaDebugLog("ATRIADBG historyCheckpoint status=durable generation=%llu through_ordinal=%llu sequence=%llu action=continue_without_ack",
+                                  generation,
+                                  checkpoint.throughOrdinal,
+                                  archiveReceipt.durableSequence)
+                } catch {
+                    checkpointErrorDescription = String(describing: error)
+                    checkpointCoordinator.checkpointCompleted(
+                        generation: generation,
+                        succeeded: false
+                    )
+                    AtriaDebugLog("ATRIADBG historyCheckpoint status=failed generation=%llu through_ordinal=%llu error=%@ action=withhold_terminal_ack_retain_gap",
+                                  generation,
+                                  checkpoint.throughOrdinal,
+                                  checkpointErrorDescription ?? "unknown")
+                }
+            }
             Task { @MainActor [weak self] in
                 self?.applyHistoricalArchivePersistenceResult(
                     persistence,
                     generation: generation,
                     frameKey: frameKey,
-                    decoded: decoded
+                    decoded: decoded,
+                    checkpointErrorDescription: checkpointErrorDescription
                 )
             }
         }
@@ -20251,7 +20312,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         _ result: AtriaWhoop4HistoryArchivePipeline.PersistenceResult,
                                                          generation: UInt64,
                                                          frameKey: String,
-                                                         decoded: Bool) {
+                                                         decoded: Bool,
+                                                         checkpointErrorDescription: String? = nil) {
         guard offlineHistoricalSyncInProgress,
               historyDrain.generation == generation else {
             HistoricalArchive.endDurableDrain(generation: generation)
@@ -20282,6 +20344,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
         }
         if result.succeeded {
+            if let checkpointErrorDescription {
+                historicalAdmissionFailed = true
+                historicalArchiveWriteFailures += 1
+                AtriaDebugLog("ATRIADBG historyCheckpoint status=failed generation=%llu error=%@ action=withhold_ack_retain_gap",
+                              generation,
+                              checkpointErrorDescription)
+            }
             if Self.historicalFrameRenewsIdleLease(
                 persistenceSucceeded: result.succeeded,
                 insertedNewFrame: result.inserted
