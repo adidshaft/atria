@@ -16659,8 +16659,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             switch stepLeaseDecision {
             case .grant:
                 r10StepLeaseConnectionStartedAt = connectedAt
-                setWorkoutMotionStatus("r10_step_lease_granted", at: now)
-                AtriaDebugLog("ATRIADBG r10_step_lease status=granted reason=%@", reason)
+                // This is authority to *try* the bounded motion bring-up, not
+                // proof that the strap has accepted it. In protected pure-HR
+                // mode the saved workout can be eligible while the current
+                // owner deliberately refuses R10 activation (for example a
+                // prior safety fallback). Calling that state "granted" made
+                // the product claim step capture although no stream-5 frame
+                // could possibly arrive. Only recordWorkoutMotionFrameIfNeeded
+                // promotes the status to `live`, after observed dense frames.
+                setWorkoutMotionStatus("r10_step_lease_eligible_waiting_for_motion", at: now)
+                AtriaDebugLog("ATRIADBG r10_step_lease status=eligible_waiting_for_motion reason=%@", reason)
             case .keep:
                 break
             case .revoke(let revocation):
