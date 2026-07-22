@@ -594,6 +594,17 @@ extension AtriaBLEManager {
         return nowUptime - lastProgressUptime >= idleTimeout
     }
 
+    /// A replayed frame proves that the BLE callback path is alive, but it does
+    /// not prove that the strap cursor or our durable prefix advanced. Counting
+    /// duplicate persistence as progress lets an endless replay suppress the
+    /// idle reset forever.
+    nonisolated static func historicalFrameRenewsIdleLease(
+        persistenceSucceeded: Bool,
+        insertedNewFrame: Bool
+    ) -> Bool {
+        persistenceSucceeded && insertedNewFrame
+    }
+
     /// Historical offload shares the strap command pipe with realtime capture.
     /// Protect every healthy connected stream, not only the optional long-wear
     /// mode. A short connect grace prevents an old pending recovery request from

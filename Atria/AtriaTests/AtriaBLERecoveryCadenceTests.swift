@@ -3115,6 +3115,40 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testHistoricalDuplicateReplayCannotRenewIdleLease() {
+        XCTAssertTrue(AtriaBLEManager.historicalFrameRenewsIdleLease(
+            persistenceSucceeded: true,
+            insertedNewFrame: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.historicalFrameRenewsIdleLease(
+            persistenceSucceeded: true,
+            insertedNewFrame: false
+        ))
+        XCTAssertFalse(AtriaBLEManager.historicalFrameRenewsIdleLease(
+            persistenceSucceeded: false,
+            insertedNewFrame: true
+        ))
+    }
+
+    func testHistoricalFrameCallbackDoesNotRenewLeaseBeforeDeduplication() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(of: "private func handleHistoricalData("))
+        let end = try XCTUnwrap(source.range(
+            of: "private func applyHistoricalArchivePersistenceResult(",
+            range: start.upperBound..<source.endIndex
+        ))
+        let callbackBody = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertFalse(callbackBody.contains("reason: \"historical_frame\""))
+
+        let persistenceEnd = try XCTUnwrap(source.range(
+            of: "private func commitDurableHistoricalMetricFacts(",
+            range: end.upperBound..<source.endIndex
+        ))
+        let persistenceBody = String(source[end.lowerBound..<persistenceEnd.lowerBound])
+        XCTAssertTrue(persistenceBody.contains("historicalFrameRenewsIdleLease"))
+        XCTAssertTrue(persistenceBody.contains("insertedNewFrame: result.inserted"))
+    }
+
     func testExplicitProtectedHistoryRequestStillHonorsSafetyGates() {
         XCTAssertTrue(AtriaBLEManager.shouldAllowProtectedHistoricalRecovery(
             linkConnected: true,
