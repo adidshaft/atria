@@ -307,6 +307,15 @@ enum HistoricalArchive {
         let completion: AtriaHistoricalDrainCompletionGenerationStore.Published
     }
 
+    struct FullScanAggregatePublicationResult {
+        let aggregateCommit: AtriaHistoricalRetentionTransaction.Result?
+        let source: AtriaHistoricalAggregateChunk.Source
+        let observedArchiveFirstTimestamp: Date
+        let catalogGeneration: UInt64
+        let catalogSnapshotSHA256: String
+        let aggregateSnapshotSHA256: String
+    }
+
     struct TerminalConsumerProjectionResumeResult {
         let completion: AtriaHistoricalDrainCompletionGenerationStore.Record
         let consumers: AtriaHistoricalConsumerProjectionCoordinator.Report
@@ -957,6 +966,111 @@ enum HistoricalArchive {
                      completion: completion)
     }
 
+    /// Commits a terminal full-scan aggregate without claiming that WHOOP
+    /// honored an exact time range. This is the evidence source for settling a
+    /// previously recovered chunk's wider consumer dependencies.
+    static func publishFullScanAggregateAfterDrain(
+        seal: TerminalCatalogSealResult,
+        completedAt: Date
+    ) throws -> FullScanAggregatePublicationResult {
+        let aggregates = archiveDirectory.appendingPathComponent(
+            "aggregates-v2", isDirectory: true
+        )
+        let manifests = archiveDirectory.appendingPathComponent(
+            "retention-manifests-v2", isDirectory: true
+        )
+        let aggregateCommit = try AtriaHistoricalRetentionTransaction(
+            now: { completedAt },
+            semanticVerifier: AtriaHistoricalAggregateBuilder.verify
+        ).commit(.init(
+            transactionID: seal.chunkID,
+            sourceURL: seal.sourceURL,
+            aggregateDirectoryURL: aggregates,
+            manifestDirectoryURL: manifests,
+            aggregate: seal.aggregateBuild.aggregate,
+            semanticParityReceipt: seal.aggregateBuild.semanticParityReceipt,
+            deleteSourceAfterCommit: false
+        ))
+        guard !aggregateCommit.sourceDeleted,
+              FileManager.default.fileExists(atPath: seal.sourceURL.path) else {
+            throw TerminalConsumerProjectionError.rawSourceWasNotRetained
+        }
+        return try currentFullScanSnapshotEvidence(
+            sourceChunkID: seal.aggregateBuild.aggregate.source.chunkID,
+            sourceRawSHA256: seal.aggregateBuild.aggregate.source.rawSHA256,
+            aggregateCommit: aggregateCommit
+        )
+    }
+
+    /// Produces a new terminal-scan checkpoint when the strap replayed only
+    /// rows already present in the archive. The snapshot and source are fully
+    /// revalidated; only the later strap cursor is new evidence.
+    static func currentFullScanSnapshotEvidence(
+        sourceChunkID: String,
+        sourceRawSHA256: String
+    ) throws -> FullScanAggregatePublicationResult {
+        try currentFullScanSnapshotEvidence(
+            sourceChunkID: sourceChunkID,
+            sourceRawSHA256: sourceRawSHA256,
+            aggregateCommit: nil
+        )
+    }
+
+    private static func currentFullScanSnapshotEvidence(
+        sourceChunkID: String,
+        sourceRawSHA256: String,
+        aggregateCommit: AtriaHistoricalRetentionTransaction.Result?
+    ) throws -> FullScanAggregatePublicationResult {
+        let aggregates = archiveDirectory.appendingPathComponent(
+            "aggregates-v2", isDirectory: true
+        )
+        let manifests = archiveDirectory.appendingPathComponent(
+            "retention-manifests-v2", isDirectory: true
+        )
+        let snapshot = AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: aggregates,
+            manifestDirectoryURL: manifests
+        ).load()
+        let catalog = try catalogStoreLocked().snapshotVerifiedAgainstFiles()
+        guard !snapshot.diagnostics.limitExceeded,
+              snapshot.diagnostics.rejectedManifests == 0,
+              let source = snapshot.aggregates.first(where: {
+                  $0.source.chunkID == sourceChunkID
+                    && $0.source.rawSHA256 == sourceRawSHA256
+              }),
+              catalog.chunks.contains(where: {
+                  $0.id == sourceChunkID && $0.contentSHA256 == sourceRawSHA256
+              }) else {
+            throw TerminalConsumerProjectionError.committedAggregateUnavailable
+        }
+        return .init(
+            aggregateCommit: aggregateCommit,
+            source: source.source,
+            observedArchiveFirstTimestamp: snapshot.aggregates
+                .map(\.source.firstTimestamp).min()
+                ?? source.source.firstTimestamp,
+            catalogGeneration: catalog.generation,
+            catalogSnapshotSHA256: AtriaHistoricalDrainCompletionGenerationStore.sha256(
+                try AtriaHistoricalActivityInspectionProofFactory.canonicalCatalogData(catalog)
+            ),
+            aggregateSnapshotSHA256: AtriaHistoricalDrainCompletionGenerationStore.sha256(
+                try AtriaHistoricalActivityInspectionProofFactory
+                    .canonicalAggregateSnapshotData(snapshot)
+            )
+        )
+    }
+
+    static func earliestCommittedAggregateTimestamp() -> Date? {
+        AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: archiveDirectory.appendingPathComponent(
+                "aggregates-v2", isDirectory: true
+            ),
+            manifestDirectoryURL: archiveDirectory.appendingPathComponent(
+                "retention-manifests-v2", isDirectory: true
+            )
+        ).load().aggregates.map(\.source.firstTimestamp).min()
+    }
+
     /// Resumes publication from an already-durable terminal completion without
     /// requiring another raw chunk. This is the crash path for a completion
     /// followed by only a prefix of the five consumer receipts. Every immutable
@@ -1162,6 +1276,55 @@ enum HistoricalArchive {
             throw TerminalConsumerProjectionError.rawSourceWasNotRetained
         }
         return .init(completion: completion, consumers: consumers)
+    }
+
+    /// Publishes the five typed artifacts for one source whose original exact
+    /// gap was already resolved but whose wider dependency range is now closed
+    /// by a later strap-cursor-bound full scan. No BLE work or raw retirement
+    /// occurs here.
+    static func publishPendingConsumersUsingLatestFullScan(
+        dependency: AtriaHistoricalFullDrainCoverageStore.PendingConsumerDependency,
+        fullScanStore: AtriaHistoricalFullScanCompletionStore,
+        configuration: AtriaHistoricalConsumerProjectionConfiguration
+    ) throws -> AtriaHistoricalConsumerProjectionCoordinator.Report {
+        let catalogStore = try catalogStoreLocked()
+        let catalog = try catalogStore.snapshotVerifiedAgainstFiles()
+        guard let sourceChunk = catalog.chunks.first(where: {
+            $0.id == dependency.sourceChunkID
+        }), sourceChunk.contentSHA256 == dependency.sourceRawSHA256 else {
+            throw TerminalConsumerProjectionError.resumeChunkUnavailable
+        }
+        let sourceURL = archiveDirectory.appendingPathComponent(sourceChunk.relativePath)
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            throw TerminalConsumerProjectionError.rawSourceWasNotRetained
+        }
+        let aggregateSnapshot = AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: archiveDirectory.appendingPathComponent(
+                "aggregates-v2", isDirectory: true
+            ),
+            manifestDirectoryURL: archiveDirectory.appendingPathComponent(
+                "retention-manifests-v2", isDirectory: true
+            )
+        ).load()
+        return try AtriaHistoricalConsumerProjectionCoordinator(
+            completionStore: AtriaHistoricalDrainCompletionGenerationStore(
+                directoryURL: archiveDirectory.appendingPathComponent(
+                    "drain-completions-v1", isDirectory: true
+                )
+            ),
+            receiptLedger: .init(directoryURL: archiveDirectory.appendingPathComponent(
+                "consumer-receipts-v1", isDirectory: true
+            ))
+        ).publishReceiptSetUsingFullScan(
+            for: dependency.sourceChunkID,
+            expectedRawSHA256: dependency.sourceRawSHA256,
+            requiredStart: Date(timeIntervalSince1970: dependency.requiredStartUnix),
+            requiredEnd: Date(timeIntervalSince1970: dependency.requiredEndUnix),
+            fullScanStore: fullScanStore,
+            catalogStore: catalogStore,
+            aggregateSnapshot: aggregateSnapshot,
+            configuration: configuration
+        )
     }
 
     /// Publishes and immediately re-reads one five-artifact app-facing consumer

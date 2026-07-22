@@ -128,6 +128,53 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
         XCTAssertEqual(requiredEnd, nextDay)
     }
 
+    func testLaterFullScanPublishesExactlyFiveForPendingOriginalSource() throws {
+        let settlement = try makeLaterFullScanFixture(coversRequiredEnd: true)
+        let report = try AtriaHistoricalConsumerProjectionCoordinator(
+            completionStore: settlement.fixture.completionStore,
+            receiptLedger: settlement.fixture.ledger
+        ).publishReceiptSetUsingFullScan(
+            for: settlement.fixture.aggregate.source.chunkID,
+            expectedRawSHA256: settlement.fixture.aggregate.source.rawSHA256,
+            requiredStart: settlement.requiredStart,
+            requiredEnd: settlement.requiredEnd,
+            fullScanStore: settlement.scanStore,
+            catalogStore: settlement.fixture.catalogStore,
+            aggregateSnapshot: settlement.snapshot,
+            configuration: configuration()
+        )
+
+        XCTAssertEqual(report.inspectedSourceCount, 1)
+        XCTAssertEqual(report.published.count, 5)
+        XCTAssertTrue(report.hasCompleteConsumerCoverage)
+        XCTAssertEqual(Set(report.published.map(\.receipt.kind)), [
+            .activity, .dailyMetrics, .steps, .sleep, .workout,
+        ])
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: settlement.fixture.rawURL.path
+        ))
+    }
+
+    func testLaterFullScanBeforeRequiredCursorEndFailsClosed() throws {
+        let settlement = try makeLaterFullScanFixture(coversRequiredEnd: false)
+        XCTAssertThrowsError(try AtriaHistoricalConsumerProjectionCoordinator(
+            completionStore: settlement.fixture.completionStore,
+            receiptLedger: settlement.fixture.ledger
+        ).publishReceiptSetUsingFullScan(
+            for: settlement.fixture.aggregate.source.chunkID,
+            expectedRawSHA256: settlement.fixture.aggregate.source.rawSHA256,
+            requiredStart: settlement.requiredStart,
+            requiredEnd: settlement.requiredEnd,
+            fullScanStore: settlement.scanStore,
+            catalogStore: settlement.fixture.catalogStore,
+            aggregateSnapshot: settlement.snapshot,
+            configuration: configuration()
+        ))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: settlement.fixture.rawURL.path
+        ))
+    }
+
     func testCrashAfterDurableReceiptPrefixResumesWithoutNewRawChunk() throws {
         let fixture = try makeFixture()
         var receiptCheckpoints = 0
@@ -315,9 +362,121 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
         let rawURL: URL
     }
 
+    private struct LaterFullScanFixture {
+        let fixture: Fixture
+        let scanStore: AtriaHistoricalFullScanCompletionStore
+        let snapshot: AtriaHistoricalAggregateReader.Snapshot
+        let requiredStart: Date
+        let requiredEnd: Date
+    }
+
+    private func makeLaterFullScanFixture(
+        coversRequiredEnd: Bool
+    ) throws -> LaterFullScanFixture {
+        let fixture = try makeFixture(narrowCompletion: true)
+        let readiness = try AtriaHistoricalConsumerProjectionCoordinator
+            .settlementReadiness(
+                sourceFirstTimestamp: fixture.aggregate.source.firstTimestamp,
+                sourceLastTimestamp: fixture.aggregate.source.lastTimestamp,
+                completionStart: fixture.aggregate.source.firstTimestamp,
+                completionEnd: fixture.aggregate.source.lastTimestamp,
+                dailyConfiguration: configuration().daily
+            )
+        guard case .pendingFutureEvidence(let requiredStart, let requiredEnd) = readiness else {
+            throw AtriaHistoricalConsumerProjectionCoordinator.CoordinatorError
+                .invalidRequiredRange
+        }
+
+        let active = try fixture.catalogStore.activeChunkDescriptor()
+        let scanStart = requiredStart.addingTimeInterval(-60)
+        let scanEnd = coversRequiredEnd
+            ? requiredEnd
+            : requiredEnd.addingTimeInterval(-60)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let records = [historicalRecord(at: scanStart), historicalRecord(at: scanEnd)]
+        var raw = Data()
+        for record in records {
+            raw.append(try encoder.encode(record))
+            raw.append(0x0A)
+        }
+        try raw.write(to: active.fileURL)
+        let digest = AtriaHistoricalRetentionTransaction.sha256(of: raw)
+        try fixture.catalogStore.sealActiveChunkAtTerminal(
+            chunkID: active.chunkID,
+            rowCount: records.count,
+            firstTimestamp: scanStart,
+            lastTimestamp: scanEnd,
+            contentSHA256: digest,
+            now: scanEnd
+        )
+        let scanAggregate = try AtriaHistoricalAggregateBuilder.build(
+            sourceURL: active.fileURL,
+            chunkID: active.chunkID,
+            createdAt: scanEnd.addingTimeInterval(1)
+        ).aggregate
+        let aggregates = fixture.root.appendingPathComponent("aggregates-v2")
+        let manifests = fixture.root.appendingPathComponent("retention-manifests-v2")
+        _ = try AtriaHistoricalRetentionTransaction(
+            now: { scanEnd.addingTimeInterval(2) },
+            semanticVerifier: { _, _, _ in true }
+        ).commit(.init(
+            transactionID: active.chunkID,
+            sourceURL: active.fileURL,
+            aggregateDirectoryURL: aggregates,
+            manifestDirectoryURL: manifests,
+            aggregate: scanAggregate,
+            semanticParityReceipt: AtriaHistoricalAggregateBuilder
+                .semanticParityReceipt(for: scanAggregate),
+            deleteSourceAfterCommit: false
+        ))
+        let snapshot = AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: aggregates,
+            manifestDirectoryURL: manifests
+        ).load()
+        let catalog = try fixture.catalogStore.snapshotVerifiedAgainstFiles()
+        let scanStore = AtriaHistoricalFullScanCompletionStore(
+            directoryURL: fixture.root.appendingPathComponent("full-scan-completions-v1")
+        )
+        _ = try scanStore.recordCompletion(.init(
+            version: AtriaHistoricalFullScanCompletionStore.Record.currentVersion,
+            generation: 2,
+            transportGeneration: 2,
+            transportNonce: "scan-nonce-2",
+            peripheralIdentifier: "peripheral-a",
+            strapIdentity: "whoop-4",
+            cursorWatermark: scanEnd,
+            terminalAt: scanEnd.addingTimeInterval(60),
+            sourceChunkID: scanAggregate.source.chunkID,
+            sourceRawSHA256: scanAggregate.source.rawSHA256,
+            sourceFirstTimestamp: scanAggregate.source.firstTimestamp,
+            sourceLastTimestamp: scanAggregate.source.lastTimestamp,
+            observedArchiveFirstTimestamp: min(
+                scanAggregate.source.firstTimestamp,
+                fixture.aggregate.source.firstTimestamp
+            ),
+            catalogGeneration: catalog.generation,
+            catalogSnapshotSHA256: AtriaHistoricalDrainCompletionGenerationStore.sha256(
+                try AtriaHistoricalActivityInspectionProofFactory
+                    .canonicalCatalogData(catalog)
+            ),
+            aggregateSnapshotSHA256: AtriaHistoricalDrainCompletionGenerationStore.sha256(
+                try AtriaHistoricalActivityInspectionProofFactory
+                    .canonicalAggregateSnapshotData(snapshot)
+            )
+        ))
+        return .init(
+            fixture: fixture,
+            scanStore: scanStore,
+            snapshot: snapshot,
+            requiredStart: requiredStart,
+            requiredEnd: requiredEnd
+        )
+    }
+
     private func makeFixture(narrowCompletion: Bool = false) throws -> Fixture {
         let root = try temporaryRoot()
-        var identifiers = ["sealed-source", "active-next"]
+        var identifiers = ["sealed-source", "active-next", "active-after-scan"]
         let catalogStore = AtriaHistoricalArchiveCatalogStore(
             rootURL: root,
             maximumActiveBytes: 1024,

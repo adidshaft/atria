@@ -8531,6 +8531,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 historicalConsumerReceiptRequiredGenerations.insert(generation)
             }
             scheduleFullDrainConsumerMaterialization(transportGeneration: generation)
+            schedulePendingConsumerFollowupScanMaterialization(
+                transportGeneration: generation
+            )
             scheduleTerminalConsumerMaterializationIfAuthorized(
                 transportGeneration: generation
             )
@@ -20506,6 +20509,77 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historicalArchiveQueue.async { [weak self] in
             do {
                 guard let self else { return }
+                if authority.status == .gapResolvedConsumersPending {
+                    guard let dependency = authority.pendingConsumerDependency else {
+                        throw AtriaBLEHistoryTerminalMaterializationError
+                            .pendingConsumerDependencyMissing
+                    }
+                    let report = try HistoricalArchive
+                        .publishPendingConsumersUsingLatestFullScan(
+                            dependency: dependency,
+                            fullScanStore: fullScanCompletionStore,
+                            configuration: configuration
+                        )
+                    guard report.hasCompleteConsumerCoverage,
+                          report.inspectedSourceCount == 1,
+                          report.published.count == 5,
+                          report.deferredSources.isEmpty,
+                          let completionGeneration = report.completionGeneration else {
+                        throw AtriaBLEHistoryTerminalMaterializationError
+                            .incompleteConsumerCoverage
+                    }
+                    let checkpointed = try coverageStore.recordProjectionsPublished(
+                        identity: identity,
+                        evidence: .init(
+                            completionGeneration: completionGeneration,
+                            inspectedSourceCount: report.inspectedSourceCount,
+                            receiptCount: report.published.count,
+                            artifactSHA256s: report.published.map {
+                                $0.receipt.artifactSHA256
+                            }.sorted()
+                        )
+                    )
+                    let receipts = try Self.fullDrainConsumerReceipts(
+                        from: report.published,
+                        authority: checkpointed
+                    )
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        let fenceSucceeded = await self.requestAndAwaitRecoveredDataPublication?(
+                            "full_scan_pending_consumers_\(transportGeneration)"
+                        ) ?? false
+                        guard fenceSucceeded else {
+                            self.historicalConsumerMaterializationInFlight = false
+                            return
+                        }
+                        do {
+                            try self.reconcileAdditionalTerminalFullDrainGaps(
+                                identity: identity
+                            )
+                            let committed = try coverageStore.recordCommittedConsumers(
+                                identity: identity,
+                                receipts: receipts,
+                                committedAt: Date(timeIntervalSince1970: max(
+                                    Date().timeIntervalSince1970,
+                                    receipts.map(\.committedAtUnix).max() ?? 0
+                                ))
+                            )
+                            guard committed.status == .resolved else {
+                                throw AtriaBLEHistoryTerminalMaterializationError
+                                    .consumerReceiptRereadFailed
+                            }
+                            self.finalizeAlreadyResolvedFullDrainConsumers(
+                                authority: committed
+                            )
+                        } catch {
+                            self.historicalConsumerMaterializationInFlight = false
+                            AtriaDebugLog("ATRIADBG historical_full_drain_publish status=deferred generation=%llu reason=full_scan_consumer_commit_%@ raw_retained=1",
+                                          transportGeneration,
+                                          String(describing: error))
+                        }
+                    }
+                    return
+                }
                 var current = try coverageStore.load()
                 if current?.publication == nil {
                     guard let terminal = current?.historyComplete else {
@@ -20670,6 +20744,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         sourceRawSHA256: scanSource.rawSHA256,
                         sourceFirstTimestamp: scanSource.firstTimestamp,
                         sourceLastTimestamp: scanSource.lastTimestamp,
+                        observedArchiveFirstTimestamp: HistoricalArchive
+                            .earliestCommittedAggregateTimestamp()
+                            ?? scanSource.firstTimestamp,
                         catalogGeneration: published.completion.record.catalogGeneration,
                         catalogSnapshotSHA256: published.completion.record.catalogSnapshotSHA256,
                         aggregateSnapshotSHA256: published.completion.record.aggregateSnapshotSHA256
@@ -20755,37 +20832,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         )
                     )
                 }
-                guard let terminal = current?.historyComplete else {
-                    throw AtriaBLEHistoryTerminalMaterializationError
-                        .publicationCheckpointMissing
-                }
-                let receipts = try resumed.consumers.published.map { published in
-                    let kind: String
-                    switch published.receipt.kind {
-                    case .activity: kind = "activity"
-                    case .dailyMetrics: kind = "daily_metrics"
-                    case .sleep: kind = "sleep"
-                    case .steps: kind = "steps"
-                    case .workout: kind = "workout"
-                    case .replayIdentity:
-                        throw AtriaBLEHistoryTerminalMaterializationError
-                            .unexpectedConsumerKind
-                    }
-                    let receiptData = try Data(contentsOf: published.receiptURL)
-                    return AtriaHistoricalFullDrainCoverageStore.ConsumerReceipt(
-                        kind: kind,
-                        receiptSHA256: AtriaHistoricalFullDrainCoveragePolicy.sha256(receiptData),
-                        artifactSHA256: published.receipt.artifactSHA256,
-                        sourceRawSnapshotSHA256: terminal.stores.raw.snapshotSHA256,
-                        sourceIdentitySnapshotSHA256: terminal.stores.identity.snapshotSHA256,
-                        sourceAdmissionSnapshotSHA256: terminal.stores.admission.snapshotSHA256,
-                        gapIdentifier: authority.gap.gapIdentifier,
-                        attemptIdentifier: authority.attempt.attemptIdentifier,
-                        completionIdentifier: terminal.completionIdentifier,
-                        commitIdentifier: published.receiptURL.lastPathComponent,
-                        committedAtUnix: published.receipt.settledAt.timeIntervalSince1970
-                    )
-                }.sorted { $0.kind < $1.kind }
+                let receipts = try Self.fullDrainConsumerReceipts(
+                    from: resumed.consumers.published,
+                    authority: authority
+                )
 
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -20840,6 +20890,100 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                               String(describing: error))
                 Task { @MainActor [weak self] in
                     self?.historicalConsumerMaterializationInFlight = false
+                }
+            }
+        }
+    }
+
+    /// Turns a later ordinary full drain into immutable scan evidence for an
+    /// older authority whose five consumer projections need wider context.
+    /// This does not claim exact-range BLE support and never removes raw data.
+    private func schedulePendingConsumerFollowupScanMaterialization(
+        transportGeneration: UInt64
+    ) {
+        guard !historicalConsumerMaterializationInFlight,
+              let nonce = fullDrainTransportNonce,
+              let peripheralIdentifier = peripheral?.identifier.uuidString,
+              let cursorWallUnix = acceptedHistoryClockWallUnix else { return }
+        let coverageStore = historicalFullDrainCoverageStore
+        let scanStore = historicalFullScanCompletionStore
+        let strapIdentity = strapModel.rawValue
+        let completedAt = Date()
+        do {
+            guard let authority = try coverageStore.load(),
+                  authority.status == .gapResolvedConsumersPending,
+                  authority.attempt.transportGeneration != transportGeneration else { return }
+        } catch {
+            AtriaDebugLog("ATRIADBG historical_full_scan status=deferred generation=%llu reason=authority_load_%@ raw_retained=1",
+                          transportGeneration, String(describing: error))
+            return
+        }
+
+        historicalConsumerMaterializationInFlight = true
+        historicalArchiveQueue.async { [weak self] in
+            do {
+                guard let self else { return }
+                let seal = try HistoricalArchive.sealCatalogChunkAfterTerminalDrain(
+                        generation: transportGeneration,
+                        completedAt: completedAt
+                      )
+                let priorGeneration: UInt64
+                let priorScan: AtriaHistoricalFullScanCompletionStore.Record?
+                do {
+                    priorScan = try scanStore.loadLatest()
+                    priorGeneration = priorScan?.generation ?? 0
+                } catch AtriaHistoricalFullScanCompletionStore.StoreError.missingCompletion {
+                    priorScan = nil
+                    priorGeneration = 0
+                }
+                let publication: HistoricalArchive.FullScanAggregatePublicationResult
+                if let seal {
+                    publication = try HistoricalArchive.publishFullScanAggregateAfterDrain(
+                        seal: seal,
+                        completedAt: completedAt
+                    )
+                } else if let priorScan {
+                    publication = try HistoricalArchive.currentFullScanSnapshotEvidence(
+                        sourceChunkID: priorScan.sourceChunkID,
+                        sourceRawSHA256: priorScan.sourceRawSHA256
+                    )
+                } else {
+                    throw AtriaBLEHistoryTerminalMaterializationError.noNewRawChunk
+                }
+                guard priorGeneration < UInt64.max else {
+                    throw AtriaBLEHistoryTerminalMaterializationError
+                        .fullScanGenerationExhausted
+                }
+                _ = try scanStore.recordCompletion(.init(
+                    version: AtriaHistoricalFullScanCompletionStore.Record.currentVersion,
+                    generation: priorGeneration + 1,
+                    transportGeneration: transportGeneration,
+                    transportNonce: nonce,
+                    peripheralIdentifier: peripheralIdentifier,
+                    strapIdentity: strapIdentity,
+                    cursorWatermark: Date(timeIntervalSince1970: TimeInterval(cursorWallUnix)),
+                    terminalAt: completedAt,
+                    sourceChunkID: publication.source.chunkID,
+                    sourceRawSHA256: publication.source.rawSHA256,
+                    sourceFirstTimestamp: publication.source.firstTimestamp,
+                    sourceLastTimestamp: publication.source.lastTimestamp,
+                    observedArchiveFirstTimestamp: publication.observedArchiveFirstTimestamp,
+                    catalogGeneration: publication.catalogGeneration,
+                    catalogSnapshotSHA256: publication.catalogSnapshotSHA256,
+                    aggregateSnapshotSHA256: publication.aggregateSnapshotSHA256
+                ))
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.historicalConsumerMaterializationInFlight = false
+                    self.resumePendingFullDrainPublicationIfNeeded(
+                        reason: "full_scan_archive_committed"
+                    )
+                }
+            } catch {
+                Task { @MainActor [weak self] in
+                    self?.historicalConsumerMaterializationInFlight = false
+                    AtriaDebugLog("ATRIADBG historical_full_scan status=deferred generation=%llu reason=%@ raw_retained=1",
+                                  transportGeneration, String(describing: error))
                 }
             }
         }
@@ -21195,6 +21339,43 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
     }
 
+    private nonisolated static func fullDrainConsumerReceipts(
+        from publishedReceipts: [AtriaHistoricalConsumerReceiptLedger.Published],
+        authority: AtriaHistoricalFullDrainCoverageStore.Authority
+    ) throws -> [AtriaHistoricalFullDrainCoverageStore.ConsumerReceipt] {
+        guard let terminal = authority.historyComplete else {
+            throw AtriaBLEHistoryTerminalMaterializationError
+                .publicationCheckpointMissing
+        }
+        return try publishedReceipts.map { published in
+            let kind: String
+            switch published.receipt.kind {
+            case .activity: kind = "activity"
+            case .dailyMetrics: kind = "daily_metrics"
+            case .sleep: kind = "sleep"
+            case .steps: kind = "steps"
+            case .workout: kind = "workout"
+            case .replayIdentity:
+                throw AtriaBLEHistoryTerminalMaterializationError
+                    .unexpectedConsumerKind
+            }
+            let receiptData = try Data(contentsOf: published.receiptURL)
+            return .init(
+                kind: kind,
+                receiptSHA256: AtriaHistoricalFullDrainCoveragePolicy.sha256(receiptData),
+                artifactSHA256: published.receipt.artifactSHA256,
+                sourceRawSnapshotSHA256: terminal.stores.raw.snapshotSHA256,
+                sourceIdentitySnapshotSHA256: terminal.stores.identity.snapshotSHA256,
+                sourceAdmissionSnapshotSHA256: terminal.stores.admission.snapshotSHA256,
+                gapIdentifier: authority.gap.gapIdentifier,
+                attemptIdentifier: authority.attempt.attemptIdentifier,
+                completionIdentifier: terminal.completionIdentifier,
+                commitIdentifier: published.receiptURL.lastPathComponent,
+                committedAtUnix: published.receipt.settledAt.timeIntervalSince1970
+            )
+        }.sorted { $0.kind < $1.kind }
+    }
+
     private nonisolated static func coverageDates(
         from proof: AtriaHistoricalFullDrainCoveragePolicy.CoverageProof,
         cadenceSeconds: Int,
@@ -21460,6 +21641,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case unexpectedConsumerKind
         case consumerReceiptRereadFailed
         case gapLedgerQuarantined
+        case pendingConsumerDependencyMissing
+        case fullScanGenerationExhausted
     }
 
     private func retryHistoricalACKAfterFailure(
