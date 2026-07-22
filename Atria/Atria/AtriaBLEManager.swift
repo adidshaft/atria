@@ -20326,12 +20326,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             frameKey: frameKey,
             payload: payload,
             admission: classification.reducerAdmission,
-            // Only a history-start-bound full-drain authority may keep raw
-            // pages across an inner record-counter discontinuity. Its durable
-            // timestamp coverage proof still decides whether the selected gap
-            // is resolved, so this cannot silently retire missed data.
+            // A confirmed production full drain may keep raw pages across an
+            // inner record-counter discontinuity. That UInt16 is not a BLE
+            // packet sequence; a full coverage authority is deliberately not
+            // required for raw retention because timestamp/cadence proof still
+            // exclusively decides whether a selected gap is resolved.
             permitsUnconfirmedForwardDiscontinuity:
-                activeFullDrainEventIdentity?.transportGeneration == generation
+                Self.permitsRawFullDrainForwardDiscontinuity(
+                    fullDrainWriteConfirmed:
+                        historicalFullDrainWriteEvidence?.transportGeneration
+                            == generation,
+                    historyStartReceived: acceptedHistoryStartSequence != nil
+                )
         )
         persistHistorySequenceContinuityIfChanged(from: priorContinuity)
         guard effects.contains(where: { effect in
@@ -20820,6 +20826,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             }
                         }
                         if error == nil {
+                            // This diagnostic is a last-failure value, not a
+                            // permanent health verdict. Clear it only after a
+                            // later successful durable boundary so an old,
+                            // repaired archive fault cannot make a healthy
+                            // current drain appear broken.
+                            let defaults = UserDefaults.standard
+                            defaults.removeObject(forKey: OfflineSyncDefaults.lastDurableFlushError)
+                            defaults.removeObject(forKey: OfflineSyncDefaults.lastDurableFlushErrorAt)
                             self.noteOfflineHistoricalSyncProgress(
                                 generation: generation,
                                 reason: "durable_flush"
