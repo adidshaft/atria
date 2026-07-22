@@ -1160,6 +1160,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 .appendingPathComponent("atria-historical/full-drain-authority-v1",
                                         isDirectory: true)
         )
+    private lazy var historicalFullScanCompletionStore =
+        AtriaHistoricalFullScanCompletionStore(
+            directoryURL: FileManager.default.urls(for: .documentDirectory,
+                                                   in: .userDomainMask)[0]
+                .appendingPathComponent(
+                    "atria-historical/full-scan-completions-v1",
+                    isDirectory: true
+                )
+        )
     private var activeFullDrainEventIdentity:
         AtriaHistoricalFullDrainCoverageStore.EventIdentity?
     private var activeHistoricalRequestBinding: AtriaBLEHistoryRequestAuthorityStore.Binding?
@@ -20445,6 +20454,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     ) {
         guard !historicalConsumerMaterializationInFlight else { return }
         let coverageStore = historicalFullDrainCoverageStore
+        let fullScanCompletionStore = historicalFullScanCompletionStore
         let authority: AtriaHistoricalFullDrainCoverageStore.Authority
         do {
             guard let loaded = try coverageStore.load(),
@@ -20644,6 +20654,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         requestedEnd: Date(timeIntervalSince1970: authority.gap.endUnix),
                         completedAt: Date(timeIntervalSince1970: publication.completedAtUnix)
                     )
+                    let scanSource = seal.aggregateBuild.aggregate.source
+                    _ = try fullScanCompletionStore.recordCompletion(.init(
+                        version: AtriaHistoricalFullScanCompletionStore.Record.currentVersion,
+                        generation: published.completion.record.generation,
+                        transportGeneration: authority.attempt.transportGeneration,
+                        transportNonce: authority.attempt.transportNonce,
+                        peripheralIdentifier: authority.attempt.peripheralIdentifier,
+                        strapIdentity: authority.attempt.strapIdentity,
+                        cursorWatermark: Date(timeIntervalSince1970: TimeInterval(
+                            authority.attempt.transportAuthority.clockWallUnix
+                        )),
+                        terminalAt: Date(timeIntervalSince1970: publication.completedAtUnix),
+                        sourceChunkID: scanSource.chunkID,
+                        sourceRawSHA256: scanSource.rawSHA256,
+                        sourceFirstTimestamp: scanSource.firstTimestamp,
+                        sourceLastTimestamp: scanSource.lastTimestamp,
+                        catalogGeneration: published.completion.record.catalogGeneration,
+                        catalogSnapshotSHA256: published.completion.record.catalogSnapshotSHA256,
+                        aggregateSnapshotSHA256: published.completion.record.aggregateSnapshotSHA256
+                    ))
                     current = try coverageStore.recordCompletionPublished(
                         identity: identity,
                         evidence: .init(
@@ -20669,7 +20699,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         completionEnd: Date(timeIntervalSince1970: authority.gap.endUnix),
                         dailyConfiguration: configuration.daily
                     )
-                if case .pendingFutureEvidence(_, let requiredEnd) = settlement {
+                if case .pendingFutureEvidence(let requiredStart, let requiredEnd) = settlement {
                     guard let pendingAuthority = try coverageStore.load() else {
                         throw AtriaBLEHistoryTerminalMaterializationError
                             .publicationCheckpointMissing
@@ -20687,7 +20717,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             authority: pendingAuthority,
                             identity: identity,
                             gapID: gapID,
-                            requiredEnd: requiredEnd
+                            dependency: .init(
+                                requiredStartUnix: requiredStart.timeIntervalSince1970,
+                                requiredEndUnix: requiredEnd.timeIntervalSince1970,
+                                sourceChunkID: source.chunkID,
+                                sourceRawSHA256: source.rawSHA256
+                            )
                         )
                     }
                     return
@@ -20951,7 +20986,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         authority: AtriaHistoricalFullDrainCoverageStore.Authority,
         identity: AtriaHistoricalFullDrainCoverageStore.EventIdentity,
         gapID: UUID,
-        requiredEnd: Date
+        dependency: AtriaHistoricalFullDrainCoverageStore.PendingConsumerDependency
     ) {
         guard authority.status == .coverageProven
                 || authority.status == .gapResolvedConsumersPending else {
@@ -20969,6 +21004,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
         do {
+            _ = try historicalFullDrainCoverageStore.recordPendingConsumerDependency(
+                identity: identity,
+                dependency: dependency
+            )
             let prepared = try historicalFullDrainCoverageStore
                 .prepareGapResolution(identity: identity, at: Date())
             guard commitFullDrainGapLedgerCAS(authority: prepared, gapID: gapID) else {
@@ -20992,7 +21031,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG historical_full_drain_publish status=gap_resolved_consumers_pending generation=%llu gap=%@ required_end=%.3f receipts=0 raw_retained=1",
                           authority.attempt.transportGeneration,
                           authority.gap.gapIdentifier,
-                          requiredEnd.timeIntervalSince1970)
+                          dependency.requiredEndUnix)
         } catch {
             AtriaDebugLog("ATRIADBG historical_full_drain_publish status=deferred generation=%llu reason=pending_resolve_%@ gap_already_removed=1",
                           authority.attempt.transportGeneration,

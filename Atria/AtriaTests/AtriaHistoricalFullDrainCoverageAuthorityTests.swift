@@ -524,6 +524,17 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
         _ = try store.recordCoverageProof(identity: identity(), proof: proof)
         try markProjectionCheckpoint(store: store)
 
+        let dependency = Store.PendingConsumerDependency(
+            requiredStartUnix: start - 600,
+            requiredEndUnix: start + 14_400,
+            sourceChunkID: "raw-chunk-a",
+            sourceRawSHA256: String(repeating: "a", count: 64)
+        )
+        _ = try store.recordPendingConsumerDependency(
+            identity: identity(),
+            dependency: dependency
+        )
+
         let prepared = try store.prepareGapResolution(
             identity: identity(),
             at: date(109)
@@ -533,11 +544,13 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
         XCTAssertEqual(pending.status, .gapResolvedConsumersPending)
         XCTAssertNil(pending.consumerCommit)
         XCTAssertNotNil(pending.resolvedAtUnix)
+        XCTAssertEqual(pending.pendingConsumerDependency, dependency)
 
         store = makeStore(root: root)
         let restarted = store
         XCTAssertEqual(try restarted.load()?.status, .gapResolvedConsumersPending,
                        "the future-dependent consumer retry must survive restart")
+        XCTAssertEqual(try restarted.load()?.pendingConsumerDependency, dependency)
 
         let completed = try restarted.recordCommittedConsumers(
             identity: identity(),

@@ -96,6 +96,25 @@ final class AtriaHistoricalFullDrainCoverageStore: @unchecked Sendable {
         let committedAtUnix: TimeInterval
     }
 
+    /// Immutable dependency identity for typed consumers that honestly need a
+    /// wider interval than the recovered gap itself. Persisting it makes the
+    /// later full-scan settlement restartable instead of relying on a log line
+    /// or recomputing against a mutated catalog.
+    struct PendingConsumerDependency: Codable, Equatable, Sendable {
+        let requiredStartUnix: TimeInterval
+        let requiredEndUnix: TimeInterval
+        let sourceChunkID: String
+        let sourceRawSHA256: String
+
+        var isValid: Bool {
+            requiredStartUnix.isFinite
+                && requiredEndUnix.isFinite
+                && requiredEndUnix > requiredStartUnix
+                && !sourceChunkID.isEmpty
+                && AtriaHistoricalFullDrainCoverageStore.isSHA256(sourceRawSHA256)
+        }
+    }
+
     struct TerminalGapReconciliation: Codable, Equatable, Sendable {
         enum Status: String, Codable, Equatable, Sendable {
             case rejected
@@ -156,6 +175,7 @@ final class AtriaHistoricalFullDrainCoverageStore: @unchecked Sendable {
         var coverageProof: CoverageProof?
         var publication: PublicationCheckpoint?
         var consumerCommit: ConsumerCommit?
+        var pendingConsumerDependency: PendingConsumerDependency?
         /// Every other closed gap observed when this terminal drain was sealed.
         /// Entries are immutable with respect to identity/coverage and advance
         /// independently through their exact ledger CAS.
@@ -267,6 +287,7 @@ final class AtriaHistoricalFullDrainCoverageStore: @unchecked Sendable {
             coverageProof: nil,
             publication: nil,
             consumerCommit: nil,
+            pendingConsumerDependency: nil,
             terminalGapReconciliations: nil,
             gapResolutionPreparedAtUnix: nil,
             resolvedAtUnix: nil,
@@ -632,6 +653,33 @@ final class AtriaHistoricalFullDrainCoverageStore: @unchecked Sendable {
         }
         authority.consumerCommit = commit
         authority.status = authority.resolvedAtUnix == nil ? .consumersCommitted : .resolved
+        envelope.authority = authority
+        try persistLocked(envelope)
+        return try requireAuthority(try loadLocked())
+    }
+
+    @discardableResult
+    func recordPendingConsumerDependency(
+        identity: EventIdentity,
+        dependency: PendingConsumerDependency
+    ) throws -> Authority {
+        guard dependency.isValid else { throw StoreError.consumerReceiptConflict }
+        lock.lock()
+        defer { lock.unlock() }
+        var envelope = try loadLocked()
+        var authority = try requireAuthority(envelope)
+        try Self.match(identity, authority: authority)
+        guard authority.status == .coverageProven
+                || authority.status == .gapResolvedConsumersPending else {
+            throw StoreError.terminalState
+        }
+        if let existing = authority.pendingConsumerDependency {
+            guard existing == dependency else {
+                throw StoreError.consumerReceiptConflict
+            }
+            return authority
+        }
+        authority.pendingConsumerDependency = dependency
         envelope.authority = authority
         try persistLocked(envelope)
         return try requireAuthority(try loadLocked())
