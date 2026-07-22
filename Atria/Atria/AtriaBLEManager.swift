@@ -2344,6 +2344,36 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return true
     }
 
+    /// Moves a previously qualified fallback to the *next process'* bounded
+    /// v9 proof owner. This is deliberately launch-only: changing the owner
+    /// while a pure-HR central is already connected would mutate stream-5
+    /// CCCDs mid-link, the exact disconnect-storm failure this fallback
+    /// prevents.
+    nonisolated private static func promoteFallbackToProtectedV9ForLaunch(
+        defaults: UserDefaults,
+        now: Date
+    ) {
+        defaults.set(now.timeIntervalSince1970,
+                     forKey: protectedR10RequalifyAttemptAtKey)
+        defaults.set(ProtectedR10CleanOwner.protectedV9.rawValue,
+                     forKey: protectedR10CleanOwnerKey)
+        defaults.set(ProtectedR10CleanOwnerState.protectedLaunchPending.rawValue,
+                     forKey: protectedR10CleanOwnerStateKey)
+        defaults.set(false, forKey: protectedR10StreamSuppressedKey)
+        defaults.set(false, forKey: protectedR10RollbackKey)
+        defaults.set(false, forKey: protectedR10StableTransportKey)
+        defaults.set(false, forKey: protectedR10ResponseEventDataConnectionCutoverKey)
+        defaults.set(false, forKey: protectedR10ResponseEventDataSequenceSentKey)
+        defaults.set(false, forKey: protectedR10PureHRV10InProcessCutoverKey)
+        defaults.set(0, forKey: protectedR10ProofChurnFailureCountKey)
+        defaults.removeObject(forKey: protectedR10CleanOwnerProofStartedAtKey)
+        defaults.removeObject(forKey: protectedR10CleanOwnerFailureReasonKey)
+        // stableTransportQualifiedAt is deliberately retained: it is the
+        // physical credential authorizing this bounded attempt.
+        defaults.set("clean_owner_v9_requalify_from_fallback",
+                     forKey: RadioDefaults.passiveR10Status)
+    }
+
     /// Selects the process owner before `CBCentralManager` is created. The V5
     /// cutover never mutates the connected v6 link: a unique v7 restoration
     /// namespace establishes HR, 2A19 and stream 5 together on its first link.
@@ -2419,6 +2449,32 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
 
         if owner == .pureHRV8 {
+            // Older v8 pure-HR owners can remain on devices that passed the
+            // one-time v9 migration before a new workout was created. Treat
+            // them exactly like the v10 fallback *only at a fresh launch*.
+            // An explicit workout may bypass the cooldown for its first
+            // lease, but it must still possess the same prior physical
+            // qualification credential; never turn an unknown v8 fallback
+            // into a live R10 experiment.
+            let priorQualifiedAt = defaults.object(
+                forKey: protectedR10StableTransportQualifiedAtKey
+            ) as? Double
+            let mayRequalify = allowFallbackRequalification
+                && (state == .fallbackActive || state == .fallbackPending)
+                && priorQualifiedAt != nil
+                && (bypassCooldownForNewWorkoutLease
+                    || protectedR10FallbackShouldRequalify(
+                        priorQualifiedAt: priorQualifiedAt,
+                        fallbackAt: defaults.object(
+                            forKey: protectedR10FallbackAtKey) as? Double,
+                        lastAttemptAt: defaults.object(
+                            forKey: protectedR10RequalifyAttemptAtKey) as? Double,
+                        now: now.timeIntervalSince1970
+                    ))
+            if mayRequalify {
+                promoteFallbackToProtectedV9ForLaunch(defaults: defaults, now: now)
+                return .requalifiedProtectedV9FromFallback
+            }
             defaults.set(true, forKey: protectedR10StreamSuppressedKey)
             defaults.set(true, forKey: protectedR10RollbackKey)
             defaults.set(false, forKey: protectedR10PassiveReprobePendingKey)
@@ -2449,25 +2505,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                        forKey: protectedR10RequalifyAttemptAtKey) as? Double,
                    now: now.timeIntervalSince1970
                ) {
-                defaults.set(now.timeIntervalSince1970,
-                             forKey: protectedR10RequalifyAttemptAtKey)
-                defaults.set(ProtectedR10CleanOwner.protectedV9.rawValue,
-                             forKey: protectedR10CleanOwnerKey)
-                defaults.set(ProtectedR10CleanOwnerState.protectedLaunchPending.rawValue,
-                             forKey: protectedR10CleanOwnerStateKey)
-                defaults.set(false, forKey: protectedR10StreamSuppressedKey)
-                defaults.set(false, forKey: protectedR10RollbackKey)
-                defaults.set(false, forKey: protectedR10StableTransportKey)
-                defaults.set(false, forKey: protectedR10ResponseEventDataConnectionCutoverKey)
-                defaults.set(false, forKey: protectedR10ResponseEventDataSequenceSentKey)
-                defaults.set(false, forKey: protectedR10PureHRV10InProcessCutoverKey)
-                defaults.set(0, forKey: protectedR10ProofChurnFailureCountKey)
-                defaults.removeObject(forKey: protectedR10CleanOwnerProofStartedAtKey)
-                defaults.removeObject(forKey: protectedR10CleanOwnerFailureReasonKey)
-                // stableTransportQualifiedAt is deliberately retained: it is
-                // the physical credential authorizing each bounded attempt.
-                defaults.set("clean_owner_v9_requalify_from_fallback",
-                             forKey: RadioDefaults.passiveR10Status)
+                promoteFallbackToProtectedV9ForLaunch(defaults: defaults, now: now)
                 return .requalifiedProtectedV9FromFallback
             }
             defaults.set(true, forKey: protectedR10StreamSuppressedKey)

@@ -957,6 +957,58 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
     }
 
+    func testExplicitNewWorkoutCanRequalifyQualifiedV8FallbackOnlyAtLaunch() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.v8WorkoutRequalify.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        // The v9 migration was already consumed before this persisted
+        // fallback was observed. This is the state that formerly stranded an
+        // explicit Walking workout on pure HR forever.
+        defaults.set(true, forKey: "atria.protectedR10.responseEventDataMigrationV9")
+        defaults.set(true, forKey: "atria.protectedR10.cleanOwnerMigrationV7")
+        defaults.set("pure_hr_v8", forKey: "atria.protectedR10.cleanOwner")
+        defaults.set("fallback_active", forKey: "atria.protectedR10.cleanOwnerState")
+        defaults.set(true, forKey: "atria.protectedR10.streamSuppressed")
+        defaults.set(true, forKey: "atria.protectedR10.rollback")
+        defaults.set(now.timeIntervalSince1970 - 86_400,
+                     forKey: "atria.protectedR10.stableTransportQualifiedAt")
+
+        XCTAssertEqual(
+            AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(
+                defaults: defaults,
+                allowFallbackRequalification: true,
+                now: now
+            ),
+            .requalifiedProtectedV9FromFallback
+        )
+        XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwner"),
+                       "protected_redp_v9")
+        XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwnerState"),
+                       "protected_launch_pending")
+        XCTAssertFalse(defaults.bool(forKey: "atria.protectedR10.streamSuppressed"))
+        XCTAssertFalse(defaults.bool(forKey: "atria.protectedR10.rollback"))
+        XCTAssertNotNil(defaults.object(forKey: "atria.protectedR10.requalifyAttemptAt"))
+
+        // A v8 fallback without a past dense qualification remains safely
+        // suppressed even for an explicit workout launch.
+        defaults.set("pure_hr_v8", forKey: "atria.protectedR10.cleanOwner")
+        defaults.set("fallback_active", forKey: "atria.protectedR10.cleanOwnerState")
+        defaults.set(true, forKey: "atria.protectedR10.streamSuppressed")
+        defaults.set(true, forKey: "atria.protectedR10.rollback")
+        defaults.removeObject(forKey: "atria.protectedR10.stableTransportQualifiedAt")
+        XCTAssertEqual(
+            AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(
+                defaults: defaults,
+                allowFallbackRequalification: true,
+                bypassCooldownForNewWorkoutLease: true,
+                now: now.addingTimeInterval(1)
+            ),
+            .none
+        )
+        XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.streamSuppressed"))
+    }
+
     func testNormalLaunchKeepsPhysicallyQualifiedFallbackOnPureHR() throws {
         let suite = "AtriaBLERecoveryCadenceTests.v10LowBatteryFallback.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
