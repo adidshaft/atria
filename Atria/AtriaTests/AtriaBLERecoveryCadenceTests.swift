@@ -139,6 +139,31 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), .enableHeartRateNotifications)
     }
 
+    func testHRContinuityRediscoveryRearmsAStaleUnreadableActiveSubscription() {
+        // WHOOP's standard HR characteristic can be notify-only. Previously
+        // this exact 30-second outage merely observed the dead subscription,
+        // leaving the live stream stale until a much later all-GATT timeout.
+        XCTAssertEqual(AtriaBLEManager.heartRateContinuityRecoveryDisposition(
+            rawHeartRateGap: 30,
+            usefulGattGap: 2,
+            adaptiveTimeout: 30,
+            peripheralConnected: true,
+            hasHeartRateCharacteristic: true,
+            heartRateIsNotifying: true,
+            canReadHeartRate: false,
+            canNotifyHeartRate: true
+        ), .rediscoverHeartRateService)
+    }
+
+    func testHRContinuityDefersRepairWhileHistoryOwnsTheTransport() {
+        XCTAssertTrue(AtriaBLEManager.shouldDeferHRContinuityRepairForHistoryOwnership(
+            historyTransportActive: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldDeferHRContinuityRepairForHistoryOwnership(
+            historyTransportActive: false
+        ))
+    }
+
     func testDenseFreshWithAcceptedHRStaleAlwaysProducesRepairAction() {
         XCTAssertEqual(AtriaBLEManager.heartRateContinuityRecoveryDisposition(
             rawHeartRateGap: 5,

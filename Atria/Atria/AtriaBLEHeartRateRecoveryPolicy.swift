@@ -183,6 +183,16 @@ extension AtriaBLEManager {
         state == .lowBatteryShutoff
     }
 
+    /// History owns the vendor transport while a durable drain is in flight.
+    /// A live-stream repair must wait for that owner to finish rather than
+    /// rediscovering services halfway through a page. The next supervisor tick
+    /// will repair 2A37 if it is still stale after the history transaction.
+    nonisolated static func shouldDeferHRContinuityRepairForHistoryOwnership(
+        historyTransportActive: Bool
+    ) -> Bool {
+        historyTransportActive
+    }
+
     struct HeartRateNotificationEnableGate {
         private var requestedAt: Date?
         private var peripheralID: UUID?
@@ -274,12 +284,13 @@ extension AtriaBLEManager {
         }
         if heartRateIsNotifying {
             if canReadHeartRate { return .readHeartRate }
-            // Fresh CRC-valid R10 with stale accepted HR proves the link is
-            // alive but 2A37 is not delivering useful samples. Restart
-            // discovery without ever disabling an active HR CCCD.
-            return denseStreamFresh && acceptedHeartRateIsStale
-                ? .rediscoverHeartRateService
-                : .observe
+            // A notifying 2A37 characteristic without read support has no
+            // soft probe available. Once its stream itself crosses the
+            // timeout, rediscover the HR service to re-arm the pipeline. This
+            // intentionally leaves the active CCCD untouched; callers defer
+            // while history owns the transport and suppress low-battery
+            // shutoff before reaching this policy.
+            return .rediscoverHeartRateService
         }
         if canReadHeartRate { return .readHeartRate }
         return denseStreamFresh && acceptedHeartRateIsStale

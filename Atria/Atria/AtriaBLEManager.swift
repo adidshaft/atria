@@ -11730,6 +11730,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                   label)
             return
         }
+        if Self.shouldDeferHRContinuityRepairForHistoryOwnership(
+            historyTransportActive: offlineHistoricalSyncInProgress
+        ) {
+            persistHRContinuityWatchdogResult(status: actionStatus,
+                                              action: "deferred_history_owner",
+                                              rawGap: rawGap,
+                                              acceptedGap: acceptedGap,
+                                              timeout: timeout,
+                                              samples: session.count,
+                                              label: label,
+                                              notifying: heartRateCharacteristic?.isNotifying)
+            AtriaDebugLog("ATRIADBG hr_continuity_watchdog status=%@ raw_gap_s=%.1f accepted_gap_s=%@ timeout_s=%.1f samples=%d action=deferred_history_owner label=%@",
+                          actionStatus,
+                          rawGap,
+                          acceptedGap.map { String(format: "%.1f", $0) } ?? "missing",
+                          timeout,
+                          session.count,
+                          label)
+            return
+        }
         guard let peripheral else {
             persistHRContinuityWatchdogResult(status: actionStatus,
                                               action: "wait_missing_peripheral",
