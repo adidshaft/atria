@@ -2406,7 +2406,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return true
     }
 
-    /// The only in-process escalation allowed from the old v8 pure-HR owner.
+    /// The only in-process escalation allowed from a pure-HR fallback owner.
     /// It is intentionally more restrictive than normal launch preparation:
     /// a user must have a durable, active manual workout and a previous dense
     /// transport qualification. The caller then disconnects the old central
@@ -2421,7 +2421,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         priorCutoverLeaseAt: Double?,
         workoutStartedAt: Date
     ) -> Bool {
-        guard owner == .pureHRV8,
+        guard owner == .pureHRV8 || owner == .pureHRV10,
               state == .fallbackActive || state == .fallbackPending,
               streamSuppressed,
               manualWorkoutActive,
@@ -13890,7 +13890,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     /// A user has already made the durable manual-workout commitment, so it is
     /// unacceptable to require an install/relaunch before offering strap-native
-    /// steps. The legacy v8 fallback cannot be changed on its inherited
+    /// steps. A pure-HR fallback cannot be changed on its inherited
     /// connection: the only safe escalation is one app-owned disconnect, then
     /// a fresh v9 central whose normal didConnect path installs the profile.
     ///
@@ -16843,7 +16843,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       reason,
                       Int(startedAt.timeIntervalSince1970.rounded()))
         // A current manual workout must not require an app reinstall to escape
-        // the legacy v8 pure-HR fallback. This only schedules an app-owned
+        // a qualified pure-HR fallback. This only schedules an app-owned
         // fresh-central cutover; it never touches proprietary CCCDs on the
         // existing live HR connection.
         if beginProtectedR10V8WorkoutCutoverIfNeeded(
