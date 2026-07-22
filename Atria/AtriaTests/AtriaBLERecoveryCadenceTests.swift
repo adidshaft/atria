@@ -6672,6 +6672,49 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testInterruptedHistoryOwnerCannotSuppressLiveReconnectDiscovery() {
+        XCTAssertTrue(
+            AtriaBLEManager.shouldReleaseInterruptedHistoryOwnerForLiveReconnect(
+                offlineSyncInProgress: true,
+                historyPhaseActive: true,
+                disconnectObservedWithHistoryOwner: true,
+                freshOwnerCutoverPending: false,
+                freshOwnerAdmissionPending: false,
+                freshOwnerConnectionArmed: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldReleaseInterruptedHistoryOwnerForLiveReconnect(
+                offlineSyncInProgress: false,
+                historyPhaseActive: true,
+                disconnectObservedWithHistoryOwner: true,
+                freshOwnerCutoverPending: false,
+                freshOwnerAdmissionPending: false,
+                freshOwnerConnectionArmed: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReleaseInterruptedHistoryOwnerForLiveReconnect(
+                offlineSyncInProgress: true,
+                historyPhaseActive: true,
+                disconnectObservedWithHistoryOwner: true,
+                freshOwnerCutoverPending: false,
+                freshOwnerAdmissionPending: true,
+                freshOwnerConnectionArmed: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReleaseInterruptedHistoryOwnerForLiveReconnect(
+                offlineSyncInProgress: true,
+                historyPhaseActive: true,
+                disconnectObservedWithHistoryOwner: false,
+                freshOwnerCutoverPending: false,
+                freshOwnerAdmissionPending: false,
+                freshOwnerConnectionArmed: false
+            )
+        )
+    }
+
     func testHistoryOwnedBatteryRefreshOnlySubscribesToStandardNotifications() {
         XCTAssertEqual(
             AtriaBLEManager.historyOwnedBatteryRefreshAction(
