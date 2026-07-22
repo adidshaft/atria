@@ -7320,12 +7320,22 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(source.contains(
             "reason: \"history_idle_timeout_gatt_heartbeat_transport_reset\""
         ))
-        XCTAssertTrue(source.contains(
-            "pendingHistoricalTransportEvents.isEmpty"
-        ), "the independent watchdog must not race queued history callbacks")
-        XCTAssertTrue(source.contains(
-            "pendingHistoryEndACK == nil"
-        ), "the independent watchdog must never interrupt an ACK boundary")
+        let start = try XCTUnwrap(source.range(
+            of: "private func enforceHistoricalIdleTimeoutFromGattHeartbeatIfNeeded("
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "/// A short whole-drain deadline",
+            range: start.upperBound..<source.endIndex
+        ))
+        let watchdog = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertFalse(watchdog.contains("pendingHistoricalTransportEvents.isEmpty"),
+                       "a queue stalled beyond the full idle deadline must not pin history ownership")
+        XCTAssertFalse(watchdog.contains("pendingHistoryEndACK == nil"),
+                       "an ACK boundary that never receives a callback must fail closed at the idle deadline")
+        XCTAssertFalse(watchdog.contains("!historyACKGate.requiresHistoryCallbackDeferral"),
+                       "a missing ACK callback must not suppress the independent liveness reset")
+        XCTAssertFalse(watchdog.contains("!historicalAdmissionBatchInFlight"),
+                       "a hung local persistence batch must not retain the BLE owner indefinitely")
     }
 
     func testPostHistoryStuckSavedReconnectGetsOneBoundedReissue() throws {
