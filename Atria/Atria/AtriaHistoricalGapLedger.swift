@@ -576,6 +576,30 @@ enum AtriaHistoricalGapLedger {
                                  ledgerSnapshotSHA256: digest)
     }
 
+    /// A reconnect-created gap is the one a user is waiting to see repaired.
+    /// Keep older unresolved windows durable, but let the automatic live-link
+    /// recovery path select the newest closed exact interval first. Explicit
+    /// archival repair can still use the chronological selector above.
+    static func newestClosedRecoveryCandidate(
+        defaults: UserDefaults = .standard
+    ) -> RecoveryCandidate? {
+        storeLock.lock(); defer { storeLock.unlock() }
+        guard let current = validWindowsForMutation(defaults: defaults) else {
+            return nil
+        }
+        guard let window = current
+            .filter({ $0.end != nil && !isLegacyCoalescedWindow($0) })
+            .sorted(by: { $0.start > $1.start })
+            .first,
+              let (generation, data) = validSnapshot(defaults: defaults) else {
+            return nil
+        }
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        return RecoveryCandidate(window: window,
+                                 ledgerGeneration: generation,
+                                 ledgerSnapshotSHA256: digest)
+    }
+
     static func allClosedRecoveryCandidates(
         defaults: UserDefaults = .standard
     ) -> [RecoveryCandidate] {
