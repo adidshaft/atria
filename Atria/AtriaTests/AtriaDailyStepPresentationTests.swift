@@ -30,7 +30,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         let capturedAt = day.addingTimeInterval(14 * 3_600)
         let value = AtriaDailyStepPresentation.resolve(
             day: day,
-            now: capturedAt.addingTimeInterval(30),
+            now: capturedAt.addingTimeInterval(10),
             liveCount: 4_125,
             liveValidationState: "validated",
             liveCapturedAt: capturedAt,
@@ -128,6 +128,47 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertFalse(value.isValidated)
         XCTAssertEqual(value.valueText, "~4000")
         XCTAssertEqual(value.detailText, "Today so far · estimate")
+    }
+
+    func testStaleStrapSubtotalCannotMaskFreshPhoneDayCoordinate() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: now,
+            liveCount: 4_000,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: now.addingTimeInterval(
+                -AtriaDailyStepPresentation.liveEvidenceMaximumAge - 0.001
+            ),
+            phoneCount: 612,
+            phoneCapturedAt: now,
+            canonicalDays: [],
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.count, 612)
+        XCTAssertEqual(value.source, .phone)
+        XCTAssertEqual(value.detailText, "Today so far · iPhone")
+    }
+
+    func testStaleStrapSubtotalIsNotPresentedAsLiveTodayCount() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: now,
+            liveCount: 612,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: now.addingTimeInterval(
+                -AtriaDailyStepPresentation.liveEvidenceMaximumAge - 0.001
+            ),
+            canonicalDays: [],
+            calendar: utcCalendar
+        )
+
+        XCTAssertNil(value.count)
+        XCTAssertEqual(value.source, .none)
+        XCTAssertEqual(value.completeness, .unavailable)
+        XCTAssertEqual(value.detailText, "No verified step coverage")
     }
 
     func testClosedPhoneDayIsPresentedAsComplete() {

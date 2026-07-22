@@ -3,6 +3,13 @@ import Foundation
 /// One honest value for step surfaces. A verified closed archive day is exact;
 /// a live count or a gapped archive subtotal is explicitly partial.
 struct AtriaDailyStepPresentation: Equatable, Sendable {
+    /// R10 emits one detector-applied coordinate per device second.  A saved
+    /// subtotal must never remain the open day's "live" source once that
+    /// stream has stopped: it may be an honest historical estimate, but using
+    /// it to outrank a fresh phone total makes an old undercount look current.
+    /// Keep this aligned with the strap-steps freshness tile.
+    static let liveEvidenceMaximumAge: TimeInterval = 15
+
     enum Completeness: Equatable, Sendable {
         case complete
         case partial
@@ -85,7 +92,9 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         let dayStart = calendar.startOfDay(for: day)
         let isToday = calendar.isDate(dayStart, inSameDayAs: now)
         let liveBelongsToDay = liveCapturedAt.map {
-            calendar.isDate($0, inSameDayAs: dayStart) && $0 <= now.addingTimeInterval(5)
+            calendar.isDate($0, inSameDayAs: dayStart)
+                && $0 <= now.addingTimeInterval(5)
+                && now.timeIntervalSince($0) <= liveEvidenceMaximumAge
         } ?? false
         let cachedPhone = AtriaPhoneDailyStepStore.cached(day: dayStart, calendar: calendar)
         let resolvedPhoneCount = phoneCount ?? cachedPhone?.count
@@ -99,7 +108,7 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
            let resolvedPhoneCount,
            let resolvedPhoneCapturedAt,
            resolvedPhoneCapturedAt <= now.addingTimeInterval(5),
-           (liveBelongsToDay || liveCount > 0),
+           liveBelongsToDay,
            liveCount > resolvedPhoneCount {
             return .init(day: dayStart,
                          count: max(0, liveCount),
@@ -121,10 +130,11 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                          capturedAt: resolvedPhoneCapturedAt,
                          coverageFraction: isToday ? nil : 1)
         }
-        // A restored same-day session prefix can survive a reconnect without a
-        // fresh motion timestamp. It is still newer partial day evidence and
-        // must not be replaced by an older canonical total.
-        if isToday, liveBelongsToDay || liveCount > 0 {
+        // A live strap subtotal is only an open-day source while its
+        // detector-applied coordinate is fresh.  A restored prefix is retained
+        // in the strap detail view as "Not live", but it cannot silently
+        // masquerade as today's current count or mask a fresh phone total.
+        if isToday, liveBelongsToDay {
             return .init(day: dayStart,
                          count: max(0, liveCount),
                          completeness: .partial,
