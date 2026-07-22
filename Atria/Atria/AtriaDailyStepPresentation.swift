@@ -87,12 +87,23 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         phoneCount: Int? = nil,
         phoneCapturedAt: Date? = nil,
         canonicalDays: [AtriaHistoricalDailyConsumerProjection.StepDay],
+        /// Live strap totals are attributed wake-to-wake. When a completed
+        /// main sleep has not arrived, this can deliberately begin on the
+        /// preceding civil date; a fresh post-midnight sample must still be
+        /// eligible to keep the active day visible.
+        physiologicalDayStart: Date? = nil,
         calendar: Calendar = .current
     ) -> Self {
         let dayStart = calendar.startOfDay(for: day)
         let isToday = calendar.isDate(dayStart, inSameDayAs: now)
+        let activeWindowStart = physiologicalDayStart ?? dayStart
+        let usesPhysiologicalOpenWindow = physiologicalDayStart != nil
+            && activeWindowStart <= now
+        let crossesCivilMidnight = usesPhysiologicalOpenWindow
+            && !calendar.isDate(activeWindowStart, inSameDayAs: now)
+        let isOpenDay = isToday || usesPhysiologicalOpenWindow
         let liveBelongsToDay = liveCapturedAt.map {
-            calendar.isDate($0, inSameDayAs: dayStart)
+            $0 >= activeWindowStart
                 && $0 <= now.addingTimeInterval(5)
                 && now.timeIntervalSince($0) <= liveEvidenceMaximumAge
         } ?? false
@@ -104,7 +115,8 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         // small subtotal) while it sits on a bench during a strap-worn walk or
         // workout. For the open day, retain the larger same-day total instead
         // of allowing that stationary-phone result to erase wrist evidence.
-        if isToday,
+        if isOpenDay,
+           !crossesCivilMidnight,
            let resolvedPhoneCount,
            let resolvedPhoneCapturedAt,
            resolvedPhoneCapturedAt <= now.addingTimeInterval(5),
@@ -120,21 +132,22 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                          capturedAt: liveCapturedAt,
                          coverageFraction: nil)
         }
-        if let resolvedPhoneCount, let resolvedPhoneCapturedAt,
+        if !crossesCivilMidnight,
+           let resolvedPhoneCount, let resolvedPhoneCapturedAt,
            resolvedPhoneCapturedAt <= now.addingTimeInterval(5) {
             return .init(day: dayStart,
                          count: max(0, resolvedPhoneCount),
-                         completeness: isToday ? .partial : .complete,
+                         completeness: isOpenDay ? .partial : .complete,
                          source: .phone,
                          isValidated: true,
                          capturedAt: resolvedPhoneCapturedAt,
-                         coverageFraction: isToday ? nil : 1)
+                         coverageFraction: isOpenDay ? nil : 1)
         }
         // A live strap subtotal is only an open-day source while its
         // detector-applied coordinate is fresh.  A restored prefix is retained
         // in the strap detail view as "Not live", but it cannot silently
         // masquerade as today's current count or mask a fresh phone total.
-        if isToday, liveBelongsToDay {
+        if isOpenDay, liveBelongsToDay {
             return .init(day: dayStart,
                          count: max(0, liveCount),
                          completeness: .partial,

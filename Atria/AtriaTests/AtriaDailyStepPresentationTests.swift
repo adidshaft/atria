@@ -130,6 +130,30 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.detailText, "Today so far · estimate")
     }
 
+    func testPostMidnightLiveStrapTotalStaysVisibleUntilCompletedSleep() {
+        let priorWakeDay = day
+        let postMidnight = day.addingTimeInterval(86_400 + 2 * 3_600)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: postMidnight,
+            now: postMidnight,
+            liveCount: 4_000,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: postMidnight,
+            // This is a valid phone coordinate for the new civil day, but it
+            // cannot replace a wake-to-wake strap total that began yesterday.
+            phoneCount: 0,
+            phoneCapturedAt: postMidnight,
+            canonicalDays: [],
+            physiologicalDayStart: priorWakeDay.addingTimeInterval(7 * 3_600),
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.count, 4_000)
+        XCTAssertEqual(value.source, .live)
+        XCTAssertEqual(value.completeness, .partial)
+        XCTAssertEqual(value.valueText, "~4000")
+    }
+
     func testStaleStrapSubtotalCannotMaskFreshPhoneDayCoordinate() {
         let now = day.addingTimeInterval(14 * 3_600)
         let value = AtriaDailyStepPresentation.resolve(

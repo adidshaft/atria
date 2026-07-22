@@ -434,6 +434,7 @@ enum WidgetSnapshotPublisher {
             liveCapturedAt: ble.liveStrapStepCountCapturedAt,
             phoneCount: cachedPhoneSteps?.count,
             phoneCapturedAt: cachedPhoneSteps?.capturedAt,
+            physiologicalDayStart: savedAggregate.day,
             calendar: calendar
         )
         let liveHeartRate = AtriaHomeModel.resolvedLiveHeartRate(
@@ -625,6 +626,7 @@ enum WidgetSnapshotPublisher {
         liveCapturedAt: Date?,
         phoneCount: Int?,
         phoneCapturedAt: Date?,
+        physiologicalDayStart: Date? = nil,
         calendar: Calendar = .current
     ) -> AtriaDailyStepPresentation {
         AtriaDailyStepPresentation.resolve(
@@ -636,6 +638,7 @@ enum WidgetSnapshotPublisher {
             phoneCount: phoneCount,
             phoneCapturedAt: phoneCapturedAt,
             canonicalDays: [],
+            physiologicalDayStart: physiologicalDayStart,
             calendar: calendar
         )
     }

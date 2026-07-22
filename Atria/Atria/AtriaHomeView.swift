@@ -9550,7 +9550,8 @@ final class AtriaHomeModel {
             liveCapturedAt: ble.liveStrapStepCountCapturedAt,
             phoneCount: AtriaPhoneDailyStepStore.cached()?.count,
             phoneCapturedAt: AtriaPhoneDailyStepStore.cached()?.capturedAt,
-            canonicalDays: canonicalStepDays
+            canonicalDays: canonicalStepDays,
+            physiologicalDayStart: savedAggregate.cycleStart
         )
         let activeCaloriesToday = SessionStore.mergedTodayActiveCalories(
             savedToday: savedAggregate.savedTodayActiveCalories,
