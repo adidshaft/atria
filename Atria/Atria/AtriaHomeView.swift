@@ -11422,8 +11422,13 @@ private struct AtriaConnectionDiagnosisBanner: View, Equatable {
             VStack(alignment: .leading, spacing: 3) {
                 Text(diagnosis.title)
                     .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
+                    // Connection states are already stressful; never squeeze a
+                    // meaningful diagnosis into an unreadable one-line label.
+                    // The handoff's mobile callouts reserve real text space,
+                    // and this is a transient, low-frequency surface so the
+                    // extra line has no scrolling-performance cost.
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(diagnosis.action)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -11446,8 +11451,16 @@ private struct AtriaConnectionDiagnosisBanner: View, Equatable {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(Color(uiColor: .secondarySystemBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        // The design handoff uses a distinct, calm status callout rather than
+        // another dense flat row. This banner is visible only for an actionable
+        // connection problem, so one native glass pass improves hierarchy
+        // without adding glass work to the normal scrolling dashboard.
+        .atriaGlassCard(cornerRadius: AtriaDesignTokens.Radius.inset)
+        .overlay {
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset,
+                             style: .continuous)
+                .stroke(diagnosis.tint.opacity(0.22), lineWidth: 1)
+        }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(diagnosis.title). \(diagnosis.action)")
     }
