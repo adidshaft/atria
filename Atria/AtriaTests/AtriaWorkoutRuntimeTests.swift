@@ -496,7 +496,7 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
                      "a later fresh total cannot repair an unknown pause boundary")
     }
 
-    func testForegroundStartAwaitsHydrationBeforeReadingMergedStepAnchor() throws {
+    func testForegroundStartUsesBoundedHydrationBeforeReadingMergedStepAnchor() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -506,13 +506,18 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
         let end = try XCTUnwrap(home.range(of: "private func beginWorkoutSession(",
                                            range: start.upperBound..<home.endIndex))
         let body = String(home[start.lowerBound..<end.lowerBound])
-        let wait = try XCTUnwrap(body.range(of: "await store.waitForDeferredSessionLoadIfNeeded()"))
-        let guardLoaded = try XCTUnwrap(body.range(of: "guard store.hasLoadedSavedSessions"))
+        let authorityStart = try XCTUnwrap(home.range(of: "private func workoutStepLedgerIsReadyForStart("))
+        let authorityEnd = try XCTUnwrap(home.range(of: "private func makeWorkoutSession(",
+                                                     range: authorityStart.upperBound..<home.endIndex))
+        let authority = String(home[authorityStart.lowerBound..<authorityEnd.lowerBound])
+        XCTAssertTrue(authority.contains("await store.waitForDeferredSessionLoadIfNeeded(timeoutSeconds: timeoutSeconds)"))
+        XCTAssertTrue(authority.contains("timeoutSeconds: TimeInterval = 1"),
+                      "A cold ledger must fail fast instead of holding Start behind the old eight-second wait")
+        let guardLoaded = try XCTUnwrap(body.range(of: "guard await workoutStepLedgerIsReadyForStart()"))
         let clock = try XCTUnwrap(body.range(of: "let start = Date()"))
         let sourceFreeze = try XCTUnwrap(body.range(of: "AtriaWorkoutStepSourceVersion.frozen"))
         let coordinate = try XCTUnwrap(body.range(of: "sourceVersion: stepSourceVersion"))
         let anchor = try XCTUnwrap(body.range(of: "startingStepCount: stepCoordinate.cumulativeCount"))
-        XCTAssertLessThan(wait.lowerBound, guardLoaded.lowerBound)
         XCTAssertLessThan(guardLoaded.lowerBound, clock.lowerBound)
         XCTAssertLessThan(clock.lowerBound, sourceFreeze.lowerBound)
         XCTAssertLessThan(sourceFreeze.lowerBound, coordinate.lowerBound)

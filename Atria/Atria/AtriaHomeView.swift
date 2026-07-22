@@ -26,6 +26,28 @@ private final class AtriaWorkoutMotionBoundaryDeadline {
     }
 }
 
+/// The Start control has a real interaction deadline too.  A workout cannot
+/// be shown until its crash-recovery intent has been read and the strap-step
+/// ledger has hydrated, but a blocked file queue must never leave the Start
+/// button spinning indefinitely.  The late I/O is allowed to finish and warm
+/// the next attempt; it cannot create or alter an intent after this gate has
+/// already returned failure.
+@MainActor
+private final class AtriaWorkoutStartAuthorityDeadline {
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    func install(_ continuation: CheckedContinuation<Bool, Never>) {
+        precondition(self.continuation == nil)
+        self.continuation = continuation
+    }
+
+    func finish(_ value: Bool) {
+        guard let continuation else { return }
+        self.continuation = nil
+        continuation.resume(returning: value)
+    }
+}
+
 /// Phone-motion fallback for locomotion workouts. The strap remains the
 /// preferred source, but a walk must not lose its step total merely because
 /// R10 motion accounting is temporarily unavailable during a reconnect.
@@ -1541,7 +1563,13 @@ struct AtriaHomeView: View {
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showWorkoutStartSheet) {
-            AtriaWorkoutStartSheet { configuration in
+            AtriaWorkoutStartSheet(onPrepare: {
+                // Warm the two authorities while the picker is on screen.
+                // This is strictly read-only: Start still requires both the
+                // exact persisted intent and a hydrated strap-step ledger.
+                _ = await AtriaPendingWorkoutIntent.preparePersistence()
+                await store.waitForDeferredSessionLoadIfNeeded(timeoutSeconds: 1)
+            }) { configuration in
                 liveWorkoutLoggedSets = []
                 liveWorkoutExcludedIntervals = []
                 liveWorkoutMinimized = false
@@ -2086,6 +2114,40 @@ struct AtriaHomeView: View {
         }
     }
 
+    /// Bound the cold authority check at the Start tap.  The sheet pre-warms
+    /// it, so this is normally an immediate snapshot read.  If the app is
+    /// still restoring a large store, fail explicitly rather than hold an
+    /// interactive control for the store's old eight-second wait (or longer
+    /// when its I/O queue was occupied).  No unpersisted workout is ever
+    /// presented as started.
+    private func prepareWorkoutStartAuthority(
+        timeout: Duration = .seconds(1)
+    ) async -> Bool {
+        let deadline = AtriaWorkoutStartAuthorityDeadline()
+        return await withCheckedContinuation { continuation in
+            deadline.install(continuation)
+            let preparation = Task { @MainActor in
+                deadline.finish(await AtriaPendingWorkoutIntent.preparePersistence())
+            }
+            Task { @MainActor in
+                try? await Task.sleep(for: timeout)
+                guard !Task.isCancelled else { return }
+                deadline.finish(false)
+                // `prepare()` only hydrates a read-only snapshot. Cancelling
+                // the waiter cannot cancel its serial disk operation, and we
+                // intentionally let that operation warm a retry.
+                preparation.cancel()
+            }
+        }
+    }
+
+    private func workoutStepLedgerIsReadyForStart(
+        timeoutSeconds: TimeInterval = 1
+    ) async -> Bool {
+        await store.waitForDeferredSessionLoadIfNeeded(timeoutSeconds: timeoutSeconds)
+        return store.hasLoadedSavedSessions
+    }
+
     private func makeWorkoutSession(
         configuration: AtriaWorkoutStartConfiguration = .init()
     ) async -> AtriaWorkoutSession? {
@@ -2093,9 +2155,8 @@ struct AtriaHomeView: View {
         // coordinate as headless controls. On a cold launch the UI projection
         // can publish before sessions.json finishes decoding, so await that
         // authority rather than anchoring against a connection-local count.
-        await store.waitForDeferredSessionLoadIfNeeded()
-        guard store.hasLoadedSavedSessions else {
-            AtriaDebugLog("ATRIADBG live_workout_start status=deferred_session_hydration_unavailable")
+        guard await workoutStepLedgerIsReadyForStart() else {
+            AtriaDebugLog("ATRIADBG live_workout_start status=deferred_session_hydration_unavailable action=fail_fast_retry_after_warm")
             return nil
         }
         // Starting the workout is more important than obtaining a perfectly
@@ -2183,7 +2244,8 @@ struct AtriaHomeView: View {
     @discardableResult
     private func beginWorkoutSession(configuration: AtriaWorkoutStartConfiguration = .init()) async -> Bool {
         guard workoutSession == nil else { return false }
-        guard await AtriaPendingWorkoutIntent.preparePersistence() else {
+        guard await prepareWorkoutStartAuthority() else {
+            AtriaDebugLog("ATRIADBG live_workout_start status=intent_authority_unavailable action=fail_fast_retry_after_warm")
             showWorkoutStartPersistenceError = true
             return false
         }

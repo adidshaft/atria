@@ -1455,6 +1455,7 @@ struct AtriaWorkoutZoneHapticLifecycle: Equatable {
 
 struct AtriaWorkoutStartSheet: View {
     let initial: AtriaWorkoutStartConfiguration
+    let onPrepare: () async -> Void
     let onStart: (AtriaWorkoutStartConfiguration) async -> Bool
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -1466,6 +1467,7 @@ struct AtriaWorkoutStartSheet: View {
     @State private var showStartError = false
 
     init(initial: AtriaWorkoutStartConfiguration = .init(),
+         onPrepare: @escaping () async -> Void = {},
          onStart: @escaping (AtriaWorkoutStartConfiguration) async -> Bool) {
         var resolvedInitial = initial
         if resolvedInitial.activityType == .other {
@@ -1473,6 +1475,7 @@ struct AtriaWorkoutStartSheet: View {
             resolvedInitial.activityType = recent ?? .walking
         }
         self.initial = resolvedInitial
+        self.onPrepare = onPrepare
         self.onStart = onStart
         _configuration = State(initialValue: resolvedInitial)
     }
@@ -1618,6 +1621,12 @@ struct AtriaWorkoutStartSheet: View {
                 if configuration.upperTargetZone < lower {
                     configuration.upperTargetZone = lower
                 }
+            }
+            .task {
+                // Picker time is free latency budget. Warm only read-only
+                // authorities here; the Start tap remains the sole creator of
+                // the durable workout intent.
+                await onPrepare()
             }
             .onChange(of: configuration.upperTargetZone) { _, upper in
                 if configuration.lowerTargetZone > upper {
