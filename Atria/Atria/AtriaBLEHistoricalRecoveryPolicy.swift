@@ -508,6 +508,19 @@ extension AtriaBLEManager {
         ]
     }
 
+    /// A WHOOP historical row's inner UInt16 is a stored-record counter, not
+    /// a BLE packet sequence. Full flash drains legitimately interleave record
+    /// layouts and can jump that counter forward. Once the production 16/00
+    /// write is confirmed and its HISTORY_START marker arrives, preserve such
+    /// rows as raw, durable evidence. This grants no gap-coverage authority:
+    /// timestamp/cadence proof still exclusively controls recovery settlement.
+    nonisolated static func permitsRawFullDrainForwardDiscontinuity(
+        fullDrainWriteConfirmed: Bool,
+        historyStartReceived: Bool
+    ) -> Bool {
+        fullDrainWriteConfirmed && historyStartReceived
+    }
+
     /// Stopping realtime is an invasive diagnostic precondition, not part of
     /// the production full-drain handshake. On the current physical strap it
     /// timed out and disconnected the link before history could start. Keep the

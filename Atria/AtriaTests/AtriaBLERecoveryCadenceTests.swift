@@ -3582,6 +3582,25 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             [AtriaBLEManager.Cmd.sendHistoricalData, 0x00],
         ])
         XCTAssertEqual(commands.last, [AtriaBLEManager.Cmd.sendHistoricalData, 0x00])
+        XCTAssertTrue(
+            AtriaBLEManager.permitsRawFullDrainForwardDiscontinuity(
+                fullDrainWriteConfirmed: true,
+                historyStartReceived: true
+            ),
+            "A confirmed full drain retains raw WHOOP flash-layout jumps; it does not resolve a local gap"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.permitsRawFullDrainForwardDiscontinuity(
+                fullDrainWriteConfirmed: true,
+                historyStartReceived: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.permitsRawFullDrainForwardDiscontinuity(
+                fullDrainWriteConfirmed: false,
+                historyStartReceived: true
+            )
+        )
         XCTAssertFalse(commands.contains { $0.first == AtriaBLEManager.Cmd.toggleRealtimeHR })
         XCTAssertFalse(commands.contains { $0.first == AtriaBLEManager.Cmd.abortHistoricalTransmits })
         XCTAssertFalse(commands.contains { $0.first == AtriaBLEManager.Cmd.enterHighFreqSync })

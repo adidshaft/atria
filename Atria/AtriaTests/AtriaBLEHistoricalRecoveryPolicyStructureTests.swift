@@ -315,6 +315,7 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
             "shouldUseFreshHistoryOwnerCutover",
             "shouldAttemptAutomaticConnectedHistoricalHandoff",
             "productionHistoricalRecoveryInitCommands",
+            "permitsRawFullDrainForwardDiscontinuity",
             "shouldStopRealtimeBeforeHistoricalRecovery",
             "standardHROnlyModeAfterOfflineSync",
             "rangeLossBackfillCanClear",
