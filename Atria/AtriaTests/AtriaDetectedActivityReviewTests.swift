@@ -97,6 +97,44 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
                             hrMaxAcceptedGap: 2)
     }
 
+    /// Mirrors the preserved July 21 gym capture: ~30.6 minutes wall time,
+    /// ~14.25 minutes observed HR split by one radio gap, clean agreeing RR,
+    /// and a sustained strength-level distribution (not a lone optical peak).
+    private func july21GappedGymSession(start: Date,
+                                        sparseSpikeOnly: Bool = false,
+                                        contactCompromised: Bool = false) -> SavedSession {
+        let wallDuration: TimeInterval = 1_839
+        let secondSegmentStart: TimeInterval = 1_414
+        var sampleTimes = Array(stride(from: 0.0, through: 430.0, by: 1.0))
+        sampleTimes.append(contentsOf: stride(from: secondSegmentStart,
+                                              through: wallDuration,
+                                              by: 1.0))
+        let points = sampleTimes.enumerated().map { index, t in
+            let bpm = sparseSpikeOnly ? (index == 300 ? 180 : 80) : (index == 300 ? 180 : 135)
+            return SavedSession.Point(t: t, bpm: bpm)
+        }
+        let rrPoints = sampleTimes.enumerated().compactMap { index, t -> SavedSession.RRPoint? in
+            guard index % 24 == 0 else { return nil }
+            let bpm = points[index].bpm
+            return SavedSession.RRPoint(t: t,
+                                        ms: Int((60_000.0 / Double(bpm)).rounded()),
+                                        source: .standardHeartRateMeasurement2A37)
+        }
+        return SavedSession(id: UUID(),
+                            start: start,
+                            end: start.addingTimeInterval(wallDuration),
+                            label: "Strength",
+                            points: points,
+                            rrPoints: rrPoints,
+                            hrRaw2A37: points.count,
+                            hrAccepted: points.count,
+                            hrZero: 0,
+                            hrArtifactHeld: 0,
+                            hrArtifactDropped: contactCompromised ? points.count : 0,
+                            hrAcceptedGaps: 1,
+                            hrMaxAcceptedGap: secondSegmentStart - 430)
+    }
+
     private func confirmedWorkout(covering session: SavedSession) -> UserConfirmedWorkout {
         UserConfirmedWorkout(id: "confirmed-\(UUID().uuidString)",
                              createdAt: session.end,
@@ -288,6 +326,72 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
                       "every Health-history projection of the non-ready effort must keep low confidence")
     }
 
+    func testPreservedJuly21GappedGymEffortSurfacesReviewOnly() throws {
+        let session = july21GappedGymSession(start: Date(timeIntervalSince1970: 1_800_150_000))
+        let readiness = session.workoutReadiness(rest: rest, maxHR: maxHR)
+
+        XCTAssertEqual(readiness.streamCoveragePercent, 47, accuracy: 1)
+        XCTAssertGreaterThanOrEqual(readiness.observedDuration, 12 * 60)
+        XCTAssertLessThan(readiness.observedDuration, 15 * 60)
+        XCTAssertFalse(readiness.ready, "a 47% stream must never clear automatic readiness")
+        XCTAssertFalse(readiness.strengthCandidate, "the normal 15-minute gate remains unchanged")
+        XCTAssertTrue(readiness.gappedStrengthReviewCandidate)
+        XCTAssertTrue(readiness.reviewWorthyCandidate)
+
+        let detection = try XCTUnwrap(session.detectedActivity(rest: rest, maxHR: maxHR))
+        XCTAssertEqual(detection.kind, .activityCandidate)
+        XCTAssertEqual(detection.confidence, .low)
+        XCTAssertTrue(detection.reason.contains("low-confidence review only"))
+    }
+
+    func testGappedFallbackRejectsSparseSpikeAndCompromisedContact() {
+        let start = Date(timeIntervalSince1970: 1_800_160_000)
+        let sparseSpike = july21GappedGymSession(start: start, sparseSpikeOnly: true)
+        let compromised = july21GappedGymSession(start: start.addingTimeInterval(4_000),
+                                                  contactCompromised: true)
+
+        let sparseReadiness = sparseSpike.workoutReadiness(rest: rest, maxHR: maxHR)
+        XCTAssertFalse(sparseReadiness.gappedStrengthReviewCandidate,
+                       "an isolated high peak without a strong HR distribution must stay hidden")
+        XCTAssertNil(sparseSpike.detectedActivity(rest: rest, maxHR: maxHR))
+
+        let compromisedReadiness = compromised.workoutReadiness(rest: rest, maxHR: maxHR)
+        XCTAssertTrue(compromisedReadiness.contactCompromised)
+        XCTAssertFalse(compromisedReadiness.gappedStrengthReviewCandidate)
+        XCTAssertNil(compromised.detectedActivity(rest: rest, maxHR: maxHR))
+    }
+
+    func testGappedFallbackRejectsFlatStressOrDrivingPlateau() {
+        let start = Date(timeIntervalSince1970: 1_800_170_000)
+        let source = july21GappedGymSession(start: start)
+        let flatPoints = source.points.map { SavedSession.Point(t: $0.t, bpm: 135) }
+        let flatRR = source.rrPoints?.map {
+            SavedSession.RRPoint(t: $0.t,
+                                 ms: 444,
+                                 source: .standardHeartRateMeasurement2A37)
+        }
+        let plateau = SavedSession(id: UUID(),
+                                   start: source.start,
+                                   end: source.end,
+                                   label: "Unclassified",
+                                   points: flatPoints,
+                                   rrPoints: flatRR,
+                                   hrRaw2A37: flatPoints.count,
+                                   hrAccepted: flatPoints.count,
+                                   hrZero: 0,
+                                   hrArtifactHeld: 0,
+                                   hrArtifactDropped: 0,
+                                   hrAcceptedGaps: 1,
+                                   hrMaxAcceptedGap: source.hrMaxAcceptedGapValue)
+
+        let readiness = plateau.workoutReadiness(rest: rest, maxHR: maxHR)
+        XCTAssertGreaterThan(readiness.p95HR, readiness.thresholdHR,
+                             "fixture sanity: the plateau has high sustained HR")
+        XCTAssertFalse(readiness.gappedStrengthReviewCandidate,
+                       "a flat high-HR plateau lacks the dynamic effort distribution required by the fallback")
+        XCTAssertNil(plateau.detectedActivity(rest: rest, maxHR: maxHR))
+    }
+
     func testNoHeartRateStrengthWindowNeverSurfacesForAutomaticReview() {
         let start = Date(timeIntervalSince1970: 1_800_200_000)
         let session = SavedSession(id: UUID(),
@@ -309,6 +413,94 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
             rest: rest,
             maxHR: maxHR
         ).isEmpty, "metadata-only/no-HR Strength must stay user-confirmed only")
+    }
+
+    func testSparseRecoveredMotionDoesNotPoisonQualifiedHROnlyReview() throws {
+        let start = Date(timeIntervalSince1970: 1_800_300_000)
+        var session = cleanEffortSession(start: start, label: "Sparse R10 effort")
+        session.recoveredMotionEpochs = [
+            AtriaRecoveredMotionEpoch(start: start.addingTimeInterval(5 * 60),
+                                      end: start.addingTimeInterval(5 * 60 + 30),
+                                      rows: 30,
+                                      validatedRows: 30,
+                                      stillnessRatio: 0.25,
+                                      movementIntensity: 0.20,
+                                      p95VectorDelta: 0.15,
+                                      maximumGapSeconds: 1,
+                                      measurementValidated: true,
+                                      lowMotionQualified: false,
+                                      reason: "test_sparse_recovered_motion")
+        ]
+
+        let assessment = SessionStore.recoveredActivityAssessment(
+            in: [session],
+            start: session.start,
+            end: session.end,
+            restingHR: rest
+        )
+        XCTAssertTrue(assessment.hasRecoveredEpochs)
+        XCTAssertFalse(assessment.evidenceSufficient)
+
+        let single = try XCTUnwrap(SessionStore.makeWorkoutReviewCandidateForCache(
+            sessions: [session],
+            confirmedWorkouts: [],
+            rest: rest,
+            maxHR: maxHR
+        ))
+        XCTAssertEqual(single.kind, .activityCandidate)
+        XCTAssertEqual(single.confidence, .medium,
+                       "sparse motion must neither veto nor promote the HR-only evidence")
+        XCTAssertNil(single.suggestedActivityType)
+        XCTAssertTrue(single.reason.contains("recovered motion incomplete; HR-only review"))
+
+        let listed = SessionStore.makeWorkoutReviewCandidatesForCache(
+            sessions: [session],
+            confirmedWorkouts: [],
+            rest: rest,
+            maxHR: maxHR
+        )
+        XCTAssertEqual(listed.count, 1)
+        XCTAssertNil(listed.first?.suggestedActivityType)
+        XCTAssertTrue(listed.first?.reason.contains("recovered motion incomplete; HR-only review") == true)
+    }
+
+    func testSufficientRecoveredMotionContradictionStillSuppressesReview() {
+        let start = Date(timeIntervalSince1970: 1_800_400_000)
+        var session = cleanEffortSession(start: start, label: "Contradicted effort")
+        session.recoveredMotionEpochs = stride(from: 0, to: 2_100, by: 120).map { offset in
+            AtriaRecoveredMotionEpoch(start: start.addingTimeInterval(TimeInterval(offset)),
+                                      end: start.addingTimeInterval(TimeInterval(offset + 120)),
+                                      rows: 120,
+                                      validatedRows: 120,
+                                      stillnessRatio: 0.99,
+                                      movementIntensity: 0.01,
+                                      p95VectorDelta: 0.01,
+                                      maximumGapSeconds: 1,
+                                      measurementValidated: true,
+                                      lowMotionQualified: true,
+                                      reason: "test_dense_still_recovered_motion")
+        }
+
+        let assessment = SessionStore.recoveredActivityAssessment(
+            in: [session],
+            start: session.start,
+            end: session.end,
+            restingHR: rest
+        )
+        XCTAssertTrue(assessment.evidenceSufficient)
+        XCTAssertFalse(assessment.activitySupported)
+        XCTAssertNil(SessionStore.makeWorkoutReviewCandidateForCache(
+            sessions: [session],
+            confirmedWorkouts: [],
+            rest: rest,
+            maxHR: maxHR
+        ))
+        XCTAssertTrue(SessionStore.makeWorkoutReviewCandidatesForCache(
+            sessions: [session],
+            confirmedWorkouts: [],
+            rest: rest,
+            maxHR: maxHR
+        ).isEmpty)
     }
 
     func testConfirmedAndDismissedWindowsAreExcludedFromCandidateList() {

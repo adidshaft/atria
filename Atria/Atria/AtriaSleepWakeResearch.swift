@@ -30,6 +30,8 @@ enum AtriaSleepWakeResearch {
         let localVariability: Double
         let progress: Double
         let motionStillnessPrior: Double
+        let motionMovementIntensity: Double
+        let motionMeasurementValidated: Bool
     }
 
     static func classify(duration: TimeInterval,
@@ -73,7 +75,8 @@ enum AtriaSleepWakeResearch {
                               end: Date,
                               restingHR: Int,
                               isNap: Bool,
-                              motionValidated: Bool) -> [SleepStageSegment] {
+                              motionValidated: Bool,
+                              motionEpochs: [AtriaRecoveredMotionEpoch] = []) -> [SleepStageSegment] {
         let duration = end.timeIntervalSince(start)
         guard duration >= 20 * 60,
               restingHR > 0 else { return [] }
@@ -89,14 +92,14 @@ enum AtriaSleepWakeResearch {
                                      start: start,
                                      end: end,
                                      epochCount: epochCount,
-                                     motionValidated: motionValidated)
+                                     motionValidated: motionValidated,
+                                     motionEpochs: motionEpochs)
         var staged: [(start: Date, end: Date, stage: SleepStageKind)] = []
 
         for feature in features {
             let stage = stage(feature: feature,
                               restingHR: restingHR,
-                              isNap: isNap,
-                              motionValidated: motionValidated)
+                              isNap: isNap)
             staged.append((feature.start, feature.end, stage))
         }
 
@@ -106,7 +109,8 @@ enum AtriaSleepWakeResearch {
                                          end: end,
                                          restingHR: restingHR,
                                          isNap: isNap,
-                                         motionValidated: motionValidated)
+                                         motionValidated: motionValidated,
+                                         motionEpochs: motionEpochs)
         }
         let merged = merge(staged)
         let covered = merged.reduce(0) { $0 + max(0, $1.duration) }
@@ -117,7 +121,8 @@ enum AtriaSleepWakeResearch {
                                                  end: end,
                                                  restingHR: restingHR,
                                                  isNap: isNap,
-                                                 motionValidated: motionValidated)
+                                                 motionValidated: motionValidated,
+                                                 motionEpochs: motionEpochs)
             if fallback.reduce(0, { $0 + max(0, $1.duration) }) > covered || nonAwake <= 0 {
                 return fallback
             }
@@ -129,7 +134,8 @@ enum AtriaSleepWakeResearch {
                                       start: Date,
                                       end: Date,
                                       epochCount: Int,
-                                      motionValidated: Bool) -> [EpochFeature] {
+                                      motionValidated: Bool,
+                                      motionEpochs: [AtriaRecoveredMotionEpoch]) -> [EpochFeature] {
         let epoch: TimeInterval = 30
         let duration = max(1, end.timeIntervalSince(start))
         return (0..<epochCount).compactMap { index in
@@ -147,7 +153,11 @@ enum AtriaSleepWakeResearch {
             let longSmoothHR = gaussianSmoothedHR(samples: samples, center: center, sigma: 600) ?? shortSmoothHR
             let variability = heartRateStandardDeviation(in: samples, range: nearbyRange)
             let progress = epochStart.timeIntervalSince(start) / duration
-            let motionStillnessPrior = motionValidated ? 1.0 : 0.55
+            let motion = motionContext(epochs: motionEpochs,
+                                       start: epochStart,
+                                       end: epochEnd)
+            let legacyMotionValidated = motionEpochs.isEmpty && motionValidated
+            let motionStillnessPrior = motion?.stillness ?? (legacyMotionValidated ? 1.0 : 0.55)
             return EpochFeature(start: epochStart,
                                 end: epochEnd,
                                 averageHR: averageHR,
@@ -156,20 +166,23 @@ enum AtriaSleepWakeResearch {
                                 differenceOfGaussians: shortSmoothHR - longSmoothHR,
                                 localVariability: variability,
                                 progress: progress,
-                                motionStillnessPrior: motionStillnessPrior)
+                                motionStillnessPrior: motionStillnessPrior,
+                                motionMovementIntensity: motion?.intensity ?? 0,
+                                motionMeasurementValidated: motion != nil || legacyMotionValidated)
         }
     }
 
     private static func stage(feature: EpochFeature,
                               restingHR: Int,
-                              isNap: Bool,
-                              motionValidated: Bool) -> SleepStageKind {
+                              isNap: Bool) -> SleepStageKind {
         let delta = feature.averageHR - Double(restingHR)
         let trendUp = feature.differenceOfGaussians
         let variability = feature.localVariability
         let stillness = feature.motionStillnessPrior
         if delta >= 18 || (trendUp >= 7 && variability >= 4) { return .awake }
-        if !motionValidated && (delta >= 13 || trendUp >= 5) { return .awake }
+        if !feature.motionMeasurementValidated && (delta >= 13 || trendUp >= 5) { return .awake }
+        if feature.motionMeasurementValidated,
+           (stillness < 0.55 || feature.motionMovementIntensity > 0.35) { return .awake }
         if stillness < 0.7 && variability >= 6 { return .awake }
         if isNap {
             if feature.progress > 0.20 && delta <= 10 && variability >= 3.5 && trendUp > -1 { return .rem }
@@ -192,6 +205,7 @@ enum AtriaSleepWakeResearch {
                                             restingHR: Int,
                                             isNap: Bool,
                                             motionValidated: Bool,
+                                            motionEpochs: [AtriaRecoveredMotionEpoch],
                                             sampleVisits: inout Int) -> [SleepStageSegment] {
         let duration = end.timeIntervalSince(start)
         guard duration >= 20 * 60, !samples.isEmpty else { return [] }
@@ -210,6 +224,10 @@ enum AtriaSleepWakeResearch {
             let averageHR = averageHeartRate(in: samples, range: nearbyRange) ?? 0
             let variability = heartRateStandardDeviation(in: samples, range: nearbyRange)
             let progress = epochStart.timeIntervalSince(start) / max(1, duration)
+            let motion = motionContext(epochs: motionEpochs,
+                                       start: epochStart,
+                                       end: epochEnd)
+            let legacyMotionValidated = motionEpochs.isEmpty && motionValidated
             let feature = EpochFeature(start: epochStart,
                                        end: epochEnd,
                                        averageHR: averageHR,
@@ -218,11 +236,12 @@ enum AtriaSleepWakeResearch {
                                        differenceOfGaussians: 0,
                                        localVariability: variability,
                                        progress: progress,
-                                       motionStillnessPrior: motionValidated ? 1.0 : 0.55)
+                                       motionStillnessPrior: motion?.stillness ?? (legacyMotionValidated ? 1.0 : 0.55),
+                                       motionMovementIntensity: motion?.intensity ?? 0,
+                                       motionMeasurementValidated: motion != nil || legacyMotionValidated)
             return (epochStart, epochEnd, stage(feature: feature,
                                                 restingHR: restingHR,
-                                                isNap: isNap,
-                                                motionValidated: motionValidated))
+                                                isNap: isNap))
         }
         guard !staged.isEmpty else { return [] }
         return merge(staged)
@@ -233,13 +252,15 @@ enum AtriaSleepWakeResearch {
                                               end: Date,
                                               restingHR: Int,
                                               isNap: Bool,
-                                              motionValidated: Bool) -> [SleepStageSegment] {
+                                              motionValidated: Bool,
+                                              motionEpochs: [AtriaRecoveredMotionEpoch]) -> [SleepStageSegment] {
         fallbackStageDiagnostics(samples: samples,
                                  start: start,
                                  end: end,
                                  restingHR: restingHR,
                                  isNap: isNap,
-                                 motionValidated: motionValidated).segments
+                                 motionValidated: motionValidated,
+                                 motionEpochs: motionEpochs).segments
     }
 
     static func fallbackStageDiagnostics(samples: [HeartSample],
@@ -247,7 +268,8 @@ enum AtriaSleepWakeResearch {
                                          end: Date,
                                          restingHR: Int,
                                          isNap: Bool,
-                                         motionValidated: Bool) -> FallbackStageDiagnostics {
+                                         motionValidated: Bool,
+                                         motionEpochs: [AtriaRecoveredMotionEpoch] = []) -> FallbackStageDiagnostics {
         var sampleVisits = 0
         let coarse = coarseStageSegments(samples: samples,
                                          start: start,
@@ -255,6 +277,7 @@ enum AtriaSleepWakeResearch {
                                          restingHR: restingHR,
                                          isNap: isNap,
                                          motionValidated: motionValidated,
+                                         motionEpochs: motionEpochs,
                                          sampleVisits: &sampleVisits)
         let duration = end.timeIntervalSince(start)
         let covered = coarse.reduce(0) { $0 + max(0, $1.duration) }
@@ -268,6 +291,7 @@ enum AtriaSleepWakeResearch {
                                                restingHR: restingHR,
                                                isNap: isNap,
                                                motionValidated: motionValidated,
+                                               motionEpochs: motionEpochs,
                                                sampleVisits: &sampleVisits)
         return FallbackStageDiagnostics(segments: full.isEmpty ? coarse : full,
                                         sampleVisits: sampleVisits)
@@ -279,6 +303,7 @@ enum AtriaSleepWakeResearch {
                                                     restingHR: Int,
                                                     isNap: Bool,
                                                     motionValidated: Bool,
+                                                    motionEpochs: [AtriaRecoveredMotionEpoch],
                                                     sampleVisits: inout Int) -> [SleepStageSegment] {
         let duration = end.timeIntervalSince(start)
         guard duration >= 20 * 60, !samples.isEmpty else { return [] }
@@ -309,12 +334,18 @@ enum AtriaSleepWakeResearch {
                 variability = heartRateStandardDeviation(in: samples, range: sourceRange)
             }
             let progress = epochStart.timeIntervalSince(start) / max(1, duration)
+            let motion = motionContext(epochs: motionEpochs,
+                                       start: epochStart,
+                                       end: epochEnd)
+            let legacyMotionValidated = motionEpochs.isEmpty && motionValidated
             let stage = hrOnlyStage(averageHR: averageHR,
                                     variability: variability,
                                     progress: progress,
                                     restingHR: restingHR,
                                     isNap: isNap,
-                                    motionValidated: motionValidated)
+                                    motionStillnessPrior: motion?.stillness ?? (legacyMotionValidated ? 1.0 : 0.55),
+                                    motionMovementIntensity: motion?.intensity ?? 0,
+                                    motionMeasurementValidated: motion != nil || legacyMotionValidated)
             return (epochStart, epochEnd, stage)
         }
         return merge(staged)
@@ -325,8 +356,10 @@ enum AtriaSleepWakeResearch {
                                     progress: Double,
                                     restingHR: Int,
                                     isNap: Bool,
-                                    motionValidated: Bool) -> SleepStageKind {
-        if motionValidated {
+                                    motionStillnessPrior: Double,
+                                    motionMovementIntensity: Double,
+                                    motionMeasurementValidated: Bool) -> SleepStageKind {
+        if motionMeasurementValidated {
             let feature = EpochFeature(start: Date(timeIntervalSince1970: 0),
                                        end: Date(timeIntervalSince1970: 1),
                                        averageHR: averageHR,
@@ -335,11 +368,12 @@ enum AtriaSleepWakeResearch {
                                        differenceOfGaussians: 0,
                                        localVariability: variability,
                                        progress: progress,
-                                       motionStillnessPrior: 1.0)
+                                       motionStillnessPrior: motionStillnessPrior,
+                                       motionMovementIntensity: motionMovementIntensity,
+                                       motionMeasurementValidated: true)
             return stage(feature: feature,
                          restingHR: restingHR,
-                         isNap: isNap,
-                         motionValidated: true)
+                         isNap: isNap)
         }
         let delta = averageHR - Double(restingHR)
         if delta >= 18 || ((progress < 0.06 || progress > 0.94) && delta >= 14) { return .awake }
@@ -355,6 +389,34 @@ enum AtriaSleepWakeResearch {
         if delta <= 3 && variability <= 3.5 { return .deep }
         if delta <= 8 { return .sws }
         return .light
+    }
+
+    private static func motionContext(
+        epochs: [AtriaRecoveredMotionEpoch],
+        start: Date,
+        end: Date
+    ) -> (stillness: Double, intensity: Double)? {
+        let duration = end.timeIntervalSince(start)
+        guard duration > 0 else { return nil }
+        let overlapping = epochs.filter {
+            $0.measurementValidated && $0.end > start && $0.start < end
+        }
+        var covered: TimeInterval = 0
+        var weightedStillness = 0.0
+        var weightedIntensity = 0.0
+        for epoch in overlapping {
+            let overlap = min(end, epoch.end).timeIntervalSince(max(start, epoch.start))
+            guard overlap > 0,
+                  let stillness = epoch.stillnessRatio,
+                  let intensity = epoch.movementIntensity,
+                  stillness.isFinite,
+                  intensity.isFinite else { continue }
+            covered += overlap
+            weightedStillness += stillness * overlap
+            weightedIntensity += intensity * overlap
+        }
+        guard covered / duration >= 0.60 else { return nil }
+        return (weightedStillness / covered, weightedIntensity / covered)
     }
 
     private static func gaussianSmoothedHR(samples: [HeartSample],

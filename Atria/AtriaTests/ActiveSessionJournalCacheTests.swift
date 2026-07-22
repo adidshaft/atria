@@ -48,7 +48,7 @@ final class ActiveSessionJournalCacheTests: XCTestCase {
         XCTAssertEqual(ActiveSessionJournal.segmentedReconstructionCountForTesting, 1)
     }
 
-    func testIncrementalSaveReconstructsExactRecordAndRejectsCursorGaps() throws {
+    func testIncrementalSaveReconstructsExactRecordAndMakesExactReplayIdempotent() throws {
         let initial = record(sampleCount: 3, rrCount: 2)
         try ActiveSessionJournal.save(initial)
         var complete = record(id: initial.id, sampleCount: 7, rrCount: 5)
@@ -69,9 +69,16 @@ final class ActiveSessionJournalCacheTests: XCTestCase {
         XCTAssertEqual(recovered.rrSamples?.map(\.ms), complete.rrSamples?.map(\.ms))
         XCTAssertEqual(recovered.rawHRNotifications, 19)
 
+        let replay = try ActiveSessionJournal.saveIncremental(delta,
+                                                               sampleStartIndex: 3,
+                                                               rrSampleStartIndex: 2,
+                                                               maxAge: 1_000,
+                                                               maxSamples: 100)
+        XCTAssertEqual(replay.sampleCount, 7)
+        XCTAssertEqual(replay.rrSampleCount, 5)
         XCTAssertThrowsError(try ActiveSessionJournal.saveIncremental(delta,
-                                                                       sampleStartIndex: 3,
-                                                                       rrSampleStartIndex: 2,
+                                                                       sampleStartIndex: 8,
+                                                                       rrSampleStartIndex: 5,
                                                                        maxAge: 1_000,
                                                                        maxSamples: 100))
     }
@@ -105,22 +112,271 @@ final class ActiveSessionJournalCacheTests: XCTestCase {
         XCTAssertEqual(ActiveSessionJournal.load()?.samples.map(\.bpm), [75, 76, 77, 78])
     }
 
-    func testCursorMismatchCanRecoverWithFreshBoundedBaseline() throws {
+    func testCrashAfterReplacementBaseDurableRetainsCompactedJournal() throws {
+        enum Injected: Error { case crash }
+        let initial = record(sampleCount: 6, rrCount: 6)
+        try ActiveSessionJournal.save(initial)
+        var delta = record(id: initial.id, sampleCount: 8, rrCount: 8)
+        delta.updatedAt = baseDate.addingTimeInterval(8)
+        delta.samples = Array(delta.samples.dropFirst(6))
+        delta.rrSamples = Array((delta.rrSamples ?? []).dropFirst(6))
+        ActiveSessionJournal.setCompactionReplacementDurableCheckpointForTesting {
+            throw Injected.crash
+        }
+
+        XCTAssertThrowsError(try ActiveSessionJournal.saveIncremental(
+            delta,
+            sampleStartIndex: 6,
+            rrSampleStartIndex: 6,
+            maxAge: 4,
+            maxSamples: 4
+        ))
+        ActiveSessionJournal.setCompactionReplacementDurableCheckpointForTesting(nil)
+        ActiveSessionJournal.resetCachesForTesting()
+
+        let recovered = try XCTUnwrap(ActiveSessionJournal.load())
+        XCTAssertEqual(recovered.samples.map(\.bpm), [74, 75, 76, 77])
+        XCTAssertEqual(recovered.rrSamples?.map(\.ms), [804, 805, 806, 807])
+    }
+
+    func testDeltaChainCompactsBeforeSegmentCountCanGrowWithoutBound() throws {
+        let initial = record(sampleCount: 1, rrCount: 1)
+        try ActiveSessionJournal.save(initial)
+
+        var persistedSamples = 1
+        var persistedRR = 1
+        var observedCompaction = false
+        for count in 2...(ActiveSessionJournal.maximumSegmentChainCount + 3) {
+            var complete = record(id: initial.id, sampleCount: count, rrCount: count)
+            complete.updatedAt = baseDate.addingTimeInterval(Double(count))
+            complete.samples = [complete.samples[count - 1]]
+            complete.rrSamples = [try XCTUnwrap(complete.rrSamples)[count - 1]]
+            let result = try ActiveSessionJournal.saveIncremental(
+                complete,
+                sampleStartIndex: persistedSamples,
+                rrSampleStartIndex: persistedRR,
+                maxAge: 10_000,
+                maxSamples: 10_000
+            )
+            persistedSamples = result.sampleCount
+            persistedRR = result.rrSampleCount
+            observedCompaction = observedCompaction || result.compacted
+        }
+
+        XCTAssertTrue(observedCompaction)
+        let storage = ActiveSessionJournal.segmentChainStorageForTesting
+        XCTAssertLessThanOrEqual(storage.count, ActiveSessionJournal.maximumSegmentChainCount)
+        XCTAssertLessThanOrEqual(storage.bytes, ActiveSessionJournal.maximumSegmentChainBytes)
+        ActiveSessionJournal.resetCachesForTesting()
+        XCTAssertEqual(ActiveSessionJournal.load()?.samples.count,
+                       ActiveSessionJournal.maximumSegmentChainCount + 3)
+        XCTAssertEqual(ActiveSessionJournal.load()?.rrSamples?.count,
+                       ActiveSessionJournal.maximumSegmentChainCount + 3)
+    }
+
+    func testCountBudgetCompactionPublishesVerifiedBaseForImmediateNextDelta() throws {
+        let id = UUID()
+        let batchSize = 5
+        var persistedSamples = 0
+        var persistedRR = 0
+        var compactedAt: Int?
+
+        for batch in 1...(ActiveSessionJournal.maximumSegmentChainCount + 1) {
+            let total = batch * batchSize
+            var complete = record(id: id, sampleCount: total, rrCount: total)
+            complete.updatedAt = baseDate.addingTimeInterval(Double(total))
+            complete.samples = Array(complete.samples.dropFirst(persistedSamples))
+            complete.rrSamples = Array((complete.rrSamples ?? []).dropFirst(persistedRR))
+            let result = try ActiveSessionJournal.saveIncremental(
+                complete,
+                sampleStartIndex: persistedSamples,
+                rrSampleStartIndex: persistedRR,
+                maxAge: 18 * 60 * 60,
+                maxSamples: 90_000
+            )
+            persistedSamples = result.sampleCount
+            persistedRR = result.rrSampleCount
+            if result.compacted { compactedAt = total }
+        }
+
+        let compactedCount = try XCTUnwrap(compactedAt)
+        XCTAssertEqual(persistedSamples, compactedCount)
+        XCTAssertEqual(ActiveSessionJournal.load()?.samples.count, compactedCount)
+
+        // Exercise both the hot post-compaction cache and a cold/crash-style
+        // reconstruction before appending the very next five-sample tail.
+        ActiveSessionJournal.resetCachesForTesting()
+        XCTAssertEqual(ActiveSessionJournal.load()?.samples.count, compactedCount)
+        let nextTotal = compactedCount + batchSize
+        var next = record(id: id, sampleCount: nextTotal, rrCount: nextTotal)
+        next.updatedAt = baseDate.addingTimeInterval(Double(nextTotal))
+        next.samples = Array(next.samples.dropFirst(compactedCount))
+        next.rrSamples = Array((next.rrSamples ?? []).dropFirst(compactedCount))
+        let continued = try ActiveSessionJournal.saveIncremental(
+            next,
+            sampleStartIndex: compactedCount,
+            rrSampleStartIndex: compactedCount,
+            maxAge: 18 * 60 * 60,
+            maxSamples: 90_000
+        )
+        XCTAssertFalse(continued.compacted)
+        XCTAssertEqual(continued.sampleCount, nextTotal)
+        XCTAssertEqual(continued.rrSampleCount, nextTotal)
+    }
+
+    func testConflictingCursorReplayFailsClosedWithoutClearingDurablePrefix() throws {
         let initial = record(sampleCount: 3, rrCount: 2)
         try ActiveSessionJournal.save(initial)
-        XCTAssertThrowsError(try ActiveSessionJournal.saveIncremental(initial,
-                                                                       sampleStartIndex: 1,
+        var conflicting = initial
+        conflicting.samples = [
+            ActiveSessionJournalRecord.Sample(t: initial.samples[1].t, bpm: 199)
+        ]
+        conflicting.rrSamples = []
+        XCTAssertThrowsError(try ActiveSessionJournal.saveIncremental(conflicting,
+                                                                       sampleStartIndex: 0,
                                                                        rrSampleStartIndex: 2,
                                                                        maxAge: 100,
                                                                        maxSamples: 100))
-        ActiveSessionJournal.clear()
-        let recovered = try ActiveSessionJournal.saveIncremental(initial,
-                                                                 sampleStartIndex: 0,
-                                                                 rrSampleStartIndex: 0,
-                                                                 maxAge: 100,
-                                                                 maxSamples: 100)
-        XCTAssertEqual(recovered.sampleCount, 3)
-        XCTAssertEqual(ActiveSessionJournal.load()?.samples.map(\.bpm), initial.samples.map(\.bpm))
+        let retained = try XCTUnwrap(ActiveSessionJournal.load())
+        XCTAssertEqual(retained.samples.map(\.bpm), initial.samples.map(\.bpm))
+        XCTAssertEqual(retained.rrSamples?.map(\.ms), initial.rrSamples?.map(\.ms))
+    }
+
+    func testRejectedDeltaCursorCanRecoverOnlyThroughExactFullReplayAndNovelSuffix() throws {
+        let initial = record(sampleCount: 3, rrCount: 2)
+        try ActiveSessionJournal.save(initial)
+
+        var complete = record(id: initial.id, sampleCount: 5, rrCount: 4)
+        complete.updatedAt = baseDate.addingTimeInterval(5)
+        var invalidDelta = complete
+        invalidDelta.samples = Array(complete.samples.dropFirst(3))
+        invalidDelta.rrSamples = Array((complete.rrSamples ?? []).dropFirst(2))
+        XCTAssertThrowsError(try ActiveSessionJournal.saveIncremental(
+            invalidDelta,
+            sampleStartIndex: 4,
+            rrSampleStartIndex: 3,
+            maxAge: 100,
+            maxSamples: 100
+        ))
+
+        let rebased = try ActiveSessionJournal.saveIncremental(
+            complete,
+            sampleStartIndex: 0,
+            rrSampleStartIndex: 0,
+            maxAge: 100,
+            maxSamples: 100
+        )
+        XCTAssertEqual(rebased.sampleCount, 5)
+        XCTAssertEqual(rebased.rrSampleCount, 4)
+        ActiveSessionJournal.resetCachesForTesting()
+        XCTAssertEqual(ActiveSessionJournal.load()?.samples.map(\.bpm),
+                       complete.samples.map(\.bpm))
+        XCTAssertEqual(ActiveSessionJournal.load()?.rrSamples?.map(\.ms),
+                       complete.rrSamples?.map(\.ms))
+    }
+
+    func testDifferentSessionDeltaRetainsDurableGenerationUntilCompleteBaseArrives() throws {
+        let durable = record(sampleCount: 3, rrCount: 2)
+        try ActiveSessionJournal.save(durable)
+
+        var incompleteReplacement = record(id: UUID(), sampleCount: 2, rrCount: 1)
+        incompleteReplacement.updatedAt = baseDate.addingTimeInterval(10)
+        XCTAssertThrowsError(try ActiveSessionJournal.saveIncremental(
+            incompleteReplacement,
+            sampleStartIndex: 3,
+            rrSampleStartIndex: 2,
+            maxAge: 100,
+            maxSamples: 100
+        )) { error in
+            guard case let ActiveSessionJournal.IncrementalSaveError
+                .discontinuousSampleCursor(expected, actual) = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(expected, 0)
+            XCTAssertEqual(actual, 3)
+        }
+
+        ActiveSessionJournal.resetCachesForTesting()
+        let retained = try XCTUnwrap(ActiveSessionJournal.load())
+        XCTAssertEqual(retained.id, durable.id)
+        XCTAssertEqual(retained.samples.map(\.t), durable.samples.map(\.t))
+        XCTAssertEqual(retained.samples.map(\.bpm), durable.samples.map(\.bpm))
+        XCTAssertEqual(retained.rrSamples?.map(\.t), durable.rrSamples?.map(\.t))
+        XCTAssertEqual(retained.rrSamples?.map(\.ms), durable.rrSamples?.map(\.ms))
+
+        let replacement = try ActiveSessionJournal.saveIncremental(
+            incompleteReplacement,
+            sampleStartIndex: 0,
+            rrSampleStartIndex: 0,
+            maxAge: 100,
+            maxSamples: 100
+        )
+        XCTAssertEqual(replacement.sampleCount, 2)
+        XCTAssertEqual(replacement.rrSampleCount, 1)
+        ActiveSessionJournal.resetCachesForTesting()
+        XCTAssertEqual(ActiveSessionJournal.load()?.id, incompleteReplacement.id)
+        XCTAssertEqual(ActiveSessionJournal.load()?.samples.map(\.t),
+                       incompleteReplacement.samples.map(\.t))
+        XCTAssertEqual(ActiveSessionJournal.load()?.samples.map(\.bpm),
+                       incompleteReplacement.samples.map(\.bpm))
+        XCTAssertEqual(ActiveSessionJournal.load()?.rrSamples?.map(\.t),
+                       incompleteReplacement.rrSamples?.map(\.t))
+        XCTAssertEqual(ActiveSessionJournal.load()?.rrSamples?.map(\.ms),
+                       incompleteReplacement.rrSamples?.map(\.ms))
+    }
+
+    func testColdRelaunchResetCursorsPreservePriorHRAndRRWithoutDuplication() throws {
+        let initial = record(sampleCount: 61, rrCount: 41)
+        try ActiveSessionJournal.save(initial)
+        ActiveSessionJournal.resetCachesForTesting()
+
+        var relaunchedTail = record(id: initial.id, sampleCount: 7, rrCount: 3)
+        relaunchedTail.startedAt = baseDate.addingTimeInterval(61)
+        relaunchedTail.updatedAt = baseDate.addingTimeInterval(68)
+        relaunchedTail.samples = (61..<68).map {
+            ActiveSessionJournalRecord.Sample(
+                t: baseDate.addingTimeInterval(Double($0)),
+                bpm: 70 + $0
+            )
+        }
+        relaunchedTail.rrSamples = (41..<44).map {
+            ActiveSessionJournalRecord.RRSample(
+                t: baseDate.addingTimeInterval(Double($0)),
+                ms: 800 + $0,
+                source: .standardHeartRateMeasurement2A37
+            )
+        }
+
+        let rebased = try ActiveSessionJournal.saveIncremental(
+            relaunchedTail,
+            sampleStartIndex: 0,
+            rrSampleStartIndex: 0,
+            maxAge: 1_000,
+            maxSamples: 100
+        )
+        XCTAssertEqual(rebased.sampleCount, 68)
+        XCTAssertEqual(rebased.rrSampleCount, 44)
+
+        // A pending retry captured with the same reset cursors is an exact
+        // replay and must remain idempotent.
+        let retry = try ActiveSessionJournal.saveIncremental(
+            relaunchedTail,
+            sampleStartIndex: 0,
+            rrSampleStartIndex: 0,
+            maxAge: 1_000,
+            maxSamples: 100
+        )
+        XCTAssertEqual(retry.sampleCount, 68)
+        XCTAssertEqual(retry.rrSampleCount, 44)
+
+        ActiveSessionJournal.resetCachesForTesting()
+        let recovered = try XCTUnwrap(ActiveSessionJournal.load())
+        let initialRR = try XCTUnwrap(initial.rrSamples)
+        let tailRR = try XCTUnwrap(relaunchedTail.rrSamples)
+        XCTAssertEqual(recovered.samples.map(\.t), initial.samples.map(\.t) + relaunchedTail.samples.map(\.t))
+        XCTAssertEqual(recovered.samples.map(\.bpm), initial.samples.map(\.bpm) + relaunchedTail.samples.map(\.bpm))
+        XCTAssertEqual(recovered.rrSamples?.map(\.t), initialRR.map(\.t) + tailRR.map(\.t))
+        XCTAssertEqual(recovered.rrSamples?.map(\.ms), initialRR.map(\.ms) + tailRR.map(\.ms))
     }
 
     func testMirrorUpdatesCacheAndLightweightStateWithoutReplay() throws {
@@ -324,30 +580,14 @@ final class ActiveSessionJournalCacheTests: XCTestCase {
         XCTAssertEqual(ActiveSessionJournal.segmentedReconstructionCountForTesting, 1)
     }
 
-    func testRestoreAcceptanceRequiresCurrentGenerationAndNoLiveSession() {
+    func testRestoreAcceptanceRequiresOnlyCurrentGenerationBecauseLiveInputIsBuffered() {
         XCTAssertTrue(AtriaBLEManager.shouldAcceptActiveSessionJournalRestore(
             requestGeneration: 7,
-            currentGeneration: 7,
-            longWearRelevant: true,
-            hasLiveSession: false
+            currentGeneration: 7
         ))
         XCTAssertFalse(AtriaBLEManager.shouldAcceptActiveSessionJournalRestore(
             requestGeneration: 7,
-            currentGeneration: 8,
-            longWearRelevant: true,
-            hasLiveSession: false
-        ))
-        XCTAssertFalse(AtriaBLEManager.shouldAcceptActiveSessionJournalRestore(
-            requestGeneration: 7,
-            currentGeneration: 7,
-            longWearRelevant: false,
-            hasLiveSession: false
-        ))
-        XCTAssertFalse(AtriaBLEManager.shouldAcceptActiveSessionJournalRestore(
-            requestGeneration: 7,
-            currentGeneration: 7,
-            longWearRelevant: true,
-            hasLiveSession: true
+            currentGeneration: 8
         ))
     }
 

@@ -202,7 +202,10 @@ def overlaps_sleep_core(start: float, end: float, timezone: str) -> bool:
 def unambiguous_hr_only_main_sleep(candidate: dict[str, Any], timezone: str) -> bool:
     if candidate["kind"] == "nap_candidate":
         return False
-    if candidate["sessions"] != 1 or candidate["duration"] < 5 * 60 * 60 or candidate["max_gap"] > 60:
+    # Journal rollover and reconnect recovery can split one continuous window
+    # across multiple durable sessions. Cardinality is not a continuity signal:
+    # retain the strict captured-duration and inter-session gap gates instead.
+    if candidate["duration"] < 5 * 60 * 60 or candidate["max_gap"] > 60:
         return False
     if candidate["avg"] > candidate["sleep_rhr"] + 12 or candidate["hr_sd"] > 9.5:
         return False

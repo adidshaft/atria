@@ -87,9 +87,10 @@ final class AtriaSleepStageIntegrityTests: XCTestCase {
         let end = try XCTUnwrap(source.range(of: "private static func confirmedSleepStagesCoverSleep", range: start.upperBound..<source.endIndex))
         let backfill = String(source[start.lowerBound..<end.lowerBound])
         let adjustedGuard = try XCTUnwrap(backfill.range(of: "if sleep.source.hasPrefix(\"user_adjusted_\")"))
-        let genericPreserve = try XCTUnwrap(backfill.range(of: "if Self.shouldPreserveConfirmedSleepStageSegments(sleep)"))
+        let genericPreserve = try XCTUnwrap(backfill.range(of: "Self.shouldPreserveConfirmedSleepStageSegments(sleep)"))
 
         XCTAssertLessThan(adjustedGuard.lowerBound, genericPreserve.lowerBound)
+        XCTAssertTrue(backfill.contains("if !hasRecoveredEpochOverlap"))
         XCTAssertTrue(backfill.contains("fragmentedAggregateHRStagesAreUnsupported"))
         XCTAssertTrue(backfill.contains("reason=fragmented_aggregate_fallback"))
     }

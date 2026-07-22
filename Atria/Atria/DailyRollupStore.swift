@@ -308,19 +308,16 @@ enum DailyRecoveryResolver {
     }
 
     /// One source of truth for non-interactive consumers such as widgets and
-    /// notifications. Main-sleep cycles prefer the frozen morning result;
-    /// fallback cycles fail closed to unknown rather than reusing a live HRV
-    /// estimate from the prior physiological day. Absence of a confirmed sleep
-    /// record is not proof that the wearer stayed awake all night.
+    /// notifications. Main-sleep cycles prefer the frozen morning result.
+    /// Without a confirmed sleep, keep the current limited-evidence estimate
+    /// rather than blanking the product; its confidence/detail must disclose
+    /// that sleep is unavailable and it is never frozen as a morning score.
     static func currentEstimate(liveEstimate: Metrics.RecoveryEstimate,
                                 rollups: [DailyRollupStoreEntry],
                                 metrics: [SavedDailyMetric],
                                 physiologicalCycle: AtriaPhysiologicalCycle,
                                 anchorSleep: SleepHistorySnapshot.Night? = nil,
                                 calendar: Calendar = .current) -> Metrics.RecoveryEstimate {
-        if physiologicalCycle.boundaryKind == .noSleepFallback {
-            return noSleepEstimate
-        }
         return summary(rollups: rollups,
                        metrics: metrics,
                        physiologicalCycle: physiologicalCycle,
@@ -567,7 +564,10 @@ final class DailyRollupStore {
     /// Restore spans this file and several other canonical destinations. While
     /// that transaction owns persistence, mutations may update the in-memory
     /// cache but cannot enqueue a stale file image behind the transaction.
-    private var persistencePaused = false
+    /// Restore and recovered-data publication may overlap briefly while their
+    /// main-actor coordinators supersede work. A depth counter prevents either
+    /// fence from resuming disk writes while the other still owns the file.
+    private var persistencePauseDepth = 0
 
     init(url: URL? = nil,
          recoveryMetricsURL: URL? = nil,
@@ -843,16 +843,37 @@ final class DailyRollupStore {
     }
 
     func replaceAll(_ rollups: [DailyRollupStoreEntry]) {
+        // `replaceAll` is also a transaction rollback primitive. Rebuild the
+        // side provenance index from the replacement image instead of retaining
+        // recovery summaries introduced by the discarded image.
+        recoverySummariesByDay.removeAll(keepingCapacity: true)
         cache = rollups.map { normalizedEntry(from: $0) }.sorted { $0.day > $1.day }
         rebuildCacheIndex()
         schedulePersistence(of: cache)
+    }
+
+    /// Recovered analytics prepare several dependent projections before one
+    /// publication fence. Keep rollup writes in memory until that fence commits
+    /// so a later component failure cannot leave a partially advanced file.
+    func beginRecoveredDataPublicationFence() {
+        persistencePauseDepth &+= 1
+    }
+
+    /// Ends the recovered-data fence and persists exactly the selected final
+    /// image (the prepared image on commit, or the restored image on rollback).
+    func endRecoveredDataPublicationFence(persistCurrentSnapshot: Bool = true) {
+        let snapshot = persistCurrentSnapshot ? cache : nil
+        persistencePauseDepth = max(0, persistencePauseDepth - 1)
+        if let snapshot, persistencePauseDepth == 0 {
+            schedulePersistence(of: snapshot)
+        }
     }
 
     /// MainActor-owned transaction fence. Draining after pausing ensures every
     /// previously queued image is durable before restore captures its rollback
     /// image. Subsequent mutations remain in memory until the fence ends.
     func beginPersistenceFence() async {
-        persistencePaused = true
+        persistencePauseDepth &+= 1
         await withCheckedContinuation { continuation in
             queue.async { continuation.resume() }
         }
@@ -862,14 +883,14 @@ final class DailyRollupStore {
     /// captured before or midway through restore.
     func endPersistenceFence(persistCurrentSnapshot: Bool = true) {
         let snapshot = persistCurrentSnapshot ? cache : nil
-        persistencePaused = false
-        if let snapshot {
+        persistencePauseDepth = max(0, persistencePauseDepth - 1)
+        if let snapshot, persistencePauseDepth == 0 {
             schedulePersistence(of: snapshot)
         }
     }
 
     private func schedulePersistence(of snapshot: [DailyRollupStoreEntry]) {
-        if persistencePaused {
+        if persistencePauseDepth > 0 {
             return
         }
         let targetURL = url

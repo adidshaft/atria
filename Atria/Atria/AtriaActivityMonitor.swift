@@ -9,6 +9,9 @@ struct AtriaActivitySectionsRequestKey: Equatable {
     let detectionsRevision: Int
     let reviewFingerprint: String
     let selectedDayStart: Date
+    let intervalStart: Date
+    let intervalEnd: Date
+    let isCurrentPhysiologicalDay: Bool
     let calendarIdentifier: String
     let timeZoneIdentifier: String
 
@@ -18,6 +21,8 @@ struct AtriaActivitySectionsRequestKey: Equatable {
          detectionsRevision: Int = 0,
          reviewFingerprint: String = "",
          selectedDay: Date,
+         interval: DateInterval? = nil,
+         isCurrentPhysiologicalDay: Bool = false,
          calendar: Calendar) {
         self.sleepRevision = sleepRevision
         self.workoutsRevision = workoutsRevision
@@ -25,8 +30,42 @@ struct AtriaActivitySectionsRequestKey: Equatable {
         self.detectionsRevision = detectionsRevision
         self.reviewFingerprint = reviewFingerprint
         selectedDayStart = calendar.startOfDay(for: selectedDay)
+        let civilEnd = calendar.date(byAdding: .day, value: 1, to: selectedDayStart) ?? selectedDayStart
+        intervalStart = interval?.start ?? selectedDayStart
+        intervalEnd = interval?.end ?? civilEnd
+        self.isCurrentPhysiologicalDay = isCurrentPhysiologicalDay
         calendarIdentifier = String(describing: calendar.identifier)
         timeZoneIdentifier = calendar.timeZone.identifier
+    }
+}
+
+struct AtriaActivityDisplayWindow: Equatable {
+    let interval: DateInterval
+    let labelDay: Date
+    let isCurrentPhysiologicalDay: Bool
+
+    static func current(now: Date,
+                        sleepHistory: SleepHistorySnapshot,
+                        calendar: Calendar = .current) -> Self {
+        // A second-level moving end would invalidate SwiftUI task/cache keys on
+        // every body evaluation. Activity presentation is minute-granular, so
+        // keep one stable live window per minute without changing attribution.
+        let minuteNow = calendar.dateInterval(of: .minute, for: now)?.start ?? now
+        let day = AtriaPhysiologicalDay.current(now: now,
+                                               sleepHistory: sleepHistory,
+                                               calendar: calendar)
+        let stableEnd = max(day.start, minuteNow)
+        return Self(interval: DateInterval(start: day.start, end: stableEnd),
+                    labelDay: day.displayDay,
+                    isCurrentPhysiologicalDay: true)
+    }
+
+    static func historical(day: Date, calendar: Calendar = .current) -> Self {
+        let start = calendar.startOfDay(for: day)
+        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start
+        return Self(interval: DateInterval(start: start, end: end),
+                    labelDay: start,
+                    isCurrentPhysiologicalDay: false)
     }
 }
 
@@ -34,6 +73,27 @@ struct AtriaActivitySectionsRequestKey: Equatable {
 /// workout or showing the same physiological window twice through the general
 /// detector and the higher-quality workout-review cache.
 enum AtriaActivityReviewProjection {
+    static func visibleDetections(_ detections: [ActivityDetection],
+                                  workoutReview: WorkoutReviewCandidate?,
+                                  confirmedWorkouts: [UserConfirmedWorkout],
+                                  interval: DateInterval) -> [ActivityDetection] {
+        detections.filter { detection in
+            guard detection.kind == .activityCandidate || detection.kind == .workout,
+                  detection.end > interval.start,
+                  detection.start < interval.end,
+                  !overlapsConfirmedWorkout(start: detection.start,
+                                            end: detection.end,
+                                            confirmedWorkouts: confirmedWorkouts) else { return false }
+            if let workoutReview {
+                let overlap = min(workoutReview.end, detection.end)
+                    .timeIntervalSince(max(workoutReview.start, detection.start))
+                let shortest = min(workoutReview.duration, detection.duration)
+                if overlap >= 5 * 60 || (shortest > 0 && overlap / shortest >= 0.70) { return false }
+            }
+            return true
+        }.sorted { $0.start > $1.start }
+    }
+
     static func overlapsConfirmedWorkout(start: Date,
                                          end: Date,
                                          confirmedWorkouts: [UserConfirmedWorkout]) -> Bool {
@@ -52,24 +112,10 @@ enum AtriaActivityReviewProjection {
                                   calendar: Calendar) -> [ActivityDetection] {
         let dayStart = calendar.startOfDay(for: selectedDay)
         guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else { return [] }
-        return detections.filter { detection in
-            guard detection.kind == .activityCandidate || detection.kind == .workout,
-                  detection.end > dayStart,
-                  detection.start < dayEnd,
-                  !overlapsConfirmedWorkout(start: detection.start,
-                                            end: detection.end,
-                                            confirmedWorkouts: confirmedWorkouts) else { return false }
-            if let workoutReview {
-                let overlap = min(workoutReview.end, detection.end)
-                    .timeIntervalSince(max(workoutReview.start, detection.start))
-                let shortest = min(workoutReview.duration, detection.duration)
-                if overlap >= 5 * 60 || (shortest > 0 && overlap / shortest >= 0.70) {
-                    return false
-                }
-            }
-            return true
-        }
-        .sorted { $0.start > $1.start }
+        return visibleDetections(detections,
+                                 workoutReview: workoutReview,
+                                 confirmedWorkouts: confirmedWorkouts,
+                                 interval: DateInterval(start: dayStart, end: dayEnd))
     }
 
     static func visibleWorkoutReview(_ candidate: WorkoutReviewCandidate?,
@@ -81,6 +127,18 @@ enum AtriaActivityReviewProjection {
         guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart),
               candidate.end > dayStart,
               candidate.start < dayEnd,
+              !overlapsConfirmedWorkout(start: candidate.start,
+                                        end: candidate.end,
+                                        confirmedWorkouts: confirmedWorkouts) else { return nil }
+        return candidate
+    }
+
+    static func visibleWorkoutReview(_ candidate: WorkoutReviewCandidate?,
+                                     confirmedWorkouts: [UserConfirmedWorkout],
+                                     interval: DateInterval) -> WorkoutReviewCandidate? {
+        guard let candidate,
+              candidate.end > interval.start,
+              candidate.start < interval.end,
               !overlapsConfirmedWorkout(start: candidate.start,
                                         end: candidate.end,
                                         confirmedWorkouts: confirmedWorkouts) else { return nil }
@@ -237,6 +295,35 @@ enum AtriaActivityTimelineAxis {
         return ticks
     }
 
+    static func ticks(interval: DateInterval,
+                      isCurrent: Bool,
+                      calendar: Calendar) -> [AtriaActivityTimelineAxisTick] {
+        guard interval.end > interval.start else { return [] }
+        var dates = [interval.start]
+        var cursor = calendar.nextDate(after: interval.start,
+                                       matching: DateComponents(minute: 0, second: 0),
+                                       matchingPolicy: .nextTime) ?? interval.end
+        while cursor < interval.end {
+            if cursor.timeIntervalSince(dates.last ?? interval.start) >= 4 * 3_600 {
+                dates.append(cursor)
+            }
+            guard let next = calendar.date(byAdding: .hour, value: 6, to: cursor), next > cursor else { break }
+            cursor = next
+        }
+        if interval.end.timeIntervalSince(dates.last ?? interval.start) >= 2 * 3_600 || dates.count == 1 {
+            dates.append(interval.end)
+        } else {
+            dates[dates.count - 1] = interval.end
+        }
+        return dates.enumerated().map { index, date in
+            let isEnd = index == dates.count - 1
+            let label = isEnd && isCurrent ? "Now" : date.formatted(.dateTime.hour(.defaultDigits(amPM: .abbreviated)))
+            return AtriaActivityTimelineAxisTick(date: date,
+                                                 label: label,
+                                                 accessibilityLabel: isEnd && isCurrent ? "Now" : date.formatted(date: .omitted, time: .shortened))
+        }
+    }
+
     static func tick(at date: Date,
                      in ticks: [AtriaActivityTimelineAxisTick]) -> AtriaActivityTimelineAxisTick? {
         ticks.first { abs($0.date.timeIntervalSince(date)) < 0.5 }
@@ -248,6 +335,10 @@ enum AtriaActivityTimelineAxis {
 /// overlaps, so an effort that crosses midnight never appears in the graph
 /// without a matching detail row below it.
 enum AtriaActivitySelectedDayWorkouts {
+    static func overlapping(_ workouts: [UserConfirmedWorkout],
+                            interval: DateInterval) -> [UserConfirmedWorkout] {
+        workouts.filter { $0.end > $0.start && $0.end > interval.start && $0.start < interval.end }
+    }
     static func overlapping(_ workouts: [UserConfirmedWorkout],
                             selectedDay: Date,
                             calendar: Calendar) -> [UserConfirmedWorkout] {
@@ -298,6 +389,18 @@ enum AtriaActivitySelectedDaySleeps {
             // Legacy summaries may not carry exact bounds. Their attributed
             // civil day remains the only truthful placement available.
             return calendar.isDate(night.day, inSameDayAs: dayStart)
+        }
+    }
+
+    static func overlapping(snapshot: SleepHistorySnapshot,
+                            pendingReview: SleepHistorySnapshot.Night?,
+                            interval: DateInterval,
+                            calendar: Calendar) -> [SleepHistorySnapshot.Night] {
+        canonical(snapshot: snapshot, pendingReview: pendingReview).filter { night in
+            if let start = night.start, let end = night.end, end > start {
+                return end > interval.start && start < interval.end
+            }
+            return calendar.isDate(night.day, inSameDayAs: interval.start)
         }
     }
 
@@ -384,6 +487,36 @@ struct AtriaDetectedActivityPresentation: Equatable {
 }
 
 enum AtriaActivityTimelineBuilder {
+    static func workoutSpans(workouts: [UserConfirmedWorkout],
+                             interval: DateInterval) -> [AtriaActivityTimelineWorkoutSpan] {
+        let projected = AtriaActivitySelectedDayWorkouts.overlapping(workouts, interval: interval).map { workout in
+            AtriaActivityTimelineWorkoutSpan(
+                id: "workout-\(workout.id)",
+                lane: "",
+                start: max(workout.start, interval.start),
+                end: min(workout.end, interval.end),
+                label: workout.activitySubtype ?? workout.activityType ?? workout.label,
+                icon: AtriaActivityDisplayIcon.icon(activityType: workout.activityType,
+                                                    subtype: workout.activitySubtype,
+                                                    label: workout.label)
+            )
+        }.sorted {
+            if $0.start == $1.start { return $0.id < $1.id }
+            return $0.start < $1.start
+        }
+        let assignments = AtriaActivityTimelineLanePacker.assignments(for: projected.map {
+            AtriaActivityTimelineLaneInterval(id: $0.id, start: $0.start, end: $0.end)
+        })
+        return projected.map {
+            AtriaActivityTimelineWorkoutSpan(id: $0.id,
+                                             lane: "workout-\(assignments[$0.id] ?? 0)",
+                                             start: $0.start,
+                                             end: $0.end,
+                                             label: $0.label,
+                                             icon: $0.icon)
+        }
+    }
+
     static func workoutSpans(workouts: [UserConfirmedWorkout],
                              selectedDay: Date,
                              calendar: Calendar) -> [AtriaActivityTimelineWorkoutSpan] {
@@ -500,6 +633,7 @@ struct AtriaActivityMonitorTab: View {
     /// of activity should have an entire graph with activities listed and
     /// days can be changed").
     @State private var timelineDay: Date = Calendar.current.startOfDay(for: Date())
+    @State private var viewingCurrentPhysiologicalDay = true
     @State private var activityMemo = AtriaActivityMonitorMemo()
     @State private var daySectionsCache = AtriaActivitySectionsCache<[DaySection]>()
 
@@ -550,6 +684,7 @@ struct AtriaActivityMonitorTab: View {
         let detections: [ActivityDetection]
         let rollups: [DailyRollupStoreEntry]
         let selectedDayStart: Date
+        let interval: DateInterval
         let calendar: Calendar
     }
 
@@ -560,13 +695,20 @@ struct AtriaActivityMonitorTab: View {
     var body: some View {
         let calendar = Calendar.current
         let activity = activityStore.state
+        let displayWindow = viewingCurrentPhysiologicalDay
+            ? AtriaActivityDisplayWindow.current(now: Date(),
+                                                 sleepHistory: activity.sleepHistorySnapshot,
+                                                 calendar: calendar)
+            : AtriaActivityDisplayWindow.historical(day: timelineDay, calendar: calendar)
         let requestKey = AtriaActivitySectionsRequestKey(
             sleepRevision: activity.sleepHistorySnapshotRevision,
             workoutsRevision: activity.confirmedWorkoutsRevision,
             rollupsRevision: activity.dailyRollupHistoryRevision,
             detectionsRevision: activity.historySnapshotRevision,
             reviewFingerprint: activity.reviewFingerprint,
-            selectedDay: timelineDay,
+            selectedDay: displayWindow.labelDay,
+            interval: displayWindow.interval,
+            isCurrentPhysiologicalDay: displayWindow.isCurrentPhysiologicalDay,
             calendar: calendar
         )
 
@@ -600,6 +742,7 @@ struct AtriaActivityMonitorTab: View {
             AtriaAddWorkoutSheet(store: store,
                                  initialStart: window.start,
                                  initialEnd: window.end,
+                                 reviewCandidateID: window.id,
                                  settlingCandidateWindow: (start: window.start,
                                                            end: window.end),
                                  onDismissCandidate: {
@@ -626,8 +769,10 @@ struct AtriaActivityMonitorTab: View {
         let calendar = Calendar.current
         return HStack(spacing: 4) {
             Button {
-                if let previous = calendar.date(byAdding: .day, value: -1, to: timelineDay) {
+                let base = currentDisplayWindow.labelDay
+                if let previous = calendar.date(byAdding: .day, value: -1, to: base) {
                     timelineDay = previous
+                    viewingCurrentPhysiologicalDay = false
                 }
             } label: {
                 Image(systemName: "chevron.left")
@@ -638,7 +783,7 @@ struct AtriaActivityMonitorTab: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Previous day")
 
-            Text(calendar.isDateInToday(timelineDay)
+            Text(viewingCurrentPhysiologicalDay
                  ? "Today"
                  : timelineDay.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))
                 .font(.subheadline.weight(.bold))
@@ -648,7 +793,12 @@ struct AtriaActivityMonitorTab: View {
 
             Button {
                 if let next = calendar.date(byAdding: .day, value: 1, to: timelineDay) {
-                    timelineDay = next
+                    if next >= currentDisplayWindow.labelDay {
+                        timelineDay = currentDisplayWindow.labelDay
+                        viewingCurrentPhysiologicalDay = true
+                    } else {
+                        timelineDay = next
+                    }
                 }
             } label: {
                 Image(systemName: "chevron.right")
@@ -707,6 +857,7 @@ struct AtriaActivityMonitorTab: View {
                                                detections: activity.activityDetections,
                                                rollups: activity.dailyRollupHistory,
                                                selectedDayStart: key.selectedDayStart,
+                                               interval: DateInterval(start: key.intervalStart, end: key.intervalEnd),
                                                calendar: calendar)
         let preparation = Task.detached(priority: .utility) {
             Self.makeDaySections(from: source)
@@ -727,7 +878,9 @@ struct AtriaActivityMonitorTab: View {
             rollupsRevision: currentActivity.dailyRollupHistoryRevision,
             detectionsRevision: currentActivity.historySnapshotRevision,
             reviewFingerprint: currentActivity.reviewFingerprint,
-            selectedDay: timelineDay,
+            selectedDay: currentDisplayWindow.labelDay,
+            interval: currentDisplayWindow.interval,
+            isCurrentPhysiologicalDay: currentDisplayWindow.isCurrentPhysiologicalDay,
             calendar: .current
         )
         guard currentKey == request.key else {
@@ -743,28 +896,25 @@ struct AtriaActivityMonitorTab: View {
         let sleeps = AtriaActivitySelectedDaySleeps.overlapping(
             snapshot: source.sleepSnapshot,
             pendingReview: source.pendingSleepReview,
-            selectedDay: source.selectedDayStart,
+            interval: source.interval,
             calendar: source.calendar
         )
             .map(Entry.sleep)
         let selectedWorkouts = AtriaActivitySelectedDayWorkouts.overlapping(
             source.workouts,
-            selectedDay: source.selectedDayStart,
-            calendar: source.calendar
+            interval: source.interval
         )
         let workouts = selectedWorkouts.map(Entry.workout)
         let workoutReview = AtriaActivityReviewProjection.visibleWorkoutReview(
             source.workoutReview,
             confirmedWorkouts: source.workouts,
-            selectedDay: source.selectedDayStart,
-            calendar: source.calendar
+            interval: source.interval
         ).map(Entry.workoutReview)
         let detections = AtriaActivityReviewProjection.visibleDetections(
             source.detections,
             workoutReview: source.workoutReview,
             confirmedWorkouts: source.workouts,
-            selectedDay: source.selectedDayStart,
-            calendar: source.calendar
+            interval: source.interval
         ).map(Entry.detection)
         let entries = (sleeps + workouts + [workoutReview].compactMap { $0 } + detections)
             .sorted { $0.date > $1.date }
@@ -812,11 +962,12 @@ struct AtriaActivityMonitorTab: View {
 
     private var timelineSpans: [TimelineSpan] {
         let activity = activityStore.state
+        let window = currentDisplayWindow
         return activityMemo.timelineSpans(sleepRevision: activity.sleepHistorySnapshotRevision,
                                           workoutsRevision: activity.confirmedWorkoutsRevision,
                                           detectionsRevision: activity.historySnapshotRevision,
                                           reviewFingerprint: activity.reviewFingerprint,
-                                          timelineDay: timelineDay,
+                                          displayWindow: window,
                                           sleepSnapshot: activity.sleepHistorySnapshot,
                                           pendingSleepReview: activity.pendingSleepReview,
                                           workouts: activity.confirmedWorkouts,
@@ -826,15 +977,26 @@ struct AtriaActivityMonitorTab: View {
     }
 
     private var canGoToNextDay: Bool {
-        Calendar.current.startOfDay(for: timelineDay) < Calendar.current.startOfDay(for: Date())
+        !viewingCurrentPhysiologicalDay
+    }
+
+    private var currentDisplayWindow: AtriaActivityDisplayWindow {
+        let calendar = Calendar.current
+        return viewingCurrentPhysiologicalDay
+            ? AtriaActivityDisplayWindow.current(now: Date(),
+                                                 sleepHistory: activityStore.state.sleepHistorySnapshot,
+                                                 calendar: calendar)
+            : AtriaActivityDisplayWindow.historical(day: timelineDay, calendar: calendar)
     }
 
     private var dayTimelineCard: some View {
         let calendar = Calendar.current
-        let dayStart = calendar.startOfDay(for: timelineDay)
-        let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) ?? dayStart
+        let window = currentDisplayWindow
+        let dayStart = window.interval.start
+        let dayEnd = window.interval.end
         let spans = timelineSpans
-        let axisTicks = AtriaActivityTimelineAxis.ticks(selectedDay: timelineDay,
+        let axisTicks = AtriaActivityTimelineAxis.ticks(interval: window.interval,
+                                                        isCurrent: window.isCurrentPhysiologicalDay,
                                                         calendar: calendar)
 
         return VStack(alignment: .leading, spacing: 0) {
@@ -909,6 +1071,20 @@ struct AtriaActivityMonitorTab: View {
         }
         .padding(8)
         .atriaCard(emphasis: .soft)
+        .atriaInspectableGraph(spans.isEmpty ? nil : AtriaInspectableGraph(
+            title: "Activity timeline",
+            subtitle: window.isCurrentPhysiologicalDay
+                ? "Since waking"
+                : window.labelDay.formatted(date: .long, time: .omitted),
+            content: .intervals(spans.map { span in
+                .init(id: span.id,
+                      lane: span.lane,
+                      label: span.label,
+                      start: span.start,
+                      end: span.end,
+                      tint: span.tint)
+            }, domain: dayStart...dayEnd)
+        ))
     }
 
     private var addActivityMenu: some View {
@@ -1182,7 +1358,8 @@ struct AtriaActivityMonitorTab: View {
 
         private struct TimelineKey: Equatable {
             let source: SourceKey
-            let selectedDayStart: Date
+            let interval: DateInterval
+            let isCurrent: Bool
         }
 
         private var timelineKey: TimelineKey?
@@ -1192,7 +1369,7 @@ struct AtriaActivityMonitorTab: View {
                            workoutsRevision: Int,
                            detectionsRevision: Int,
                            reviewFingerprint: String,
-                           timelineDay: Date,
+                           displayWindow: AtriaActivityDisplayWindow,
                            sleepSnapshot: SleepHistorySnapshot,
                            pendingSleepReview: SleepHistorySnapshot.Night?,
                            workouts: [UserConfirmedWorkout],
@@ -1204,22 +1381,19 @@ struct AtriaActivityMonitorTab: View {
                                    detectionsRevision: detectionsRevision,
                                    reviewFingerprint: reviewFingerprint,
                                    calendar: calendar)
-            let dayStart = calendar.startOfDay(for: timelineDay)
-            let key = TimelineKey(source: source, selectedDayStart: dayStart)
+            let dayStart = displayWindow.interval.start
+            let dayEnd = displayWindow.interval.end
+            let key = TimelineKey(source: source,
+                                  interval: displayWindow.interval,
+                                  isCurrent: displayWindow.isCurrentPhysiologicalDay)
             if timelineKey == key {
                 return timelineValue
             }
-            guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else {
-                timelineKey = key
-                timelineValue = []
-                return []
-            }
-
             var spans: [TimelineSpan] = []
             let visibleSleeps = AtriaActivitySelectedDaySleeps.overlapping(
                 snapshot: sleepSnapshot,
                 pendingReview: pendingSleepReview,
-                selectedDay: timelineDay,
+                interval: displayWindow.interval,
                 calendar: calendar
             ).compactMap { night -> (SleepHistorySnapshot.Night, Date, Date)? in
                 guard let start = night.start, let end = night.end,
@@ -1241,8 +1415,7 @@ struct AtriaActivityMonitorTab: View {
             }
             let workoutSpans = AtriaActivityTimelineBuilder.workoutSpans(
                 workouts: workouts,
-                selectedDay: timelineDay,
-                calendar: calendar
+                interval: displayWindow.interval
             )
             let workoutByID = Dictionary(uniqueKeysWithValues: workouts.map { ("workout-\($0.id)", $0) })
             for workoutSpan in workoutSpans {
@@ -1258,15 +1431,13 @@ struct AtriaActivityMonitorTab: View {
             let visibleReview = AtriaActivityReviewProjection.visibleWorkoutReview(
                 workoutReview,
                 confirmedWorkouts: workouts,
-                selectedDay: timelineDay,
-                calendar: calendar
+                interval: displayWindow.interval
             )
             let visibleDetections = AtriaActivityReviewProjection.visibleDetections(
                 detections,
                 workoutReview: workoutReview,
                 confirmedWorkouts: workouts,
-                selectedDay: timelineDay,
-                calendar: calendar
+                interval: displayWindow.interval
             )
             var reviewIntervals: [(id: String, start: Date, end: Date, label: String, icon: String)] = []
             if let candidate = visibleReview {
@@ -1852,13 +2023,6 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     private func saveAllAsync() async {
         defer { isRouteTransactionInFlight = false }
         saveError = nil
-        let pendingRecovery = await AtriaWorkoutRouteTransactionRecovery.recover(
-            workouts: store.confirmedWorkouts
-        )
-        guard pendingRecovery != .failed, pendingRecovery != .deferred else {
-            saveError = "Atria is still recovering an earlier route update. Close and reopen Activity, then try Save again."
-            return
-        }
         let requestedType = AtriaWorkoutActivityType.resolved(
             activityType: activityType,
             subtype: activitySubtype,
@@ -1869,6 +2033,32 @@ private struct AtriaActivityWorkoutDetailSheet: View {
             subtype: workout.activitySubtype,
             label: workout.label
         )
+        let routeIdentityChanged = requestedType != originalType
+            || startTime != workout.start
+            || endTime != workout.end
+        if !routeIdentityChanged {
+            switch store.editConfirmedWorkout(id: workout.id,
+                                              label: label,
+                                              activityType: activityType,
+                                              activitySubtype: activitySubtype,
+                                              start: startTime,
+                                              end: endTime,
+                                              rest: store.baseline.restingInt ?? 60,
+                                              maxHR: store.profile.maxHR) {
+            case .success:
+                dismiss()
+            case .failure(let error):
+                saveError = error.userMessage
+            }
+            return
+        }
+        let pendingRecovery = await AtriaWorkoutRouteTransactionRecovery.recover(
+            workouts: store.confirmedWorkouts
+        )
+        guard pendingRecovery != .failed, pendingRecovery != .deferred else {
+            saveError = "Atria is still recovering an earlier route update. Close and reopen Activity, then try Save again."
+            return
+        }
         let expectedWorkoutID = expectedEditedWorkoutID(start: startTime, end: endTime)
         let originalState = AtriaWorkoutRouteStore.CanonicalWorkoutState(
             id: workout.id,
@@ -2243,16 +2433,18 @@ struct AtriaActivityRecoveryEffect: Equatable {
 /// be saved, because Atria never invents heart rate or strain.
 struct AtriaAddWorkoutSheet: View {
     let store: SessionStore
+    private let reviewCandidateID: String?
     private let settlingCandidateWindow: (start: Date, end: Date)?
     private let onDismissCandidate: (() -> Bool)?
     @Environment(\.dismiss) private var dismiss
 
-    @State private var activityLabel = AtriaWorkoutActivityType.walking.rawValue
-    @State private var activityType = AtriaWorkoutActivityType.walking.rawValue
+    @State private var activityLabel: String
+    @State private var activityType: String
     @State private var activitySubtype: String?
     @State private var startTime: Date
     @State private var endTime: Date
     @State private var failed = false
+    @State private var isSaving = false
     @State private var showDismissConfirmation = false
     @State private var dismissFailed = false
 
@@ -2274,12 +2466,21 @@ struct AtriaAddWorkoutSheet: View {
     init(store: SessionStore,
          initialStart: Date? = nil,
          initialEnd: Date? = nil,
+         reviewCandidateID: String? = nil,
          settlingCandidateWindow: (start: Date, end: Date)? = nil,
          onDismissCandidate: (() -> Bool)? = nil) {
         self.store = store
+        self.reviewCandidateID = reviewCandidateID
         self.settlingCandidateWindow = settlingCandidateWindow
         self.onDismissCandidate = onDismissCandidate
         let now = Date()
+        let isDetectorReview = reviewCandidateID != nil || settlingCandidateWindow != nil
+        _activityLabel = State(initialValue: isDetectorReview
+            ? ""
+            : AtriaWorkoutActivityType.walking.rawValue)
+        _activityType = State(initialValue: isDetectorReview
+            ? ""
+            : AtriaWorkoutActivityType.walking.rawValue)
         _endTime = State(initialValue: initialEnd ?? now)
         _startTime = State(initialValue: initialStart ?? (initialEnd ?? now).addingTimeInterval(-45 * 60))
     }
@@ -2320,7 +2521,7 @@ struct AtriaAddWorkoutSheet: View {
                                 Image(systemName: AtriaWorkoutActivityType(rawValue: activityType)?.icon
                                       ?? AtriaWorkoutActivityType.other.icon)
                                     .foregroundStyle(.secondary)
-                                Text(activityType)
+                                Text(activityType.isEmpty ? "Choose" : activityType)
                                     .foregroundStyle(.secondary)
                                 Image(systemName: "chevron.up.chevron.down")
                                     .font(.caption.weight(.bold))
@@ -2387,14 +2588,22 @@ struct AtriaAddWorkoutSheet: View {
                     }
 
                     Button(action: add) {
-                        Text(commitTitle)
-                            .font(.subheadline.weight(.bold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 4)
+                        HStack(spacing: 8) {
+                            if isSaving {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Text(isSaving ? "Saving…" : commitTitle)
+                                .font(.subheadline.weight(.bold))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
                     }
                     .buttonStyle(.glassProminent)
                     .tint(Metrics.electricStrain)
-                    .disabled(endTime <= startTime
+                    .disabled(isSaving
+                              || endTime <= startTime
+                              || activityType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                               || activityLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 .padding(16)
@@ -2404,6 +2613,7 @@ struct AtriaAddWorkoutSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") { dismiss() }
+                        .disabled(isSaving)
                 }
                 if onDismissCandidate != nil {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -2415,6 +2625,7 @@ struct AtriaAddWorkoutSheet: View {
                             Image(systemName: "ellipsis")
                         }
                         .accessibilityLabel("Suggestion actions")
+                        .disabled(isSaving)
                     }
                 }
             }
@@ -2438,31 +2649,49 @@ struct AtriaAddWorkoutSheet: View {
             } message: {
                 Text("The suggestion is still available. Please try again.")
             }
+            .interactiveDismissDisabled(isSaving)
         }
     }
 
     private func add() {
-        guard endTime > startTime else { return }
+        guard !isSaving, endTime > startTime else { return }
+        let requestedStart = startTime
+        let requestedEnd = endTime
+        let requestedLabel = activityLabel
+        let requestedType = activityType
+        let requestedSubtype = activitySubtype
+        let candidateID = reviewCandidateID
+        let candidateWindow = settlingCandidateWindow
         let rest = store.baseline.restingInt ?? 60
-        let result = store.confirmWorkoutWindowForUI(start: startTime,
-                                                     end: endTime,
-                                                     rest: rest,
-                                                     maxHR: store.profile.maxHR,
-                                                     source: "manual_activity_add",
-                                                     preserveUserDeclaredActivityWithoutHeartRate: true,
-                                                     activityLabel: activityLabel,
-                                                     activityType: activityType,
-                                                     activitySubtype: activitySubtype,
-                                                     settlingCandidateWindow: settlingCandidateWindow)
-        if result != nil {
-            // Candidate settlement is part of the canonical store operation
-            // above. Keep `onDismissCandidate` exclusively for the explicit
-            // destructive action so Save can never become a second UI-owned
-            // persistence sequence. A plain manual Add passes no candidate
-            // window and retains its existing re-add semantics.
-            dismiss()
-        } else {
-            failed = true
+        let maximumHeartRate = store.profile.maxHR
+        failed = false
+        isSaving = true
+        Task { @MainActor in
+            let result = await store.confirmWorkoutWindowForUIAsync(
+                start: requestedStart,
+                end: requestedEnd,
+                rest: rest,
+                maxHR: maximumHeartRate,
+                source: "manual_activity_add",
+                preserveUserDeclaredActivityWithoutHeartRate: true,
+                activityLabel: requestedLabel,
+                activityType: requestedType,
+                activitySubtype: requestedSubtype,
+                reviewSource: candidateID == nil ? nil : "detected_activity_review",
+                reviewCandidateID: candidateID,
+                settlingCandidateWindow: candidateWindow
+            )
+            isSaving = false
+            if result != nil {
+                // Candidate settlement is part of the canonical store operation
+                // above. Keep `onDismissCandidate` exclusively for the explicit
+                // destructive action so Save can never become a second UI-owned
+                // persistence sequence. A plain manual Add passes no candidate
+                // window and retains its existing re-add semantics.
+                dismiss()
+            } else {
+                failed = true
+            }
         }
     }
 }

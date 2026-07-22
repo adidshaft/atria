@@ -50,15 +50,33 @@ struct AtriaFrozenDailyStrainTarget: Codable, Equatable {
 enum AtriaDailyStrainTargetStore {
     static let storageKey = "atria.coach.frozenDailyStrainTarget.v1"
 
+    enum MutationAuthority: Equatable {
+        /// Canonical Recovery may mint, replace, or explicitly invalidate.
+        case canonical
+        /// Presentation-only/unknown Recovery may read a valid same-cycle
+        /// target, but it may not write or delete durable coaching state.
+        case preserveExisting
+    }
+
     static func resolve(recovery: Int?,
                         load: TrainingLoadSummary?,
                         recoveryIsAttributedToCurrentDay: Bool = true,
                         loadIsPrepared: Bool = true,
+                        mutationAuthority: MutationAuthority = .canonical,
                         cycleStart: Date? = nil,
                         now: Date = Date(),
                         calendar: Calendar = .current,
                         defaults: UserDefaults = .standard) -> AtriaFrozenDailyStrainTarget? {
         let existing = loadSnapshot(defaults: defaults)
+        if mutationAuthority == .preserveExisting {
+            guard let existing,
+                  existing.target.isFinite,
+                  (0...21).contains(existing.target) else { return nil }
+            let sameCycle = cycleStart.map {
+                abs(existing.day.timeIntervalSince($0)) < 1
+            } ?? calendar.isDate(existing.day, inSameDayAs: now)
+            return sameCycle ? existing : nil
+        }
         guard recoveryIsAttributedToCurrentDay else {
             // A deleted/reclassified sleep must not leave a target that implies
             // recovery still belongs to the active physiological cycle.

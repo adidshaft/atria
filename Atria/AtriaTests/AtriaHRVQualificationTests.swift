@@ -153,6 +153,39 @@ final class AtriaHRVQualificationTests: XCTestCase {
         XCTAssertNotEqual(updated.hrv, 99)
     }
 
+    func testRecoveredHistoricalRRFillsOvernightSleepOnWakeDay() throws {
+        let recovered = session(dayOffset: 0,
+                                source: .verifiedWhoop4HistoricalV24)
+        let sleep = confirmedMainSleep(for: recovered,
+                                       id: "recovered-overnight-sleep")
+
+        XCTAssertNotEqual(calendar.startOfDay(for: sleep.start),
+                          calendar.startOfDay(for: sleep.end),
+                          "the fixture must cross midnight so readiness belongs to the wake day")
+
+        let updated = try XCTUnwrap(
+            SessionStore.requalifiedConfirmedSleepHRVRecords(
+                [sleep],
+                sessions: [recovered]
+            ).first
+        )
+
+        XCTAssertGreaterThanOrEqual(updated.hrvWindowCount ?? 0, 3)
+        XCTAssertEqual(updated.hrv,
+                       recovered.localRMSSD(in: sleep.start, end: sleep.end))
+        XCTAssertNotNil(updated.hrv)
+    }
+
+    func testRecoveredHistoricalRRFeedsLocalButNotReferenceValidatedHRVSource() throws {
+        let recovered = session(dayOffset: 0,
+                                source: .verifiedWhoop4HistoricalV24)
+
+        let local = try XCTUnwrap(SessionStore.latestLocalRMSSDSource(in: [recovered]))
+        XCTAssertEqual(local.sessionID, recovered.id)
+        XCTAssertEqual(local.value, recovered.localRMSSD)
+        XCTAssertNil(SessionStore.latestReferenceValidatedHRVSource(in: [recovered]))
+    }
+
     func testQualifiedDaytimeRRDoesNotAdvanceOvernightTrustCount() {
         let daytime = session(dayOffset: 0,
                               source: .standardHeartRateMeasurement2A37,

@@ -228,6 +228,9 @@ struct AtriaHealthScreen: View {
     // @State value changes -> no view invalidation).
     @State private var latestRollupCache = LatestRollupCache()
     @StateObject private var historyProjectionStore = AtriaVitalsHistoryProjectionStore()
+    /// Immutable, slow-moving review-queue projection supplied by the narrow
+    /// detected-activities host. History never observes SessionStore directly.
+    @State private var historyReviewCandidateDays: [AtriaHistoryReviewCandidateDay] = []
     @State private var debugArchiveRefreshGate = AtriaVitalsActivityGate()
     // The detected-activities fixture lives in the Trends scope; opening
     // there directly keeps the sim screenshot loop honest (simctl cannot tap
@@ -278,10 +281,12 @@ struct AtriaHealthScreen: View {
             key: AtriaHistoryRevisionKey(rollup: vitals.dailyRollupHistoryRevision,
                                          workouts: vitals.confirmedWorkoutsRevision,
                                          sleep: vitals.sleepHistorySnapshotRevision,
-                                         detections: detectionsRevision),
+                                         detections: detectionsRevision,
+                                         reviewCandidateDays: historyReviewCandidateDays),
             rollups: vitals.dailyRollupHistory,
             workouts: vitals.confirmedWorkouts,
-            sleeps: vitals.confirmedSleeps
+            sleeps: vitals.confirmedSleeps,
+            reviewCandidateDays: historyReviewCandidateDays
         )
         let historyProjection = historyProjectionStore.projection
         Group {
@@ -500,6 +505,10 @@ struct AtriaHealthScreen: View {
         AtriaDetectedActivitiesHost(store: store,
                                     restingHeartRateFallback: { [heroStore] in
                                         heroStore.state.restingHeartRate
+                                    },
+                                    onCandidateDaysChange: { days in
+                                        guard days != historyReviewCandidateDays else { return }
+                                        historyReviewCandidateDays = days
                                     })
         AtriaHistorySection(model: historyProjection.model,
                             revisionKey: historyProjection.key,
@@ -1275,6 +1284,22 @@ private struct AtriaHealthStressSection: View {
                         .equatable()
                         .frame(height: 56)
                         .clipped()
+                        .atriaInspectableGraph(
+                            AtriaInspectableGraph(
+                                title: "Session stress",
+                                subtitle: "Observed readings only; blanks are collection gaps",
+                                content: .timeSeries([
+                                    .init(title: "Stress",
+                                          unit: "",
+                                          tint: .orange,
+                                          points: stressStripReduced.map {
+                                              .init(date: $0.t,
+                                                    value: $0.value,
+                                                    segment: $0.segment)
+                                          })
+                                ])
+                            )
+                        )
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
@@ -1393,6 +1418,15 @@ private struct AtriaHealthFitnessAgeCard: View, Equatable {
                         .font(.headline.weight(.bold))
                     if summary.isReady {
                         deltaRevealRow
+                        if let qualifier = summary.earlyEstimateQualifierText {
+                            // Early phase (14–27 days): the estimate never
+                            // carries the same visual authority as a confident
+                            // one — an unmissable calibration-orange qualifier
+                            // with day-count progress sits under the delta.
+                            Text(qualifier)
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.orange)
+                        }
                     } else if summary.isRefreshing {
                         HStack(spacing: 6) {
                             ProgressView()
@@ -1447,7 +1481,7 @@ private struct AtriaHealthFitnessAgeCard: View, Equatable {
         .background(Color(uiColor: .secondarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Fitness age. \(summary.valueText). \(summary.isReady ? summary.detailText : summary.isRefreshing ? "Updating weekly estimate" : "Calibrating 28-day baseline"). \(summary.footnote)")
+        .accessibilityLabel("Fitness age. \(summary.valueText). \(summary.isReady ? summary.detailText : summary.isRefreshing ? "Updating weekly estimate" : "Calibrating 28-day baseline").\(summary.earlyEstimateQualifierText.map { " \($0)." } ?? "") \(summary.footnote)")
         .onAppear { syncAnimatedDelta() }
         .onChange(of: summary) { _, _ in syncAnimatedDelta() }
     }
@@ -1490,9 +1524,11 @@ private struct AtriaHealthFitnessAgeCard: View, Equatable {
 
     /// Green when at or below chronological age ("younger"), amber
     /// (electric-yellow) when above ("older") -- matches the app-wide
-    /// green/amber/red vocabulary. Orange only while still calibrating.
+    /// green/amber/red vocabulary. Orange while still calibrating, including
+    /// the early-estimate phase (14–27 days): an early value must never wear
+    /// the confident green/amber authority.
     private var tint: Color {
-        guard summary.isReady else { return .orange }
+        guard summary.isReady, !summary.isEarlyEstimate else { return .orange }
         return (summary.ageDelta ?? 0) <= 0 ? Metrics.electricGreen : Metrics.electricYellow
     }
 }

@@ -146,6 +146,9 @@ final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
         let maxHR: Int
         let batteryLevel: Int
         let recoveryPercent: Int?
+        /// A numeric early estimate remains useful in the UI, but only a
+        /// baseline-qualified recovery should announce itself as "ready".
+        let recoveryIsReadyForAlert: Bool
         let strain: Double
         let strainTarget: Double?
         let settings: AtriaHapticAlertSettings
@@ -175,6 +178,7 @@ final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
         updateLowBattery(level: snapshot.batteryLevel,
                          settings: snapshot.settings)
         updateRecoveryReady(percent: snapshot.recoveryPercent,
+                            isReadyForAlert: snapshot.recoveryIsReadyForAlert,
                             settings: snapshot.settings)
         updateStrainTarget(strain: snapshot.strain,
                            target: snapshot.strainTarget,
@@ -226,10 +230,22 @@ final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
         AtriaDebugLog("ATRIADBG haptic_alert kind=low_battery level=%d phone_side=1 strap_write=0", level)
     }
 
-    private func updateRecoveryReady(percent: Int?, settings: AtriaHapticAlertSettings) {
-        let ready = percent != nil
+    nonisolated static func shouldFireRecoveryReady(percent: Int?,
+                                                    isReadyForAlert: Bool,
+                                                    wasReady: Bool) -> Bool {
+        percent != nil && isReadyForAlert && !wasReady
+    }
+
+    private func updateRecoveryReady(percent: Int?,
+                                     isReadyForAlert: Bool,
+                                     settings: AtriaHapticAlertSettings) {
+        let ready = percent != nil && isReadyForAlert
         defer { recoveryWasReady = ready }
-        guard settings.recoveryReady, let percent, !recoveryWasReady else { return }
+        guard settings.recoveryReady,
+              Self.shouldFireRecoveryReady(percent: percent,
+                                           isReadyForAlert: isReadyForAlert,
+                                           wasReady: recoveryWasReady),
+              let percent else { return }
         let feedback: UINotificationFeedbackGenerator.FeedbackType = percent <= 33 ? .warning : .success
         UINotificationFeedbackGenerator().notificationOccurred(feedback)
         AtriaDebugLog("ATRIADBG haptic_alert kind=recovery_ready percent=%d feedback=%@ phone_side=1 strap_write=0",

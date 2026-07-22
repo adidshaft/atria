@@ -116,6 +116,15 @@ final class AtriaStrapCalibrationArchive: @unchecked Sendable {
         return Date(timeIntervalSince1970: stored)
     }
 
+    /// Enforces age/byte retention even after calibration capture has ended.
+    /// Previously pruning only ran while another frame was being written, so
+    /// an inactive archive could occupy its full research allowance forever.
+    func scheduleRetentionPrune(now: Date = Date()) {
+        queue.async { [weak self] in
+            self?.pruneArchiveLocked(now: now, force: true)
+        }
+    }
+
     /// Validates framing and CRC, then returns a motion-bearing WHOOP 4 frame.
     /// R10 (0x2B/0x0A) is the observed high-rate stream; 0x33 remains accepted
     /// for firmware variants that expose the smaller realtime IMU packet.

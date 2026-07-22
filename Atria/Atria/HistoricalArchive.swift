@@ -1,12 +1,21 @@
 import Foundation
 
 enum HistoricalArchive {
+    enum DurableAdmissionReconciliationError: Error {
+        case rematerializationFailed(String)
+    }
+
     static let didUpdateNotification = Notification.Name("AtriaHistoricalArchiveDidUpdate")
     static let schema = 3
-    static let layoutVersion = "strap4_v24_hr_rr_gravity_clock_diagnostic"
-    // Empty until a generation-specific fixed layout passes an independent
-    // HR/RR reference validation. Diagnostic layouts must never feed metrics.
-    static let validatedMetricLayoutVersions: Set<String> = []
+    static let decodedLayoutPrefix = "whoop4_0x2f_openstrap_v1"
+    static func layoutVersion(for version: UInt8) -> String {
+        "\(decodedLayoutPrefix)_v\(version)"
+    }
+    static let layoutVersion = layoutVersion(for: 24)
+    // v24 is present in the captured WHOOP 4 archive and its fixed HR/RR/time
+    // layout matches the independently maintained OpenStrap protocol. Other
+    // decoded versions remain raw/motion-only until captured on this hardware.
+    static let validatedMetricLayoutVersions: Set<String> = [layoutVersion]
     static var hasValidatedMetricLayout: Bool {
         !validatedMetricLayoutVersions.isEmpty
     }
@@ -15,16 +24,24 @@ enum HistoricalArchive {
     private static let rotationManifestFilename = "historical-archive.manifest.json"
     private static let rotationThresholdBytes = 128 * 1024 * 1024
     private static let maxImmediateDiagnosticsScanBytes = 8 * 1024 * 1024
+    private static let recoveredDataCacheMaximumWindowDrift: TimeInterval = 24 * 60 * 60
     private static let segmentsDirectoryName = "segments"
     private static let promotionLock = NSLock()
+    private static let durableStoreLock = NSLock()
+    private static let archiveCatalogInitializationLock = NSLock()
+    private static var durableStore: AtriaHistoricalArchiveDurableStore?
+    private static var archiveCatalogStore: AtriaHistoricalArchiveCatalogStore?
+    private static var durableDrainBatches: [UInt64: AtriaHistoricalArchiveDurableStore.DrainBatch] = [:]
     private static let diagnosticsIndexLock = NSLock()
     private static let recentGravityCacheLock = NSLock()
+    private static let recoveredDataCacheLock = NSLock()
 #if DEBUG
     private static let fullGravityInstrumentationLock = NSLock()
     private static var fullGravityLoadCount = 0
 #endif
     private static let archiveDateFormatter = ISO8601DateFormatter()
     private static var recentGravityCache: RecentGravityCache?
+    private static var recoveredDataCache: RecoveredDataCache?
     private static var recentGravityLoadInFlight = false
     private static var recentGravityLoadGeneration: UInt64 = 0
 
@@ -101,12 +118,138 @@ enum HistoricalArchive {
 
     struct MotionArchiveSnapshot {
         fileprivate let samples: [GravitySample]
+        /// Motion is independently fail-closed. A complete physiology scan may
+        /// still carry an explicitly unavailable motion channel when its
+        /// bounded replay-identity or sample budget was reached.
+        let completeness: RecoveredDataCompleteness
+
+        func recoveredEvidence(start: Date, end: Date) -> AtriaRecoveredMotionProjection.Evidence {
+            guard completeness == .complete else {
+                return AtriaRecoveredMotionProjection.project(
+                    samples: [],
+                    window: .init(id: "motion_budget_unavailable", start: start, end: end)
+                )
+            }
+            return HistoricalArchive.recoveredMotionEvidence(start: start,
+                                                              end: end,
+                                                              records: samples)
+        }
 
         func diagnostics(start: Date, end: Date) -> MotionWindowDiagnostics {
-            HistoricalArchive.motionWindowDiagnostics(start: start,
-                                                       end: end,
-                                                       records: samples)
+            guard completeness == .complete else {
+                return HistoricalArchive.emptyMotionWindow(
+                    status: "learning",
+                    reason: completeness.failureReason ?? "motion_projection_incomplete"
+                )
+            }
+            return HistoricalArchive.recoveredMotionWindowDiagnostics(start: start,
+                                                                       end: end,
+                                                                       records: samples)
         }
+
+        func recoveredEpochs(
+            windows: [AtriaRecoveredMotionProjection.Window]
+        ) -> [String: [AtriaRecoveredMotionEpoch]] {
+            guard completeness == .complete else { return [:] }
+            return AtriaRecoveredMotionProjection.epochFeatures(samples: samples.map {
+                .init(timestamp: Date(timeIntervalSince1970: $0.timestamp),
+                      sequence: $0.sequence,
+                      x: $0.x,
+                      y: $0.y,
+                      z: $0.z,
+                      timestampValidated: $0.timestampValidated,
+                      gravityValidated: $0.validated)
+            }, windows: windows)
+        }
+    }
+
+    struct RecoveredArchiveScanDiagnostics: Equatable, Sendable {
+        let fileReadCount: Int
+        let byteCount: Int
+        let decodedRecordCount: Int
+        let elapsedMilliseconds: Int
+    }
+
+    struct RecoveredProjectionBudget: Equatable, Sendable {
+        static let production = RecoveredProjectionBudget(
+            maximumHeartRatePoints: 1_500_000,
+            maximumRRRecords: 250_000,
+            maximumGravitySamples: 750_000,
+            maximumMotionReplayIdentities: 750_000
+        )
+
+        let maximumHeartRatePoints: Int
+        let maximumRRRecords: Int
+        let maximumGravitySamples: Int
+        let maximumMotionReplayIdentities: Int
+
+        init(maximumHeartRatePoints: Int,
+             maximumRRRecords: Int,
+             maximumGravitySamples: Int,
+             maximumMotionReplayIdentities: Int) {
+            precondition(maximumHeartRatePoints > 0)
+            precondition(maximumRRRecords > 0)
+            precondition(maximumGravitySamples > 0)
+            precondition(maximumMotionReplayIdentities > 0)
+            self.maximumHeartRatePoints = maximumHeartRatePoints
+            self.maximumRRRecords = maximumRRRecords
+            self.maximumGravitySamples = maximumGravitySamples
+            self.maximumMotionReplayIdentities = maximumMotionReplayIdentities
+        }
+    }
+
+    enum RecoveredDataCompleteness: Equatable, Sendable {
+        enum Channel: String, Equatable, Hashable, Sendable {
+            case heartRate = "heart_rate"
+            case rrRecords = "rr_records"
+            case gravity = "gravity"
+            case motionReplayIdentity = "motion_replay_identity"
+        }
+
+        case complete
+        case budgetExceeded(channel: Channel, limit: Int)
+
+        var failureReason: String? {
+            guard case let .budgetExceeded(channel, limit) = self else { return nil }
+            return "archive_projection_budget_exceeded_\(channel.rawValue)_\(limit)"
+        }
+    }
+
+    struct RecoveredDataBudgetLimitation: Equatable, Sendable {
+        let channel: RecoveredDataCompleteness.Channel
+        let limit: Int
+
+        var completeness: RecoveredDataCompleteness {
+            .budgetExceeded(channel: channel, limit: limit)
+        }
+    }
+
+    /// One immutable decode pass supplies HR, RR and motion projection. The
+    /// recovered fence must not reread a large physical archive independently
+    /// for each metric family.
+    struct RecoveredDataSnapshot {
+        let heartRatePoints: [HeartRatePoint]
+        let rrRecords: [Record]
+        let motion: MotionArchiveSnapshot
+        let scan: RecoveredArchiveScanDiagnostics
+        /// Truthful completeness across every decoded channel. This must not
+        /// become `.complete` merely because HR/RR remain publishable.
+        let completeness: RecoveredDataCompleteness
+        /// The independent gate used by the physiology projection. Motion
+        /// exhaustion cannot discard fully scanned HR/RR, while either HR or RR
+        /// exhaustion still withholds physiology as a unit.
+        let physiologyCompleteness: RecoveredDataCompleteness
+        /// Every exhausted channel in deterministic order, retaining the exact
+        /// bound that caused partial publication.
+        let budgetLimitations: [RecoveredDataBudgetLimitation]
+    }
+
+    struct VerifiedConsumerSourceReadReport: Equatable, Sendable {
+        let committedSourceCount: Int
+        let attemptedSourceCount: Int
+        let deliveredSourceCount: Int
+        let wasBounded: Bool
+        let rejectedManifestCount: Int
     }
 
     struct MotionFeatureSummary: Equatable {
@@ -134,6 +277,85 @@ enum HistoricalArchive {
     struct HeartRatePoint: Equatable, Sendable {
         let t: Date
         let bpm: Int
+    }
+
+    struct HeartRateWindowRead: Equatable, Sendable {
+        let points: [HeartRatePoint]
+        let scannedFileCount: Int
+        let scannedByteCount: Int
+    }
+
+    struct DurableAppendResult {
+        let url: URL
+        let inserted: Bool
+    }
+
+    struct TerminalCatalogSealResult {
+        let chunkID: String
+        let sourceURL: URL
+        let aggregateBuild: AtriaHistoricalAggregateBuilder.FileBuildResult
+    }
+
+    struct TerminalConsumerProjectionResult {
+        let aggregateCommit: AtriaHistoricalRetentionTransaction.Result
+        let completion: AtriaHistoricalDrainCompletionGenerationStore.Published
+        let consumers: AtriaHistoricalConsumerProjectionCoordinator.Report
+    }
+
+    struct TerminalCompletionPublicationResult {
+        let aggregateCommit: AtriaHistoricalRetentionTransaction.Result
+        let completion: AtriaHistoricalDrainCompletionGenerationStore.Published
+    }
+
+    struct TerminalConsumerProjectionResumeResult {
+        let completion: AtriaHistoricalDrainCompletionGenerationStore.Record
+        let consumers: AtriaHistoricalConsumerProjectionCoordinator.Report
+    }
+
+    /// Audit result for the bounded retention cutover step. It proves that one
+    /// committed shadow chunk has all six typed, re-readable retirement
+    /// receipts while the original raw file still exists. The five app-facing
+    /// receipts remain the ledger's atomic current set; replay identity is an
+    /// independently durable raw-bound audit artifact.
+    struct HistoricalConsumerCutoverResult: Equatable {
+        let chunkID: String
+        let completionGeneration: UInt64
+        let receiptCount: Int
+        let reusedReceiptCount: Int
+        let receiptKinds: [AtriaHistoricalConsumerReceiptLedger.ProjectionKind]
+        let canonicalApplicationCount: Int
+        let canonicalApplicationIdentitySHA256: String
+        let rawSourceURL: URL
+    }
+
+    /// Exact values exposed to SessionStore after the atomic canonical
+    /// application proof and all five destination snapshots are re-read.
+    struct VerifiedCanonicalConsumerSource: Equatable, Sendable {
+        let identity: AtriaHistoricalCanonicalConsumerApplicationStore.VerificationIdentity
+        let activity: AtriaHistoricalActivityProjection
+        let dailyMetrics: AtriaHistoricalDailyConsumerProjection.DailyMetricsArtifact
+        let steps: AtriaHistoricalDailyConsumerProjection.StepsArtifact
+        let sleep: AtriaHistoricalSleepProjection
+        let workout: AtriaHistoricalWorkoutProjection
+        let replayIdentity: AtriaHistoricalReplayIdentityShard
+        let replayPayloadRetired: Bool
+    }
+
+    struct VerifiedCanonicalConsumerPage: Sendable {
+        let sources: [VerifiedCanonicalConsumerSource]
+        let nextCursor: AtriaHistoricalAggregateReader.PageCursor?
+        let hasMore: Bool
+        let examinedSourceCount: Int
+    }
+
+    enum HistoricalConsumerCutoverError: Error, Equatable {
+        case committedShadowUnavailable
+        case rawSourceUnavailable
+        case terminalCompletionAttestationUnavailable
+        case terminalCompletionAttestationRejected
+        case receiptPublicationIncomplete
+        case typedVerificationIncomplete
+        case rawSourceWasNotRetained
     }
 
     struct Record: Codable {
@@ -221,6 +443,140 @@ enum HistoricalArchive {
         return try appendJSONLine(frame)
     }
 
+    /// Idempotently appends one decoded frame to a generation-scoped drain.
+    /// The identity index is derived from archive rows and rebuilt on launch;
+    /// it is not a second source of truth.
+    static func appendDurably(
+        _ record: Record,
+        identity: AtriaHistoricalArchiveDurableStore.FrameIdentity,
+        generation: UInt64
+    ) throws -> DurableAppendResult {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(record)
+        return try appendDurably(
+            encodedJSONObject: data,
+            diagnosticsObject: (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            identity: identity,
+            generation: generation
+        )
+    }
+
+    static func appendUndecodableDurably(
+        payload: [UInt8],
+        reason: String,
+        identity: AtriaHistoricalArchiveDurableStore.FrameIdentity,
+        generation: UInt64
+    ) throws -> DurableAppendResult {
+        let frame = UndecodableFrame(schema: schema,
+                                     capturedAt: Date(),
+                                     source: "0x2f",
+                                     payloadLength: payload.count,
+                                     rawPayloadHex: hex(payload),
+                                     currentSessionUsable: false,
+                                     metricUsable: false,
+                                     usabilityReason: reason)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(frame)
+        return try appendDurably(
+            encodedJSONObject: data,
+            diagnosticsObject: (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            identity: identity,
+            generation: generation
+        )
+    }
+
+    private static func appendDurably(
+        encodedJSONObject: Data,
+        diagnosticsObject: [String: Any]?,
+        identity: AtriaHistoricalArchiveDurableStore.FrameIdentity,
+        generation: UInt64
+    ) throws -> DurableAppendResult {
+        promotionLock.lock()
+        defer { promotionLock.unlock() }
+        let url = try writableFileURL()
+        let previousAttributes = archiveAttributes(for: url)
+
+        durableStoreLock.lock()
+        defer { durableStoreLock.unlock() }
+        let store = try durableStoreLocked()
+        let batch = durableDrainBatches[generation] ?? store.beginDrainBatch()
+        durableDrainBatches[generation] = batch
+        let result = try store.append(identity: identity,
+                                      encodedJSONObject: encodedJSONObject,
+                                      to: url,
+                                      batch: batch)
+        let inserted: Bool
+        switch result {
+        case .inserted:
+            inserted = true
+            updateDiagnosticsIndexAfterAppend(object: diagnosticsObject,
+                                              archiveURL: url,
+                                              previousAttributes: previousAttributes)
+        case .duplicate:
+            inserted = false
+        }
+        return DurableAppendResult(url: url, inserted: inserted)
+    }
+
+    /// Rebinds every admission row still awaiting promotion to the exact
+    /// archive receipt that will authorize this HISTORY_END. Existing rows are
+    /// never duplicated; a missing identity fails closed before flush/ACK.
+    static func includeExistingAdmissionFramesInDurableBatch(
+        payloads: [Data],
+        strapIdentifier: String,
+        generation: UInt64,
+        clock: AtriaWhoop4HistoryArchivePipeline.ClockReference? = nil,
+        historyClockSyncEnabled: Bool = false
+    ) throws {
+        guard !payloads.isEmpty else { return }
+        for payload in payloads {
+            do {
+                promotionLock.lock()
+                durableStoreLock.lock()
+                let store = try durableStoreLocked()
+                let batch = durableDrainBatches[generation] ?? store.beginDrainBatch()
+                durableDrainBatches[generation] = batch
+                try store.includeExisting(
+                    .whoop4(strapIdentifier: strapIdentifier, payload: payload),
+                    in: batch
+                )
+                durableStoreLock.unlock()
+                promotionLock.unlock()
+            } catch AtriaHistoricalArchiveDurableStore.StoreError.missingExistingIdentity {
+                durableStoreLock.unlock()
+                promotionLock.unlock()
+
+                // The exact-admission SQLite ledger is write-ahead authority:
+                // a crash may leave an admitted payload without its raw JSONL
+                // row. Re-materialize that exact payload into the same drain
+                // batch before fsync instead of permanently wedging every
+                // later HISTORY_END. This remains fail-closed: any decode or
+                // append failure propagates and the strap receives no ACK.
+                let computation = AtriaWhoop4HistoryArchivePipeline.prepare(
+                    payload: Array(payload),
+                    clock: clock,
+                    historyClockSyncEnabled: historyClockSyncEnabled
+                )
+                let persistence = AtriaWhoop4HistoryArchivePipeline.persist(
+                    computation,
+                    strapIdentifier: strapIdentifier,
+                    generation: generation
+                )
+                guard persistence.succeeded else {
+                    throw DurableAdmissionReconciliationError.rematerializationFailed(
+                        persistence.errorDescription ?? "unknown"
+                    )
+                }
+            } catch {
+                durableStoreLock.unlock()
+                promotionLock.unlock()
+                throw error
+            }
+        }
+    }
+
     /// Establishes the durability boundary used by the strap-history ACK.
     /// Individual frames are appended serially; synchronizing once at the end
     /// of a transmitted batch keeps the hot path cheap while ensuring the
@@ -235,9 +591,860 @@ enum HistoricalArchive {
         try handle.synchronize()
     }
 
+    /// Flushes every base/rotated archive file dirtied by this exact drain plus
+    /// its replay index. This is the only durability result eligible to precede
+    /// a HISTORY_END ACK.
+    @discardableResult
+    static func synchronizeDurableStorage(
+        generation: UInt64
+    ) throws -> AtriaHistoricalArchiveDurableStore.FlushReceipt? {
+        durableStoreLock.lock()
+        defer { durableStoreLock.unlock() }
+        let store = try durableStoreLocked()
+        // Empty terminal tails still receive a distinct durable sequence and
+        // zero-row receipt. This proves ordering without fabricating positive
+        // historical coverage.
+        let batch = durableDrainBatches[generation] ?? store.beginDrainBatch()
+        let receipt = try store.flush(batch)
+        // Each HISTORY_END is a separate durability boundary. A successful
+        // flush seals this store batch; the next strap burst gets a fresh one
+        // while retaining the same BLE drain generation.
+        durableDrainBatches.removeValue(forKey: generation)
+        NotificationCenter.default.post(name: didUpdateNotification, object: nil)
+        return receipt
+    }
+
+    /// Production-facing bridge for the terminal history-drain callback.
+    /// It flushes the exact drain batch, derives authoritative bounds through
+    /// the canonical aggregate builder, and atomically rotates the active raw
+    /// chunk. The returned aggregate is still shadow-only until its retention
+    /// transaction is separately committed; this method never deletes raw.
+    static func sealCatalogChunkAfterTerminalDrain(
+        generation: UInt64,
+        completedAt: Date = Date(),
+        expectedChunkID: String? = nil
+    ) throws -> TerminalCatalogSealResult? {
+        promotionLock.lock()
+        defer { promotionLock.unlock() }
+
+        durableStoreLock.lock()
+        do {
+            if let batch = durableDrainBatches[generation] {
+                _ = try durableStoreLocked().flush(batch)
+                durableDrainBatches.removeValue(forKey: generation)
+            }
+            durableStoreLock.unlock()
+        } catch {
+            durableStoreLock.unlock()
+            throw error
+        }
+
+        let catalogStore = try catalogStoreLocked()
+        let active = try catalogStore.activeChunkDescriptor()
+        guard expectedChunkID == nil || active.chunkID == expectedChunkID else {
+            throw TerminalConsumerProjectionError.resumeChunkUnavailable
+        }
+        let bytes = ((try? FileManager.default.attributesOfItem(atPath: active.fileURL.path)[.size])
+            as? NSNumber)?.uint64Value ?? 0
+        guard bytes > 0 else { return nil }
+        let handle = try FileHandle(forWritingTo: active.fileURL)
+        defer { try? handle.close() }
+        try handle.synchronize()
+
+        let build = try AtriaHistoricalAggregateBuilder.build(
+            sourceURL: active.fileURL,
+            chunkID: active.chunkID,
+            createdAt: completedAt
+        )
+        try catalogStore.sealActiveChunkAtTerminal(
+            chunkID: active.chunkID,
+            rowCount: build.aggregate.source.rawRowCount,
+            firstTimestamp: build.aggregate.source.firstTimestamp,
+            lastTimestamp: build.aggregate.source.lastTimestamp,
+            contentSHA256: build.aggregate.source.rawSHA256,
+            now: completedAt
+        )
+        NotificationCenter.default.post(name: didUpdateNotification, object: nil)
+        return .init(chunkID: active.chunkID,
+                     sourceURL: active.fileURL,
+                     aggregateBuild: build)
+    }
+
+    /// Read-only identifier used to stage the crash journal before the catalog
+    /// seal changes the active chunk. The seal rechecks this exact ID.
+    static func terminalCatalogCandidateChunkID() throws -> String {
+        try catalogStoreLocked().activeChunkDescriptor().chunkID
+    }
+
+    /// Reconciles a staged journal across the catalog-seal boundary. If the
+    /// expected chunk is still active it performs the seal; if it was already
+    /// sealed before a crash it rebuilds and verifies the same immutable seal.
+    static func recoverTerminalCatalogSeal(
+        job: AtriaBLEHistoryTerminalPublicationStore.Job,
+        generation: UInt64
+    ) throws -> TerminalCatalogSealResult {
+        let store = try catalogStoreLocked()
+        let catalog = try store.snapshot()
+        guard let chunk = catalog.chunks.first(where: { $0.id == job.chunkID }) else {
+            throw TerminalConsumerProjectionError.resumeChunkUnavailable
+        }
+        if chunk.state == .active {
+            guard let seal = try sealCatalogChunkAfterTerminalDrain(
+                generation: generation,
+                completedAt: job.completedAt,
+                expectedChunkID: job.chunkID
+            ) else {
+                throw TerminalConsumerProjectionError.resumeChunkUnavailable
+            }
+            return seal
+        }
+        return try recoverAlreadySealedTerminalCatalogChunk(
+            job: job,
+            archiveRoot: archiveDirectory,
+            catalogStore: store
+        )
+    }
+
+    /// Injected sealed-side recovery used to prove the checkpoint immediately
+    /// after catalog seal and before the journal advances from `staged`.
+    static func recoverAlreadySealedTerminalCatalogChunk(
+        job: AtriaBLEHistoryTerminalPublicationStore.Job,
+        archiveRoot: URL,
+        catalogStore: AtriaHistoricalArchiveCatalogStore
+    ) throws -> TerminalCatalogSealResult {
+        let catalog = try catalogStore.snapshotVerifiedAgainstFiles()
+        guard let chunk = catalog.chunks.first(where: { $0.id == job.chunkID }),
+              chunk.state == .sealed else {
+            throw TerminalConsumerProjectionError.resumeChunkUnavailable
+        }
+        let sourceURL = archiveRoot.appendingPathComponent(chunk.relativePath)
+        let build = try AtriaHistoricalAggregateBuilder.build(
+            sourceURL: sourceURL,
+            chunkID: job.chunkID,
+            createdAt: job.completedAt
+        )
+        guard build.aggregate.source.rawSHA256 == chunk.contentSHA256,
+              build.aggregate.source.rawByteCount == chunk.byteCount,
+              build.aggregate.source.rawRowCount == chunk.rowCount,
+              build.aggregate.source.firstTimestamp == chunk.firstTimestamp,
+              build.aggregate.source.lastTimestamp == chunk.lastTimestamp else {
+            throw TerminalConsumerProjectionError.resumeChunkUnavailable
+        }
+        return .init(chunkID: job.chunkID,
+                     sourceURL: sourceURL,
+                     aggregateBuild: build)
+    }
+
+    static func recoverFullDrainTerminalCatalogSeal(
+        checkpoint: AtriaHistoricalFullDrainCoverageStore.PublicationCheckpoint,
+        generation: UInt64
+    ) throws -> TerminalCatalogSealResult {
+        let store = try catalogStoreLocked()
+        let catalog = try store.snapshot()
+        guard let chunk = catalog.chunks.first(where: {
+            $0.id == checkpoint.chunkID
+        }) else { throw TerminalConsumerProjectionError.resumeChunkUnavailable }
+        if chunk.state == .active {
+            guard let seal = try sealCatalogChunkAfterTerminalDrain(
+                generation: generation,
+                completedAt: Date(timeIntervalSince1970: checkpoint.completedAtUnix),
+                expectedChunkID: checkpoint.chunkID
+            ) else { throw TerminalConsumerProjectionError.resumeChunkUnavailable }
+            return seal
+        }
+        let verified = try store.snapshotVerifiedAgainstFiles()
+        guard let sealed = verified.chunks.first(where: {
+            $0.id == checkpoint.chunkID && $0.state == .sealed
+        }) else { throw TerminalConsumerProjectionError.resumeChunkUnavailable }
+        let sourceURL = archiveDirectory.appendingPathComponent(sealed.relativePath)
+        let build = try AtriaHistoricalAggregateBuilder.build(
+            sourceURL: sourceURL,
+            chunkID: checkpoint.chunkID,
+            createdAt: Date(timeIntervalSince1970: checkpoint.completedAtUnix)
+        )
+        guard build.aggregate.source.rawSHA256 == sealed.contentSHA256,
+              build.aggregate.source.rawByteCount == sealed.byteCount,
+              build.aggregate.source.rawRowCount == sealed.rowCount,
+              build.aggregate.source.firstTimestamp == sealed.firstTimestamp,
+              build.aggregate.source.lastTimestamp == sealed.lastTimestamp else {
+            throw TerminalConsumerProjectionError.resumeChunkUnavailable
+        }
+        return .init(chunkID: checkpoint.chunkID,
+                     sourceURL: sourceURL,
+                     aggregateBuild: build)
+    }
+
+    static func verifiedMetricTimestamps(
+        in seal: TerminalCatalogSealResult,
+        start: Date,
+        end: Date
+    ) throws -> [TimeInterval] {
+        guard end > start,
+              try AtriaHistoricalJSONLInput.identity(at: seal.sourceURL).sha256
+                == seal.aggregateBuild.aggregate.source.rawSHA256,
+              let descriptor = AtriaHistoricalJSONLRecentScanner
+                .descriptors(for: [seal.sourceURL]).first else {
+            throw TerminalConsumerProjectionError.resumeChunkUnavailable
+        }
+        var timestamps: [TimeInterval] = []
+        timestamps.reserveCapacity(min(
+            Int(end.timeIntervalSince(start).rounded(.up)),
+            1_500_000
+        ))
+        let decoder = JSONDecoder()
+        let result = AtriaHistoricalJSONLRecentScanner.scan(
+            sources: [.init(descriptor: descriptor, startOffset: 0)],
+            cutoff: start.timeIntervalSince1970
+        ) { line in
+            guard timestamps.count < 1_500_000,
+                  let record = try? decoder.decode(Record.self, from: line),
+                  record.metricUsable,
+                  let timestamp = AtriaHistoricalJSONLRecentScanner.timestamp(in: line),
+                  timestamp >= start.timeIntervalSince1970,
+                  timestamp < end.timeIntervalSince1970 else { return }
+            timestamps.append(timestamp)
+        }
+        guard result.complete else {
+            throw TerminalConsumerProjectionError.resumeChunkUnavailable
+        }
+        return timestamps
+    }
+
+    /// Commits the already-sealed terminal aggregate, records a durable exact
+    /// request-range completion, and publishes consumer artifacts derived from
+    /// that attestation. This is the bounded runtime seam for the terminal BLE
+    /// callback. The caller must supply the actual requested range; this method
+    /// never widens it from file timestamps or local completion time.
+    ///
+    /// Raw retirement is deliberately impossible here: the aggregate commit
+    /// uses `deleteSourceAfterCommit: false`, and consumer publication has no
+    /// catalog-retirement API.
+    static func materializeTerminalConsumerProjectionsAfterDrain(
+        seal: TerminalCatalogSealResult,
+        terminalBatchNumber: UInt64,
+        durableSequence: UInt64,
+        requestedStart: Date,
+        requestedEnd: Date,
+        completedAt: Date,
+        configuration: AtriaHistoricalConsumerProjectionCoordinator.Configuration
+    ) throws -> TerminalConsumerProjectionResult {
+        let published = try publishTerminalCompletionAfterDrain(
+            seal: seal,
+            terminalBatchNumber: terminalBatchNumber,
+            durableSequence: durableSequence,
+            requestedStart: requestedStart,
+            requestedEnd: requestedEnd,
+            completedAt: completedAt
+        )
+        let aggregates = archiveDirectory.appendingPathComponent("aggregates-v2", isDirectory: true)
+        let manifests = archiveDirectory.appendingPathComponent(
+            "retention-manifests-v2",
+            isDirectory: true
+        )
+        let aggregateSnapshot = AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: aggregates,
+            manifestDirectoryURL: manifests
+        ).load()
+        let coordinator = AtriaHistoricalConsumerProjectionCoordinator(
+            completionStore: AtriaHistoricalDrainCompletionGenerationStore(
+                directoryURL: archiveDirectory.appendingPathComponent(
+                    "drain-completions-v1",
+                    isDirectory: true
+                )
+            ),
+            receiptLedger: .init(directoryURL: archiveDirectory.appendingPathComponent(
+                "consumer-receipts-v1",
+                isDirectory: true
+            ))
+        )
+        let consumers = try coordinator.publishEligibleReceipts(
+            catalogStore: try catalogStoreLocked(),
+            aggregateSnapshot: aggregateSnapshot,
+            configuration: configuration
+        )
+        return .init(aggregateCommit: published.aggregateCommit,
+                     completion: published.completion,
+                     consumers: consumers)
+    }
+
+    /// Publishes only the immutable aggregate and exact terminal completion.
+    /// The caller must durably checkpoint this result before invoking any
+    /// consumer projection publication.
+    static func publishTerminalCompletionAfterDrain(
+        seal: TerminalCatalogSealResult,
+        terminalBatchNumber: UInt64,
+        durableSequence: UInt64,
+        requestedStart: Date,
+        requestedEnd: Date,
+        completedAt: Date
+    ) throws -> TerminalCompletionPublicationResult {
+        guard durableSequence > 0,
+              requestedEnd > requestedStart,
+              completedAt >= requestedEnd else {
+            throw TerminalConsumerProjectionError.invalidTerminalAuthority
+        }
+        let aggregates = archiveDirectory.appendingPathComponent("aggregates-v2", isDirectory: true)
+        let manifests = archiveDirectory.appendingPathComponent(
+            "retention-manifests-v2",
+            isDirectory: true
+        )
+        let transaction = AtriaHistoricalRetentionTransaction(
+            now: { completedAt },
+            semanticVerifier: AtriaHistoricalAggregateBuilder.verify
+        )
+        let aggregateCommit = try transaction.commit(.init(
+            transactionID: seal.chunkID,
+            sourceURL: seal.sourceURL,
+            aggregateDirectoryURL: aggregates,
+            manifestDirectoryURL: manifests,
+            aggregate: seal.aggregateBuild.aggregate,
+            semanticParityReceipt: seal.aggregateBuild.semanticParityReceipt,
+            deleteSourceAfterCommit: false
+        ))
+        guard !aggregateCommit.sourceDeleted,
+              FileManager.default.fileExists(atPath: seal.sourceURL.path) else {
+            throw TerminalConsumerProjectionError.rawSourceWasNotRetained
+        }
+
+        let aggregateSnapshot = AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: aggregates,
+            manifestDirectoryURL: manifests
+        ).load()
+        guard aggregateSnapshot.diagnostics.rejectedManifests == 0,
+              aggregateSnapshot.aggregates.contains(where: {
+                  $0.source.chunkID == seal.chunkID
+                      && $0 == seal.aggregateBuild.aggregate
+              }) else {
+            throw TerminalConsumerProjectionError.committedAggregateUnavailable
+        }
+
+        let completionStore = AtriaHistoricalDrainCompletionGenerationStore(
+            directoryURL: archiveDirectory.appendingPathComponent(
+                "drain-completions-v1",
+                isDirectory: true
+            )
+        )
+        let prior = try? completionStore.loadLatest()
+        let generation: UInt64
+        if let prior,
+           prior.terminalBatchNumber == terminalBatchNumber,
+           prior.durableSequence == durableSequence,
+           prior.requestedStart == requestedStart,
+           prior.requestedEnd == requestedEnd,
+           prior.completedAt == completedAt {
+            generation = prior.generation
+        } else {
+            let priorGeneration = prior?.generation ?? 0
+            guard priorGeneration < UInt64.max else {
+                throw TerminalConsumerProjectionError.completionGenerationExhausted
+            }
+            generation = priorGeneration + 1
+        }
+        guard generation > 0 else {
+            throw TerminalConsumerProjectionError.completionGenerationExhausted
+        }
+        let completion = try completionStore.recordTerminal(
+            generation: generation,
+            terminalBatchNumber: terminalBatchNumber,
+            durableSequence: durableSequence,
+            requestedStart: requestedStart,
+            requestedEnd: requestedEnd,
+            completedAt: completedAt,
+            catalogStore: try catalogStoreLocked(),
+            aggregateSnapshot: aggregateSnapshot
+        )
+        return .init(aggregateCommit: aggregateCommit,
+                     completion: completion)
+    }
+
+    /// Resumes publication from an already-durable terminal completion without
+    /// requiring another raw chunk. This is the crash path for a completion
+    /// followed by only a prefix of the five consumer receipts. Every immutable
+    /// input is re-read and re-verified; raw remains present and is never
+    /// retired by this path.
+    static func resumeTerminalConsumerProjectionsAfterCrash(
+        job: AtriaBLEHistoryTerminalPublicationStore.Job,
+        configuration: AtriaHistoricalConsumerProjectionCoordinator.Configuration
+    ) throws -> TerminalConsumerProjectionResumeResult {
+        try resumeTerminalConsumerProjectionsAfterCrash(
+            job: job,
+            archiveRoot: archiveDirectory,
+            catalogStore: try catalogStoreLocked(),
+            configuration: configuration
+        )
+    }
+
+    /// Dependency-injected overload used by crash/restart tests.
+    static func resumeTerminalConsumerProjectionsAfterCrash(
+        job: AtriaBLEHistoryTerminalPublicationStore.Job,
+        archiveRoot: URL,
+        catalogStore: AtriaHistoricalArchiveCatalogStore,
+        configuration: AtriaHistoricalConsumerProjectionCoordinator.Configuration
+    ) throws -> TerminalConsumerProjectionResumeResult {
+        guard job.status == .completionPublished
+                || job.status == .projectionsPublished
+                || job.status == .authorityConsumed,
+              job.durableSequence > 0,
+              job.exactRequest.requestedEnd > job.exactRequest.requestedStart,
+              job.completedAt >= job.exactRequest.requestedEnd else {
+            throw TerminalConsumerProjectionError.invalidResumeJob
+        }
+
+        let catalog = try catalogStore.snapshotVerifiedAgainstFiles()
+        try catalog.validate()
+        guard let chunk = catalog.chunks.first(where: { $0.id == job.chunkID }),
+              chunk.state == .sealed,
+              chunk.rowCount != nil,
+              chunk.firstTimestamp != nil,
+              chunk.lastTimestamp != nil,
+              chunk.contentSHA256 != nil else {
+            throw TerminalConsumerProjectionError.resumeChunkUnavailable
+        }
+        let sourceURL = archiveRoot.appendingPathComponent(chunk.relativePath)
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            throw TerminalConsumerProjectionError.rawSourceWasNotRetained
+        }
+
+        let aggregates = archiveRoot.appendingPathComponent("aggregates-v2", isDirectory: true)
+        let manifests = archiveRoot.appendingPathComponent(
+            "retention-manifests-v2",
+            isDirectory: true
+        )
+        let aggregateSnapshot = AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: aggregates,
+            manifestDirectoryURL: manifests
+        ).load()
+        guard aggregateSnapshot.diagnostics.rejectedManifests == 0,
+              let aggregate = aggregateSnapshot.aggregates.first(where: {
+                  $0.source.chunkID == job.chunkID
+              }),
+              aggregate.source.rawSHA256 == chunk.contentSHA256,
+              aggregate.source.rawByteCount == chunk.byteCount,
+              aggregate.source.rawRowCount == chunk.rowCount,
+              aggregate.source.firstTimestamp == chunk.firstTimestamp,
+              aggregate.source.lastTimestamp == chunk.lastTimestamp,
+              try AtriaHistoricalAggregateBuilder.verify(
+                  sourceURL: sourceURL,
+                  aggregate: aggregate,
+                  semanticParityReceipt: AtriaHistoricalAggregateBuilder
+                      .semanticParityReceipt(for: aggregate)
+              ) else {
+            throw TerminalConsumerProjectionError.resumeAggregateUnavailable
+        }
+
+        let completionStore = AtriaHistoricalDrainCompletionGenerationStore(
+            directoryURL: archiveRoot.appendingPathComponent(
+                "drain-completions-v1",
+                isDirectory: true
+            )
+        )
+        let completion = try completionStore.loadLatest()
+        let catalogData = try AtriaHistoricalActivityInspectionProofFactory
+            .canonicalCatalogData(catalog)
+        let aggregateData = try AtriaHistoricalActivityInspectionProofFactory
+            .canonicalAggregateSnapshotData(aggregateSnapshot)
+        guard completion.terminalBatchNumber == job.terminalBatchNumber,
+              completion.durableSequence == job.durableSequence,
+              completion.requestedStart == job.exactRequest.requestedStart,
+              completion.requestedEnd == job.exactRequest.requestedEnd,
+              completion.completedAt == job.completedAt,
+              completion.catalogGeneration == catalog.generation,
+              completion.catalogSnapshotSHA256
+                == AtriaHistoricalDrainCompletionGenerationStore.sha256(catalogData),
+              completion.aggregateSnapshotSHA256
+                == AtriaHistoricalDrainCompletionGenerationStore.sha256(aggregateData) else {
+            throw TerminalConsumerProjectionError.resumeCompletionMismatch
+        }
+
+        let coordinator = AtriaHistoricalConsumerProjectionCoordinator(
+            completionStore: completionStore,
+            receiptLedger: .init(directoryURL: archiveRoot.appendingPathComponent(
+                "consumer-receipts-v1",
+                isDirectory: true
+            ))
+        )
+        let consumers = try coordinator.publishEligibleReceipts(
+            catalogStore: catalogStore,
+            aggregateSnapshot: aggregateSnapshot,
+            configuration: configuration
+        )
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            throw TerminalConsumerProjectionError.rawSourceWasNotRetained
+        }
+        return .init(completion: completion, consumers: consumers)
+    }
+
+    static func resumeFullDrainConsumerProjectionsAfterCrash(
+        checkpoint: AtriaHistoricalFullDrainCoverageStore.PublicationCheckpoint,
+        requestedStart: Date,
+        requestedEnd: Date,
+        configuration: AtriaHistoricalConsumerProjectionCoordinator.Configuration
+    ) throws -> TerminalConsumerProjectionResumeResult {
+        guard checkpoint.status == .completionPublished
+                || checkpoint.status == .projectionsPublished,
+              checkpoint.durableSequence > 0,
+              requestedEnd > requestedStart,
+              Date(timeIntervalSince1970: checkpoint.completedAtUnix) >= requestedEnd else {
+            throw TerminalConsumerProjectionError.invalidResumeJob
+        }
+        let catalogStore = try catalogStoreLocked()
+        let catalog = try catalogStore.snapshotVerifiedAgainstFiles()
+        try catalog.validate()
+        guard let chunk = catalog.chunks.first(where: {
+            $0.id == checkpoint.chunkID && $0.state == .sealed
+        }), chunk.rowCount != nil,
+           chunk.firstTimestamp != nil,
+           chunk.lastTimestamp != nil,
+           chunk.contentSHA256 != nil else {
+            throw TerminalConsumerProjectionError.resumeChunkUnavailable
+        }
+        let sourceURL = archiveDirectory.appendingPathComponent(chunk.relativePath)
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            throw TerminalConsumerProjectionError.rawSourceWasNotRetained
+        }
+        let aggregateSnapshot = AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: archiveDirectory.appendingPathComponent(
+                "aggregates-v2", isDirectory: true
+            ),
+            manifestDirectoryURL: archiveDirectory.appendingPathComponent(
+                "retention-manifests-v2", isDirectory: true
+            )
+        ).load()
+        guard aggregateSnapshot.diagnostics.rejectedManifests == 0,
+              let aggregate = aggregateSnapshot.aggregates.first(where: {
+                  $0.source.chunkID == checkpoint.chunkID
+              }),
+              aggregate.source.rawSHA256 == chunk.contentSHA256,
+              aggregate.source.rawByteCount == chunk.byteCount,
+              aggregate.source.rawRowCount == chunk.rowCount,
+              aggregate.source.firstTimestamp == chunk.firstTimestamp,
+              aggregate.source.lastTimestamp == chunk.lastTimestamp,
+              try AtriaHistoricalAggregateBuilder.verify(
+                  sourceURL: sourceURL,
+                  aggregate: aggregate,
+                  semanticParityReceipt: AtriaHistoricalAggregateBuilder
+                    .semanticParityReceipt(for: aggregate)
+              ) else { throw TerminalConsumerProjectionError.resumeAggregateUnavailable }
+        let completionStore = AtriaHistoricalDrainCompletionGenerationStore(
+            directoryURL: archiveDirectory.appendingPathComponent(
+                "drain-completions-v1", isDirectory: true
+            )
+        )
+        let completion = try completionStore.loadLatest()
+        let catalogData = try AtriaHistoricalActivityInspectionProofFactory
+            .canonicalCatalogData(catalog)
+        let aggregateData = try AtriaHistoricalActivityInspectionProofFactory
+            .canonicalAggregateSnapshotData(aggregateSnapshot)
+        guard completion.terminalBatchNumber == checkpoint.terminalBatchNumber,
+              completion.durableSequence == checkpoint.durableSequence,
+              completion.requestedStart == requestedStart,
+              completion.requestedEnd == requestedEnd,
+              completion.completedAt == Date(timeIntervalSince1970: checkpoint.completedAtUnix),
+              completion.catalogGeneration == catalog.generation,
+              completion.catalogSnapshotSHA256
+                == AtriaHistoricalDrainCompletionGenerationStore.sha256(catalogData),
+              completion.aggregateSnapshotSHA256
+                == AtriaHistoricalDrainCompletionGenerationStore.sha256(aggregateData) else {
+            throw TerminalConsumerProjectionError.resumeCompletionMismatch
+        }
+        let consumers = try AtriaHistoricalConsumerProjectionCoordinator(
+            completionStore: completionStore,
+            receiptLedger: .init(directoryURL: archiveDirectory.appendingPathComponent(
+                "consumer-receipts-v1", isDirectory: true
+            ))
+        ).publishReceiptSet(
+            for: checkpoint.chunkID,
+            catalogStore: catalogStore,
+            aggregateSnapshot: aggregateSnapshot,
+            configuration: configuration
+        )
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            throw TerminalConsumerProjectionError.rawSourceWasNotRetained
+        }
+        return .init(completion: completion, consumers: consumers)
+    }
+
+    /// Publishes and immediately re-reads one five-artifact app-facing consumer
+    /// set plus the independently durable exact replay-identity shard for an
+    /// already committed shadow aggregate. This is deliberately not retirement
+    /// authority: it cannot edit the aggregate, catalog, manifest, mark a chunk
+    /// retired, or delete raw. Missing, stale, or too-narrow terminal completion
+    /// evidence fails closed; this path never manufactures a completion record.
+    static func publishAndVerifyHistoricalConsumerCutover(
+        chunkID: String,
+        archiveRoot: URL,
+        catalogStore: AtriaHistoricalArchiveCatalogStore,
+        configuration: AtriaHistoricalConsumerProjectionConfiguration,
+        receiptLedger injectedLedger: AtriaHistoricalConsumerReceiptLedger? = nil
+    ) throws -> HistoricalConsumerCutoverResult {
+        let aggregates = archiveRoot.appendingPathComponent("aggregates-v2", isDirectory: true)
+        let manifests = archiveRoot.appendingPathComponent(
+            "retention-manifests-v2",
+            isDirectory: true
+        )
+        let aggregateReader = AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: aggregates,
+            manifestDirectoryURL: manifests
+        )
+        let snapshot = aggregateReader.load()
+        let matchingAggregates = snapshot.aggregates.filter { $0.source.chunkID == chunkID }
+        guard !snapshot.diagnostics.limitExceeded,
+              snapshot.diagnostics.rejectedManifests == 0,
+              matchingAggregates.count == 1,
+              let aggregate = matchingAggregates.first else {
+            throw HistoricalConsumerCutoverError.committedShadowUnavailable
+        }
+
+        let catalog = try catalogStore.snapshotVerifiedAgainstFiles()
+        guard let rawChunk = catalog.chunks.first(where: { $0.id == chunkID }),
+              rawChunk.state == .sealed,
+              rawChunk.contentSHA256 == aggregate.source.rawSHA256,
+              rawChunk.byteCount == aggregate.source.rawByteCount,
+              rawChunk.rowCount == aggregate.source.rawRowCount,
+              rawChunk.firstTimestamp == aggregate.source.firstTimestamp,
+              rawChunk.lastTimestamp == aggregate.source.lastTimestamp else {
+            throw HistoricalConsumerCutoverError.rawSourceUnavailable
+        }
+        let rawURL = archiveRoot.appendingPathComponent(rawChunk.relativePath)
+        // Compare the retained source's decoded identity — transparently
+        // inflating a compressed artifact — against the committed aggregate, so
+        // compressed shards verify by content, not physical bytes. Plaintext
+        // sources are read verbatim, so their behavior is unchanged.
+        guard FileManager.default.fileExists(atPath: rawURL.path),
+              let rawIdentity = try? AtriaHistoricalJSONLInput.identity(at: rawURL),
+              rawIdentity.byteCount == aggregate.source.rawByteCount,
+              rawIdentity.sha256 == aggregate.source.rawSHA256 else {
+            throw HistoricalConsumerCutoverError.rawSourceUnavailable
+        }
+        let ledgerSource = AtriaHistoricalConsumerReceiptLedger.Source(
+            chunkID: aggregate.source.chunkID,
+            rawSHA256: aggregate.source.rawSHA256,
+            firstTimestamp: aggregate.source.firstTimestamp,
+            lastTimestamp: aggregate.source.lastTimestamp
+        )
+
+        let completionStore = AtriaHistoricalDrainCompletionGenerationStore(
+            directoryURL: archiveRoot.appendingPathComponent(
+                "drain-completions-v1",
+                isDirectory: true
+            )
+        )
+        let completion: AtriaHistoricalDrainCompletionGenerationStore.Record
+        do {
+            completion = try completionStore.loadLatest()
+        } catch {
+            throw HistoricalConsumerCutoverError.terminalCompletionAttestationUnavailable
+        }
+        let ledger = injectedLedger ?? .init(
+            directoryURL: archiveRoot.appendingPathComponent(
+                "consumer-receipts-v1",
+                isDirectory: true
+            )
+        )
+        let report = try AtriaHistoricalConsumerProjectionCoordinator(
+            completionStore: completionStore,
+            receiptLedger: ledger
+        ).publishReceiptSet(
+            for: chunkID,
+            catalogStore: catalogStore,
+            aggregateSnapshot: snapshot,
+            configuration: configuration
+        )
+        let expectedKinds: Set<AtriaHistoricalConsumerReceiptLedger.ProjectionKind> = [
+            .activity, .dailyMetrics, .steps, .sleep, .workout,
+        ]
+        guard report.completionGeneration == completion.generation,
+              report.inspectedSourceCount == 1,
+              report.deferredSources.isEmpty else {
+            throw HistoricalConsumerCutoverError.terminalCompletionAttestationRejected
+        }
+        guard report.published.count == AtriaHistoricalConsumerProjectionCoordinator
+                .Report.artifactsPerCompleteSource,
+              Set(report.published.map(\.receipt.kind)) == expectedKinds,
+              report.published.allSatisfy({ $0.receipt.source == ledgerSource }) else {
+            throw HistoricalConsumerCutoverError.receiptPublicationIncomplete
+        }
+
+        let verified = AtriaHistoricalVerifiedConsumerReader(
+            aggregateReader: aggregateReader,
+            completionStore: completionStore,
+            receiptLedger: ledger
+        ).readSource(
+            chunkID: chunkID,
+            catalogStore: catalogStore,
+            configuration: configuration
+        )
+        guard verified.hasCompleteConsumerCoverage,
+              let identity = verified.verificationIdentity,
+              identity.completionGeneration == completion.generation,
+              identity.source == ledgerSource,
+              identity.receipts.count == expectedKinds.count,
+              Set(identity.receipts.map(\.kind)) == expectedKinds else {
+            throw HistoricalConsumerCutoverError.typedVerificationIncomplete
+        }
+
+        // Replay identity is deliberately outside `activateCurrentSet`: app
+        // readers retain their bounded atomic five-artifact contract, while the
+        // retention audit also proves every exact schema-v2 replay key directly
+        // from the still-sealed raw source.
+        let replay = try AtriaHistoricalReplayIdentityShard.publishReceipt(
+            sourceURL: rawURL,
+            source: aggregate.source,
+            ledger: ledger,
+            settledAt: completion.completedAt
+        )
+        let typedReceipts = Dictionary(uniqueKeysWithValues: identity.receipts.map {
+            ($0.kind, $0)
+        })
+        var canonicalArtifacts: [AtriaHistoricalConsumerReceiptLedger.ValidatedArtifact] = []
+        let projections = try ledger.validatedMaterializedProjections(
+            for: ledgerSource
+        ) { receipt, artifact in
+            if receipt.kind == .replayIdentity {
+                guard receipt == replay.receipt else { return false }
+                let valid = try AtriaHistoricalReplayIdentityShard.verifyReceipt(
+                    receipt,
+                    artifact: artifact,
+                    sourceURL: rawURL,
+                    source: aggregate.source
+                )
+                if valid { canonicalArtifacts.append(.init(receipt: receipt, artifact: artifact)) }
+                return valid
+            }
+            // These exact immutable receipt+artifact digests were semantically
+            // decoded by the typed reader above. Matching the whole receipt
+            // binds this audit scan to that verification rather than accepting
+            // an older receipt produced by another configuration generation.
+            let valid = typedReceipts[receipt.kind] == receipt
+            if valid { canonicalArtifacts.append(.init(receipt: receipt, artifact: artifact)) }
+            return valid
+        }
+        let requiredKinds = AtriaHistoricalAggregateChunk
+            .rawRetirementRequiredProjectionKinds
+        guard projections.count == requiredKinds.count,
+              Set(projections.map(\.kind)) == requiredKinds else {
+            throw HistoricalConsumerCutoverError.typedVerificationIncomplete
+        }
+
+        // Projection receipts are immutable staging evidence. Apply the exact
+        // six verified artifacts to the five downstream destinations and only
+        // then publish the atomic application proof. Its verifier re-opens each
+        // destination snapshot and binds every payload digest to this identity.
+        let canonicalIdentity = AtriaHistoricalCanonicalConsumerApplicationStore
+            .VerificationIdentity(typed: identity, replayReceipt: replay.receipt)
+        let canonicalRoot = archiveRoot.appendingPathComponent(
+            "canonical-consumers-v1", isDirectory: true
+        )
+        let canonicalAdapter = AtriaHistoricalCanonicalConsumerApplicationAdapter(
+            destinationStore: .init(directoryURL: canonicalRoot.appendingPathComponent(
+                "destinations", isDirectory: true
+            )),
+            proofDirectoryURL: canonicalRoot.appendingPathComponent(
+                "application-proofs", isDirectory: true
+            )
+        )
+        let canonicalApplied = try canonicalAdapter.apply(
+            identity: canonicalIdentity,
+            artifacts: canonicalArtifacts,
+            appliedAt: Date()
+        )
+        let canonicalReadback = try canonicalAdapter.validatedCurrent(
+            identity: canonicalIdentity
+        )
+        guard canonicalReadback == canonicalApplied,
+              canonicalReadback.applications.count
+                == AtriaHistoricalCanonicalConsumerApplicationStore.Consumer.allCases.count else {
+            throw HistoricalConsumerCutoverError.typedVerificationIncomplete
+        }
+
+        // The replay shard can be large. Refuse to return a mixed-generation
+        // audit if terminal authority or the atomic five-receipt app pointer
+        // advanced while it was scanned.
+        let finalCompletion: AtriaHistoricalDrainCompletionGenerationStore.Record
+        let finalCurrentSet: [AtriaHistoricalConsumerReceiptLedger.ProjectionKind:
+            AtriaHistoricalConsumerReceiptLedger.ValidatedArtifact]
+        do {
+            finalCompletion = try completionStore.loadLatest()
+            finalCurrentSet = try ledger.validatedCurrentSet(for: ledgerSource)
+        } catch {
+            throw HistoricalConsumerCutoverError.typedVerificationIncomplete
+        }
+        guard finalCompletion == completion else {
+            throw HistoricalConsumerCutoverError.terminalCompletionAttestationRejected
+        }
+        let finalCurrentReceipts = Dictionary(uniqueKeysWithValues: finalCurrentSet.map {
+            ($0.key, $0.value.receipt)
+        })
+        guard finalCurrentReceipts.count == expectedKinds.count,
+              finalCurrentReceipts == typedReceipts else {
+            throw HistoricalConsumerCutoverError.typedVerificationIncomplete
+        }
+
+        // Close the audit with fresh file-backed evidence. No result escapes if
+        // the aggregate/manifest, sealed catalog row, raw length, or raw digest
+        // changed while the six artifacts were being published and re-read.
+        let finalSnapshot = aggregateReader.load()
+        let finalMatches = finalSnapshot.aggregates.filter { $0.source.chunkID == chunkID }
+        let finalCatalog = try catalogStore.snapshotVerifiedAgainstFiles()
+        guard !finalSnapshot.diagnostics.limitExceeded,
+              finalSnapshot.diagnostics.rejectedManifests == 0,
+              finalMatches.count == 1,
+              finalMatches.first == aggregate,
+              finalCatalog.chunks.first(where: { $0.id == chunkID }) == rawChunk,
+              rawChunk.state == .sealed,
+              FileManager.default.fileExists(atPath: rawURL.path),
+              let finalRawIdentity = try? AtriaHistoricalJSONLInput.identity(at: rawURL),
+              finalRawIdentity.byteCount == aggregate.source.rawByteCount,
+              finalRawIdentity.sha256 == aggregate.source.rawSHA256 else {
+            throw HistoricalConsumerCutoverError.rawSourceWasNotRetained
+        }
+        return .init(
+            chunkID: chunkID,
+            completionGeneration: completion.generation,
+            receiptCount: projections.count,
+            reusedReceiptCount: report.published.filter(\.reusedExistingReceipt).count
+                + (replay.reusedExistingReceipt ? 1 : 0),
+            receiptKinds: projections.map(\.kind).sorted { $0.rawValue < $1.rawValue },
+            canonicalApplicationCount: canonicalReadback.applications.count,
+            canonicalApplicationIdentitySHA256: canonicalReadback.verificationIdentitySHA256,
+            rawSourceURL: rawURL
+        )
+    }
+
+    enum TerminalConsumerProjectionError: Error, Equatable {
+        case invalidTerminalAuthority
+        case rawSourceWasNotRetained
+        case committedAggregateUnavailable
+        case completionGenerationExhausted
+        case invalidResumeJob
+        case resumeChunkUnavailable
+        case resumeAggregateUnavailable
+        case resumeCompletionMismatch
+    }
+
+    static func endDurableDrain(generation: UInt64) {
+        durableStoreLock.lock()
+        durableDrainBatches.removeValue(forKey: generation)
+        durableStoreLock.unlock()
+    }
+
+    private static func durableStoreLocked() throws -> AtriaHistoricalArchiveDurableStore {
+        if let durableStore { return durableStore }
+        var archives = [fileURL, legacyFileURL]
+        archives.append(contentsOf: rotatedSegmentFileURLs())
+        let store = try AtriaHistoricalArchiveDurableStore(
+            indexURL: archiveDirectory.appendingPathComponent("historical-archive.identity.jsonl"),
+            existingArchiveURLs: archives
+        )
+        durableStore = store
+        return store
+    }
+
     static func diagnostics() -> Diagnostics {
-        let url = readableFileURL
-        guard FileManager.default.fileExists(atPath: url.path) else {
+        // A catalog-v2 install may have no legacy base file at all. Diagnose
+        // the newest real raw chunk rather than treating that healthy layout as
+        // a missing archive.
+        guard let url = recentReadableFileURLs().first else {
             return Diagnostics(exists: false,
                                parseOK: true,
                                rows: 0,
@@ -260,7 +1467,9 @@ enum HistoricalArchive {
         let attributes = archiveAttributes(for: url)
         let byteCount = attributes.byteCount
         if let index = readDiagnosticsIndex(for: url, attributes: attributes) {
-            let segmentIndexes = rotatedSegmentFileURLs().compactMap { segmentURL -> DiagnosticsIndex? in
+            let segmentIndexes = rotatedSegmentFileURLs()
+                .filter { $0.standardizedFileURL != url.standardizedFileURL }
+                .compactMap { segmentURL -> DiagnosticsIndex? in
                 let segmentAttributes = archiveAttributes(for: segmentURL)
                 if let segmentIndex = readDiagnosticsIndex(for: segmentURL, attributes: segmentAttributes) {
                     return segmentIndex
@@ -451,10 +1660,8 @@ enum HistoricalArchive {
         guard let payloadHex = object["rawPayloadHex"] as? String,
               let payload = bytes(fromHex: payloadHex),
               historicalGravity(payload)?.validated == true else { return false }
-        let directRRCount = ((object["whoofRR19"] as? [Any])?.count ?? 0)
-            + ((object["kRR64"] as? [Any])?.count ?? 0)
-        let candidateRRCount = (object["candidateRR"] as? [Any])?.count ?? 0
-        return directRRCount > 0 || candidateRRCount >= 2
+        guard let heartRate = (object["whoofHR17"] as? NSNumber)?.intValue else { return false }
+        return (25...230).contains(heartRate)
     }
 
     static func metricLayoutValidated(_ layoutVersion: String) -> Bool {
@@ -471,17 +1678,8 @@ enum HistoricalArchive {
               metricLayoutValidated(layoutVersion) else { return false }
         guard object["clockCorrectionStatus"] as? String == "clock_ref_present" else { return false }
         guard object["gravityValidated"] as? Bool == true else { return false }
-        return rrValues(object["whoofRR19"]).contains { (300...2000).contains($0) }
-            || rrValues(object["kRR64"]).contains { (300...2000).contains($0) }
-    }
-
-    private static func rrValues(_ value: Any?) -> [Int] {
-        guard let values = value as? [Any] else { return [] }
-        return values.compactMap { item in
-            if let number = item as? NSNumber { return number.intValue }
-            if let int = item as? Int { return int }
-            return nil
-        }
+        guard let heartRate = (object["whoofHR17"] as? NSNumber)?.intValue else { return false }
+        return (25...230).contains(heartRate)
     }
 
     static func motionWindowDiagnostics(start: Date, end: Date) -> MotionWindowDiagnostics {
@@ -493,7 +1691,666 @@ enum HistoricalArchive {
 
     static func makeMotionArchiveSnapshot() -> MotionArchiveSnapshot {
         precondition(!Thread.isMainThread, "Full historical motion decoding must run off the main thread")
-        return MotionArchiveSnapshot(samples: loadGravitySamples())
+        return MotionArchiveSnapshot(samples: loadGravitySamples(), completeness: .complete)
+    }
+
+    static func makeRecoveredDataSnapshot(
+        since: Date,
+        budget: RecoveredProjectionBudget = .production
+    ) -> RecoveredDataSnapshot {
+        precondition(!Thread.isMainThread, "Recovered archive decoding must run off the main thread")
+        let started = DispatchTime.now().uptimeNanoseconds
+        let cutoff = since.timeIntervalSince1970
+        let descriptors = AtriaHistoricalJSONLRecentScanner.descriptors(
+            for: recentRecoveredReadableFileURLs(since: cutoff)
+        )
+        return makeRecoveredDataSnapshot(
+            since: since,
+            budget: budget,
+            descriptors: descriptors,
+            started: started
+        )
+    }
+
+    /// Bounded, read-only facade for app stores consuming verified historical
+    /// artifacts. The callback receives one source at a time so five potentially
+    /// large typed artifacts are released before the next source is opened.
+    /// Missing/deferred/known-empty states are delivered unchanged; this API
+    /// never edits catalog state and has no raw-retirement authority.
+    @discardableResult
+    static func readVerifiedConsumerSources(
+        configuration: AtriaHistoricalVerifiedConsumerReader.Configuration,
+        maximumSourceCount: Int = 8,
+        consume: (AtriaHistoricalVerifiedConsumerReader.SourceArtifacts) -> Void
+    ) -> VerifiedConsumerSourceReadReport {
+        do {
+            return try readVerifiedConsumerSources(
+                archiveRoot: archiveDirectory,
+                catalogStore: catalogStoreLocked(),
+                configuration: configuration,
+                maximumSourceCount: maximumSourceCount,
+                consume: consume
+            )
+        } catch {
+            return .init(committedSourceCount: 0,
+                         attemptedSourceCount: 0,
+                         deliveredSourceCount: 0,
+                         wasBounded: false,
+                         rejectedManifestCount: 1)
+        }
+    }
+
+    /// Dependency-injected seam used by crash/tamper tests. It exercises the
+    /// same aggregate, completion and receipt paths as the production facade.
+    @discardableResult
+    static func readVerifiedConsumerSources(
+        archiveRoot: URL,
+        catalogStore: AtriaHistoricalArchiveCatalogStore,
+        configuration: AtriaHistoricalVerifiedConsumerReader.Configuration,
+        maximumSourceCount: Int,
+        consume: (AtriaHistoricalVerifiedConsumerReader.SourceArtifacts) -> Void
+    ) throws -> VerifiedConsumerSourceReadReport {
+        guard maximumSourceCount > 0 else {
+            return .init(committedSourceCount: 0,
+                         attemptedSourceCount: 0,
+                         deliveredSourceCount: 0,
+                         wasBounded: true,
+                         rejectedManifestCount: 0)
+        }
+        let aggregateReader = AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: archiveRoot.appendingPathComponent(
+                "aggregates-v2", isDirectory: true
+            ),
+            manifestDirectoryURL: archiveRoot.appendingPathComponent(
+                "retention-manifests-v2", isDirectory: true
+            )
+        )
+        let snapshot = aggregateReader.load()
+        guard !snapshot.diagnostics.limitExceeded,
+              snapshot.diagnostics.rejectedManifests == 0 else {
+            return .init(committedSourceCount: snapshot.aggregates.count,
+                         attemptedSourceCount: 0,
+                         deliveredSourceCount: 0,
+                         wasBounded: snapshot.diagnostics.limitExceeded,
+                         rejectedManifestCount: snapshot.diagnostics.rejectedManifests)
+        }
+        let sources = snapshot.aggregates.sorted {
+            if $0.source.lastTimestamp != $1.source.lastTimestamp {
+                return $0.source.lastTimestamp > $1.source.lastTimestamp
+            }
+            return $0.source.chunkID < $1.source.chunkID
+        }
+        let selected = Array(sources.prefix(maximumSourceCount))
+        let reader = AtriaHistoricalVerifiedConsumerReader(
+            aggregateReader: aggregateReader,
+            completionStore: .init(directoryURL: archiveRoot.appendingPathComponent(
+                "drain-completions-v1", isDirectory: true
+            )),
+            receiptLedger: .init(directoryURL: archiveRoot.appendingPathComponent(
+                "consumer-receipts-v1", isDirectory: true
+            ))
+        )
+        var delivered = 0
+        for source in selected {
+            autoreleasepool {
+                consume(reader.readSource(chunkID: source.source.chunkID,
+                                          catalogStore: catalogStore,
+                                          configuration: configuration))
+                delivered += 1
+            }
+        }
+        return .init(committedSourceCount: sources.count,
+                     attemptedSourceCount: selected.count,
+                     deliveredSourceCount: delivered,
+                     wasBounded: selected.count < sources.count,
+                     rejectedManifestCount: 0)
+    }
+
+    /// Bounded production read path for app-visible canonical history. Any
+    /// missing proof, corrupt pointer, mismatched generation, or undecodable
+    /// destination drops that source rather than falling back to shadow bytes.
+    static func readVerifiedCanonicalConsumerSources(
+        maximumSourceCount: Int = 8
+    ) -> [VerifiedCanonicalConsumerSource] {
+        readVerifiedCanonicalConsumerSourcePage(
+            archiveRoot: archiveDirectory,
+            after: nil,
+            maximumSourceCount: maximumSourceCount
+        ).sources
+    }
+
+    static func readVerifiedCanonicalConsumerSources(
+        archiveRoot: URL,
+        maximumSourceCount: Int
+    ) -> [VerifiedCanonicalConsumerSource] {
+        readVerifiedCanonicalConsumerSourcePage(
+            archiveRoot: archiveRoot,
+            after: nil,
+            maximumSourceCount: maximumSourceCount
+        ).sources
+    }
+
+    static func readVerifiedCanonicalConsumerSourcePage(
+        after cursor: AtriaHistoricalAggregateReader.PageCursor?,
+        maximumSourceCount: Int = 8
+    ) -> VerifiedCanonicalConsumerPage {
+        readVerifiedCanonicalConsumerSourcePage(
+            archiveRoot: archiveDirectory,
+            after: cursor,
+            maximumSourceCount: maximumSourceCount
+        )
+    }
+
+    static func readVerifiedCanonicalConsumerSourcePage(
+        archiveRoot: URL,
+        after cursor: AtriaHistoricalAggregateReader.PageCursor?,
+        maximumSourceCount: Int
+    ) -> VerifiedCanonicalConsumerPage {
+        guard maximumSourceCount > 0 else {
+            return .init(sources: [], nextCursor: cursor, hasMore: false,
+                         examinedSourceCount: 0)
+        }
+        let aggregatePage = AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: archiveRoot.appendingPathComponent(
+                "aggregates-v2", isDirectory: true
+            ),
+            manifestDirectoryURL: archiveRoot.appendingPathComponent(
+                "retention-manifests-v2", isDirectory: true
+            )
+        ).loadPage(
+            after: cursor,
+            maximumAggregateCount: maximumSourceCount,
+            limits: .init(maximumManifestCount: 200_000,
+                          maximumManifestBytes: 512 * 1_024,
+                          maximumAggregateBytes: 64 * 1_024 * 1_024,
+                          maximumTotalAggregateBytes: 128 * 1_024 * 1_024)
+        )
+        let snapshot = aggregatePage.snapshot
+        guard !snapshot.diagnostics.limitExceeded,
+              snapshot.diagnostics.rejectedManifests == 0 else {
+            return .init(sources: [],
+                         nextCursor: aggregatePage.nextCursor,
+                         hasMore: aggregatePage.hasMore,
+                         examinedSourceCount: 0)
+        }
+        let canonicalRoot = archiveRoot.appendingPathComponent(
+            "canonical-consumers-v1", isDirectory: true
+        )
+        let destination = AtriaHistoricalCanonicalConsumerDestinationStore(
+            directoryURL: canonicalRoot.appendingPathComponent(
+                "destinations", isDirectory: true
+            )
+        )
+        let proofDirectory = canonicalRoot.appendingPathComponent(
+            "application-proofs", isDirectory: true
+        )
+        let structuralProofStore = AtriaHistoricalCanonicalConsumerApplicationStore(
+            directoryURL: proofDirectory
+        )
+        let adapter = AtriaHistoricalCanonicalConsumerApplicationAdapter(
+            destinationStore: destination,
+            proofDirectoryURL: proofDirectory
+        )
+        let sources: [VerifiedCanonicalConsumerSource] = snapshot.aggregates.compactMap { aggregate in
+            do {
+                guard let structural = try structuralProofStore.loadCurrent(
+                    sourceChunkID: aggregate.source.chunkID
+                ), structural.verificationIdentity.source.rawSHA256
+                    == aggregate.source.rawSHA256 else { return nil }
+                let identity = structural.verificationIdentity
+                var byKind: [AtriaHistoricalConsumerReceiptLedger.ProjectionKind: Data] = [:]
+                var replay: AtriaHistoricalReplayIdentityShard?
+                var replayPayloadRetired = false
+                do {
+                    _ = try adapter.validatedCurrent(identity: identity)
+                    let artifacts = try adapter.validatedArtifacts(identity: identity)
+                    byKind = Dictionary(uniqueKeysWithValues: artifacts.map {
+                        ($0.receipt.kind, $0.artifact)
+                    })
+                    guard let replayData = byKind[.replayIdentity] else { return nil }
+                    replay = try AtriaHistoricalReplayIdentityShard
+                        .decodeRetainedArtifact(replayData, source: aggregate.source)
+                    guard try replay?.encodedArtifact() == replayData else { return nil }
+                } catch {
+                    let replayIndex = try AtriaHistoricalRetiredReplayIndex(
+                        databaseURL: archiveRoot.appendingPathComponent(
+                            "retired-replay-v1/exact-identities-v3.sqlite"
+                        )
+                    )
+                    _ = try AtriaHistoricalReplayPayloadCompactionStore(
+                        directoryURL: archiveRoot.appendingPathComponent(
+                            "replay-compaction-v1", isDirectory: true
+                        )
+                    ).verifiedProof(identity: identity, replayIndex: replayIndex)
+                    var typed: [AtriaHistoricalConsumerReceiptLedger.ProjectionKind: Data] = [:]
+                    for application in structural.applications
+                        where application.consumer != .replayIdentity {
+                        for artifact in try destination.validatedArtifacts(
+                            application: application, identity: identity
+                        ) {
+                            typed[artifact.receipt.kind] = artifact.artifact
+                        }
+                    }
+                    byKind = typed
+                    replay = .init(
+                        schema: AtriaHistoricalReplayIdentityShard.currentSchema,
+                        source: .init(chunkID: aggregate.source.chunkID,
+                                      rawSHA256: aggregate.source.rawSHA256,
+                                      rawRowCount: aggregate.source.rawRowCount),
+                        entries: []
+                    )
+                    replayPayloadRetired = true
+                }
+                guard let replay,
+                      let activityData = byKind[.activity],
+                      let dailyData = byKind[.dailyMetrics],
+                      let stepsData = byKind[.steps],
+                      let sleepData = byKind[.sleep],
+                      let workoutData = byKind[.workout] else { return nil }
+                let decoder = JSONDecoder()
+                let activity = try decoder.decode(AtriaHistoricalActivityProjection.self,
+                                                  from: activityData)
+                let daily = try decoder.decode(
+                    AtriaHistoricalDailyConsumerProjection.DailyMetricsArtifact.self,
+                    from: dailyData
+                )
+                let steps = try decoder.decode(
+                    AtriaHistoricalDailyConsumerProjection.StepsArtifact.self,
+                    from: stepsData
+                )
+                let sleep = try decoder.decode(AtriaHistoricalSleepProjection.self,
+                                               from: sleepData)
+                let workout = try decoder.decode(AtriaHistoricalWorkoutProjection.self,
+                                                 from: workoutData)
+                guard try activity.encodedArtifact() == activityData,
+                      try daily.encodedArtifact() == dailyData,
+                      try steps.encodedArtifact() == stepsData,
+                      try sleep.encodedArtifact() == sleepData,
+                      try workout.encodedArtifact() == workoutData else { return nil }
+                return .init(identity: identity,
+                             activity: activity,
+                             dailyMetrics: daily,
+                             steps: steps,
+                             sleep: sleep,
+                             workout: workout,
+                             replayIdentity: replay,
+                             replayPayloadRetired: replayPayloadRetired)
+            } catch {
+                return nil
+            }
+        }
+        return .init(sources: sources,
+                     nextCursor: aggregatePage.nextCursor,
+                     hasMore: aggregatePage.hasMore,
+                     examinedSourceCount: snapshot.aggregates.count)
+    }
+
+    /// Dependency-injected production-path seam for retention tests. It uses
+    /// the exact catalog selector and one-pass decoder used above, while
+    /// keeping fixtures out of the app container.
+    static func makeRecoveredDataSnapshot(
+        since: Date,
+        budget: RecoveredProjectionBudget = .production,
+        candidates: [URL],
+        catalog: AtriaHistoricalArchiveCatalog,
+        archiveRoot: URL
+    ) -> RecoveredDataSnapshot {
+        precondition(!Thread.isMainThread, "Recovered archive decoding must run off the main thread")
+        let started = DispatchTime.now().uptimeNanoseconds
+        let selected = recoveredProjectionFileURLs(
+            candidates: candidates,
+            catalog: catalog,
+            archiveRoot: archiveRoot,
+            since: since.timeIntervalSince1970
+        )
+        let descriptors = AtriaHistoricalJSONLRecentScanner.descriptors(for: selected)
+        return makeRecoveredDataSnapshot(
+            since: since,
+            budget: budget,
+            descriptors: descriptors,
+            started: started
+        )
+    }
+
+    private static func makeRecoveredDataSnapshot(
+        since: Date,
+        budget: RecoveredProjectionBudget,
+        descriptors: [AtriaHistoricalJSONLRecentScanner.FileDescriptor],
+        started: UInt64
+    ) -> RecoveredDataSnapshot {
+        let cutoff = since.timeIntervalSince1970
+
+        recoveredDataCacheLock.lock()
+        defer { recoveredDataCacheLock.unlock() }
+
+        let reusableCache = recoveredDataCache.flatMap { cache in
+            cache.budget == budget
+                && cache.coveredSince <= cutoff
+                && cutoff - cache.coveredSince <= recoveredDataCacheMaximumWindowDrift
+                ? prunedRecoveredCache(cache, since: cutoff)
+                : nil
+        }
+        let plan = AtriaHistoricalJSONLRecentScanner.plan(
+            previousStates: reusableCache?.fileStates,
+            current: descriptors
+        )
+        if case .reuse = plan, let reusableCache {
+            let elapsed = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+            let limitations = recoveredBudgetLimitations(cache: reusableCache, budget: budget)
+            recoveredDataCache = limitations.isEmpty ? reusableCache : nil
+            return recoveredSnapshot(from: reusableCache,
+                                     scan: .init(fileReadCount: 0,
+                                                 byteCount: 0,
+                                                 decodedRecordCount: 0,
+                                                 elapsedMilliseconds: elapsed),
+                                     limitations: limitations)
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var decodedRecordCount = 0
+        let coveredSince = cutoff
+        var heartRate = reusableCache?.heartRatePoints ?? []
+        var rrRecords = reusableCache?.rrRecords ?? []
+        var gravity = reusableCache?.gravitySamples ?? []
+        var motionRecordIdentities = reusableCache?.motionRecordIdentities ?? []
+        var limitations = recoveredBudgetLimitations(
+            heartRateCount: heartRate.count,
+            rrRecordCount: rrRecords.count,
+            gravityCount: gravity.count,
+            motionIdentityCount: motionRecordIdentities.count,
+            budget: budget
+        )
+        let sources: [AtriaHistoricalJSONLRecentScanner.Source]
+        switch plan {
+        case .reuse:
+            sources = []
+        case .incremental(let additions), .rebuild(let additions):
+            sources = additions
+        }
+        if case .rebuild = plan {
+            heartRate.removeAll(keepingCapacity: true)
+            rrRecords.removeAll(keepingCapacity: true)
+            gravity.removeAll(keepingCapacity: true)
+            motionRecordIdentities.removeAll(keepingCapacity: true)
+        }
+
+        let scanResult = AtriaHistoricalJSONLRecentScanner.scan(
+            sources: sources,
+            cutoff: coveredSince
+        ) { lineData in
+            guard let record = try? decoder.decode(Record.self, from: lineData) else { return }
+            decodedRecordCount += 1
+            appendRecoveredRecord(record,
+                                  cutoff: coveredSince,
+                                  budget: budget,
+                                  limitations: &limitations,
+                                  heartRate: &heartRate,
+                                  rrRecords: &rrRecords,
+                                  gravity: &gravity,
+                                  motionRecordIdentities: &motionRecordIdentities)
+        }
+        sortRecoveredData(heartRate: &heartRate,
+                          rrRecords: &rrRecords,
+                          gravity: &gravity)
+
+        var fileStates: [String: AtriaHistoricalJSONLRecentScanner.FileState]
+        if case .incremental = plan {
+            fileStates = reusableCache?.fileStates ?? [:]
+            scanResult.states.forEach { fileStates[$0.key] = $0.value }
+        } else {
+            fileStates = scanResult.states
+        }
+        let cache = RecoveredDataCache(coveredSince: coveredSince,
+                                       budget: budget,
+                                       fileStates: fileStates,
+                                       heartRatePoints: heartRate,
+                                       rrRecords: rrRecords,
+                                       gravitySamples: gravity,
+                                       motionRecordIdentities: motionRecordIdentities)
+        if scanResult.complete, limitations.isEmpty {
+            recoveredDataCache = cache
+        } else if !limitations.isEmpty {
+            // A bounded channel must be rebuilt on the next request; retaining
+            // it would make a later, narrower window look complete. The current
+            // snapshot may still publish independently complete HR/RR, while
+            // the limited motion facade remains explicitly unavailable.
+            recoveredDataCache = nil
+        }
+
+        let elapsed = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+        return recoveredSnapshot(from: cache,
+                                 scan: .init(fileReadCount: scanResult.statistics.fileReadCount,
+                                             byteCount: scanResult.statistics.byteCount,
+                                             decodedRecordCount: decodedRecordCount,
+                                             elapsedMilliseconds: elapsed),
+                                 limitations: limitations)
+    }
+
+    private static func appendRecoveredRecord(
+        _ record: Record,
+        cutoff: TimeInterval,
+        budget: RecoveredProjectionBudget,
+        limitations: inout [RecoveredDataCompleteness.Channel: Int],
+        heartRate: inout [HeartRatePoint],
+        rrRecords: inout [Record],
+        gravity: inout [GravitySample],
+        motionRecordIdentities: inout Set<AtriaRecoveredMotionReplayIdentity>
+    ) {
+        let unix = record.clockCorrectedUnix7 ?? record.unix7
+        guard unix > 0, record.subsec11 < 32_768 else { return }
+        let timestamp = TimeInterval(unix) + TimeInterval(record.subsec11) / 32_768
+        guard timestamp >= cutoff else { return }
+        let motionAlreadyLimited = limitations[.motionReplayIdentity] != nil
+            || limitations[.gravity] != nil
+        if !motionAlreadyLimited {
+            let motionIdentity = AtriaRecoveredMotionReplayIdentity(record: record)
+            if !motionRecordIdentities.contains(motionIdentity) {
+                if motionRecordIdentities.count >= budget.maximumMotionReplayIdentities {
+                    limitations[.motionReplayIdentity] = budget.maximumMotionReplayIdentities
+                } else if let sample = gravitySample(from: record) {
+                    if gravity.count >= budget.maximumGravitySamples {
+                        limitations[.gravity] = budget.maximumGravitySamples
+                    } else {
+                        motionRecordIdentities.insert(motionIdentity)
+                        gravity.append(sample)
+                    }
+                } else {
+                    motionRecordIdentities.insert(motionIdentity)
+                }
+            }
+        }
+        guard record.metricUsable,
+              metricLayoutValidated(record.layoutVersion),
+              record.clockCorrectionStatus == "clock_ref_present",
+              record.clockCorrectedUnix7 != nil else { return }
+        if (35...240).contains(record.whoofHR17) {
+            if limitations[.heartRate] == nil {
+                if heartRate.count >= budget.maximumHeartRatePoints {
+                    limitations[.heartRate] = budget.maximumHeartRatePoints
+                } else {
+                    heartRate.append(.init(t: Date(timeIntervalSince1970: timestamp),
+                                           bpm: record.whoofHR17))
+                }
+            }
+        }
+        if record.whoofRRNum18 > 0 {
+            if limitations[.rrRecords] == nil {
+                if rrRecords.count >= budget.maximumRRRecords {
+                    limitations[.rrRecords] = budget.maximumRRRecords
+                } else {
+                    rrRecords.append(record)
+                }
+            }
+        }
+    }
+
+    private static func sortRecoveredData(
+        heartRate: inout [HeartRatePoint],
+        rrRecords: inout [Record],
+        gravity: inout [GravitySample]
+    ) {
+        heartRate.sort {
+            if $0.t != $1.t { return $0.t < $1.t }
+            return $0.bpm < $1.bpm
+        }
+        rrRecords.sort {
+            let lhsUnix = $0.clockCorrectedUnix7 ?? $0.unix7
+            let rhsUnix = $1.clockCorrectedUnix7 ?? $1.unix7
+            if lhsUnix != rhsUnix { return lhsUnix < rhsUnix }
+            if $0.subsec11 != $1.subsec11 { return $0.subsec11 < $1.subsec11 }
+            return $0.flash13 < $1.flash13
+        }
+        gravity.sort {
+            if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
+            return $0.sequence < $1.sequence
+        }
+    }
+
+    private static func prunedRecoveredCache(
+        _ cache: RecoveredDataCache,
+        since cutoff: TimeInterval
+    ) -> RecoveredDataCache {
+        RecoveredDataCache(
+            coveredSince: cutoff,
+            budget: cache.budget,
+            fileStates: cache.fileStates,
+            heartRatePoints: cache.heartRatePoints.filter {
+                $0.t.timeIntervalSince1970 >= cutoff
+            },
+            rrRecords: cache.rrRecords.filter {
+                let unix = $0.clockCorrectedUnix7 ?? $0.unix7
+                return TimeInterval(unix) + TimeInterval($0.subsec11) / 32_768 >= cutoff
+            },
+            gravitySamples: cache.gravitySamples.filter { $0.timestamp >= cutoff },
+            motionRecordIdentities: Set(cache.motionRecordIdentities.filter {
+                $0.projectedTimestamp >= cutoff
+            })
+        )
+    }
+
+    private static let recoveredBudgetChannelOrder: [RecoveredDataCompleteness.Channel] = [
+        .heartRate, .rrRecords, .gravity, .motionReplayIdentity
+    ]
+
+    private static func recoveredBudgetLimitations(
+        cache: RecoveredDataCache,
+        budget: RecoveredProjectionBudget
+    ) -> [RecoveredDataCompleteness.Channel: Int] {
+        recoveredBudgetLimitations(heartRateCount: cache.heartRatePoints.count,
+                                   rrRecordCount: cache.rrRecords.count,
+                                   gravityCount: cache.gravitySamples.count,
+                                   motionIdentityCount: cache.motionRecordIdentities.count,
+                                   budget: budget)
+    }
+
+    private static func recoveredBudgetLimitations(
+        heartRateCount: Int,
+        rrRecordCount: Int,
+        gravityCount: Int,
+        motionIdentityCount: Int,
+        budget: RecoveredProjectionBudget
+    ) -> [RecoveredDataCompleteness.Channel: Int] {
+        var limitations: [RecoveredDataCompleteness.Channel: Int] = [:]
+        if heartRateCount > budget.maximumHeartRatePoints {
+            limitations[.heartRate] = budget.maximumHeartRatePoints
+        }
+        if rrRecordCount > budget.maximumRRRecords {
+            limitations[.rrRecords] = budget.maximumRRRecords
+        }
+        if gravityCount > budget.maximumGravitySamples {
+            limitations[.gravity] = budget.maximumGravitySamples
+        }
+        if motionIdentityCount > budget.maximumMotionReplayIdentities {
+            limitations[.motionReplayIdentity] = budget.maximumMotionReplayIdentities
+        }
+        return limitations
+    }
+
+    private static func recoveredCompleteness(
+        limitations: [RecoveredDataCompleteness.Channel: Int],
+        channels: Set<RecoveredDataCompleteness.Channel>? = nil
+    ) -> RecoveredDataCompleteness {
+        for channel in recoveredBudgetChannelOrder
+        where channels?.contains(channel) ?? true {
+            if let limit = limitations[channel] {
+                return .budgetExceeded(channel: channel, limit: limit)
+            }
+        }
+        return .complete
+    }
+
+    private static func recoveredSnapshot(
+        from cache: RecoveredDataCache,
+        scan: RecoveredArchiveScanDiagnostics,
+        limitations: [RecoveredDataCompleteness.Channel: Int]
+    ) -> RecoveredDataSnapshot {
+        let orderedLimitations = recoveredBudgetChannelOrder.compactMap { channel in
+            limitations[channel].map {
+                RecoveredDataBudgetLimitation(channel: channel, limit: $0)
+            }
+        }
+        let motionCompleteness = recoveredCompleteness(
+            limitations: limitations,
+            channels: [.gravity, .motionReplayIdentity]
+        )
+        return .init(heartRatePoints: cache.heartRatePoints,
+                     rrRecords: cache.rrRecords,
+                     motion: .init(samples: cache.gravitySamples,
+                                   completeness: motionCompleteness),
+                     scan: scan,
+                     completeness: recoveredCompleteness(limitations: limitations),
+                     physiologyCompleteness: recoveredCompleteness(
+                        limitations: limitations,
+                        channels: [.heartRate, .rrRecords]
+                     ),
+                     budgetLimitations: orderedLimitations)
+    }
+
+    /// Test/replay adapter for the same independent metric gates used by the
+    /// one-pass file scanner. In particular, a row may remain usable for
+    /// verified HR/RR even when its gravity vector fails the stricter motion
+    /// range; motion failure must not discard another independently proven
+    /// channel from the archive snapshot.
+    static func makeRecoveredDataSnapshot(
+        records: [Record],
+        since: Date,
+        budget: RecoveredProjectionBudget = .production
+    ) -> RecoveredDataSnapshot {
+        let cutoff = since.timeIntervalSince1970
+        var heartRate: [HeartRatePoint] = []
+        var rrRecords: [Record] = []
+        var gravity: [GravitySample] = []
+        var motionRecordIdentities = Set<AtriaRecoveredMotionReplayIdentity>()
+        var limitations: [RecoveredDataCompleteness.Channel: Int] = [:]
+        for record in records {
+            appendRecoveredRecord(record,
+                                  cutoff: cutoff,
+                                  budget: budget,
+                                  limitations: &limitations,
+                                  heartRate: &heartRate,
+                                  rrRecords: &rrRecords,
+                                  gravity: &gravity,
+                                  motionRecordIdentities: &motionRecordIdentities)
+        }
+        sortRecoveredData(heartRate: &heartRate,
+                          rrRecords: &rrRecords,
+                          gravity: &gravity)
+        let cache = RecoveredDataCache(coveredSince: cutoff,
+                                       budget: budget,
+                                       fileStates: [:],
+                                       heartRatePoints: heartRate,
+                                       rrRecords: rrRecords,
+                                       gravitySamples: gravity,
+                                       motionRecordIdentities: motionRecordIdentities)
+        return recoveredSnapshot(
+            from: cache,
+            scan: .init(fileReadCount: 0,
+                        byteCount: 0,
+                        decodedRecordCount: records.count,
+                        elapsedMilliseconds: 0),
+            limitations: limitations
+        )
     }
 
 #if DEBUG
@@ -511,176 +2368,92 @@ enum HistoricalArchive {
     }
 #endif
 
-    private static func motionWindowDiagnostics(start: Date,
-                                                end: Date,
-                                                records: [GravitySample]) -> MotionWindowDiagnostics {
-        guard end > start else {
-            return emptyMotionWindow(status: "learning", reason: "invalid_window")
-        }
-        let windowStart = start.timeIntervalSince1970
-        let windowEnd = end.timeIntervalSince1970
-        guard !records.isEmpty else {
-            return emptyMotionWindow(status: "learning", reason: "no_historical_gravity")
-        }
-        let archiveFirst = Int(records.map(\.timestamp).min()?.rounded() ?? 0)
-        let archiveLast = Int(records.map(\.timestamp).max()?.rounded() ?? 0)
-        let nearestSeparation = nearestSeparationSeconds(archiveFirst: TimeInterval(archiveFirst),
-                                                         archiveLast: TimeInterval(archiveLast),
-                                                         windowStart: windowStart,
-                                                         windowEnd: windowEnd)
-        let overlapping = records
-            .filter { $0.timestamp >= windowStart && $0.timestamp <= windowEnd }
-            .sorted {
-                if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
-                return $0.sequence < $1.sequence
-            }
-        guard !overlapping.isEmpty else {
-            let reason: String
-            if nearestSeparation >= 24 * 60 * 60 {
-                reason = archiveLast < Int(windowStart.rounded()) ? "historical_archive_stale" : "historical_archive_future_or_misaligned"
-            } else {
-                reason = "no_timestamp_overlap"
-            }
-            return MotionWindowDiagnostics(status: "learning",
-                                           reason: reason,
-                                           rows: 0,
-                                           validatedRows: 0,
-                                           coverageSeconds: 0,
-                                           spanSeconds: Int(end.timeIntervalSince(start).rounded()),
-                                           meanVectorDelta: nil,
-                                           p95VectorDelta: nil,
-                                           magnitudeMean: nil,
-                                           magnitudeStdDev: nil,
-                                           archiveFirstUnix: archiveFirst,
-                                           archiveLastUnix: archiveLast,
-                                           nearestSeparationSeconds: nearestSeparation,
-                                           lowMotionReady: false)
-        }
+    private static func recoveredMotionWindowDiagnostics(
+        start: Date,
+        end: Date,
+        records: [GravitySample]
+    ) -> MotionWindowDiagnostics {
+        let evidence = recoveredMotionEvidence(start: start, end: end, records: records)
+        let trusted = records
+            .filter { $0.timestampValidated && $0.validated }
+            .map(\.timestamp)
+            .sorted()
+        let archiveFirst = Int((trusted.first ?? 0).rounded())
+        let archiveLast = Int((trusted.last ?? 0).rounded())
+        return MotionWindowDiagnostics(
+            status: evidence.lowMotionQualified ? "ready" : "learning",
+            reason: evidence.reason,
+            rows: evidence.rows,
+            validatedRows: evidence.validatedRows,
+            coverageSeconds: evidence.coverageSeconds,
+            spanSeconds: max(0, Int(end.timeIntervalSince(start).rounded())),
+            meanVectorDelta: evidence.movementIntensity,
+            p95VectorDelta: evidence.p95VectorDelta,
+            magnitudeMean: nil,
+            magnitudeStdDev: nil,
+            archiveFirstUnix: archiveFirst,
+            archiveLastUnix: archiveLast,
+            nearestSeparationSeconds: nearestSeparationSeconds(
+                archiveFirst: TimeInterval(archiveFirst),
+                archiveLast: TimeInterval(archiveLast),
+                windowStart: start.timeIntervalSince1970,
+                windowEnd: end.timeIntervalSince1970
+            ),
+            lowMotionReady: evidence.lowMotionQualified
+        )
+    }
 
-        let validated = overlapping.filter(\.validated)
-        guard validated.count >= 2 else {
-            return MotionWindowDiagnostics(status: "learning",
-                                           reason: "insufficient_validated_gravity",
-                                           rows: overlapping.count,
-                                           validatedRows: validated.count,
-                                           coverageSeconds: coverageSeconds(for: overlapping.map(\.timestamp)),
-                                           spanSeconds: Int(end.timeIntervalSince(start).rounded()),
-                                           meanVectorDelta: nil,
-                                           p95VectorDelta: nil,
-                                           magnitudeMean: nil,
-                                           magnitudeStdDev: nil,
-                                           archiveFirstUnix: archiveFirst,
-                                           archiveLastUnix: archiveLast,
-                                           nearestSeparationSeconds: nearestSeparation,
-                                           lowMotionReady: false)
-        }
-
-        let deltas = zip(validated, validated.dropFirst()).map { previous, current in
-            let dx = current.x - previous.x
-            let dy = current.y - previous.y
-            let dz = current.z - previous.z
-            return sqrt(dx * dx + dy * dy + dz * dz)
-        }
-        let magnitudes = validated.map(\.magnitude)
-        let coverage = coverageSeconds(for: validated.map(\.timestamp))
-        let meanDelta = mean(deltas)
-        let p95Delta = percentile(deltas, 0.95)
-        let magnitudeMean = mean(magnitudes)
-        let magnitudeStdDev = stddev(magnitudes, mean: magnitudeMean)
-        let enoughCoverage = validated.count >= 300 && coverage >= 30 * 60
-        let stableVector = (p95Delta ?? .infinity) <= 0.08
-        let stableMagnitude = (magnitudeStdDev ?? .infinity) <= 0.05
-        let ready = enoughCoverage && stableVector && stableMagnitude
-        let reason: String
-        if !enoughCoverage {
-            reason = "insufficient_overlap_coverage"
-        } else if !stableVector {
-            reason = "vector_delta_high"
-        } else if !stableMagnitude {
-            reason = "magnitude_variance_high"
-        } else {
-            reason = "timestamp_aligned_low_motion"
-        }
-        return MotionWindowDiagnostics(status: ready ? "ready" : "learning",
-                                       reason: reason,
-                                       rows: overlapping.count,
-                                       validatedRows: validated.count,
-                                       coverageSeconds: coverage,
-                                       spanSeconds: Int(end.timeIntervalSince(start).rounded()),
-                                       meanVectorDelta: meanDelta,
-                                       p95VectorDelta: p95Delta,
-                                       magnitudeMean: magnitudeMean,
-                                       magnitudeStdDev: magnitudeStdDev,
-                                       archiveFirstUnix: archiveFirst,
-                                       archiveLastUnix: archiveLast,
-                                       nearestSeparationSeconds: nearestSeparation,
-                                       lowMotionReady: ready)
+    private static func recoveredMotionEvidence(
+        start: Date,
+        end: Date,
+        records: [GravitySample]
+    ) -> AtriaRecoveredMotionProjection.Evidence {
+        AtriaRecoveredMotionProjection.project(
+            samples: records.map { sample in
+                .init(timestamp: Date(timeIntervalSince1970: sample.timestamp),
+                      sequence: sample.sequence,
+                      x: sample.x,
+                      y: sample.y,
+                      z: sample.z,
+                      timestampValidated: sample.timestampValidated,
+                      gravityValidated: sample.validated)
+            },
+            window: .init(id: "full_archive", start: start, end: end)
+        )
     }
 
     static func motionFeatureSummary(start: Date, end: Date) -> MotionFeatureSummary? {
         guard end > start else { return nil }
-        let windowStart = start.timeIntervalSince1970
-        let windowEnd = end.timeIntervalSince1970
-        let overlapping = loadRecentGravitySamples(start: start, end: end)
-            .filter { $0.timestamp >= windowStart && $0.timestamp <= windowEnd }
-            .sorted {
-                if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
-                return $0.sequence < $1.sequence
-            }
-        guard overlapping.count >= 30 else { return nil }
-        let validated = overlapping.filter(\.validated)
-        var stillRows = 0
-        var deltas: [Double] = []
-        var previous: GravitySample?
-        for sample in validated {
-            let delta: Double
-            if let previous {
-                let dx = sample.x - previous.x
-                let dy = sample.y - previous.y
-                let dz = sample.z - previous.z
-                delta = sqrt(dx * dx + dy * dy + dz * dz)
-                deltas.append(delta)
-            } else {
-                delta = 0
-            }
-            if delta <= 0.05 {
-                stillRows += 1
-            }
-            previous = sample
-        }
-        let movementIntensity = mean(deltas) ?? 0
-        let timestamps = validated.map(\.timestamp)
-        let gaps = zip(timestamps, timestamps.dropFirst()).map { max(0, $1 - $0) }
-        let coverage = coverageSeconds(for: timestamps)
-        let maximumGap = Int((gaps.max() ?? 0).rounded())
-        let validatedRatio = Double(validated.count) / Double(overlapping.count)
-        let ready = validated.count >= 300
-            && validatedRatio >= 0.95
-            && coverage >= 30 * 60
-            && maximumGap <= 5 * 60
-            && Double(stillRows) / Double(max(validated.count, 1)) >= 0.72
-            && movementIntensity <= 0.18
-        let reason: String
-        if validated.count < 300 || coverage < 30 * 60 {
-            reason = "bounded_recent_insufficient_overlap_coverage"
-        } else if validatedRatio < 0.95 {
-            reason = "bounded_recent_unvalidated_rows"
-        } else if maximumGap > 5 * 60 {
-            reason = "bounded_recent_internal_gap"
-        } else if !ready {
-            reason = "bounded_recent_motion_high"
-        } else {
-            reason = "bounded_recent_timestamp_aligned_low_motion"
-        }
-        return MotionFeatureSummary(stillnessRatio: Double(stillRows) / Double(max(validated.count, 1)),
-                                    movementIntensity: movementIntensity,
-                                    rows: overlapping.count,
-                                    validatedRows: validated.count,
-                                    coverageSeconds: coverage,
-                                    maximumGapSeconds: maximumGap,
-                                    firstUnix: Int((timestamps.first ?? 0).rounded()),
-                                    lastUnix: Int((timestamps.last ?? 0).rounded()),
-                                    reason: reason)
+        let samples = loadRecentGravitySamples(start: start, end: end)
+        let evidence = AtriaRecoveredMotionProjection.project(
+            samples: samples.map { sample in
+                .init(timestamp: Date(timeIntervalSince1970: sample.timestamp),
+                      sequence: sample.sequence,
+                      x: sample.x,
+                      y: sample.y,
+                      z: sample.z,
+                      timestampValidated: sample.timestampValidated,
+                      gravityValidated: sample.validated)
+            },
+            window: .init(id: "bounded_recent", start: start, end: end)
+        )
+        guard evidence.rows > 0,
+              let stillness = evidence.stillnessRatio,
+              let intensity = evidence.movementIntensity else { return nil }
+        let trustedTimes = samples
+            .filter { $0.timestampValidated && $0.validated }
+            .map(\.timestamp)
+            .filter { $0 >= start.timeIntervalSince1970 && $0 <= end.timeIntervalSince1970 }
+            .sorted()
+        return MotionFeatureSummary(stillnessRatio: stillness,
+                                    movementIntensity: intensity,
+                                    rows: evidence.rows,
+                                    validatedRows: evidence.validatedRows,
+                                    coverageSeconds: evidence.coverageSeconds,
+                                    maximumGapSeconds: evidence.maximumGapSeconds,
+                                    firstUnix: Int((trustedTimes.first ?? 0).rounded()),
+                                    lastUnix: Int((trustedTimes.last ?? 0).rounded()),
+                                    reason: evidence.reason)
     }
 
     static func boundedMotionWindowDiagnostics(start: Date, end: Date) -> MotionWindowDiagnostics {
@@ -713,6 +2486,94 @@ enum HistoricalArchive {
         return loadHeartRateSamples(since: since, limit: limit)
     }
 
+    /// Exact, memory-bounded raw-history lookup for a closed-open workout
+    /// window. Unlike the recent-tail facade, newer rows cannot consume this
+    /// window's row budget. Sealed catalog bounds select only overlapping raw
+    /// chunks; active/legacy/untrusted files are conservatively streamed in
+    /// 64-KiB pieces. A truncated or unreadable scan fails closed to nil.
+    static func metricHeartRatePoints(
+        start: Date,
+        end: Date,
+        maximumPoints: Int
+    ) -> HeartRateWindowRead? {
+        guard end > start, maximumPoints > 0 else { return nil }
+        let candidates = recentReadableFileURLs()
+        let catalog = (try? catalogStoreLocked()).flatMap { try? $0.snapshot() }
+        return exactMetricHeartRatePoints(
+            in: candidates,
+            catalog: catalog,
+            archiveRoot: archiveDirectory,
+            start: start,
+            end: end,
+            maximumPoints: maximumPoints
+        )
+    }
+
+    /// Testable production seam. The scanner never materializes a source file;
+    /// its resident payload is one chunk plus at most `maximumPoints` results.
+    static func exactMetricHeartRatePoints(
+        in candidates: [URL],
+        catalog: AtriaHistoricalArchiveCatalog?,
+        archiveRoot: URL,
+        start: Date,
+        end: Date,
+        maximumPoints: Int,
+        fileManager: FileManager = .default
+    ) -> HeartRateWindowRead? {
+        guard end > start, maximumPoints > 0 else { return nil }
+        let selected: [URL]
+        if let catalog {
+            selected = exactWindowProjectionFileURLs(
+                candidates: candidates,
+                catalog: catalog,
+                archiveRoot: archiveRoot,
+                start: start,
+                end: end,
+                fileManager: fileManager
+            )
+        } else {
+            selected = candidates
+        }
+        guard selected.allSatisfy({ fileManager.fileExists(atPath: $0.path) }) else {
+            return nil
+        }
+        let descriptors = AtriaHistoricalJSONLRecentScanner.descriptors(for: selected)
+        guard selected.isEmpty || !descriptors.isEmpty else {
+            return nil
+        }
+
+        var points: [HeartRatePoint] = []
+        let durationCapacity = Int(min(Double(maximumPoints),
+                                       max(2, end.timeIntervalSince(start) + 1)))
+        points.reserveCapacity(durationCapacity)
+        var overflowed = false
+        let result = AtriaHistoricalJSONLRecentScanner.scan(
+            sources: descriptors.map { .init(descriptor: $0, startOffset: 0) },
+            // Current-session rows may need capturedAt correction, so raw unix
+            // is not a safe lower-bound prefilter here.
+            cutoff: 0
+        ) { line in
+            guard !overflowed,
+                  let text = String(data: line, encoding: .utf8),
+                  let point = fastHeartRatePoint(from: text),
+                  point.t >= start,
+                  point.t < end else { return }
+            guard points.count < maximumPoints else {
+                overflowed = true
+                return
+            }
+            points.append(point)
+        }
+        guard result.complete, !overflowed else { return nil }
+        points.sort {
+            if $0.t != $1.t { return $0.t < $1.t }
+            return $0.bpm < $1.bpm
+        }
+        return .init(points: points,
+                     scannedFileCount: result.statistics.fileReadCount,
+                     scannedByteCount: result.statistics.byteCount)
+    }
+
     private static func appendJSONLine<T: Encodable>(_ value: T) throws -> URL {
         // Serialize with compactArchive/promoteMetricUsableRows: both rewrite the
         // base file wholesale; an unlocked append during that window would land
@@ -737,6 +2598,7 @@ enum HistoricalArchive {
         } else {
             try line.write(to: url, options: .atomic)
         }
+        try catalogStoreLocked().recordAppendCompleted(at: url)
         updateDiagnosticsIndexAfterAppend(object: object,
                                           archiveURL: url,
                                           previousAttributes: previousAttributes)
@@ -752,20 +2614,22 @@ enum HistoricalArchive {
         documentsDirectory.appendingPathComponent("atria-historical", isDirectory: true)
     }
 
+    static var verifiedActivityConsumerShadowDirectory: URL {
+        archiveDirectory.appendingPathComponent(
+            "verified-consumer-application-v1/activity-shadow-v1",
+            isDirectory: true
+        )
+    }
+
     private static var segmentsDirectory: URL {
         archiveDirectory.appendingPathComponent(segmentsDirectoryName, isDirectory: true)
     }
 
     private static func writableFileURL(now: Date = Date()) throws -> URL {
-        let baseAttributes = archiveAttributes(for: fileURL)
-        guard baseAttributes.byteCount >= rotationThresholdBytes else {
-            return fileURL
-        }
-        let segmentURL = activeSegmentURL(for: now)
-        try FileManager.default.createDirectory(at: segmentURL.deletingLastPathComponent(),
-                                                withIntermediateDirectories: true)
-        try writeRotationManifest(activeSegmentURL: segmentURL, createdAt: now)
-        return segmentURL
+        // New writes always use a bounded UUID chunk. Existing base/daily files
+        // are discovered once as immutable legacy chunks and remain readable;
+        // a sealed path is never reopened for append.
+        try catalogStoreLocked().writableChunkURL(now: now)
     }
 
     private static func activeSegmentURL(for date: Date = Date()) -> URL {
@@ -773,10 +2637,13 @@ enum HistoricalArchive {
     }
 
     private static func activeSegmentFilename(for date: Date) -> String {
-        let components = Calendar(identifier: .gregorian).dateComponents([.year, .month], from: date)
+        let components = Calendar(identifier: .gregorian).dateComponents([.year, .month, .day], from: date)
         let year = components.year ?? 1970
         let month = components.month ?? 1
-        return String(format: "historical-archive-%04d-%02d.jsonl", year, month)
+        let day = components.day ?? 1
+        // Daily segments bound reconnect projection memory while preserving the
+        // append-only archive. Existing monthly segment files remain readable.
+        return String(format: "historical-archive-%04d-%02d-%02d.jsonl", year, month, day)
     }
 
     private static func writeRotationManifest(activeSegmentURL: URL, createdAt: Date) throws {
@@ -803,14 +2670,14 @@ enum HistoricalArchive {
                 }
             }
         }
-        let currentMonth = activeSegmentURL()
-        if FileManager.default.fileExists(atPath: currentMonth.path) {
-            return currentMonth
+        let currentDay = activeSegmentURL()
+        if FileManager.default.fileExists(atPath: currentDay.path) {
+            return currentDay
         }
         return nil
     }
 
-    private static func rotatedSegmentFileURLs() -> [URL] {
+    private static func legacyRotatedSegmentFileURLs() -> [URL] {
         guard let items = try? FileManager.default.contentsOfDirectory(at: segmentsDirectory,
                                                                        includingPropertiesForKeys: nil,
                                                                        options: [.skipsHiddenFiles]) else {
@@ -821,12 +2688,47 @@ enum HistoricalArchive {
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
+    private static func rotatedSegmentFileURLs() -> [URL] {
+        var urls = legacyRotatedSegmentFileURLs()
+        urls.append(contentsOf: catalogRawFileURLs())
+        var seen = Set<String>()
+        return urls
+            .filter { seen.insert($0.standardizedFileURL.path).inserted }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    private static func catalogStoreLocked() throws -> AtriaHistoricalArchiveCatalogStore {
+        archiveCatalogInitializationLock.lock()
+        defer { archiveCatalogInitializationLock.unlock() }
+        if let archiveCatalogStore { return archiveCatalogStore }
+        let store = AtriaHistoricalArchiveCatalogStore(rootURL: archiveDirectory)
+        var legacy = legacyRotatedSegmentFileURLs()
+        if FileManager.default.fileExists(atPath: fileURL.path) { legacy.append(fileURL) }
+        _ = try store.loadOrRecover(discoveredLegacyURLs: legacy, now: Date())
+        archiveCatalogStore = store
+        return store
+    }
+
+    private static func catalogRawFileURLs() -> [URL] {
+        let catalogURL = archiveDirectory.appendingPathComponent("historical-archive.catalog-v2.json")
+        guard FileManager.default.fileExists(atPath: catalogURL.path),
+              let store = try? catalogStoreLocked(),
+              let snapshot = try? store.snapshot() else { return [] }
+        return snapshot.chunks
+            .filter { $0.state != .retired }
+            .map { archiveDirectory.appendingPathComponent($0.relativePath) }
+    }
+
     private static func recentReadableFileURLs() -> [URL] {
-        var urls: [URL] = []
+        // Newest first so bounded readers spend their budget on the most
+        // relevant rows, but retain every rotated month for reconnect gaps
+        // that cross a month boundary.
+        var urls = rotatedSegmentFileURLs().reversed().map { $0 }
         if let activeSegment = activeSegmentReadableURL() {
-            urls.append(activeSegment)
+            urls.insert(activeSegment, at: 0)
         }
         urls.append(readableFileURL)
+        urls.append(legacyFileURL)
         var seen = Set<String>()
         return urls.filter { url in
             guard FileManager.default.fileExists(atPath: url.path),
@@ -834,6 +2736,179 @@ enum HistoricalArchive {
             seen.insert(url.path)
             return true
         }
+    }
+
+    /// Narrows the recovered projection to raw chunks that can still overlap
+    /// its cutoff. A sealed catalog bound is eligible to exclude a file only
+    /// when the catalog's seal transaction durably bound that exact path,
+    /// byte count, row count, digest, and first/last timestamp, and the file
+    /// has not changed in size or modification time since the seal. The digest
+    /// was verified when the bound was committed; rehashing every known-old
+    /// chunk here would itself reread lifetime raw history on every refresh.
+    ///
+    /// Any missing, malformed, conflicting, active, or externally changed
+    /// metadata fails closed for retention: that file remains in the scan.
+    private static func recentRecoveredReadableFileURLs(
+        since cutoff: TimeInterval
+    ) -> [URL] {
+        let candidates = recentReadableFileURLs()
+        guard cutoff.isFinite,
+              let store = try? catalogStoreLocked(),
+              let catalog = try? store.snapshot() else {
+            return candidates
+        }
+        return recoveredProjectionFileURLs(
+            candidates: candidates,
+            catalog: catalog,
+            archiveRoot: archiveDirectory,
+            since: cutoff
+        )
+    }
+
+    /// Internal seam shared by production selection and focused retention
+    /// tests. Returning a candidate is always safe; exclusion requires one
+    /// unique, durably verified sealed catalog bound proving it wholly old.
+    static func recoveredProjectionFileURLs(
+        candidates: [URL],
+        catalog: AtriaHistoricalArchiveCatalog,
+        archiveRoot: URL,
+        since cutoff: TimeInterval,
+        fileManager: FileManager = .default
+    ) -> [URL] {
+        guard cutoff.isFinite,
+              (try? catalog.validate()) != nil else {
+            return candidates
+        }
+
+        let canonicalRoot = archiveRoot.standardizedFileURL
+        let chunksByCanonicalPath = Dictionary(grouping: catalog.chunks) { chunk in
+            canonicalRoot.appendingPathComponent(chunk.relativePath)
+                .standardizedFileURL.path
+        }
+        return candidates.filter { candidate in
+            let canonicalCandidate = candidate.standardizedFileURL
+            let matchingChunks = chunksByCanonicalPath[canonicalCandidate.path] ?? []
+            guard matchingChunks.count == 1,
+                  let chunk = matchingChunks.first,
+                  sealedCatalogBoundIsDurablyTrusted(
+                    chunk,
+                    fileURL: canonicalCandidate,
+                    cutoff: cutoff,
+                    fileManager: fileManager
+                  ) else {
+                // Unknown/untrusted bounds are conservatively scanned.
+                return true
+            }
+            return false
+        }
+    }
+
+    /// Selects raw chunks that may overlap one exact closed-open interval.
+    /// A file is excluded only when one immutable catalog row, still matching
+    /// its on-disk byte identity, proves the complete chunk is before or after
+    /// the requested window. Unknown and active files remain scan candidates.
+    static func exactWindowProjectionFileURLs(
+        candidates: [URL],
+        catalog: AtriaHistoricalArchiveCatalog,
+        archiveRoot: URL,
+        start: Date,
+        end: Date,
+        fileManager: FileManager = .default
+    ) -> [URL] {
+        guard end > start,
+              start.timeIntervalSince1970.isFinite,
+              end.timeIntervalSince1970.isFinite,
+              (try? catalog.validate()) != nil else {
+            return candidates
+        }
+
+        let canonicalRoot = archiveRoot.standardizedFileURL
+        let chunksByCanonicalPath = Dictionary(grouping: catalog.chunks) { chunk in
+            canonicalRoot.appendingPathComponent(chunk.relativePath)
+                .standardizedFileURL.path
+        }
+        return candidates.filter { candidate in
+            let canonicalCandidate = candidate.standardizedFileURL
+            let matchingChunks = chunksByCanonicalPath[canonicalCandidate.path] ?? []
+            guard matchingChunks.count == 1,
+                  let chunk = matchingChunks.first,
+                  sealedCatalogBoundIsDurablyTrustedOutsideWindow(
+                    chunk,
+                    fileURL: canonicalCandidate,
+                    start: start,
+                    end: end,
+                    fileManager: fileManager
+                  ) else {
+                return true
+            }
+            return false
+        }
+    }
+
+    private static func sealedCatalogBoundIsDurablyTrustedOutsideWindow(
+        _ chunk: AtriaHistoricalArchiveCatalog.RawChunk,
+        fileURL: URL,
+        start: Date,
+        end: Date,
+        fileManager: FileManager
+    ) -> Bool {
+        guard chunk.state == .sealed,
+              let sealedAt = chunk.sealedAt,
+              let rowCount = chunk.rowCount,
+              rowCount > 0,
+              let firstTimestamp = chunk.firstTimestamp,
+              let lastTimestamp = chunk.lastTimestamp,
+              lastTimestamp > firstTimestamp,
+              lastTimestamp < start || firstTimestamp >= end,
+              chunk.byteCount > 0,
+              let digest = chunk.contentSHA256,
+              digest.count == 64,
+              digest.unicodeScalars.allSatisfy(
+                CharacterSet(charactersIn: "0123456789abcdef").contains
+              ),
+              let attributes = try? fileManager.attributesOfItem(atPath: fileURL.path),
+              (attributes[.type] as? FileAttributeType) == .typeRegular,
+              (attributes[.size] as? NSNumber)?.uint64Value == chunk.byteCount,
+              let modificationDate = attributes[.modificationDate] as? Date,
+              modificationDate.timeIntervalSince(sealedAt) <= 1 else {
+            return false
+        }
+        return true
+    }
+
+    /// Returns true only when an immutable sealed file is proven to end before
+    /// the requested window and may therefore be omitted without data loss.
+    private static func sealedCatalogBoundIsDurablyTrusted(
+        _ chunk: AtriaHistoricalArchiveCatalog.RawChunk,
+        fileURL: URL,
+        cutoff: TimeInterval,
+        fileManager: FileManager
+    ) -> Bool {
+        guard chunk.state == .sealed,
+              let sealedAt = chunk.sealedAt,
+              let rowCount = chunk.rowCount,
+              rowCount > 0,
+              let firstTimestamp = chunk.firstTimestamp?.timeIntervalSince1970,
+              let lastTimestamp = chunk.lastTimestamp?.timeIntervalSince1970,
+              firstTimestamp.isFinite,
+              lastTimestamp.isFinite,
+              lastTimestamp > firstTimestamp,
+              lastTimestamp < cutoff,
+              chunk.byteCount > 0,
+              let digest = chunk.contentSHA256,
+              digest.count == 64,
+              digest.unicodeScalars.allSatisfy(
+                CharacterSet(charactersIn: "0123456789abcdef").contains
+              ),
+              let attributes = try? fileManager.attributesOfItem(atPath: fileURL.path),
+              (attributes[.type] as? FileAttributeType) == .typeRegular,
+              (attributes[.size] as? NSNumber)?.uint64Value == chunk.byteCount,
+              let modificationDate = attributes[.modificationDate] as? Date,
+              // Filesystem timestamp precision can be coarser than Date.
+              modificationDate.timeIntervalSince(sealedAt) <= 1 else {
+            return false
+        }
+        return true
     }
 
     private static func documentsRelativePath(for url: URL) -> String {
@@ -854,7 +2929,10 @@ enum HistoricalArchive {
         if url == fileURL {
             return diagnosticsIndexURL
         }
-        guard url.deletingLastPathComponent() == segmentsDirectory else { return nil }
+        // UUID raw chunks live in segments/raw-v2 rather than directly under
+        // segments. Keep each immutable chunk's sidecar adjacent to it.
+        guard url.standardizedFileURL.path.hasPrefix(archiveDirectory.path + "/"),
+              url.pathExtension == "jsonl" else { return nil }
         return url.deletingPathExtension().appendingPathExtension("diagnostics.json")
     }
 
@@ -1096,6 +3174,21 @@ enum HistoricalArchive {
         let z: Double
         let magnitude: Double
         let validated: Bool
+        let timestampValidated: Bool
+    }
+
+    /// Immutable projection input keyed by complete JSONL line boundaries.
+    /// File identity fencing prevents an atomic compaction/rewrite from being
+    /// mistaken for tail growth, while genuine history appends only decode the
+    /// bytes added since the preceding snapshot.
+    private struct RecoveredDataCache {
+        let coveredSince: TimeInterval
+        let budget: RecoveredProjectionBudget
+        let fileStates: [String: AtriaHistoricalJSONLRecentScanner.FileState]
+        let heartRatePoints: [HeartRatePoint]
+        let rrRecords: [Record]
+        let gravitySamples: [GravitySample]
+        let motionRecordIdentities: Set<AtriaRecoveredMotionReplayIdentity>
     }
 
     private struct RecentGravityCache {
@@ -1105,29 +3198,32 @@ enum HistoricalArchive {
         let latestTimestamp: TimeInterval?
     }
 
-    private struct GravityRecord {
-        let record: Record
-        let unix: UInt32
-        let gravity: (x: Double, y: Double, z: Double, magnitude: Double, validated: Bool)
-    }
-
     private static func loadGravitySamples() -> [GravitySample] {
 #if DEBUG
         fullGravityInstrumentationLock.lock()
         fullGravityLoadCount += 1
         fullGravityInstrumentationLock.unlock()
 #endif
-        let url = readableFileURL
-        guard FileManager.default.fileExists(atPath: url.path),
-              let content = try? String(contentsOf: url, encoding: .utf8) else { return [] }
-        return gravitySamples(from: content)
+        return recentReadableFileURLs()
+            .compactMap { try? String(contentsOf: $0, encoding: .utf8) }
+            .flatMap(gravitySamples(from:))
+            .sorted {
+                if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
+                return $0.sequence < $1.sequence
+            }
     }
 
     private static func loadRecentGravitySamples(start: Date, end: Date) -> [GravitySample] {
         guard end > start else { return [] }
         let spanSeconds = max(1, end.timeIntervalSince(start))
         let estimatedRows = Int((spanSeconds / 2.0).rounded(.up)) + 720
-        let targetBytes = UInt64(max(4_194_304, min(33_554_432, estimatedRows * 1_024)))
+        // A raw JSONL tail expands several-fold while Foundation decodes it.
+        // The former 32 MiB ceiling drove an observed 696 MiB footprint jump
+        // and an iOS CPU-resource kill during a single sleep review. Eight MiB
+        // still covers the normal overnight Whoop cadence while keeping review
+        // work bounded; older windows fail closed unless their decoded motion
+        // epochs were already projected into the canonical session.
+        let targetBytes = UInt64(max(2_097_152, min(8_388_608, estimatedRows * 640)))
 
         recentGravityCacheLock.lock()
         if let cache = recentGravityCache,
@@ -1198,14 +3294,33 @@ enum HistoricalArchive {
         recentGravityCache = nil
         recentGravityLoadInFlight = false
         recentGravityCacheLock.unlock()
+
+        recoveredDataCacheLock.lock()
+        recoveredDataCache = nil
+        recoveredDataCacheLock.unlock()
+
+        // Fixture tests temporarily move the entire archive directory. Any
+        // process-lifetime catalog or exact-index object would otherwise keep
+        // referring to the inode/path set from the directory that was moved.
+        archiveCatalogInitializationLock.lock()
+        archiveCatalogStore = nil
+        archiveCatalogInitializationLock.unlock()
+        durableStoreLock.lock()
+        durableStore = nil
+        durableDrainBatches.removeAll()
+        durableStoreLock.unlock()
     }
 #endif
 
     private static func loadRecentGravitySamplesUncached(targetBytes: UInt64) -> [GravitySample] {
         var samples: [GravitySample] = []
+        var remainingBytes = targetBytes
         for url in recentReadableFileURLs().reversed() {
-            guard let content = tailContent(from: url, targetBytes: targetBytes) else { continue }
+            guard remainingBytes > 0 else { break }
+            guard let content = tailContent(from: url, targetBytes: remainingBytes) else { continue }
             samples.append(contentsOf: gravitySamples(from: content))
+            let consumed = UInt64(content.utf8.count)
+            remainingBytes = consumed >= remainingBytes ? 0 : remainingBytes - consumed
         }
         return samples.sorted { lhs, rhs in
             if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
@@ -1216,48 +3331,78 @@ enum HistoricalArchive {
     private static func gravitySamples(from content: String) -> [GravitySample] {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        var records: [GravityRecord] = []
-        for rawLine in content.split(whereSeparator: \.isNewline) {
-            let line = String(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
+        return content.split(whereSeparator: \.isNewline).compactMap { rawLine in
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty,
                   let data = line.data(using: .utf8),
-                  let record = try? decoder.decode(Record.self, from: data) else { continue }
-            let unix = record.clockCorrectedUnix7 ?? record.unix7
-            guard unix > 0,
-                  let payload = bytes(fromHex: record.rawPayloadHex),
-                  let gravity = historicalGravity(payload) else { continue }
-            records.append(GravityRecord(record: record, unix: unix, gravity: gravity))
+                  let record = try? decoder.decode(Record.self, from: data) else { return nil }
+            return gravitySample(from: record)
+        }
+    }
+
+    /// RR-equivalent verification for historical gravity. Stored metadata is
+    /// not trusted until the versioned decoder reproduces its clock identity;
+    /// subsecond ticks and flash counter are preserved for deterministic order.
+    private static func gravitySample(from record: Record) -> GravitySample? {
+        guard record.unix7 > 0,
+              record.subsec11 < 32_768,
+              let payload = bytes(fromHex: record.rawPayloadHex),
+              payload.count == record.payloadLength,
+              let gravity = historicalGravity(payload) else { return nil }
+
+        let rawIdentityValidated: Bool
+        if case .record(let decoded) = AtriaWhoop4HistoricalRecordDecoder.decode(
+            payload,
+            origin: "atria-recovered-motion"
+        ) {
+            rawIdentityValidated = decoded.counter == record.flash13
+                && decoded.timestampSeconds == record.unix7
+                && decoded.subsecond == record.subsec11
+                && record.sequence == Int(decoded.layout.rawValue)
+                && record.layoutVersion == layoutVersion(for: decoded.layout.rawValue)
+                && decoded.gravity.magnitude.isFinite
+                && abs(decoded.gravity.magnitude - gravity.magnitude) <= 0.000_1
+        } else {
+            rawIdentityValidated = false
         }
 
-        let currentUsable = records.filter(\.record.currentSessionUsable)
-        let currentAnchor = currentUsable.max { lhs, rhs in
-            if lhs.record.capturedAt != rhs.record.capturedAt {
-                return lhs.record.capturedAt < rhs.record.capturedAt
-            }
-            return lhs.unix < rhs.unix
-        }
-
-        var samples: [GravitySample] = []
-        samples.reserveCapacity(records.count)
-        for item in records {
-            let timestamp: TimeInterval
-            if item.record.currentSessionUsable,
-               let anchor = currentAnchor,
-               abs(item.record.capturedAt.timeIntervalSince1970 - TimeInterval(item.unix)) > 12 * 60 * 60 {
-                timestamp = anchor.record.capturedAt.timeIntervalSince1970
-                    - TimeInterval(Int64(anchor.unix) - Int64(item.unix))
+        let clockValidated: Bool
+        if record.clockCorrectionStatus == "clock_ref_present",
+           let device = record.clockDeviceRef,
+           let wall = record.clockWallRef,
+           let storedDrift = record.clockDriftSeconds,
+           let corrected = record.clockCorrectedUnix7 {
+            let drift = Int(wall) - Int(device)
+            let snapped: Int
+            if abs(drift) < 86_400 {
+                snapped = drift
+            } else if drift >= 0 {
+                snapped = ((drift + 150) / 300) * 300
             } else {
-                timestamp = TimeInterval(item.unix)
+                snapped = ((drift - 150) / 300) * 300
             }
-            samples.append(GravitySample(timestamp: timestamp,
-                                         sequence: item.record.sequence,
-                                         x: item.gravity.x,
-                                         y: item.gravity.y,
-                                         z: item.gravity.z,
-                                         magnitude: item.gravity.magnitude,
-                                         validated: item.gravity.validated))
+            let expected = Int64(record.unix7) + Int64(snapped)
+            clockValidated = storedDrift == drift
+                && expected > 0
+                && expected <= Int64(UInt32.max)
+                && corrected == UInt32(expected)
+        } else {
+            clockValidated = false
         }
-        return samples
+        let unix = record.clockCorrectedUnix7 ?? record.unix7
+        let timestamp = TimeInterval(unix) + TimeInterval(record.subsec11) / 32_768
+        let trusted = rawIdentityValidated
+            && clockValidated
+            && record.gravityValidated
+            && gravity.validated
+        return GravitySample(timestamp: timestamp,
+                             sequence: Int(record.flash13),
+                             x: gravity.x,
+                             y: gravity.y,
+                             z: gravity.z,
+                             magnitude: gravity.magnitude,
+                             validated: trusted,
+                             timestampValidated: rawIdentityValidated && clockValidated)
     }
 
     private struct HeartRateArchiveRow {
@@ -1351,7 +3496,7 @@ enum HistoricalArchive {
     private static func loadRecentHeartRateSamples(since: Date, limit: Int) -> [HeartRatePoint] {
         guard limit > 0 else { return [] }
         let lowerBound = since.timeIntervalSince1970
-        let targetBytes = UInt64(max(4_194_304, min(33_554_432, limit * 1_024)))
+        let targetBytes = UInt64(max(4_194_304, min(100_663_296, limit * 1_024)))
         var points: [HeartRatePoint] = []
         points.reserveCapacity(limit)
         for url in recentReadableFileURLs() {
@@ -1576,10 +3721,443 @@ enum HistoricalArchive {
         return fileURL.deletingLastPathComponent().appendingPathComponent(name)
     }
 
+    /// Builds and commits one parity-verified aggregate in shadow mode. Raw is
+    /// intentionally retained until aggregate readers and retired-identity
+    /// shards pass end-to-end parity. This replaces the former best-effort
+    /// compactor, which could delete raw after unverified `try?` summary writes.
     static func compactArchive(olderThanDays: Int = 30,
                                pinnedWindows: [(start: Date, end: Date)],
                                reason: String,
+                               configuration: AtriaHistoricalConsumerProjectionConfiguration,
                                now: Date = Date()) -> CompactionResult {
+        do {
+            let store = try catalogStoreLocked()
+            let retirementExecutor = AtriaHistoricalRawRetirementExecutor(
+                archiveRoot: archiveDirectory,
+                catalogStore: store
+            )
+            if let recovered = try retirementExecutor.recoverFirstPendingIntent() {
+                AtriaDebugLog("ATRIADBG archive_retention status=recovered_retirement_intent reason=%@ chunk=%@ source_deleted=%d catalog_retired=%d",
+                              reason,
+                              recovered.chunkID,
+                              recovered.sourceDeleted ? 1 : 0,
+                              recovered.catalogRetired ? 1 : 0)
+                // One invocation may cross at most one irreversible raw
+                // boundary. Recovery is therefore terminal; a fresh call can
+                // independently select the next verified candidate.
+                return CompactionResult(status: "ok_recovered_retirement_intent",
+                                        scannedRows: 0,
+                                        keptRows: 0,
+                                        compactedRows: 0,
+                                        summaryRows: 0,
+                                        bytesBefore: 0,
+                                        bytesAfter: 0)
+            }
+            let catalog = try store.snapshot()
+            // Recover crash-left immutable generations before high-volume
+            // accounting. The collector follows every durable current pointer
+            // and never removes necessary typed history.
+            do {
+                let collected = try AtriaHistoricalGeneratedArtifactGC(
+                    archiveRoot: archiveDirectory,
+                    now: now
+                ).prune()
+                AtriaDebugLog("ATRIADBG historical_generated_gc status=maintenance removed=%d removed_bytes=%llu avoidable_after=%llu limit_satisfied=%d",
+                              collected.removedFiles,
+                              collected.removedBytes,
+                              collected.avoidableBytesAfter,
+                              collected.limitSatisfied ? 1 : 0)
+            } catch {
+                AtriaDebugLog("ATRIADBG historical_generated_gc status=deferred error=%@ removed=0",
+                              String(describing: error))
+            }
+            // Substitute the large replay shard copies only after the retired
+            // SQLite source receipt and all six canonical destinations have
+            // independently revalidated. Typed historical destinations remain
+            // untouched and a compact proof makes retries idempotent.
+            var replayCompactedChunkIDs = Set<String>()
+            for chunk in catalog.chunks.filter({ $0.state == .retired }).sorted(by: {
+                let lhs = $0.lastTimestamp ?? $0.sealedAt ?? $0.createdAt
+                let rhs = $1.lastTimestamp ?? $1.sealedAt ?? $1.createdAt
+                return lhs == rhs ? $0.id < $1.id : lhs < rhs
+            }) {
+                do {
+                    let compacted = try AtriaHistoricalReplayPayloadCompactor(
+                        archiveRoot: archiveDirectory
+                    ).compactRetiredSource(chunkID: chunk.id, now: now)
+                    if compacted.proof.publishedAt <= now.addingTimeInterval(-90 * 86_400) {
+                        replayCompactedChunkIDs.insert(chunk.id)
+                    }
+                    if compacted.retiredBytes > 0 {
+                        AtriaDebugLog("ATRIADBG retired_replay_payload status=compacted chunk=%@ retired_bytes=%llu typed_destinations_retained=1",
+                                      chunk.id, compacted.retiredBytes)
+                    }
+                } catch {
+                    AtriaDebugLog("ATRIADBG retired_replay_payload status=deferred chunk=%@ error=%@ payload_retained=1",
+                                  chunk.id, String(describing: error))
+                }
+            }
+            // Retired replay membership has a deliberate 14-day exact-dedupe
+            // horizon; source receipts remain as 90-day reimport tombstones.
+            // Run the SQLite page-reclaim transaction before accounting so the
+            // combined cap observes physical post-VACUUM bytes, not a lifetime
+            // freelist high-water mark. Any corruption/failure is fail-closed:
+            // no raw selection or replay payload deletion follows this pass.
+            let replayDatabaseURL = archiveDirectory
+                .appendingPathComponent("retired-replay-v1", isDirectory: true)
+                .appendingPathComponent("exact-identities-v3.sqlite")
+            if FileManager.default.fileExists(atPath: replayDatabaseURL.path) {
+                let replayIndex = try AtriaHistoricalRetiredReplayIndex(
+                    databaseURL: replayDatabaseURL
+                )
+                let maintained = try replayIndex.maintainStorage(
+                    identityCutoff: now.addingTimeInterval(-14 * 86_400),
+                    sourceTombstoneCutoff: now.addingTimeInterval(-90 * 86_400),
+                    sourceTombstoneRetirementAuthorizedChunkIDs: replayCompactedChunkIDs
+                )
+                AtriaDebugLog("ATRIADBG retired_replay_maintenance status=verified identities_removed=%d memberships_removed=%d tombstones_removed=%d identities_remaining=%d tombstones_remaining=%d bytes_before=%llu bytes_after=%llu",
+                              maintained.removedExactIdentities,
+                              maintained.removedSourceMemberships,
+                              maintained.removedSourceTombstones,
+                              maintained.remainingExactIdentities,
+                              maintained.remainingSourceTombstones,
+                              maintained.bytesBefore,
+                              maintained.bytesAfter)
+            }
+            // Read-only high-volume accounting is advisory. A scan failure is
+            // logged truthfully and cannot delay capture or authorize any
+            // retention mutation.
+            var highVolumeReport: AtriaHistoricalHighVolumeDiagnosticsCoordinator.Report?
+            do {
+                let diagnostics = try AtriaHistoricalHighVolumeDiagnosticsCoordinator
+                    .evaluate(archiveRoot: archiveDirectory, catalog: catalog)
+                highVolumeReport = diagnostics
+                AtriaDebugLog("ATRIADBG archive_storage_diagnostics state=%@ high_volume_bytes=%llu cap_bytes=%llu projected_bytes=%llu cap_satisfied=%d net_decreasing_candidates=%d remaining_overage_bytes=%llu protected_active_bytes=%llu protected_active_overage_bytes=%llu unresolved_nonactive_overage_bytes=%llu compact_typed_bytes=%llu replay_evidence_bytes=%llu verified_replay_chunks=%d incomplete_replay_chunks=%d mutation_authority=0 raw_retained=1",
+                              diagnostics.plan.state.rawValue,
+                              diagnostics.accounting.highVolumeBytes,
+                              diagnostics.plan.maximumHighVolumeBytes,
+                              diagnostics.plan.projectedHighVolumeBytes,
+                              diagnostics.plan.capSatisfied ? 1 : 0,
+                              diagnostics.plan.selections.count,
+                              diagnostics.plan.remainingOverageBytes,
+                              diagnostics.plan.protectedActiveBytes,
+                              diagnostics.plan.protectedActiveOverageBytes,
+                              diagnostics.plan.unresolvedNonActiveOverageBytes,
+                              diagnostics.accounting.compactLongTermTypedBytes,
+                              diagnostics.accounting.replayEvidenceBytes,
+                              diagnostics.verifiedReplayEvidenceChunkCount,
+                              diagnostics.incompleteReplayEvidenceChunkCount)
+            } catch {
+                AtriaDebugLog("ATRIADBG archive_storage_diagnostics state=unavailable error=%@ mutation_authority=0 raw_retained=1",
+                              String(describing: error))
+            }
+            let aggregates = archiveDirectory.appendingPathComponent("aggregates-v2", isDirectory: true)
+            let manifests = archiveDirectory.appendingPathComponent("retention-manifests-v2", isDirectory: true)
+            // A filename alone is not a commit. Only the strict reader's
+            // digest/schema/parity-validated aggregate set can suppress retry.
+            let aggregateReader = AtriaHistoricalAggregateReader(
+                aggregateDirectoryURL: aggregates,
+                manifestDirectoryURL: manifests
+            )
+            let committedIndex = aggregateReader.loadCommittedChunkIDs()
+            guard !committedIndex.limitExceeded,
+                  committedIndex.rejectedManifests == 0 else {
+                AtriaDebugLog("ATRIADBG archive_retention status=deferred_reader_limit reason=%@ raw_retained=1",
+                              reason)
+                return CompactionResult(status: "deferred_retention_reader_limit",
+                                        scannedRows: 0,
+                                        keptRows: 0,
+                                        compactedRows: 0,
+                                        summaryRows: 0,
+                                        bytesBefore: 0,
+                                        bytesAfter: 0)
+            }
+            let committedChunkIDs = committedIndex.chunkIDs
+            // The combined raw + exact-replay ceiling is an execution input, not
+            // merely a dashboard diagnostic. Verified planner selections are
+            // eligible for immediate cutover. While the tree is over cap, the
+            // oldest sealed chunks whose replay proof is not ready are also fed
+            // through the one-chunk shadow transaction so a later invocation can
+            // actually reclaim them. The executor still performs every semantic,
+            // consumer and replay-identity verification before unlinking raw.
+            var highVolumeCandidateIDs = Set(
+                highVolumeReport?.plan.selections.map(\.chunk.identifier) ?? []
+            )
+            if let report = highVolumeReport,
+               report.accounting.highVolumeBytes > report.plan.maximumHighVolumeBytes {
+                let incomplete = catalog.chunks
+                    .filter { $0.state == .sealed && !committedChunkIDs.contains($0.id) }
+                    .sorted { lhs, rhs in
+                        let lhsEnd = lhs.lastTimestamp ?? lhs.sealedAt ?? lhs.createdAt
+                        let rhsEnd = rhs.lastTimestamp ?? rhs.sealedAt ?? rhs.createdAt
+                        if lhsEnd != rhsEnd { return lhsEnd < rhsEnd }
+                        return lhs.id < rhs.id
+                    }
+                if let oldest = incomplete.first { highVolumeCandidateIDs.insert(oldest.id) }
+            }
+            let retention = AtriaHistoricalShadowCompactionCoordinator.retentionQueue(
+                catalog: catalog,
+                archiveDirectory: archiveDirectory,
+                committedChunkIDs: committedChunkIDs,
+                additionalCandidateIDs: highVolumeCandidateIDs,
+                policy: .production,
+                now: now
+            )
+            AtriaDebugLog("ATRIADBG archive_retention status=policy_evaluated reason=%@ raw_bytes=%llu projected_after_verified_retirement=%llu selected=%d shadow_pending=%d shadow_committed=%d missing_sources=%d provisional_timestamps=%d hard_cap_satisfied=%d raw_retained=1",
+                          reason,
+                          retention.plan.rawBytesBefore,
+                          retention.plan.projectedRawBytes,
+                          retention.plan.candidates.count,
+                          retention.uncommittedCandidates.count,
+                          retention.shadowCommittedCandidateIDs.count,
+                          retention.missingSourceCandidateIDs.count,
+                          retention.provisionalTimestampCandidateIDs.count,
+                          retention.plan.hardCapSatisfied ? 1 : 0)
+            let outcome = AtriaHistoricalShadowCompactionCoordinator.commitFirst(
+                candidates: retention.uncommittedCandidates
+            ) { chunk in
+                let sourceURL = archiveDirectory.appendingPathComponent(chunk.relativePath)
+                let build = try AtriaHistoricalAggregateBuilder.build(sourceURL: sourceURL,
+                                                                      chunkID: chunk.id,
+                                                                      createdAt: now)
+                // Catalog recovery intentionally registers legacy JSONL with nil
+                // decoded bounds. Persist the builder's exact digest/count/time
+                // identity before publishing its aggregate; otherwise legacy
+                // archives can shadow-commit forever but can never satisfy the
+                // raw-retirement executor's authority checks.
+                if chunk.rowCount == nil || chunk.firstTimestamp == nil
+                    || chunk.lastTimestamp == nil || chunk.contentSHA256 == nil {
+                    try store.recordSealedMetadata(
+                        chunkID: chunk.id,
+                        rowCount: build.aggregate.source.rawRowCount,
+                        firstTimestamp: build.aggregate.source.firstTimestamp,
+                        lastTimestamp: build.aggregate.source.lastTimestamp,
+                        contentSHA256: build.aggregate.source.rawSHA256
+                    )
+                }
+                let transaction = AtriaHistoricalRetentionTransaction(
+                    now: { now },
+                    semanticVerifier: AtriaHistoricalAggregateBuilder.verify
+                )
+                let result = try transaction.commit(.init(
+                    transactionID: chunk.id,
+                    sourceURL: sourceURL,
+                    aggregateDirectoryURL: aggregates,
+                    manifestDirectoryURL: manifests,
+                    aggregate: build.aggregate,
+                    semanticParityReceipt: build.semanticParityReceipt,
+                    deleteSourceAfterCommit: false
+                ))
+                return (chunk: chunk, build: build, result: result)
+            }
+
+            switch outcome {
+            case .noCandidates:
+                let status: String
+                if !retention.missingSourceCandidateIDs.isEmpty {
+                    status = "deferred_retention_source_unavailable"
+                } else if let chunkID = retention.shadowCommittedCandidateIDs.first {
+                    do {
+                        let cutover = try publishAndVerifyHistoricalConsumerCutover(
+                            chunkID: chunkID,
+                            archiveRoot: archiveDirectory,
+                            catalogStore: store,
+                            configuration: configuration
+                        )
+                        let retired = try retirementExecutor.retire(chunkID: cutover.chunkID)
+                        AtriaDebugLog("ATRIADBG archive_retention status=retired_verified_raw reason=%@ chunk=%@ completion_generation=%llu receipts=%d reused=%d source_deleted=%d catalog_retired=%d",
+                                      reason,
+                                      cutover.chunkID,
+                                      cutover.completionGeneration,
+                                      cutover.receiptCount,
+                                      cutover.reusedReceiptCount,
+                                      retired.sourceDeleted ? 1 : 0,
+                                      retired.catalogRetired ? 1 : 0)
+                        status = "ok_verified_consumer_cutover_raw_retired"
+                    } catch {
+                        AtriaDebugLog("ATRIADBG archive_retention status=deferred_verified_consumer_cutover reason=%@ chunk=%@ error=%@ raw_retained=1 retirement_authority=0",
+                                      reason,
+                                      chunkID,
+                                      String(describing: error))
+                        status = "deferred_verified_consumer_cutover_required"
+                    }
+                } else {
+                    switch highVolumeReport?.plan.state {
+                    case .protectedActiveException:
+                        status = "noop_retention_protected_active_exception"
+                    case .blocked, .progressOnly:
+                        status = "deferred_retention_cap_unresolved"
+                    case .capSatisfied, .none:
+                        status = "noop_retention_within_bounds"
+                    }
+                }
+                return CompactionResult(status: status,
+                                        scannedRows: 0,
+                                        keptRows: 0,
+                                        compactedRows: 0,
+                                        summaryRows: 0,
+                                        bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
+                                        bytesAfter: Int(clamping: retention.plan.rawBytesBefore))
+            case let .allFailed(failures):
+                for failure in failures {
+                    AtriaDebugLog("ATRIADBG archive_retention status=shadow_chunk_deferred reason=%@ chunk=%@ error=%@ raw_retained=1",
+                                  reason,
+                                  failure.chunkID,
+                                  failure.message)
+                }
+                return CompactionResult(status: "deferred_shadow_verification_failed",
+                                        scannedRows: 0,
+                                        keptRows: 0,
+                                        compactedRows: 0,
+                                        summaryRows: 0,
+                                        bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
+                                        bytesAfter: Int(clamping: retention.plan.rawBytesBefore))
+            case let .committed(value, precedingFailures):
+                for failure in precedingFailures {
+                    AtriaDebugLog("ATRIADBG archive_retention status=shadow_chunk_skipped reason=%@ chunk=%@ error=%@ raw_retained=1",
+                                  reason,
+                                  failure.chunkID,
+                                  failure.message)
+                }
+                let build = value.build
+                let result = value.result
+                AtriaDebugLog("ATRIADBG archive_retention status=shadow_committed reason=%@ chunk=%@ rows=%d raw_bytes=%llu aggregate=%@ manifest=%@ reused=%d raw_retained=1",
+                              reason,
+                              value.chunk.id,
+                              build.aggregate.source.rawRowCount,
+                              build.aggregate.source.rawByteCount,
+                              result.aggregateURL.lastPathComponent,
+                              result.manifestURL.lastPathComponent,
+                              result.reusedCommittedTransaction ? 1 : 0)
+                // Do not make a verified shadow wait for tomorrow's once-daily
+                // pass. The same invocation can publish/re-read every consumer
+                // and cross the one permitted irreversible boundary. Any failed
+                // gate still leaves raw intact and returns an explicitly
+                // retryable status.
+                do {
+                    let cutover = try publishAndVerifyHistoricalConsumerCutover(
+                        chunkID: value.chunk.id,
+                        archiveRoot: archiveDirectory,
+                        catalogStore: store,
+                        configuration: configuration
+                    )
+                    let retired = try retirementExecutor.retire(chunkID: cutover.chunkID)
+                    AtriaDebugLog("ATRIADBG archive_retention status=retired_verified_raw_after_shadow reason=%@ chunk=%@ completion_generation=%llu receipts=%d source_deleted=%d catalog_retired=%d",
+                                  reason,
+                                  cutover.chunkID,
+                                  cutover.completionGeneration,
+                                  cutover.receiptCount,
+                                  retired.sourceDeleted ? 1 : 0,
+                                  retired.catalogRetired ? 1 : 0)
+                    return CompactionResult(
+                        status: "ok_verified_consumer_cutover_raw_retired",
+                        scannedRows: build.aggregate.source.rawRowCount,
+                        keptRows: build.aggregate.source.rawRowCount,
+                        compactedRows: 0,
+                        summaryRows: build.aggregate.heartRateMinutes.count
+                            + build.aggregate.rrEpochs.count
+                            + build.aggregate.motionEpochs.count,
+                        bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
+                        bytesAfter: Int(clamping: retention.plan.projectedRawBytes)
+                    )
+                } catch {
+                    AtriaDebugLog("ATRIADBG archive_retention status=deferred_verified_consumer_cutover_after_shadow reason=%@ chunk=%@ error=%@ raw_retained=1 retirement_authority=0",
+                                  reason,
+                                  value.chunk.id,
+                                  String(describing: error))
+                    return CompactionResult(
+                        status: "deferred_verified_consumer_cutover_required",
+                        scannedRows: build.aggregate.source.rawRowCount,
+                        keptRows: build.aggregate.source.rawRowCount,
+                        compactedRows: 0,
+                        summaryRows: build.aggregate.heartRateMinutes.count
+                            + build.aggregate.rrEpochs.count
+                            + build.aggregate.motionEpochs.count,
+                        bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
+                        bytesAfter: Int(clamping: retention.plan.rawBytesBefore)
+                    )
+                }
+            }
+        } catch {
+            AtriaDebugLog("ATRIADBG archive_retention status=shadow_deferred reason=%@ error=%@ raw_retained=1",
+                          reason,
+                          error.localizedDescription)
+            return CompactionResult(status: "deferred_shadow_verification_failed",
+                                    scannedRows: 0,
+                                    keptRows: 0,
+                                    compactedRows: 0,
+                                    summaryRows: 0,
+                                    bytesBefore: 0,
+                                    bytesAfter: 0)
+        }
+    }
+
+    /// Makes bounded same-pass progress instead of consuming one daily launch
+    /// per chunk. `compactArchive` still crosses at most one irreversible raw
+    /// boundary; this coordinator starts a fresh fully verified transaction for
+    /// each subsequent iteration and yields to the driver on time/iteration
+    /// budget so capture cannot be starved.
+    static func compactArchiveConverging(
+        pinnedWindows: [(start: Date, end: Date)],
+        reason: String,
+        configuration: AtriaHistoricalConsumerProjectionConfiguration,
+        now: Date = Date(),
+        maximumIterations: Int = 8,
+        maximumElapsed: TimeInterval = 8
+    ) -> CompactionResult {
+        precondition(maximumIterations > 0)
+        precondition(maximumElapsed > 0)
+        let started = Date()
+        var firstBytesBefore: Int?
+        var scanned = 0
+        var kept = 0
+        var compacted = 0
+        var summaries = 0
+        var last: CompactionResult?
+        for _ in 0..<maximumIterations {
+            let result = compactArchive(pinnedWindows: pinnedWindows,
+                                        reason: reason,
+                                        configuration: configuration,
+                                        now: now)
+            if firstBytesBefore == nil { firstBytesBefore = result.bytesBefore }
+            scanned &+= result.scannedRows
+            kept &+= result.keptRows
+            compacted &+= result.compactedRows
+            summaries &+= result.summaryRows
+            last = result
+            let madeProgress = result.status == "ok_recovered_retirement_intent"
+                || result.status == "ok_verified_consumer_cutover_raw_retired"
+                || result.status.hasPrefix("ok_shadow_")
+            guard madeProgress else {
+                return .init(status: result.status,
+                             scannedRows: scanned,
+                             keptRows: kept,
+                             compactedRows: compacted,
+                             summaryRows: summaries,
+                             bytesBefore: firstBytesBefore ?? result.bytesBefore,
+                             bytesAfter: result.bytesAfter)
+            }
+            if Date().timeIntervalSince(started) >= maximumElapsed { break }
+        }
+        let final = last ?? .init(status: "deferred_retention_cap_unresolved",
+                                  scannedRows: 0, keptRows: 0, compactedRows: 0,
+                                  summaryRows: 0, bytesBefore: 0, bytesAfter: 0)
+        return .init(status: "yielded_retention_progress",
+                     scannedRows: scanned,
+                     keptRows: kept,
+                     compactedRows: compacted,
+                     summaryRows: summaries,
+                     bytesBefore: firstBytesBefore ?? final.bytesBefore,
+                     bytesAfter: final.bytesAfter)
+    }
+
+    /// Preserved temporarily as unreachable migration reference. It must not
+    /// be re-enabled: its summary schema has no reader and cannot preserve RR,
+    /// motion, strain, sleep, activity, or exact replay identity.
+    private static func legacyCompactArchiveDisabled(olderThanDays: Int = 30,
+                                                     pinnedWindows: [(start: Date, end: Date)],
+                                                     reason: String,
+                                                     now: Date = Date()) -> CompactionResult {
         promotionLock.lock()
         defer { promotionLock.unlock() }
 

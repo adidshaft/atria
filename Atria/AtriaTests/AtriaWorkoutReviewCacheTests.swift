@@ -62,22 +62,32 @@ final class AtriaWorkoutReviewCacheTests: XCTestCase {
     func testCacheKeyInvalidatesForSessionConfirmationAndHRInputChanges() {
         let original = SessionStore.WorkoutReviewCacheKey(canonicalSessionsRevision: 4,
                                                           confirmedWorkoutsRevision: 2,
+                                                          liveFiveMinuteBucket: 10,
                                                           restingHR: 60,
                                                           maxHR: 190)
         XCTAssertNotEqual(original,
                           SessionStore.WorkoutReviewCacheKey(canonicalSessionsRevision: 5,
                                                              confirmedWorkoutsRevision: 2,
+                                                             liveFiveMinuteBucket: 10,
                                                              restingHR: 60,
                                                              maxHR: 190))
         XCTAssertNotEqual(original,
                           SessionStore.WorkoutReviewCacheKey(canonicalSessionsRevision: 4,
                                                              confirmedWorkoutsRevision: 3,
+                                                             liveFiveMinuteBucket: 10,
                                                              restingHR: 60,
                                                              maxHR: 190))
         XCTAssertNotEqual(original,
                           SessionStore.WorkoutReviewCacheKey(canonicalSessionsRevision: 4,
                                                              confirmedWorkoutsRevision: 2,
+                                                             liveFiveMinuteBucket: 10,
                                                              restingHR: 61,
+                                                             maxHR: 190))
+        XCTAssertNotEqual(original,
+                          SessionStore.WorkoutReviewCacheKey(canonicalSessionsRevision: 4,
+                                                             confirmedWorkoutsRevision: 2,
+                                                             liveFiveMinuteBucket: 11,
+                                                             restingHR: 60,
                                                              maxHR: 190))
     }
 

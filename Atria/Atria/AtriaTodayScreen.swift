@@ -761,10 +761,16 @@ struct AtriaTodayScreen: View {
                             detail: recoveryMetric.detail,
                             tintHex: AtriaRingMetricProjection.zoneTintHex(ringRecoveryZone?.level),
                             fill: recoveryMetric.fill),
-            sleep: .init(title: "Sleep",
+        sleep: .init(title: "Sleep",
                          value: sleepMetric.value,
                          detail: sleepMetric.detail,
-                         tintHex: AtriaRingMetricProjection.achievementTintHex(fill: sleepMetric.fill),
+                         // Sleep uses percent-of-need zones rather than the generic
+                         // achievement rule (which stays yellow until exact closure).
+                         // Persist the same tint as the live ring so a confirmed 99%
+                         // night cannot flash or remain yellow after projection reload.
+                         tintHex: AtriaRingMetricProjection.sleepStateTintHex(
+                            percent: sleepPerformancePercent.map(Double.init)
+                         ) ?? AtriaRingMetricProjection.neutralTintHex,
                          fill: sleepMetric.fill,
                          stateTintHex: AtriaRingMetricProjection.sleepStateTintHex(
                             percent: sleepPerformancePercent.map(Double.init)
@@ -773,7 +779,10 @@ struct AtriaTodayScreen: View {
             strain: .init(title: "Strain",
                           value: strainMetric.value,
                           detail: strainMetric.detail,
-                          tintHex: AtriaRingMetricProjection.achievementTintHex(fill: strainProgress),
+                          tintHex: AtriaRingMetricProjection.strainTintHex(
+                            targetProgress: strainProgress,
+                            actualFill: strainMetric.fill
+                          ),
                           fill: strainMetric.fill,
                           stateTintHex: strainZone.map { AtriaRingMetricProjection.zoneTintHex($0.level) },
                           targetFraction: strainMetric.targetFraction),
@@ -1102,6 +1111,16 @@ struct AtriaTodayScreen: View {
         )
     }
 
+    /// Display-only sleep evidence may be newer than the confirmed night that
+    /// owns Recovery and sleep-need math. Keeping the two projections separate
+    /// lets a first-night candidate show its measured duration immediately
+    /// without silently promoting it into physiological truth.
+    private var latestDisplaySleep: SleepHistorySnapshot.Night? {
+        AtriaOverviewCurrentSleep.resolveDisplayEvidence(
+            from: sessionProjectionStore.state.sleepHistorySnapshot
+        )
+    }
+
     /// Today reads the sleep ring, center caption, and sleep-performance tile
     /// several times per body pass. The underlying math scans recent sleep
     /// nights for debt and rollups for yesterday's strain, so cache it behind
@@ -1112,14 +1131,23 @@ struct AtriaTodayScreen: View {
         let key = AtriaTodaySleepNeedKey(sleepRevision: sessionProjectionStore.state.sleepHistorySnapshotRevision,
                                          rollupRevision: sessionProjectionStore.state.dailyRollupHistoryRevision,
                                          latestNightID: latest?.id,
+                                         displayNightID: latestDisplaySleep?.id,
                                          baseNeedHours: sleepBaseNeedHours)
         if glanceMemo.sleepNeedKey == key, let cached = glanceMemo.sleepNeedValue {
             return cached
         }
-        let value = Self.makeSleepNeedSnapshot(sleepHistory: sleepHistory,
+        let value: AtriaTodaySleepNeedSnapshot
+        if latest == nil, latestDisplaySleep != nil {
+            // A reviewable night may be shown as duration evidence, but an old
+            // rollup's performance must not be attached to that new candidate.
+            value = AtriaTodaySleepNeedSnapshot(needHours: nil,
+                                                performancePercent: nil)
+        } else {
+            value = Self.makeSleepNeedSnapshot(sleepHistory: sleepHistory,
                                                latestSleep: latest,
                                                dayDescendingRollups: dayDescendingRollups,
                                                baseNeedHours: sleepBaseNeedHours)
+        }
         glanceMemo.sleepNeedKey = key
         glanceMemo.sleepNeedValue = value
         return value
@@ -1203,17 +1231,28 @@ struct AtriaTodayScreen: View {
         let performance = sleepPerformancePercent
         // Hours-first, always: falls back to the rollup's stored duration
         // before ever falling back to a bare percent as the primary number.
-        let value = latestSleep?.durationText
+        let value = latestDisplaySleep?.durationText
             ?? latestRollup?.sleepSeconds.map { AtriaMetricFormat.sleepDuration(seconds: $0) }
             ?? "Learning"   // canonical not-ready word (was "Building"); consistent across tabs
+        let detail: String
+        if let evidence = latestDisplaySleep, !evidence.confirmed {
+            detail = evidence.isNapEvidence ? "Review nap" : "Review sleep"
+        } else {
+            detail = sleepNeedDetailText(performance: performance)
+        }
         return AtriaTriRingMetric(title: "Sleep",
                                   value: value,
-                                  detail: sleepNeedDetailText(performance: performance),
+                                  detail: detail,
                                   systemImage: "moon.fill",
                                   // Achievement coloring (2026-07-08, user request): the ring
                                   // warms to green as sleep fills toward need, so a met goal reads
                                   // as a win. The legend dot (stateTint) still carries the zone.
-                                  tint: Metrics.ringAchievementTint(fill: performance.map { min(max(Double($0) / 100.0, 0), 1) }),
+                                  // Sleep is judged against its percent-of-need zone, not the
+                                  // generic exact-closure achievement rule. Otherwise a rounded
+                                  // 99% night displays a yellow ring while its state dot and
+                                  // sleep-performance card correctly say green.
+                                  tint: performance.map { AtriaTriRing.zoneTint(.sleep, percent: Double($0)) }
+                                      ?? .secondary,
                                   fill: performance.map { min(max(Double($0) / 100.0, 0), 1) },
                                   stateTint: performance.map { AtriaTriRing.zoneTint(.sleep, percent: Double($0)) },
                                   // A marker at 1.0 (ring closure) exactly when there's a real,
@@ -1250,10 +1289,11 @@ struct AtriaTodayScreen: View {
             let detail = displayHero.recoveryLiftedAfterNap ? "↑ after nap" : displayHero.recoveryDetail
             return ("\(percent)%", detail, percent)
         }
-        // Time-to-detect (2026-07-05): recovery calibrates over ~4 nights. Instead
-        // of a bare "Learning", show how far into that window the user is (matches
-        // the overview surface's "Day X of 4"), so they know when a score arrives.
-        return ("Learning", "Day \(recoveryCalibratingDay) of 4", nil)
+        return ("Learning", AtriaRecoveryAvailabilityPresentation.detail(
+            estimateDetail: estimate.detail,
+            hrvBaselineSamples: sessionProjectionStore.state.baseline.freshHRVSampleCount(),
+            restingBaselineSamples: sessionProjectionStore.state.baseline.freshRestingSampleCount()
+        ), nil)
     }
 
     /// HRV glance carry (mirrors `displayRecovery`): the tile shows the SAME frozen
@@ -1318,16 +1358,6 @@ struct AtriaTodayScreen: View {
         return ("Steady", "flat over \(nights) nights")
     }
 
-    /// Which day of the ~4-night recovery calibration the user is on. Shared by the
-    /// ring center (`centerValue`) and the recovery legend chip (`displayRecovery`)
-    /// so the two never disagree — the center used to hardcode "Day 1" while the
-    /// legend showed the real day, which read as a bug on-device.
-    private var recoveryCalibratingDay: Int {
-        let samples = max(sessionProjectionStore.state.baseline.freshHRVSampleCount(),
-                          sessionProjectionStore.state.baseline.freshRestingSampleCount())
-        return min(max(samples + 1, 1), 4)
-    }
-
     private var recoveryMetric: AtriaTriRingMetric {
         let display = displayRecovery
         return AtriaTriRingMetric(title: "Recovery",
@@ -1350,23 +1380,33 @@ struct AtriaTodayScreen: View {
         // color and the marker are separate and require a real frozen target.
         let target = displayHero.guidance.target
         let incomplete = dayStrainIsIncomplete
+        let pending = isPendingHeroValue(displayHero.strainValue)
         let fill = AtriaRingMetricProjection.strainFill(
             strain: displayHero.strain,
-            isPending: incomplete
+            isPending: incomplete || pending
         )
         let targetProgress = AtriaRingMetricProjection.strainTargetProgress(
             strain: displayHero.strain,
             target: target
         )
         return AtriaTriRingMetric(title: "Strain",
-                                  value: incomplete ? "Incomplete" : displayHero.strainValue,
-                                  detail: incomplete ? "Sparse HR" : (target.map { String(format: "of %.1f", $0) } ?? "Strain"),
+                                  value: incomplete && !displayHero.strainValue.hasPrefix("≥")
+                                    ? "≥ \(displayHero.strainValue)"
+                                    : displayHero.strainValue,
+                                  detail: pending
+                                    ? "Learning"
+                                    : (incomplete ? "Partial · sparse HR" : (target.map { String(format: "of %.1f", $0) } ?? "Strain")),
                                   systemImage: "flame.fill",
-                                  // Achievement coloring turns green only when the real target is met.
-                                  tint: Metrics.ringAchievementTint(fill: incomplete ? nil : targetProgress),
+                                  // Without a Recovery-derived target, measured
+                                  // strain keeps its identity blue instead of
+                                  // looking like absent data.
+                                  tint: AtriaRingMetricProjection.strainTint(
+                                    targetProgress: incomplete || pending ? nil : targetProgress,
+                                    actualFill: fill
+                                  ),
                                   fill: fill,
-                                  stateTint: incomplete ? nil : ringStrainZone(target: target)?.tint,
-                                  targetFraction: incomplete ? nil : AtriaRingMetricProjection.strainTargetFraction(target))
+                                  stateTint: incomplete || pending ? nil : ringStrainZone(target: target)?.tint,
+                                  targetFraction: incomplete || pending ? nil : AtriaRingMetricProjection.strainTargetFraction(target))
     }
 
     /// The ring, compact header, accessibility summary and glance grid all ask
@@ -1475,7 +1515,7 @@ struct AtriaTodayScreen: View {
     private var centerValue: String {
         switch layoutConfig.ringCenterMetric {
         case .recovery:
-            return displayRecovery.percent != nil ? displayRecovery.value : "Day \(recoveryCalibratingDay)"
+            return displayRecovery.value
         case .sleep:
             // Hours-first: never the bare "82%" this used to show -- the
             // percent moves to `centerState` as a small "82% of need"
@@ -2131,6 +2171,7 @@ private struct AtriaTodaySleepNeedKey: Equatable {
     let sleepRevision: Int
     let rollupRevision: Int
     let latestNightID: String?
+    let displayNightID: String?
     let baseNeedHours: Double
 }
 
@@ -2335,13 +2376,15 @@ private struct AtriaTodayLiveGlanceTileHost: View {
                              showsDetail: Bool) -> AtriaTodayGlanceItem? {
         switch metric {
         case .steps:
+            let steps = live.dailyStepPresentation
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: live.strapStepResearchText,
-                                        detail: legendDetail(live.hasStrapStepResearch ? "Strap movement" : "Not available on this strap",
+                                        value: steps.valueText,
+                                        detail: legendDetail(steps.detailText,
                                                              showsDetail: showsDetail),
                                         systemImage: metric.systemImage,
-                                        tint: live.hasStrapStepResearch ? .green : .secondary,
+                                        tint: steps.count == nil ? .secondary
+                                            : (steps.completeness == .complete ? .green : .orange),
                                         layoutSize: layoutSize)
         case .calories:
             return AtriaTodayGlanceItem(title: metric.label,

@@ -19,6 +19,50 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
         super.tearDown()
     }
 
+    func testCompletedStepSelectionPrefersValidatedStrap() {
+        let strap = AtriaCompletedWorkoutStepEvidence(
+            count: 612,
+            isEstimated: false,
+            capturedAt: Date(timeIntervalSince1970: 100)
+        )
+        let phone = AtriaCompletedWorkoutStepEvidence(
+            count: 1_010,
+            isEstimated: true,
+            capturedAt: Date(timeIntervalSince1970: 101)
+        )
+
+        XCTAssertEqual(AtriaCompletedWorkoutStepEvidence.select(strap: strap, phone: phone),
+                       strap)
+    }
+
+    func testCompletedStepSelectionUsesLargerPreliminarySubtotal() {
+        let capturedAt = Date(timeIntervalSince1970: 100)
+        let sparseStrap = AtriaCompletedWorkoutStepEvidence(
+            count: 612,
+            isEstimated: true,
+            capturedAt: capturedAt
+        )
+        let carriedPhone = AtriaCompletedWorkoutStepEvidence(
+            count: 1_010,
+            isEstimated: true,
+            capturedAt: capturedAt
+        )
+        XCTAssertEqual(
+            AtriaCompletedWorkoutStepEvidence.select(strap: sparseStrap, phone: carriedPhone),
+            carriedPhone
+        )
+
+        let benchPhone = AtriaCompletedWorkoutStepEvidence(
+            count: 0,
+            isEstimated: true,
+            capturedAt: capturedAt
+        )
+        XCTAssertEqual(
+            AtriaCompletedWorkoutStepEvidence.select(strap: sparseStrap, phone: benchPhone),
+            sparseStrap
+        )
+    }
+
     func testHeadlessPausePersistsCanonicalPauseAndStepAnchor() throws {
         let start = Date(timeIntervalSince1970: 2_000_000_000)
         let original = makeIntent(startedAt: start)
@@ -386,7 +430,8 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
                                            range: start.upperBound..<home.endIndex))
         let body = String(home[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(body.contains("currentWorkoutStepCoordinate(now: now)"))
+        XCTAssertTrue(body.contains("sourceVersion: session.stepSourceVersion"))
+        XCTAssertTrue(body.contains("now: now"))
         XCTAssertTrue(body.contains("coordinate.isLiveForCompletion"))
         XCTAssertFalse(body.contains("AtriaLiveWorkoutStepProjection.make"),
                        "the 15-second HUD tolerance cannot authorize foreground End")
@@ -464,10 +509,13 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
         let wait = try XCTUnwrap(body.range(of: "await store.waitForDeferredSessionLoadIfNeeded()"))
         let guardLoaded = try XCTUnwrap(body.range(of: "guard store.hasLoadedSavedSessions"))
         let clock = try XCTUnwrap(body.range(of: "let start = Date()"))
-        let coordinate = try XCTUnwrap(body.range(of: "currentWorkoutStepCoordinate(now: start)"))
+        let sourceFreeze = try XCTUnwrap(body.range(of: "AtriaWorkoutStepSourceVersion.frozen"))
+        let coordinate = try XCTUnwrap(body.range(of: "sourceVersion: stepSourceVersion"))
         let anchor = try XCTUnwrap(body.range(of: "startingStepCount: stepCoordinate.cumulativeCount"))
         XCTAssertLessThan(wait.lowerBound, guardLoaded.lowerBound)
         XCTAssertLessThan(guardLoaded.lowerBound, clock.lowerBound)
+        XCTAssertLessThan(clock.lowerBound, sourceFreeze.lowerBound)
+        XCTAssertLessThan(sourceFreeze.lowerBound, coordinate.lowerBound)
         XCTAssertLessThan(clock.lowerBound, coordinate.lowerBound)
         XCTAssertLessThan(coordinate.lowerBound, anchor.lowerBound)
         XCTAssertFalse(body.contains("model.coreLiveStore.state.strapStepResearchCount"))

@@ -14,6 +14,18 @@ final class AtriaTodayTileLogicTests: XCTestCase {
         XCTAssertEqual(Metrics.ringAchievementTint(fill: 1.20), .green)
     }
 
+    func testConfirmedEightHourFiveMinuteSleepMeetsEightHourRingGoal() {
+        let confirmedSleepSeconds = 29_097.122655034065
+        let goalSeconds = 8.0 * 3_600
+        let fill = min(max(confirmedSleepSeconds / goalSeconds, 0), 1)
+
+        XCTAssertEqual(fill, 1, accuracy: 1e-12)
+        XCTAssertEqual(Metrics.ringAchievementTint(fill: fill), .green)
+        XCTAssertEqual(Metrics.sleepDurationZone(confirmedSleepSeconds / 3_600,
+                                                 goalHours: 8)?.level,
+                       .green)
+    }
+
     // MARK: zoneTint bands
 
     func testSleepZoneBands() {
@@ -73,6 +85,50 @@ final class AtriaTodayTileLogicTests: XCTestCase {
         XCTAssertEqual(AtriaRingMetricProjection.zoneTintHex(nil),
                        AtriaRingMetricProjection.neutralTintHex)
         XCTAssertEqual(AtriaRingMetricProjection.zoneTintHex(.red), "#ff4f7b")
+    }
+
+    func testMeasuredStrainKeepsIdentityColorUntilRecoveryProvidesTarget() {
+        let actualFill = AtriaRingMetricProjection.strainFill(strain: 0.43)
+
+        XCTAssertEqual(AtriaRingMetricProjection.strainTint(
+            targetProgress: nil,
+            actualFill: actualFill
+        ), Metrics.electricStrain)
+        XCTAssertEqual(AtriaRingMetricProjection.strainTintHex(
+            targetProgress: nil,
+            actualFill: actualFill
+        ), AtriaRingMetricProjection.strainIdentityTintHex)
+        XCTAssertEqual(AtriaRingMetricProjection.strainTint(
+            targetProgress: nil,
+            actualFill: nil
+        ), .secondary)
+        XCTAssertEqual(AtriaRingMetricProjection.strainTint(
+            targetProgress: 0.75,
+            actualFill: actualFill
+        ), .yellow)
+    }
+
+    func testRecoveryFailureNamesMissingEvidenceInsteadOfClaimingDayFourCompletion() {
+        XCTAssertEqual(AtriaRecoveryAvailabilityPresentation.detail(
+            estimateDetail: "learning: need saved sleep",
+            hrvBaselineSamples: 3,
+            restingBaselineSamples: 3
+        ), "Save sleep to score")
+        XCTAssertEqual(AtriaRecoveryAvailabilityPresentation.detail(
+            estimateDetail: "learning: need a steady HRV window",
+            hrvBaselineSamples: 3,
+            restingBaselineSamples: 4
+        ), "Needs steady HRV")
+        XCTAssertEqual(AtriaRecoveryAvailabilityPresentation.detail(
+            estimateDetail: "learning: need resting HR",
+            hrvBaselineSamples: 4,
+            restingBaselineSamples: 0
+        ), "Needs resting HR")
+        XCTAssertEqual(AtriaRecoveryAvailabilityPresentation.detail(
+            estimateDetail: "learning RHR baseline 3/14",
+            hrvBaselineSamples: 3,
+            restingBaselineSamples: 3
+        ), "RHR baseline 3 of 14 nights")
     }
 
     // MARK: TodayHRZoneMinutes text

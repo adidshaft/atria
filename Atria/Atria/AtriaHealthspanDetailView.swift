@@ -223,6 +223,15 @@ struct AtriaHealthspanDetailView: View {
                     .foregroundStyle(Metrics.electricStrain)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
+                if let qualifier = model.summary.earlyEstimateQualifierText {
+                    // 14–27 days of history: the estimate is real but not yet
+                    // confident. The qualifier stays visibly attached to the
+                    // hero so an early value never reads as a confident one.
+                    Text(qualifier)
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.orange)
+                        .padding(.top, 2)
+                }
             }
             .padding(.horizontal, AtriaDesignTokens.Spacing.xl)
         }
@@ -317,7 +326,8 @@ struct AtriaHealthspanDetailView: View {
 
     private var ageAccessibilityLabel: String {
         if model.summary.isReady {
-            return "Body age \(model.summary.valueText). \(ageComparisonText)."
+            let qualifier = model.summary.earlyEstimateQualifierText.map { " \($0)." } ?? ""
+            return "Body age \(model.summary.valueText). \(ageComparisonText).\(qualifier)"
         }
         return "Body age unavailable. \(ageComparisonText)."
     }
@@ -453,6 +463,20 @@ struct AtriaHealthspanDetailView: View {
             .chartYAxis(.hidden)
             .frame(height: 82)
             .accessibilityLabel(trendAccessibilityLabel)
+            .atriaInspectableGraph(
+                AtriaInspectableGraph(
+                    title: model.trendTitle,
+                    subtitle: "Recorded fitness-age estimates",
+                    content: .timeSeries([
+                        .init(title: "Fitness age",
+                              unit: " yr",
+                              tint: Metrics.electricStrain,
+                              points: model.trendPoints.map {
+                                  .init(date: $0.day, value: $0.value)
+                              })
+                    ])
+                )
+            )
         }
         .padding(AtriaDesignTokens.Spacing.lg)
         .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile)

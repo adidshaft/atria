@@ -10,6 +10,9 @@ struct WidgetSnapshot: Codable {
     let recoveryConfidence: String
     let recoveryDetail: String
     let strain: Double
+    /// Evidence qualifier for the numeric day-load value. Current writers use
+    /// this to distinguish a partial sparse-HR aggregate from a complete cycle.
+    var strainDetail: String? = nil
     /// When the cumulative wake-to-wake strain projection was recomputed.
     /// This is deliberately independent of the latest live HR sample; a radio
     /// pause cannot invalidate load already accumulated from durable evidence.
@@ -25,6 +28,9 @@ struct WidgetSnapshot: Codable {
     // Sleep duration for the Sleep h chip/column on Home Screen widgets. Optional
     // so widgets built against schema <4 payloads still decode (missing key -> nil).
     let sleepHours: Double?
+    /// Display-only provenance. A reviewable duration may be shown here without
+    /// authorizing that sleep for Recovery, debt, or physiological boundaries.
+    var sleepDetail: String? = nil
     // Lock Screen single-metric widgets (Steps / BPM, alongside Strain / HRV).
     let steps: Int?
     /// `true` means a fresh strap-derived preliminary count. Widgets must
@@ -196,6 +202,11 @@ enum WidgetSnapshotPublisher {
             recoveryConfidence: current.recoveryConfidence,
             recoveryDetail: current.recoveryDetail,
             strain: strain,
+            strainDetail: strainCapturedAt == nil
+                ? current.strainDetail
+                : (current.strainDetail?.localizedCaseInsensitiveContains("partial") == true && strain < 1
+                    ? current.strainDetail
+                    : "Current cycle"),
             strainCapturedAt: cumulativeStrainCaptureDate(
                 previousValue: current.strain,
                 previousCapturedAt: current.strainCapturedAt,
@@ -209,6 +220,7 @@ enum WidgetSnapshotPublisher {
             hrvState: current.hrvState,
             maxHR: current.maxHR,
             sleepHours: current.sleepHours,
+            sleepDetail: current.sleepDetail,
             steps: steps,
             stepsAreEstimated: steps == nil ? nil : stepsAreEstimated,
             stepsCapturedAt: steps == nil ? nil : stepsCapturedAt,
@@ -269,6 +281,7 @@ enum WidgetSnapshotPublisher {
                                        recoveryConfidence: snapshot.recoveryConfidence,
                                        recoveryDetail: snapshot.recoveryDetail,
                                        strain: snapshot.strain,
+                                       strainDetail: snapshot.strainDetail,
                                        strainCapturedAt: snapshot.strainCapturedAt,
                                        strainCycleStart: snapshot.strainCycleStart,
                                        strainCycleExpiresAt: snapshot.strainCycleExpiresAt,
@@ -277,6 +290,7 @@ enum WidgetSnapshotPublisher {
                                        hrvState: snapshot.hrvState,
                                        maxHR: snapshot.maxHR,
                                        sleepHours: snapshot.sleepHours,
+                                       sleepDetail: snapshot.sleepDetail,
                                        steps: snapshot.steps,
                                        stepsAreEstimated: snapshot.stepsAreEstimated,
                                        stepsCapturedAt: snapshot.stepsCapturedAt,
@@ -358,6 +372,10 @@ enum WidgetSnapshotPublisher {
         let fallbackHRV = validatedHRV ?? store.latestLocalRecoveryHRV(on: now)
         let latestSleep = store.sleepHistorySnapshot.latestMainSleep
             .flatMap { _ in store.currentPhysiologicalMainSleep(on: now) }
+        let latestDisplaySleep = AtriaOverviewCurrentSleep.resolveDisplayEvidence(
+            from: store.sleepHistorySnapshot,
+            now: now
+        )
         let calendar = Calendar.current
         let physiologicalCycle = AtriaPhysiologicalCycle.current(now: now,
                                                                  confirmedSleeps: store.confirmedSleeps,
@@ -394,11 +412,29 @@ enum WidgetSnapshotPublisher {
         // Mirrors AtriaHomeModel.strainConfidence's "learning" guard: strain is
         // only credible with real resting-HR evidence and a usable max HR.
         let strainIsCredible = rest != nil && store.profile.maxHR > (rest ?? 60)
+        let strainIsPartial = strainIsCredible
+            && AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(
+                day: now,
+                strain: strain,
+                workouts: store.confirmedWorkouts,
+                calendar: calendar
+            )
         let strapStepsToday = AtriaHomeModel.mergedStrapStepResearchCount(
             savedToday: savedAggregate.savedTodayStrapSteps,
             savedActiveSession: savedAggregate.savedActiveSessionStrapSteps,
             savedActiveSessionTotal: savedAggregate.savedActiveSessionTotalStrapSteps,
             liveActiveSession: ble.liveStrapStepResearchCount
+        )
+        let cachedPhoneSteps = AtriaPhoneDailyStepStore.cached(now: now, calendar: calendar)
+        let dailySteps = resolvedDailySteps(
+            day: now,
+            now: now,
+            liveCount: strapStepsToday,
+            liveValidationState: ble.liveStrapStepResearchState,
+            liveCapturedAt: ble.liveStrapStepCountCapturedAt,
+            phoneCount: cachedPhoneSteps?.count,
+            phoneCapturedAt: cachedPhoneSteps?.capturedAt,
+            calendar: calendar
         )
         let liveHeartRate = AtriaHomeModel.resolvedLiveHeartRate(
             heartRate: ble.heartRate,
@@ -411,14 +447,9 @@ enum WidgetSnapshotPublisher {
         let liveHeartRateZone = liveHeartRate > 0
             ? HRZone.zone(for: liveHeartRate, maxHR: store.profile.maxHR)
             : nil
-        let stepsAreValidated = strapStepsAreValidated(state: ble.liveStrapStepResearchState)
-        let publishedSteps = strapStepsToday > 0
-            && strapStepsArePublishable(state: ble.liveStrapStepResearchState)
-            ? strapStepsToday
-            : nil
-        let stepsCapturedAt = publishedSteps == nil
-            ? nil
-            : ble.liveStrapStepCountCapturedAt
+        let publishedSteps = dailySteps.count
+        let stepsAreValidated = dailySteps.isValidated
+        let stepsCapturedAt = dailySteps.capturedAt
         let storedDailyStepGoal = UserDefaults.standard.integer(forKey: "atria.target.steps.goal")
         let dailyStepGoal = storedDailyStepGoal > 0 ? storedDailyStepGoal : 8_000
         let hrvRMSSD: Int?
@@ -466,12 +497,17 @@ enum WidgetSnapshotPublisher {
             && persistedBattery.chargeAge >= 0
             ? now.addingTimeInterval(-persistedBattery.chargeAge)
             : nil
+        // Optional evidence qualifiers are an additive schema-4 extension so
+        // already-installed widget extensions continue decoding the payload.
         let snapshot = WidgetSnapshot(schema: 4,
                                       createdAt: now,
                                       recoveryPercent: recoveryPercent,
                                       recoveryConfidence: displayedRecovery.confidence.rawValue,
                                       recoveryDetail: displayedRecovery.detail,
                                       strain: strain,
+                                      strainDetail: strainIsCredible
+                                        ? (strainIsPartial ? "Partial · sparse HR" : "Current cycle")
+                                        : nil,
                                       // `dayStrain` was recomputed immediately
                                       // above; this is its true computation
                                       // clock, not a generic snapshot fallback.
@@ -488,7 +524,10 @@ enum WidgetSnapshotPublisher {
                                       hrvRMSSD: hrvRMSSD,
                                       hrvState: hrvState,
                                       maxHR: store.profile.maxHR,
-                                      sleepHours: latestSleep?.durationHours,
+                                      sleepHours: latestDisplaySleep?.durationHours,
+                                      sleepDetail: latestDisplaySleep.map {
+                                        $0.confirmed ? "Confirmed sleep" : ($0.isNapEvidence ? "Review nap" : "Review sleep")
+                                      },
                                       steps: publishedSteps,
                                       stepsAreEstimated: publishedSteps == nil ? nil : !stepsAreValidated,
                                       stepsCapturedAt: stepsCapturedAt,
@@ -512,13 +551,16 @@ enum WidgetSnapshotPublisher {
                                       appGroupEnabled: widgetDiagnostics.appGroupEnabled,
                                       widgetTargetPresent: widgetDiagnostics.widgetTargetPresent,
                                       complicationTargetPresent: widgetDiagnostics.complicationTargetPresent)
-        // Cold-start guard (2026-07-07, device-verified residual): before the
-        // deferred session load completes, day strain computes from zero saved
-        // TRIMP and would overwrite last run's good snapshot with an
-        // under-report (0.0 -> real over ~4s on device). Compute and return,
-        // but don't persist -- the session_load republish writes the real one.
-        if !store.hasLoadedSavedSessions {
-            AtriaDebugLog("ATRIADBG widget_snapshot status=deferred reason=%@ awaiting=session_load", reason)
+        // Cold-start + card-settlement guard: landing sessions makes the UI
+        // interactive before the async confirmed-sleep -> metric -> rollup chain
+        // is complete. Preserve the last durable widget until both authorities
+        // are ready; the verified settlement callback republishes immediately.
+        if !shouldPersistSnapshot(
+            hasLoadedSavedSessions: store.hasLoadedSavedSessions,
+            deferredLaunchCardSettlementPending: store.deferredLaunchCardSettlementPending
+        ) {
+            let awaiting = store.hasLoadedSavedSessions ? "card_settlement" : "session_load"
+            AtriaDebugLog("ATRIADBG widget_snapshot status=deferred reason=%@ awaiting=%@", reason, awaiting)
             return snapshot
         }
         if let data = try? JSONEncoder.widgetSnapshotEncoder.encode(snapshot) {
@@ -561,9 +603,41 @@ enum WidgetSnapshotPublisher {
         return snapshot
     }
 
+    nonisolated static func shouldPersistSnapshot(
+        hasLoadedSavedSessions: Bool,
+        deferredLaunchCardSettlementPending: Bool
+    ) -> Bool {
+        hasLoadedSavedSessions && !deferredLaunchCardSettlementPending
+    }
+
     nonisolated static func strapStepsAreValidated(state: String) -> Bool {
         state == "validated"
             || state == "r10_live_validated"
+    }
+
+    /// Widgets and the in-app Steps card must select from phone and strap
+    /// evidence with the same overlap-safe policy.
+    nonisolated static func resolvedDailySteps(
+        day: Date,
+        now: Date,
+        liveCount: Int,
+        liveValidationState: String,
+        liveCapturedAt: Date?,
+        phoneCount: Int?,
+        phoneCapturedAt: Date?,
+        calendar: Calendar = .current
+    ) -> AtriaDailyStepPresentation {
+        AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: now,
+            liveCount: liveCount,
+            liveValidationState: liveValidationState,
+            liveCapturedAt: liveCapturedAt,
+            phoneCount: phoneCount,
+            phoneCapturedAt: phoneCapturedAt,
+            canonicalDays: [],
+            calendar: calendar
+        )
     }
 
     nonisolated static func strapStepsArePublishable(state: String) -> Bool {
@@ -615,11 +689,13 @@ enum WidgetSnapshotPublisher {
         parts.append(snapshot.recoveryPercent.map(String.init) ?? "learning")
         parts.append(snapshot.recoveryConfidence)
         parts.append(String(format: "%.1f", snapshot.strain))
+        parts.append(snapshot.strainDetail ?? "strain_detail_absent")
         parts.append(snapshot.strainCycleStart.map { String($0.timeIntervalSince1970) } ?? "strain_cycle_absent")
         parts.append(snapshot.strainCycleExpiresAt.map { String($0.timeIntervalSince1970) } ?? "strain_expiry_absent")
         parts.append(snapshot.restingHR.map(String.init) ?? "-")
         parts.append(snapshot.hrvRMSSD.map(String.init) ?? "-")
         parts.append(snapshot.sleepHours.map { String(format: "%.1f", $0) } ?? "-")
+        parts.append(snapshot.sleepDetail ?? "sleep_detail_absent")
         // Exact step/HR values and capture clocks are handled by the bounded
         // sensor lane above. Presence and semantic transitions stay immediate.
         parts.append(snapshot.steps == nil ? "steps_absent" : "steps_present")

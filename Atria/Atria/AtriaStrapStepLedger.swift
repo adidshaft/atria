@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// A tiny crash-recovery checkpoint for strap-native steps. This deliberately
@@ -15,14 +16,26 @@ enum AtriaStrapStepLedger {
         let cumulativeRawSteps: Int
         let deviceTimestamp: UInt32?
         let state: String?
+        var segmentGyroCadenceResearchSteps: Int? = nil
+        var cumulativeGyroCadenceResearchSteps: Int? = nil
     }
 
-    enum SaveError: Error, Equatable {
+    enum SaveError: Error, Equatable, LocalizedError {
         case malformed
         case mismatchedSegment
         case regressedCount
         case staleWatermark
         case unavailableStorage
+
+        var errorDescription: String? {
+            switch self {
+            case .malformed: return "malformed_ledger"
+            case .mismatchedSegment: return "mismatched_segment"
+            case .regressedCount: return "regressed_count"
+            case .staleWatermark: return "stale_watermark"
+            case .unavailableStorage: return "unavailable_storage"
+            }
+        }
     }
 
     static let schema = 1
@@ -67,7 +80,9 @@ enum AtriaStrapStepLedger {
             cumulativeSteps: stored.cumulativeSteps,
             cumulativeRawSteps: stored.cumulativeRawSteps,
             deviceTimestamp: nil,
-            state: stored.state
+            state: stored.state,
+            segmentGyroCadenceResearchSteps: stored.segmentGyroCadenceResearchSteps,
+            cumulativeGyroCadenceResearchSteps: stored.cumulativeGyroCadenceResearchSteps
         )
         guard isValid(resumed, now: now) else { return nil }
         do {
@@ -89,8 +104,10 @@ enum AtriaStrapStepLedger {
         segmentRawSteps: Int,
         deviceTimestamp: UInt32?,
         state: String?,
+        gyroCadenceResearchSteps: Int? = nil,
         now: Date = Date(),
-        at target: URL? = url
+        at target: URL? = url,
+        unhandedRebindingSourceSegmentID: UUID? = nil
     ) throws -> Record {
         ioLock.lock()
         defer { ioLock.unlock() }
@@ -99,16 +116,59 @@ enum AtriaStrapStepLedger {
         if existing == nil, FileManager.default.fileExists(atPath: target.path) {
             throw SaveError.malformed
         }
-        let record = try reconciledCheckpoint(
-            existing: existing,
-            segmentID: segmentID,
-            segmentStartedAt: segmentStartedAt,
-            segmentSteps: segmentSteps,
-            segmentRawSteps: segmentRawSteps,
-            deviceTimestamp: deviceTimestamp,
-            state: state,
-            now: now
-        )
+        let record: Record
+        if let unhandedRebindingSourceSegmentID,
+           let existing,
+           existing.segmentID != segmentID {
+            // This narrowly-scoped recovery is enabled only while restoring an
+            // unhanded live R10 prefix. First advance the old identity using
+            // all ordinary monotonic/watermark checks, then transfer ownership
+            // of that exact prefix. Delayed writers do not pass this flag and
+            // therefore still fail with `mismatchedSegment`.
+            guard existing.segmentID == unhandedRebindingSourceSegmentID else {
+                throw SaveError.mismatchedSegment
+            }
+            let observed = try reconciledCheckpoint(
+                existing: existing,
+                segmentID: existing.segmentID,
+                segmentStartedAt: existing.segmentStartedAt,
+                segmentSteps: segmentSteps,
+                segmentRawSteps: segmentRawSteps,
+                deviceTimestamp: deviceTimestamp,
+                state: state,
+                gyroCadenceResearchSteps: gyroCadenceResearchSteps,
+                now: now
+            )
+            record = Record(
+                schema: schema,
+                segmentID: segmentID,
+                segmentStartedAt: min(segmentStartedAt, now),
+                updatedAt: now,
+                segmentSteps: observed.segmentSteps,
+                segmentRawSteps: observed.segmentRawSteps,
+                cumulativeSteps: observed.cumulativeSteps,
+                cumulativeRawSteps: observed.cumulativeRawSteps,
+                deviceTimestamp: observed.deviceTimestamp,
+                state: observed.state,
+                segmentGyroCadenceResearchSteps: observed.segmentGyroCadenceResearchSteps,
+                cumulativeGyroCadenceResearchSteps: observed.cumulativeGyroCadenceResearchSteps
+            )
+            guard isValid(record, now: now, enforcesFreshness: false) else {
+                throw SaveError.malformed
+            }
+        } else {
+            record = try reconciledCheckpoint(
+                existing: existing,
+                segmentID: segmentID,
+                segmentStartedAt: segmentStartedAt,
+                segmentSteps: segmentSteps,
+                segmentRawSteps: segmentRawSteps,
+                deviceTimestamp: deviceTimestamp,
+                state: state,
+                gyroCadenceResearchSteps: gyroCadenceResearchSteps,
+                now: now
+            )
+        }
         try writeLocked(record, to: target)
         return record
     }
@@ -122,6 +182,7 @@ enum AtriaStrapStepLedger {
         finalizedSteps: Int,
         finalizedRawSteps: Int,
         deviceTimestamp: UInt32?,
+        finalizedGyroCadenceResearchSteps: Int? = nil,
         to nextSegmentID: UUID,
         nextSegmentStartedAt: Date,
         now: Date = Date(),
@@ -141,6 +202,7 @@ enum AtriaStrapStepLedger {
             segmentRawSteps: finalizedRawSteps,
             deviceTimestamp: deviceTimestamp,
             state: existing.state,
+            gyroCadenceResearchSteps: finalizedGyroCadenceResearchSteps,
             now: now
         )
         let rotated = Record(
@@ -153,7 +215,9 @@ enum AtriaStrapStepLedger {
             cumulativeSteps: finalized.cumulativeSteps,
             cumulativeRawSteps: finalized.cumulativeRawSteps,
             deviceTimestamp: finalized.deviceTimestamp,
-            state: finalized.state
+            state: finalized.state,
+            segmentGyroCadenceResearchSteps: finalizedGyroCadenceResearchSteps == nil ? nil : 0,
+            cumulativeGyroCadenceResearchSteps: finalized.cumulativeGyroCadenceResearchSteps
         )
         guard isValid(rotated, now: now, enforcesFreshness: false) else {
             throw SaveError.malformed
@@ -172,9 +236,11 @@ enum AtriaStrapStepLedger {
         observedSteps: Int,
         observedRawSteps: Int,
         deviceTimestamp: UInt32?,
+        observedGyroCadenceResearchSteps: Int? = nil,
         to nextSegmentID: UUID,
         carriedSteps: Int,
         carriedRawSteps: Int,
+        carriedGyroCadenceResearchSteps: Int? = nil,
         nextSegmentStartedAt: Date,
         now: Date = Date(),
         at target: URL? = url
@@ -193,12 +259,17 @@ enum AtriaStrapStepLedger {
             segmentRawSteps: observedRawSteps,
             deviceTimestamp: deviceTimestamp,
             state: existing.state,
+            gyroCadenceResearchSteps: observedGyroCadenceResearchSteps,
             now: now
         )
+        let carriedGyroIsValid = carriedGyroCadenceResearchSteps.map {
+            $0 >= 0 && $0 <= (observed.segmentGyroCadenceResearchSteps ?? 0)
+        } ?? true
         guard carriedSteps >= 0,
               carriedRawSteps >= 0,
               carriedSteps <= observed.segmentSteps,
-              carriedRawSteps <= observed.segmentRawSteps else {
+              carriedRawSteps <= observed.segmentRawSteps,
+              carriedGyroIsValid else {
             throw SaveError.malformed
         }
         let resegmented = Record(
@@ -211,7 +282,9 @@ enum AtriaStrapStepLedger {
             cumulativeSteps: observed.cumulativeSteps,
             cumulativeRawSteps: observed.cumulativeRawSteps,
             deviceTimestamp: observed.deviceTimestamp,
-            state: observed.state
+            state: observed.state,
+            segmentGyroCadenceResearchSteps: carriedGyroCadenceResearchSteps,
+            cumulativeGyroCadenceResearchSteps: observed.cumulativeGyroCadenceResearchSteps
         )
         guard isValid(resegmented, now: now, enforcesFreshness: false) else {
             throw SaveError.malformed
@@ -225,6 +298,13 @@ enum AtriaStrapStepLedger {
         now: Date = Date(),
         enforcesFreshness: Bool = true
     ) -> Bool {
+        let segmentGyroIsValid = record.segmentGyroCadenceResearchSteps.map {
+            $0 >= 0 && $0 <= maximumCount
+        } ?? true
+        let cumulativeGyroIsValid = record.cumulativeGyroCadenceResearchSteps.map {
+            $0 >= (record.segmentGyroCadenceResearchSteps ?? 0)
+                && $0 <= maximumCount
+        } ?? (record.segmentGyroCadenceResearchSteps == nil)
         guard record.schema == schema,
               record.segmentSteps >= 0,
               record.segmentRawSteps >= 0,
@@ -232,6 +312,8 @@ enum AtriaStrapStepLedger {
               record.cumulativeRawSteps >= record.segmentRawSteps,
               record.cumulativeSteps <= maximumCount,
               record.cumulativeRawSteps <= maximumCount,
+              segmentGyroIsValid,
+              cumulativeGyroIsValid,
               record.segmentStartedAt.timeIntervalSince1970.isFinite,
               record.updatedAt.timeIntervalSince1970.isFinite,
               record.updatedAt >= record.segmentStartedAt,
@@ -264,12 +346,17 @@ enum AtriaStrapStepLedger {
         segmentRawSteps: Int,
         deviceTimestamp: UInt32?,
         state: String?,
+        gyroCadenceResearchSteps: Int?,
         now: Date
     ) throws -> Record {
+        let gyroStepsAreValid = gyroCadenceResearchSteps.map {
+            $0 >= 0 && $0 <= maximumCount
+        } ?? true
         guard segmentSteps >= 0,
               segmentRawSteps >= 0,
               segmentSteps <= maximumCount,
               segmentRawSteps <= maximumCount,
+              gyroStepsAreValid,
               deviceTimestamp != 0 else {
             throw SaveError.malformed
         }
@@ -279,6 +366,8 @@ enum AtriaStrapStepLedger {
         let priorCumulativeSteps: Int
         let priorCumulativeRawSteps: Int
         let priorTimestamp: UInt32?
+        let priorSegmentGyroSteps: Int?
+        let priorCumulativeGyroSteps: Int?
         if let existing {
             guard isValid(existing, now: now, enforcesFreshness: false) else {
                 throw SaveError.malformed
@@ -307,16 +396,30 @@ enum AtriaStrapStepLedger {
             priorCumulativeSteps = existing.cumulativeSteps
             priorCumulativeRawSteps = existing.cumulativeRawSteps
             priorTimestamp = existing.deviceTimestamp
+            if let incoming = gyroCadenceResearchSteps,
+               let prior = existing.segmentGyroCadenceResearchSteps,
+               incoming < prior {
+                throw SaveError.regressedCount
+            }
+            priorSegmentGyroSteps = existing.segmentGyroCadenceResearchSteps
+            priorCumulativeGyroSteps = existing.cumulativeGyroCadenceResearchSteps
         } else {
             priorSegmentSteps = 0
             priorSegmentRawSteps = 0
             priorCumulativeSteps = 0
             priorCumulativeRawSteps = 0
             priorTimestamp = nil
+            priorSegmentGyroSteps = nil
+            priorCumulativeGyroSteps = nil
         }
 
         let cumulativeSteps = priorCumulativeSteps - priorSegmentSteps + segmentSteps
         let cumulativeRawSteps = priorCumulativeRawSteps - priorSegmentRawSteps + segmentRawSteps
+        let resolvedSegmentGyroSteps = gyroCadenceResearchSteps ?? priorSegmentGyroSteps
+        let cumulativeGyroSteps = resolvedSegmentGyroSteps.map {
+            (priorCumulativeGyroSteps ?? priorSegmentGyroSteps ?? 0)
+                - (priorSegmentGyroSteps ?? 0) + $0
+        }
         let record = Record(
             schema: schema,
             segmentID: segmentID,
@@ -327,7 +430,9 @@ enum AtriaStrapStepLedger {
             cumulativeSteps: cumulativeSteps,
             cumulativeRawSteps: cumulativeRawSteps,
             deviceTimestamp: deviceTimestamp ?? priorTimestamp,
-            state: state ?? existing?.state
+            state: state ?? existing?.state,
+            segmentGyroCadenceResearchSteps: resolvedSegmentGyroSteps,
+            cumulativeGyroCadenceResearchSteps: cumulativeGyroSteps
         )
         guard isValid(record, now: now, enforcesFreshness: false) else {
             throw SaveError.malformed
@@ -354,5 +459,16 @@ enum AtriaStrapStepLedger {
                                                 withIntermediateDirectories: true)
         let data = try JSONEncoder().encode(record)
         try data.write(to: target, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        let handle = try FileHandle(forWritingTo: target)
+        defer { try? handle.close() }
+        try handle.synchronize()
+        let descriptor = open(directory.path, O_RDONLY | O_DIRECTORY)
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { close(descriptor) }
+        guard fsync(descriptor) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 }

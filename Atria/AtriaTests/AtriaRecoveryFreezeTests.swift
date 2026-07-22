@@ -54,14 +54,15 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
                        start: Date,
                        end: Date,
                        confirmed: Bool = true,
-                       source: String = "manual_sleep") -> SleepHistorySnapshot.Night {
+                       source: String = "manual_sleep",
+                       hrv: Int? = 63) -> SleepHistorySnapshot.Night {
         SleepHistorySnapshot.Night(id: "night-\(day.timeIntervalSince1970)-\(confirmed)",
                                    day: day,
                                    start: start,
                                    end: end,
                                    duration: 7 * 3_600,
                                    restingHR: 49,
-                                   hrv: 63,
+                                   hrv: hrv,
                                    respiratoryRate: 14.2,
                                    sleepEfficiency: 0.91,
                                    confidence: confirmed ? "manual_user_entered" : "review_needed",
@@ -256,6 +257,134 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
         XCTAssertEqual(reminted.sleepEnd, sleepEnd)
         XCTAssertEqual(reminted.sleepDuration, 8 * 3_600)
         XCTAssertNotEqual(reminted.recoveryPercent, frozen.recoveryPercent)
+    }
+
+    func testMatchingConfirmedSleepRepairsPreviouslyBlankDayOneRecovery() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2027,
+                                                                   month: 1,
+                                                                   day: 16)))
+        let start = day.addingTimeInterval(-7 * 3_600)
+        let end = day
+        let confirmed = night(day: day,
+                              start: start,
+                              end: end,
+                              hrv: nil)
+        let sleep = SleepHistorySnapshot(nights: [confirmed],
+                                         confirmedCount: 1,
+                                         candidateCount: 0)
+        let blank = SavedDailyMetric(day: day,
+                                     recoveryPercent: nil,
+                                     recoveryConfidence: "learning",
+                                     hrv: nil,
+                                     restingHR: confirmed.restingHR,
+                                     respiratoryRate: confirmed.respiratoryRate,
+                                     sleepDuration: confirmed.duration,
+                                     sleepSpan: end.timeIntervalSince(start),
+                                     sleepStart: start,
+                                     sleepEnd: end,
+                                     sleepSource: confirmed.source,
+                                     sleepStageSegments: [],
+                                     sleepConsistencyPercent: nil,
+                                     strain: 2.5)
+
+        XCTAssertTrue(SessionStore.frozenRecoveryMatchesConfirmedNight(
+            frozen: blank,
+            night: confirmed
+        ), "the migration must not depend on a synthetic sleep edit")
+
+        let merged = SessionStore.mergeDailyMetricHistory(
+            existing: [blank],
+            computed: [],
+            sessions: [],
+            sleep: sleep,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: end.addingTimeInterval(3_600),
+            calendar: calendar
+        )
+        let repaired = try XCTUnwrap(merged.first)
+        XCTAssertNotNil(repaired.recoveryPercent)
+        XCTAssertEqual(repaired.recoveryConfidence,
+                       Metrics.RecoveryEstimate.Confidence.unverified.rawValue)
+        XCTAssertEqual(repaired.recoverySummary?.usesHRV, false)
+        XCTAssertTrue(repaired.recoverySummary?.detail.contains("HRV unavailable") == true)
+    }
+
+    func testMatchingConfirmedSleepRepairsFrozenScoreThatFalselyClaimsMissingHRV() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2027,
+                                                                   month: 1,
+                                                                   day: 17)))
+        let start = day.addingTimeInterval(-6.5 * 3_600)
+        let end = day
+        let confirmed = night(day: day,
+                              start: start,
+                              end: end,
+                              hrv: nil)
+        let sleep = SleepHistorySnapshot(nights: [confirmed],
+                                         confirmedCount: 1,
+                                         candidateCount: 0)
+        let contradictorySummary = FrozenRecoverySummary(
+            score: 66,
+            confidence: Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
+            source: FrozenRecoverySummary.recoveryV2Source,
+            model: "recovery_v2",
+            scoredDay: day,
+            usesHRV: true,
+            detail: "HRV provisional baseline",
+            contributors: [
+                .init(kind: Metrics.RecoveryEstimate.Contributor.Kind.hrv.rawValue,
+                      zScore: 0,
+                      weight: 0.60,
+                      detail: "HRV provisional baseline")
+            ]
+        )
+        let frozen = SavedDailyMetric(
+            day: day,
+            recoveryPercent: 66,
+            recoveryConfidence: Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
+            hrv: nil,
+            restingHR: confirmed.restingHR,
+            respiratoryRate: confirmed.respiratoryRate,
+            sleepDuration: confirmed.duration,
+            sleepSpan: end.timeIntervalSince(start),
+            sleepStart: start,
+            sleepEnd: end,
+            sleepSource: confirmed.source,
+            sleepStageSegments: [],
+            sleepConsistencyPercent: nil,
+            strain: 2.5,
+            recoverySummary: contradictorySummary
+        )
+
+        XCTAssertTrue(SessionStore.frozenRecoveryMatchesConfirmedNight(
+            frozen: frozen,
+            night: confirmed
+        ), "the repair must run even when the sleep inputs themselves are unchanged")
+
+        let merged = SessionStore.mergeDailyMetricHistory(
+            existing: [frozen],
+            computed: [],
+            sessions: [],
+            sleep: sleep,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: end.addingTimeInterval(3_600),
+            calendar: calendar
+        )
+        let repaired = try XCTUnwrap(merged.first)
+        XCTAssertNotNil(repaired.recoveryPercent)
+        XCTAssertEqual(repaired.hrv, nil)
+        XCTAssertEqual(repaired.recoveryConfidence,
+                       Metrics.RecoveryEstimate.Confidence.unverified.rawValue)
+        XCTAssertEqual(repaired.recoverySummary?.usesHRV, false)
+        XCTAssertEqual(repaired.recoverySummary?.contributors.first(where: {
+            $0.kind == Metrics.RecoveryEstimate.Contributor.Kind.hrv.rawValue
+        })?.weight, 0)
+        XCTAssertTrue(repaired.recoverySummary?.detail.contains("HRV unavailable") == true)
     }
 
     func testBiologicalAgeWeeklyCadenceInvalidatesWhenDeferredSessionsFinishLoading() throws {
@@ -474,24 +603,21 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
         XCTAssertEqual(resolved?.score, 79)
     }
 
-    func testMissingConfirmedSleepFailsClosedInsteadOfClaimingAllNighterRecovery() {
+    func testMissingConfirmedSleepKeepsExplicitlyLimitedCurrentEstimate() {
         let cycle = AtriaPhysiologicalCycle(start: at(24),
                                             boundaryKind: .noSleepFallback,
                                             anchorSleepID: "prior-night",
                                             expectedInterval: 24 * 3_600)
+        let live = recoveryEstimate(percent: 88)
 
         let resolved = DailyRecoveryResolver.currentEstimate(
-            liveEstimate: recoveryEstimate(percent: 88),
+            liveEstimate: live,
             rollups: [],
             metrics: [],
             physiologicalCycle: cycle
         )
 
-        XCTAssertNil(resolved.percent)
-        XCTAssertEqual(resolved.confidence, .unverified)
-        XCTAssertFalse(resolved.usesHRV)
-        XCTAssertTrue(resolved.contributors.isEmpty)
-        XCTAssertTrue(resolved.detail.contains("No confirmed main sleep"))
+        XCTAssertEqual(resolved, live)
     }
 
     func testInitialWearFallbackCanUseCurrentLiveEstimate() {

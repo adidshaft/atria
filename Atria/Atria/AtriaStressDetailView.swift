@@ -372,6 +372,22 @@ struct AtriaStressDetailView: View {
                     .equatable()
                     .frame(height: 142)
                     .accessibilityLabel(timelineAccessibilityLabel(points: points))
+                    .atriaInspectableGraph(
+                        AtriaInspectableGraph(
+                            title: "Stress timeline",
+                            subtitle: "Observed readings only; blanks are collection gaps",
+                            content: .timeSeries([
+                                .init(title: "Stress",
+                                      unit: "",
+                                      tint: input.tint,
+                                      points: points.map {
+                                          .init(date: $0.reading.date,
+                                                value: $0.reading.score,
+                                                segment: $0.segment)
+                                      })
+                            ])
+                        )
+                    )
             } else {
                 HStack(spacing: 10) {
                     Image(systemName: "waveform.path.ecg")

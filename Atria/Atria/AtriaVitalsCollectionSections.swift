@@ -5429,8 +5429,21 @@ private struct AtriaSleepHistoryCard: View, Equatable {
         return .learning
     }
 
+    /// Numeric first-night evidence stays visible while its review is pending.
+    /// All averages/debt/baseline math still reads confirmed main sleep only.
+    private var latestEvidence: SleepHistorySnapshot.Night? {
+        snapshot.latestDisplayEvidence
+    }
+
+    private var zonedLatestEvidence: SleepHistorySnapshot.Night? {
+        guard let latestEvidence,
+              latestEvidence.confirmed,
+              !latestEvidence.isNapEvidence else { return nil }
+        return latestEvidence
+    }
+
     private var latestEvidenceFootnote: String {
-        guard let latest = snapshot.latestMainSleep else { return "No saved sleep yet." }
+        guard let latest = latestEvidence else { return "No saved sleep yet." }
         return "\(latest.confidenceText) · \(latest.reviewContextText)"
     }
 
@@ -5444,7 +5457,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     }
 
     private var restingHeartRateZone: AtriaMetricZone? {
-        Metrics.restingHeartRateZone(snapshot.latestMainSleep?.restingHR,
+        Metrics.restingHeartRateZone(zonedLatestEvidence?.restingHR,
                                      baseline: restingBaseline,
                                      baselineSamples: restingBaselineSamples,
                                      baselineTrusted: restingBaselineTrusted,
@@ -5454,17 +5467,17 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     }
 
     private var sleepDurationZone: AtriaMetricZone? {
-        Metrics.sleepDurationZone(snapshot.latestMainSleep?.durationHours, goalHours: sleepGoalHours)
+        Metrics.sleepDurationZone(zonedLatestEvidence?.durationHours, goalHours: sleepGoalHours)
     }
 
     private var sleepEfficiencyZone: AtriaMetricZone? {
-        Metrics.sleepEfficiencyZone(snapshot.latestMainSleep?.sleepEfficiency,
+        Metrics.sleepEfficiencyZone(zonedLatestEvidence?.sleepEfficiency,
                                     greenLower: sleepEfficiencyGreenLower,
                                     yellowLower: sleepEfficiencyYellowLower)
     }
 
     private var hrvZone: AtriaMetricZone? {
-        Metrics.hrvZone(snapshot.latestMainSleep?.hrv,
+        Metrics.hrvZone(zonedLatestEvidence?.hrv,
                         baseline: hrvBaseline,
                         baselineSamples: hrvBaselineSamples,
                         baselineTrusted: hrvBaselineTrusted,
@@ -5474,7 +5487,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     }
 
     private var respiratoryRateZone: AtriaMetricZone? {
-        return Metrics.respiratoryRateZone(snapshot.latestMainSleep?.respiratoryRate,
+        return Metrics.respiratoryRateZone(zonedLatestEvidence?.respiratoryRate,
                                            baseline: snapshot.respiratoryBaselineMean,
                                            baselineSamples: snapshot.respiratoryBaselineCount,
                                            greenDelta: respiratoryGreenDelta,
@@ -5553,9 +5566,9 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                       goalHours: sleepGoalHours)
 
                 LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
-                    AtriaMetricTile(label: snapshot.latestMainSleep?.evidenceLabel ?? "Latest",
-                                    value: snapshot.latestMainSleep?.durationText ?? "--",
-                                    state: snapshot.latestMainSleep?.confirmed == true ? .validated : .research,
+                    AtriaMetricTile(label: latestEvidence?.evidenceLabel ?? "Latest",
+                                    value: latestEvidence?.durationText ?? "--",
+                                    state: latestEvidence?.confirmed == true ? .validated : .research,
                                     tint: sleepDurationZone?.tint ?? .cyan,
                                     footnote: latestEvidenceFootnote,
                                     zone: sleepDurationZone,
@@ -5575,34 +5588,34 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                     state: snapshot.sleepDebtText(goalHours: sleepGoalHours) == "--" ? .learning : .local,
                                     tint: .indigo,
                                     footnote: snapshot.sleepDebtFootnote(goalHours: sleepGoalHours))
-                    AtriaMetricTile(label: "\(snapshot.latestMainSleep?.evidenceLabel ?? "Sleep") RHR",
-                                    value: snapshot.latestMainSleep?.restingHRText ?? "--",
-                                    unit: snapshot.latestMainSleep?.restingHR == nil ? nil : "bpm",
-                                    state: snapshot.latestMainSleep?.restingHR == nil ? .learning : .personalBaseline,
+                    AtriaMetricTile(label: "\(latestEvidence?.evidenceLabel ?? "Sleep") RHR",
+                                    value: latestEvidence?.restingHRText ?? "--",
+                                    unit: latestEvidence?.restingHR == nil ? nil : "bpm",
+                                    state: latestEvidence?.restingHR == nil ? .learning : (latestEvidence?.confirmed == true ? .personalBaseline : .research),
                                     tint: restingHeartRateZone?.tint ?? .red,
                                     zone: restingHeartRateZone,
                                     targetMetric: .rhr)
                     AtriaMetricTile(label: "Efficiency",
-                                    value: snapshot.latestMainSleep?.sleepEfficiencyText ?? "--",
-                                    state: snapshot.latestMainSleep?.sleepEfficiency == nil ? .learning : .research,
+                                    value: latestEvidence?.sleepEfficiencyText ?? "--",
+                                    state: latestEvidence?.sleepEfficiency == nil ? .learning : .research,
                                     tint: sleepEfficiencyZone?.tint ?? .cyan,
                                     footnote: "Duration-based estimate",
                                     zone: sleepEfficiencyZone,
                                     targetMetric: .sleepEfficiency)
-                    AtriaMetricTile(label: "\(snapshot.latestMainSleep?.evidenceLabel ?? "Sleep") HRV",
-                                    value: snapshot.latestMainSleep?.hrvText ?? "--",
-                                    unit: snapshot.latestMainSleep?.hrv == nil ? nil : "ms",
-                                    state: snapshot.latestMainSleep?.hrv == nil ? .learning : .research,
+                    AtriaMetricTile(label: "\(latestEvidence?.evidenceLabel ?? "Sleep") HRV",
+                                    value: latestEvidence?.hrvText ?? "--",
+                                    unit: latestEvidence?.hrv == nil ? nil : "ms",
+                                    state: latestEvidence?.hrv == nil ? .learning : .research,
                                     tint: hrvZone?.tint ?? .purple,
-                                    footnote: snapshot.latestMainSleep?.evidenceOnlyFootnote ?? "Sleep-only estimate",
+                                    footnote: latestEvidence?.evidenceOnlyFootnote ?? "Sleep-only estimate",
                                     zone: hrvZone,
                                     targetMetric: .hrv)
-                    AtriaMetricTile(label: "\(snapshot.latestMainSleep?.evidenceLabel ?? "Sleep") resp",
-                                    value: snapshot.latestMainSleep?.respiratoryRateText ?? "--",
-                                    unit: snapshot.latestMainSleep?.respiratoryRate == nil ? nil : "/min",
-                                    state: snapshot.latestMainSleep?.respiratoryRate == nil ? .learning : .research,
+                    AtriaMetricTile(label: "\(latestEvidence?.evidenceLabel ?? "Sleep") resp",
+                                    value: latestEvidence?.respiratoryRateText ?? "--",
+                                    unit: latestEvidence?.respiratoryRate == nil ? nil : "/min",
+                                    state: latestEvidence?.respiratoryRate == nil ? .learning : .research,
                                     tint: respiratoryRateZone?.tint ?? .teal,
-                                    footnote: snapshot.latestMainSleep?.evidenceOnlyFootnote ?? "Sleep-only estimate",
+                                    footnote: latestEvidence?.evidenceOnlyFootnote ?? "Sleep-only estimate",
                                     zone: respiratoryRateZone,
                                     targetMetric: .respiratoryRate)
                 }
@@ -5867,6 +5880,7 @@ struct AtriaSleepStageSummary: View, Equatable {
                                      end: night.end,
                                      duration: night.duration)
                 .frame(height: 120)
+                .atriaInspectableGraph(sleepStageGraph)
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 8)], spacing: 8) {
                 ForEach(SleepStageKind.allCases) { stage in
@@ -5917,6 +5931,25 @@ struct AtriaSleepStageSummary: View, Equatable {
         case .sws: return .blue
         case .deep: return .purple
         }
+    }
+
+    private var sleepStageGraph: AtriaInspectableGraph? {
+        guard !night.displayStageSegments.isEmpty else { return nil }
+        let start = night.start ?? night.displayStageSegments.map(\.start).min()
+        let end = night.end ?? night.displayStageSegments.map(\.end).max()
+        guard let start, let end, end > start else { return nil }
+        return AtriaInspectableGraph(
+            title: "Sleep stages",
+            subtitle: "\(start.formatted(date: .abbreviated, time: .shortened)) – \(end.formatted(date: .omitted, time: .shortened))",
+            content: .intervals(night.displayStageSegments.map { segment in
+                .init(id: segment.id,
+                      lane: segment.stage.label,
+                      label: segment.stage.label,
+                      start: segment.start,
+                      end: segment.end,
+                      tint: color(for: segment.stage))
+            }, domain: start...end)
+        )
     }
 }
 

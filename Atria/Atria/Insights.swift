@@ -502,6 +502,20 @@ struct RestingTrendChart: View {
                     }
                 }
                 .frame(height: 160)
+                .atriaInspectableGraph(
+                    AtriaInspectableGraph(
+                        title: "Resting HR trend",
+                        subtitle: baseline.map { "Baseline \($0) bpm" },
+                        content: .timeSeries([
+                            .init(title: "Resting HR",
+                                  unit: " bpm",
+                                  tint: .teal,
+                                  points: points.map {
+                                      .init(date: $0.start, value: Double($0.resting))
+                                  })
+                        ])
+                    )
+                )
             }
         }
     }
@@ -539,6 +553,16 @@ struct TimeInZoneView: View {
                 }
             }
         }
+        .atriaInspectableGraph(rows.isEmpty ? nil : AtriaInspectableGraph(
+            title: "Time in heart-rate zones",
+            subtitle: "Recorded session duration",
+            content: .histogram(rows.map { row in
+                .init(label: row.zone.name,
+                      value: row.seconds / 60,
+                      unit: " min",
+                      tint: row.zone.color)
+            })
+        ))
     }
 
     private func fmt(_ s: Double) -> String {

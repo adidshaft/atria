@@ -493,6 +493,67 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertEqual(crossing.end, nextDay)
     }
 
+    func testCurrentActivityWindowSpansMidnightFromConfirmedWakeToNow() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let wakeDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 12)))
+        let wake = wakeDay.addingTimeInterval(7 * 3_600)
+        let now = wakeDay.addingTimeInterval(26 * 3_600)
+        let night = activitySleep(id: "main",
+                                  day: wakeDay,
+                                  start: wake.addingTimeInterval(-8 * 3_600),
+                                  end: wake,
+                                  confirmed: true)
+        let snapshot = SleepHistorySnapshot(nights: [night], confirmedCount: 1, candidateCount: 0)
+
+        let window = AtriaActivityDisplayWindow.current(now: now,
+                                                        sleepHistory: snapshot,
+                                                        calendar: calendar)
+
+        XCTAssertEqual(window.interval.start, wake)
+        XCTAssertEqual(window.interval.end, now)
+        XCTAssertEqual(window.labelDay, wakeDay)
+        XCTAssertTrue(window.isCurrentPhysiologicalDay)
+    }
+
+    func testPhysiologicalTimelineIncludesBothSidesOfMidnightAndClipsAtWake() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 12)))
+        let interval = DateInterval(start: day.addingTimeInterval(7 * 3_600),
+                                    end: day.addingTimeInterval(26 * 3_600))
+        let beforeWake = timelineWorkout(id: "before-wake",
+                                         start: day.addingTimeInterval(6 * 3_600),
+                                         end: day.addingTimeInterval(6.5 * 3_600),
+                                         type: .walking)
+        let evening = timelineWorkout(id: "evening",
+                                      start: day.addingTimeInterval(20 * 3_600),
+                                      end: day.addingTimeInterval(21 * 3_600),
+                                      type: .running)
+        let afterMidnight = timelineWorkout(id: "after-midnight",
+                                            start: day.addingTimeInterval(25 * 3_600),
+                                            end: day.addingTimeInterval(25.5 * 3_600),
+                                            type: .cycling)
+
+        let spans = AtriaActivityTimelineBuilder.workoutSpans(
+            workouts: [beforeWake, evening, afterMidnight], interval: interval
+        )
+
+        XCTAssertEqual(Set(spans.map(\.id)), ["workout-evening", "workout-after-midnight"])
+    }
+
+    func testHistoricalActivityWindowRemainsCivilDay() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 12)))
+        let window = AtriaActivityDisplayWindow.historical(day: day.addingTimeInterval(15 * 3_600),
+                                                           calendar: calendar)
+
+        XCTAssertEqual(window.interval.start, day)
+        XCTAssertEqual(window.interval.end, day.addingTimeInterval(24 * 3_600))
+        XCTAssertFalse(window.isCurrentPhysiologicalDay)
+    }
+
     func testTimelineLanePackingIsMinimalDeterministicAndReusesHalfOpenEnds() {
         let start = Date(timeIntervalSinceReferenceDate: 800_000_000)
         let intervals = [

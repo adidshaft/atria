@@ -33,7 +33,7 @@ struct AtriaHistoryDay: Identifiable, Equatable {
     let confirmedWorkoutCount: Int
     let confirmedSleepCount: Int
     let savedDurationSeconds: TimeInterval
-    /// Honest placeholder (2026-07-05): 0 until a real review-queue signal exists.
+    /// Genuine unconfirmed detector candidates whose start falls on this day.
     let reviewPending: Int
     let state: DayState
 
@@ -63,6 +63,23 @@ struct AtriaHistoryMedians: Equatable {
     }
 }
 
+/// Small immutable projection of the genuine review queue. History only needs
+/// a civil day and count; retaining the full candidates here would couple its
+/// off-main model preparation to the detector's much heavier value objects.
+struct AtriaHistoryReviewCandidateDay: Equatable, Hashable, Sendable {
+    let day: Date
+    let count: Int
+
+    static func make(candidates: [WorkoutReviewCandidate],
+                     calendar: Calendar = .current) -> [Self] {
+        Dictionary(grouping: candidates) {
+            calendar.startOfDay(for: $0.start)
+        }
+        .map { Self(day: $0.key, count: $0.value.count) }
+        .sorted { $0.day > $1.day }
+    }
+}
+
 struct AtriaHistoryModel: Equatable {
     let days: [AtriaHistoryDay]
     let sessionsCount: Int
@@ -81,6 +98,7 @@ struct AtriaHistoryModel: Equatable {
     static func make(rollups: [DailyRollupStoreEntry],
                       workouts: [UserConfirmedWorkout],
                       sleeps: [UserConfirmedSleep],
+                      reviewCandidateDays: [AtriaHistoryReviewCandidateDay] = [],
                       calendar: Calendar = .current) -> AtriaHistoryModel {
         let rollupsByDay = Dictionary(grouping: rollups) {
             calendar.startOfDay(for: $0.day)
@@ -99,12 +117,16 @@ struct AtriaHistoryModel: Equatable {
                                eventTimeZoneIdentifier: $0.eventTimeZoneIdentifier,
                                outputCalendar: calendar)
         }
+        let reviewPendingByDay = Dictionary(grouping: reviewCandidateDays) {
+            calendar.startOfDay(for: $0.day)
+        }.mapValues { $0.reduce(0) { $0 + max(0, $1.count) } }
         // Saved activity is authoritative even before the asynchronous metric
         // rollup is minted. Build the list from the union so Save immediately
         // produces an editable Activity day instead of an apparently empty tab.
         let activityDays = Set(rollupsByDay.keys)
             .union(workoutsByDay.keys)
             .union(sleepsByDay.keys)
+            .union(reviewPendingByDay.keys)
 
         let days: [AtriaHistoryDay] = activityDays.sorted(by: >).map { day in
             let rollup = rollupsByDay[day]
@@ -112,7 +134,7 @@ struct AtriaHistoryModel: Equatable {
             let daySleeps = sleepsByDay[day] ?? []
             let confirmedWorkoutCount = dayWorkouts.count
             let confirmedSleepCount = daySleeps.count
-            let reviewPending = reviewPendingCount(for: day)
+            let reviewPending = reviewPendingByDay[day] ?? 0
 
             let state: AtriaHistoryDay.DayState
             if confirmedWorkoutCount > 0 {
@@ -153,11 +175,6 @@ struct AtriaHistoryModel: Equatable {
                                   detections: detections)
     }
 
-    private static func reviewPendingCount(for _: Date) -> Int {
-        // Honest placeholder (2026-07-05): 0 until a real review-queue signal exists.
-        0
-    }
-
     /// Trailing 14 calendar days ending on (and including) `day`.
     func medianWindow(around day: AtriaHistoryDay, calendar: Calendar = .current) -> AtriaHistoryMedians {
         guard let start = calendar.date(byAdding: .day, value: -13, to: day.date) else { return .empty }
@@ -178,6 +195,7 @@ struct AtriaHistoryRevisionKey: Equatable, Hashable, Sendable {
     let workouts: Int
     let sleep: Int
     let detections: Int
+    let reviewCandidateDays: [AtriaHistoryReviewCandidateDay]
 }
 
 struct AtriaHistoryProjectionInput: @unchecked Sendable {
@@ -185,6 +203,7 @@ struct AtriaHistoryProjectionInput: @unchecked Sendable {
     let rollups: [DailyRollupStoreEntry]
     let workouts: [UserConfirmedWorkout]
     let sleeps: [UserConfirmedSleep]
+    let reviewCandidateDays: [AtriaHistoryReviewCandidateDay]
 }
 
 struct AtriaHistoryProjection: Equatable {
@@ -213,7 +232,8 @@ final class AtriaVitalsHistoryProjectionStore: ObservableObject {
         let preparation = Task.detached(priority: .utility) {
             AtriaHistoryModel.make(rollups: input.rollups,
                                    workouts: input.workouts,
-                                   sleeps: input.sleeps)
+                                   sleeps: input.sleeps,
+                                   reviewCandidateDays: input.reviewCandidateDays)
         }
         let model = await withTaskCancellationHandler {
             await preparation.value
@@ -687,10 +707,14 @@ struct AtriaDetectionsListSheet: View {
             }
             .navigationTitle("Detections")
             .sheet(item: $addWorkoutSeed) { event in
-                if let store {
+                if let store,
+                   let start = event.windowStart,
+                   let end = event.windowEnd {
                     AtriaAddWorkoutSheet(store: store,
-                                         initialStart: event.windowStart,
-                                         initialEnd: event.windowEnd)
+                                         initialStart: start,
+                                         initialEnd: end,
+                                         reviewCandidateID: event.id.uuidString,
+                                         settlingCandidateWindow: (start: start, end: end))
                         .presentationDetents([.medium, .large])
                         .presentationDragIndicator(.visible)
                 }
@@ -767,6 +791,9 @@ struct AtriaDetectedActivitiesState: Equatable {
     static let empty = AtriaDetectedActivitiesState(candidates: [], dismissedWindows: [])
 
     var isEmpty: Bool { candidates.isEmpty && dismissedWindows.isEmpty }
+    var candidateDays: [AtriaHistoryReviewCandidateDay] {
+        AtriaHistoryReviewCandidateDay.make(candidates: candidates)
+    }
 }
 
 /// Narrow observation boundary for the Detected activities card. Vitals
@@ -829,19 +856,30 @@ final class AtriaDetectedActivitiesProjectionStore: ObservableObject {
 struct AtriaDetectedActivitiesHost: View {
     @StateObject private var projectionStore: AtriaDetectedActivitiesProjectionStore
     private let store: SessionStore
+    private let onCandidateDaysChange: ([AtriaHistoryReviewCandidateDay]) -> Void
 
-    init(store: SessionStore, restingHeartRateFallback: @escaping () -> Int) {
+    init(store: SessionStore,
+         restingHeartRateFallback: @escaping () -> Int,
+         onCandidateDaysChange: @escaping ([AtriaHistoryReviewCandidateDay]) -> Void = { _ in }) {
         _projectionStore = StateObject(wrappedValue: AtriaDetectedActivitiesProjectionStore(
             store: store,
             restingHeartRateFallback: restingHeartRateFallback
         ))
         self.store = store
+        self.onCandidateDaysChange = onCandidateDaysChange
     }
 
     var body: some View {
-        AtriaDetectedActivitiesSection(state: debugFixtureState ?? projectionStore.state,
+        let state = debugFixtureState ?? projectionStore.state
+        AtriaDetectedActivitiesSection(state: state,
                                        store: store)
-            .onAppear { projectionStore.refresh() }
+            .onAppear {
+                projectionStore.refresh()
+                onCandidateDaysChange(state.candidateDays)
+            }
+            .onChange(of: state) { _, updated in
+                onCandidateDaysChange(updated.candidateDays)
+            }
     }
 
     #if DEBUG

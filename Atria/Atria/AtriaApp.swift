@@ -17,6 +17,15 @@ enum AtriaSceneResumePolicy {
     static func shouldStopMotionMonitor(isBackground: Bool) -> Bool {
         isBackground
     }
+
+    /// A CoreBluetooth restoration launch receives a very short scene-update
+    /// allowance. Persist the recovered boundary immediately, but move O(n)
+    /// baseline/RR/dashboard work out of that allowance.
+    static func shouldDeferSessionBoundaryDerivedPublication(
+        isApplicationActive: Bool
+    ) -> Bool {
+        !isApplicationActive
+    }
 }
 
 final class AtriaAppDelegate: NSObject, UIApplicationDelegate {
@@ -28,6 +37,24 @@ final class AtriaAppDelegate: NSObject, UIApplicationDelegate {
         // response. Scheduling-time registration is too late and can leave the
         // app open on its launch surface without applying the requested route.
         LocalNotificationScheduler.configureForApplicationLaunch()
+        // Share-card PNGs are regenerable temp artifacts. A cold launch has no
+        // handed-out or in-flight share URL, so it is a safe point to bound
+        // leftovers from prior processes without delaying UIKit startup.
+        Task.detached(priority: .utility) {
+            AtriaGeneratedArtifactRetention.prune(
+                in: FileManager.default.temporaryDirectory,
+                policy: AtriaGeneratedArtifactRetention.shareCards
+            )
+            AtriaGeneratedArtifactRetention.prune(
+                in: FileManager.default.temporaryDirectory,
+                policy: AtriaGeneratedArtifactRetention.workoutShareCards
+            )
+            AtriaGeneratedArtifactRetention.prune(
+                in: FileManager.default.temporaryDirectory,
+                policy: AtriaGeneratedArtifactRetention.portableWorkoutExports
+            )
+            AtriaStrapCalibrationArchive.shared.scheduleRetentionPrune()
+        }
         return true
     }
 
@@ -60,6 +87,12 @@ private final class AtriaAppDependencies {
             AtriaPendingWorkoutIntentStore.shared.beginPreparing()
         }
         let ble = AtriaBLEManager(startsBluetooth: !store.restoreInitializationBlocked)
+        store.installRecoveredDataRecomputationDeferralProvider { [weak ble] in
+            ble?.recoveredDataProjectionDeferralIsActive ?? false
+        }
+        ble.onHistoricalTransportOwnershipReleased = { [weak store] reason in
+            store?.resumeDeferredRecoveredDataRecomputation(reason: reason)
+        }
         let workoutRouteRecorder = AtriaWorkoutRouteRecorder()
         let workoutRuntime = AtriaWorkoutRuntime(ble: ble,
                                                  store: store,
@@ -67,7 +100,19 @@ private final class AtriaAppDependencies {
         if !store.restoreInitializationBlocked {
             ble.onSessionEnd = { [store] saved in store.add(saved) }
             ble.onSessionEndDurably = { [store] saved in
-                guard store.add(saved) else { return false }
+                // Do not synchronously decode the 20+ MB canonical store again
+                // when a stale journal boundary races the existing deferred
+                // launch load. Awaiting yields MainActor and lets its prepared
+                // merge land without consuming the background watchdog window.
+                await store.waitForDeferredSessionLoadIfNeeded(timeoutSeconds: 20)
+                let deferDerivedPublication = AtriaSceneResumePolicy
+                    .shouldDeferSessionBoundaryDerivedPublication(
+                        isApplicationActive: UIApplication.shared.applicationState == .active
+                    )
+                guard store.add(saved,
+                                deferDerivedPublication: deferDerivedPublication) else {
+                    return false
+                }
                 return await withCheckedContinuation { continuation in
                     store.flushScheduledPersistenceAsync(reason: "ble_session_boundary") { succeeded in
                         continuation.resume(returning: succeeded)
@@ -75,11 +120,38 @@ private final class AtriaAppDependencies {
                 }
             }
             ble.onSessionCheckpoint = { [store] saved in store.checkpoint(saved) }
+            ble.requestAndAwaitRecoveredDataPublication = { [weak store] reason in
+                guard let store else { return false }
+                return await store.requestAndAwaitRecoveredDataPublication(
+                    reason: reason,
+                    timeout: .seconds(120)
+                )
+            }
+            ble.resumePendingFullDrainPublicationIfNeeded(
+                reason: "app_dependencies_ready"
+            )
         }
         self.ble = ble
         self.store = store
         self.workoutRouteRecorder = workoutRouteRecorder
         self.workoutRuntime = workoutRuntime
+        store.onRecoveredDataRecomputePublished = { [weak store, weak ble] revision, reason in
+            guard let store, let ble else { return }
+            WidgetSnapshotPublisher.schedulePublish(
+                store: store,
+                ble: ble,
+                reason: "recovered_fence_\(reason)_r\(revision)"
+            )
+        }
+        store.onDeferredLaunchCardSettlementPublished = { [weak store, weak ble] reason in
+            guard let store, let ble else { return }
+            WidgetSnapshotPublisher.schedulePublish(
+                store: store,
+                ble: ble,
+                reason: "deferred_launch_cards_\(reason)",
+                delay: .zero
+            )
+        }
         if !store.restoreInitializationBlocked {
             AppDependencyManager.shared.add(
                 dependency: AtriaLiveWorkoutCommandHandler { [workoutRuntime] action, startedAt, issuedAt in
@@ -240,6 +312,12 @@ struct AtriaApp: App {
                         }
                     case .active:
                         recordScenePhase("active", reason: "scene_active")
+                        store.resumeDeferredSessionBoundaryDerivedPublicationIfNeeded(
+                            reason: "scene_active"
+                        )
+                        store.resumeDeferredLaunchCardSettlementIfNeeded(
+                            reason: "scene_active"
+                        )
                         dependencies.workoutRuntime.schedulePendingActionReplay()
                         scheduleProductionNotificationMaintenance(reason: "scene_active")
                         inactiveFlushTask?.cancel()
@@ -339,21 +417,39 @@ struct AtriaApp: App {
                 completion.complete(task, success: false)
                 return
             }
-            // Refresh the shared widget snapshot so the morning recovery number
-            // is on the Lock Screen before the app is ever opened.
-            WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: reason)
             // Nightly research-sharing upload piggybacks the processing task
             // only (app-refresh's budget is too short for a build+network
             // round trip); gated to the sleep window and once per day inside.
+            var historicalRecoverySucceeded = true
+            var recoveredPublicationSucceeded = true
             if reason == "bg_processing" {
-                _ = ble.requestOfflineHistoricalSyncIfNeeded(reason: reason)
+                let priorArchiveRevision = store.recoveredDataArchiveRevisionSnapshot
+                if ble.rangeLossBackfillPending {
+                    historicalRecoverySucceeded = await ble
+                        .requestOfflineHistoricalSyncAwaitingCompletion(
+                            reason: reason,
+                            admitAutomaticConnectedHandoffIfEligible: true
+                        )
+                    if historicalRecoverySucceeded {
+                        recoveredPublicationSucceeded = await store.awaitRecoveredDataPublication(
+                            after: priorArchiveRevision,
+                            timeout: .seconds(25)
+                        )
+                    }
+                }
                 await AtriaResearchUploadQueue.runNightlyIfDue(store: store, reason: reason)
             }
             guard !Task.isCancelled else {
                 completion.complete(task, success: false)
                 return
             }
-            completion.complete(task, success: backupSucceeded)
+            // One snapshot after the exact archive-derived publication fence;
+            // never write the pre-backfill morning state over its completed data.
+            WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: reason)
+            completion.complete(task,
+                                success: backupSucceeded
+                                    && historicalRecoverySucceeded
+                                    && recoveredPublicationSucceeded)
         }
         task.expirationHandler = {
             work.cancel()
@@ -368,30 +464,54 @@ struct AtriaApp: App {
 
     private func performSceneBackgroundMaintenance(reason: String) {
         var backgroundTask = UIBackgroundTaskIdentifier.invalid
+        var historicalSyncTask: Task<Void, Never>?
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Atria background flush") {
             AtriaDebugLog("ATRIADBG background_flush status=expired reason=%@", reason)
+            historicalSyncTask?.cancel()
             if backgroundTask != .invalid {
                 UIApplication.shared.endBackgroundTask(backgroundTask)
                 backgroundTask = .invalid
             }
         }
 
-        let syncStarted = ble.requestOfflineHistoricalSyncIfNeeded(reason: "\(reason)_opportunistic")
+        let syncRequired = ble.rangeLossBackfillPending
         // Scene backgrounding is a durability boundary, but lifecycle callbacks
         // must never wait synchronously for JSON encoding or disk I/O. Keep the
         // UIKit task alive until both the session snapshot and active journal
         // have settled, allowing the return animation to remain interactive.
         var sessionFlushFinished = false
         var journalFlushFinished = false
+        var historicalSyncFinished = !syncRequired
+        var historicalSyncSucceeded = !syncRequired
         func finishBackgroundTaskIfReady() {
-            guard sessionFlushFinished, journalFlushFinished else { return }
+            guard sessionFlushFinished,
+                  journalFlushFinished,
+                  historicalSyncFinished else { return }
             if backgroundTask != .invalid {
                 UIApplication.shared.endBackgroundTask(backgroundTask)
                 backgroundTask = .invalid
             }
-            AtriaDebugLog("ATRIADBG background_flush status=completed reason=%@ offline_sync_started=%d",
+            AtriaDebugLog("ATRIADBG background_flush status=completed reason=%@ offline_sync_required=%d offline_sync_succeeded=%d",
                           reason,
-                          syncStarted ? 1 : 0)
+                          syncRequired ? 1 : 0,
+                          historicalSyncSucceeded ? 1 : 0)
+        }
+        if syncRequired {
+            historicalSyncTask = Task { @MainActor in
+                let priorArchiveRevision = store.recoveredDataArchiveRevisionSnapshot
+                historicalSyncSucceeded = await ble
+                    .requestOfflineHistoricalSyncAwaitingCompletion(
+                        reason: "\(reason)_opportunistic"
+                    )
+                if historicalSyncSucceeded {
+                    historicalSyncSucceeded = await store.awaitRecoveredDataPublication(
+                        after: priorArchiveRevision,
+                        timeout: .seconds(20)
+                    )
+                }
+                historicalSyncFinished = true
+                finishBackgroundTaskIfReady()
+            }
         }
         store.flushScheduledPersistenceAsync(reason: reason) {
             sessionFlushFinished = true
@@ -402,9 +522,9 @@ struct AtriaApp: App {
             journalFlushFinished = true
             finishBackgroundTaskIfReady()
         }
-        AtriaDebugLog("ATRIADBG background_flush status=awaiting_durable_writes reason=%@ offline_sync_started=%d timeout_s=3",
+        AtriaDebugLog("ATRIADBG background_flush status=awaiting_durable_writes reason=%@ offline_sync_required=%d",
                       reason,
-                      syncStarted ? 1 : 0)
+                      syncRequired ? 1 : 0)
     }
 
     private static func scheduleBackgroundRefresh(reason: String) {
