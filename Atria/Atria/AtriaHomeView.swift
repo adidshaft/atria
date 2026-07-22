@@ -3616,9 +3616,22 @@ struct AtriaHomeView: View {
                       Int(((ProcessInfo.processInfo.systemUptime - endRequestedUptime) * 1_000).rounded()))
         let endedAt = max(endedAt, motionBoundaryAt ?? endedAt)
         let strapStepEvidence = completedWorkoutStepEvidence(session: workoutSession, now: endedAt)
+        let strapEvidence: AtriaCompletedWorkoutStepEvidence? = strapStepEvidence.map {
+            AtriaCompletedWorkoutStepEvidence(count: $0.count,
+                                               isEstimated: $0.isEstimated,
+                                               capturedAt: $0.capturedAt)
+        }
+        // The query can wait for Core Motion's historical service for its
+        // bounded timeout. Do not put that wait on the End path when fresh
+        // strap evidence will win selection anyway. A gyro-anchored workout
+        // also cannot change source at its terminal boundary, so querying the
+        // phone in that case was guaranteed discarded work.
+        let canUsePhoneStepFallback = workoutSession?.stepSourceVersion
+            != .strapGyroCadenceAmbulatoryV1
+        let needsPhoneStepFallback = strapEvidence == nil && canUsePhoneStepFallback
         let phoneStepEvidence: (count: Int, isEstimated: Bool, capturedAt: Date?)?
-        switch activityType {
-        case .walking, .running, .hiking:
+        switch (activityType, needsPhoneStepFallback) {
+        case (.walking, true), (.running, true), (.hiking, true):
             phoneStepEvidence = await AtriaWorkoutPhonePedometer.shared.finish(
                 from: startedAt,
                 at: endedAt
@@ -3629,11 +3642,6 @@ struct AtriaHomeView: View {
         }
         AtriaDebugLog("ATRIADBG live_workout_end_latency phase=step_evidence elapsed_ms=%d",
                       Int(((ProcessInfo.processInfo.systemUptime - endRequestedUptime) * 1_000).rounded()))
-        let strapEvidence: AtriaCompletedWorkoutStepEvidence? = strapStepEvidence.map {
-            AtriaCompletedWorkoutStepEvidence(count: $0.count,
-                                               isEstimated: $0.isEstimated,
-                                               capturedAt: $0.capturedAt)
-        }
         let phoneEvidence: AtriaCompletedWorkoutStepEvidence? = phoneStepEvidence.map {
             AtriaCompletedWorkoutStepEvidence(count: $0.count,
                                                isEstimated: true,

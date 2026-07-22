@@ -84,4 +84,24 @@ final class AtriaWorkoutEndResponsivenessTests: XCTestCase {
                           "Physical workout logs must preserve the \(phase) latency checkpoint")
         }
     }
+
+    func testEndOnlyQueriesPhoneStepsWhenStrapEvidenceCannotBeSelected() throws {
+        let home = try appSource("AtriaHomeView.swift")
+        let start = try XCTUnwrap(home.range(of: "private func endWorkoutSession(startedAt: Date,"))
+        let end = try XCTUnwrap(home.range(of: "private func workoutShareSnapshot(",
+                                           range: start.upperBound..<home.endIndex))
+        let completion = String(home[start.lowerBound..<end.lowerBound])
+
+        let strapEvidence = try XCTUnwrap(completion.range(of: "let strapEvidence:"))
+        let fallbackGate = try XCTUnwrap(completion.range(of: "let needsPhoneStepFallback ="))
+        let query = try XCTUnwrap(completion.range(of: "AtriaWorkoutPhonePedometer.shared.finish("))
+        let selection = try XCTUnwrap(completion.range(of: "AtriaCompletedWorkoutStepEvidence.select("))
+
+        XCTAssertLessThan(strapEvidence.lowerBound, fallbackGate.lowerBound)
+        XCTAssertLessThan(fallbackGate.lowerBound, query.lowerBound,
+                          "The phone query must be guarded by whether it can affect terminal steps")
+        XCTAssertLessThan(query.lowerBound, selection.lowerBound)
+        XCTAssertTrue(completion.contains("strapEvidence == nil && canUsePhoneStepFallback"),
+                      "Fresh strap steps and gyro-anchored sessions must bypass the phone query")
+    }
 }
