@@ -16901,42 +16901,6 @@ final class SessionStore: ObservableObject {
         return true
     }
 
-    /// Attaches a bounded background phone-pedometer result to an already
-    /// confirmed workout. The absolute window is part of the compare-and-set:
-    /// a late Core Motion callback cannot attach evidence after the user edits
-    /// the workout, and an exact/live count that arrived first is never
-    /// overwritten. `saveConfirmedWorkouts` is the single atomic mutation
-    /// boundary for both the file and the in-memory projection.
-    @discardableResult
-    func enrichConfirmedWorkoutWithEstimatedPhoneSteps(
-        id: String,
-        expectedStart: Date,
-        expectedEnd: Date,
-        count: Int,
-        capturedAt: Date
-    ) -> Bool {
-        guard count > 0,
-              capturedAt.timeIntervalSinceReferenceDate.isFinite,
-              let index = cachedConfirmedWorkouts.firstIndex(where: { workout in
-                  workout.id == id
-                      && workout.start == expectedStart
-                      && workout.end == expectedEnd
-              }) else {
-            return false
-        }
-        let existing = cachedConfirmedWorkouts[index]
-        // A phone query may repair only weaker provisional evidence. Exact
-        // strap totals are immutable here, and repeated/lower async callbacks
-        // cannot move a workout backwards.
-        if existing.workoutStepsAreEstimated == false { return false }
-        if let existingCount = existing.workoutSteps, existingCount >= count { return false }
-        var updated = cachedConfirmedWorkouts
-        updated[index].workoutSteps = count
-        updated[index].workoutStepsAreEstimated = true
-        updated[index].workoutStepsCapturedAt = min(capturedAt, expectedEnd)
-        return saveConfirmedWorkouts(updated)
-    }
-
     private func confirmedWorkoutID(start: Date, end: Date, source: String) -> String {
         let startSeconds = Int(start.timeIntervalSince1970.rounded())
         let endSeconds = Int(end.timeIntervalSince1970.rounded())
