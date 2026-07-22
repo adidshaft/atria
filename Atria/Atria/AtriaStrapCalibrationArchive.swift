@@ -125,6 +125,15 @@ final class AtriaStrapCalibrationArchive: @unchecked Sendable {
         }
     }
 
+    /// Test-only synchronization seam for the maintenance path. Production
+    /// callers must use `scheduleRetentionPrune` so pruning never blocks the
+    /// foreground or the live motion writer.
+    func pruneSynchronouslyForTesting(now: Date) {
+        queue.sync { [self] in
+            pruneArchiveLocked(now: now, force: true)
+        }
+    }
+
     /// Validates framing and CRC, then returns a motion-bearing WHOOP 4 frame.
     /// R10 (0x2B/0x0A) is the observed high-rate stream; 0x33 remains accepted
     /// for firmware variants that expose the smaller realtime IMU packet.
