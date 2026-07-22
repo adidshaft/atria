@@ -3493,6 +3493,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         debugForceUnknownStrapGeneration = false
 #endif
         super.init()
+        // A process crash cannot resume the old reducer/ACK gate. Preserve its
+        // bounded ingress journal for a finite diagnostic window, then retire
+        // only that raw non-authoritative cache. This deliberately runs before
+        // CoreBluetooth can restore a connection or start a new generation.
+        let ingressDirectory = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0].appendingPathComponent(
+            AtriaWhoop4HistoricalIngressSpool.productionDirectoryName,
+            isDirectory: true
+        )
+        let orphanIngressURL = ingressDirectory.appendingPathComponent(
+            AtriaWhoop4HistoricalIngressSpool.productionFileName
+        )
+        if AtriaWhoop4HistoricalIngressSpool.removeExpiredOrphan(at: orphanIngressURL) {
+            AtriaDebugLog("ATRIADBG historyIngress status=retired reason=expired_orphan retention_days=7 action=retain_archive_ledger_and_gap")
+        }
         guard startsBluetooth else {
             bluetoothStartupSuspended = true
             AtriaDebugLog("ATRIADBG ble_manager_init status=suspended reason=restore_marker_retained")
@@ -8127,8 +8144,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let ingressDirectory = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
-        )[0].appendingPathComponent("atria-historical/history-ingress-v1", isDirectory: true)
-        let ingressURL = ingressDirectory.appendingPathComponent("whoop-history-ingress-current.bin")
+        )[0].appendingPathComponent(
+            AtriaWhoop4HistoricalIngressSpool.productionDirectoryName,
+            isDirectory: true
+        )
+        let ingressURL = ingressDirectory.appendingPathComponent(
+            AtriaWhoop4HistoricalIngressSpool.productionFileName
+        )
         // An old generation can never establish a new terminal proof. Drop it
         // before arming this fresh generation; the strap receives no ACK for
         // any row it had not already durably archived.

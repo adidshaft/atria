@@ -64,4 +64,44 @@ final class AtriaWhoop4HistoricalIngressSpoolTests: XCTestCase {
         }
         XCTAssertEqual(spool.pendingCount, 1)
     }
+
+    func testOrphanRetentionPreservesFreshJournal() throws {
+        let url = directory.appendingPathComponent("fresh.bin")
+        _ = try AtriaWhoop4HistoricalIngressSpool(url: url, generation: 3)
+
+        XCTAssertFalse(AtriaWhoop4HistoricalIngressSpool.removeExpiredOrphan(
+            at: url,
+            now: Date(),
+            retention: 60
+        ))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testOrphanRetentionRemovesOnlyExpiredRegularJournal() throws {
+        let url = directory.appendingPathComponent("expired.bin")
+        _ = try AtriaWhoop4HistoricalIngressSpool(url: url, generation: 3)
+        let stale = Date(timeIntervalSinceNow: -61)
+        try FileManager.default.setAttributes([.modificationDate: stale], ofItemAtPath: url.path)
+
+        XCTAssertTrue(AtriaWhoop4HistoricalIngressSpool.removeExpiredOrphan(
+            at: url,
+            now: Date(),
+            retention: 60
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testOrphanRetentionFailsClosedForDirectory() throws {
+        let url = directory.appendingPathComponent("not-a-journal", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+        let stale = Date(timeIntervalSinceNow: -61)
+        try FileManager.default.setAttributes([.modificationDate: stale], ofItemAtPath: url.path)
+
+        XCTAssertFalse(AtriaWhoop4HistoricalIngressSpool.removeExpiredOrphan(
+            at: url,
+            now: Date(),
+            retention: 60
+        ))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+    }
 }

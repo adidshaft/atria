@@ -10,6 +10,14 @@ import Foundation
 /// remain the durability and coverage authorities.
 final class AtriaWhoop4HistoricalIngressSpool {
     static let productionMaximumBytes: UInt64 = 32 * 1024 * 1024
+    /// A crashed history generation has no in-memory reducer or ACK gate to
+    /// resume on the next process launch. Keep its raw ingress journal long
+    /// enough for diagnosis/retry, but never let that non-authoritative cache
+    /// become permanent user storage. The canonical archive and admission
+    /// ledger have their own retention policies and are never removed here.
+    static let orphanRetention: TimeInterval = 7 * 24 * 60 * 60
+    static let productionDirectoryName = "atria-historical/history-ingress-v1"
+    static let productionFileName = "whoop-history-ingress-current.bin"
 
     struct Clock: Equatable, Sendable {
         let device: UInt32
@@ -64,6 +72,37 @@ final class AtriaWhoop4HistoricalIngressSpool {
         try self.init(url: directory.appendingPathComponent("whoop-history-ingress-\(generation).bin"),
                       generation: generation,
                       maximumBytes: maximumBytes)
+    }
+
+    /// Removes only an expired journal left by a *previous process*. Call this
+    /// during manager construction, before any live history generation exists.
+    /// A spool never authorizes an ACK; an ACK remains conditional on the
+    /// canonical archive's durable terminal proof. Therefore this cannot drop
+    /// data an ACK depends on. If metadata cannot be read, retain the file
+    /// fail-closed and try again at a later launch.
+    @discardableResult
+    static func removeExpiredOrphan(
+        at url: URL,
+        now: Date = Date(),
+        retention: TimeInterval = orphanRetention,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        guard retention >= 0,
+              fileManager.fileExists(atPath: url.path) else { return false }
+        do {
+            let values = try url.resourceValues(forKeys: [.contentModificationDateKey,
+                                                            .fileSizeKey,
+                                                            .isRegularFileKey])
+            guard values.isRegularFile == true,
+                  let modified = values.contentModificationDate,
+                  now.timeIntervalSince(modified) >= retention else {
+                return false
+            }
+            try fileManager.removeItem(at: url)
+            return true
+        } catch {
+            return false
+        }
     }
 
     var pendingCount: Int { unreadCount }
