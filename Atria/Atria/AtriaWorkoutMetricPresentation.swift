@@ -41,10 +41,11 @@ enum AtriaWorkoutMetricPresentation {
                                       strain: Double,
                                       workouts: [UserConfirmedWorkout],
                                       calendar: Calendar = .current) -> Bool {
-        // A substantial day score may include useful non-workout wear. Only
-        // suppress tiny day-strain precision when its sole visible activity
-        // evidence is one or more severely sparse confirmed workouts.
-        guard strain < 1 else { return false }
+        // A day score can include useful all-day wear, but when every visible
+        // workout on that day has severely sparse HR coverage it is only a
+        // lower bound, regardless of its magnitude. Preserve the number as
+        // `≥ n.n`; do not turn a sparse fragment into apparent precision.
+        _ = strain
         let dayStart = calendar.startOfDay(for: day)
         let sameDay = workouts.filter { workout in
             EventCivilTime.day(containing: workout.start,
