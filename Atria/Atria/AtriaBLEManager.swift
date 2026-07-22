@@ -19563,10 +19563,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG historicalArchive status=ignored reason=inactive_or_stale_transport_phase")
             return
         }
-        noteOfflineHistoricalSyncProgress(
-            generation: generation,
-            reason: "historical_frame"
-        )
         recordResearchProbeCandidate(payload: payload, source: .historical)
         guard !historicalAdmissionFailed else { return }
         guard pendingHistoricalTransportEvents.count < 1_024 else {
@@ -19815,10 +19811,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             succeeded: result.succeeded
         )
         if result.succeeded {
-            noteOfflineHistoricalSyncProgress(
-                generation: generation,
-                reason: "archive_persistence"
-            )
+            if Self.historicalFrameRenewsIdleLease(
+                persistenceSucceeded: result.succeeded,
+                insertedNewFrame: result.inserted
+            ) {
+                noteOfflineHistoricalSyncProgress(
+                    generation: generation,
+                    reason: "archive_inserted_new_frame"
+                )
+            }
             if result.inserted {
                 historicalArchiveRows += 1
                 historicalArchiveRowsSinceAck += 1
@@ -20096,10 +20097,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                 self.fullDrainACKPermits[boundaryID] = permit
                             }
                         }
-                        self.noteOfflineHistoricalSyncProgress(
-                            generation: generation,
-                            reason: error == nil ? "durable_flush" : "durable_flush_failed"
-                        )
+                        if error == nil {
+                            self.noteOfflineHistoricalSyncProgress(
+                                generation: generation,
+                                reason: "durable_flush"
+                            )
+                        }
                         if let error {
                             self.historicalArchiveWriteFailures += 1
                             let defaults = UserDefaults.standard
