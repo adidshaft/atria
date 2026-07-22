@@ -486,18 +486,28 @@ struct AtriaTriRing: View, Equatable {
                         .shadow(color: metric.tint.opacity(0.55), radius: 7, x: 0, y: 0)
                 }
             } else {
-                // Learning: a short static cap gives the ring life without
-                // implying a real scored value exists yet (honesty rule --
-                // never fabricate progress). It MUST start at trim 0 (12 o'clock,
-                // same as a real fill) -- starting at 0.06 made learning rings
-                // begin ~1 o'clock while data-filled rings began at 12, so the
-                // rings visibly "didn't start at the same place". The dim opacity
-                // + the "Learning" legend already distinguish it from a real fill.
+                // Learning: a DASHED full track (design handoff's learning ring).
+                // This supersedes the previous short solid cap at 12 o'clock.
+                // That cap honored the "all rings start at the same place" rule,
+                // but with two or three metrics still calibrating the caps
+                // stacked into a pile of lozenges at the top of the hero that
+                // read as a rendering fault. A dash pattern sweeps the whole
+                // circumference, so there is no start position to disagree about
+                // at all, and it states "not measured yet" more honestly than a
+                // solid arc -- a solid arc is the same mark a real fill uses, so
+                // at a glance it still implied ~10% of something.
+                // NOTE: .butt, not .round. A round cap on a stroke this thick
+                // swells every dash into a full circle, which turned the hero
+                // into three rings of polka dots.
+                // Sparse + faint on purpose: three calibrating rings at once,
+                // so a dense or bright dash pattern turns the hero into a
+                // ratchet texture that pulls more attention than the real
+                // values below it. The handoff draws this band at ~0.09 alpha.
                 Circle()
-                    .trim(from: 0, to: 0.10)
-                    .stroke(metric.tint.opacity(0.5),
-                            style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
+                    .stroke(metric.tint.opacity(0.22),
+                            style: StrokeStyle(lineWidth: lineWidth,
+                                               lineCap: .butt,
+                                               dash: [4, 16]))
             }
 
             if let targetFraction = metric.targetFraction {
@@ -575,7 +585,12 @@ struct AtriaTriRing: View, Equatable {
                     }
                     // The name line above already says it -- don't repeat
                     // it when a learning-state detail defaults to the name.
-                    if metric.detail != metric.title {
+                    // Nor when the detail collapses onto the VALUE: in the
+                    // learning state several metrics resolve both to the same
+                    // word ("Strain / Learning / Learning"), which read as a
+                    // rendering fault rather than a state. One statement of a
+                    // state is the whole design-handoff rule.
+                    if metric.detail != metric.title, metric.detail != metric.value {
                         Text(metric.detail)
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
@@ -597,7 +612,11 @@ struct AtriaTriRing: View, Equatable {
             )
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(metric.title) \(metric.value), \(metric.detail)")
+        // Mirror the visual de-duplication above so VoiceOver does not read
+        // "Strain Learning, Learning" either.
+        .accessibilityLabel(metric.detail == metric.title || metric.detail == metric.value
+                            ? "\(metric.title) \(metric.value)"
+                            : "\(metric.title) \(metric.value), \(metric.detail)")
     }
 
     /// Spring fill-in that plays once per real appearance/value change, and

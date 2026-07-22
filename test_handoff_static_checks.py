@@ -3120,8 +3120,18 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, live_workout, ".safeAreaPadding(.bottom)")
         assert_contains(self, live_workout, "@Environment(\\.accessibilityReduceMotion) private var reduceMotion")
         assert_contains(self, live_workout, "private var pulsingHeartIcon: some View")
-        assert_contains(self, live_workout, "if reduceMotion {")
-        assert_contains(self, live_workout, "icon.symbolEffect(.pulse, options: .repeating)")
+        # Pin migrated 2026-07-22 (design-handoff UI pass): the live-heart motion
+        # moved out of this view into the shared `AtriaPulsingHeart`, which
+        # replaces the old `icon.symbolEffect(.pulse, options: .repeating)` with
+        # the handoff's `atria-heart` scale keyframe. Both live HR surfaces now
+        # render that one component; the Reduce Motion guard travelled with it,
+        # so it is asserted against shared_ui below instead of here.
+        assert_contains(self, live_workout, "AtriaPulsingHeart(font: .title2)")
+        assert_contains(self, live_workout, "AtriaPulsingHeart(font: .headline.weight(.black))")
+        assert_not_contains(self, live_workout, "icon.symbolEffect(.pulse, options: .repeating)")
+        assert_contains(self, shared_ui, "struct AtriaPulsingHeart: View, Equatable")
+        assert_contains(self, shared_ui, "if reduceMotion {")
+        assert_contains(self, shared_ui, "CubicKeyframe(1.28, duration: Self.contract)")
         # Live workout uses two purpose-built, narrowly observed performance
         # surfaces. The superseded parent-level cue/target cards must not remain
         # as dead SwiftUI implementations beside them.
