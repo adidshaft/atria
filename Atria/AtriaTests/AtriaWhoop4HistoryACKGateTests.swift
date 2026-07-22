@@ -225,12 +225,9 @@ final class AtriaWhoop4HistoryACKGateTests: XCTestCase {
         XCTAssertTrue(manager.contains(
             "guard !historyACKGate.requiresHistoryCallbackDeferral else"
         ))
-        XCTAssertTrue(manager.contains(
-            "pendingHistoricalTransportEvents.removeAll(keepingCapacity: true)"
-        ))
-        XCTAssertTrue(manager.contains(
-            "if discardedPostACKCallbacks > 0 {"
-        ))
+        XCTAssertTrue(manager.contains("AtriaWhoop4HistoricalIngressSpool"))
+        XCTAssertTrue(manager.contains("let retainedPostACKIngress"))
+        XCTAssertTrue(manager.contains("Do not delete disk ingress after an ACK failure"))
         XCTAssertTrue(manager.contains(
             "historicalAdmissionFailed = true"
         ))

@@ -896,10 +896,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private nonisolated(unsafe) var realtimePacketDrainScheduled = false
     nonisolated private static let realtimePacketBatchSize = 12
     nonisolated private static let pendingRealtimePacketLimit = 4_096
-    /// A WHOOP full-flash history transfer can contain more than 100k frames.
-    /// This is a bounded transport cushion, not an in-memory archive: durable
-    /// checkpoints seal raw prefixes every 48k frames while this FIFO drains.
-    nonisolated private static let pendingHistoricalTransportEventLimit = 131_072
+    /// Archive work is deliberately bounded. The ingress spool owns any larger
+    /// retained strap backlog on disk rather than in callback closures.
+    nonisolated private static let maximumHistoricalArchiveWorkInFlight = 1_024
     private var liveSessionID = UUID()
     private var liveSessionEventTimeZoneIdentifier = TimeZone.current.identifier
     var currentLiveSessionID: UUID { liveSessionID }
@@ -1401,8 +1400,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case frame(PendingHistoricalFrameAdmission)
         case metadata([UInt8], AtriaBLEHistoryTransportPhaseFence.Snapshot)
     }
-    private var pendingHistoricalTransportEvents =
-        AtriaFIFOBuffer<PendingHistoricalTransportEvent>()
+    /// Arrival-ordered, generation-scoped disk spool. It is explicitly not an
+    /// ACK authority; canonical archive fsync/coverage proof remains below.
+    private var historicalIngressSpool: AtriaWhoop4HistoricalIngressSpool?
+    private var historicalIngressStrapIdentifier = "unknown-whoop4"
+    private var historicalIngressSpoolFailure: String?
+    /// At most one decoded metadata barrier may sit ahead of a classifier
+    /// batch. This is the sole RAM ingress item and preserves disk ordering.
+    private var historicalIngressDeferredEvent: AtriaWhoop4HistoricalIngressSpool.Event?
+    private var pendingHistoricalTransportEventCount: Int {
+        (historicalIngressSpool?.pendingCount ?? 0)
+            + (historicalIngressDeferredEvent == nil ? 0 : 1)
+    }
+    private var hasPendingHistoricalTransportEvents: Bool {
+        historicalIngressDeferredEvent != nil || !(historicalIngressSpool?.isEmpty ?? true)
+    }
     private var historicalAdmissionBatchInFlight = false
     private var historicalAdmissionBatchScheduled = false
     private var fullDrainHistoryEndPayloads: [String: [UInt8]] = [:]
@@ -8105,7 +8117,33 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         acceptedHistoryStartAtUnix = nil
         pendingFullDrainCommandRequestedAtUnix = nil
         activeFullDrainEventIdentity = nil
-        pendingHistoricalTransportEvents.removeAll(keepingCapacity: false)
+        historicalIngressSpool?.remove()
+        historicalIngressSpool = nil
+        historicalIngressSpoolFailure = nil
+        historicalIngressDeferredEvent = nil
+        historicalIngressStrapIdentifier = peripheral?.identifier.uuidString
+            ?? UserDefaults.standard.string(forKey: LinkDefaults.savedPeripheralUUID)
+            ?? "unknown-whoop4"
+        let ingressDirectory = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0].appendingPathComponent("atria-historical/history-ingress-v1", isDirectory: true)
+        let ingressURL = ingressDirectory.appendingPathComponent("whoop-history-ingress-current.bin")
+        // An old generation can never establish a new terminal proof. Drop it
+        // before arming this fresh generation; the strap receives no ACK for
+        // any row it had not already durably archived.
+        try? FileManager.default.removeItem(at: ingressURL)
+        do {
+            historicalIngressSpool = try AtriaWhoop4HistoricalIngressSpool(
+                url: ingressURL,
+                generation: syncGeneration
+            )
+        } catch {
+            historicalAdmissionFailed = true
+            historicalIngressSpoolFailure = String(describing: error)
+            AtriaDebugLog("ATRIADBG historyIngress status=failed generation=%llu reason=spool_open_failed error=%@ action=withhold_ack_retain_gap",
+                          syncGeneration, historicalIngressSpoolFailure ?? "unknown")
+        }
         historicalAdmissionBatchInFlight = false
         historicalAdmissionBatchScheduled = false
         fullDrainHistoryEndPayloads.removeAll(keepingCapacity: false)
@@ -8513,7 +8551,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         now: Date = Date()
     ) {
         guard historicalDrainTelemetry.generation == generation else { return }
-        let pending = pendingHistoricalTransportEvents.count
+        let pending = pendingHistoricalTransportEventCount
             + historyDrain.pendingPersistenceCount
             + (historicalAdmissionBatchInFlight ? 1 : 0)
         historicalDrainTelemetry.observePending(pending)
@@ -8592,6 +8630,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historySkipDataRangeRequest = false
         probeCommandMode = .withoutResponse
         finishHistoricalDrainTelemetry(generation: generation, trigger: "finish")
+        let mayDiscardIngress = offlineHistoricalSyncReachedTerminal
+            && !historicalAdmissionFailed
+            && pendingHistoricalTransportEventCount == 0
+            && historyDrain.pendingPersistenceCount == 0
+            && !historicalAdmissionBatchInFlight
+        if mayDiscardIngress {
+            // The reducer terminal proof and canonical archive durability have
+            // both completed. Only now is this raw ingress cache disposable.
+            historicalIngressSpool?.remove()
+        } else {
+            // Preserve a failed/interrupted generation for crash diagnostics;
+            // it cannot be reused as a new generation's ACK authority.
+            try? historicalIngressSpool?.synchronize()
+        }
+        historicalIngressSpool = nil
+        historicalIngressDeferredEvent = nil
         offlineHistoricalSyncInProgress = false
         // Keep the phase visible until the transaction is no longer active, so
         // an in-flight RX/stream4 callback is never dropped inside the drain.
@@ -19794,8 +19848,39 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             processOrderedHistoryMetadata(payload, historyPhase: historyPhase)
             return
         }
-        pendingHistoricalTransportEvents.append(.metadata(payload, historyPhase))
+        guard enqueueHistoricalIngress(.metadata(
+            payload: payload,
+            phaseGeneration: historyPhase.generation
+        )) else { return }
         scheduleHistoricalTransportEventDrain()
+    }
+
+    /// The ingress journal is the only retained ordering source between BLE
+    /// callbacks and the slower SQLite/archive pipeline. Its contents never
+    /// authorize an ACK; a write failure instead permanently retains the gap.
+    @discardableResult
+    private func enqueueHistoricalIngress(
+        _ event: AtriaWhoop4HistoricalIngressSpool.Event
+    ) -> Bool {
+        guard let spool = historicalIngressSpool else {
+            historicalAdmissionFailed = true
+            historicalArchiveWriteFailures += 1
+            AtriaDebugLog("ATRIADBG historyIngress status=failed generation=%llu reason=spool_missing action=withhold_ack_retain_gap",
+                          offlineHistoricalSyncGeneration)
+            return false
+        }
+        do {
+            try spool.append(event)
+            return true
+        } catch {
+            historicalAdmissionFailed = true
+            historicalArchiveWriteFailures += 1
+            historicalIngressSpoolFailure = String(describing: error)
+            AtriaDebugLog("ATRIADBG historyIngress status=failed generation=%llu reason=spool_append_failed error=%@ action=withhold_ack_retain_gap",
+                          offlineHistoricalSyncGeneration,
+                          historicalIngressSpoolFailure ?? "unknown")
+            return false
+        }
     }
 
     private func processOrderedHistoryMetadata(
@@ -20007,32 +20092,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             historicalDrainTelemetry.noteProgress()
         }
         guard !historicalAdmissionFailed else { return }
-        guard pendingHistoricalTransportEvents.count
-                < Self.pendingHistoricalTransportEventLimit else {
-            historicalAdmissionFailed = true
-            historicalArchiveWriteFailures += 1
-            pendingHistoricalTransportEvents.removeAll(keepingCapacity: false)
-            AtriaDebugLog("ATRIADBG historyAdmission status=failed generation=%llu reason=bounded_callback_buffer_exceeded limit=%d action=withhold_ack_retain_gap",
-                          generation,
-                          Self.pendingHistoricalTransportEventLimit)
-            return
-        }
         let clock = historyClockRef
         let historyClockSyncEnabled = historyClockSyncEnabled
             || productionFullDrainClockAuthorityEnabled
-        let strapIdentifier = peripheral?.identifier.uuidString
-            ?? UserDefaults.standard.string(forKey: LinkDefaults.savedPeripheralUUID)
-            ?? "unknown-whoop4"
-        pendingHistoricalTransportEvents.append(.frame(.init(
+        guard enqueueHistoricalIngress(.frame(
             payload: payload,
-            generation: generation,
-            clock: clock,
-            clockAuthorityEnabled: historyClockSyncEnabled,
-            strapIdentifier: strapIdentifier
-        )))
+            clock: clock.map { .init(device: $0.device, wall: $0.wall) },
+            clockAuthorityEnabled: historyClockSyncEnabled
+        )) else { return }
         if historicalDrainTelemetry.generation == generation {
             historicalDrainTelemetry.observePending(
-                pendingHistoricalTransportEvents.count + historyDrain.pendingPersistenceCount
+                pendingHistoricalTransportEventCount + historyDrain.pendingPersistenceCount
             )
         }
         scheduleHistoricalTransportEventDrain()
@@ -20041,7 +20111,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func scheduleHistoricalTransportEventDrain() {
         guard !historicalAdmissionBatchScheduled,
               !historicalAdmissionBatchInFlight,
-              !pendingHistoricalTransportEvents.isEmpty else { return }
+              hasPendingHistoricalTransportEvents else { return }
         historicalAdmissionBatchScheduled = true
         Task { @MainActor [weak self] in
             // Coalesce one CoreBluetooth callback burst without allowing an
@@ -20055,17 +20125,49 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func drainNextHistoricalTransportEventBurst() {
         guard !historicalAdmissionBatchInFlight,
-              !pendingHistoricalTransportEvents.isEmpty else { return }
+              hasPendingHistoricalTransportEvents else { return }
         guard !historyACKGate.requiresHistoryCallbackDeferral else {
             AtriaDebugLog("ATRIADBG historyAdmission status=deferred reason=awaiting_ack_two_proofs generation=%llu buffered=%d action=preserve_order",
                           offlineHistoricalSyncGeneration,
-                          pendingHistoricalTransportEvents.count)
+                          pendingHistoricalTransportEventCount)
             return
         }
-        if let first = pendingHistoricalTransportEvents.first,
-           case .metadata(let payload, let phase) = first {
-            _ = pendingHistoricalTransportEvents.popFirst()
-            processOrderedHistoryMetadata(payload, historyPhase: phase)
+        guard let spool = historicalIngressSpool else {
+            historicalAdmissionFailed = true
+            historicalArchiveWriteFailures += 1
+            return
+        }
+        let first: AtriaWhoop4HistoricalIngressSpool.Event
+        let firstWasDeferred: Bool
+        if let deferred = historicalIngressDeferredEvent {
+            historicalIngressDeferredEvent = nil
+            first = deferred
+            firstWasDeferred = true
+        } else {
+            do {
+                guard let peeked = try spool.peekFirst() else { return }
+                first = peeked
+            } catch {
+                historicalAdmissionFailed = true
+                historicalArchiveWriteFailures += 1
+                AtriaDebugLog("ATRIADBG historyIngress status=failed generation=%llu reason=spool_read_failed error=%@ action=withhold_ack_retain_gap",
+                              offlineHistoricalSyncGeneration, String(describing: error))
+                return
+            }
+            firstWasDeferred = false
+        }
+        if case let .metadata(payload, phaseGeneration) = first {
+            if !firstWasDeferred {
+                do { _ = try spool.popFirst() } catch {
+                    historicalAdmissionFailed = true
+                    historicalArchiveWriteFailures += 1
+                    return
+                }
+            }
+            processOrderedHistoryMetadata(
+                payload,
+                historyPhase: .init(generation: phaseGeneration)
+            )
             scheduleHistoricalTransportEventDrain()
             return
         }
@@ -20080,23 +20182,60 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG historyAdmission status=deferred reason=reducer_batch_boundary phase=%@ generation=%llu buffered=%d action=retain_until_ack",
                           historyDrain.phaseForDiagnostics,
                           offlineHistoricalSyncGeneration,
-                          pendingHistoricalTransportEvents.count)
+                          pendingHistoricalTransportEventCount)
+            return
+        }
+        guard historyDrain.pendingPersistenceCount
+                < Self.maximumHistoricalArchiveWorkInFlight else {
+            // Archive completion schedules the next bounded spool batch.
             return
         }
         var frames: [PendingHistoricalFrameAdmission] = []
-        frames.reserveCapacity(256)
-        while frames.count < 256,
-              let first = pendingHistoricalTransportEvents.first {
-            guard case .frame(let frame) = first else { break }
-            _ = pendingHistoricalTransportEvents.popFirst()
-            frames.append(frame)
+        let capacity = min(256, Self.maximumHistoricalArchiveWorkInFlight
+            - historyDrain.pendingPersistenceCount)
+        frames.reserveCapacity(capacity)
+        if case let .frame(payload, clock, authority) = first {
+            if !firstWasDeferred {
+                do { _ = try spool.popFirst() } catch {
+                    historicalAdmissionFailed = true
+                    historicalArchiveWriteFailures += 1
+                    return
+                }
+            }
+            frames.append(.init(payload: payload,
+                                generation: offlineHistoricalSyncGeneration,
+                                clock: clock.map { .init(device: $0.device, wall: $0.wall) },
+                                clockAuthorityEnabled: authority,
+                                strapIdentifier: historicalIngressStrapIdentifier))
+        }
+        while frames.count < capacity, hasPendingHistoricalTransportEvents {
+            let next: AtriaWhoop4HistoricalIngressSpool.Event
+            do {
+                guard let popped = try spool.popFirst() else { break }
+                next = popped
+            } catch {
+                historicalAdmissionFailed = true
+                historicalArchiveWriteFailures += 1
+                return
+            }
+            guard case let .frame(payload, clock, authority) = next else {
+                // Metadata is a strict barrier. It has already been removed
+                // from the append-only file but remains represented by this
+                // local event only for this MainActor turn.
+                historicalIngressDeferredEvent = next
+                break
+            }
+            frames.append(.init(payload: payload,
+                                generation: offlineHistoricalSyncGeneration,
+                                clock: clock.map { .init(device: $0.device, wall: $0.wall) },
+                                clockAuthorityEnabled: authority,
+                                strapIdentifier: historicalIngressStrapIdentifier))
         }
         guard !frames.isEmpty,
               let admissionLedger = historicalAdmissionLedger,
               let admissionAttempt = historicalAdmissionAttempt else {
             historicalAdmissionFailed = true
             historicalArchiveWriteFailures += 1
-            pendingHistoricalTransportEvents.removeAll(keepingCapacity: false)
             AtriaDebugLog("ATRIADBG historyAdmission status=failed reason=ledger_or_attempt_missing action=withhold_reducer_and_ack")
             return
         }
@@ -20340,7 +20479,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 historicalDrainTelemetry.persistErrors += 1
             }
             historicalDrainTelemetry.observePending(
-                pendingHistoricalTransportEvents.count + historyDrain.pendingPersistenceCount
+                pendingHistoricalTransportEventCount + historyDrain.pendingPersistenceCount
             )
         }
         if result.succeeded {
@@ -20391,6 +20530,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       result.persistedPath)
             }
             processHistoricalDrainEffects(drainEffects)
+            scheduleHistoricalTransportEventDrain()
             return
         }
 
@@ -20402,6 +20542,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               result.errorDescription ?? "unknown",
               HistoricalArchive.relativePath)
         processHistoricalDrainEffects(drainEffects)
+        scheduleHistoricalTransportEventDrain()
     }
 
     private func commitDurableHistoricalMetricFacts(
@@ -20485,7 +20626,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 if historicalDrainTelemetry.generation == generation {
                     historicalDrainTelemetry.flushStarted += 1
                     historicalDrainTelemetry.observePending(
-                        pendingHistoricalTransportEvents.count
+                        pendingHistoricalTransportEventCount
                             + historyDrain.pendingPersistenceCount
                     )
                 }
@@ -20645,7 +20786,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                 self.historicalDrainTelemetry.flushErrors += 1
                             }
                             self.historicalDrainTelemetry.observePending(
-                                self.pendingHistoricalTransportEvents.count
+                                self.pendingHistoricalTransportEventCount
                                     + self.historyDrain.pendingPersistenceCount
                             )
                         }
@@ -22342,11 +22483,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         historyACKGate.reset()
         pendingHistoryEndACK = nil
-        let discardedPostACKCallbacks = pendingHistoricalTransportEvents.count
-        pendingHistoricalTransportEvents.removeAll(keepingCapacity: true)
-        if discardedPostACKCallbacks > 0 {
-            // The strap may already have advanced beyond these rows. Never
-            // allow this drain to retire its gap after discarding them.
+        let retainedPostACKIngress = pendingHistoricalTransportEventCount
+        if retainedPostACKIngress > 0 {
+            // Do not delete disk ingress after an ACK failure. The strap may
+            // have advanced beyond these rows, so this generation cannot
+            // retire its gap; retaining the journal keeps crash diagnostics.
             historicalAdmissionFailed = true
             historicalArchiveWriteFailures += 1
         }
@@ -22360,7 +22501,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       identity.attempt,
                       Int(identity.commandSequence),
                       reason,
-                      discardedPostACKCallbacks)
+                          retainedPostACKIngress)
         retryHistoricalACKAfterFailure(
             generation: identity.generation,
             boundaryID: identity.boundaryID
@@ -22405,7 +22546,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             historicalDrainTelemetry.ackSucceeded += 1
             historicalDrainTelemetry.noteProgress()
             historicalDrainTelemetry.observePending(
-                pendingHistoricalTransportEvents.count + historyDrain.pendingPersistenceCount
+                pendingHistoricalTransportEventCount + historyDrain.pendingPersistenceCount
             )
         }
         noteOfflineHistoricalSyncProgress(
@@ -22522,7 +22663,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       self.historyDrain.generation == generation,
                       self.pendingHistoryEndACK == nil,
                       !self.historyACKGate.requiresHistoryCallbackDeferral,
-                      self.pendingHistoricalTransportEvents.isEmpty,
+                      !self.hasPendingHistoricalTransportEvents,
                       !self.historicalAdmissionBatchInFlight,
                       self.peripheral?.state == .connected else { return }
 
