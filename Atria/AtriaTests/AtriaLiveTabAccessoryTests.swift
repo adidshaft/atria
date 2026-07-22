@@ -211,15 +211,15 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                             hasEverConnected: true)
 
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: normal, now: now).label,
-                       "Live · 43%")
+                       "43%")
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: normal, now: now).tone,
-                       .cyan)
+                       .green)
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: normal, now: now).accessibilityLabel,
                        "Live strap, 43%, charger status unavailable")
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: normal, now: now).symbol,
                        "battery.50percent")
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: charging, now: now).label,
-                       "Live · 43%")
+                       "43%")
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: charging, now: now).symbol,
                        "battery.50percent")
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: charging, now: now).accessorySymbol,
@@ -227,17 +227,17 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: charging, now: now).accessibilityLabel,
                        "Live strap, 43%, Charging")
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: low, now: now).label,
-                       "Live · 10% · Low")
+                       "10% · Low")
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: pending, now: now).label,
                        "Live · Battery pending")
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: recent, now: now),
-                       AtriaTopStatusPresentation(label: "Live · 30% · battery 1h ago",
+                       AtriaTopStatusPresentation(label: "30%",
                                                   symbol: "battery.25percent",
-                                                  tone: .cyan,
+                                                  tone: .green,
                                                   isConnected: true,
                                                   accessibilityLabel: "Live strap, 30%, charger status unavailable"))
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: freshCachedLow, now: now),
-                       AtriaTopStatusPresentation(label: "Live · 14% · Low",
+                       AtriaTopStatusPresentation(label: "14% · Low",
                                                   symbol: "battery.25percent",
                                                   tone: .orange,
                                                   isConnected: true,
@@ -266,7 +266,7 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                        AtriaHomeModel.BatteryChargeProjection(status: .levelOnly,
                                                               isCharging: false))
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: input, now: now).label,
-                       "Live · 17% · Low")
+                       "17% · Low")
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: input, now: now).symbol,
                        "battery.25percent")
         XCTAssertNil(AtriaTopStatusProjection.presentation(input: input, now: now).accessorySymbol)
@@ -298,7 +298,7 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         let expired = now.addingTimeInterval(6)
         let presentation = AtriaTopStatusProjection.presentation(input: input, now: expired)
         XCTAssertNil(presentation.accessorySymbol)
-        XCTAssertEqual(presentation.label, "Live · 17% · Low")
+        XCTAssertEqual(presentation.label, "17% · Low")
         XCTAssertEqual(presentation.accessibilityLabel,
                        "Live strap, 17%, charger status unavailable")
     }
@@ -318,7 +318,7 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
 
         let presentation = AtriaTopStatusProjection.presentation(input: input, now: now)
         XCTAssertNil(presentation.accessorySymbol)
-        XCTAssertEqual(presentation.label, "Live · 35%")
+        XCTAssertEqual(presentation.label, "35%")
         XCTAssertEqual(presentation.accessibilityLabel,
                        "Live strap, 35%, charger status unavailable")
     }
@@ -332,7 +332,7 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                    hasEverConnected: true)
         let presentation = AtriaTopStatusProjection.presentation(input: input, now: Date())
 
-        XCTAssertEqual(presentation.label, "Live · 100% · Full")
+        XCTAssertEqual(presentation.label, "100% · Full")
         XCTAssertEqual(presentation.symbol, "battery.100percent")
         XCTAssertNil(presentation.accessorySymbol)
         XCTAssertEqual(presentation.accessibilityLabel, "Live strap, 100%, Full")
@@ -358,7 +358,7 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                    batteryChargeStatus: .charging,
                                    hasEverConnected: true)
         let presentation = AtriaTopStatusProjection.presentation(input: input, now: Date())
-        XCTAssertEqual(presentation.label, "Live · 43%")
+        XCTAssertEqual(presentation.label, "43%")
         XCTAssertEqual(presentation.accessibilityLabel,
                        "Live strap, 43%, charger status unavailable")
         XCTAssertNil(presentation.accessorySymbol)
@@ -473,7 +473,7 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
             hasEverConnected: true
         )
         let presentation = AtriaTopStatusProjection.presentation(input: input, now: now)
-        XCTAssertEqual(presentation.label, "Live · 43%")
+        XCTAssertEqual(presentation.label, "43%")
         XCTAssertNil(presentation.accessorySymbol)
         XCTAssertEqual(presentation.accessibilityLabel,
                        "Live strap, 43%, charger status unavailable")
