@@ -5289,7 +5289,12 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     private var recoveryStrainVisuals: some View {
         HStack(spacing: 14) {
             AtriaMetricRing(label: "Recovery",
-                            value: hero.recoveryEstimate.percent.map { "\($0)%" } ?? "--",
+                            // A recovery number is deliberately available on the
+                            // first measured sleep even before HRV/baselines are
+                            // qualified. When there is genuinely no measurement
+                            // to score, use the same explicit Learning state as
+                            // Home rather than a grey, ambiguous placeholder.
+                            value: hero.recoveryValue,
                             fraction: recoveryFraction,
                             tint: recoveryZone?.tint ?? hero.recoveryEstimate.percent.map(Metrics.recoveryColor) ?? .orange,
                             size: 112)
@@ -5320,7 +5325,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     @ViewBuilder
     private var recoveryStrainTiles: some View {
         AtriaMetricTile(label: "Recovery",
-                        value: hero.recoveryEstimate.percent.map { "\($0)" } ?? "--",
+                        value: hero.recoveryValue,
                         unit: hero.recoveryEstimate.percent == nil ? nil : "%",
                         state: recoveryState,
                         tint: recoveryZone?.tint ?? hero.recoveryEstimate.percent.map(Metrics.recoveryColor) ?? .orange,
