@@ -1416,6 +1416,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var workoutMotionActivationTask: Task<Void, Never>?
     private var workoutMotionCommandTask: Task<Void, Never>?
     private var workoutMotionOwnerStartedAt: Date?
+    /// Epoch-local R10 authority is intentionally separate from the durable
+    /// workout intent. A reconnect or history handoff revokes only this lease,
+    /// never the user's workout.
+    private var r10StepLeaseConnectionStartedAt: Date?
     private var workoutMotionStatus = ""
     private var workoutMotionFrameTimestamps: [Date] = []
     private var workoutMotionLeaseProfileArmed = false
@@ -14566,6 +14570,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         lastStandardHR = (rate, sampleTime)
         lastAcceptedHRAt = sampleTime
+        // Fresh accepted HR is the only signal allowed to grant a new R10
+        // lease after a reconnect or HR outage. The scheduler coalesces the
+        // one-Hz stream, so this cannot create command churn.
+        if workoutMotionOwnerStartedAt != nil {
+            scheduleWorkoutMotionLeaseEvaluation(reason: "fresh_accepted_hr", delay: 0)
+        }
         resetRecoveryReconnectBackoff(reason: "accepted_hr")
         fireDebugRRPresenceWatchdogIfDue(now: sampleTime, source: "accepted_hr")
         if acceptedHeartRateBatchDepth > 0 {
@@ -16564,6 +16574,41 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func evaluateWorkoutMotionLease(now: Date, reason: String) {
         guard !historyOnlyProbeMode, !offlineHistoricalSyncInProgress else { return }
         guard let leaseStartedAt = workoutMotionOwnerStartedAt else { return }
+        // The new bounded lease governs explicit workouts first (including
+        // Walking). Existing all-day/calibration behavior remains untouched
+        // until it has its own physical safety qualification.
+        if AtriaPendingWorkoutIntent.isActiveForBLEContinuity(now: now) {
+            let stepLeaseDecision = AtriaR10StepLeasePolicy.decision(
+                manualWorkoutActive: true,
+                historyOwnsTransport: offlineHistoricalSyncInProgress || historyOnlyProbeMode,
+                connected: peripheral?.state == .connected,
+                connectionStartedAt: connectedAt,
+                leaseConnectionStartedAt: r10StepLeaseConnectionStartedAt,
+                leaseStartedAt: leaseStartedAt,
+                lastAcceptedHeartRateAt: lastAcceptedHRAt,
+                now: now
+            )
+            switch stepLeaseDecision {
+            case .grant:
+                r10StepLeaseConnectionStartedAt = connectedAt
+                setWorkoutMotionStatus("r10_step_lease_granted", at: now)
+                AtriaDebugLog("ATRIADBG r10_step_lease status=granted reason=%@", reason)
+            case .keep:
+                break
+            case .revoke(let revocation):
+                // This revokes only pending R10 work. HR and the durable
+                // workout intent continue; fresh HR on a later epoch may
+                // grant anew.
+                workoutMotionActivationTask?.cancel()
+                workoutMotionActivationTask = nil
+                workoutMotionCommandTask?.cancel()
+                workoutMotionCommandTask = nil
+                r10StepLeaseConnectionStartedAt = nil
+                setWorkoutMotionStatus("r10_step_lease_revoked_\(revocation)", at: now)
+                AtriaDebugLog("ATRIADBG r10_step_lease status=revoked cause=%@ reason=%@", String(describing: revocation), reason)
+                return
+            }
+        }
         let defaults = UserDefaults.standard
         let lastActivationConnectionAt = (defaults.object(
             forKey: WorkoutMotionDefaults.activationConnectionAt
@@ -16749,6 +16794,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         workoutMotionActivationTask = nil
         workoutMotionCommandTask?.cancel()
         workoutMotionCommandTask = nil
+        r10StepLeaseConnectionStartedAt = nil
+        setWorkoutMotionStatus("r10_step_lease_revoked_history_owner", at: Date())
     }
 
     /// The common history finalizer reaches every terminal, timeout and
@@ -25161,6 +25208,9 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             proprietaryNotifyFallbackTask = nil
             activeProprietaryNotifyUUIDs.removeAll()
             strapStream5NotifyConfirmed = false
+            // The old R10 lease is bound to the prior BLE epoch. Never let it
+            // survive range loss, Bluetooth-off, or an app-owned reconnect.
+            r10StepLeaseConnectionStartedAt = nil
             protectedR10InitialProfilePeripheralID = nil
             protectedR10InitialProfileNotificationRequested = false
             let defaults = UserDefaults.standard

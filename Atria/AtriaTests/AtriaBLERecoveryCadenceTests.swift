@@ -7390,4 +7390,66 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testR10StepLeaseGrantsOnlyForFreshManualWorkoutHR() {
+        let connection = Date(timeIntervalSince1970: 1_000)
+        let started = Date(timeIntervalSince1970: 1_005)
+        XCTAssertEqual(AtriaR10StepLeasePolicy.decision(
+            manualWorkoutActive: true,
+            historyOwnsTransport: false,
+            connected: true,
+            connectionStartedAt: connection,
+            leaseConnectionStartedAt: nil,
+            leaseStartedAt: started,
+            lastAcceptedHeartRateAt: Date(timeIntervalSince1970: 1_010),
+            now: Date(timeIntervalSince1970: 1_015)
+        ), .grant)
+        XCTAssertEqual(AtriaR10StepLeasePolicy.decision(
+            manualWorkoutActive: true,
+            historyOwnsTransport: false,
+            connected: true,
+            connectionStartedAt: connection,
+            leaseConnectionStartedAt: connection,
+            leaseStartedAt: started,
+            lastAcceptedHeartRateAt: Date(timeIntervalSince1970: 1_010),
+            now: Date(timeIntervalSince1970: 1_015)
+        ), .keep)
+    }
+
+    func testR10StepLeaseNeverCompetesWithHistoryOrHR() {
+        let connection = Date(timeIntervalSince1970: 1_000)
+        let started = Date(timeIntervalSince1970: 1_005)
+        let freshHR = Date(timeIntervalSince1970: 1_010)
+        XCTAssertEqual(AtriaR10StepLeasePolicy.decision(
+            manualWorkoutActive: true, historyOwnsTransport: true,
+            connected: true, connectionStartedAt: connection,
+            leaseConnectionStartedAt: connection, leaseStartedAt: started,
+            lastAcceptedHeartRateAt: freshHR, now: Date(timeIntervalSince1970: 1_015)
+        ), .revoke(.historyOwnsTransport))
+        XCTAssertEqual(AtriaR10StepLeasePolicy.decision(
+            manualWorkoutActive: true, historyOwnsTransport: false,
+            connected: true, connectionStartedAt: connection,
+            leaseConnectionStartedAt: connection, leaseStartedAt: started,
+            lastAcceptedHeartRateAt: freshHR, now: Date(timeIntervalSince1970: 1_026)
+        ), .revoke(.heartRateNotFresh))
+    }
+
+    func testR10StepLeaseRevokesAcrossReconnectAndAtBound() {
+        let oldConnection = Date(timeIntervalSince1970: 1_000)
+        let newConnection = Date(timeIntervalSince1970: 1_100)
+        let started = Date(timeIntervalSince1970: 1_005)
+        XCTAssertEqual(AtriaR10StepLeasePolicy.decision(
+            manualWorkoutActive: true, historyOwnsTransport: false,
+            connected: true, connectionStartedAt: newConnection,
+            leaseConnectionStartedAt: oldConnection, leaseStartedAt: started,
+            lastAcceptedHeartRateAt: newConnection, now: Date(timeIntervalSince1970: 1_105)
+        ), .revoke(.connectionChanged))
+        XCTAssertEqual(AtriaR10StepLeasePolicy.decision(
+            manualWorkoutActive: true, historyOwnsTransport: false,
+            connected: true, connectionStartedAt: oldConnection,
+            leaseConnectionStartedAt: oldConnection, leaseStartedAt: started,
+            lastAcceptedHeartRateAt: Date(timeIntervalSince1970: 11_800),
+            now: Date(timeIntervalSince1970: 11_806)
+        ), .revoke(.expired))
+    }
+
 }
