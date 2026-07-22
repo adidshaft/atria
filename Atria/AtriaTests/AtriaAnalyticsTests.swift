@@ -4943,6 +4943,47 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertTrue(classification.isHROnly)
     }
 
+    /// Physical regression (2026-07-23): the strap was worn while awake from
+    /// 02:11–05:19. Three otherwise contiguous all-day fragments produced a
+    /// 3-hour HR-only candidate because the old degraded-review gate accepted
+    /// median baseline+7 and P90 baseline+21. No motion evidence existed, so
+    /// this must remain invisible rather than asking the user to dismiss sleep.
+    func testAwakeThreeHourOvernightWindowDoesNotSurfaceWithoutMotion() {
+        let calendar = utcCalendar
+        let rest = 71
+        let first = flatHRSession(start: utcDate(2027, 3, 2, 2, 11),
+                                  end: utcDate(2027, 3, 2, 2, 37),
+                                  bpm: 87)
+        let middleStart = utcDate(2027, 3, 2, 2, 37)
+        let middleEnd = utcDate(2027, 3, 2, 4, 54)
+        // A bounded awake rise (P90 92) is enough to distinguish this from
+        // the low, stable fragmented-night fixture immediately above.
+        let middlePoints = (0..<137).map { index in
+            SavedSession.Point(t: Double(index) * 60,
+                               bpm: index < 30 ? 92 : 78)
+        }
+        let middle = SavedSession(id: UUID(),
+                                  start: middleStart,
+                                  end: middleEnd,
+                                  label: "Awake overnight regression",
+                                  points: middlePoints)
+        let last = flatHRSession(start: utcDate(2027, 3, 2, 5, 0),
+                                 end: utcDate(2027, 3, 2, 5, 19),
+                                 bpm: 80)
+
+        let candidates = SessionStore.aggregateSleepCandidates(in: [first, middle, last],
+                                                               rest: rest,
+                                                               maxHR: 190,
+                                                               calendar: calendar,
+                                                               historicalMotionPolicy: .boundedRecent)
+        let candidate = try! XCTUnwrap(candidates.first)
+        XCTAssertFalse(candidate.motionEvidenceValidated)
+        XCTAssertEqual(candidate.medianHR, 78)
+        XCTAssertEqual(candidate.hrP90, 92)
+        XCTAssertFalse(SessionStore.isDegradedHROnlyOvernightSleepCandidate(candidate))
+        XCTAssertFalse(SessionStore.isReviewWorthySleepCandidate(candidate))
+    }
+
     /// An evening couch session (not overnight) must never confirm through the
     /// degraded HR-only tier: near-zero overlap with the sleep-core window (00:00-06:00)
     /// is the primary guardrail against an active/awake evening masquerading as sleep.

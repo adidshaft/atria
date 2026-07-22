@@ -19389,8 +19389,15 @@ final class SessionStore: ObservableObject {
         guard candidate.sessions >= 1,
               candidate.maxGap <= 90 * 60,
               candidate.span <= candidate.duration * 1.8 else { return false }
-        guard candidate.medianHR <= candidate.baselineRestingHR + 10,
-              candidate.hrP90 <= candidate.baselineRestingHR + 22,
+        // With no validated stillness, a short overnight window needs a
+        // materially tighter HR shape than the motion-backed review tier.
+        // The 2026-07-23 physical false positive (02:11–05:19) had a
+        // baseline of 71, median 78 and P90 92: low enough for the previous
+        // broad review gate, but not a credible sleep signature while awake.
+        // Keep the looser path available when strap stillness is actually
+        // validated; this HR-only exception must fail closed instead.
+        guard candidate.medianHR <= candidate.baselineRestingHR + 8,
+              candidate.hrP90 <= candidate.baselineRestingHR + 18,
               candidate.elevatedSampleFraction < 0.10 else { return false }
         // Wake/false-night guard: an active evening cannot masquerade as sleep just
         // because a bounded fraction of samples were elevated — bound the total
