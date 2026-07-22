@@ -2,7 +2,6 @@ import SwiftUI
 import Combine
 import UniformTypeIdentifiers
 import UIKit
-import CoreMotion
 
 /// Makes workout control deadlines real rather than advisory. Cancelling a
 /// task that is awaiting a FIFO motion marker does not itself resume that
@@ -45,278 +44,6 @@ private final class AtriaWorkoutStartAuthorityDeadline {
         guard let continuation else { return }
         self.continuation = nil
         continuation.resume(returning: value)
-    }
-}
-
-/// Phone-motion fallback for locomotion workouts. The strap remains the
-/// preferred source, but a walk must not lose its step total merely because
-/// R10 motion accounting is temporarily unavailable during a reconnect.
-@MainActor
-private final class AtriaWorkoutPhonePedometer {
-    static let shared = AtriaWorkoutPhonePedometer()
-    typealias StepEvidence = (count: Int, isEstimated: Bool, capturedAt: Date?)
-    private static let finishQueryTimeout: Duration = .milliseconds(750)
-
-    private let pedometer = CMPedometer()
-    private var startedAt: Date?
-    private var latestCount: Int?
-    private var latestCapturedAt: Date?
-    private var pendingFinish: (id: UUID,
-                                continuation: CheckedContinuation<StepEvidence?, Never>)?
-
-    func start(at date: Date) {
-        cancel()
-        guard CMPedometer.isStepCountingAvailable() else { return }
-        startedAt = date
-        latestCount = 0
-        latestCapturedAt = date
-        pedometer.startUpdates(from: date) { [weak self] data, error in
-            guard error == nil, let data else { return }
-            Task { @MainActor [weak self] in
-                guard let self, self.startedAt == date else { return }
-                self.latestCount = max(0, data.numberOfSteps.intValue)
-                self.latestCapturedAt = data.endDate
-            }
-        }
-    }
-
-    func finish(from workoutStart: Date,
-                at endedAt: Date) async -> StepEvidence? {
-        pedometer.stopUpdates()
-        let cached: StepEvidence? = latestCount.map {
-            (count: $0, isEstimated: true, capturedAt: min(latestCapturedAt ?? endedAt, endedAt))
-        }
-        guard CMPedometer.isStepCountingAvailable() else {
-            cancel()
-            return cached
-        }
-        let queried: StepEvidence? = await withCheckedContinuation { continuation in
-            let id = UUID()
-            pendingFinish = (id, continuation)
-            pedometer.queryPedometerData(from: workoutStart, to: endedAt) { [weak self] data, error in
-                let result: StepEvidence? = if error == nil, let data {
-                    (
-                        max(0, data.numberOfSteps.intValue),
-                        true,
-                        min(data.endDate, endedAt)
-                    )
-                } else {
-                    nil
-                }
-                Task { @MainActor [weak self] in
-                    self?.finishPendingQuery(id: id, result: result ?? cached)
-                }
-            }
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(for: Self.finishQueryTimeout)
-                self?.finishPendingQuery(id: id, result: cached)
-            }
-        }
-        cancel()
-        return queried ?? cached
-    }
-
-    func cancel() {
-        pedometer.stopUpdates()
-        if let pendingFinish {
-            self.pendingFinish = nil
-            pendingFinish.continuation.resume(returning: nil)
-        }
-        startedAt = nil
-        latestCount = nil
-        latestCapturedAt = nil
-    }
-
-    private func finishPendingQuery(id: UUID, result: StepEvidence?) {
-        guard let pendingFinish, pendingFinish.id == id else { return }
-        self.pendingFinish = nil
-        pendingFinish.continuation.resume(returning: result)
-    }
-}
-
-/// Full-interval phone steps are the reliable day authority while the strap's
-/// R10 transport remains preliminary. Values are cached so the first Home
-/// frame can render yesterday's result while today's query runs asynchronously.
-private let atriaPhoneDailyStepCacheLock = NSLock()
-
-@MainActor
-final class AtriaPhoneDailyStepStore {
-    static let shared = AtriaPhoneDailyStepStore()
-    private static let countKey = "atria.phoneSteps.today.count"
-    private static let dayKey = "atria.phoneSteps.today.day"
-    private static let capturedAtKey = "atria.phoneSteps.today.capturedAt"
-    private let pedometer = CMPedometer()
-    private var liveUpdateGeneration = UUID()
-    private var liveUpdateDay: Date?
-    private var lastPublishedLiveCount: Int?
-    private var lastPublishedLiveCapturedAt: Date?
-
-    nonisolated static func cached(now: Date = Date(), calendar: Calendar = .current) -> (count: Int, capturedAt: Date)? {
-        cached(day: calendar.startOfDay(for: now), calendar: calendar)
-    }
-
-    nonisolated static func cached(day: Date,
-                                   calendar: Calendar = .current) -> (count: Int, capturedAt: Date)? {
-        let defaults = UserDefaults.standard
-        let expected = calendar.startOfDay(for: day).timeIntervalSince1970
-        let suffix = String(Int(expected.rounded()))
-        let countKey = "atria.phoneSteps.day.\(suffix).count"
-        let capturedKey = "atria.phoneSteps.day.\(suffix).capturedAt"
-        if defaults.object(forKey: countKey) != nil {
-            let captured = defaults.double(forKey: capturedKey)
-            return (max(0, defaults.integer(forKey: countKey)),
-                    captured > 0 ? Date(timeIntervalSince1970: captured) : day)
-        }
-        // One-generation compatibility with the original today-only cache.
-        let legacyDay = defaults.double(forKey: "atria.phoneSteps.today.day")
-        guard abs(legacyDay - expected) < 1,
-              defaults.object(forKey: "atria.phoneSteps.today.count") != nil else { return nil }
-        let captured = defaults.double(forKey: "atria.phoneSteps.today.capturedAt")
-        return (max(0, defaults.integer(forKey: "atria.phoneSteps.today.count")),
-                captured > 0 ? Date(timeIntervalSince1970: captured) : day)
-    }
-
-    func refreshRecentDays(now: Date = Date(), completion: @escaping () -> Void) {
-        guard CMPedometer.isStepCountingAvailable() else { completion(); return }
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: now)
-        let days = (0...2).compactMap { calendar.date(byAdding: .day, value: -$0, to: today) }
-        let group = DispatchGroup()
-        for dayStart in days {
-            group.enter()
-            let dayEnd = min(now, calendar.date(byAdding: .day, value: 1, to: dayStart) ?? now)
-            pedometer.queryPedometerData(from: dayStart, to: dayEnd) { data, error in
-                defer { group.leave() }
-                guard error == nil, let data else { return }
-                Self.persist(count: max(0, data.numberOfSteps.intValue),
-                             capturedAt: data.endDate,
-                             dayStart: dayStart,
-                             calendar: calendar)
-            }
-        }
-        group.notify(queue: .main) {
-            Task { @MainActor in
-                completion()
-            }
-        }
-    }
-
-    /// Keep the open civil-day phone coordinate moving while Home remains
-    /// active. A one-shot foreground query otherwise freezes at the count that
-    /// existed when the screen opened; a later walk can then keep rendering
-    /// that stale subtotal for hours even though CMPedometer has newer data.
-    ///
-    /// This is only a same-day cumulative fallback. It is never added to strap
-    /// steps (the presentation resolver chooses the larger overlapping total),
-    /// and stopping/restarting performs a full-day query so app suspension does
-    /// not create a hole in the phone coordinate.
-    func startLiveTodayUpdates(now: Date = Date(), onUpdate: @escaping () -> Void) {
-        guard CMPedometer.isStepCountingAvailable() else { return }
-        stopLiveTodayUpdates()
-        let calendar = Calendar.current
-        let dayStart = calendar.startOfDay(for: now)
-        let generation = UUID()
-        liveUpdateGeneration = generation
-        liveUpdateDay = dayStart
-        let cached = Self.cached(day: dayStart, calendar: calendar)
-        lastPublishedLiveCount = cached?.count
-        lastPublishedLiveCapturedAt = cached?.capturedAt
-        pedometer.startUpdates(from: dayStart) { [weak self] data, error in
-            guard error == nil, let data else { return }
-            let count = max(0, data.numberOfSteps.intValue)
-            let startedAt = data.startDate
-            let capturedAt = data.endDate
-            Task { @MainActor [weak self] in
-                guard let self,
-                      self.liveUpdateGeneration == generation,
-                      self.liveUpdateDay == dayStart else { return }
-                let callbackNow = Date()
-                guard calendar.isDate(dayStart, inSameDayAs: callbackNow) else {
-                    self.startLiveTodayUpdates(now: callbackNow, onUpdate: onUpdate)
-                    return
-                }
-                guard Self.liveTodayUpdateIsAdmissible(count: count,
-                                                       queryStartedAt: startedAt,
-                                                       capturedAt: capturedAt,
-                                                       dayStart: dayStart,
-                                                       now: callbackNow,
-                                                       calendar: calendar) else { return }
-                guard Self.persist(count: count,
-                                   capturedAt: capturedAt,
-                                   dayStart: dayStart,
-                                   calendar: calendar) else { return }
-                let countChanged = self.lastPublishedLiveCount != count
-                let captureAdvanced = self.lastPublishedLiveCapturedAt.map {
-                    capturedAt.timeIntervalSince($0) >= 30
-                } ?? true
-                guard countChanged || captureAdvanced else { return }
-                self.lastPublishedLiveCount = count
-                self.lastPublishedLiveCapturedAt = capturedAt
-                onUpdate()
-            }
-        }
-    }
-
-    func stopLiveTodayUpdates() {
-        liveUpdateGeneration = UUID()
-        liveUpdateDay = nil
-        lastPublishedLiveCount = nil
-        lastPublishedLiveCapturedAt = nil
-        pedometer.stopUpdates()
-    }
-
-    nonisolated static func liveTodayUpdateIsAdmissible(
-        count: Int,
-        queryStartedAt: Date,
-        capturedAt: Date,
-        dayStart: Date,
-        now: Date,
-        calendar: Calendar
-    ) -> Bool {
-        let expectedDay = calendar.startOfDay(for: dayStart)
-        return count >= 0
-            && abs(queryStartedAt.timeIntervalSince(expectedDay)) <= 5
-            && capturedAt >= expectedDay
-            && capturedAt <= now.addingTimeInterval(5)
-            && calendar.isDate(capturedAt, inSameDayAs: expectedDay)
-            && calendar.isDate(now, inSameDayAs: expectedDay)
-    }
-
-    nonisolated static func phoneDailyStepUpdateShouldReplace(
-        cachedCapturedAt: TimeInterval,
-        incomingCapturedAt: TimeInterval
-    ) -> Bool {
-        cachedCapturedAt <= 0 || incomingCapturedAt >= cachedCapturedAt
-    }
-
-    @discardableResult
-    private nonisolated static func persist(count: Int,
-                                            capturedAt: Date,
-                                            dayStart: Date,
-                                            calendar: Calendar) -> Bool {
-        atriaPhoneDailyStepCacheLock.lock()
-        defer { atriaPhoneDailyStepCacheLock.unlock() }
-        let normalizedDay = calendar.startOfDay(for: dayStart)
-        let suffix = String(Int(normalizedDay.timeIntervalSince1970.rounded()))
-        let defaults = UserDefaults.standard
-        let capturedKey = "atria.phoneSteps.day.\(suffix).capturedAt"
-        let priorCapturedAt = defaults.double(forKey: capturedKey)
-        guard phoneDailyStepUpdateShouldReplace(
-            cachedCapturedAt: priorCapturedAt,
-            incomingCapturedAt: capturedAt.timeIntervalSince1970
-        ) else {
-            return false
-        }
-        defaults.set(max(0, count), forKey: "atria.phoneSteps.day.\(suffix).count")
-        defaults.set(capturedAt.timeIntervalSince1970, forKey: capturedKey)
-        if calendar.isDate(normalizedDay, inSameDayAs: Date()) {
-            defaults.set(max(0, count), forKey: "atria.phoneSteps.today.count")
-            defaults.set(normalizedDay.timeIntervalSince1970,
-                         forKey: "atria.phoneSteps.today.day")
-            defaults.set(capturedAt.timeIntervalSince1970,
-                         forKey: "atria.phoneSteps.today.capturedAt")
-        }
-        return true
     }
 }
 
@@ -1412,7 +1139,6 @@ struct AtriaHomeView: View {
             connectionDiagnosisPromotionTask = nil
             mediaController.setRefreshLoopActive(false)
             motionActivityMonitor.stop()
-            AtriaPhoneDailyStepStore.shared.stopLiveTodayUpdates()
         }
     }
 
@@ -2219,12 +1945,6 @@ struct AtriaHomeView: View {
             return nil
         }
         workoutPersistenceRevision = intent.persistenceRevision
-        switch session.activityType {
-        case .walking, .running, .hiking:
-            AtriaWorkoutPhonePedometer.shared.start(at: session.start)
-        default:
-            AtriaWorkoutPhonePedometer.shared.cancel()
-        }
         // Seal the pre-workout all-day segment at the persisted exact start so
         // no later save can relabel it. The commit runs off the start tap so a
         // large all-day journal cannot delay the workout UI; correctness does
@@ -3683,40 +3403,11 @@ struct AtriaHomeView: View {
                                                isEstimated: $0.isEstimated,
                                                capturedAt: $0.capturedAt)
         }
-        // The query can wait for Core Motion's historical service for its
-        // bounded timeout. Do not put that wait on the End path when fresh
-        // strap evidence will win selection anyway. A gyro-anchored workout
-        // also cannot change source at its terminal boundary, so querying the
-        // phone in that case was guaranteed discarded work.
-        let canUsePhoneStepFallback = workoutSession?.stepSourceVersion
-            != .strapGyroCadenceAmbulatoryV1
-        let needsPhoneStepFallback = strapEvidence == nil && canUsePhoneStepFallback
-        let phoneStepEvidence: (count: Int, isEstimated: Bool, capturedAt: Date?)?
-        switch (activityType, needsPhoneStepFallback) {
-        case (.walking, true), (.running, true), (.hiking, true):
-            phoneStepEvidence = await AtriaWorkoutPhonePedometer.shared.finish(
-                from: startedAt,
-                at: endedAt
-            )
-        default:
-            AtriaWorkoutPhonePedometer.shared.cancel()
-            phoneStepEvidence = nil
-        }
         AtriaDebugLog("ATRIADBG live_workout_end_latency phase=step_evidence elapsed_ms=%d",
                       Int(((ProcessInfo.processInfo.systemUptime - endRequestedUptime) * 1_000).rounded()))
-        let phoneEvidence: AtriaCompletedWorkoutStepEvidence? = phoneStepEvidence.map {
-            AtriaCompletedWorkoutStepEvidence(count: $0.count,
-                                               isEstimated: true,
-                                               capturedAt: $0.capturedAt)
-        }
-        // A gyro-anchored workout remains on that detector through End. The
-        // phone-on-bench fallback is intentionally excluded; selecting a new
-        // source here would invalidate pause anchors and restart continuity.
-        let stepEvidence = workoutSession?.stepSourceVersion
-            == .strapGyroCadenceAmbulatoryV1
-            ? strapEvidence
-            : AtriaCompletedWorkoutStepEvidence.select(strap: strapEvidence,
-                                                        phone: phoneEvidence)
+        // A missing dense strap boundary stays unavailable; phone motion is
+        // never promoted into a wrist-derived workout total.
+        let stepEvidence = AtriaCompletedWorkoutStepEvidence.select(strap: strapEvidence)
         workoutPersistenceRevision &+= 1
         let finalIntent = AtriaPendingWorkoutIntent(
             startedAt: startedAt,
@@ -4174,9 +3865,7 @@ struct AtriaHomeView: View {
         // publisher subscription existed. Schedule the sticky route before
         // optional diagnostics, but apply it only after the active first frame.
         schedulePendingNotificationDeepLinkDrain()
-        refreshPhoneDailySteps()
         if scenePhase == .active {
-            startLivePhoneDailySteps()
             motionActivityMonitor.start()
         }
         applyDebugUIScreenLaunchArgumentIfNeeded()
@@ -4284,7 +3973,6 @@ struct AtriaHomeView: View {
     private func handleHomeScenePhaseChange(_ phase: ScenePhase) {
         updateMediaRefreshLoop()
         guard phase == .active else {
-            AtriaPhoneDailyStepStore.shared.stopLiveTodayUpdates()
             foregroundResumeTask?.cancel()
             foregroundResumeTask = nil
             connectionDiagnosisPromotionTask?.cancel()
@@ -4327,8 +4015,6 @@ struct AtriaHomeView: View {
             return
         }
         schedulePendingNotificationDeepLinkDrain()
-        refreshPhoneDailySteps()
-        startLivePhoneDailySteps()
         foregroundResumeTask?.cancel()
         foregroundResumeTask = Task { @MainActor in
             // Let the returning scene draw first. Widget encoding, Keychain reads,
@@ -4380,21 +4066,6 @@ struct AtriaHomeView: View {
                 LocalNotificationScheduler.scheduleMorningJournalCheckIn(lastJournalActivity: lastJournalActivity)
             }
             foregroundResumeTask = nil
-        }
-    }
-
-    private func refreshPhoneDailySteps() {
-        AtriaPhoneDailyStepStore.shared.refreshRecentDays { [model, store] in
-            model.forceRefresh()
-            AtriaRecentWorkoutStepEnricher.shared.enrich(store: store)
-        }
-    }
-
-    private func startLivePhoneDailySteps() {
-        AtriaPhoneDailyStepStore.shared.startLiveTodayUpdates { [model] in
-            // The model rebuild is already coalesced; only a changed count or a
-            // 30-second evidence-clock renewal reaches this callback.
-            model.forceRefresh()
         }
     }
 
@@ -9613,8 +9284,6 @@ final class AtriaHomeModel {
             liveCount: strapStepsToday,
             liveValidationState: ble.liveStrapStepResearchState,
             liveCapturedAt: ble.liveStrapStepCountCapturedAt,
-            phoneCount: AtriaPhoneDailyStepStore.cached()?.count,
-            phoneCapturedAt: AtriaPhoneDailyStepStore.cached()?.capturedAt,
             canonicalDays: canonicalStepDays,
             physiologicalDayStart: savedAggregate.cycleStart
         )

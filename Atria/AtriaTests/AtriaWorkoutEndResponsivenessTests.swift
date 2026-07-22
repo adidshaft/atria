@@ -56,7 +56,7 @@ final class AtriaWorkoutEndResponsivenessTests: XCTestCase {
     func testEndCriticalPathHasBoundedSensorWaitsAndDefersHeavyCompletion() throws {
         let home = try appSource("AtriaHomeView.swift")
         XCTAssertTrue(home.contains("timeout: Duration = .milliseconds(250)"))
-        XCTAssertTrue(home.contains("finishQueryTimeout: Duration = .milliseconds(750)"))
+        XCTAssertFalse(home.contains("CMPedometer"))
 
         let start = try XCTUnwrap(home.range(of: "private func endWorkoutSession(startedAt: Date,"))
         let end = try XCTUnwrap(home.range(of: "private func workoutShareSnapshot(",
@@ -85,7 +85,7 @@ final class AtriaWorkoutEndResponsivenessTests: XCTestCase {
         }
     }
 
-    func testEndOnlyQueriesPhoneStepsWhenStrapEvidenceCannotBeSelected() throws {
+    func testEndNeverQueriesPhoneStepsWhenStrapEvidenceIsUnavailable() throws {
         let home = try appSource("AtriaHomeView.swift")
         let start = try XCTUnwrap(home.range(of: "private func endWorkoutSession(startedAt: Date,"))
         let end = try XCTUnwrap(home.range(of: "private func workoutShareSnapshot(",
@@ -93,15 +93,10 @@ final class AtriaWorkoutEndResponsivenessTests: XCTestCase {
         let completion = String(home[start.lowerBound..<end.lowerBound])
 
         let strapEvidence = try XCTUnwrap(completion.range(of: "let strapEvidence:"))
-        let fallbackGate = try XCTUnwrap(completion.range(of: "let needsPhoneStepFallback ="))
-        let query = try XCTUnwrap(completion.range(of: "AtriaWorkoutPhonePedometer.shared.finish("))
         let selection = try XCTUnwrap(completion.range(of: "AtriaCompletedWorkoutStepEvidence.select("))
 
-        XCTAssertLessThan(strapEvidence.lowerBound, fallbackGate.lowerBound)
-        XCTAssertLessThan(fallbackGate.lowerBound, query.lowerBound,
-                          "The phone query must be guarded by whether it can affect terminal steps")
-        XCTAssertLessThan(query.lowerBound, selection.lowerBound)
-        XCTAssertTrue(completion.contains("strapEvidence == nil && canUsePhoneStepFallback"),
-                      "Fresh strap steps and gyro-anchored sessions must bypass the phone query")
+        XCTAssertLessThan(strapEvidence.lowerBound, selection.lowerBound)
+        XCTAssertFalse(completion.contains("AtriaWorkoutPhonePedometer"))
+        XCTAssertTrue(completion.contains("never promoted into a wrist-derived workout total"))
     }
 }

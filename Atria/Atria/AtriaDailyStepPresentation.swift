@@ -18,7 +18,6 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
 
     enum Source: Equatable, Sendable {
         case live
-        case phone
         case verifiedCanonical
         case none
     }
@@ -51,10 +50,6 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             return "Partial archive coverage"
         case (.live, .partial):
             return isValidated ? "Today so far · live" : "Today so far · estimate"
-        case (.phone, .partial):
-            return "Today so far · iPhone"
-        case (.phone, .complete):
-            return "Complete day · iPhone"
         default:
             return "No verified step coverage"
         }
@@ -69,10 +64,6 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             return "At least \(count) steps. Partial verified archive coverage."
         case (.live, .partial):
             return "\(isValidated ? "\(count)" : "Approximately \(count)") steps today so far."
-        case (.phone, .partial):
-            return "\(count) steps today so far, measured by iPhone motion."
-        case (.phone, .complete):
-            return "\(count) steps, measured across the complete day by iPhone motion."
         default:
             return "Step count unavailable."
         }
@@ -84,8 +75,6 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         liveCount: Int,
         liveValidationState: String,
         liveCapturedAt: Date?,
-        phoneCount: Int? = nil,
-        phoneCapturedAt: Date? = nil,
         canonicalDays: [AtriaHistoricalDailyConsumerProjection.StepDay],
         /// Live strap totals are attributed wake-to-wake. When a completed
         /// main sleep has not arrived, this can deliberately begin on the
@@ -107,46 +96,10 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                 && $0 <= now.addingTimeInterval(5)
                 && now.timeIntervalSince($0) <= liveEvidenceMaximumAge
         } ?? false
-        let cachedPhone = AtriaPhoneDailyStepStore.cached(day: dayStart, calendar: calendar)
-        let resolvedPhoneCount = phoneCount ?? cachedPhone?.count
-        let resolvedPhoneCapturedAt = phoneCapturedAt ?? cachedPhone?.capturedAt
-        // Both sources are cumulative day totals with unknown overlap, so they
-        // must never be added. The iPhone can legitimately report zero (or a
-        // small subtotal) while it sits on a bench during a strap-worn walk or
-        // workout. For the open day, retain the larger same-day total instead
-        // of allowing that stationary-phone result to erase wrist evidence.
-        if isOpenDay,
-           !crossesCivilMidnight,
-           let resolvedPhoneCount,
-           let resolvedPhoneCapturedAt,
-           resolvedPhoneCapturedAt <= now.addingTimeInterval(5),
-           liveBelongsToDay,
-           liveCount > resolvedPhoneCount {
-            return .init(day: dayStart,
-                         count: max(0, liveCount),
-                         completeness: .partial,
-                         source: .live,
-                         isValidated: WidgetSnapshotPublisher.strapStepsAreValidated(
-                            state: liveValidationState
-                         ),
-                         capturedAt: liveCapturedAt,
-                         coverageFraction: nil)
-        }
-        if !crossesCivilMidnight,
-           let resolvedPhoneCount, let resolvedPhoneCapturedAt,
-           resolvedPhoneCapturedAt <= now.addingTimeInterval(5) {
-            return .init(day: dayStart,
-                         count: max(0, resolvedPhoneCount),
-                         completeness: isOpenDay ? .partial : .complete,
-                         source: .phone,
-                         isValidated: true,
-                         capturedAt: resolvedPhoneCapturedAt,
-                         coverageFraction: isOpenDay ? nil : 1)
-        }
         // A live strap subtotal is only an open-day source while its
-        // detector-applied coordinate is fresh.  A restored prefix is retained
+        // detector-applied coordinate is fresh. A restored prefix is retained
         // in the strap detail view as "Not live", but it cannot silently
-        // masquerade as today's current count or mask a fresh phone total.
+        // masquerade as today's current count.
         if isOpenDay, liveBelongsToDay {
             return .init(day: dayStart,
                          count: max(0, liveCount),

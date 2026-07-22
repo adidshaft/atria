@@ -425,15 +425,12 @@ enum WidgetSnapshotPublisher {
             savedActiveSessionTotal: savedAggregate.savedActiveSessionTotalStrapSteps,
             liveActiveSession: ble.liveStrapStepResearchCount
         )
-        let cachedPhoneSteps = AtriaPhoneDailyStepStore.cached(now: now, calendar: calendar)
         let dailySteps = resolvedDailySteps(
             day: now,
             now: now,
             liveCount: strapStepsToday,
             liveValidationState: ble.liveStrapStepResearchState,
             liveCapturedAt: ble.liveStrapStepCountCapturedAt,
-            phoneCount: cachedPhoneSteps?.count,
-            phoneCapturedAt: cachedPhoneSteps?.capturedAt,
             physiologicalDayStart: savedAggregate.day,
             calendar: calendar
         )
@@ -616,16 +613,13 @@ enum WidgetSnapshotPublisher {
             || state == "r10_live_validated"
     }
 
-    /// Widgets and the in-app Steps card must select from phone and strap
-    /// evidence with the same overlap-safe policy.
+    /// Widgets and the in-app Steps card use the same strap-only policy.
     nonisolated static func resolvedDailySteps(
         day: Date,
         now: Date,
         liveCount: Int,
         liveValidationState: String,
         liveCapturedAt: Date?,
-        phoneCount: Int?,
-        phoneCapturedAt: Date?,
         physiologicalDayStart: Date? = nil,
         calendar: Calendar = .current
     ) -> AtriaDailyStepPresentation {
@@ -635,8 +629,6 @@ enum WidgetSnapshotPublisher {
             liveCount: liveCount,
             liveValidationState: liveValidationState,
             liveCapturedAt: liveCapturedAt,
-            phoneCount: phoneCount,
-            phoneCapturedAt: phoneCapturedAt,
             canonicalDays: [],
             physiologicalDayStart: physiologicalDayStart,
             calendar: calendar
