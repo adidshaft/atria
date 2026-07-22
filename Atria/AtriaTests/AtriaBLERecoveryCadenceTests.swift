@@ -3368,17 +3368,31 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
         let resumeBody = String(source[resumeStart.lowerBound...].prefix(1_500))
         XCTAssertTrue(resumeBody.contains("lastAcceptedHRAt >= connectedAt"))
-        XCTAssertTrue(resumeBody.contains("force: pending.force"))
         XCTAssertTrue(resumeBody.contains(
-            "explicitResearchRequest: pending.explicitRequest"
+            "shouldDeferInterruptedFullDrainRelaunchAfterLivePersistence"
         ))
+        XCTAssertTrue(resumeBody.contains(
+            "deferred_interrupted_full_drain_live_priority"
+        ))
+        XCTAssertTrue(resumeBody.contains(
+            "retain_exact_gap_no_fresh_owner_cutover"
+        ))
+
+        XCTAssertTrue(AtriaBLEManager
+            .shouldDeferInterruptedFullDrainRelaunchAfterLivePersistence(
+                pendingReason: "interrupted_full_drain_relaunch"
+            ))
+        XCTAssertFalse(AtriaBLEManager
+            .shouldDeferInterruptedFullDrainRelaunchAfterLivePersistence(
+                pendingReason: "user_requested_history_diagnostic"
+            ))
 
         XCTAssertTrue(source.contains(
             "persistActiveSessionJournalIfNeeded(reason: \"accepted_hr\", force: false)"
         ))
         XCTAssertTrue(source.contains(
             "resumePendingForcedHistoricalSyncAfterLivePersistenceIfNeeded(\n                reason: \"accepted_hr\""
-        ), "the accepted-HR path must persist first, then replay the forced request")
+        ), "the accepted-HR path must persist first, then evaluate a forced request")
     }
 
     func testInterruptedFullDrainRelaunchResumesOnlyPendingTransportAuthority() {

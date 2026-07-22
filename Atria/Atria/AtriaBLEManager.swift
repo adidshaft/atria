@@ -1219,6 +1219,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// that connection requests the proprietary service, so no later reconnect
     /// can replay the handoff.
     private var freshHistoryOwnerConnectionGeneration: UInt64?
+    /// A resumed live epoch wins over a persisted, interrupted full drain.
+    /// This is intentionally in-memory: the next genuine connection boundary
+    /// may reconsider the durable gap under normal automatic policy.
+    private var deferInterruptedFullDrainForCurrentLiveConnection = false
     private let offlineHistoricalSyncMinimumInterval: TimeInterval = 6 * 60 * 60
     private let offlineSyncLiveAcceptedHRProtectionWindow: TimeInterval = 45
     private let rangeLossBackfillReadyForceInterval: TimeInterval = 90
@@ -5654,11 +5658,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return pendingOfflineHistoricalSyncRequest
     }
 
-    /// A launch-forced physical recovery commonly arrives while CoreBluetooth
-    /// is still reconnecting. Resume it only after one current-epoch HR sample
-    /// has entered the normal session/journal path. Automatic requests never
-    /// use this edge, and the ordinary request guards still protect workouts,
-    /// capability qualification, and terminal materialization.
+    /// An explicitly requested diagnostic may resume after a current-epoch HR
+    /// sample has entered the journal. A persisted *interrupted* full drain is
+    /// different: it is recovery evidence, not a user command. Reclaiming a
+    /// just-restored live link for that old request creates a reconnect loop,
+    /// so preserve its exact gap and wait for ordinary retry policy or a new
+    /// explicit diagnostic instead.
     private func resumePendingForcedHistoricalSyncAfterLivePersistenceIfNeeded(
         reason: String
     ) {
@@ -5675,6 +5680,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               let connectedAt,
               let lastAcceptedHRAt,
               lastAcceptedHRAt >= connectedAt else { return }
+        if Self.shouldDeferInterruptedFullDrainRelaunchAfterLivePersistence(
+            pendingReason: pending.reason
+        ) {
+            _ = takePendingOfflineHistoricalSyncRequest()
+            explicitHistoryLaunchIntentPending = false
+            deferInterruptedFullDrainForCurrentLiveConnection = true
+            rangeLossBackfillTask?.cancel()
+            rangeLossBackfillTask = nil
+            let defaults = UserDefaults.standard
+            defaults.set("deferred_interrupted_full_drain_live_priority",
+                         forKey: OfflineSyncDefaults.lastStatus)
+            defaults.set(pending.reason, forKey: OfflineSyncDefaults.lastReason)
+            AtriaDebugLog("ATRIADBG offline_sync status=deferred_interrupted_full_drain_live_priority reason=%@ trigger=%@ action=retain_exact_gap_no_fresh_owner_cutover",
+                          pending.reason,
+                          reason)
+            return
+        }
         _ = takePendingOfflineHistoricalSyncRequest()
         AtriaDebugLog("ATRIADBG offline_sync status=resuming_explicit_force reason=%@ trigger=%@ action=flush_live_journal_then_acquire_history_owner",
                       pending.reason,
@@ -5694,6 +5716,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         rangeLossBackfillPending
             && authorityStatus == .draining
             && exactGapFingerprintStillPending
+    }
+
+    /// The launch marker restores a durable recovery candidate, not permission
+    /// to interrupt the first healthy live connection after a radio outage.
+    nonisolated static func shouldDeferInterruptedFullDrainRelaunchAfterLivePersistence(
+        pendingReason: String
+    ) -> Bool {
+        pendingReason == "interrupted_full_drain_relaunch"
     }
 
     /// A full-drain authority is a durable transport transaction, not merely a
@@ -8733,6 +8763,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func scheduleRangeLossBackfillIfNeeded(reason: String) {
         let defaults = UserDefaults.standard
         guard defaults.bool(forKey: OfflineSyncDefaults.enabled) else { return }
+        guard !deferInterruptedFullDrainForCurrentLiveConnection else {
+            rangeLossBackfillTask?.cancel()
+            rangeLossBackfillTask = nil
+            defaults.set("deferred_interrupted_full_drain_live_priority",
+                         forKey: OfflineSyncDefaults.lastStatus)
+            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            AtriaDebugLog("ATRIADBG offline_sync status=deferred_interrupted_full_drain_live_priority reason=%@ action=hold_until_next_connection_or_explicit_diagnostic",
+                          reason)
+            return
+        }
         scheduleStaleArmedRangeLossBackfillReconciliation(reason: reason)
         guard defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) else { return }
         guard !offlineHistoricalSyncInProgress else { return }
@@ -25207,6 +25247,10 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                               peripheral.identifier.uuidString)
                 return
             }
+            // This is the natural boundary which may later permit an ordinary
+            // gap retry.  It never starts history here; realtime reconnect is
+            // still installed first below.
+            self.deferInterruptedFullDrainForCurrentLiveConnection = false
             if self.readOnlyHistoryRestoreCutoverPending {
                 self.readOnlyHistoryRestoreCutoverPending = false
                 self.writeCompletionLedger.reset()
