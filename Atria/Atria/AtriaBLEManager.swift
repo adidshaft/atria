@@ -19722,7 +19722,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             generation: generation,
             frameKey: frameKey,
             payload: payload,
-            admission: classification.reducerAdmission
+            admission: classification.reducerAdmission,
+            // Only a history-start-bound full-drain authority may keep raw
+            // pages across an inner record-counter discontinuity. Its durable
+            // timestamp coverage proof still decides whether the selected gap
+            // is resolved, so this cannot silently retire missed data.
+            permitsUnconfirmedForwardDiscontinuity:
+                activeFullDrainEventIdentity?.transportGeneration == generation
         )
         persistHistorySequenceContinuityIfChanged(from: priorContinuity)
         guard effects.contains(where: { effect in
