@@ -296,6 +296,40 @@ final class AtriaHistoricalGapLedgerTests: XCTestCase {
         }
     }
 
+    func testNewestRecoveryCandidatePrioritizesRecentReconnectGapWithoutDroppingOlderGap() throws {
+        try withDefaults { defaults in
+            let older = Date(timeIntervalSince1970: 3_500)
+            let newer = older.addingTimeInterval(600)
+            XCTAssertTrue(AtriaHistoricalGapLedger.recordObservedGap(
+                start: older,
+                end: older.addingTimeInterval(45),
+                reason: "older_unresolved",
+                defaults: defaults
+            ))
+            XCTAssertTrue(AtriaHistoricalGapLedger.recordObservedGap(
+                start: newer,
+                end: newer.addingTimeInterval(45),
+                reason: "current_reconnect",
+                defaults: defaults
+            ))
+
+            XCTAssertEqual(
+                AtriaHistoricalGapLedger.oldestClosedRecoveryCandidate(
+                    defaults: defaults
+                )?.window.start,
+                older
+            )
+            XCTAssertEqual(
+                AtriaHistoricalGapLedger.newestClosedRecoveryCandidate(
+                    defaults: defaults
+                )?.window.start,
+                newer
+            )
+            XCTAssertEqual(AtriaHistoricalGapLedger.windows(defaults: defaults).count, 2,
+                           "prioritizing the current reconnect must retain older unresolved evidence")
+        }
+    }
+
     func testStagedDenseRowsRemainPendingUntilExplicitConsumerSettlement() throws {
         try withDefaults { defaults in
             let start = Date(timeIntervalSince1970: 3_700)

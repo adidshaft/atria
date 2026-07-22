@@ -2499,6 +2499,33 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                                 now.addingTimeInterval(-30)))
     }
 
+    func testAcceptedHRQualifiesPendingRecoveryWithoutTimerReliance() throws {
+        let source = try leaseManagerSource()
+        let methodStart = try XCTUnwrap(source.range(
+            of: "private func attemptQualifiedRangeLossBackfillAfterAcceptedHRIfNeeded"
+        ))
+        let methodEnd = try XCTUnwrap(source.range(
+            of: "private func scheduleStaleArmedRangeLossBackfillReconciliation",
+            range: methodStart.upperBound..<source.endIndex
+        ))
+        let method = String(source[methodStart.lowerBound..<methodEnd.lowerBound])
+        XCTAssertTrue(method.contains("!foregroundInteractiveMode"))
+        XCTAssertTrue(method.contains("automaticConnectedHistoricalHandoffIsEligible(now: now)"))
+        XCTAssertTrue(method.contains("allowConnectedAutomaticHandoff: true"))
+        XCTAssertTrue(method.contains("rangeLossBackfillTask?.cancel()"),
+                      "the accepted-HR event must replace a suspended retry timer")
+
+        let acceptedStart = try XCTUnwrap(source.range(of: "private func acceptHeartRate"))
+        let acceptedEnd = try XCTUnwrap(source.range(
+            of: "private func beginAcceptedHeartRateBatch",
+            range: acceptedStart.upperBound..<source.endIndex
+        ))
+        let accepted = String(source[acceptedStart.lowerBound..<acceptedEnd.lowerBound])
+        XCTAssertTrue(accepted.contains(
+            "attemptQualifiedRangeLossBackfillAfterAcceptedHRIfNeeded(\n                now: sampleTime"
+        ))
+    }
+
     func testOnlyDeliberateUIActionsCountAsConnectedHistoricalSyncIntent() {
         XCTAssertTrue(AtriaBLEManager.isExplicitUserOfflineSyncReason("manual_user_request"))
         XCTAssertTrue(AtriaBLEManager.isExplicitUserOfflineSyncReason("pull_to_refresh"))

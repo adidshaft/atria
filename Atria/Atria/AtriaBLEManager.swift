@@ -8100,11 +8100,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 }
                 if oldAuthorityCleared {
                     selectedFullDrainGap = AtriaHistoricalGapLedger
-                        .oldestClosedRecoveryCandidate()
+                        .newestClosedRecoveryCandidate()
                 }
             }
         } else {
-            selectedFullDrainGap = AtriaHistoricalGapLedger.oldestClosedRecoveryCandidate()
+            // An automatic reconnect exists to repair the gap that just
+            // closed, not to make the user wait behind unrelated historical
+            // outages. Older intervals remain in the durable ledger and are
+            // never discarded; only this transaction's coverage authority is
+            // scoped to the newest exact candidate.
+            selectedFullDrainGap = explicitRequest
+                ? AtriaHistoricalGapLedger.oldestClosedRecoveryCandidate()
+                : AtriaHistoricalGapLedger.newestClosedRecoveryCandidate()
         }
         fullDrainTransportNonce = UUID().uuidString.lowercased()
         pendingHistoryClockCommandSequence = nil
@@ -9122,6 +9129,38 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 reason: Self.stableRangeLossBackfillRetryReason(reason)
             )
         }
+    }
+
+    /// Timers are not a reliable wake source after iOS backgrounds a locked
+    /// phone. Each accepted 2A37 sample is an observed execution opportunity,
+    /// so use it to admit the existing safe handoff as soon as the current
+    /// connection has reached its stability window. This does not loosen any
+    /// policy gate and sends no command itself; the normal request path still
+    /// journals the boundary and performs the single audited cutover.
+    private func attemptQualifiedRangeLossBackfillAfterAcceptedHRIfNeeded(
+        now: Date
+    ) {
+        guard !foregroundInteractiveMode,
+              !deferInterruptedFullDrainForCurrentLiveConnection,
+              UserDefaults.standard.bool(
+                forKey: OfflineSyncDefaults.rangeLossBackfillPending
+              ),
+              !offlineHistoricalSyncInProgress,
+              automaticConnectedHistoricalHandoffIsEligible(now: now) else {
+            return
+        }
+        rangeLossBackfillTask?.cancel()
+        rangeLossBackfillTask = nil
+        let reason = UserDefaults.standard.string(
+            forKey: OfflineSyncDefaults.rangeLossBackfillReason
+        ) ?? "accepted_hr_qualified_range_loss"
+        AtriaDebugLog("ATRIADBG offline_sync status=accepted_hr_qualified_handoff reason=%@ action=admit_current_epoch_without_timer_dependency",
+                      reason)
+        _ = requestOfflineHistoricalSyncIfNeeded(
+            reason: reason,
+            force: true,
+            allowConnectedAutomaticHandoff: true
+        )
     }
 
     private func scheduleStaleArmedRangeLossBackfillReconciliation(reason: String,
@@ -15018,6 +15057,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             checkpointFromLiveEventIfNeeded(now: sampleTime)
             resumePendingForcedHistoricalSyncAfterLivePersistenceIfNeeded(
                 reason: "accepted_hr"
+            )
+            attemptQualifiedRangeLossBackfillAfterAcceptedHRIfNeeded(
+                now: sampleTime
             )
         }
     }
