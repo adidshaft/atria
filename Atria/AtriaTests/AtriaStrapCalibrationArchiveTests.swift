@@ -190,6 +190,35 @@ final class AtriaStrapCalibrationArchiveTests: XCTestCase {
         XCTAssertLessThanOrEqual(sizes.reduce(0, +), cap)
     }
 
+    func testMaintenancePrunesExpiredCapturesWithoutAnyNewFrame() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atria-step-maintenance-tests-\(UUID().uuidString)",
+                                    isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory,
+                                                withIntermediateDirectories: true)
+        let now = Date(timeIntervalSince1970: 1_750_000_000)
+        let expired = directory.appendingPathComponent("strap-imu-20250601-expired.csv")
+        let current = directory.appendingPathComponent("strap-imu-20250608-current.csv")
+        try Data("old\n".utf8).write(to: expired)
+        try Data("new\n".utf8).write(to: current)
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-8 * 24 * 60 * 60)],
+            ofItemAtPath: expired.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-60)],
+            ofItemAtPath: current.path
+        )
+
+        let archive = AtriaStrapCalibrationArchive(directoryURL: directory,
+                                                   retentionInterval: 7 * 24 * 60 * 60)
+        archive.pruneSynchronouslyForTesting(now: now)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: expired.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: current.path))
+    }
+
     private func r10Frame(deviceTimestamp: UInt32) -> Data {
         var payload = [UInt8](repeating: 0, count: 1_288)
         payload[0] = AtriaR10MotionDecoder.packetType

@@ -58,6 +58,15 @@ final class AtriaAppDelegate: NSObject, UIApplicationDelegate {
         return true
     }
 
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        // A process can remain resident while calibration capture is off for
+        // days. Cold-launch-only maintenance would then leave expired raw IMU
+        // research captures on disk until another frame happens to arrive.
+        // This is local, queue-confined retention only; it neither changes BLE
+        // state nor touches any current capture file.
+        AtriaStrapCalibrationArchive.shared.scheduleRetentionPrune()
+    }
+
     func application(_ application: UIApplication,
                      supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
         Self.supportedOrientations
