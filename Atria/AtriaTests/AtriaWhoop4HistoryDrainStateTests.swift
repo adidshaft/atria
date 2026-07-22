@@ -2,6 +2,163 @@ import XCTest
 @testable import Atria
 
 final class AtriaWhoop4HistoryDrainStateTests: XCTestCase {
+    func testThreeReplayConfirmedCadencedFlashJumpsAdmitNextMatchingOccurrence() {
+        let confirmed = [UInt16(100), 200, 300].map { previous in
+            AtriaWhoop4HistoryDrainState.ContinuitySnapshot.Transition(
+                streamKey: 0,
+                previousFrameKey: "previous-\(previous)",
+                currentFrameKey: "current-\(previous + 10)",
+                previousSequence: previous,
+                currentSequence: previous + 10
+            )
+        }
+        var state = AtriaWhoop4HistoryDrainState()
+        XCTAssertTrue(state.restoreContinuitySnapshot(.init(
+            schemaVersion: AtriaWhoop4HistoryDrainState.ContinuitySnapshot.currentSchemaVersion,
+            pending: nil,
+            confirmed: confirmed
+        )))
+        _ = state.begin(generation: 1)
+        let previous: [UInt8] = [0x2f, 0, 0, 0x90, 0x01] // 400
+        let candidate: [UInt8] = [0x2f, 0, 0, 0x9a, 0x01] // 410
+        _ = state.receiveFrame(
+            generation: 1,
+            frameKey: "previous-400",
+            payload: previous
+        )
+
+        XCTAssertEqual(
+            state.receiveFrame(
+                generation: 1,
+                frameKey: "current-410",
+                payload: candidate
+            ),
+            [.persistFrame(
+                generation: 1,
+                frameKey: "current-410",
+                payload: candidate
+            )]
+        )
+        XCTAssertNil(state.failure)
+        XCTAssertEqual(state.continuitySnapshot.confirmed.count, 4)
+    }
+
+    func testCadencedFlashPatternStillRejectsChangedJump() {
+        let confirmed = [UInt16(100), 200, 300].map { previous in
+            AtriaWhoop4HistoryDrainState.ContinuitySnapshot.Transition(
+                streamKey: 0,
+                previousFrameKey: "previous-\(previous)",
+                currentFrameKey: "current-\(previous + 10)",
+                previousSequence: previous,
+                currentSequence: previous + 10
+            )
+        }
+        var state = AtriaWhoop4HistoryDrainState()
+        XCTAssertTrue(state.restoreContinuitySnapshot(.init(
+            schemaVersion: AtriaWhoop4HistoryDrainState.ContinuitySnapshot.currentSchemaVersion,
+            pending: nil,
+            confirmed: confirmed
+        )))
+        _ = state.begin(generation: 2)
+        let previous: [UInt8] = [0x2f, 0, 0, 0x90, 0x01] // 400
+        let changedJump: [UInt8] = [0x2f, 0, 0, 0x9b, 0x01] // 411
+        _ = state.receiveFrame(
+            generation: 2,
+            frameKey: "previous-400",
+            payload: previous
+        )
+
+        XCTAssertEqual(
+            state.receiveFrame(
+                generation: 2,
+                frameKey: "changed-411",
+                payload: changedJump
+            ),
+            [.failed(
+                generation: 2,
+                failure: .protocolViolation(
+                    "history_sequence_gap_unconfirmed_previous_400_received_411"
+                )
+            )]
+        )
+    }
+
+    func testCadencedFlashPatternRequiresThreeConfirmedOccurrences() {
+        let confirmed = [UInt16(100), 200].map { previous in
+            AtriaWhoop4HistoryDrainState.ContinuitySnapshot.Transition(
+                streamKey: 0,
+                previousFrameKey: "previous-\(previous)",
+                currentFrameKey: "current-\(previous + 10)",
+                previousSequence: previous,
+                currentSequence: previous + 10
+            )
+        }
+        var state = AtriaWhoop4HistoryDrainState()
+        XCTAssertTrue(state.restoreContinuitySnapshot(.init(
+            schemaVersion: AtriaWhoop4HistoryDrainState.ContinuitySnapshot.currentSchemaVersion,
+            pending: nil,
+            confirmed: confirmed
+        )))
+        _ = state.begin(generation: 3)
+        _ = state.receiveFrame(
+            generation: 3,
+            frameKey: "previous-300",
+            payload: [0x2f, 0, 0, 0x2c, 0x01]
+        )
+
+        XCTAssertEqual(
+            state.receiveFrame(
+                generation: 3,
+                frameKey: "current-310",
+                payload: [0x2f, 0, 0, 0x36, 0x01]
+            ),
+            [.failed(
+                generation: 3,
+                failure: .protocolViolation(
+                    "history_sequence_gap_unconfirmed_previous_300_received_310"
+                )
+            )]
+        )
+    }
+
+    func testCadencedFlashPatternStillRejectsChangedCadence() {
+        let confirmed = [UInt16(100), 200, 300].map { previous in
+            AtriaWhoop4HistoryDrainState.ContinuitySnapshot.Transition(
+                streamKey: 0,
+                previousFrameKey: "previous-\(previous)",
+                currentFrameKey: "current-\(previous + 10)",
+                previousSequence: previous,
+                currentSequence: previous + 10
+            )
+        }
+        var state = AtriaWhoop4HistoryDrainState()
+        XCTAssertTrue(state.restoreContinuitySnapshot(.init(
+            schemaVersion: AtriaWhoop4HistoryDrainState.ContinuitySnapshot.currentSchemaVersion,
+            pending: nil,
+            confirmed: confirmed
+        )))
+        _ = state.begin(generation: 4)
+        _ = state.receiveFrame(
+            generation: 4,
+            frameKey: "previous-401",
+            payload: [0x2f, 0, 0, 0x91, 0x01]
+        )
+
+        XCTAssertEqual(
+            state.receiveFrame(
+                generation: 4,
+                frameKey: "current-411",
+                payload: [0x2f, 0, 0, 0x9b, 0x01]
+            ),
+            [.failed(
+                generation: 4,
+                failure: .protocolViolation(
+                    "history_sequence_gap_unconfirmed_previous_401_received_411"
+                )
+            )]
+        )
+    }
+
     func testPendingForwardDiscontinuitySurvivesProcessRestartAndExactReplayConfirms() {
         let first: [UInt8] = [0x2f, 0, 0, 0x10, 0x00]
         let gap: [UInt8] = [0x2f, 0, 0, 0x12, 0x00]

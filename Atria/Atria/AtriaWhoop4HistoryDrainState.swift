@@ -406,6 +406,17 @@ struct AtriaWhoop4HistoryDrainState: Equatable, Sendable {
                     )
                     if confirmedForwardDiscontinuities.contains(transition) {
                         sequenceRestartCount += 1
+                    } else if matchesEstablishedForwardDiscontinuityPattern(
+                        transition
+                    ) {
+                        // WHOOP flash layouts can interleave a secondary record
+                        // block at a fixed sequence cadence. Require three
+                        // independently replay-confirmed transitions with the
+                        // same stream, jump and cadence before admitting the
+                        // next occurrence on first observation. A changed jump
+                        // or cadence still takes the exact two-generation path.
+                        rememberConfirmedForwardDiscontinuity(transition)
+                        sequenceRestartCount += 1
                     } else if pendingForwardDiscontinuity?.transition == transition,
                               (pendingForwardDiscontinuity?.firstObservedGeneration != eventGeneration
                                || pendingForwardDiscontinuity?.wasRestoredAcrossProcessBoundary == true) {
@@ -457,6 +468,27 @@ struct AtriaWhoop4HistoryDrainState: Equatable, Sendable {
             frameKey: frameKey,
             payload: payload
         )]
+    }
+
+    private func matchesEstablishedForwardDiscontinuityPattern(
+        _ candidate: ForwardDiscontinuity
+    ) -> Bool {
+        let candidateDelta = candidate.currentSequence &- candidate.previousSequence
+        let matching = confirmedForwardDiscontinuities.filter { transition in
+            transition.streamKey == candidate.streamKey
+                && transition.currentSequence &- transition.previousSequence
+                    == candidateDelta
+        }
+        guard matching.count >= 3 else { return false }
+        let a = matching[matching.count - 3]
+        let b = matching[matching.count - 2]
+        let c = matching[matching.count - 1]
+        let firstCadence = b.previousSequence &- a.previousSequence
+        let secondCadence = c.previousSequence &- b.previousSequence
+        let candidateCadence = candidate.previousSequence &- c.previousSequence
+        return firstCadence > 0
+            && firstCadence == secondCadence
+            && candidateCadence == firstCadence
     }
 
     mutating func persistenceCompleted(
