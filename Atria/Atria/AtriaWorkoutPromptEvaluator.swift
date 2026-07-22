@@ -61,11 +61,13 @@ enum AtriaWorkoutPromptEvaluator {
         }
 
         var hasContinuityEvidence: Bool {
-            // A handful of RR values can corroborate HR rate, but they do not
-            // prove that an otherwise missing accepted-HR interval was covered.
-            // Never let sparse RR presence bridge a hard transport gap.
-            acceptedGapCount == 0
-                && maxAcceptedGap <= AtriaWorkoutPromptEvaluator.maximumPacketGap
+            // Continuity is proved by the timestamped accepted samples below,
+            // where every hard gap breaks the current bout. Do not veto the
+            // entire eight-minute window merely because it contains an older
+            // gap: after reconnect, a new five-minute continuous effort must be
+            // allowed to qualify. Repeated/large gaps and poor packet shares
+            // still fail through `contactCompromised`.
+            true
         }
     }
 

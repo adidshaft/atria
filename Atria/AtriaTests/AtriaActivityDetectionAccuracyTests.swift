@@ -172,6 +172,41 @@ final class AtriaActivityDetectionAccuracyTests: XCTestCase {
                        "sparse RR corroboration must not bridge hard accepted-HR transport gaps")
     }
 
+    func testRecoveredStreamCanPromptAfterFreshContinuousEffort() {
+        let start = now.addingTimeInterval(-8 * 60)
+        let beforeDisconnect = (0..<60).map {
+            HRSample(t: start.addingTimeInterval(TimeInterval($0)), bpm: 95)
+        }
+        let recoveredStart = now.addingTimeInterval(-(5 * 60 + 1))
+        let recovered = (0...301).map {
+            HRSample(t: recoveredStart.addingTimeInterval(TimeInterval($0)), bpm: 95)
+        }
+        let samples = beforeDisconnect + recovered
+        let quality = AtriaWorkoutPromptEvaluator.SignalQuality(
+            rawSamples: samples.count,
+            acceptedSamples: samples.count,
+            zeroSamples: 0,
+            heldArtifacts: 0,
+            droppedArtifacts: 0,
+            acceptedGapCount: 1,
+            maxAcceptedGap: recoveredStart.timeIntervalSince(beforeDisconnect.last!.t),
+            rrImpliedMedianBPM: nil
+        )
+
+        let result = AtriaWorkoutPromptEvaluator.evaluate(samples: samples,
+                                                          currentHeartRate: 95,
+                                                          restingHeartRate: 60,
+                                                          maxHeartRate: 190,
+                                                          hasContact: true,
+                                                          signalQuality: quality,
+                                                          now: now)
+
+        XCTAssertTrue(result.shouldPrompt,
+                      "an older disconnect must not suppress a new five-minute continuous effort")
+        XCTAssertGreaterThanOrEqual(result.longestElevatedBout,
+                                    AtriaWorkoutPromptEvaluator.minimumSustainedElevatedSamples)
+    }
+
     func testSeparatedElevatedBoutsCannotAggregateIntoOneWorkoutPrompt() {
         let start = now.addingTimeInterval(-8 * 60)
         var samples: [HRSample] = []
