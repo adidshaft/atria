@@ -1022,6 +1022,16 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
         XCTAssertTrue(allowed)
 
+        XCTAssertTrue(AtriaBLEManager.protectedR10V8WorkoutCutoverMayStart(
+            owner: .pureHRV10,
+            state: .fallbackActive,
+            streamSuppressed: true,
+            manualWorkoutActive: true,
+            priorQualifiedAt: start.timeIntervalSince1970 - 86_400,
+            priorCutoverLeaseAt: nil,
+            workoutStartedAt: start
+        ), "a qualified v10 fallback needs the same one-shot fresh-owner path for a manual workout")
+
         XCTAssertFalse(AtriaBLEManager.protectedR10V8WorkoutCutoverMayStart(
             owner: .pureHRV8,
             state: .fallbackActive,
