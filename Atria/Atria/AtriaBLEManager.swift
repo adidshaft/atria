@@ -8090,6 +8090,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// independent liveness path. This never ACKs, aborts, or advances the
     /// strap cursor; it only drops the link so the durable prefix can replay on
     /// a fresh history-owner generation.
+    ///
+    /// Do not exempt a stalled local ACK, persistence batch, or callback queue
+    /// here. Those are precisely the states which can strand an owner after the
+    /// task-based watchdog was suspended. Once the full idle interval elapsed,
+    /// a transport reset is safer than holding the link indefinitely: no ACK is
+    /// manufactured and the durable prefix remains replayable.
     private func enforceHistoricalIdleTimeoutFromGattHeartbeatIfNeeded(
         nowUptime: TimeInterval
     ) {
@@ -8100,10 +8106,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 nowUptime: nowUptime,
                 idleTimeout: offlineHistoricalSyncIdleTimeout
               ),
-              pendingHistoryEndACK == nil,
-              !historyACKGate.requiresHistoryCallbackDeferral,
-              pendingHistoricalTransportEvents.isEmpty,
-              !historicalAdmissionBatchInFlight,
               let stalledPeripheral = peripheral,
               stalledPeripheral.state == .connected else { return }
 
