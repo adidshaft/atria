@@ -10882,54 +10882,53 @@ enum AtriaTopStatusProjection {
             }
         }
 
-        // The leading pill is the compact strap control. When the link is
-        // demonstrably live, use that high-value space for battery truth instead
-        // of a redundant second "Live" label. A current reading says Live/Low;
-        // a bounded verified reconnect baseline says exactly how old it is.
-        // Restoration sentinels never reach this projection. Charging stays a
-        // compact visual state; VoiceOver still receives its full meaning.
+        // Keep collection and battery clocks explicitly distinct. A live strap
+        // may legitimately have a battery percentage from minutes ago because
+        // BAS notifications are change-driven; never make that battery age look
+        // like a collection/sync age. Restoration sentinels never reach this
+        // projection. Charging stays a compact visual state with its bolt.
         var accessorySymbol: String?
         var accessibilityLabel: String?
         if displayStatus == .connected,
-           hasPulseSignal || input.strapStreamState == .live {
+           freshPulse || input.strapStreamState == .live {
             if let batteryLevel = input.battery.level {
                 symbol = batterySymbol(level: batteryLevel)
                 let currentPowerState = input.battery.powerState(at: now)
                 if currentPowerState == .charging {
-                    label = "\(batteryLevel)%"
+                    label = "Live · \(batteryLevel)%"
                     accessorySymbol = "bolt.fill"
-                    accessibilityLabel = "\(batteryLevel)%, Charging"
+                    accessibilityLabel = "Live strap, \(batteryLevel)%, Charging"
                     tone = .green
                 } else if currentPowerState == .full {
                     // Full SOC is not proof that the strap is still on external
                     // power. Reserve the bolt for independently proven charging.
-                    label = "\(batteryLevel)% · Full"
-                    accessibilityLabel = "\(batteryLevel)%, Full"
+                    label = "Live · \(batteryLevel)% · Full"
+                    accessibilityLabel = "Live strap, \(batteryLevel)%, Full"
                     tone = .green
                 } else if currentPowerState == .unknown {
-                    accessibilityLabel = "\(batteryLevel)%, charger status unavailable"
+                    accessibilityLabel = "Live strap, \(batteryLevel)%, charger status unavailable"
                     if batteryLevel <= 20 {
-                        label = "\(batteryLevel)% · Low"
+                        label = "Live · \(batteryLevel)% · Low"
                         tone = .orange
                     } else if input.battery.isRecentBaseline {
-                        label = "\(batteryLevel)% · \(batteryRecencyText(verifiedAt: input.battery.verifiedAt, now: now))"
+                        label = "Live · \(batteryLevel)% · battery \(batteryRecencyText(verifiedAt: input.battery.verifiedAt, now: now))"
                         tone = .cyan
                     } else {
                         // Unknown charger evidence must be silent in the compact
                         // pill. The level itself is verified; a question mark
                         // makes that reading look uncertain and gives an
                         // internal fail-closed state user-facing prominence.
-                        label = "\(batteryLevel)%"
+                        label = "Live · \(batteryLevel)%"
                         tone = .cyan
                     }
                 } else if batteryLevel <= 20 {
-                    label = "\(batteryLevel)% · Low"
+                    label = "Live · \(batteryLevel)% · Low"
                     tone = .orange
                 } else if input.battery.isRecentBaseline {
-                    label = "\(batteryLevel)% · \(batteryRecencyText(verifiedAt: input.battery.verifiedAt, now: now))"
+                    label = "Live · \(batteryLevel)% · battery \(batteryRecencyText(verifiedAt: input.battery.verifiedAt, now: now))"
                     tone = .cyan
                 } else {
-                    label = "\(batteryLevel)% · Live"
+                    label = "Live · \(batteryLevel)%"
                     tone = .green
                 }
             } else {
