@@ -119,33 +119,17 @@ struct AtriaWorkoutStepCoordinate: Equatable {
     }
 }
 
-/// Chooses one completed-workout step total without adding overlapping
-/// cumulative sources. A validated strap boundary is authoritative. While the
-/// strap decoder remains preliminary, the larger observed subtotal wins so a
-/// phone left on a bench cannot erase wrist motion and a sparse strap stream
-/// cannot erase a complete phone-pedometer interval.
+/// A completed workout owns only the strap-derived boundary captured by its
+/// frozen step coordinate. Atria never substitutes iPhone pedometer data for
+/// a missing or preliminary strap interval: that would make a wrist product
+/// report steps the strap did not observe.
 struct AtriaCompletedWorkoutStepEvidence: Equatable {
     let count: Int
     let isEstimated: Bool
     let capturedAt: Date?
 
-    static func select(
-        strap: Self?,
-        phone: Self?
-    ) -> Self? {
-        if let strap, !strap.isEstimated {
-            return sanitized(strap)
-        }
-        switch (strap.map(sanitized), phone.map(sanitized)) {
-        case let (strap?, phone?):
-            return strap.count >= phone.count ? strap : phone
-        case let (strap?, nil):
-            return strap
-        case let (nil, phone?):
-            return phone
-        case (nil, nil):
-            return nil
-        }
+    static func select(strap: Self?) -> Self? {
+        strap.map(sanitized)
     }
 
     private static func sanitized(_ evidence: Self) -> Self {

@@ -390,23 +390,21 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertFalse(WidgetSnapshotPublisher.strapStepsArePublishable(state: "r10_live_calibrating"))
     }
 
-    func testWidgetDailyStepResolverUsesSamePhoneVersusStrapPolicyAsHome() {
+    func testWidgetDailyStepResolverUsesSameStrapOnlyPolicyAsHome() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         let now = Date(timeIntervalSince1970: 2_000_000_000)
-        let phoneWins = WidgetSnapshotPublisher.resolvedDailySteps(
+        let strapValue = WidgetSnapshotPublisher.resolvedDailySteps(
             day: now,
             now: now,
             liveCount: 612,
             liveValidationState: "r10_live_preliminary",
             liveCapturedAt: now,
-            phoneCount: 2_628,
-            phoneCapturedAt: now,
             calendar: calendar
         )
-        XCTAssertEqual(phoneWins.count, 2_628)
-        XCTAssertEqual(phoneWins.source, .phone)
-        XCTAssertTrue(phoneWins.isValidated)
+        XCTAssertEqual(strapValue.count, 612)
+        XCTAssertEqual(strapValue.source, .live)
+        XCTAssertFalse(strapValue.isValidated)
 
         let strapWins = WidgetSnapshotPublisher.resolvedDailySteps(
             day: now,
@@ -414,8 +412,6 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             liveCount: 4_000,
             liveValidationState: "r10_live_preliminary",
             liveCapturedAt: now,
-            phoneCount: 0,
-            phoneCapturedAt: now,
             calendar: calendar
         )
         XCTAssertEqual(strapWins.count, 4_000)

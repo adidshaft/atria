@@ -87,28 +87,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.completeness, .unavailable)
     }
 
-    func testPhoneFullIntervalWinsOverPreliminaryLiveSubtotalToday() {
-        let capturedAt = day.addingTimeInterval(14 * 3_600)
-        let value = AtriaDailyStepPresentation.resolve(
-            day: day,
-            now: capturedAt,
-            liveCount: 612,
-            liveValidationState: "r10_live_preliminary",
-            liveCapturedAt: capturedAt,
-            phoneCount: 2_628,
-            phoneCapturedAt: capturedAt,
-            canonicalDays: [],
-            calendar: utcCalendar
-        )
-
-        XCTAssertEqual(value.count, 2_628)
-        XCTAssertEqual(value.source, .phone)
-        XCTAssertEqual(value.completeness, .partial)
-        XCTAssertTrue(value.isValidated)
-        XCTAssertEqual(value.detailText, "Today so far · iPhone")
-    }
-
-    func testStationaryPhoneDoesNotEraseLargerSameDayStrapTotal() {
+    func testPreliminaryLiveStrapTotalIsPresentedAsEstimate() {
         let capturedAt = day.addingTimeInterval(14 * 3_600)
         let value = AtriaDailyStepPresentation.resolve(
             day: day,
@@ -116,8 +95,6 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             liveCount: 4_000,
             liveValidationState: "r10_live_preliminary",
             liveCapturedAt: capturedAt,
-            phoneCount: 0,
-            phoneCapturedAt: capturedAt,
             canonicalDays: [],
             calendar: utcCalendar
         )
@@ -139,10 +116,6 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             liveCount: 4_000,
             liveValidationState: "r10_live_preliminary",
             liveCapturedAt: postMidnight,
-            // This is a valid phone coordinate for the new civil day, but it
-            // cannot replace a wake-to-wake strap total that began yesterday.
-            phoneCount: 0,
-            phoneCapturedAt: postMidnight,
             canonicalDays: [],
             physiologicalDayStart: priorWakeDay.addingTimeInterval(7 * 3_600),
             calendar: utcCalendar
@@ -154,7 +127,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.valueText, "~4000")
     }
 
-    func testStaleStrapSubtotalCannotMaskFreshPhoneDayCoordinate() {
+    func testStaleStrapSubtotalIsUnavailableWithoutCanonicalCoverage() {
         let now = day.addingTimeInterval(14 * 3_600)
         let value = AtriaDailyStepPresentation.resolve(
             day: day,
@@ -164,15 +137,13 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             liveCapturedAt: now.addingTimeInterval(
                 -AtriaDailyStepPresentation.liveEvidenceMaximumAge - 0.001
             ),
-            phoneCount: 612,
-            phoneCapturedAt: now,
             canonicalDays: [],
             calendar: utcCalendar
         )
 
-        XCTAssertEqual(value.count, 612)
-        XCTAssertEqual(value.source, .phone)
-        XCTAssertEqual(value.detailText, "Today so far · iPhone")
+        XCTAssertNil(value.count)
+        XCTAssertEqual(value.source, .none)
+        XCTAssertEqual(value.detailText, "No verified step coverage")
     }
 
     func testStaleStrapSubtotalIsNotPresentedAsLiveTodayCount() {
@@ -195,79 +166,20 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.detailText, "No verified step coverage")
     }
 
-    func testClosedPhoneDayIsPresentedAsComplete() {
+    func testClosedDayWithoutCanonicalStrapCoverageIsUnavailable() {
         let value = AtriaDailyStepPresentation.resolve(
             day: day,
             now: day.addingTimeInterval(2 * 86_400),
             liveCount: 0,
             liveValidationState: "unavailable",
             liveCapturedAt: nil,
-            phoneCount: 2_628,
-            phoneCapturedAt: day.addingTimeInterval(86_400),
             canonicalDays: [],
             calendar: utcCalendar
         )
 
-        XCTAssertEqual(value.count, 2_628)
-        XCTAssertEqual(value.source, .phone)
-        XCTAssertEqual(value.completeness, .complete)
-        XCTAssertEqual(value.coverageFraction, 1)
-        XCTAssertEqual(value.detailText, "Complete day · iPhone")
-    }
-
-    func testLivePhoneCoordinateAcceptsOnlyFullSameDayCumulativeQuery() {
-        let now = day.addingTimeInterval(14 * 3_600)
-        XCTAssertTrue(AtriaPhoneDailyStepStore.liveTodayUpdateIsAdmissible(
-            count: 2_628,
-            queryStartedAt: day,
-            capturedAt: now,
-            dayStart: day,
-            now: now,
-            calendar: utcCalendar
-        ))
-        XCTAssertFalse(AtriaPhoneDailyStepStore.liveTodayUpdateIsAdmissible(
-            count: 2_628,
-            queryStartedAt: day.addingTimeInterval(3_600),
-            capturedAt: now,
-            dayStart: day,
-            now: now,
-            calendar: utcCalendar
-        ), "a partial workout/window query must not replace the all-day coordinate")
-    }
-
-    func testLivePhoneCoordinateRejectsMidnightRolloverAndFutureCallbacks() {
-        let nextDay = day.addingTimeInterval(86_400)
-        XCTAssertFalse(AtriaPhoneDailyStepStore.liveTodayUpdateIsAdmissible(
-            count: 3_000,
-            queryStartedAt: day,
-            capturedAt: nextDay,
-            dayStart: day,
-            now: nextDay,
-            calendar: utcCalendar
-        ))
-        XCTAssertFalse(AtriaPhoneDailyStepStore.liveTodayUpdateIsAdmissible(
-            count: 3_000,
-            queryStartedAt: day,
-            capturedAt: day.addingTimeInterval(3_600),
-            dayStart: day,
-            now: day.addingTimeInterval(3_590),
-            calendar: utcCalendar
-        ))
-    }
-
-    func testOlderForegroundQueryCannotOverwriteNewerLivePhoneCoordinate() {
-        XCTAssertFalse(AtriaPhoneDailyStepStore.phoneDailyStepUpdateShouldReplace(
-            cachedCapturedAt: 2_000,
-            incomingCapturedAt: 1_999
-        ))
-        XCTAssertTrue(AtriaPhoneDailyStepStore.phoneDailyStepUpdateShouldReplace(
-            cachedCapturedAt: 2_000,
-            incomingCapturedAt: 2_001
-        ))
-        XCTAssertTrue(AtriaPhoneDailyStepStore.phoneDailyStepUpdateShouldReplace(
-            cachedCapturedAt: 0,
-            incomingCapturedAt: 1
-        ))
+        XCTAssertNil(value.count)
+        XCTAssertEqual(value.source, .none)
+        XCTAssertEqual(value.completeness, .unavailable)
     }
 
     private var utcCalendar: Calendar {

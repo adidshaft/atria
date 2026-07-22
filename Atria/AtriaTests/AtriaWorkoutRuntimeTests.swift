@@ -19,48 +19,14 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
         super.tearDown()
     }
 
-    func testCompletedStepSelectionPrefersValidatedStrap() {
+    func testCompletedStepSelectionIsStrapOnly() {
         let strap = AtriaCompletedWorkoutStepEvidence(
             count: 612,
             isEstimated: false,
             capturedAt: Date(timeIntervalSince1970: 100)
         )
-        let phone = AtriaCompletedWorkoutStepEvidence(
-            count: 1_010,
-            isEstimated: true,
-            capturedAt: Date(timeIntervalSince1970: 101)
-        )
-
-        XCTAssertEqual(AtriaCompletedWorkoutStepEvidence.select(strap: strap, phone: phone),
-                       strap)
-    }
-
-    func testCompletedStepSelectionUsesLargerPreliminarySubtotal() {
-        let capturedAt = Date(timeIntervalSince1970: 100)
-        let sparseStrap = AtriaCompletedWorkoutStepEvidence(
-            count: 612,
-            isEstimated: true,
-            capturedAt: capturedAt
-        )
-        let carriedPhone = AtriaCompletedWorkoutStepEvidence(
-            count: 1_010,
-            isEstimated: true,
-            capturedAt: capturedAt
-        )
-        XCTAssertEqual(
-            AtriaCompletedWorkoutStepEvidence.select(strap: sparseStrap, phone: carriedPhone),
-            carriedPhone
-        )
-
-        let benchPhone = AtriaCompletedWorkoutStepEvidence(
-            count: 0,
-            isEstimated: true,
-            capturedAt: capturedAt
-        )
-        XCTAssertEqual(
-            AtriaCompletedWorkoutStepEvidence.select(strap: sparseStrap, phone: benchPhone),
-            sparseStrap
-        )
+        XCTAssertEqual(AtriaCompletedWorkoutStepEvidence.select(strap: strap), strap)
+        XCTAssertNil(AtriaCompletedWorkoutStepEvidence.select(strap: nil))
     }
 
     func testHeadlessPausePersistsCanonicalPauseAndStepAnchor() throws {
