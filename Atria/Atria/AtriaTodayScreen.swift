@@ -1531,9 +1531,13 @@ struct AtriaTodayScreen: View {
         switch layoutConfig.ringCenterMetric {
         case .recovery:
             if displayRecovery.detail == "yesterday" { return "yesterday" }
-            // "Learning" (not "Building") to match the recovery legend chip's word
-            // for the same calibrating state.
-            return displayRecovery.percent.map(recoveryState) ?? "Learning"
+            // While learning, the numeral ALREADY reads "Learning" (see
+            // displayRecovery), so repeating the word here rendered the hero as
+            // "Learning / Learning". Carry the real evidence line instead —
+            // "Save sleep to score", "HRV baseline 2 of 14 nights" — which is
+            // what the handoff's "Learning · of 4" caption stands for: say how
+            // far along calibration is, never restate the state twice.
+            return displayRecovery.percent.map(recoveryState) ?? displayRecovery.detail
         case .sleep:
             return sleepPerformancePercent.map { "\($0)% of need" } ?? sleepMetric.detail
         case .strain:
@@ -2810,12 +2814,15 @@ private struct AtriaTodayGlanceTile: View, Equatable {
         .frame(minHeight: 48)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
-                .stroke(item.tint.opacity(0.18), lineWidth: 1)
-        }
+        // Identity-forward metric chip (design handoff: one hue per metric, on
+        // the SURFACE, not only the icon + hairline). These tiles previously
+        // hand-rolled an opaque neutral fill with a hue border only, so a row of
+        // sleep/recovery/strain chips read as three grey boxes. Routing them
+        // through the shared inset-card token also starts the Today deck's
+        // migration onto the token layer it had been bypassing.
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip,
+                        tint: item.tint,
+                        hueTinted: true)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(item.title). \(item.value). \(item.detail).")
     }
@@ -2850,12 +2857,10 @@ private struct AtriaTodayGlanceTile: View, Equatable {
         // Consistency (2026-07-05): route the glance tile's corner radius through the
         // shared chip token instead of a hardcoded 8, so the deck's dominant card
         // shares one radius scale (chip < tile < card).
-        .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
-                .stroke(item.tint.opacity(0.18), lineWidth: 1)
-        }
+        // Identity hue now also washes the surface — see barBody for why.
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip,
+                        tint: item.tint,
+                        hueTinted: true)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(item.title). \(item.value). \(item.detail).")
     }
