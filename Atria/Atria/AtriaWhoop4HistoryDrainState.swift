@@ -330,7 +330,15 @@ struct AtriaWhoop4HistoryDrainState: Equatable, Sendable {
         generation eventGeneration: UInt64,
         frameKey: String,
         payload: [UInt8],
-        admission: Admission = .firstSeen
+        admission: Admission = .firstSeen,
+        /// An authority-bound full-flash drain has a separate timestamp-based
+        /// coverage proof before it can resolve a missing interval. The WHOOP
+        /// inner record counter is not that proof: physical captures contain
+        /// large forward jumps for the same layout. In this narrow mode retain
+        /// and fsync the raw frame, leave the coverage gap pending, and record
+        /// the discontinuity for a future replay instead of discarding a whole
+        /// page on an unproven counter jump.
+        permitsUnconfirmedForwardDiscontinuity: Bool = false
     ) -> [Effect] {
         guard accepts(eventGeneration), !frameKey.isEmpty else { return [] }
         guard case .listening = phase else {
@@ -390,7 +398,7 @@ struct AtriaWhoop4HistoryDrainState: Equatable, Sendable {
                         // expected frame must then arrive contiguously too.
                         pendingForwardDiscontinuity = nil
                         requiresPendingForwardDiscontinuityReplay = false
-                    } else {
+                    } else if !permitsUnconfirmedForwardDiscontinuity {
                         return fail(.protocolViolation(
                             "history_sequence_gap_replay_mismatch_expected_\(replayCandidate.transition.currentSequence)_received_\(sequence)"
                         ))
@@ -422,6 +430,22 @@ struct AtriaWhoop4HistoryDrainState: Equatable, Sendable {
                                || pendingForwardDiscontinuity?.wasRestoredAcrossProcessBoundary == true) {
                         rememberConfirmedForwardDiscontinuity(transition)
                         pendingForwardDiscontinuity = nil
+                        sequenceRestartCount += 1
+                    } else if permitsUnconfirmedForwardDiscontinuity {
+                        // This is deliberately not a coverage acceptance. The
+                        // caller has an authority-bound full drain and its
+                        // timestamp/cadence verifier still owns retirement of
+                        // the exact missing interval. Keeping the raw frame
+                        // here prevents a real flash-layout jump from making
+                        // every later page unreachable, while the pending
+                        // transition remains durable replay evidence.
+                        if pendingForwardDiscontinuity == nil {
+                            pendingForwardDiscontinuity = PendingForwardDiscontinuity(
+                                transition: transition,
+                                firstObservedGeneration: eventGeneration,
+                                wasRestoredAcrossProcessBoundary: false
+                            )
+                        }
                         sequenceRestartCount += 1
                     } else {
                         pendingForwardDiscontinuity = PendingForwardDiscontinuity(

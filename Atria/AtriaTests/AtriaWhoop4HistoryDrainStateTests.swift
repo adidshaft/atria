@@ -727,6 +727,44 @@ final class AtriaWhoop4HistoryDrainStateTests: XCTestCase {
         ).isEmpty)
     }
 
+    func testAuthorityBoundFullDrainPersistsUnconfirmedForwardDiscontinuityBeforeACK() {
+        var state = AtriaWhoop4HistoryDrainState()
+        _ = state.begin(generation: 14)
+        let first: [UInt8] = [0x2f, 0x18, 0x05, 0x18, 0xa5] // 42264
+        let jump: [UInt8] = [0x2f, 0x18, 0x05, 0xc9, 0xa9] // 43465
+        _ = state.receiveFrame(generation: 14, frameKey: "42264", payload: first)
+
+        XCTAssertEqual(
+            state.receiveFrame(
+                generation: 14,
+                frameKey: "43465",
+                payload: jump,
+                permitsUnconfirmedForwardDiscontinuity: true
+            ),
+            [.persistFrame(generation: 14, frameKey: "43465", payload: jump)]
+        )
+        XCTAssertNil(state.failure)
+        XCTAssertNotNil(state.continuitySnapshot.pending,
+                        "the raw page is retained, but the discontinuity remains replay evidence")
+        XCTAssertEqual(state.sequenceRestartCount, 1)
+
+        XCTAssertTrue(state.historyEnd(
+            generation: 14,
+            boundaryID: "end",
+            ackPayload: [1]
+        ).isEmpty)
+        XCTAssertTrue(state.persistenceCompleted(
+            generation: 14,
+            frameKey: "42264",
+            succeeded: true
+        ).isEmpty)
+        XCTAssertEqual(state.persistenceCompleted(
+            generation: 14,
+            frameKey: "43465",
+            succeeded: true
+        ), [.durableFlush(generation: 14, boundary: .batch("end"))])
+    }
+
     func testBackwardOverlapDoesNotRewindForwardSequenceCursor() {
         var state = AtriaWhoop4HistoryDrainState()
         _ = state.begin(generation: 14)
