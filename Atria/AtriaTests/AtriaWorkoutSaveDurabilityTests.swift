@@ -346,6 +346,19 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         ))
     }
 
+    func testBalancedModeStillPersistsAcceptedLiveSession() {
+        XCTAssertTrue(AtriaBLEManager.shouldPersistActiveSessionJournal(
+            hasLiveSamples: true,
+            longWearEnabled: false,
+            activeExplicitWorkout: false
+        ), "Collection mode must not discard already accepted samples")
+        XCTAssertFalse(AtriaBLEManager.shouldPersistActiveSessionJournal(
+            hasLiveSamples: false,
+            longWearEnabled: true,
+            activeExplicitWorkout: true
+        ))
+    }
+
     func testBackgroundEdgeCheckpointsExplicitWorkoutMetadataAndJournal() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let source = try String(
@@ -1209,6 +1222,119 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertNotNil(result.strain)
     }
 
+    func testRecoveredWorkoutEvidenceAcceptsMoreExactSamplesAtSameRoundedCoverage() {
+        let start = Date(timeIntervalSince1970: 1_783_767_620)
+        let end = start.addingTimeInterval(50 * 60)
+        let current = sparseConfirmedWorkout(start: start,
+                                             end: end,
+                                             samples: 100,
+                                             coverage: 42)
+        let stronger = sparseConfirmedWorkout(start: start,
+                                              end: end,
+                                              samples: 101,
+                                              coverage: 42)
+
+        XCTAssertTrue(SessionStore.recoveredWorkoutEvidenceIsStronger(stronger,
+                                                                       than: current),
+                      "Rounded coverage must not discard an additional exact recovered sample")
+        XCTAssertFalse(SessionStore.recoveredWorkoutEvidenceIsStronger(current,
+                                                                        than: stronger),
+                       "A replay of weaker evidence must remain idempotent")
+    }
+
+    func testArchiveRehydrationRepairsNoHRConfidenceWhenRealHRBecomesAvailable() throws {
+        let start = Date(timeIntervalSince1970: 1_783_767_620)
+        let end = start.addingTimeInterval(20 * 60)
+        var old = sparseConfirmedWorkout(start: start,
+                                         end: end,
+                                         samples: 0,
+                                         coverage: 0)
+        old = UserConfirmedWorkout(id: old.id,
+                                   createdAt: old.createdAt,
+                                   start: old.start,
+                                   end: old.end,
+                                   label: old.label,
+                                   source: old.source,
+                                   confidence: "user_confirmed_no_hr",
+                                   sessions: old.sessions,
+                                   samples: 0,
+                                   avgHR: 0,
+                                   peakHR: 0,
+                                   p95HR: 0,
+                                   p99HR: 0,
+                                   thresholdHR: old.thresholdHR,
+                                   streamCoveragePercent: 0,
+                                   observedDuration: 0,
+                                   reason: "no_strap_hr_samples",
+                                   activityType: old.activityType,
+                                   activitySubtype: old.activitySubtype,
+                                   exerciseNames: old.exerciseNames,
+                                   strengthSets: old.strengthSets,
+                                   excludedIntervals: old.excludedIntervals,
+                                   reviewSource: old.reviewSource,
+                                   strain: nil,
+                                   activeEnergyKilocalories: nil,
+                                   activeEnergyConfidence: nil,
+                                   zoneSeconds: nil,
+                                   eventTimeZoneIdentifier: old.eventTimeZoneIdentifier)
+        let archive = stride(from: 0.0, through: 20 * 60, by: 10).map {
+            HistoricalArchive.HeartRatePoint(t: start.addingTimeInterval($0), bpm: 118)
+        }
+
+        let result = try XCTUnwrap(SessionStore.rehydratedConfirmedWorkout(
+            old,
+            existingPoints: [],
+            archivePoints: archive,
+            rest: 60,
+            maxHR: 190,
+            profile: testAthleteProfile
+        ))
+
+        XCTAssertEqual(result.confidence, "user_confirmed_recovered_hr")
+        XCTAssertGreaterThan(result.samples, 0)
+        XCTAssertGreaterThan(result.avgHR, 0)
+        XCTAssertNotNil(result.strain)
+    }
+
+    func testHistoricalRehydrationEligibilityRepairsIncompleteLegacyRows() {
+        let start = Date(timeIntervalSince1970: 1_783_767_620)
+        let complete = sparseConfirmedWorkout(start: start,
+                                              end: start.addingTimeInterval(50 * 60),
+                                              samples: 3_000,
+                                              coverage: 100)
+        let missingMetrics = UserConfirmedWorkout(id: complete.id,
+                                                  createdAt: complete.createdAt,
+                                                  start: complete.start,
+                                                  end: complete.end,
+                                                  label: complete.label,
+                                                  source: complete.source,
+                                                  confidence: complete.confidence,
+                                                  sessions: complete.sessions,
+                                                  samples: complete.samples,
+                                                  avgHR: complete.avgHR,
+                                                  peakHR: complete.peakHR,
+                                                  p95HR: complete.p95HR,
+                                                  p99HR: complete.p99HR,
+                                                  thresholdHR: complete.thresholdHR,
+                                                  streamCoveragePercent: 100,
+                                                  observedDuration: complete.observedDuration,
+                                                  reason: complete.reason,
+                                                  activityType: complete.activityType,
+                                                  activitySubtype: complete.activitySubtype,
+                                                  exerciseNames: complete.exerciseNames,
+                                                  strengthSets: complete.strengthSets,
+                                                  excludedIntervals: complete.excludedIntervals,
+                                                  reviewSource: complete.reviewSource,
+                                                  strain: nil,
+                                                  activeEnergyKilocalories: complete.activeEnergyKilocalories,
+                                                  activeEnergyConfidence: complete.activeEnergyConfidence,
+                                                  zoneSeconds: nil,
+                                                  eventTimeZoneIdentifier: complete.eventTimeZoneIdentifier)
+
+        XCTAssertFalse(SessionStore.confirmedWorkoutNeedsArchiveRehydration(complete))
+        XCTAssertTrue(SessionStore.confirmedWorkoutNeedsArchiveRehydration(missingMetrics))
+    }
+
     func testArchiveRehydrationNeverReplacesWithEqualOrLowerCoverage() {
         let start = Date(timeIntervalSince1970: 1_783_767_620)
         let old = sparseConfirmedWorkout(start: start,
@@ -1242,18 +1368,18 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         let subThreshold = sparseConfirmedWorkout(start: start,
                                                   end: end,
                                                   samples: 1_000,
-                                                  coverage: 74)
+                                                  coverage: 99)
         let complete = sparseConfirmedWorkout(start: start,
                                               end: end,
                                               samples: 1_100,
-                                              coverage: 75)
+                                              coverage: 100)
 
         XCTAssertFalse(SessionStore.historicalRecoveryRequestIsSatisfied(
             original: original,
             replacement: subThreshold,
             requestedStart: start,
             requestedEnd: end
-        ), "Improvement below 75% must remain pending")
+        ), "Improvement below complete coverage must remain pending")
         XCTAssertTrue(SessionStore.historicalRecoveryRequestIsSatisfied(
             original: original,
             replacement: complete,
@@ -1361,7 +1487,10 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
 
         XCTAssertLessThan(intent.lowerBound, dismiss.lowerBound)
         XCTAssertLessThan(dismiss.lowerBound, delayedWork.lowerBound)
-        XCTAssertTrue(tail.contains("requestPersistenceFlush(reason: \"live_workout_end_checkpoint\")"))
+        // The terminal intent remains the recovery authority until the single
+        // completion-aware session flush succeeds. An eager flush here would
+        // duplicate serialization when its write has already begun.
+        XCTAssertFalse(tail.contains("requestPersistenceFlush(reason: \"live_workout_end_checkpoint\")"))
         XCTAssertTrue(tail.contains("flushScheduledPersistenceAsync(reason: \"live_workout_end_confirmed\")"))
         XCTAssertFalse(tail.contains("flushScheduledPersistence(reason: \"live_workout_end\")"))
     }

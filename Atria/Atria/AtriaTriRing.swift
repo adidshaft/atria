@@ -36,6 +36,7 @@ struct AtriaTriRingMetric: Equatable {
 /// achievement and target markers exist only when a real target exists.
 enum AtriaRingMetricProjection {
     static let neutralTintHex = "#8c929e"
+    static let strainIdentityTintHex = "#0093e7"
 
     static func strainFill(strain: Double, isPending: Bool = false) -> Double? {
         guard !isPending, strain.isFinite else { return nil }
@@ -57,6 +58,23 @@ enum AtriaRingMetricProjection {
         if fill >= 1 { return "#42f59b" }
         if fill >= 0.6 { return "#f5d142" }
         return "#ff8a3d"
+    }
+
+    /// A measured strain remains a real metric even before Recovery can mint a
+    /// personalized target. In that state the arc uses strain's identity blue;
+    /// only the target-relative achievement hue is unavailable. Returning the
+    /// neutral tint for a numeric value made the ring look missing alongside a
+    /// legitimately unavailable Recovery score.
+    static func strainTint(targetProgress: Double?, actualFill: Double?) -> Color {
+        guard let actualFill, actualFill.isFinite else { return .secondary }
+        guard targetProgress != nil else { return Metrics.electricStrain }
+        return Metrics.ringAchievementTint(fill: targetProgress)
+    }
+
+    static func strainTintHex(targetProgress: Double?, actualFill: Double?) -> String {
+        guard let actualFill, actualFill.isFinite else { return neutralTintHex }
+        guard targetProgress != nil else { return strainIdentityTintHex }
+        return achievementTintHex(fill: targetProgress)
     }
 
     static func zoneTintHex(_ level: AtriaMetricZoneLevel?) -> String {
@@ -95,6 +113,38 @@ enum AtriaRingMetricProjection {
               let value, value > 0,
               let baseline, baseline > 0 else { return nil }
         return min(max(Double(baseline) / Double(value), 0), 1.15)
+    }
+}
+
+/// Turns Recovery v2's fail-closed reason into concise user-facing evidence
+/// guidance. A calibration countdown is not a substitute for this reason: the
+/// score can be available provisionally before a trusted 14-night baseline,
+/// while a missing current HRV/RHR/sleep input will remain unavailable no
+/// matter which nominal "day" the UI shows.
+enum AtriaRecoveryAvailabilityPresentation {
+    static func detail(estimateDetail: String,
+                       hrvBaselineSamples: Int,
+                       restingBaselineSamples: Int) -> String {
+        let normalized = estimateDetail.lowercased()
+        if normalized.contains("need saved sleep") {
+            return "Save sleep to score"
+        }
+        if normalized.contains("need a steady hrv") {
+            return "Needs steady HRV"
+        }
+        if normalized.contains("need resting hr") {
+            return "Needs resting HR"
+        }
+        if normalized.contains("rhr baseline") {
+            return "RHR baseline \(max(0, restingBaselineSamples)) of \(PersonalBaseline.trustedMinimumSamples) nights"
+        }
+        if normalized.contains("hrv baseline") {
+            return "HRV baseline \(max(0, hrvBaselineSamples)) of \(PersonalBaseline.trustedMinimumSamples) nights"
+        }
+        if hrvBaselineSamples <= 0 && restingBaselineSamples <= 0 {
+            return "Needs sleep, HRV & RHR"
+        }
+        return "Recovery evidence incomplete"
     }
 }
 

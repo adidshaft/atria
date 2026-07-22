@@ -207,13 +207,24 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         ), identifier)
     }
 
-    func testDaytimeNapCandidateRemainsReviewOnly() throws {
+    func testDaytimeLowHRWithoutValidatedStillnessDoesNotBecomeNap() {
         let quietDaytime = session(start: date(2032, 7, 3, 13, 0),
                                    end: date(2032, 7, 3, 13, 45),
                                    bpm: 52)
+
+        XCTAssertTrue(candidates([quietDaytime]).isEmpty,
+                      "daytime HR alone cannot distinguish a nap from quiet or intermittently active wakefulness")
+    }
+
+    func testDaytimeNapWithValidatedStillnessRemainsReviewOnly() throws {
+        let quietDaytime = session(start: date(2032, 7, 3, 13, 0),
+                                   end: date(2032, 7, 3, 13, 45),
+                                   bpm: 52,
+                                   motionValidated: true)
         let candidate = try XCTUnwrap(candidates([quietDaytime]).first)
 
         XCTAssertEqual(candidate.kind, "nap_candidate")
+        XCTAssertTrue(candidate.motionEvidenceValidated)
         XCTAssertFalse(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
     }
 
@@ -236,7 +247,7 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
 
         let candidate = try XCTUnwrap(candidates([morningSleep], rest: 55).first)
         XCTAssertEqual(candidate.duration, 3 * 60 * 60 - 7, accuracy: 0.1)
-        XCTAssertTrue(candidate.nearStrictMorningHROnlyReviewQualified)
+        XCTAssertTrue(candidate.denseMorningHROnlyReviewQualified)
         XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(candidate))
         XCTAssertFalse(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate),
                        "boundary tolerance must never auto-confirm or affect recovery before Save")
@@ -253,6 +264,43 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertEqual(rollup.sleepReady, 0)
         XCTAssertEqual(rollup.sleepStart, morningSleep.start)
         XCTAssertEqual(rollup.sleepEnd, morningSleep.end)
+    }
+
+    func testDenseFourHourMorningWindowRemainsVisibleButCannotAutoConfirm() throws {
+        // Regression for the old non-monotonic gate: the same evidence was
+        // reviewable at 2h59m, disappeared at 3h, then returned at 5h.
+        let morningSleep = denseHRRRSession(
+            start: date(2032, 7, 9, 5, 51),
+            end: date(2032, 7, 9, 9, 51)
+        )
+
+        let candidate = try XCTUnwrap(candidates([morningSleep], rest: 55).first)
+        XCTAssertTrue(candidate.denseMorningHROnlyReviewQualified)
+        XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(candidate))
+        XCTAssertFalse(SessionStore.isAutoConfirmableMainSleepCandidate(
+            candidate,
+            baselineRestingIsTrusted: true
+        ), "a sub-five-hour HR-only window must remain review-only even with a trusted baseline")
+    }
+
+    func testDenseMorningReviewSurvivesASeamlessReconnectSplit() throws {
+        let first = denseHRRRSession(
+            start: date(2032, 7, 10, 5, 51),
+            end: date(2032, 7, 10, 7, 51)
+        )
+        let resumed = denseHRRRSession(
+            start: date(2032, 7, 10, 7, 51, 10),
+            end: date(2032, 7, 10, 10, 6)
+        )
+
+        let candidate = try XCTUnwrap(candidates([first, resumed], rest: 55).first)
+        XCTAssertEqual(candidate.sessions, 2)
+        XCTAssertTrue(candidate.denseMorningHROnlyReviewQualified)
+        XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(candidate))
+        XCTAssertFalse(SessionStore.isAutoConfirmableMainSleepCandidate(
+            candidate,
+            baselineRestingIsTrusted: true
+        ))
     }
 
     func testMateriallyShortDenseMorningWindowRemainsRejected() {
@@ -433,6 +481,42 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertEqual(untrustedRollup.sleepReady, 0)
     }
 
+    func testStableShiftWorkerSleepSurvivesThreeHourRetentionRollover() throws {
+        let firstRetentionChunk = session(start: date(2032, 7, 5, 9, 0),
+                                          end: date(2032, 7, 5, 12, 0),
+                                          bpm: 52)
+        let secondRetentionChunk = session(start: date(2032, 7, 5, 12, 0),
+                                           end: date(2032, 7, 5, 14, 30),
+                                           bpm: 52)
+
+        let candidate = try XCTUnwrap(candidates([
+            firstRetentionChunk,
+            secondRetentionChunk
+        ]).first)
+        XCTAssertEqual(candidate.sessions, 2)
+        XCTAssertEqual(candidate.maxGap, 0, accuracy: 0.001)
+        XCTAssertTrue(SessionStore.isUnambiguousHROnlyMainSleepCandidate(
+            candidate,
+            calendar: Self.utcCalendar
+        ), "a storage-only rollover must not turn continuous shift-work sleep into fragmentation")
+        XCTAssertTrue(SessionStore.isAutoConfirmableMainSleepCandidate(
+            candidate,
+            baselineRestingIsTrusted: true
+        ))
+    }
+
+    func testFragmentedShiftWorkerChunksRemainRejectedWithoutSleepCoreEvidence() {
+        let firstFragment = session(start: date(2032, 7, 5, 9, 0),
+                                    end: date(2032, 7, 5, 12, 0),
+                                    bpm: 52)
+        let secondFragment = session(start: date(2032, 7, 5, 13, 0),
+                                     end: date(2032, 7, 5, 15, 30),
+                                     bpm: 52)
+
+        XCTAssertTrue(candidates([firstFragment, secondFragment]).isEmpty,
+                      "a one-hour daytime evidence gap is not a storage-only rollover")
+    }
+
     func testClusteredHRBurstCannotClaimWholeNightCoverage() throws {
         let start = date(2032, 7, 5, 23, 0)
         let end = date(2032, 7, 6, 5, 0)
@@ -491,6 +575,59 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
             candidate,
             baselineRestingIsTrusted: true
         ))
+    }
+
+    func testThirtyNineSecondCrashTailGapDoesNotDiscardDenseHROvernightEvidence() throws {
+        let start = date(2032, 7, 10, 23, 30)
+        let end = date(2032, 7, 11, 5, 0)
+        let duration = end.timeIntervalSince(start)
+        let gapStart: TimeInterval = 2 * 60 * 60
+        let gapEnd = gapStart + 39
+        let points = stride(from: 0.0, to: duration, by: 5.0)
+            .filter { $0 < gapStart || $0 >= gapEnd }
+            .map { SavedSession.Point(t: $0, bpm: 52) }
+        let journalProjection = SavedSession(id: UUID(),
+                                             start: start,
+                                             end: end,
+                                             label: "Resident journal with crash tail gap",
+                                             points: points,
+                                             eventTimeZoneIdentifier: "UTC")
+
+        let candidate = try XCTUnwrap(candidates([journalProjection]).first)
+        XCTAssertGreaterThanOrEqual(candidate.maximumHRSampleGap, 39)
+        XCTAssertLessThan(candidate.maximumHRSampleGap,
+                          AggregateSleepCandidate.briefSleepGapCreditMax)
+        XCTAssertGreaterThan(candidate.hrObservedCoverageFraction, 0.99)
+        XCTAssertTrue(SessionStore.isUnambiguousHROnlyMainSleepCandidate(candidate))
+        XCTAssertTrue(SessionStore.isAutoConfirmableMainSleepCandidate(
+            candidate,
+            baselineRestingIsTrusted: true
+        ))
+    }
+
+    func testIntermittentRRLapsePreservesQualifiedWindowsBeforeAndAfterGap() {
+        let start = date(2032, 7, 10, 23, 30)
+        let runStarts: [TimeInterval] = [0, 475, 950]
+        let rrPoints = runStarts.flatMap { runStart in
+            (0...300).map { offset in
+                SavedSession.RRPoint(t: runStart + TimeInterval(offset),
+                                     ms: offset.isMultiple(of: 2) ? 980 : 1_020,
+                                     source: .standardHeartRateMeasurement2A37)
+            }
+        }
+        let end = start.addingTimeInterval(1_251)
+        let session = SavedSession(id: UUID(),
+                                   start: start,
+                                   end: end,
+                                   label: "Intermittent standard RR",
+                                   points: [SavedSession.Point(t: 0, bpm: 60),
+                                            SavedSession.Point(t: 1_250, bpm: 60)],
+                                   rrPoints: rrPoints,
+                                   eventTimeZoneIdentifier: "UTC")
+
+        XCTAssertEqual(session.localHRVWindowCount, 3)
+        XCTAssertNotNil(session.localRMSSD,
+                        "a bounded RR lapse must split continuity, not erase qualified windows")
     }
 
     func testLongQuietWindowWithWakePhysiologyDoesNotAnchor() throws {

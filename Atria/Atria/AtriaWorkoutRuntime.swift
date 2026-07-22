@@ -6,6 +6,28 @@ extension Notification.Name {
     )
 }
 
+/// Persisted identity of the cumulative coordinate chosen at Workout Start.
+/// Never infer this again from a subsequently edited activity type: changing a
+/// label mid-workout must not splice two unrelated detector clocks together.
+enum AtriaWorkoutStepSourceVersion: String, Codable, Equatable, Sendable {
+    case strapAccelerometerV1 = "strap_accelerometer_v1"
+    case strapGyroCadenceAmbulatoryV1 = "strap_gyro_cadence_ambulatory_v1"
+
+    static func frozen(
+        for activityType: AtriaWorkoutActivityType,
+        gyroCoordinate: AtriaWorkoutStepCoordinate?
+    ) -> Self {
+        switch activityType {
+        case .walking, .running, .hiking:
+            return gyroCoordinate?.isLiveForCompletion == true
+                ? .strapGyroCadenceAmbulatoryV1
+                : .strapAccelerometerV1
+        default:
+            return .strapAccelerometerV1
+        }
+    }
+}
+
 /// One all-day step coordinate shared by foreground Home and headless
 /// Lock-Screen commands. `liveActiveSession` is connection-local; the saved
 /// prefix must be hydrated and reconciled before a pause/resume/end command can
@@ -62,6 +84,74 @@ struct AtriaWorkoutStepCoordinate: Equatable {
                 && !reconnectPending
                 && !rangeLossBackfillPending
         )
+    }
+
+    /// Builds a coordinate whose durable ledger already owns the cumulative
+    /// prefix. This is used only by the explicitly ambulatory workout source;
+    /// it is intentionally not routed into Home/day-step production totals.
+    static func makeCumulative(
+        savedPrefixHydrated: Bool,
+        cumulativeCount: Int,
+        hasEvidence: Bool,
+        capturedAt: Date?,
+        isConnected: Bool,
+        reconnectPending: Bool,
+        rangeLossBackfillPending: Bool,
+        now: Date
+    ) -> Self? {
+        guard savedPrefixHydrated else { return nil }
+        let count = max(0, cumulativeCount)
+        let fresh = capturedAt.map {
+            $0 <= now.addingTimeInterval(actionFutureTolerance)
+                && now.timeIntervalSince($0) <= actionDetectorSnapshotMaximumAge
+        } ?? false
+        return Self(
+            cumulativeCount: count,
+            hasEvidence: hasEvidence,
+            isEstimated: hasEvidence,
+            capturedAt: capturedAt,
+            isLiveForCompletion: hasEvidence
+                && fresh
+                && isConnected
+                && !reconnectPending
+                && !rangeLossBackfillPending
+        )
+    }
+}
+
+/// Chooses one completed-workout step total without adding overlapping
+/// cumulative sources. A validated strap boundary is authoritative. While the
+/// strap decoder remains preliminary, the larger observed subtotal wins so a
+/// phone left on a bench cannot erase wrist motion and a sparse strap stream
+/// cannot erase a complete phone-pedometer interval.
+struct AtriaCompletedWorkoutStepEvidence: Equatable {
+    let count: Int
+    let isEstimated: Bool
+    let capturedAt: Date?
+
+    static func select(
+        strap: Self?,
+        phone: Self?
+    ) -> Self? {
+        if let strap, !strap.isEstimated {
+            return sanitized(strap)
+        }
+        switch (strap.map(sanitized), phone.map(sanitized)) {
+        case let (strap?, phone?):
+            return strap.count >= phone.count ? strap : phone
+        case let (strap?, nil):
+            return strap
+        case let (nil, phone?):
+            return phone
+        case (nil, nil):
+            return nil
+        }
+    }
+
+    private static func sanitized(_ evidence: Self) -> Self {
+        Self(count: max(0, evidence.count),
+             isEstimated: evidence.isEstimated,
+             capturedAt: evidence.capturedAt)
     }
 }
 
@@ -389,7 +479,10 @@ final class AtriaWorkoutRuntime {
                 <= AtriaWorkoutStepCoordinate.actionDetectorSnapshotMaximumAge
                 ? max(actionDate, motionBoundaryAt)
                 : actionDate
-            guard let stepCoordinate = currentStepCoordinate(now: stepReferenceDate) else {
+            guard let stepCoordinate = currentStepCoordinate(
+                sourceVersion: intent.stepSourceVersion,
+                now: stepReferenceDate
+            ) else {
                 // The Home-created starting anchor is in the merged all-day
                 // coordinate. Until the saved prefix is hydrated, comparing it
                 // with a connection-local count can underflow or invent paused
@@ -461,7 +554,13 @@ final class AtriaWorkoutRuntime {
         return canonicalState
     }
 
-    private func currentStepCoordinate(now: Date) -> AtriaWorkoutStepCoordinate? {
+    private func currentStepCoordinate(
+        sourceVersion: AtriaWorkoutStepSourceVersion,
+        now: Date
+    ) -> AtriaWorkoutStepCoordinate? {
+        if sourceVersion == .strapGyroCadenceAmbulatoryV1 {
+            return ble.ambulatoryWorkoutGyroStepCoordinate(now: now)
+        }
         guard store.hasLoadedSavedSessions else { return nil }
         let rest = store.baseline.restingInt ?? 60
         let saved = store.homeSavedAggregate(

@@ -38,15 +38,19 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
         XCTAssertFalse(automaticBackup.contains("writeSessionBackup(label:"),
                        "Automatic session/profile/workout saves must never encode a full backup on MainActor")
         XCTAssertTrue(sessions.contains("private enum SessionBackupWriter"))
-        XCTAssertTrue(sessions.contains("AtriaRawExport.hrRows(sessions: request.sessions)"),
-                      "Raw-row expansion belongs inside the serial worker")
+        XCTAssertTrue(sessions.contains("rawExport: nil"),
+                      "Schema 4 backups must regenerate raw rows from canonical sessions")
+        XCTAssertFalse(sessions.contains("AtriaRawExport.hrRows(sessions: request.sessions)"),
+                       "Backups must not duplicate every HR/RR sample as expanded strings")
     }
 
     func testBackgroundTaskWaitsForDurableBackupWorkerCompletion() throws {
         let app = try appSource("AtriaApp.swift")
         XCTAssertTrue(app.contains("let backupSucceeded = await withCheckedContinuation"))
         XCTAssertTrue(app.contains("store.performBackgroundMaintenance(reason: reason) { succeeded in"))
-        XCTAssertTrue(app.contains("completion.complete(task, success: backupSucceeded)"))
+        XCTAssertTrue(app.contains("success: backupSucceeded"))
+        XCTAssertTrue(app.contains("&& historicalRecoverySucceeded"))
+        XCTAssertTrue(app.contains("&& recoveredPublicationSucceeded"))
     }
 
     func testSettingsManualBackupUsesWorkerWithoutBlockingMainActor() throws {
@@ -518,6 +522,34 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
                           "Sharing/recap must remain structurally downstream of canonical confirmation")
     }
 
+    func testWorkoutMotionBoundaryDeadlineResumesWithoutAwaitingCancelledMarkerTask() throws {
+        let home = try appSource("AtriaHomeView.swift")
+        let helperStart = try XCTUnwrap(
+            home.range(of: "private func synchronizedWorkoutMotionBoundary(")
+        )
+        let helperEnd = try XCTUnwrap(
+            home.range(of: "private func makeWorkoutSession(",
+                       range: helperStart.upperBound..<home.endIndex)
+        )
+        let helper = String(home[helperStart.lowerBound..<helperEnd.lowerBound])
+
+        XCTAssertTrue(helper.contains("deadline.finish(nil)"))
+        XCTAssertTrue(helper.contains("synchronization.cancel()"))
+        XCTAssertFalse(helper.contains("await synchronization.value"),
+                       "The UI deadline must not wait for the cancelled FIFO marker to unwind")
+
+        let completionStart = try XCTUnwrap(
+            home.range(of: "private func endWorkoutSession(startedAt: Date,")
+        )
+        let completionEnd = try XCTUnwrap(
+            home.range(of: "private func workoutShareSnapshot(",
+                       range: completionStart.upperBound..<home.endIndex)
+        )
+        let completion = String(home[completionStart.lowerBound..<completionEnd.lowerBound])
+        XCTAssertTrue(completion.contains("await synchronizedWorkoutMotionBoundary()"))
+        XCTAssertFalse(completion.contains("await syncTask.value"))
+    }
+
     func testOlderWorkoutCompletionCannotClearNewerPendingIntent() throws {
         let suite = "AtriaSwiftUIPerformanceAuditTests.pending.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -606,6 +638,7 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
             strengthSets: [],
             excludedIntervals: [],
             reviewSource: nil,
+            reviewCandidateID: nil,
             settlingCandidateWindow: nil,
             workoutSteps: nil,
             workoutStepsAreEstimated: nil,

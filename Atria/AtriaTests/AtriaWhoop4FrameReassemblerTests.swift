@@ -55,4 +55,18 @@ final class AtriaWhoop4FrameReassemblerTests: XCTestCase {
 
         XCTAssertEqual(reassembler.feed(bytes, source: "stream3"), [first, second])
     }
+
+    func testPreservesPhysicalACKResponseImmediatelyFollowedByHistoryStart() {
+        let ack = encodeFrame([0x24, 0xd0, 0x17, 0x00, 0x01, 0x00, 0x00, 0x00])
+        let historyStart = encodeFrame([0x31, 0xd1])
+        let reassembler = AtriaWhoop4FrameReassembler()
+        var coalesced = Data(ack)
+        coalesced.append(historyStart)
+
+        XCTAssertEqual(
+            reassembler.feed(coalesced, source: "stream5"),
+            [ack, historyStart]
+        )
+        XCTAssertEqual(reassembler.bufferedByteCount(source: "stream5"), 0)
+    }
 }

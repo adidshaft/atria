@@ -926,9 +926,10 @@ struct AtriaSettingsView: View {
         let archiveBaseBytes: Int64
         let segmentsBytes: Int64
         let rollupsBytes: Int64
+        let allDocumentsBytes: Int64
 
         var totalBytes: Int64 {
-            sessionsBytes + coldSessionsBytes + archiveBaseBytes + segmentsBytes + rollupsBytes
+            allDocumentsBytes
         }
     }
 
@@ -946,25 +947,34 @@ struct AtriaSettingsView: View {
         func directorySize(_ url: URL) -> Int64 {
             guard let enumerator = fileManager.enumerator(
                 at: url,
-                includingPropertiesForKeys: [.fileSizeKey],
+                includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
                 options: [.skipsHiddenFiles]
             ) else { return 0 }
             var total: Int64 = 0
             for case let fileURL as URL in enumerator {
-                let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey])
-                total += Int64(values?.fileSize ?? 0)
+                let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+                if values?.isRegularFile == true {
+                    total += Int64(values?.fileSize ?? 0)
+                }
             }
             return total
         }
 
         let sessionsBytes = size(of: documents.appendingPathComponent("sessions.json"))
         let coldSessionsBytes = size(of: documents.appendingPathComponent("sessions-cold.json"))
+            + directorySize(documents.appendingPathComponent(
+                AtriaFullFidelityColdSessionStore.directoryName,
+                isDirectory: true
+            ))
         let archiveDirectory = documents.appendingPathComponent("atria-historical", isDirectory: true)
         let archiveBaseBytes = size(of: archiveDirectory.appendingPathComponent("historical-archive.jsonl"))
         let segmentsBytes = directorySize(archiveDirectory.appendingPathComponent("segments", isDirectory: true))
         let rollupsBytes = size(of: documents.appendingPathComponent("daily-rollups.json"))
 
-        let totalBytes = sessionsBytes + coldSessionsBytes + archiveBaseBytes + segmentsBytes + rollupsBytes
+        // The headline is the whole app Documents tree, not a hand-picked
+        // subtotal. This includes compact facts, replay SQLite/WAL files,
+        // backups, calibration captures, receipts and future managed tiers.
+        let totalBytes = directorySize(documents)
 
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
@@ -974,7 +984,8 @@ struct AtriaSettingsView: View {
                                 coldSessionsBytes: coldSessionsBytes,
                                 archiveBaseBytes: archiveBaseBytes,
                                 segmentsBytes: segmentsBytes,
-                                rollupsBytes: rollupsBytes)
+                                rollupsBytes: rollupsBytes,
+                                allDocumentsBytes: totalBytes)
     }
 
     private func refreshStorageFootprint() async {
@@ -1364,7 +1375,7 @@ struct AtriaSettingsView: View {
                             tint: batterySaver ? .green : .orange,
                             title: batterySaver ? "Heart rate + strap motion" : "Diagnostic full protocol",
                             detail: batterySaver
-                                ? "Recommended. Keeps live heart rate and strap-native steps on the physically verified minimal connection. Atria never substitutes phone motion."
+                                ? "Recommended. Keeps live heart rate and verified strap motion on the stable connection. When strap steps are unavailable, Atria can use clearly labelled iPhone steps for periods when you carried the phone."
                                 : "Enables additional proprietary streams for diagnostics. This may be less stable and use more strap battery.")
             // Static handoff compatibility marker for the old detail:
             // Keeps richer strap streams available for beat-to-beat, HRV, Recovery and sleep research.

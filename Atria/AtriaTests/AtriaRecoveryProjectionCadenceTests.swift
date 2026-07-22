@@ -58,12 +58,16 @@ final class AtriaRecoveryProjectionCadenceTests: XCTestCase {
         XCTAssertNil(cache.entry)
     }
 
-    func testAllNighterFailsClosedWithoutEvaluatingProvisionalAutoclosure() {
+    func testMissingSleepPublishesLimitedEstimateInsteadOfBlankingDayOne() {
         var cache = SessionStore.RecoveryProjectionCache()
         var evaluations = 0
         func evaluate() -> Metrics.RecoveryEstimate {
             evaluations += 1
-            return estimate(99)
+            return Metrics.RecoveryEstimate(percent: 99,
+                                            confidence: .unverified,
+                                            usesHRV: false,
+                                            detail: "Limited estimate; sleep or HRV is still unavailable.",
+                                            contributors: [])
         }
         let cycle = AtriaPhysiologicalCycle(start: start,
                                             boundaryKind: .noSleepFallback,
@@ -79,13 +83,13 @@ final class AtriaRecoveryProjectionCadenceTests: XCTestCase {
             provisional: evaluate()
         )
 
-        XCTAssertNil(projected.percent)
+        XCTAssertEqual(projected.percent, 99)
         XCTAssertEqual(projected.confidence, .unverified)
         XCTAssertFalse(projected.usesHRV)
-        XCTAssertEqual(evaluations, 0)
+        XCTAssertEqual(evaluations, 1)
     }
 
-    func testOrdinaryInputChurnStaysStableUntilTTLButCycleChangesRefresh() {
+    func testChangedPhysiologyFingerprintRefreshesImmediately() {
         var cache = SessionStore.RecoveryProjectionCache()
         var evaluations = 0
         let firstFingerprint = SessionStore.RecoveryProjectionFingerprint(fallbackRMSSD: 55)
@@ -120,7 +124,7 @@ final class AtriaRecoveryProjectionCadenceTests: XCTestCase {
                           ttl: SessionStore.provisionalRecoveryProjectionTTL,
                           provisional: evaluate())
 
-        XCTAssertEqual(evaluations, 3)
+        XCTAssertEqual(evaluations, 4)
     }
 
     func testConfirmedSleepRevisionAndNewTrustedHRVRefreshImmediately() {
@@ -201,6 +205,340 @@ final class AtriaRecoveryProjectionCadenceTests: XCTestCase {
         ))
     }
 
+    func testRealPendingSleepReviewUnlocksDayOnePresentationRecovery() throws {
+        let pending = pendingNight(end: start, duration: 4 * 60 * 60)
+        let authoritative = Metrics.RecoveryEstimate(
+            percent: nil,
+            confidence: .learning,
+            usesHRV: false,
+            detail: "learning: need saved sleep",
+            contributors: []
+        )
+
+        let projected = SessionStore.presentationRecoveryEstimate(
+            authoritative: authoritative,
+            hasConfirmedMainSleep: false,
+            hasFrozenRecovery: false,
+            pendingSleepReview: pending,
+            baseline: PersonalBaseline(),
+            respiratoryBaseline: nil,
+            now: start.addingTimeInterval(60),
+            physiologicalCycle: makeCycle(start: start)
+        )
+
+        XCTAssertNotNil(projected.percent)
+        XCTAssertEqual(projected.confidence, .unverified)
+        XCTAssertFalse(projected.usesHRV,
+                       "an unqualified pending HRV integer must not become measured HRV")
+        XCTAssertTrue(projected.detail.contains("pending sleep review"))
+        XCTAssertNotEqual(projected, authoritative)
+    }
+
+    func testPendingReviewCanNeverOverrideConfirmedOrFrozenRecovery() {
+        let pending = pendingNight(end: start, duration: 4 * 60 * 60)
+        let confirmed = estimate(82)
+        let confirmedWins = SessionStore.presentationRecoveryEstimate(
+            authoritative: confirmed,
+            hasConfirmedMainSleep: true,
+            hasFrozenRecovery: false,
+            pendingSleepReview: pending,
+            baseline: PersonalBaseline(),
+            respiratoryBaseline: nil,
+            now: start.addingTimeInterval(60),
+            physiologicalCycle: makeCycle(start: start)
+        )
+        let frozen = Metrics.RecoveryEstimate(percent: 48,
+                                              confidence: .unverified,
+                                              usesHRV: false,
+                                              detail: "frozen limited morning",
+                                              contributors: [])
+        let frozenWins = SessionStore.presentationRecoveryEstimate(
+            authoritative: frozen,
+            hasConfirmedMainSleep: false,
+            hasFrozenRecovery: true,
+            pendingSleepReview: pending,
+            baseline: PersonalBaseline(),
+            respiratoryBaseline: nil,
+            now: start.addingTimeInterval(60),
+            physiologicalCycle: makeCycle(start: start)
+        )
+
+        XCTAssertEqual(confirmedWins, confirmed)
+        XCTAssertEqual(frozenWins, frozen,
+                       "presentation evidence must not remint a frozen morning")
+    }
+
+    func testPendingReviewNeverDowngradesAnyNumericCanonicalAuthority() {
+        let pending = pendingNight(end: start, duration: 4 * 60 * 60)
+        let authorities = [
+            Metrics.RecoveryEstimate(percent: 41,
+                                     confidence: .unverified,
+                                     usesHRV: false,
+                                     detail: "canonical limited evidence",
+                                     contributors: []),
+            Metrics.RecoveryEstimate(percent: 72,
+                                     confidence: .personalBaseline,
+                                     usesHRV: true,
+                                     detail: "canonical personal baseline",
+                                     contributors: []),
+            Metrics.RecoveryEstimate(percent: 88,
+                                     confidence: .validated,
+                                     usesHRV: true,
+                                     detail: "canonical validated",
+                                     contributors: []),
+        ]
+
+        for authoritative in authorities {
+            XCTAssertEqual(SessionStore.presentationRecoveryEstimate(
+                authoritative: authoritative,
+                hasConfirmedMainSleep: false,
+                hasFrozenRecovery: false,
+                pendingSleepReview: pending,
+                baseline: PersonalBaseline(),
+                respiratoryBaseline: nil,
+                now: start.addingTimeInterval(60),
+                physiologicalCycle: makeCycle(start: start)
+            ), authoritative)
+        }
+    }
+
+    func testSixAMRolloverAcceptsCurrentOvernightButRejectsPriorDayCandidate() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let boundary = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2033, month: 6, day: 2, hour: 6
+        )))
+        let now = boundary.addingTimeInterval(15 * 60)
+        let cycle = AtriaPhysiologicalCycle(start: boundary,
+                                            boundaryKind: .initialFallback,
+                                            anchorSleepID: nil,
+                                            expectedInterval: 24 * 60 * 60)
+        let learning = Metrics.RecoveryEstimate(percent: nil,
+                                                confidence: .learning,
+                                                usesHRV: false,
+                                                detail: "learning",
+                                                contributors: [])
+        let overnight = pendingNight(end: boundary.addingTimeInterval(-30 * 60),
+                                     duration: 4 * 60 * 60)
+        let priorDayMidday = pendingNight(end: boundary.addingTimeInterval(-18 * 60 * 60),
+                                         duration: 4 * 60 * 60)
+
+        XCTAssertNotEqual(SessionStore.presentationRecoveryEstimate(
+            authoritative: learning,
+            hasConfirmedMainSleep: false,
+            hasFrozenRecovery: false,
+            pendingSleepReview: overnight,
+            baseline: PersonalBaseline(),
+            respiratoryBaseline: nil,
+            now: now,
+            physiologicalCycle: cycle,
+            calendar: calendar
+        ), learning, "an overnight sleep ending just before 06:00 belongs to the new morning")
+        XCTAssertEqual(SessionStore.presentationRecoveryEstimate(
+            authoritative: learning,
+            hasConfirmedMainSleep: false,
+            hasFrozenRecovery: false,
+            pendingSleepReview: priorDayMidday,
+            baseline: PersonalBaseline(),
+            respiratoryBaseline: nil,
+            now: now,
+            physiologicalCycle: cycle,
+            calendar: calendar
+        ), learning, "a prior-day episode must not leak across the 06:00 rollover")
+    }
+
+    func testPendingHRVRequiresThreeQualifiedWindowsLikeCanonicalSleep() throws {
+        let now = start.addingTimeInterval(60)
+        let cycle = makeCycle(start: start)
+        let baseline = trustedBaseline(now: now)
+
+        for count in [1, 2] {
+            let estimate = try XCTUnwrap(SessionStore.pendingSleepRecoveryEstimate(
+                pendingNight(end: start,
+                             duration: 4 * 60 * 60,
+                             hrvWindowCount: count),
+                baseline: baseline,
+                respiratoryBaseline: nil,
+                now: now,
+                physiologicalCycle: cycle
+            ))
+            XCTAssertFalse(estimate.usesHRV,
+                           "\(count) RR windows must stay below canonical HRV authority")
+        }
+        let qualified = try XCTUnwrap(SessionStore.pendingSleepRecoveryEstimate(
+            pendingNight(end: start,
+                         duration: 4 * 60 * 60,
+                         hrvWindowCount: 3),
+            baseline: baseline,
+            respiratoryBaseline: nil,
+            now: now,
+            physiologicalCycle: cycle
+        ))
+        XCTAssertTrue(qualified.usesHRV)
+    }
+
+    func testProductionRollupPreservesLegacyUnknownAndActualOneTwoThreeHRVWindowGate() throws {
+        let now = start.addingTimeInterval(60)
+        let baseline = trustedBaseline(now: now)
+        for count in 0...3 {
+            let rollup = DailyRollup(
+                day: Calendar.current.startOfDay(for: start),
+                sessions: 1,
+                activityCandidates: 0,
+                workouts: 0,
+                confirmedWorkouts: 0,
+                restCandidates: 0,
+                sleepReady: 0,
+                sleepCandidates: 1,
+                duration: 4 * 60 * 60,
+                sleepDuration: 4 * 60 * 60,
+                sleepSpan: 4 * 60 * 60,
+                sleepStart: start.addingTimeInterval(-4 * 60 * 60),
+                sleepEnd: start,
+                sleepSource: "sleep_window",
+                sleepStageSegments: [],
+                strain: 0,
+                avgHRV: 61,
+                hrvWindowCount: count,
+                restingHR: 56,
+                avgRespiratoryRate: nil
+            )
+            let snapshot = SleepHistorySnapshot(
+                rollups: [rollup],
+                confirmedSleeps: []
+            )
+            let night = try XCTUnwrap(snapshot.nights.first)
+            XCTAssertEqual(night.hrvWindowCount, count)
+            let estimate = try XCTUnwrap(SessionStore.pendingSleepRecoveryEstimate(
+                night,
+                baseline: baseline,
+                respiratoryBaseline: nil,
+                now: now,
+                physiologicalCycle: makeCycle(start: start)
+            ))
+            XCTAssertEqual(estimate.usesHRV, count >= 3,
+                           "rollup count \(count) must not be promoted to three")
+        }
+    }
+
+    func testPendingRecoveryCannotPersistDailyStrainTarget() throws {
+        let pending = try XCTUnwrap(SessionStore.pendingSleepRecoveryEstimate(
+            pendingNight(end: start, duration: 4 * 60 * 60),
+            baseline: PersonalBaseline(),
+            respiratoryBaseline: nil,
+            now: start.addingTimeInterval(60),
+            physiologicalCycle: makeCycle(start: start)
+        ))
+        XCTAssertEqual(pending.confidence, .unverified)
+        XCTAssertNil(AtriaHomeModel.recoveryAuthorizedForStrainTarget(pending))
+
+        let suite = "AtriaRecoveryProjectionCadenceTests.target.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertNil(AtriaDailyStrainTargetStore.resolve(
+            recovery: AtriaHomeModel.recoveryAuthorizedForStrainTarget(pending),
+            load: nil,
+            recoveryIsAttributedToCurrentDay: false,
+            loadIsPrepared: true,
+            mutationAuthority: .preserveExisting,
+            cycleStart: start,
+            now: start.addingTimeInterval(60),
+            defaults: defaults
+        ))
+        XCTAssertNil(AtriaDailyStrainTargetStore.loadSnapshot(defaults: defaults))
+    }
+
+    func testPendingRecoveryPreservesExistingCanonicalSameCycleTarget() throws {
+        let suite = "AtriaRecoveryProjectionCadenceTests.target-preserve.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let canonical = try XCTUnwrap(AtriaDailyStrainTargetStore.resolve(
+            recovery: 78,
+            load: nil,
+            recoveryIsAttributedToCurrentDay: true,
+            loadIsPrepared: true,
+            mutationAuthority: .canonical,
+            cycleStart: start,
+            now: start.addingTimeInterval(60),
+            defaults: defaults
+        ))
+
+        let preserved = AtriaDailyStrainTargetStore.resolve(
+            recovery: nil,
+            load: nil,
+            recoveryIsAttributedToCurrentDay: false,
+            loadIsPrepared: true,
+            mutationAuthority: .preserveExisting,
+            cycleStart: start,
+            now: start.addingTimeInterval(120),
+            defaults: defaults
+        )
+        XCTAssertEqual(preserved, canonical)
+        XCTAssertEqual(AtriaDailyStrainTargetStore.loadSnapshot(defaults: defaults),
+                       canonical)
+    }
+
+    func testStaleFutureNapAndMalformedPendingReviewsFailClosed() {
+        let authoritative = Metrics.RecoveryEstimate(percent: nil,
+                                                     confidence: .learning,
+                                                     usesHRV: false,
+                                                     detail: "learning",
+                                                     contributors: [])
+        let now = start.addingTimeInterval(2 * 24 * 60 * 60)
+        let stale = pendingNight(end: start, duration: 4 * 60 * 60)
+        let future = pendingNight(end: now.addingTimeInterval(10 * 60),
+                                  duration: 4 * 60 * 60)
+        let nap = pendingNight(end: now,
+                               duration: 60 * 60,
+                               source: "nap_candidate")
+        let malformed = SleepHistorySnapshot.Night(
+            id: "malformed-pending",
+            day: now,
+            start: now.addingTimeInterval(-4 * 60 * 60),
+            end: now,
+            duration: 4 * 60 * 60,
+            restingHR: 300,
+            hrv: nil,
+            respiratoryRate: nil,
+            sleepEfficiency: 1.2,
+            confidence: "review_needed",
+            source: "sleep_window",
+            confirmed: false,
+            stageSegments: []
+        )
+
+        for rejected in [stale, future, nap, malformed] {
+            XCTAssertEqual(SessionStore.presentationRecoveryEstimate(
+                authoritative: authoritative,
+                hasConfirmedMainSleep: false,
+                hasFrozenRecovery: false,
+                pendingSleepReview: rejected,
+                baseline: PersonalBaseline(),
+                respiratoryBaseline: nil,
+                now: now,
+                physiologicalCycle: makeCycle(start: start)
+            ), authoritative)
+        }
+    }
+
+    func testPendingPresentationRecoveryHasNoReadyHapticAuthority() throws {
+        let projected = try XCTUnwrap(SessionStore.pendingSleepRecoveryEstimate(
+            pendingNight(end: start, duration: 4 * 60 * 60),
+            baseline: PersonalBaseline(),
+            respiratoryBaseline: nil,
+            now: start.addingTimeInterval(60),
+            physiologicalCycle: makeCycle(start: start)
+        ))
+
+        XCTAssertEqual(projected.confidence, .unverified)
+        XCTAssertFalse(AtriaHapticAlertCoordinator.shouldFireRecoveryReady(
+            percent: projected.percent,
+            isReadyForAlert: projected.confidence == .validated
+                || projected.confidence == .personalBaseline,
+            wasReady: false
+        ))
+    }
+
     private func makeCycle(start: Date) -> AtriaPhysiologicalCycle {
         AtriaPhysiologicalCycle(start: start,
                                boundaryKind: .mainSleep,
@@ -214,5 +552,38 @@ final class AtriaRecoveryProjectionCadenceTests: XCTestCase {
                                  usesHRV: true,
                                  detail: "test",
                                  contributors: [])
+    }
+
+    private func pendingNight(end: Date,
+                              duration: TimeInterval,
+                              source: String = "sleep_window",
+                              hrvWindowCount: Int = 0) -> SleepHistorySnapshot.Night {
+        SleepHistorySnapshot.Night(
+            id: "pending-\(source)-\(Int(end.timeIntervalSince1970))",
+            day: Calendar.current.startOfDay(for: end),
+            start: end.addingTimeInterval(-duration),
+            end: end,
+            duration: duration,
+            restingHR: 56,
+            hrv: 61,
+            hrvWindowCount: hrvWindowCount,
+            respiratoryRate: nil,
+            sleepEfficiency: 0.91,
+            confidence: "review_needed",
+            source: source,
+            confirmed: false,
+            stageSegments: []
+        )
+    }
+
+    private func trustedBaseline(now: Date) -> PersonalBaseline {
+        var baseline = PersonalBaseline()
+        for index in 0..<PersonalBaseline.trustedMinimumSamples {
+            baseline.learn(fromResting: 56 + (index % 3),
+                           hrv: 58 + (index % 5),
+                           at: now.addingTimeInterval(-Double(index + 1) * 24 * 60 * 60),
+                           overnight: true)
+        }
+        return baseline
     }
 }

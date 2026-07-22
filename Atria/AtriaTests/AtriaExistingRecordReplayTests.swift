@@ -179,6 +179,7 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
                                            expectedQualifiedStandardRRSessionCount: Int,
                                            expectedLocallyQualifiedHRVSessionCount: Int,
                                            expectedMorningHRV: Int?,
+                                           expectedLimitedRecovery: Int? = nil,
                                            file: StaticString = #filePath,
                                            line: UInt = #line) throws {
         let sessions = try capturedOvernightSessions(endingYear: year, month: month, day: day)
@@ -216,7 +217,39 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
                           line: line)
         XCTAssertNil(result.morningMetric?.sleepDuration, file: file, line: line)
         XCTAssertEqual(result.morningMetric?.hrv, expectedMorningHRV, file: file, line: line)
-        XCTAssertNil(result.morningMetric?.recoveryPercent, file: file, line: line)
+        XCTAssertEqual(result.morningMetric?.recoveryPercent,
+                       expectedLimitedRecovery,
+                       file: file,
+                       line: line)
+        if expectedLimitedRecovery != nil {
+            XCTAssertEqual(result.morningMetric?.recoveryConfidence,
+                           Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
+                           "a day-one RHR-only score must remain visibly limited-confidence",
+                           file: file,
+                           line: line)
+            let summary = try XCTUnwrap(result.morningMetric?.recoverySummary,
+                                        file: file,
+                                        line: line)
+            XCTAssertFalse(summary.usesHRV,
+                           "RR outside a confirmed main sleep cannot influence Recovery",
+                           file: file,
+                           line: line)
+            XCTAssertTrue(summary.detail.contains("Limited confidence"), file: file, line: line)
+            XCTAssertTrue(summary.detail.contains("sleep and HRV unavailable"), file: file, line: line)
+            XCTAssertEqual(summary.contributors.first(where: { $0.kind == "restingHeartRate" })?.weight,
+                           0.20,
+                           "RHR must retain its normal model weight instead of being promoted to full certainty",
+                           file: file,
+                           line: line)
+            XCTAssertEqual(summary.contributors.first(where: { $0.kind == "hrv" })?.weight,
+                           0,
+                           file: file,
+                           line: line)
+            XCTAssertEqual(summary.contributors.first(where: { $0.kind == "sleep" })?.weight,
+                           0,
+                           file: file,
+                           line: line)
+        }
         XCTAssertEqual(result.baseline.hrvSampleCount, 0,
                        "qualified RR outside confirmed main sleep cannot advance the overnight HRV baseline",
                        file: file,
@@ -257,7 +290,7 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
         XCTAssertEqual(first.morningMetric, second.morningMetric)
     }
 
-    func testPulledConfirmedBoundaryAnchorsButRejectsUnqualifiedRecoveryAndHRV() throws {
+    func testPulledConfirmedBoundaryAnchorsAndShowsLimitedRecoveryWithoutUnqualifiedHRV() throws {
         let data = try Data(contentsOf: pulledSessionsURL)
         _ = try JSONDecoder().decode([SavedSession].self, from: data)
         let now = Date(timeIntervalSinceReferenceDate: 805_702_080 + 60 * 60)
@@ -278,11 +311,16 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
         XCTAssertEqual(result.morningMetric?.sleepEnd, sleep.end)
         XCTAssertNil(sleep.hrv, "legacy scalar HRV must be removed when raw qualified RR cannot reproduce it")
         XCTAssertNil(result.morningMetric?.hrv)
-        XCTAssertNil(result.morningMetric?.recoveryPercent)
+        XCTAssertNotNil(result.morningMetric?.recoveryPercent,
+                        "confirmed measured sleep should still produce an honest day-one recovery")
+        XCTAssertEqual(result.morningMetric?.recoveryConfidence,
+                       Metrics.RecoveryEstimate.Confidence.unverified.rawValue)
+        XCTAssertEqual(result.morningMetric?.recoverySummary?.usesHRV, false)
+        XCTAssertTrue(result.morningMetric?.recoverySummary?.detail.contains("HRV unavailable") == true)
         XCTAssertEqual(result.baseline.hrvSampleCount, 0)
     }
 
-    func testJuly8RealMotionValidatedCandidateAutoConfirmsAtExactRecordedWindow() throws {
+    func testJuly8IsolatedLegacyMotionFragmentCannotValidateWholeSleep() throws {
         let data = try Data(contentsOf: pulledSessionsURL)
         let recordedEnd = Date(timeIntervalSinceReferenceDate: 805_179_279.049116)
         let result = try AtriaExistingRecordReplay.run(
@@ -293,20 +331,11 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
             calendar: calendar
         )
 
-        let candidate = try XCTUnwrap(result.candidate)
-        let sleep = try XCTUnwrap(result.confirmedSleep)
+        XCTAssertNil(result.candidate)
+        XCTAssertNil(result.confirmedSleep)
         XCTAssertFalse(result.usedPersistedConfirmation)
-        XCTAssertTrue(candidate.motionEvidenceValidated)
-        XCTAssertEqual(candidate.motionEvidenceSource, "historical_gravity")
-        XCTAssertEqual(candidate.start.timeIntervalSinceReferenceDate, 805_152_491.340943,
-                       accuracy: 0.001)
-        XCTAssertEqual(candidate.end.timeIntervalSinceReferenceDate, 805_179_279,
-                       accuracy: 0.001)
-        XCTAssertEqual(sleep.start, candidate.start)
-        XCTAssertEqual(sleep.end, candidate.end)
-        XCTAssertTrue(sleep.motionValidated)
-        XCTAssertEqual(result.physiologicalCycle.boundaryKind, .mainSleep)
-        XCTAssertEqual(result.physiologicalCycle.anchorSleepID, sleep.id)
+        XCTAssertNotEqual(result.physiologicalCycle.boundaryKind, .mainSleep)
+        XCTAssertNil(result.physiologicalCycle.anchorSleepID)
     }
 
     func testRemovingRRDoesNotManufactureHRVOrRecoveryInput() throws {
@@ -361,7 +390,8 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
                                       expectedLegacyRRPointCount: 19_515,
                                       expectedQualifiedStandardRRSessionCount: 0,
                                       expectedLocallyQualifiedHRVSessionCount: 0,
-                                      expectedMorningHRV: nil)
+                                      expectedMorningHRV: nil,
+                                      expectedLimitedRecovery: 72)
     }
 
     func testJuly16CapturedNightDoesNotPromoteSparseQualifiedRRWithoutSleepEvidence() throws {
@@ -385,7 +415,8 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
                                       expectedLegacyRRPointCount: 0,
                                       expectedQualifiedStandardRRSessionCount: 9,
                                       expectedLocallyQualifiedHRVSessionCount: 2,
-                                      expectedMorningHRV: nil)
+                                      expectedMorningHRV: nil,
+                                      expectedLimitedRecovery: 63)
     }
 
     func testJuly18CapturedNightKeepsQualifiedHRVSeparateFromFragmentedWear() throws {
@@ -397,6 +428,7 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
                                       expectedLegacyRRPointCount: 0,
                                       expectedQualifiedStandardRRSessionCount: 5,
                                       expectedLocallyQualifiedHRVSessionCount: 1,
-                                      expectedMorningHRV: 74)
+                                      expectedMorningHRV: 74,
+                                      expectedLimitedRecovery: 65)
     }
 }

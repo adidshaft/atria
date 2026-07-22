@@ -29,6 +29,70 @@ final class AtriaTodayWorkoutZoneSummaryTests: XCTestCase {
         XCTAssertEqual(summary.histogram.map(\.minutes), [10, 5, 1])
     }
 
+    func testPostMidnightWorkoutRemainsInTodayUntilConfirmedWake() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Kolkata"))
+        let priorWake = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 7, day: 10, hour: 7
+        )))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 7, day: 11, hour: 2
+        )))
+        let afterMidnight = workout(id: "after-midnight",
+                                    start: now.addingTimeInterval(-3_600),
+                                    zones: ["aerobic": 600])
+        let main = confirmedSleep(id: "prior", start: priorWake.addingTimeInterval(-8 * 3_600), end: priorWake)
+
+        let summary = AtriaTodayWorkoutZoneSummary.make(workouts: [afterMidnight],
+                                                        confirmedSleeps: [main],
+                                                        now: now,
+                                                        calendar: calendar)
+
+        XCTAssertEqual(summary.workoutCount, 1)
+    }
+
+    func testConfirmedWakeStartsFreshWorkoutSummary() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Kolkata"))
+        let wake = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 7, day: 11, hour: 7
+        )))
+        let beforeWake = workout(id: "before-wake",
+                                 start: wake.addingTimeInterval(-5 * 3_600),
+                                 zones: ["aerobic": 600])
+        let main = confirmedSleep(id: "main", start: wake.addingTimeInterval(-8 * 3_600), end: wake)
+
+        let summary = AtriaTodayWorkoutZoneSummary.make(workouts: [beforeWake],
+                                                        confirmedSleeps: [main],
+                                                        now: wake.addingTimeInterval(600),
+                                                        calendar: calendar)
+
+        XCTAssertEqual(summary.workoutCount, 0)
+    }
+
+    private func confirmedSleep(id: String, start: Date, end: Date) -> UserConfirmedSleep {
+        UserConfirmedSleep(id: id,
+                           createdAt: end,
+                           start: start,
+                           end: end,
+                           source: "manual_sleep",
+                           confidence: "user",
+                           sessions: 1,
+                           samples: 100,
+                           avgHR: 52,
+                           peakHR: 60,
+                           restingHR: 48,
+                           hrv: 60,
+                           hrvWindowCount: 4,
+                           duration: end.timeIntervalSince(start),
+                           span: end.timeIntervalSince(start),
+                           reason: "test",
+                           motionSource: "test",
+                           motionValidated: true,
+                           stageSegments: nil,
+                           eventTimeZoneIdentifier: "Asia/Kolkata")
+    }
+
     private func workout(id: String,
                          start: Date,
                          zones: [String: TimeInterval]) -> UserConfirmedWorkout {

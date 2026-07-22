@@ -42,6 +42,7 @@ private let atriaHeartRateFreshness: TimeInterval = 90
 // workout updates.
 private let atriaStaticStepFreshness: TimeInterval = 90
 private let atriaBatteryFreshness: TimeInterval = 10 * 60
+private let atriaBatteryChargeFreshness: TimeInterval = 90
 // Cumulative day strain is a durable wake-to-wake aggregate, not a live HR
 // packet. Its value remains displayable when the strap stream pauses; this
 // clock only describes how recently Atria recomputed the aggregate. Active
@@ -99,7 +100,7 @@ private func atriaFreshBatteryChargeStatus(_ snapshot: AtriaWidgetSnapshot,
     guard status == "charging" || status == "full" else { return status }
     guard atriaFreshStaticSensorValue(true,
                                       capturedAt: snapshot.batteryChargeCapturedAt,
-                                      freshness: atriaBatteryFreshness,
+                                      freshness: atriaBatteryChargeFreshness,
                                       now: now) != nil else { return nil }
     return status
 }
@@ -127,6 +128,8 @@ struct AtriaWidgetSnapshot: Codable {
     let recoveryConfidence: String
     let recoveryDetail: String
     let strain: Double
+    /// Additive optional evidence qualifier in the schema-4 payload.
+    var strainDetail: String? = nil
     /// Cumulative day-strain computation time, not the live-HR packet clock.
     var strainCapturedAt: Date? = nil
     var strainCycleStart: Date? = nil
@@ -137,6 +140,8 @@ struct AtriaWidgetSnapshot: Codable {
     let maxHR: Int
     // Optional so schema-1 payloads still decode (missing keys -> nil).
     let sleepHours: Double?
+    /// Additive optional display-only sleep provenance in schema 4.
+    var sleepDetail: String? = nil
     let steps: Int?
     /// Optional for snapshots written before preliminary strap steps were
     /// exposed honestly in widgets.
@@ -197,7 +202,7 @@ struct AtriaWidgetProvider: TimelineProvider {
             (snapshot?.heartRateCapturedAt, atriaHeartRateFreshness),
             (snapshot?.stepsCapturedAt, atriaStaticStepFreshness),
             (batteryEvidenceAt, atriaBatteryFreshness),
-            (snapshot?.batteryChargeCapturedAt, atriaBatteryFreshness),
+            (snapshot?.batteryChargeCapturedAt, atriaBatteryChargeFreshness),
             (snapshot?.strainCapturedAt, atriaCumulativeDayStrainFreshness)
         ]
         for (capturedAt, freshness) in expirySources {
@@ -454,13 +459,18 @@ struct AtriaWidgetEntryView: View {
         Link(destination: metric.deepLinkURL) {
             widgetMetricTile(metric.title,
                              value: metric.value(entry.snapshot, now: entry.date),
+                             evidenceNote: metric.evidenceNote(entry.snapshot),
                              icon: metric.icon,
                              tint: metric.tint)
         }
         .accessibilityLabel("\(metric.title) \(metric.value(entry.snapshot, now: entry.date)). \(metric.statusText(entry.snapshot, now: entry.date))")
     }
 
-    private func widgetMetricTile(_ title: String, value: String, icon: String, tint: Color) -> some View {
+    private func widgetMetricTile(_ title: String,
+                                  value: String,
+                                  evidenceNote: String?,
+                                  icon: String,
+                                  tint: Color) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Label(title, systemImage: icon)
                 .font(.caption2.weight(.bold))
@@ -472,6 +482,13 @@ struct AtriaWidgetEntryView: View {
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.55)
+            if let evidenceNote {
+                Text(evidenceNote)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.68)
+            }
         }
         .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
         .padding(.vertical, 7)
@@ -628,15 +645,30 @@ struct AtriaWidgetEntryView: View {
     private var secondaryText: String {
         guard let snapshot = entry.snapshot else { return "Open app for live strap status" }
         if let recovery = snapshot.recoveryPercent {
-            return "Recovery \(recovery)% · \(snapshot.recoveryConfidence)"
+            return "Recovery \(recovery)% · \(recoveryEvidenceText(snapshot))"
         }
-        return "Recovery learning · \(snapshot.recoveryConfidence)"
+        return "Recovery learning · \(recoveryEvidenceText(snapshot))"
+    }
+
+    /// Keep the widget aligned with the in-app recovery card. A useful day-one
+    /// score must not lose its evidence disclaimer merely because WidgetKit is
+    /// rendering a compact surface; `unverified` alone does not tell the user
+    /// that HRV was excluded rather than silently treated as neutral.
+    private func recoveryEvidenceText(_ snapshot: AtriaWidgetSnapshot) -> String {
+        if snapshot.recoveryDetail.localizedCaseInsensitiveContains("HRV unavailable") {
+            return "Limited confidence · HRV unavailable"
+        }
+        return snapshot.recoveryConfidence
     }
 
     private var footerText: String {
         guard let snapshot = entry.snapshot else { return "Sleep learning" }
         if atriaSnapshotIsStale(snapshot, now: entry.date) {
             return "Stale · \(atriaSnapshotAgeMinutes(snapshot, now: entry.date) / 60)h old"
+        }
+        if let sleepDetail = snapshot.sleepDetail,
+           sleepDetail.localizedCaseInsensitiveContains("review") {
+            return "Sleep \(atriaFormattedSleepHours(snapshot.sleepHours)) · \(sleepDetail)"
         }
         return "Sleep \(atriaFormattedSleepHours(snapshot.sleepHours)) · RHR \(snapshot.restingHR.map(String.init) ?? "learning")"
     }
@@ -964,7 +996,7 @@ private func liveActivityChargeIsFresh(
           state.batteryChargeStatus == "charging",
           let capturedAt = state.batteryChargeCapturedAt else { return false }
     let age = now.timeIntervalSince(capturedAt)
-    return age >= -atriaStaticSensorFutureTolerance && age <= atriaBatteryFreshness
+    return age >= -atriaStaticSensorFutureTolerance && age <= atriaBatteryChargeFreshness
 }
 
 private func liveActivityBatteryText(
@@ -1667,7 +1699,10 @@ enum AtriaWidgetMetric: String, Identifiable {
             // This is accumulated day load, independent of the live-HR clock,
             // but it still belongs to one bounded physiological cycle.
             guard atriaCumulativeDayStrainIsCurrent(s, now: now) else { return "--" }
-            return String(format: "%.1f", max(0, s.strain))
+            let numeric = String(format: "%.1f", max(0, s.strain))
+            return s.strainDetail?.localizedCaseInsensitiveContains("partial") == true
+                ? "≥ \(numeric)"
+                : numeric
         case .hrv:
             return s.hrvRMSSD.map(String.init) ?? "--"
         case .bpm:
@@ -1732,10 +1767,16 @@ enum AtriaWidgetMetric: String, Identifiable {
             }
             let age = max(0, now.timeIntervalSince(capturedAt))
             if atriaCumulativeDayStrainIsCurrent(snapshot, now: now) {
-                return "Updated · \(atriaCaptureTimeText(capturedAt))"
+                return snapshot.strainDetail ?? "Updated · \(atriaCaptureTimeText(capturedAt))"
             }
             return "Day load expired · \(Int(age / 3_600))h old"
-        case .hrv, .sleep, .rhr:
+        case .sleep:
+            if let detail = snapshot.sleepDetail,
+               detail.localizedCaseInsensitiveContains("review") {
+                return detail
+            }
+            fallthrough
+        case .hrv, .rhr:
             let age = atriaSnapshotAgeMinutes(snapshot, now: now)
             if age < 1 { return "Updated now" }
             if age < 60 { return "Updated \(age)m ago" }
@@ -1743,6 +1784,22 @@ enum AtriaWidgetMetric: String, Identifiable {
                 return "Stale · \(age / 60)h ago"
             }
             return "Updated \(age / 60)h ago"
+        }
+    }
+
+    /// Compact aggregate-widget note. Only limitations are repeated under the
+    /// value; complete/current metrics keep the existing uncluttered tile.
+    func evidenceNote(_ snapshot: AtriaWidgetSnapshot?) -> String? {
+        guard let snapshot else { return nil }
+        switch self {
+        case .strain:
+            guard snapshot.strainDetail?.localizedCaseInsensitiveContains("partial") == true else { return nil }
+            return snapshot.strainDetail
+        case .sleep:
+            guard snapshot.sleepDetail?.localizedCaseInsensitiveContains("review") == true else { return nil }
+            return snapshot.sleepDetail
+        default:
+            return nil
         }
     }
 }

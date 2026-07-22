@@ -1,8 +1,8 @@
 import XCTest
 @testable import Atria
 
-/// Deterministic coverage for the 2026-07-08 "Stop the bleeding" perf fixes
-/// (docs/PERF_HANDOFF_2026-07-08.md). These exercise the shipped logic at
+/// Deterministic coverage for the 2026-07-08 performance fixes (the original
+/// point-in-time handoff remains in Git history). These exercise shipped logic at
 /// realistic volumes WITHOUT a live strap session — the crash/jank only
 /// manifest during continuous streaming, which unit tests can stand in for by
 /// driving the pure functions directly.
@@ -261,6 +261,48 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertTrue(source.contains("snapshotGeneration: snapshot.generation"))
     }
 
+    func testLaunchStepLedgerRestorePrecedesActiveJournalR10Boundary() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        let restoreStart = try XCTUnwrap(
+            source.range(of: "private func restoreActiveSessionJournalIfNeeded(reason: String)")
+        )
+        let restoreEnd = try XCTUnwrap(
+            source.range(of: "private func resumeActiveSessionRestoreAfterStrapStepLedger()",
+                         range: restoreStart.upperBound..<source.endIndex)
+        )
+        let restoreBody = String(source[restoreStart.lowerBound..<restoreEnd.lowerBound])
+        XCTAssertTrue(restoreBody.contains("guard !strapStepLedgerRestoreInFlight"),
+                      "journal recovery must not prepare an R10 boundary before the durable step prefix is seeded")
+
+        let ledgerStart = try XCTUnwrap(
+            source.range(of: "private func restoreStrapStepLedgerAtLaunch()")
+        )
+        let ledgerEnd = try XCTUnwrap(
+            source.range(of: "private func scheduleStrapStepLedgerCheckpoint(",
+                         range: ledgerStart.upperBound..<source.endIndex)
+        )
+        let ledgerBody = String(source[ledgerStart.lowerBound..<ledgerEnd.lowerBound])
+        let seed = try XCTUnwrap(ledgerBody.range(of: "await self.r10MotionPipeline.seed"))
+        let resume = try XCTUnwrap(
+            ledgerBody.range(of: "self.resumeActiveSessionRestoreAfterStrapStepLedger()",
+                             range: seed.upperBound..<ledgerBody.endIndex)
+        )
+        XCTAssertLessThan(seed.lowerBound, resume.lowerBound)
+        XCTAssertGreaterThanOrEqual(
+            ledgerBody.components(separatedBy: "resumeActiveSessionRestoreAfterStrapStepLedger()").count - 1,
+            2,
+            "both absent-ledger and successful-ledger completion must release deferred journal recovery"
+        )
+
+        XCTAssertTrue(source.contains(
+            "activeSessionRestoreInFlightGeneration != nil ||\n            strapStepLedgerRestoreInFlight"
+        ), "HR and realtime inputs must remain buffered across the launch ordering fence")
+    }
+
     func testSessionBoundarySettlesOldJournalWriterBeforeSuccessOrFailureOutcome() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceURL = testsDirectory.deletingLastPathComponent()
@@ -281,6 +323,43 @@ final class AtriaPerfFixesTests: XCTestCase {
                       "failed SavedSession persistence must re-arm the retained live journal")
         XCTAssertTrue(source.contains("self.activeJournalBoundaryFenceID == nil"),
                       "an old completion must not schedule another write through the boundary fence")
+    }
+
+    func testCommittedSessionBoundaryRestartsNewJournalAfterBufferedReplay() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let boundaryStart = try XCTUnwrap(source.range(of: "private func completeSessionBoundary("))
+        let boundaryEnd = try XCTUnwrap(source.range(
+            of: "private func waitForSessionInputBatchesToDrain(",
+            range: boundaryStart.upperBound..<source.endIndex
+        ))
+        let body = String(source[boundaryStart.lowerBound..<boundaryEnd.lowerBound])
+
+        let clearManagerFence = try XCTUnwrap(body.range(of: "r10SessionBoundaryID = nil"))
+        let replay = try XCTUnwrap(body.range(
+            of: "replayBufferedSessionInputs()",
+            range: clearManagerFence.upperBound..<body.endIndex
+        ))
+        let checkpoint = try XCTUnwrap(body.range(
+            of: #"\(persistenceReason)_post_boundary_replay"#,
+            range: replay.upperBound..<body.endIndex
+        ))
+        let committedLog = try XCTUnwrap(body.range(
+            of: "ATRIADBG session_boundary status=committed",
+            range: checkpoint.upperBound..<body.endIndex
+        ))
+
+        XCTAssertLessThan(clearManagerFence.lowerBound, replay.lowerBound)
+        XCTAssertLessThan(replay.lowerBound, checkpoint.lowerBound)
+        XCTAssertLessThan(checkpoint.lowerBound, committedLog.lowerBound)
+        XCTAssertTrue(body.contains("if !session.isEmpty"),
+                      "an empty new segment must not manufacture a journal")
+        let postReplay = String(body[replay.lowerBound..<committedLog.lowerBound])
+        XCTAssertTrue(postReplay.contains("persistActiveSessionJournalIfNeeded("))
+        XCTAssertTrue(postReplay.contains("force: true"),
+                      "the committed boundary must not leave restart durability to a later live callback")
     }
 
     func testLongWearSessionRollsAtRecordedCivilMidnight() {
@@ -1071,16 +1150,20 @@ final class AtriaPerfFixesTests: XCTestCase {
             reason: "checkpoint",
             hasCompletedDeferredSessionLoad: true
         ))
-        XCTAssertTrue(SessionStore.shouldReconcileSessionsBeforeLiveUpsert(
+        XCTAssertFalse(SessionStore.shouldReconcileSessionsBeforeLiveUpsert(
             reason: "checkpoint",
             hasCompletedDeferredSessionLoad: false
         ))
-        XCTAssertTrue(SessionStore.shouldReconcileSessionsBeforeLiveUpsert(
+        XCTAssertFalse(SessionStore.shouldReconcileSessionsBeforeLiveUpsert(
             reason: "add",
             hasCompletedDeferredSessionLoad: true
         ))
-        XCTAssertTrue(SessionStore.shouldReconcileSessionsBeforeLiveUpsert(
+        XCTAssertFalse(SessionStore.shouldReconcileSessionsBeforeLiveUpsert(
             reason: "fast_launch",
+            hasCompletedDeferredSessionLoad: true
+        ))
+        XCTAssertTrue(SessionStore.shouldReconcileSessionsBeforeLiveUpsert(
+            reason: "explicit_backup_restore",
             hasCompletedDeferredSessionLoad: true
         ))
     }
@@ -1799,6 +1882,48 @@ final class AtriaPerfFixesTests: XCTestCase {
             observedSeconds: 12 * 3600,
             dayElapsedSeconds: 8 * 3600
         ) ?? -1, 1.0, accuracy: 0.001)
+    }
+
+    func testRRQualityUsesNonPersistedContinuousBufferAcrossStorageRollover() {
+        let rollover = t0.addingTimeInterval(3 * 60 * 60)
+        let qualityWindowStart = rollover.addingTimeInterval(-300)
+
+        XCTAssertTrue(AtriaBLEManager.shouldUseContinuousRRBuffer(
+            continuityStart: qualityWindowStart,
+            firstBufferedBeat: qualityWindowStart.addingTimeInterval(-0.8)
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldUseContinuousRRBuffer(
+            continuityStart: qualityWindowStart,
+            firstBufferedBeat: rollover.addingTimeInterval(0.8)
+        ), "a new post-roll session buffer cannot claim coverage of the prior window")
+
+        // The session-local archive may be empty immediately after the exact 3h
+        // persistence rollover, while the non-persisted HRV buffer remains a
+        // continuous physiological timeline. Its measured gap remains ~1s, not
+        // the ~300s distance from the old quality-window start.
+        let continuousBeats = stride(from: -300.0, through: 1.0, by: 1.0).map {
+            rollover.addingTimeInterval($0)
+        }
+        let gap = AtriaBLEManager.maxRRBeatGap(
+            inOrderedBeatTimes: continuousBeats,
+            since: qualityWindowStart,
+            now: rollover.addingTimeInterval(1.2)
+        )
+        XCTAssertEqual(gap ?? -1, 1.0, accuracy: 0.001)
+    }
+
+    func testRRQualityTimelineIncludesLeadingAndTrailingSilence() {
+        let start = t0
+        let beats = [
+            start.addingTimeInterval(1.5),
+            start.addingTimeInterval(2.5),
+            start.addingTimeInterval(3.5),
+        ]
+        XCTAssertEqual(AtriaBLEManager.maxRRBeatGap(
+            inOrderedBeatTimes: beats,
+            since: start,
+            now: start.addingTimeInterval(5.5)
+        ) ?? -1, 2.0, accuracy: 0.001)
     }
 
 }

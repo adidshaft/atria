@@ -2,6 +2,301 @@ import SwiftUI
 import Combine
 import UniformTypeIdentifiers
 import UIKit
+import CoreMotion
+
+/// Makes workout control deadlines real rather than advisory. Cancelling a
+/// task that is awaiting a FIFO motion marker does not itself resume that
+/// await, so the old "sleep, then cancel" pattern could still hold Start/End
+/// until the detector queue eventually reached the marker. This main-actor
+/// gate resumes the UI at the deadline while the cancelled marker task remains
+/// responsible for releasing any boundary it eventually acquires.
+@MainActor
+private final class AtriaWorkoutMotionBoundaryDeadline {
+    private var continuation: CheckedContinuation<Date?, Never>?
+
+    func install(_ continuation: CheckedContinuation<Date?, Never>) {
+        precondition(self.continuation == nil)
+        self.continuation = continuation
+    }
+
+    func finish(_ value: Date?) {
+        guard let continuation else { return }
+        self.continuation = nil
+        continuation.resume(returning: value)
+    }
+}
+
+/// Phone-motion fallback for locomotion workouts. The strap remains the
+/// preferred source, but a walk must not lose its step total merely because
+/// R10 motion accounting is temporarily unavailable during a reconnect.
+@MainActor
+private final class AtriaWorkoutPhonePedometer {
+    static let shared = AtriaWorkoutPhonePedometer()
+    typealias StepEvidence = (count: Int, isEstimated: Bool, capturedAt: Date?)
+    private static let finishQueryTimeout: Duration = .milliseconds(750)
+
+    private let pedometer = CMPedometer()
+    private var startedAt: Date?
+    private var latestCount: Int?
+    private var latestCapturedAt: Date?
+    private var pendingFinish: (id: UUID,
+                                continuation: CheckedContinuation<StepEvidence?, Never>)?
+
+    func start(at date: Date) {
+        cancel()
+        guard CMPedometer.isStepCountingAvailable() else { return }
+        startedAt = date
+        latestCount = 0
+        latestCapturedAt = date
+        pedometer.startUpdates(from: date) { [weak self] data, error in
+            guard error == nil, let data else { return }
+            Task { @MainActor [weak self] in
+                guard let self, self.startedAt == date else { return }
+                self.latestCount = max(0, data.numberOfSteps.intValue)
+                self.latestCapturedAt = data.endDate
+            }
+        }
+    }
+
+    func finish(from workoutStart: Date,
+                at endedAt: Date) async -> StepEvidence? {
+        pedometer.stopUpdates()
+        let cached: StepEvidence? = latestCount.map {
+            (count: $0, isEstimated: true, capturedAt: min(latestCapturedAt ?? endedAt, endedAt))
+        }
+        guard CMPedometer.isStepCountingAvailable() else {
+            cancel()
+            return cached
+        }
+        let queried: StepEvidence? = await withCheckedContinuation { continuation in
+            let id = UUID()
+            pendingFinish = (id, continuation)
+            pedometer.queryPedometerData(from: workoutStart, to: endedAt) { [weak self] data, error in
+                let result: StepEvidence? = if error == nil, let data {
+                    (
+                        max(0, data.numberOfSteps.intValue),
+                        true,
+                        min(data.endDate, endedAt)
+                    )
+                } else {
+                    nil
+                }
+                Task { @MainActor [weak self] in
+                    self?.finishPendingQuery(id: id, result: result ?? cached)
+                }
+            }
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: Self.finishQueryTimeout)
+                self?.finishPendingQuery(id: id, result: cached)
+            }
+        }
+        cancel()
+        return queried ?? cached
+    }
+
+    func cancel() {
+        pedometer.stopUpdates()
+        if let pendingFinish {
+            self.pendingFinish = nil
+            pendingFinish.continuation.resume(returning: nil)
+        }
+        startedAt = nil
+        latestCount = nil
+        latestCapturedAt = nil
+    }
+
+    private func finishPendingQuery(id: UUID, result: StepEvidence?) {
+        guard let pendingFinish, pendingFinish.id == id else { return }
+        self.pendingFinish = nil
+        pendingFinish.continuation.resume(returning: result)
+    }
+}
+
+/// Full-interval phone steps are the reliable day authority while the strap's
+/// R10 transport remains preliminary. Values are cached so the first Home
+/// frame can render yesterday's result while today's query runs asynchronously.
+private let atriaPhoneDailyStepCacheLock = NSLock()
+
+@MainActor
+final class AtriaPhoneDailyStepStore {
+    static let shared = AtriaPhoneDailyStepStore()
+    private static let countKey = "atria.phoneSteps.today.count"
+    private static let dayKey = "atria.phoneSteps.today.day"
+    private static let capturedAtKey = "atria.phoneSteps.today.capturedAt"
+    private let pedometer = CMPedometer()
+    private var liveUpdateGeneration = UUID()
+    private var liveUpdateDay: Date?
+    private var lastPublishedLiveCount: Int?
+    private var lastPublishedLiveCapturedAt: Date?
+
+    nonisolated static func cached(now: Date = Date(), calendar: Calendar = .current) -> (count: Int, capturedAt: Date)? {
+        cached(day: calendar.startOfDay(for: now), calendar: calendar)
+    }
+
+    nonisolated static func cached(day: Date,
+                                   calendar: Calendar = .current) -> (count: Int, capturedAt: Date)? {
+        let defaults = UserDefaults.standard
+        let expected = calendar.startOfDay(for: day).timeIntervalSince1970
+        let suffix = String(Int(expected.rounded()))
+        let countKey = "atria.phoneSteps.day.\(suffix).count"
+        let capturedKey = "atria.phoneSteps.day.\(suffix).capturedAt"
+        if defaults.object(forKey: countKey) != nil {
+            let captured = defaults.double(forKey: capturedKey)
+            return (max(0, defaults.integer(forKey: countKey)),
+                    captured > 0 ? Date(timeIntervalSince1970: captured) : day)
+        }
+        // One-generation compatibility with the original today-only cache.
+        let legacyDay = defaults.double(forKey: "atria.phoneSteps.today.day")
+        guard abs(legacyDay - expected) < 1,
+              defaults.object(forKey: "atria.phoneSteps.today.count") != nil else { return nil }
+        let captured = defaults.double(forKey: "atria.phoneSteps.today.capturedAt")
+        return (max(0, defaults.integer(forKey: "atria.phoneSteps.today.count")),
+                captured > 0 ? Date(timeIntervalSince1970: captured) : day)
+    }
+
+    func refreshRecentDays(now: Date = Date(), completion: @escaping () -> Void) {
+        guard CMPedometer.isStepCountingAvailable() else { completion(); return }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: now)
+        let days = (0...2).compactMap { calendar.date(byAdding: .day, value: -$0, to: today) }
+        let group = DispatchGroup()
+        for dayStart in days {
+            group.enter()
+            let dayEnd = min(now, calendar.date(byAdding: .day, value: 1, to: dayStart) ?? now)
+            pedometer.queryPedometerData(from: dayStart, to: dayEnd) { data, error in
+                defer { group.leave() }
+                guard error == nil, let data else { return }
+                Self.persist(count: max(0, data.numberOfSteps.intValue),
+                             capturedAt: data.endDate,
+                             dayStart: dayStart,
+                             calendar: calendar)
+            }
+        }
+        group.notify(queue: .main) {
+            Task { @MainActor in
+                completion()
+            }
+        }
+    }
+
+    /// Keep the open civil-day phone coordinate moving while Home remains
+    /// active. A one-shot foreground query otherwise freezes at the count that
+    /// existed when the screen opened; a later walk can then keep rendering
+    /// that stale subtotal for hours even though CMPedometer has newer data.
+    ///
+    /// This is only a same-day cumulative fallback. It is never added to strap
+    /// steps (the presentation resolver chooses the larger overlapping total),
+    /// and stopping/restarting performs a full-day query so app suspension does
+    /// not create a hole in the phone coordinate.
+    func startLiveTodayUpdates(now: Date = Date(), onUpdate: @escaping () -> Void) {
+        guard CMPedometer.isStepCountingAvailable() else { return }
+        stopLiveTodayUpdates()
+        let calendar = Calendar.current
+        let dayStart = calendar.startOfDay(for: now)
+        let generation = UUID()
+        liveUpdateGeneration = generation
+        liveUpdateDay = dayStart
+        let cached = Self.cached(day: dayStart, calendar: calendar)
+        lastPublishedLiveCount = cached?.count
+        lastPublishedLiveCapturedAt = cached?.capturedAt
+        pedometer.startUpdates(from: dayStart) { [weak self] data, error in
+            guard error == nil, let data else { return }
+            let count = max(0, data.numberOfSteps.intValue)
+            let startedAt = data.startDate
+            let capturedAt = data.endDate
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.liveUpdateGeneration == generation,
+                      self.liveUpdateDay == dayStart else { return }
+                let callbackNow = Date()
+                guard calendar.isDate(dayStart, inSameDayAs: callbackNow) else {
+                    self.startLiveTodayUpdates(now: callbackNow, onUpdate: onUpdate)
+                    return
+                }
+                guard Self.liveTodayUpdateIsAdmissible(count: count,
+                                                       queryStartedAt: startedAt,
+                                                       capturedAt: capturedAt,
+                                                       dayStart: dayStart,
+                                                       now: callbackNow,
+                                                       calendar: calendar) else { return }
+                guard Self.persist(count: count,
+                                   capturedAt: capturedAt,
+                                   dayStart: dayStart,
+                                   calendar: calendar) else { return }
+                let countChanged = self.lastPublishedLiveCount != count
+                let captureAdvanced = self.lastPublishedLiveCapturedAt.map {
+                    capturedAt.timeIntervalSince($0) >= 30
+                } ?? true
+                guard countChanged || captureAdvanced else { return }
+                self.lastPublishedLiveCount = count
+                self.lastPublishedLiveCapturedAt = capturedAt
+                onUpdate()
+            }
+        }
+    }
+
+    func stopLiveTodayUpdates() {
+        liveUpdateGeneration = UUID()
+        liveUpdateDay = nil
+        lastPublishedLiveCount = nil
+        lastPublishedLiveCapturedAt = nil
+        pedometer.stopUpdates()
+    }
+
+    nonisolated static func liveTodayUpdateIsAdmissible(
+        count: Int,
+        queryStartedAt: Date,
+        capturedAt: Date,
+        dayStart: Date,
+        now: Date,
+        calendar: Calendar
+    ) -> Bool {
+        let expectedDay = calendar.startOfDay(for: dayStart)
+        return count >= 0
+            && abs(queryStartedAt.timeIntervalSince(expectedDay)) <= 5
+            && capturedAt >= expectedDay
+            && capturedAt <= now.addingTimeInterval(5)
+            && calendar.isDate(capturedAt, inSameDayAs: expectedDay)
+            && calendar.isDate(now, inSameDayAs: expectedDay)
+    }
+
+    nonisolated static func phoneDailyStepUpdateShouldReplace(
+        cachedCapturedAt: TimeInterval,
+        incomingCapturedAt: TimeInterval
+    ) -> Bool {
+        cachedCapturedAt <= 0 || incomingCapturedAt >= cachedCapturedAt
+    }
+
+    @discardableResult
+    private nonisolated static func persist(count: Int,
+                                            capturedAt: Date,
+                                            dayStart: Date,
+                                            calendar: Calendar) -> Bool {
+        atriaPhoneDailyStepCacheLock.lock()
+        defer { atriaPhoneDailyStepCacheLock.unlock() }
+        let normalizedDay = calendar.startOfDay(for: dayStart)
+        let suffix = String(Int(normalizedDay.timeIntervalSince1970.rounded()))
+        let defaults = UserDefaults.standard
+        let capturedKey = "atria.phoneSteps.day.\(suffix).capturedAt"
+        let priorCapturedAt = defaults.double(forKey: capturedKey)
+        guard phoneDailyStepUpdateShouldReplace(
+            cachedCapturedAt: priorCapturedAt,
+            incomingCapturedAt: capturedAt.timeIntervalSince1970
+        ) else {
+            return false
+        }
+        defaults.set(max(0, count), forKey: "atria.phoneSteps.day.\(suffix).count")
+        defaults.set(capturedAt.timeIntervalSince1970, forKey: capturedKey)
+        if calendar.isDate(normalizedDay, inSameDayAs: Date()) {
+            defaults.set(max(0, count), forKey: "atria.phoneSteps.today.count")
+            defaults.set(normalizedDay.timeIntervalSince1970,
+                         forKey: "atria.phoneSteps.today.day")
+            defaults.set(capturedAt.timeIntervalSince1970,
+                         forKey: "atria.phoneSteps.today.capturedAt")
+        }
+        return true
+    }
+}
 
 /// Settings presentation must not be owned by `AtriaHomeView`'s value state.
 /// Toggling a root `@State` rebuilt the complete Home/TabView hierarchy before
@@ -1095,6 +1390,7 @@ struct AtriaHomeView: View {
             connectionDiagnosisPromotionTask = nil
             mediaController.setRefreshLoopActive(false)
             motionActivityMonitor.stop()
+            AtriaPhoneDailyStepStore.shared.stopLiveTodayUpdates()
         }
     }
 
@@ -1639,6 +1935,7 @@ struct AtriaHomeView: View {
                                                                           maxHR: 190,
                                                                           batteryLevel: 85,
                                                                           recoveryPercent: 68,
+                                                                          recoveryIsReadyForAlert: true,
                                                                           strain: 12.4,
                                                                           strainTarget: 12.0,
                                                                           settings: AtriaHapticAlertSettings()))
@@ -1733,7 +2030,13 @@ struct AtriaHomeView: View {
     /// boundary. It deliberately bypasses the asynchronously published Home
     /// projection so a cold-start Start/Pause/Resume cannot observe a partial
     /// saved prefix.
-    private func currentWorkoutStepCoordinate(now: Date) -> AtriaWorkoutStepCoordinate? {
+    private func currentWorkoutStepCoordinate(
+        sourceVersion: AtriaWorkoutStepSourceVersion = .strapAccelerometerV1,
+        now: Date
+    ) -> AtriaWorkoutStepCoordinate? {
+        if sourceVersion == .strapGyroCadenceAmbulatoryV1 {
+            return ble.ambulatoryWorkoutGyroStepCoordinate(now: now)
+        }
         guard store.hasLoadedSavedSessions else { return nil }
         let saved = store.homeSavedAggregate(
             rest: store.baseline.restingInt ?? 60,
@@ -1760,6 +2063,29 @@ struct AtriaHomeView: View {
         )
     }
 
+    /// The user's tap is an interactive deadline, not a request to wait until
+    /// the detector FIFO becomes available. `synchronizeCurrentR10...` cleans
+    /// up a late boundary when cancelled; this wrapper independently resumes
+    /// the UI when the deadline wins.
+    private func synchronizedWorkoutMotionBoundary(
+        timeout: Duration = .milliseconds(250)
+    ) async -> Date? {
+        let deadline = AtriaWorkoutMotionBoundaryDeadline()
+        return await withCheckedContinuation { continuation in
+            deadline.install(continuation)
+            let synchronization = Task { @MainActor in
+                let value = await ble.synchronizeCurrentR10MotionAccounting()
+                deadline.finish(value)
+            }
+            Task { @MainActor in
+                try? await Task.sleep(for: timeout)
+                guard !Task.isCancelled else { return }
+                deadline.finish(nil)
+                synchronization.cancel()
+            }
+        }
+    }
+
     private func makeWorkoutSession(
         configuration: AtriaWorkoutStartConfiguration = .init()
     ) async -> AtriaWorkoutSession? {
@@ -1772,16 +2098,29 @@ struct AtriaHomeView: View {
             AtriaDebugLog("ATRIADBG live_workout_start status=deferred_session_hydration_unavailable")
             return nil
         }
-        guard await ble.synchronizeCurrentR10MotionAccounting() != nil else {
-            AtriaDebugLog("ATRIADBG live_workout_start status=step_boundary_unavailable")
-            return nil
+        // Starting the workout is more important than obtaining a perfectly
+        // current step boundary. A reconnect/history transition can hold the
+        // R10 boundary briefly; never let that make the Start button appear
+        // dead. The persisted workout starts at the tap and step evidence stays
+        // explicitly incomplete until fresh strap motion arrives.
+        let stepBoundaryAt = await synchronizedWorkoutMotionBoundary()
+        if stepBoundaryAt == nil {
+            AtriaDebugLog("ATRIADBG live_workout_start status=step_boundary_unavailable action=fail_open_start_at_tap_time")
         }
         // The workout clock and all-day step anchor begin together after the
         // saved prefix is authoritative. Otherwise steps arriving during a
         // slow cold-start decode would be consumed by the anchor while the
         // session misleadingly claimed an earlier start time.
         let start = Date()
-        guard let stepCoordinate = currentWorkoutStepCoordinate(now: start) else {
+        let gyroCoordinate = ble.ambulatoryWorkoutGyroStepCoordinate(now: start)
+        let stepSourceVersion = AtriaWorkoutStepSourceVersion.frozen(
+            for: configuration.activityType,
+            gyroCoordinate: gyroCoordinate
+        )
+        guard let stepCoordinate = currentWorkoutStepCoordinate(
+            sourceVersion: stepSourceVersion,
+            now: start
+        ) else {
             AtriaDebugLog("ATRIADBG live_workout_start status=step_coordinate_unavailable")
             return nil
         }
@@ -1793,6 +2132,7 @@ struct AtriaHomeView: View {
                                           lowerTargetZone: configuration.lowerTargetZone,
                                           upperTargetZone: configuration.upperTargetZone,
                                           activityType: configuration.activityType,
+                                          stepSourceVersion: stepSourceVersion,
                                           startingStepCount: stepCoordinate.cumulativeCount,
                                           startingDayStrain: model.heroStore.state.strain,
                                           calculationContext: calculationContext)
@@ -1807,6 +2147,7 @@ struct AtriaHomeView: View {
                                                lowerTargetZone: session.lowerTargetZone,
                                                upperTargetZone: session.upperTargetZone,
                                                startingStepCount: session.startingStepCount,
+                                               stepSourceVersion: session.stepSourceVersion,
                                                pausedStepCount: session.pausedStepCount,
                                                pauseStartedStepCount: session.pauseStartedStepCount,
                                                stepAccountingIsComplete: session.stepAccountingIsComplete,
@@ -1817,6 +2158,12 @@ struct AtriaHomeView: View {
             return nil
         }
         workoutPersistenceRevision = intent.persistenceRevision
+        switch session.activityType {
+        case .walking, .running, .hiking:
+            AtriaWorkoutPhonePedometer.shared.start(at: session.start)
+        default:
+            AtriaWorkoutPhonePedometer.shared.cancel()
+        }
         // Seal the pre-workout all-day segment at the persisted exact start so
         // no later save can relabel it. The commit runs off the start tap so a
         // large all-day journal cannot delay the workout UI; correctness does
@@ -1885,6 +2232,7 @@ struct AtriaHomeView: View {
                                   lowerTargetZone: session.lowerTargetZone,
                                   upperTargetZone: session.upperTargetZone,
                                   startingStepCount: session.startingStepCount,
+                                  stepSourceVersion: session.stepSourceVersion,
                                   pausedStepCount: session.pausedStepCount,
                                   pauseStartedStepCount: session.pauseStartedStepCount,
                                   stepAccountingIsComplete: session.stepAccountingIsComplete,
@@ -1928,7 +2276,10 @@ struct AtriaHomeView: View {
 
     private func setLiveWorkoutPaused(_ paused: Bool, at date: Date) {
         guard var session = workoutSession else { return }
-        let actionCoordinate = currentWorkoutStepCoordinate(now: date)
+        let actionCoordinate = currentWorkoutStepCoordinate(
+            sourceVersion: session.stepSourceVersion,
+            now: date
+        )
         let hasLiveActionCoordinate = actionCoordinate?.isLiveForCompletion == true
         if paused {
             guard liveWorkoutPauseStartedAt == nil else { return }
@@ -2053,6 +2404,7 @@ struct AtriaHomeView: View {
                                               lowerTargetZone: pending.lowerTargetZone,
                                               upperTargetZone: pending.upperTargetZone,
                                               activityType: pending.resolvedActivityType,
+                                              stepSourceVersion: pending.stepSourceVersion,
                                               startingStepCount: pending.startingStepCount,
                                               pausedStepCount: pending.pausedStepCount,
                                               pauseStartedStepCount: pending.pauseStartedStepCount,
@@ -2263,11 +2615,12 @@ struct AtriaHomeView: View {
 
     private var batteryWidgetUpdates: AnyPublisher<Void, Never> {
         if let cached = publisherCache.batteryWidgetUpdates { return cached }
-        let publisher = Publishers.Merge3(
-            ble.$batteryLevel.removeDuplicates().map { _ in () },
-            ble.$batteryChargeStatus.removeDuplicates().map { _ in () },
-            ble.$batteryProjectionRevision.removeDuplicates().map { _ in () }
-        )
+        let publisher = Publishers.MergeMany([
+            ble.$batteryLevel.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$batteryChargeStatus.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$batteryChargeLastVerifiedAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$batteryProjectionRevision.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
+        ])
         .map { _ in () }
         .debounce(for: .milliseconds(450), scheduler: RunLoop.main)
         .eraseToAnyPublisher()
@@ -2772,6 +3125,8 @@ struct AtriaHomeView: View {
             maxHR: model.profileStore.profile.maxHR,
             batteryLevel: model.coreLiveStore.state.batteryLevel,
             recoveryPercent: model.heroStore.state.recoveryEstimate.percent,
+            recoveryIsReadyForAlert: model.heroStore.state.recoveryEstimate.confidence == .validated
+                || model.heroStore.state.recoveryEstimate.confidence == .personalBaseline,
             strain: model.heroStore.state.strain,
             strainTarget: model.heroStore.state.guidance.target,
             settings: hapticSettings
@@ -2918,18 +3273,22 @@ struct AtriaHomeView: View {
     ) -> AtriaLiveWorkoutMetricProjection {
         guard let session else { return .empty }
         let core = model.coreLiveStore.state
-        let capturedAt = ble.liveStrapStepCountCapturedAt
+        let selectedCoordinate = currentWorkoutStepCoordinate(
+            sourceVersion: session.stepSourceVersion,
+            now: now
+        )
+        let capturedAt = selectedCoordinate?.capturedAt
         let isReconnecting = core.status != .connected
             || core.rangeLossBackfillPending
             || core.isInRecentLiveRecovery(now: now)
         let steps = AtriaLiveWorkoutStepProjection.make(
-            totalCount: core.strapStepResearchCount,
+            totalCount: selectedCoordinate?.cumulativeCount ?? 0,
             startingCount: session.startingStepCount,
             pausedCount: session.pausedStepCount,
             pauseStartedCount: session.pauseStartedStepCount,
             hasStepEvidence: session.stepAccountingIsComplete
-                && (core.hasStrapStepResearch || capturedAt != nil),
-            isValidated: core.strapStepsAreValidated,
+                && selectedCoordinate?.hasEvidence == true,
+            isValidated: selectedCoordinate?.isEstimated == false,
             capturedAt: capturedAt,
             isReconnecting: isReconnecting,
             now: now
@@ -2972,7 +3331,10 @@ struct AtriaHomeView: View {
         now: Date
     ) -> (count: Int, isEstimated: Bool, capturedAt: Date?)? {
         guard let session, session.stepAccountingIsComplete else { return nil }
-        guard let coordinate = currentWorkoutStepCoordinate(now: now),
+        guard let coordinate = currentWorkoutStepCoordinate(
+            sourceVersion: session.stepSourceVersion,
+            now: now
+        ),
               coordinate.isLiveForCompletion else { return nil }
         let openPauseSteps = session.pauseStartedStepCount.map {
             max(0, coordinate.cumulativeCount - $0)
@@ -3240,23 +3602,51 @@ struct AtriaHomeView: View {
                                    strengthSets: [LoggedSet],
                                    excludedIntervals: [ExcludedInterval]) async -> Bool {
         let label = "Live workout"
+        let endRequestedUptime = ProcessInfo.processInfo.systemUptime
         // Ending a workout must never trap the user: reconnect storms can
         // starve the R10 boundary marker indefinitely (2026-07-15 23:00 IST,
         // repeated dead End taps on the walk home). Wait briefly for the
         // exact marker, then fail open to the tap time — step accounting
         // simply stays marked incomplete rather than inventing counts.
-        let syncTask = Task { await ble.synchronizeCurrentR10MotionAccounting() }
-        let syncTimeout = Task.detached {
-            try? await Task.sleep(for: .seconds(3))
-            syncTask.cancel()
-        }
-        let motionBoundaryAt = await syncTask.value
-        syncTimeout.cancel()
+        let motionBoundaryAt = await synchronizedWorkoutMotionBoundary()
         if motionBoundaryAt == nil {
             AtriaDebugLog("ATRIADBG live_workout_end status=step_boundary_unavailable action=fail_open_end_at_tap_time")
         }
+        AtriaDebugLog("ATRIADBG live_workout_end_latency phase=motion_boundary elapsed_ms=%d",
+                      Int(((ProcessInfo.processInfo.systemUptime - endRequestedUptime) * 1_000).rounded()))
         let endedAt = max(endedAt, motionBoundaryAt ?? endedAt)
-        let stepEvidence = completedWorkoutStepEvidence(session: workoutSession, now: endedAt)
+        let strapStepEvidence = completedWorkoutStepEvidence(session: workoutSession, now: endedAt)
+        let phoneStepEvidence: (count: Int, isEstimated: Bool, capturedAt: Date?)?
+        switch activityType {
+        case .walking, .running, .hiking:
+            phoneStepEvidence = await AtriaWorkoutPhonePedometer.shared.finish(
+                from: startedAt,
+                at: endedAt
+            )
+        default:
+            AtriaWorkoutPhonePedometer.shared.cancel()
+            phoneStepEvidence = nil
+        }
+        AtriaDebugLog("ATRIADBG live_workout_end_latency phase=step_evidence elapsed_ms=%d",
+                      Int(((ProcessInfo.processInfo.systemUptime - endRequestedUptime) * 1_000).rounded()))
+        let strapEvidence: AtriaCompletedWorkoutStepEvidence? = strapStepEvidence.map {
+            AtriaCompletedWorkoutStepEvidence(count: $0.count,
+                                               isEstimated: $0.isEstimated,
+                                               capturedAt: $0.capturedAt)
+        }
+        let phoneEvidence: AtriaCompletedWorkoutStepEvidence? = phoneStepEvidence.map {
+            AtriaCompletedWorkoutStepEvidence(count: $0.count,
+                                               isEstimated: true,
+                                               capturedAt: $0.capturedAt)
+        }
+        // A gyro-anchored workout remains on that detector through End. The
+        // phone-on-bench fallback is intentionally excluded; selecting a new
+        // source here would invalidate pause anchors and restart continuity.
+        let stepEvidence = workoutSession?.stepSourceVersion
+            == .strapGyroCadenceAmbulatoryV1
+            ? strapEvidence
+            : AtriaCompletedWorkoutStepEvidence.select(strap: strapEvidence,
+                                                        phone: phoneEvidence)
         workoutPersistenceRevision &+= 1
         let finalIntent = AtriaPendingWorkoutIntent(
             startedAt: startedAt,
@@ -3270,6 +3660,7 @@ struct AtriaHomeView: View {
             lowerTargetZone: workoutSession?.lowerTargetZone,
             upperTargetZone: workoutSession?.upperTargetZone,
             startingStepCount: workoutSession?.startingStepCount ?? 0,
+            stepSourceVersion: workoutSession?.stepSourceVersion ?? .strapAccelerometerV1,
             pausedStepCount: workoutSession?.pausedStepCount ?? 0,
             pauseStartedStepCount: workoutSession?.pauseStartedStepCount,
             stepAccountingIsComplete: workoutSession?.stepAccountingIsComplete ?? false,
@@ -3290,6 +3681,8 @@ struct AtriaHomeView: View {
                           Int(startedAt.timeIntervalSince1970.rounded()))
             return false
         }
+        AtriaDebugLog("ATRIADBG live_workout_end_latency phase=terminal_intent_durable elapsed_ms=%d",
+                      Int(((ProcessInfo.processInfo.systemUptime - endRequestedUptime) * 1_000).rounded()))
         // The workout stopped successfully: release the strap motion ownership
         // lease and cancel its bounded activation tasks.
         ble.endWorkoutMotionLease(reason: "workout_end")
@@ -3303,6 +3696,8 @@ struct AtriaHomeView: View {
         liveWorkoutExcludedIntervals = []
         liveWorkoutPauseStartedAt = nil
         liveWorkoutMinimized = false
+        AtriaDebugLog("ATRIADBG live_workout_end_latency phase=ui_release_authorized elapsed_ms=%d",
+                      Int(((ProcessInfo.processInfo.systemUptime - endRequestedUptime) * 1_000).rounded()))
         Task { @MainActor in
             await Task.yield()
             try? await Task.sleep(for: .milliseconds(50))
@@ -3320,9 +3715,11 @@ struct AtriaHomeView: View {
             excludedIntervals: finalizedExcludedIntervals,
             notBefore: finalIntent.startedAt
         )
-        // The exact pending intent remains armed until the completion-aware
-        // flush below. Never block the main actor on persistenceQueue.sync.
-        store.requestPersistenceFlush(reason: "live_workout_end_checkpoint")
+        // checkpointCurrentSession already schedules this revision. Do not
+        // force an eager full-store write here: once that write starts it
+        // cannot be cancelled, and the completion-aware flush below would
+        // serialize the same large store again. The exact pending intent stays
+        // armed until that single awaited flush succeeds.
         let calculationContext = finalIntent.calculationContext
         let rest = calculationContext?.restingHeartRate
             ?? store.baseline.restingInt
@@ -3435,6 +3832,8 @@ struct AtriaHomeView: View {
               checkpointed ? 1 : 0,
               confirmed == nil ? 0 : 1,
               Int(startedAt.timeIntervalSince1970.rounded()))
+        AtriaDebugLog("ATRIADBG live_workout_end_latency phase=background_completion_published elapsed_ms=%d",
+                      Int(((ProcessInfo.processInfo.systemUptime - endRequestedUptime) * 1_000).rounded()))
         }
         return true
     }
@@ -3705,7 +4104,9 @@ struct AtriaHomeView: View {
         // publisher subscription existed. Schedule the sticky route before
         // optional diagnostics, but apply it only after the active first frame.
         schedulePendingNotificationDeepLinkDrain()
+        refreshPhoneDailySteps()
         if scenePhase == .active {
+            startLivePhoneDailySteps()
             motionActivityMonitor.start()
         }
         applyDebugUIScreenLaunchArgumentIfNeeded()
@@ -3813,6 +4214,7 @@ struct AtriaHomeView: View {
     private func handleHomeScenePhaseChange(_ phase: ScenePhase) {
         updateMediaRefreshLoop()
         guard phase == .active else {
+            AtriaPhoneDailyStepStore.shared.stopLiveTodayUpdates()
             foregroundResumeTask?.cancel()
             foregroundResumeTask = nil
             connectionDiagnosisPromotionTask?.cancel()
@@ -3855,6 +4257,8 @@ struct AtriaHomeView: View {
             return
         }
         schedulePendingNotificationDeepLinkDrain()
+        refreshPhoneDailySteps()
+        startLivePhoneDailySteps()
         foregroundResumeTask?.cancel()
         foregroundResumeTask = Task { @MainActor in
             // Let the returning scene draw first. Widget encoding, Keychain reads,
@@ -3906,6 +4310,21 @@ struct AtriaHomeView: View {
                 LocalNotificationScheduler.scheduleMorningJournalCheckIn(lastJournalActivity: lastJournalActivity)
             }
             foregroundResumeTask = nil
+        }
+    }
+
+    private func refreshPhoneDailySteps() {
+        AtriaPhoneDailyStepStore.shared.refreshRecentDays { [model, store] in
+            model.forceRefresh()
+            AtriaRecentWorkoutStepEnricher.shared.enrich(store: store)
+        }
+    }
+
+    private func startLivePhoneDailySteps() {
+        AtriaPhoneDailyStepStore.shared.startLiveTodayUpdates { [model] in
+            // The model rebuild is already coalesced; only a changed count or a
+            // 30-second evidence-clock renewal reaches this callback.
+            model.forceRefresh()
         }
     }
 
@@ -4280,7 +4699,10 @@ struct AtriaHomeView: View {
                                   strain: AtriaShareSnapshot.Ring(title: "Strain",
                                                                   value: strainValue,
                                                                   detail: hero.strainDetail,
-                                                                  tintHex: AtriaRingMetricProjection.achievementTintHex(fill: strainProgress),
+                                                                  tintHex: AtriaRingMetricProjection.strainTintHex(
+                                                                    targetProgress: strainProgress,
+                                                                    actualFill: strainFill
+                                                                  ),
                                                                   fill: strainFill,
                                                                   stateTintHex: strainZone.map { AtriaRingMetricProjection.zoneTintHex($0.level) },
                                                                   targetFraction: strainIsPending ? nil : AtriaRingMetricProjection.strainTargetFraction(hero.guidance.target)),
@@ -7313,10 +7735,11 @@ private struct AtriaStandByMetric: View {
 @MainActor
 final class AtriaHomeModel {
     nonisolated static let liveHeartRateFreshnessInterval: TimeInterval = 6
-    /// The strap's CRC-validated power event normally arrives about every eight
-    /// minutes. Retain that explicit proof through one event interval, matching
-    /// the BLE truth gate, without treating a rising percentage as power state.
-    nonisolated static let freshChargerEvidenceInterval: TimeInterval = 10 * 60
+    /// Charging is a short explicit-evidence lease, not a percentage trend.
+    /// The strap can keep reporting rising SOC after physical removal, so the
+    /// top-left bolt disappears within 90 seconds unless another accepted
+    /// powered-state packet renews it.
+    nonisolated static let freshChargerEvidenceInterval: TimeInterval = 90
 
     struct BatteryChargeProjection: Equatable {
         let status: AtriaBLEManager.BatteryChargeStatus
@@ -7343,15 +7766,12 @@ final class AtriaHomeModel {
             return BatteryChargeProjection(status: liveStatus, isCharging: false)
         }
 
-        let hasFreshPersistedChargerEvent = persistedStatus == .charging
-            && persistedAge >= 0
-            && persistedAge <= freshnessInterval
-        if !batteryRecentlyDropping,
-           liveStatus == .levelOnly,
-           !liveIsCharging,
-           hasFreshPersistedChargerEvent {
-            return BatteryChargeProjection(status: .charging, isCharging: true)
-        }
+        // Persisted charger state cannot outlive the live connection. Both
+        // decoded powered sources can be latched across physical removal, so a
+        // reconnect/unknown live state must never resurrect an old bolt.
+        _ = persistedStatus
+        _ = persistedAge
+        _ = freshnessInterval
 
         // A status/flag mismatch is not charger evidence. Fail closed until a
         // fresh explicit event arrives; percentage movement is intentionally
@@ -7360,6 +7780,29 @@ final class AtriaHomeModel {
             return BatteryChargeProjection(status: .levelOnly, isCharging: false)
         }
         return BatteryChargeProjection(status: liveStatus, isCharging: false)
+    }
+
+    /// Selects the evidence clock that authorizes a powered presentation.
+    /// Same-state charger events publish a new live timestamp even when the
+    /// status enum itself does not change. Persisted proof is a reconnect-only
+    /// fallback and is bounded by the same freshness window.
+    nonisolated static func resolvedBatteryChargeVerifiedAt(
+        projection: BatteryChargeProjection,
+        liveVerifiedAt: Date?,
+        persistedStatus: AtriaBLEManager.BatteryChargeStatus,
+        persistedAge: TimeInterval,
+        now: Date,
+        freshnessInterval: TimeInterval = freshChargerEvidenceInterval
+    ) -> Date? {
+        guard projection.status == .charging, projection.isCharging else { return nil }
+        if let liveVerifiedAt {
+            let liveAge = now.timeIntervalSince(liveVerifiedAt)
+            if liveAge >= 0, liveAge <= freshnessInterval { return liveVerifiedAt }
+        }
+        guard persistedStatus == .charging,
+              persistedAge >= 0,
+              persistedAge <= freshnessInterval else { return nil }
+        return now.addingTimeInterval(-persistedAge)
     }
 
     struct StatusState: Equatable {
@@ -7394,6 +7837,7 @@ final class AtriaHomeModel {
         var liveActiveCalories: Double?
         var strapStepResearchCount: Int
         var strapStepResearchState: String
+        var dailyStepPresentation: AtriaDailyStepPresentation
         var officialAppCoexistenceRisk: AtriaBLEManager.OfficialAppCoexistenceRisk
         var lastScanRequestedAt: Date?
         var lastScanMatchAt: Date?
@@ -7551,10 +7995,9 @@ final class AtriaHomeModel {
             WidgetSnapshotPublisher.strapStepsAreValidated(state: strapStepResearchState)
         }
         var strapStepResearchText: String {
-            guard strapStepResearchCount > 0 else { return "--" }
-            return strapStepsAreValidated ? "\(strapStepResearchCount)" : "~\(strapStepResearchCount)"
+            dailyStepPresentation.valueText
         }
-        var hasStrapStepResearch: Bool { strapStepResearchCount > 0 }
+        var hasStrapStepResearch: Bool { dailyStepPresentation.count != nil }
         var isLowBatteryBroadcastShutoff: Bool { strapStreamState == .lowBatteryShutoff }
         var isLowBatteryLiveLimited: Bool {
             strapStreamState == .lowBatteryShutoff || strapStreamState == .lowBatteryReducedDetail
@@ -7725,6 +8168,12 @@ final class AtriaHomeModel {
         }
 
         var recoveryDetail: String {
+            if recoveryEstimate.confidence == .unverified,
+               recoveryEstimate.detail.localizedCaseInsensitiveContains("HRV unavailable") {
+                return recoveryLiftedAfterNap
+                    ? "Limited confidence · HRV unavailable · ↑ after nap"
+                    : "Limited confidence · HRV unavailable"
+            }
             let base = recoveryIsProvisional
                 ? "\(recoveryEstimate.confidence.rawValue) · provisional"
                 : recoveryEstimate.confidence.rawValue
@@ -7732,7 +8181,14 @@ final class AtriaHomeModel {
         }
 
         var strainValue: String {
-            String(format: "%.1f", strain)
+            guard !strainConfidence.localizedCaseInsensitiveContains("learning"),
+                  !strainConfidence.localizedCaseInsensitiveContains("standby") else {
+                return "Learning"
+            }
+            let numeric = String(format: "%.1f", strain)
+            return strainConfidence.localizedCaseInsensitiveContains("partial")
+                ? "≥ \(numeric)"
+                : numeric
         }
 
         var strainDetail: String {
@@ -8178,7 +8634,9 @@ final class AtriaHomeModel {
                                         isBluetoothReady: ble.isBluetoothReady)
         let initialCoreLive = Self.makeCoreLiveState(ble: ble,
                                                      liveSessionDerived: initialLiveSessionDerived,
-                                                     savedAggregate: self.savedAggregate)
+                                                     savedAggregate: self.savedAggregate,
+                                                     canonicalStepDays: store.historySnapshot
+                                                        .verifiedHistoricalStepEvidenceDays)
         let initialRRSamples = ble.recentBreathworkRRSamples()
         let initialHeroPulse = Self.makeHeroPulseState(ble: ble,
                                                        rest: initialLiveSessionDerived.rest,
@@ -8334,6 +8792,7 @@ final class AtriaHomeModel {
             ble.$hasContact.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$batteryLevel.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$batteryChargeStatus.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$batteryChargeLastVerifiedAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$batteryRecentlyDropping.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$batteryReadingIsRecentBaseline.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$batteryProjectionRevision.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
@@ -8342,6 +8801,7 @@ final class AtriaHomeModel {
             ble.$sessionSampleCount.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$liveStrapStepResearchCount.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$liveStrapStepResearchState.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$liveStrapStepCountCapturedAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$officialAppCoexistenceRisk.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$lastScanRequestedAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$lastScanMatchAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
@@ -8469,12 +8929,22 @@ final class AtriaHomeModel {
             }
             .store(in: &cancellables)
 
+        store.$historySnapshot
+            .map { _ in () }
+            .sink { [weak self] _ in self?.coreRefreshSubject.send(()) }
+            .store(in: &cancellables)
+
         Publishers.Merge(
             store.$sleepHistorySnapshot.map { _ in () }.eraseToAnyPublisher(),
             store.$pendingSleepReviewNightForUI.map { _ in () }.eraseToAnyPublisher()
         )
             .sink { [weak self] _ in
                 self?.requestActivityProjectionRefresh()
+                // A newly published real sleep review can unlock a deliberately
+                // unverified presentation-only Recovery before confirmation.
+                // Refresh the hero immediately; the canonical/frozen Recovery
+                // pipeline remains untouched inside SessionStore.
+                self?.heroRefreshSubject.send(())
             }
             .store(in: &cancellables)
 
@@ -8572,7 +9042,9 @@ final class AtriaHomeModel {
         refreshLiveSessionDerivedIfNeeded()
         let next = Self.makeCoreLiveState(ble: ble,
                                           liveSessionDerived: liveSessionDerived,
-                                          savedAggregate: savedAggregate)
+                                          savedAggregate: savedAggregate,
+                                          canonicalStepDays: store.historySnapshot
+                                            .verifiedHistoricalStepEvidenceDays)
         guard next != coreLiveStore.state else { return }
         coreLiveStore.state = next
     }
@@ -9024,7 +9496,8 @@ final class AtriaHomeModel {
 
     private static func makeCoreLiveState(ble: AtriaBLEManager,
                                           liveSessionDerived: LiveSessionDerived,
-                                          savedAggregate: SavedAggregate) -> CoreLiveState {
+                                          savedAggregate: SavedAggregate,
+                                          canonicalStepDays: [AtriaHistoricalDailyConsumerProjection.StepDay]) -> CoreLiveState {
         let deviceName = ble.resolvedDeviceName
         let displayableBatteryLevel = ble.displayableBatteryLevel()
         let batteryRecentlyDropping = displayableBatteryLevel != nil && ble.batteryRecentlyDropping
@@ -9043,9 +9516,13 @@ final class AtriaHomeModel {
                 persistedStatus: persistedBattery.chargeStatus,
                 persistedAge: persistedBattery.chargeAge
             )
-            batteryChargeLastVerifiedAt = persistedBattery.chargeAge >= 0
-                ? now.addingTimeInterval(-persistedBattery.chargeAge)
-                : nil
+            batteryChargeLastVerifiedAt = resolvedBatteryChargeVerifiedAt(
+                projection: batteryChargeProjection,
+                liveVerifiedAt: ble.batteryChargeLastVerifiedAt,
+                persistedStatus: persistedBattery.chargeStatus,
+                persistedAge: persistedBattery.chargeAge,
+                now: now
+            )
         } else {
             batteryChargeProjection = BatteryChargeProjection(status: .levelOnly,
                                                                isCharging: false)
@@ -9056,6 +9533,16 @@ final class AtriaHomeModel {
             savedActiveSession: savedAggregate.savedActiveSessionStrapSteps,
             savedActiveSessionTotal: savedAggregate.savedActiveSessionTotalStrapSteps,
             liveActiveSession: ble.liveStrapStepResearchCount
+        )
+        let dailyStepPresentation = AtriaDailyStepPresentation.resolve(
+            day: Date(),
+            now: Date(),
+            liveCount: strapStepsToday,
+            liveValidationState: ble.liveStrapStepResearchState,
+            liveCapturedAt: ble.liveStrapStepCountCapturedAt,
+            phoneCount: AtriaPhoneDailyStepStore.cached()?.count,
+            phoneCapturedAt: AtriaPhoneDailyStepStore.cached()?.capturedAt,
+            canonicalDays: canonicalStepDays
         )
         let activeCaloriesToday = SessionStore.mergedTodayActiveCalories(
             savedToday: savedAggregate.savedTodayActiveCalories,
@@ -9084,6 +9571,7 @@ final class AtriaHomeModel {
                              liveActiveCalories: activeCaloriesToday,
                              strapStepResearchCount: strapStepsToday,
                              strapStepResearchState: ble.liveStrapStepResearchState,
+                             dailyStepPresentation: dailyStepPresentation,
                              officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk,
                              lastScanRequestedAt: ble.lastScanRequestedAt,
                              lastScanMatchAt: ble.lastScanMatchAt,
@@ -9207,6 +9695,16 @@ final class AtriaHomeModel {
                                    officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk)
     }
 
+    /// Durable coaching targets require canonical Recovery authority. Pending
+    /// sleep review scores are intentionally `.unverified` and stay visual-only.
+    nonisolated static func recoveryAuthorizedForStrainTarget(
+        _ estimate: Metrics.RecoveryEstimate
+    ) -> Int? {
+        guard estimate.confidence == .personalBaseline
+                || estimate.confidence == .validated else { return nil }
+        return estimate.percent
+    }
+
     private static func makeHeroSnapshot(ble: AtriaBLEManager,
                                          store: SessionStore,
                                          live: CoreLiveState,
@@ -9237,11 +9735,12 @@ final class AtriaHomeModel {
         // SessionStore owns the wake-to-wake recovery projection. Frozen days
         // never evaluate Recovery v2; a provisional input set is memoized for a
         // bounded four-hour cadence shared with widgets and notifications.
-        let recovery = store.recoveryProjection(
+        let recovery = store.recoveryProjectionForPresentation(
             now: now,
             calendar: calendar,
             initialFallbackHRVSnapshot: ble.recoveryHRVSnapshot,
-            liveRestingHeartRate: ble.restingHR
+            liveRestingHeartRate: ble.restingHR,
+            pendingSleepReview: store.pendingSleepReviewNightForUI
         )
         let recoveryIsProvisional = sleepRecoveryIsProvisional
             || recovery.confidence == .unverified
@@ -9276,10 +9775,19 @@ final class AtriaHomeModel {
             || storedRecovery != nil
             || (latestSleep.map { ($0.end ?? $0.day) == physiologicalCycle.start } == true)
         let loadIsPrepared = store.hasLoadedSavedSessions && store.trainingLoadSummaryIsPrepared
-        let frozenTarget = AtriaDailyStrainTargetStore.resolve(recovery: recovery.percent,
+        // Pending-review Recovery is display evidence only. Only canonical
+        // personal-baseline/validated authority may mint or replace the durable
+        // daily strain target; visual guidance below may still use the clearly
+        // labelled pending estimate.
+        let strainTargetRecovery = recoveryAuthorizedForStrainTarget(recovery)
+        let frozenTarget = AtriaDailyStrainTargetStore.resolve(recovery: strainTargetRecovery,
                                                                load: load,
-                                                               recoveryIsAttributedToCurrentDay: recoveryIsAttributedToCurrentDay,
+                                                               recoveryIsAttributedToCurrentDay: recoveryIsAttributedToCurrentDay
+                                                                   && strainTargetRecovery != nil,
                                                                loadIsPrepared: loadIsPrepared,
+                                                               mutationAuthority: strainTargetRecovery == nil
+                                                                   ? .preserveExisting
+                                                                   : .canonical,
                                                                cycleStart: physiologicalCycle.start,
                                                                now: now,
                                                                calendar: calendar)
@@ -9358,15 +9866,29 @@ final class AtriaHomeModel {
                                                source: "sleep_window",
                                                confirmed: false,
                                                stageSegments: [])
-        let recovery = Metrics.recoveryV2(hrvSnapshot: nil,
-                                          fallbackRMSSD: night.hrv,
-                                          restingNow: night.restingHR,
-                                          baseline: baseline,
-                                          hrvReferenceValidated: false,
-                                          sleepEfficiency: night.sleepEfficiency,
-                                          sleepDurationHours: night.durationHours,
-                                          respiratoryRate: night.respiratoryRate,
-                                          respiratoryBaseline: nil)
+        let recovery = SessionStore.presentationRecoveryEstimate(
+            authoritative: Metrics.RecoveryEstimate(
+                percent: nil,
+                confidence: .learning,
+                usesHRV: false,
+                detail: "learning: need saved sleep",
+                contributors: []
+            ),
+            hasConfirmedMainSleep: false,
+            hasFrozenRecovery: false,
+            pendingSleepReview: night,
+            baseline: baseline,
+            respiratoryBaseline: nil,
+            now: end.addingTimeInterval(60),
+            physiologicalCycle: AtriaPhysiologicalCycle(
+                start: Calendar.current.date(bySettingHour: 6, minute: 0, second: 0, of: end)
+                    ?? Calendar.current.startOfDay(for: end),
+                boundaryKind: .initialFallback,
+                anchorSleepID: nil,
+                expectedInterval: AtriaPhysiologicalCycle.defaultInterval
+            ),
+            calendar: .current
+        )
         let strain = 4.2
         let guidance = Coach.guide(recovery: recovery, strain: strain, load: .learning)
         return HeroSnapshot(recoveryEstimate: recovery,
@@ -10173,6 +10695,7 @@ struct AtriaTopStatusProjectionInput: Equatable {
 struct AtriaHeaderBatterySnapshot: Equatable {
     enum PowerState: Equatable {
         case none
+        case unknown
         case charging
         case full
     }
@@ -10201,14 +10724,17 @@ struct AtriaHeaderBatterySnapshot: Equatable {
         }
 
         level = rawLevel
-        if showsPowered && chargeStatus == .charging {
+        switch chargeStatus {
+        case .charging where showsPowered:
             powerState = .charging
-        } else if chargeStatus == .full {
+        case .full:
             powerState = .full
-        } else {
-            // A status/flag mismatch is not charger evidence. The header fails
-            // closed rather than briefly showing a false bolt.
+        case .notCharging:
             powerState = .none
+        case .levelOnly, .charging:
+            // A status/flag mismatch is not charger evidence. Preserve unknown
+            // separately from an explicit not-charging event.
+            powerState = .unknown
         }
         self.isRecentBaseline = isRecentBaseline
         self.verifiedAt = verifiedAt
@@ -10216,10 +10742,11 @@ struct AtriaHeaderBatterySnapshot: Equatable {
     }
 
     func powerState(at now: Date) -> PowerState {
-        guard powerState == .charging, let chargeVerifiedAt else { return powerState }
+        guard powerState == .charging else { return powerState }
+        guard let chargeVerifiedAt else { return .unknown }
         let age = now.timeIntervalSince(chargeVerifiedAt)
         return age >= 0 && age <= AtriaHomeModel.freshChargerEvidenceInterval
-            ? .charging : .none
+            ? .charging : .unknown
     }
 }
 
@@ -10370,6 +10897,22 @@ enum AtriaTopStatusProjection {
                     label = "\(batteryLevel)% · Full"
                     accessibilityLabel = "\(batteryLevel)%, Full"
                     tone = .green
+                } else if currentPowerState == .unknown {
+                    accessibilityLabel = "\(batteryLevel)%, charger status unavailable"
+                    if batteryLevel <= 20 {
+                        label = "\(batteryLevel)% · Low"
+                        tone = .orange
+                    } else if input.battery.isRecentBaseline {
+                        label = "\(batteryLevel)% · \(batteryRecencyText(verifiedAt: input.battery.verifiedAt, now: now))"
+                        tone = .cyan
+                    } else {
+                        // Unknown charger evidence must be silent in the compact
+                        // pill. The level itself is verified; a question mark
+                        // makes that reading look uncertain and gives an
+                        // internal fail-closed state user-facing prominence.
+                        label = "\(batteryLevel)%"
+                        tone = .cyan
+                    }
                 } else if batteryLevel <= 20 {
                     label = "\(batteryLevel)% · Low"
                     tone = .orange

@@ -163,7 +163,14 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
             range: observerStart.upperBound..<sessions.endIndex))
         let observer = sessions[observerStart.lowerBound..<observerEnd.lowerBound]
         XCTAssertFalse(observer.contains("invalidateSleepReviewCache"))
-        XCTAssertTrue(observer.contains("scheduleConfirmedWorkoutArchiveRehydration"))
+        XCTAssertTrue(observer.contains("requestRecoveredDataRecomputation"))
+        let recoveredRequestStart = try XCTUnwrap(sessions.range(of:
+            "private func requestRecoveredDataRecomputation"))
+        let recoveredRequestEnd = try XCTUnwrap(sessions.range(of:
+            "private func beginRecoveredDataMutationTransaction",
+            range: recoveredRequestStart.upperBound..<sessions.endIndex))
+        let recoveredRequest = sessions[recoveredRequestStart.lowerBound..<recoveredRequestEnd.lowerBound]
+        XCTAssertTrue(recoveredRequest.contains("scheduleConfirmedWorkoutArchiveRehydration"))
         XCTAssertTrue(sessions.contains(
             "@Published private(set) var historicalArchiveStatus = HistoricalArchiveStatus.empty"
         ))
@@ -181,6 +188,92 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
                                                                calendar: calendar)
 
         XCTAssertEqual(result, expected)
+    }
+
+    func testGrowingResidentJournalAggregateReplacesFirstWakeSnapshot() throws {
+        let staleStart = date(day: 10, hour: 3).addingTimeInterval(16 * 60)
+        let staleEnd = date(day: 10, hour: 9).addingTimeInterval(15 * 60)
+        let stale = SleepHistorySnapshot.Night(
+            id: "first-wake-snapshot",
+            day: calendar.startOfDay(for: staleEnd),
+            start: staleStart,
+            end: staleEnd,
+            duration: staleEnd.timeIntervalSince(staleStart),
+            restingHR: 58,
+            hrv: nil,
+            respiratoryRate: nil,
+            sleepEfficiency: 1,
+            confidence: "review_needed",
+            source: "sleep_window",
+            confirmed: false,
+            stageSegments: []
+        )
+        let snapshot = SleepHistorySnapshot(nights: [stale],
+                                            confirmedCount: 0,
+                                            candidateCount: 1)
+        let firstStart = date(day: 10, hour: 6).addingTimeInterval(55 * 60)
+        let rollover = date(day: 10, hour: 9).addingTimeInterval(55 * 60)
+        let finalEnd = date(day: 10, hour: 12).addingTimeInterval(15 * 60)
+        func session(start: Date, end: Date, briefWakeAt: Date? = nil) -> SavedSession {
+            let duration = end.timeIntervalSince(start)
+            let points = stride(from: 0.0, through: duration, by: 60).map { offset in
+                let date = start.addingTimeInterval(offset)
+                let isBriefWake = briefWakeAt.map {
+                    date >= $0 && date < $0.addingTimeInterval(5 * 60)
+                } ?? false
+                return SavedSession.Point(t: offset, bpm: isBriefWake ? 88 : 58)
+            }
+            return SavedSession(id: UUID(),
+                                start: start,
+                                end: end,
+                                label: "Resident all-day journal",
+                                points: points)
+        }
+        let beforeRollover = session(start: firstStart, end: rollover)
+        let activeJournal = session(start: rollover.addingTimeInterval(1),
+                                    end: finalEnd,
+                                    briefWakeAt: date(day: 10, hour: 10))
+
+        let result = try XCTUnwrap(SessionStore.makeSleepReviewNightForCache(
+            snapshot: snapshot,
+            canonicalSessions: [beforeRollover, activeJournal],
+            confirmedSleeps: [],
+            rest: 59,
+            maxHR: 190,
+            calendar: calendar
+        ))
+
+        XCTAssertEqual(result.start, firstStart)
+        XCTAssertEqual(result.end, finalEnd)
+        XCTAssertEqual(result.source, "aggregate_sleep")
+        XCTAssertFalse(result.confirmed,
+                       "resident-journal growth must remain review-only without validated motion")
+    }
+
+    func testGrowingReviewDoesNotReplaceWithUnrelatedSameDayEpisode() {
+        let current = reviewNight(id: "morning-sleep")
+        let laterStart = try! XCTUnwrap(current.end).addingTimeInterval(3 * 60 * 60)
+        let unrelated = SleepHistorySnapshot.Night(
+            id: "afternoon-nap",
+            day: current.day,
+            start: laterStart,
+            end: laterStart.addingTimeInterval(90 * 60),
+            duration: 90 * 60,
+            restingHR: 55,
+            hrv: nil,
+            respiratoryRate: nil,
+            sleepEfficiency: 1,
+            confidence: "review_needed",
+            source: "nap_candidate",
+            confirmed: false,
+            stageSegments: []
+        )
+
+        XCTAssertNil(SessionStore.preferredGrowingSleepReview(
+            replacing: current,
+            with: [unrelated],
+            calendar: calendar
+        ))
     }
 
     func testFragmentedSubThreeHourHROnlySnapshotDoesNotClaimSleep() {
@@ -286,6 +379,28 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
             in: [session],
             confirmedSleeps: [manual],
             rest: 60,
+            calendar: calendar
+        ))
+    }
+
+    func testPhysiologicalHRFallbackDoesNotSurfaceDaytimeFalseNap() {
+        let start = date(day: 10, hour: 14)
+        let duration: TimeInterval = 60 * 60
+        // Mirrors the physical false-positive shape: abundant low-HR samples
+        // with a brief active-wear excursion, but no motion/stillness proof.
+        var points = stride(from: 0.0, to: duration, by: 60.0).map {
+            SavedSession.Point(t: $0, bpm: 62)
+        }
+        points[points.count / 2] = SavedSession.Point(t: duration / 2, bpm: 105)
+        let activeWear = SavedSession(id: UUID(),
+                                      start: start,
+                                      end: start.addingTimeInterval(duration),
+                                      label: "Active daytime wear",
+                                      points: points)
+
+        XCTAssertNil(SessionStore.physiologicalSleepReviewNight(
+            in: [activeWear],
+            rest: 62,
             calendar: calendar
         ))
     }
@@ -835,7 +950,8 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
                                              range: start.lowerBound..<source.endIndex))
         let implementation = String(source[start.lowerBound..<end.lowerBound])
         let worker = try XCTUnwrap(implementation.range(of: "let workItem = DispatchWorkItem"))
-        let journalLoad = try XCTUnwrap(implementation.range(of: "SessionStore.loadActiveJournalSessionIfFresh"))
+        let journalLoad = try XCTUnwrap(implementation.range(of:
+            "SessionStore.loadResidentJournalSessionForSleepEvaluation"))
         let mainPublication = try XCTUnwrap(implementation.range(of: "DispatchQueue.main.async"))
 
         XCTAssertLessThan(worker.lowerBound, journalLoad.lowerBound)

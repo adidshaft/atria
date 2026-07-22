@@ -1,8 +1,8 @@
 # CODEX HANDOFF — 2026-07-18 · DETECTION & TRUTH phase
 
-Continuation handoff for Atria. The transport/HR-reliability phase
-(`docs/CODEX_HANDOFF_2026-07-18.md`) is COMPLETE and verified. This document
-opens the next phase: restore automatic detection so every number shown is real
+Current continuation handoff for Atria. The superseded transport/HR-reliability
+handoff is preserved in Git history; that phase is complete and verified. This
+document opens the next phase: restore automatic detection so every number shown is real
 or honestly absent — never hardcoded, never fabricated. Written from a
 device-evidence audit (pull `logs/live-device/detection-audit-20260718T*/`).
 Read it fully before editing. Intended to run as autonomous OVERNIGHT night runs

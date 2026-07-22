@@ -29,6 +29,9 @@ struct AtriaWorkoutSession: Identifiable {
     var lowerTargetZone: Int? = nil
     var upperTargetZone: Int? = nil
     var activityType: AtriaWorkoutActivityType = .other
+    /// Immutable detector coordinate selected when Start commits. Activity
+    /// edits change presentation/route behavior, never step accounting.
+    let stepSourceVersion: AtriaWorkoutStepSourceVersion
     var startingStepCount: Int = 0
     /// Strap steps accumulated during completed pause windows. These are
     /// removed from workout-only steps while the day total remains monotonic.
@@ -44,6 +47,34 @@ struct AtriaWorkoutSession: Identifiable {
     /// Nil only for legacy in-memory/restored sessions created before this
     /// field existed; those use a one-time current-profile fallback.
     var calculationContext: AtriaWorkoutCalculationContext? = nil
+
+    init(start: Date,
+         targetStrain: Double? = nil,
+         targetZone: Int? = nil,
+         lowerTargetZone: Int? = nil,
+         upperTargetZone: Int? = nil,
+         activityType: AtriaWorkoutActivityType = .other,
+         stepSourceVersion: AtriaWorkoutStepSourceVersion = .strapAccelerometerV1,
+         startingStepCount: Int = 0,
+         pausedStepCount: Int = 0,
+         pauseStartedStepCount: Int? = nil,
+         stepAccountingIsComplete: Bool = true,
+         startingDayStrain: Double = 0,
+         calculationContext: AtriaWorkoutCalculationContext? = nil) {
+        self.start = start
+        self.targetStrain = targetStrain
+        self.targetZone = targetZone
+        self.lowerTargetZone = lowerTargetZone
+        self.upperTargetZone = upperTargetZone
+        self.activityType = activityType
+        self.stepSourceVersion = stepSourceVersion
+        self.startingStepCount = startingStepCount
+        self.pausedStepCount = pausedStepCount
+        self.pauseStartedStepCount = pauseStartedStepCount
+        self.stepAccountingIsComplete = stepAccountingIsComplete
+        self.startingDayStrain = startingDayStrain
+        self.calculationContext = calculationContext
+    }
 
     /// The user's target choice re-derived from the persisted fields, if any.
     var targetChoice: AtriaWorkoutTargetChoice? {
@@ -726,6 +757,9 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
     var lowerTargetZone: Int? = nil
     var upperTargetZone: Int? = nil
     let startingStepCount: Int
+    /// Frozen at Start. Missing legacy values decode to the coordinate those
+    /// builds actually used, so an upgrade cannot reinterpret their anchors.
+    let stepSourceVersion: AtriaWorkoutStepSourceVersion
     var pausedStepCount: Int = 0
     var pauseStartedStepCount: Int? = nil
     var stepAccountingIsComplete: Bool = true
@@ -750,6 +784,7 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
         case lowerTargetZone
         case upperTargetZone
         case startingStepCount
+        case stepSourceVersion
         case pausedStepCount
         case pauseStartedStepCount
         case stepAccountingIsComplete
@@ -779,6 +814,10 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
         lowerTargetZone = try values.decodeIfPresent(Int.self, forKey: .lowerTargetZone)
         upperTargetZone = try values.decodeIfPresent(Int.self, forKey: .upperTargetZone)
         startingStepCount = try values.decodeIfPresent(Int.self, forKey: .startingStepCount) ?? 0
+        stepSourceVersion = try values.decodeIfPresent(
+            AtriaWorkoutStepSourceVersion.self,
+            forKey: .stepSourceVersion
+        ) ?? .strapAccelerometerV1
         pausedStepCount = try values.decodeIfPresent(Int.self, forKey: .pausedStepCount) ?? 0
         pauseStartedStepCount = try values.decodeIfPresent(Int.self,
                                                             forKey: .pauseStartedStepCount)
@@ -811,6 +850,7 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
          lowerTargetZone: Int? = nil,
          upperTargetZone: Int? = nil,
          startingStepCount: Int,
+         stepSourceVersion: AtriaWorkoutStepSourceVersion = .strapAccelerometerV1,
          pausedStepCount: Int = 0,
          pauseStartedStepCount: Int? = nil,
          stepAccountingIsComplete: Bool = true,
@@ -831,6 +871,7 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
         self.lowerTargetZone = lowerTargetZone
         self.upperTargetZone = upperTargetZone
         self.startingStepCount = startingStepCount
+        self.stepSourceVersion = stepSourceVersion
         self.pausedStepCount = max(0, pausedStepCount)
         self.pauseStartedStepCount = pauseStartedStepCount
         self.stepAccountingIsComplete = stepAccountingIsComplete
@@ -1008,6 +1049,18 @@ final class AtriaPendingWorkoutIntentStore: @unchecked Sendable {
         defer { stateLock.unlock() }
         guard case .ready(let intent) = state else { return nil }
         return intent
+    }
+
+    /// Read-only launch credential for radio policy. Unlike
+    /// `isActiveForBLEContinuity`, an unprepared/corrupt store is not treated
+    /// as proof that a workout exists. The file is tiny and this path performs
+    /// no migration or write; it is used before the async store hydration has
+    /// completed.
+    func launchSnapshot() -> AtriaPendingWorkoutIntent? {
+        if let snapshot { return snapshot }
+        guard let data = try? Data(contentsOf: fileURL) else { return nil }
+        return try? JSONDecoder().decode(AtriaPendingWorkoutIntent.self,
+                                         from: data)
     }
 
     var isPrepared: Bool {
@@ -2040,12 +2093,19 @@ struct AtriaLiveWorkoutView: View {
                 .tint(isPaused ? .green : .orange)
 
                 Button(role: .destructive, action: endWorkout) {
-                    Label("End", systemImage: "stop.fill")
-                        .font(.headline.weight(.black))
-                        .frame(maxWidth: .infinity, minHeight: 54)
+                    Group {
+                        if isEndingWorkout {
+                            Label("Saving…", systemImage: "clock")
+                        } else {
+                            Label("End", systemImage: "stop.fill")
+                        }
+                    }
+                    .font(.headline.weight(.black))
+                    .frame(maxWidth: .infinity, minHeight: 54)
                 }
                 .buttonStyle(.glassProminent)
                 .tint(.red)
+                .disabled(isEndingWorkout)
             }
         }
         .accessibilityElement(children: .contain)
@@ -2515,18 +2575,33 @@ struct AtriaLiveWorkoutView: View {
 
     private var stopButton: some View {
         Button(role: .destructive, action: endWorkout) {
-            Label("End workout", systemImage: "stop.fill")
-                .font(.headline.weight(.bold))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
+            Group {
+                if isEndingWorkout {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Saving workout…")
+                    }
+                } else {
+                    Label("End workout", systemImage: "stop.fill")
+                }
+            }
+            .font(.headline.weight(.bold))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
         }
         .atriaCardAction(tint: .red)
+        .disabled(isEndingWorkout)
     }
 
     private func endWorkout() {
-        finalizePauseIfNeeded()
         guard !isEndingWorkout else { return }
+        // Commit acknowledgement in the same button transaction. In
+        // particular, do this before requesting a paused-workout boundary:
+        // that request is asynchronous and a second tap must not enqueue a
+        // second pause transition while the terminal intent is being saved.
         isEndingWorkout = true
+        finalizePauseIfNeeded()
         Task { @MainActor in
             if await onStop() {
                 dismiss()

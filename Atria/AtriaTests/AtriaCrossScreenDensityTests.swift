@@ -408,7 +408,7 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
             XCTAssertTrue(today.contains(key))
         }
         XCTAssertTrue(today.contains("tint: ringRecoveryZone?.tint ?? .secondary"))
-        XCTAssertTrue(today.contains("stateTint: incomplete ? nil : ringStrainZone(target: target)?.tint"))
+        XCTAssertTrue(today.contains("stateTint: incomplete || pending ? nil : ringStrainZone(target: target)?.tint"))
         XCTAssertFalse(today.contains("AtriaTriRing.zoneTint(.recovery"))
         XCTAssertFalse(today.contains("AtriaTriRing.zoneTint(.strain"))
 

@@ -2397,6 +2397,41 @@ enum AtriaShareCardRenderer {
     private static var cache: [String: URL] = [:]
     private static var cacheRecency: [String] = []
     private static let cacheCapacity = 24
+    private static var inFlightExportURLCounts: [URL: Int] = [:]
+    private static var currentExportURLCounts: [URL: Int] = [:]
+
+    private static func incrementReferenceCount(for url: URL,
+                                                in counts: inout [URL: Int]) {
+        counts[url, default: 0] += 1
+    }
+
+    @discardableResult
+    private static func decrementReferenceCount(for url: URL,
+                                                in counts: inout [URL: Int]) -> Int {
+        guard let count = counts[url] else { return 0 }
+        if count <= 1 {
+            counts.removeValue(forKey: url)
+            return 0
+        }
+        counts[url] = count - 1
+        return count - 1
+    }
+
+    private static func beginExport(to url: URL) {
+        incrementReferenceCount(for: url, in: &inFlightExportURLCounts)
+    }
+
+    private static func finishExport(to url: URL) {
+        decrementReferenceCount(for: url, in: &inFlightExportURLCounts)
+    }
+
+    private static func retainCurrentExport(at url: URL) {
+        incrementReferenceCount(for: url, in: &currentExportURLCounts)
+    }
+
+    private static var protectedExportURLs: Set<URL> {
+        Set(inFlightExportURLCounts.keys).union(currentExportURLCounts.keys)
+    }
 
     private static func cachedURL(for key: String) -> URL? {
         guard let url = cache[key] else { return nil }
@@ -2407,6 +2442,7 @@ enum AtriaShareCardRenderer {
         }
         cacheRecency.removeAll { $0 == key }
         cacheRecency.append(key)
+        retainCurrentExport(at: url)
         return url
     }
 
@@ -2417,14 +2453,22 @@ enum AtriaShareCardRenderer {
         while cacheRecency.count > cacheCapacity {
             let evictedKey = cacheRecency.removeFirst()
             guard let evictedURL = cache.removeValue(forKey: evictedKey), evictedURL != url else { continue }
+            guard currentExportURLCounts[evictedURL, default: 0] == 0,
+                  inFlightExportURLCounts[evictedURL, default: 0] == 0 else { continue }
             Task { await removeExportFile(evictedURL) }
         }
     }
 
     static func releaseTemporaryExport(at url: URL) async {
+        guard decrementReferenceCount(for: url, in: &currentExportURLCounts) == 0 else {
+            return
+        }
         let removedKeys = cache.compactMap { key, value in value == url ? key : nil }
         removedKeys.forEach { cache.removeValue(forKey: $0) }
         cacheRecency.removeAll { removedKeys.contains($0) }
+        // Two same-key renders can share a destination while their atomic
+        // writes complete. The last in-flight writer owns cleanup/publication.
+        guard inFlightExportURLCounts[url, default: 0] == 0 else { return }
         await removeExportFile(url)
     }
 
@@ -2459,10 +2503,19 @@ enum AtriaShareCardRenderer {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("atria-share-\(key)-\(photoBackground == nil ? "canvas" : UUID().uuidString)")
             .appendingPathExtension("png")
-        try await writeExportData(data, to: url)
+        beginExport(to: url)
+        do {
+            try await writeExportData(data, to: url)
+        } catch {
+            finishExport(to: url)
+            throw error
+        }
+        retainCurrentExport(at: url)
         if photoBackground == nil {
             storeCachedURL(url, for: key)
         }
+        await pruneDailyShareCards(preserving: protectedExportURLs)
+        finishExport(to: url)
         return url
     }
 
@@ -2492,8 +2545,20 @@ enum AtriaShareCardRenderer {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("atria-workout-share-\(key)-\(photoBackground == nil ? "canvas" : UUID().uuidString)")
             .appendingPathExtension("png")
-        try await writeExportData(data, to: url)
+        beginExport(to: url)
+        do {
+            try await writeExportData(data, to: url)
+        } catch {
+            finishExport(to: url)
+            throw error
+        }
+        retainCurrentExport(at: url)
         if photoBackground == nil { storeCachedURL(url, for: key) }
+        await pruneGeneratedArtifacts(
+            policy: AtriaGeneratedArtifactRetention.workoutShareCards,
+            preserving: protectedExportURLs
+        )
+        finishExport(to: url)
         return url
     }
 
@@ -2525,8 +2590,20 @@ enum AtriaShareCardRenderer {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("Atria-\(activity)-\(stableDigest(key))-\(cacheResult ? "canvas" : UUID().uuidString)")
             .appendingPathExtension("html")
-        try await writeExportData(Data(html.utf8), to: url)
+        beginExport(to: url)
+        do {
+            try await writeExportData(Data(html.utf8), to: url)
+        } catch {
+            finishExport(to: url)
+            throw error
+        }
+        retainCurrentExport(at: url)
         if cacheResult { storeCachedURL(url, for: cacheKey) }
+        await pruneGeneratedArtifacts(
+            policy: AtriaGeneratedArtifactRetention.portableWorkoutExports,
+            preserving: protectedExportURLs
+        )
+        finishExport(to: url)
         return url
     }
 
@@ -2816,6 +2893,26 @@ enum AtriaShareCardRenderer {
     nonisolated private static func removeExportFile(_ url: URL) async {
         await Task.detached(priority: .utility) {
             try? FileManager.default.removeItem(at: url)
+        }.value
+    }
+
+    nonisolated private static func pruneDailyShareCards(preserving protectedURLs: Set<URL>) async {
+        await pruneGeneratedArtifacts(
+            policy: AtriaGeneratedArtifactRetention.shareCards,
+            preserving: protectedURLs
+        )
+    }
+
+    nonisolated private static func pruneGeneratedArtifacts(
+        policy: AtriaGeneratedArtifactRetention.Policy,
+        preserving protectedURLs: Set<URL>
+    ) async {
+        await Task.detached(priority: .utility) {
+            _ = AtriaGeneratedArtifactRetention.prune(
+                in: FileManager.default.temporaryDirectory,
+                policy: policy,
+                preserving: protectedURLs
+            )
         }.value
     }
 

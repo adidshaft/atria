@@ -1,0 +1,302 @@
+import Foundation
+
+/// Production-safe publication of historical consumer artifacts.
+///
+/// The coordinator accepts no caller-created inspection proof. Every typed
+/// proof is derived from `AtriaHistoricalActivityInspectionProofFactory`, which
+/// re-reads the real catalog from disk and binds it to a durable terminal-drain
+/// record and the exact strict-reader aggregate snapshot. Publication is
+/// shadow-only: this type never mutates the raw catalog, never marks a chunk
+/// retired, and never deletes a source file.
+struct AtriaHistoricalConsumerProjectionCoordinator {
+    typealias Configuration = AtriaHistoricalConsumerProjectionConfiguration
+
+    enum SettlementReadiness: Equatable, Sendable {
+        case ready(requiredStart: Date, requiredEnd: Date)
+        case pendingFutureEvidence(requiredStart: Date, requiredEnd: Date)
+    }
+
+    struct DeferredSource: Equatable, Sendable {
+        let chunkID: String
+        let reason: String
+    }
+
+    struct Report: Sendable {
+        static let artifactsPerCompleteSource = 5
+
+        let completionGeneration: UInt64?
+        let inspectedSourceCount: Int
+        let published: [AtriaHistoricalConsumerReceiptLedger.Published]
+        let deferredSources: [DeferredSource]
+
+        var rawRetirementWasAttempted: Bool { false }
+
+        /// Authority may be consumed only after every inspected source has a
+        /// complete activity/daily/steps/sleep/workout receipt set. A narrow
+        /// completion interval normally defers sources because it cannot cover
+        /// their civil-day and lookback/lookahead dependencies; zero receipts
+        /// is therefore never success.
+        var hasCompleteConsumerCoverage: Bool {
+            inspectedSourceCount > 0
+                && deferredSources.isEmpty
+                && published.count
+                    == inspectedSourceCount * Self.artifactsPerCompleteSource
+        }
+    }
+
+    let completionStore: AtriaHistoricalDrainCompletionGenerationStore
+    let receiptLedger: AtriaHistoricalConsumerReceiptLedger
+
+    /// Publishes all five derived consumer receipts for every source whose
+    /// complete history/look-ahead interval is covered by the latest durable
+    /// terminal record. Sources that are too recent or lack committed neighbor
+    /// aggregates are deferred, never interpreted as empty.
+    func publishEligibleReceipts(
+        catalogStore: AtriaHistoricalArchiveCatalogStore,
+        aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
+        configuration: Configuration
+    ) throws -> Report {
+        try publishEligibleReceipts(
+            catalogStore: catalogStore,
+            aggregateSnapshot: aggregateSnapshot,
+            configuration: configuration,
+            selectedChunkID: nil
+        )
+    }
+
+    /// Publishes one atomic five-receipt set for a single already-committed
+    /// source. This bounded form is used by maintenance so one invocation can
+    /// never accidentally claim cutover for unrelated shadow chunks.
+    func publishReceiptSet(
+        for chunkID: String,
+        catalogStore: AtriaHistoricalArchiveCatalogStore,
+        aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
+        configuration: Configuration
+    ) throws -> Report {
+        try publishEligibleReceipts(
+            catalogStore: catalogStore,
+            aggregateSnapshot: aggregateSnapshot,
+            configuration: configuration,
+            selectedChunkID: chunkID
+        )
+    }
+
+    private func publishEligibleReceipts(
+        catalogStore: AtriaHistoricalArchiveCatalogStore,
+        aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
+        configuration: Configuration,
+        selectedChunkID: String?
+    ) throws -> Report {
+        guard !aggregateSnapshot.diagnostics.limitExceeded,
+              aggregateSnapshot.diagnostics.rejectedManifests == 0 else {
+            throw CoordinatorError.rejectedAggregateManifest
+        }
+        let completion = try completionStore.loadLatest()
+        let factory = AtriaHistoricalActivityInspectionProofFactory(
+            completionStore: completionStore
+        )
+        var published: [AtriaHistoricalConsumerReceiptLedger.Published] = []
+        var deferred: [DeferredSource] = []
+        let sources = aggregateSnapshot.aggregates
+            .filter { selectedChunkID == nil || $0.source.chunkID == selectedChunkID }
+            .sorted(by: sourceOrder)
+
+        for source in sources {
+            do {
+                let range = try requiredRange(for: source,
+                                              dailyConfiguration: configuration.daily)
+                let prepared = try factory.prepare(
+                    catalogStore: catalogStore,
+                    aggregateSnapshot: aggregateSnapshot,
+                    requestedStart: range.lowerBound,
+                    requestedEnd: range.upperBound
+                )
+                guard prepared.completionGeneration == completion.generation else {
+                    throw CoordinatorError.completionChangedDuringPublication
+                }
+                let dailyProof = try makeDailyProof(prepared)
+                let sessionProof = try makeSessionProof(prepared)
+                let settledAt = completion.completedAt
+
+                // Each receipt is immutable. The complete generation becomes
+                // visible only after the ledger atomically advances its
+                // five-artifact set pointer. A crash may leave an audit prefix,
+                // but readers continue to see the prior complete set.
+                var sourcePublished: [AtriaHistoricalConsumerReceiptLedger.Published] = []
+                sourcePublished.append(try AtriaHistoricalActivityProjection.publishReceipt(
+                    source: source,
+                    dependencyChunks: prepared.dependencyChunks,
+                    configuration: configuration.activity,
+                    inspectionProof: prepared.inspectionProof,
+                    completionWatermark: prepared.completionWatermark,
+                    ledger: receiptLedger,
+                    settledAt: settledAt
+                ))
+                sourcePublished.append(try AtriaHistoricalDailyConsumerProjection.publishDailyMetricsReceipt(
+                    source: source,
+                    dependencyChunks: prepared.dependencyChunks,
+                    configuration: configuration.daily,
+                    inspectionProof: dailyProof,
+                    completionWatermark: prepared.completionWatermark,
+                    ledger: receiptLedger,
+                    settledAt: settledAt
+                ))
+                sourcePublished.append(try AtriaHistoricalDailyConsumerProjection.publishStepsReceipt(
+                    source: source,
+                    dependencyChunks: prepared.dependencyChunks,
+                    configuration: configuration.daily,
+                    inspectionProof: dailyProof,
+                    completionWatermark: prepared.completionWatermark,
+                    ledger: receiptLedger,
+                    settledAt: settledAt
+                ))
+                sourcePublished.append(try AtriaHistoricalSleepProjection.publishReceipt(
+                    source: source,
+                    dependencyChunks: prepared.dependencyChunks,
+                    configuration: configuration.sleep,
+                    inspectionProof: sessionProof,
+                    completionWatermark: prepared.completionWatermark,
+                    ledger: receiptLedger,
+                    settledAt: settledAt
+                ))
+                sourcePublished.append(try AtriaHistoricalWorkoutProjection.publishReceipt(
+                    source: source,
+                    dependencyChunks: prepared.dependencyChunks,
+                    configuration: configuration.workout,
+                    inspectionProof: sessionProof,
+                    completionWatermark: prepared.completionWatermark,
+                    ledger: receiptLedger,
+                    settledAt: settledAt
+                ))
+                let ledgerSource = AtriaHistoricalConsumerReceiptLedger.Source(
+                    chunkID: source.source.chunkID,
+                    rawSHA256: source.source.rawSHA256,
+                    firstTimestamp: source.source.firstTimestamp,
+                    lastTimestamp: source.source.lastTimestamp
+                )
+                try receiptLedger.activateCurrentSet(for: ledgerSource,
+                                                     publications: sourcePublished)
+                published.append(contentsOf: sourcePublished)
+            } catch {
+                deferred.append(.init(chunkID: source.source.chunkID,
+                                      reason: String(reflecting: error)))
+            }
+        }
+
+        return .init(completionGeneration: completion.generation,
+                     inspectedSourceCount: sources.count,
+                     published: published,
+                     deferredSources: deferred)
+    }
+
+    enum CoordinatorError: Error, Equatable {
+        case rejectedAggregateManifest
+        case invalidDailyTimeZone
+        case invalidRequiredRange
+        case completionChangedDuringPublication
+    }
+
+    /// Tells the full-drain authority whether its exact closed interval can
+    /// honestly settle the five typed consumers. A current-day drain normally
+    /// cannot: daily consumers need the civil-day close and sleep needs four
+    /// hours of lookahead. That is a pending projection, not failed gap
+    /// coverage and never permission to manufacture an empty artifact.
+    static func settlementReadiness(
+        sourceFirstTimestamp: Date,
+        sourceLastTimestamp: Date,
+        completionStart: Date,
+        completionEnd: Date,
+        dailyConfiguration: AtriaHistoricalDailyConsumerProjection.Configuration
+    ) throws -> SettlementReadiness {
+        let range = try requiredRange(sourceFirstTimestamp: sourceFirstTimestamp,
+                                      sourceLastTimestamp: sourceLastTimestamp,
+                                      dailyConfiguration: dailyConfiguration)
+        if completionStart <= range.lowerBound, completionEnd >= range.upperBound {
+            return .ready(requiredStart: range.lowerBound, requiredEnd: range.upperBound)
+        }
+        return .pendingFutureEvidence(requiredStart: range.lowerBound,
+                                      requiredEnd: range.upperBound)
+    }
+
+    private static func requiredRange(
+        sourceFirstTimestamp: Date,
+        sourceLastTimestamp: Date,
+        dailyConfiguration: AtriaHistoricalDailyConsumerProjection.Configuration
+    ) throws -> ClosedRange<Date> {
+        guard sourceLastTimestamp >= sourceFirstTimestamp else {
+            throw CoordinatorError.invalidRequiredRange
+        }
+        guard let zone = TimeZone(identifier: dailyConfiguration.timeZoneIdentifier) else {
+            throw CoordinatorError.invalidDailyTimeZone
+        }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let dailyStart = calendar.startOfDay(for: sourceFirstTimestamp)
+        let lastDay = calendar.startOfDay(for: sourceLastTimestamp)
+        guard let dailyEnd = calendar.date(byAdding: .day, value: 1, to: lastDay) else {
+            throw CoordinatorError.invalidRequiredRange
+        }
+        let start = min(
+            dailyStart,
+            sourceFirstTimestamp.addingTimeInterval(
+                -max(AtriaHistoricalActivityProjection.requiredHistory,
+                     AtriaHistoricalSleepProjection.requiredHistory,
+                     AtriaHistoricalWorkoutProjection.requiredHistory)
+            )
+        )
+        let end = max(
+            dailyEnd,
+            sourceLastTimestamp.addingTimeInterval(
+                max(AtriaHistoricalActivityProjection.requiredLookahead,
+                    AtriaHistoricalSleepProjection.requiredLookahead,
+                    AtriaHistoricalWorkoutProjection.requiredLookahead)
+            )
+        )
+        guard end > start else { throw CoordinatorError.invalidRequiredRange }
+        return start...end
+    }
+
+    private func requiredRange(
+        for source: AtriaHistoricalAggregateChunk,
+        dailyConfiguration: AtriaHistoricalDailyConsumerProjection.Configuration
+    ) throws -> ClosedRange<Date> {
+        try Self.requiredRange(sourceFirstTimestamp: source.source.firstTimestamp,
+                               sourceLastTimestamp: source.source.lastTimestamp,
+                               dailyConfiguration: dailyConfiguration)
+    }
+
+    private func makeDailyProof(
+        _ prepared: AtriaHistoricalActivityInspectionProofFactory.Prepared
+    ) throws -> AtriaHistoricalDailyConsumerProjection.InspectionProof {
+        try .make(
+            generationIdentifier: prepared.generationIdentifier,
+            catalogSnapshot: prepared.catalogSnapshot,
+            dependencyChunks: prepared.dependencyChunks,
+            closedCoverageIntervals: prepared.closedCoverageIntervals.map {
+                .init(start: $0.start, end: $0.end, recordCount: $0.recordCount)
+            }
+        )
+    }
+
+    private func makeSessionProof(
+        _ prepared: AtriaHistoricalActivityInspectionProofFactory.Prepared
+    ) throws -> AtriaHistoricalSessionInspectionProof {
+        try .make(
+            generationIdentifier: prepared.generationIdentifier,
+            catalogSnapshot: prepared.catalogSnapshot,
+            closedCoverageIntervals: prepared.closedCoverageIntervals.map {
+                .init(start: $0.start, end: $0.end, recordCount: $0.recordCount)
+            }
+        )
+    }
+
+    private func sourceOrder(
+        _ lhs: AtriaHistoricalAggregateChunk,
+        _ rhs: AtriaHistoricalAggregateChunk
+    ) -> Bool {
+        if lhs.source.firstTimestamp != rhs.source.firstTimestamp {
+            return lhs.source.firstTimestamp < rhs.source.firstTimestamp
+        }
+        return lhs.source.chunkID < rhs.source.chunkID
+    }
+}

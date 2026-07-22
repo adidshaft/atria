@@ -51,6 +51,63 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
         XCTAssertEqual(cycle.anchorSleepID, main.id)
     }
 
+    func testPhysiologicalDayKeepsPostMidnightAwakeActivityOnPriorWakeDay() {
+        let main = sleep(id: "main", start: date(1, 0), end: date(1, 7))
+        let now = date(2, 2)
+        let day = AtriaPhysiologicalDay.current(now: now,
+                                               confirmedSleeps: [main],
+                                               calendar: calendar)
+
+        XCTAssertEqual(day.start, main.end)
+        XCTAssertEqual(day.displayDay, calendar.startOfDay(for: main.end))
+        XCTAssertTrue(day.overlaps(start: date(2, 1), end: now))
+    }
+
+    func testPhysiologicalDayDoesNotResetWhileMainSleepIsUnconfirmed() {
+        let prior = sleep(id: "prior", start: date(1, 0), end: date(1, 7))
+        let now = date(2, 6)
+        // The current in-progress night is deliberately absent from confirmed
+        // sleeps: merely detecting or entering sleep cannot move Today.
+        let day = AtriaPhysiologicalDay.current(now: now,
+                                               confirmedSleeps: [prior],
+                                               calendar: calendar)
+
+        XCTAssertEqual(day.start, prior.end)
+        XCTAssertEqual(day.boundaryKind, .mainSleep)
+    }
+
+    func testPhysiologicalDayMovesAtConfirmedMainSleepWake() {
+        let prior = sleep(id: "prior", start: date(1, 0), end: date(1, 7))
+        let current = sleep(id: "current", start: date(1, 23), end: date(2, 7))
+        let day = AtriaPhysiologicalDay.current(now: date(2, 8),
+                                               confirmedSleeps: [prior, current],
+                                               calendar: calendar)
+
+        XCTAssertEqual(day.start, current.end)
+        XCTAssertEqual(day.displayDay, calendar.startOfDay(for: current.end))
+        XCTAssertFalse(day.overlaps(start: date(2, 1), end: date(2, 2)))
+    }
+
+    func testPhysiologicalDayNapNeverResetsBoundary() {
+        let main = sleep(id: "main", start: date(1, 0), end: date(1, 7))
+        let nap = sleep(id: "nap", start: date(1, 15), end: date(1, 16), source: "manual_nap")
+        let day = AtriaPhysiologicalDay.current(now: date(2, 2),
+                                               confirmedSleeps: [main, nap],
+                                               calendar: calendar)
+
+        XCTAssertEqual(day.start, main.end)
+    }
+
+    func testPhysiologicalDayUsesBoundedNoSleepFallback() {
+        let main = sleep(id: "main", start: date(1, 0), end: date(1, 7))
+        let day = AtriaPhysiologicalDay.current(now: date(2, 9),
+                                               confirmedSleeps: [main],
+                                               calendar: calendar)
+
+        XCTAssertEqual(day.start, date(2, 7))
+        XCTAssertEqual(day.boundaryKind, .noSleepFallback)
+    }
+
     func testUnambiguousHROnlyAutomaticSleepStartsMainSleepCycle() {
         let automatic = sleep(id: "hr-only-main",
                               start: date(1, 23),

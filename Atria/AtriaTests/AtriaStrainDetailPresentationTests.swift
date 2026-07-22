@@ -27,4 +27,45 @@ final class AtriaStrainDetailPresentationTests: XCTestCase {
         XCTAssertTrue(source.contains("private struct AtriaStrainScoreHero"))
         XCTAssertTrue(source.contains("AtriaStrainTargetPresentation.progress(for: score)"))
     }
+
+    func testPartialDayStrainKeepsMeasuredNumberAndAddsLimitation() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let overviewURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaOverviewSections.swift")
+        let overview = try String(contentsOf: overviewURL, encoding: .utf8)
+        let valueStart = try XCTUnwrap(overview.range(of: "private var strainHeroValue: String"))
+        let valueEnd = try XCTUnwrap(overview.range(of: "private var dayStrainMetricsIncomplete", range: valueStart.upperBound..<overview.endIndex))
+        let valueProjection = String(overview[valueStart.lowerBound..<valueEnd.lowerBound])
+
+        XCTAssertTrue(overview.contains("if dayStrainMetricsIncomplete { return \"Partial · sparse HR\" }"))
+        XCTAssertFalse(valueProjection.contains("return \"Incomplete\""),
+                       "partial evidence must not replace a real strain number")
+        XCTAssertTrue(valueProjection.contains("dayStrainMetricsIncomplete ? \"≥ \\(value)\" : value"),
+                      "partial cumulative strain is an observed lower bound")
+
+        let todayURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaTodayScreen.swift")
+        let today = try String(contentsOf: todayURL, encoding: .utf8)
+        XCTAssertTrue(today.contains("!displayHero.strainValue.hasPrefix(\"≥\")"))
+        XCTAssertTrue(today.contains("incomplete ? \"Partial · sparse HR\""))
+        XCTAssertTrue(today.contains("? \"≥ \\(displayHero.strainValue)\""))
+    }
+
+    func testNoEvidenceStrainRemainsLearningInsteadOfInventedZero() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let homeURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift")
+        let source = try String(contentsOf: homeURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "var strainValue: String"))
+        let end = try XCTUnwrap(source.range(of: "var strainDetail: String", range: start.upperBound..<source.endIndex))
+        let projection = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(projection.contains("strainConfidence.localizedCaseInsensitiveContains(\"learning\")"))
+        XCTAssertTrue(projection.contains("return \"Learning\""))
+        XCTAssertTrue(projection.contains("String(format: \"%.1f\", strain)"))
+        XCTAssertTrue(projection.contains("? \"≥ \\(numeric)\""))
+    }
 }

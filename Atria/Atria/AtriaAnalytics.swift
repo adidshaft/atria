@@ -1076,17 +1076,13 @@ enum AtriaAnalytics {
                              sleepDurationHours: Double? = nil,
                              respiratoryRate: Double? = nil,
                              respiratoryBaseline: (mean: Double, sd: Double, count: Int)? = nil) -> Estimate {
-            guard let restingNow else {
-                return Estimate(percent: nil, confidence: .learning,
-                                usesHRV: false, detail: "learning: need resting HR", contributors: [])
-            }
-
             guard let sleepZ = sleepRecoveryZ(efficiency: sleepEfficiency,
                                               durationHours: sleepDurationHours) else {
                 // Sleep missing but HRV/RHR baselines trusted: renormalize the
                 // weights and score at reduced confidence instead of refusing —
                 // one night of missed sleep capture must not blank recovery.
-                if let renormalized = sleepMissingEstimate(hrvSnapshot: hrvSnapshot,
+                if let restingNow,
+                   let renormalized = sleepMissingEstimate(hrvSnapshot: hrvSnapshot,
                                                            fallbackRMSSD: fallbackRMSSD,
                                                            restingNow: restingNow,
                                                            baseline: baseline,
@@ -1094,9 +1090,43 @@ enum AtriaAnalytics {
                                                            respiratoryBaseline: respiratoryBaseline) {
                     return renormalized
                 }
+                if let restingNow,
+                   let restingOnly = limitedEvidenceEstimateWithoutSleepOrHRV(
+                    restingNow: restingNow,
+                    baseline: baseline
+                   ) {
+                    return restingOnly
+                }
                 return Estimate(percent: nil, confidence: .learning,
                                 usesHRV: true,
                                 detail: "learning: need saved sleep",
+                                contributors: [])
+            }
+
+            // Day-one recovery must be useful without pretending that an HRV
+            // measurement exists. A confirmed sleep supplies a real, bounded
+            // duration/efficiency signal immediately. Add RHR only when both a
+            // current value and an honest comparator exist, then disclose the
+            // missing primary signal with zero weight. Qualified HRV below
+            // upgrades this provisional result to the full personal model.
+            let rmssdNow = hrvSnapshot?.isReady == true
+                ? hrvSnapshot?.rmssd
+                : fallbackRMSSD.map(Double.init)
+            guard let rmssdNow, rmssdNow > 0 else {
+                return limitedEvidenceEstimateWithoutHRV(
+                    sleepZ: sleepZ,
+                    sleepDurationHours: sleepDurationHours,
+                    restingNow: restingNow,
+                    baseline: baseline,
+                    respiratoryRate: respiratoryRate,
+                    respiratoryBaseline: respiratoryBaseline
+                )
+            }
+
+            guard let restingNow else {
+                return Estimate(percent: nil, confidence: .learning,
+                                usesHRV: false,
+                                detail: "learning: need resting HR for the full recovery model",
                                 contributors: [])
             }
             let hasTrustedRestingBaseline = baseline.hasTrustedRestingBaseline()
@@ -1115,15 +1145,6 @@ enum AtriaAnalytics {
             }
 
             let restingZ = zScore(Double(restingNow), mean: restingStats.mean, sd: restingStats.sd, minSD: 1.0)
-            let rmssdNow = hrvSnapshot?.isReady == true
-                ? hrvSnapshot?.rmssd
-                : fallbackRMSSD.map(Double.init)
-            guard let rmssdNow, rmssdNow > 0 else {
-                return Estimate(percent: nil, confidence: .learning,
-                                usesHRV: false,
-                                detail: "learning: need a steady HRV window",
-                                contributors: [])
-            }
 
             let hrvStats = baseline.lnRMSSDStats
             let hasTrustedHRVBaseline = baseline.hasTrustedHRVBaseline()
@@ -1187,6 +1208,139 @@ enum AtriaAnalytics {
                             usesHRV: true,
                             detail: String(format: "lnRMSSD z %.1f · RHR z %.1f · Sleep z %.1f · %@", hrvZ, restingZ, sleepZ, respirationDetail),
                             contributors: contributors)
+        }
+
+        /// Day-one last resort. A real current resting reading compared with a
+        /// real local resting baseline is enough to show a useful number, but
+        /// never enough to call it validated recovery. Missing sleep and HRV
+        /// remain explicit zero-weight contributors instead of silently acting
+        /// neutral or blanking the product indefinitely.
+        private static func limitedEvidenceEstimateWithoutSleepOrHRV(
+            restingNow: Int,
+            baseline: PersonalBaseline
+        ) -> Estimate? {
+            guard restingNow > 0,
+                  let restingBaseline = baseline.restingHR,
+                  restingBaseline > 0 else { return nil }
+            let stats = baseline.restingStats
+            let restingZ = zScore(Double(restingNow),
+                                  mean: stats?.mean ?? restingBaseline,
+                                  sd: stats?.sd ?? 5,
+                                  minSD: 1)
+            // Do not renormalize a lone secondary signal to 100% of the model.
+            // RHR normally owns 20% of Recovery; letting it own the whole score
+            // made a narrow early baseline turn one low reading into a green
+            // 99 even when both sleep and HRV were absent. Missing contributors
+            // remain neutral, so this is useful on day one without presenting
+            // one-signal certainty.
+            let restingWeight = 0.20
+            return Estimate(
+                percent: logisticRecoveryPercent(z: restingWeight * -restingZ),
+                confidence: .unverified,
+                usesHRV: false,
+                detail: "Limited confidence · sleep and HRV unavailable · conservative RHR-only estimate",
+                contributors: [
+                    Estimate.Contributor(kind: .hrv,
+                                         zScore: 0,
+                                         weight: 0,
+                                         detail: "HRV unavailable; excluded",
+                                         displayValue: "HRV unavailable",
+                                         direction: 0),
+                    Estimate.Contributor(kind: .restingHeartRate,
+                                         zScore: -restingZ,
+                                         weight: restingWeight,
+                                         detail: String(format: "RHR %.1fσ", -restingZ),
+                                         displayValue: "Resting HR \(restingNow) bpm"),
+                    Estimate.Contributor(kind: .sleep,
+                                         zScore: 0,
+                                         weight: 0,
+                                         detail: "Sleep unavailable; excluded",
+                                         displayValue: "Sleep unavailable",
+                                         direction: 0)
+                ]
+            )
+        }
+
+        /// Honest day-one recovery. The score is never labeled baseline or
+        /// validated and HRV contributes exactly zero. Sleep is always present
+        /// here; RHR/respiration join only with real comparison evidence. The
+        /// weights are renormalized across what was actually observed so the
+        /// absent signals cannot silently act as neutral measurements.
+        private static func limitedEvidenceEstimateWithoutHRV(
+            sleepZ: Double,
+            sleepDurationHours: Double?,
+            restingNow: Int?,
+            baseline: PersonalBaseline,
+            respiratoryRate: Double?,
+            respiratoryBaseline: (mean: Double, sd: Double, count: Int)?
+        ) -> Estimate {
+            var weightedZ = 0.75 * sleepZ
+            var observedWeight = 0.75
+            var contributors = [
+                Estimate.Contributor(
+                    kind: .hrv,
+                    zScore: 0,
+                    weight: 0,
+                    detail: "HRV unavailable; excluded from this estimate",
+                    displayValue: "HRV unavailable",
+                    direction: 0
+                ),
+                Estimate.Contributor(
+                    kind: .sleep,
+                    zScore: sleepZ,
+                    weight: 0.75,
+                    detail: String(format: "Sleep %.1fσ vs 7h·85%% norm", sleepZ),
+                    displayValue: sleepDurationHours.map {
+                        "\(AtriaMetricFormat.sleepHours($0)) · measured"
+                    } ?? String(format: "Sleep %+.1fσ", sleepZ)
+                )
+            ]
+
+            if let restingNow,
+               let restingBaseline = baseline.restingHR,
+               restingBaseline > 0 {
+                let stats = baseline.restingStats
+                let restingZ = zScore(
+                    Double(restingNow),
+                    mean: stats?.mean ?? restingBaseline,
+                    sd: stats?.sd ?? 5,
+                    minSD: 1
+                )
+                weightedZ += 0.20 * -restingZ
+                observedWeight += 0.20
+                contributors.append(Estimate.Contributor(
+                    kind: .restingHeartRate,
+                    zScore: -restingZ,
+                    weight: 0.20,
+                    detail: String(format: "RHR %.1fσ", -restingZ),
+                    displayValue: "Resting HR \(restingNow) bpm"
+                ))
+            }
+
+            let respirationZ = respiratoryRecoveryZ(
+                rate: respiratoryRate,
+                baseline: respiratoryBaseline
+            )
+            if respiratoryRate != nil, respirationZ != 0 {
+                weightedZ += 0.05 * respirationZ
+                observedWeight += 0.05
+                contributors.append(Estimate.Contributor(
+                    kind: .respiration,
+                    zScore: respirationZ,
+                    weight: 0.05,
+                    detail: String(format: "Resp %.1fσ", respirationZ),
+                    displayValue: String(format: "Respiration %+.1fσ", respirationZ)
+                ))
+            }
+
+            let blendedZ = weightedZ / observedWeight
+            return Estimate(
+                percent: logisticRecoveryPercent(z: blendedZ),
+                confidence: .unverified,
+                usesHRV: false,
+                detail: "Limited confidence · HRV unavailable · sleep-led estimate",
+                contributors: contributors
+            )
         }
 
         /// Sleep-missing path: requires BOTH trusted baselines, then blends

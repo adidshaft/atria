@@ -506,6 +506,80 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
         case dropFrame
     }
 
+    /// Value-semantic accumulator used by both the legacy research harness and
+    /// the production R10 queue. Keeping the open span inside this state lets a
+    /// session marker inspect its exact prefix without closing or copying it;
+    /// commit can then rebase accounting while abort leaves continuity intact.
+    struct State: Equatable, Sendable {
+        private(set) var spanMagnitudes: [Double] = []
+        private(set) var lastDeviceTimestamp: UInt32?
+        private(set) var closedSpanSteps = 0.0
+        private(set) var closedSpans = 0
+        private(set) var observedTotalSteps = 0.0
+
+        mutating func ingest(deviceTimestamp: UInt32,
+                             rotationMagnitudes: [Double]) -> Snapshot? {
+            var scored = false
+            switch AtriaGyroCadenceResearchShadow.spanContinuity(
+                previousDeviceTimestamp: lastDeviceTimestamp,
+                frameDeviceTimestamp: deviceTimestamp
+            ) {
+            case .dropFrame:
+                return nil
+            case .closeSpanThenStartNew:
+                closeOpenSpan()
+                scored = true
+            case .appendToCurrentSpan:
+                break
+            }
+            lastDeviceTimestamp = deviceTimestamp
+            spanMagnitudes.append(contentsOf: rotationMagnitudes)
+            if let prefix = AtriaGyroCadenceResearchShadow.sizeBoundScoredPrefix(
+                spanSampleCount: spanMagnitudes.count
+            ) {
+                closedSpanSteps += AtriaGyroCadenceResearchPedometer.steps(
+                    contiguousRotationMagnitudes: Array(spanMagnitudes[..<prefix])
+                )
+                spanMagnitudes.removeFirst(prefix)
+                closedSpans += 1
+                scored = true
+            }
+            guard scored else { return nil }
+            return snapshot()
+        }
+
+        /// Monotonic estimate including the open contiguous span. This is used
+        /// only at durable journal/session markers; normal 100 Hz ingestion
+        /// remains O(samples) and does not repeatedly run the batch DFT.
+        mutating func boundaryTotalSteps() -> Double {
+            let open = spanMagnitudes.isEmpty ? 0
+                : AtriaGyroCadenceResearchPedometer.steps(
+                    contiguousRotationMagnitudes: spanMagnitudes
+                )
+            observedTotalSteps = max(observedTotalSteps, closedSpanSteps + open)
+            return observedTotalSteps
+        }
+
+        mutating func closeOpenSpan() {
+            guard !spanMagnitudes.isEmpty else { return }
+            closedSpanSteps += AtriaGyroCadenceResearchPedometer.steps(
+                contiguousRotationMagnitudes: spanMagnitudes
+            )
+            spanMagnitudes.removeAll(keepingCapacity: false)
+            closedSpans += 1
+            observedTotalSteps = max(observedTotalSteps, closedSpanSteps)
+        }
+
+        mutating func reset() {
+            self = State()
+        }
+
+        func snapshot() -> Snapshot {
+            Snapshot(totalSteps: max(observedTotalSteps, closedSpanSteps),
+                     closedSpans: closedSpans)
+        }
+    }
+
     /// Continuity policy for one decoded R10 frame. A zero device timestamp
     /// cannot prove contiguity, so the frame is dropped; the next valid
     /// frame's own delta then decides whether the open span really continued
@@ -540,10 +614,7 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
         label: "com.adidshaft.atria.gyro-cadence-research-shadow",
         qos: .utility
     )
-    private var spanMagnitudes: [Double] = []
-    private var lastDeviceTimestamp: UInt32?
-    private var totalSteps = 0.0
-    private var closedSpans = 0
+    private var state = State()
 
     /// Feeds one decoded R10 frame's rotation magnitudes. `onUpdate` fires
     /// only when a span was scored (total may have advanced).
@@ -551,27 +622,9 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
                 rotationMagnitudes: [Double],
                 onUpdate: @escaping @Sendable (Snapshot) -> Void) {
         queue.async { [self] in
-            var scored = false
-            switch Self.spanContinuity(previousDeviceTimestamp: lastDeviceTimestamp,
-                                       frameDeviceTimestamp: deviceTimestamp) {
-            case .dropFrame:
-                return
-            case .closeSpanThenStartNew:
-                closeOpenSpanLocked()
-                scored = true
-            case .appendToCurrentSpan:
-                break
-            }
-            lastDeviceTimestamp = deviceTimestamp
-            spanMagnitudes.append(contentsOf: rotationMagnitudes)
-            if let prefix = Self.sizeBoundScoredPrefix(spanSampleCount: spanMagnitudes.count) {
-                scoreLocked(Array(spanMagnitudes[..<prefix]))
-                spanMagnitudes.removeFirst(prefix)
-                closedSpans += 1
-                scored = true
-            }
-            if scored {
-                onUpdate(snapshotLocked())
+            if let snapshot = state.ingest(deviceTimestamp: deviceTimestamp,
+                                           rotationMagnitudes: rotationMagnitudes) {
+                onUpdate(snapshot)
             }
         }
     }
@@ -582,34 +635,17 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
     @discardableResult
     func closeOpenSpanSynchronously() -> Snapshot {
         queue.sync { [self] in
-            closeOpenSpanLocked()
-            return snapshotLocked()
+            state.closeOpenSpan()
+            return state.snapshot()
         }
     }
 
     func snapshotSynchronously() -> Snapshot {
-        queue.sync { snapshotLocked() }
+        queue.sync { state.snapshot() }
     }
 
     func openSpanSampleCountForTesting() -> Int {
-        queue.sync { spanMagnitudes.count }
-    }
-
-    private func closeOpenSpanLocked() {
-        guard !spanMagnitudes.isEmpty else { return }
-        scoreLocked(spanMagnitudes)
-        spanMagnitudes.removeAll(keepingCapacity: false)
-        closedSpans += 1
-    }
-
-    private func scoreLocked(_ samples: [Double]) {
-        totalSteps += AtriaGyroCadenceResearchPedometer.steps(
-            contiguousRotationMagnitudes: samples
-        )
-    }
-
-    private func snapshotLocked() -> Snapshot {
-        Snapshot(totalSteps: totalSteps, closedSpans: closedSpans)
+        queue.sync { state.spanMagnitudes.count }
     }
 }
 
@@ -931,6 +967,11 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
         /// Motion accepted after the persisted snapshot was captured. This is
         /// carried into the new accounting segment instead of being dropped.
         let carriedSnapshot: Snapshot?
+        /// Research-only gyro cadence assigned to the closed/new accounting
+        /// segments. Optional preserves source compatibility with boundaries
+        /// prepared before the shadow joined the atomic R10 transaction.
+        let finalGyroCadenceResearchSteps: Int?
+        let carriedGyroCadenceResearchSteps: Int?
         let generation: UInt64
     }
 
@@ -939,6 +980,19 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
         let finalSnapshot: Snapshot?
         let generation: UInt64
         let markerRawSteps: Int
+        let markerGyroCadenceResearchSteps: Int?
+
+        init(id: UUID,
+             finalSnapshot: Snapshot?,
+             generation: UInt64,
+             markerRawSteps: Int,
+             markerGyroCadenceResearchSteps: Int? = nil) {
+            self.id = id
+            self.finalSnapshot = finalSnapshot
+            self.generation = generation
+            self.markerRawSteps = markerRawSteps
+            self.markerGyroCadenceResearchSteps = markerGyroCadenceResearchSteps
+        }
     }
 
     /// A FIFO marker is enqueued synchronously at the caller's logical edge,
@@ -987,11 +1041,16 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
     private let gain: Double
     private let snapshotMinimumInterval: TimeInterval
     private var detector = AtriaStrapPedometer.StreamingDetector()
+    /// Research-only challenger state is serialized with the production
+    /// detector so both observe the same accepted R10 frames and boundary FIFO.
+    private var gyroCadenceState = AtriaGyroCadenceResearchShadow.State()
     private var committedRawSteps = 0
+    private var committedGyroCadenceResearchSteps = 0
     /// Largest durable prefix already merged by `seed`. Journal restoration
     /// can be requested more than once across foreground/restoration races;
     /// only a newly larger prefix may advance accounting a second time.
     private var restoredRawStepPrefix = 0
+    private var restoredGyroCadenceResearchPrefix = 0
     /// A resident journal is bounded to 18 hours. If CoreBluetooth replays a
     /// few pre-checkpoint frames before that first restore finishes, their
     /// older device seconds can be identified without confusing a genuine
@@ -1011,6 +1070,7 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
     private var lastPublishedSteps = -1
     private var lastSnapshotEvaluationAt: Date?
     private var segmentRawStepBaseline = 0
+    private var segmentGyroCadenceResearchBaseline = 0
     private var generation: UInt64 = 0
     private var pendingSnapshotWorkItem: DispatchWorkItem?
     private var pendingSnapshotDeviceTimestamp: UInt32?
@@ -1097,9 +1157,13 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
             cancelTrailingSnapshot()
             generation &+= 1
             detector.reset()
+            gyroCadenceState.reset()
             committedRawSteps = 0
+            committedGyroCadenceResearchSteps = 0
             restoredRawStepPrefix = 0
+            restoredGyroCadenceResearchPrefix = 0
             segmentRawStepBaseline = 0
+            segmentGyroCadenceResearchBaseline = 0
             totalFrames = 0
             totalSamples = 0
             stillSamples = 0
@@ -1142,6 +1206,7 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
                          "a committed boundary must be released before preparing another")
             cancelTrailingSnapshot()
             let markerRawSteps = currentRawSteps()
+            let markerGyroSteps = currentGyroCadenceResearchStepsLocked()
             let snapshot = (totalFrames > 0 || markerRawSteps > 0)
                 ? makeSnapshot(deviceTimestamp: lastAcceptedDeviceTimestamp ?? 0,
                                receivedAt: lastAcceptedReceivedAt)
@@ -1150,7 +1215,8 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
                 id: UUID(),
                 finalSnapshot: snapshot,
                 generation: generation,
-                markerRawSteps: markerRawSteps
+                markerRawSteps: markerRawSteps,
+                markerGyroCadenceResearchSteps: markerGyroSteps
             )
             preparedBoundary = token
             preparation.resolve(token)
@@ -1168,6 +1234,7 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
     func commitBoundary(
         _ token: BoundaryToken,
         handedOffRawSteps: Int? = nil,
+        handedOffGyroCadenceResearchSteps: Int? = nil,
         nextGeneration: UInt64
     ) async -> SegmentTransition? {
         await withCheckedContinuation { continuation in
@@ -1176,12 +1243,18 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
                       generation == token.generation,
                       nextGeneration == generation &+ 1,
                       (handedOffRawSteps == token.markerRawSteps || handedOffRawSteps == 0),
+                      (handedOffGyroCadenceResearchSteps == nil
+                        || handedOffGyroCadenceResearchSteps == token.markerGyroCadenceResearchSteps
+                        || handedOffGyroCadenceResearchSteps == 0),
                       currentRawSteps() >= token.markerRawSteps else {
                     continuation.resume(returning: nil)
                     return
                 }
                 let transition = transitionSegmentLocked(
                     handedOffRawSteps: handedOffRawSteps ?? token.markerRawSteps,
+                    handedOffGyroCadenceResearchSteps: handedOffGyroCadenceResearchSteps
+                        ?? token.markerGyroCadenceResearchSteps
+                        ?? 0,
                     nextGeneration: nextGeneration
                 )
                 preparedBoundary = nil
@@ -1289,6 +1362,7 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
                          "testing roll must not invalidate an active async boundary")
             return transitionSegmentLocked(
                 handedOffRawSteps: persistedRawSteps,
+                handedOffGyroCadenceResearchSteps: currentGyroCadenceResearchStepsLocked(),
                 nextGeneration: generation &+ 1
             )
         }
@@ -1296,17 +1370,23 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
 
     private func transitionSegmentLocked(
         handedOffRawSteps: Int,
+        handedOffGyroCadenceResearchSteps: Int,
         nextGeneration: UInt64
     ) -> SegmentTransition {
         cancelTrailingSnapshot()
         let currentSegmentRawSteps = currentRawSteps()
+        let currentSegmentGyroSteps = currentGyroCadenceResearchStepsLocked()
         let finalSnapshot = (totalFrames > 0 || currentSegmentRawSteps > 0)
             ? makeSnapshot(deviceTimestamp: lastAcceptedDeviceTimestamp ?? 0,
                            receivedAt: lastAcceptedReceivedAt)
             : nil
         precondition(handedOffRawSteps >= 0 && handedOffRawSteps <= currentSegmentRawSteps)
+        precondition(handedOffGyroCadenceResearchSteps >= 0
+            && handedOffGyroCadenceResearchSteps <= currentSegmentGyroSteps)
         segmentRawStepBaseline += handedOffRawSteps
+        segmentGyroCadenceResearchBaseline += handedOffGyroCadenceResearchSteps
         let carriedRawSteps = currentRawSteps()
+        let carriedGyroSteps = currentGyroCadenceResearchStepsLocked()
 
         generation = nextGeneration
         totalFrames = 0
@@ -1330,6 +1410,9 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
         }
         return SegmentTransition(finalSnapshot: finalSnapshot,
                                  carriedSnapshot: carriedSnapshot,
+                                 finalGyroCadenceResearchSteps: currentSegmentGyroSteps,
+                                 carriedGyroCadenceResearchSteps: carriedGyroSteps > 0
+                                    ? carriedGyroSteps : nil,
                                  generation: generation)
     }
 
@@ -1338,13 +1421,15 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
     /// so new frames continue monotonically from the last published raw total.
     func seed(
         committedRawSteps restoredRawSteps: Int,
-        lastAcceptedDeviceTimestamp restoredDeviceTimestamp: UInt32? = nil
+        lastAcceptedDeviceTimestamp restoredDeviceTimestamp: UInt32? = nil,
+        committedGyroCadenceResearchSteps restoredGyroSteps: Int? = nil
     ) async -> (steps: Int, rawSteps: Int) {
         await withCheckedContinuation { continuation in
             queue.async { [self] in
                 continuation.resume(returning: seedLocked(
                     committedRawSteps: restoredRawSteps,
-                    lastAcceptedDeviceTimestamp: restoredDeviceTimestamp
+                    lastAcceptedDeviceTimestamp: restoredDeviceTimestamp,
+                    committedGyroCadenceResearchSteps: restoredGyroSteps
                 ))
             }
         }
@@ -1352,17 +1437,20 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
 
     func seedSynchronously(
         committedRawSteps restoredRawSteps: Int,
-        lastAcceptedDeviceTimestamp restoredDeviceTimestamp: UInt32? = nil
+        lastAcceptedDeviceTimestamp restoredDeviceTimestamp: UInt32? = nil,
+        committedGyroCadenceResearchSteps restoredGyroSteps: Int? = nil
     ) -> (steps: Int, rawSteps: Int) {
         queue.sync { [self] in
             seedLocked(committedRawSteps: restoredRawSteps,
-                       lastAcceptedDeviceTimestamp: restoredDeviceTimestamp)
+                       lastAcceptedDeviceTimestamp: restoredDeviceTimestamp,
+                       committedGyroCadenceResearchSteps: restoredGyroSteps)
         }
     }
 
     private func seedLocked(
         committedRawSteps restoredRawSteps: Int,
-        lastAcceptedDeviceTimestamp restoredDeviceTimestamp: UInt32?
+        lastAcceptedDeviceTimestamp restoredDeviceTimestamp: UInt32?,
+        committedGyroCadenceResearchSteps restoredGyroSteps: Int?
     ) -> (steps: Int, rawSteps: Int) {
         guard preparedBoundary == nil && committedBoundaryAwaitingRelease == nil else {
             let rawSteps = max(lastObservedRawSteps, currentRawSteps())
@@ -1374,12 +1462,21 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
         // above an already-restored prefix so repeated restore requests cannot
         // duplicate the same durable steps.
         let boundedRestoredRawSteps = max(0, restoredRawSteps)
-        if boundedRestoredRawSteps > 0 {
+        let boundedRestoredGyroSteps = restoredGyroSteps.map {
+            max(0, min($0, 10_000_000))
+        }
+        if boundedRestoredRawSteps > 0 || (boundedRestoredGyroSteps ?? 0) > 0 {
             discardPreRestoreReplayIfNeeded(restoredDeviceTimestamp)
         }
         let newlyRestoredRawSteps = max(0, boundedRestoredRawSteps - restoredRawStepPrefix)
         committedRawSteps += newlyRestoredRawSteps
         restoredRawStepPrefix = max(restoredRawStepPrefix, boundedRestoredRawSteps)
+        if let bounded = boundedRestoredGyroSteps {
+            let delta = max(0, bounded - restoredGyroCadenceResearchPrefix)
+            committedGyroCadenceResearchSteps += delta
+            restoredGyroCadenceResearchPrefix = max(restoredGyroCadenceResearchPrefix,
+                                                     bounded)
+        }
         installRestoredDeviceTimestampWatermark(restoredDeviceTimestamp)
         let rawSteps = max(lastObservedRawSteps, currentRawSteps())
         lastObservedRawSteps = rawSteps
@@ -1394,6 +1491,7 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
     /// backwards jumps remain intact because they can be a strap clock reset.
     private func discardPreRestoreReplayIfNeeded(_ restored: UInt32?) {
         guard restoredRawStepPrefix == 0,
+              restoredGyroCadenceResearchPrefix == 0,
               generation == 0,
               let restored, restored > 0,
               let current = lastAcceptedDeviceTimestamp, current > 0 else { return }
@@ -1404,6 +1502,7 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
 
         cancelTrailingSnapshot()
         detector.reset()
+        gyroCadenceState.reset()
         totalFrames = 0
         totalSamples = 0
         stillSamples = 0
@@ -1516,6 +1615,12 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
 
         totalFrames += 1
         totalSamples += frame.acceleration.count
+        if frame.rotationRate.count == AtriaR10MotionDecoder.sampleCount {
+            _ = gyroCadenceState.ingest(
+                deviceTimestamp: frame.deviceTimestamp,
+                rotationMagnitudes: frame.rotationRate.map(\.magnitude)
+            )
+        }
         let magnitudes = frame.acceleration.map(\.magnitude)
         detector.ingest(magnitudes)
         var frameStillSamples = 0
@@ -1595,6 +1700,23 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
 
     private func currentRawSteps() -> Int {
         max(0, committedRawSteps + detector.rawSteps - segmentRawStepBaseline)
+    }
+
+    private func currentGyroCadenceResearchStepsLocked() -> Int {
+        let processSteps = Int(gyroCadenceState.boundaryTotalSteps().rounded())
+        return min(10_000_000, max(
+            0,
+            committedGyroCadenceResearchSteps
+                + processSteps
+                - segmentGyroCadenceResearchBaseline
+        ))
+    }
+
+    /// Durable research-only prefix for the active accounting segment. It is
+    /// intentionally separate from `Snapshot.steps`, so production step and
+    /// phone-fallback selection cannot accidentally consume the challenger.
+    func gyroCadenceResearchStepsSynchronously() -> Int {
+        queue.sync { [self] in currentGyroCadenceResearchStepsLocked() }
     }
 
     private func makeSnapshot(deviceTimestamp: UInt32,

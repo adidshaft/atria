@@ -47,4 +47,50 @@ final class AtriaSleepTruthTests: XCTestCase {
         XCTAssertEqual(snapshot.averageDurationText, "7h 0m")
         XCTAssertEqual(snapshot.sleepBudgetDebtHours(baseNeedHours: 8), 1, accuracy: 0.001)
     }
+
+    func testNewestReviewCandidateIsVisibleWithoutBecomingAuthoritative() {
+        let candidate = night(id: "candidate", hours: 6, confirmed: false)
+        let confirmed = night(id: "confirmed", hours: 7, confirmed: true, dayOffset: -86_400)
+        let snapshot = SleepHistorySnapshot(nights: [candidate, confirmed],
+                                            confirmedCount: 1,
+                                            candidateCount: 1)
+
+        XCTAssertEqual(snapshot.latestDisplayEvidence?.id, candidate.id)
+        XCTAssertEqual(snapshot.latestMainSleep?.id, confirmed.id)
+        XCTAssertEqual(snapshot.averageDurationText, "7h 0m")
+        XCTAssertEqual(snapshot.sleepBudgetDebtHours(baseNeedHours: 8), 1, accuracy: 0.001)
+    }
+
+    func testProductionSnapshotRetainsTwelveWeeksOfCompactSleepHistory() {
+        let reference = Date(timeIntervalSince1970: 1_800_000_000)
+        let sleeps = (0..<100).map { offset -> UserConfirmedSleep in
+            let end = reference.addingTimeInterval(-Double(offset) * 86_400)
+            let start = end.addingTimeInterval(-7 * 3_600)
+            return UserConfirmedSleep(id: "sleep-\(offset)",
+                                      createdAt: end,
+                                      start: start,
+                                      end: end,
+                                      source: "manual_sleep",
+                                      confidence: "confirmed",
+                                      sessions: 1,
+                                      samples: 100,
+                                      avgHR: 55,
+                                      peakHR: 70,
+                                      restingHR: 50,
+                                      hrv: nil,
+                                      hrvWindowCount: nil,
+                                      duration: 7 * 3_600,
+                                      span: 7 * 3_600,
+                                      reason: "fixture",
+                                      motionSource: "manual",
+                                      motionValidated: false,
+                                      stageSegments: nil)
+        }
+
+        let snapshot = SleepHistorySnapshot(rollups: [], confirmedSleeps: sleeps)
+
+        XCTAssertEqual(snapshot.nights.count, SleepHistorySnapshot.maximumResidentNightCount)
+        XCTAssertEqual(snapshot.nights.first?.id, "sleep-0")
+        XCTAssertEqual(snapshot.nights.last?.id, "sleep-83")
+    }
 }

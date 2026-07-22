@@ -22,6 +22,7 @@ struct RRSample: Identifiable {
 enum AtriaRRSourceProvenance: String, Codable, Equatable, Sendable {
     case standardHeartRateMeasurement2A37 = "standard_2a37"
     case validatedProprietaryRealtime = "validated_proprietary_realtime"
+    case verifiedWhoop4HistoricalV24 = "verified_whoop4_historical_v24"
 }
 
 struct RRInterval {
@@ -491,5 +492,26 @@ struct TachogramChart: View {
         .chartXAxis(.hidden)
         .chartYScale(domain: yDomain)
         .frame(height: 120)
+        .atriaInspectableGraph(
+            AtriaInspectableGraph(
+                title: "RR tachogram",
+                subtitle: "Corrected intervals and excluded artifacts",
+                content: .timeSeries([
+                    .init(title: "Corrected RR",
+                          unit: " ms",
+                          tint: .purple,
+                          points: AtriaInspectableGraph.segmentedPoints(
+                            correctedSamples.map { (date: $0.t, value: $0.ms) },
+                            gapThreshold: HRVSnapshot.maxReadyRRGapSeconds
+                          )),
+                    .init(title: "Excluded",
+                          unit: " ms",
+                          tint: .orange,
+                          points: uncorrectedSamples.enumerated().map { index, sample in
+                              .init(date: sample.t, value: sample.ms, segment: index)
+                          })
+                ])
+            )
+        )
     }
 }

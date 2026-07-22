@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct AtriaOnboardingFlow: View {
     @State private var draft: AthleteProfile
     let ble: AtriaBLEManager
+    @ObservedObject var historyBootstrap: AtriaOnboardingHistoryBootstrap
     let onComplete: (AthleteProfile) -> Void
     let onRestoreBackup: ((URL) async -> Bool)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -92,8 +93,11 @@ struct AtriaOnboardingFlow: View {
 
     private struct PrimaryActionButton: View {
         @ObservedObject var ble: AtriaBLEManager
+        @ObservedObject var historyBootstrap: AtriaOnboardingHistoryBootstrap
         let step: Step
         let action: () -> Void
+
+        private var strapIsReady: Bool { historyBootstrap.isCompleteForCurrentStrap }
 
         var body: some View {
             Button(action: action) {
@@ -103,22 +107,29 @@ struct AtriaOnboardingFlow: View {
                     .frame(minHeight: 30)
             }
             .controlSize(.large)
-            .atriaCardAction(tint: step == .strap && ble.status != .connected ? .blue : .green)
+            .atriaCardAction(tint: step == .strap && !strapIsReady ? .blue : .green)
+            .disabled(step == .strap && historyBootstrap.isWorking)
         }
 
         private var title: String {
             switch step {
             case .whatThisIs: return "Get started"
-            case .strap: return ble.status == .connected ? "Continue" : "Connect"
+            case .strap:
+                if strapIsReady { return "Continue" }
+                if historyBootstrap.isWorking { return "Preparing your strap…" }
+                if historyBootstrap.snapshot.phase == .failed { return "Retry secure import" }
+                return ble.status == .connected ? "Waiting for live data…" : "Connect"
             case .you: return "Continue"
             case .behaviors: return "Continue"
-            case .expectations: return "Start using Atria"
+            case .expectations:
+                return strapIsReady ? "Start using Atria" : "Finish strap setup"
             }
         }
     }
 
     private struct ConnectedDebugObserver: View {
         @ObservedObject var ble: AtriaBLEManager
+        @ObservedObject var historyBootstrap: AtriaOnboardingHistoryBootstrap
         let onConnected: () -> Void
         @State private var didComplete = false
 
@@ -129,7 +140,7 @@ struct AtriaOnboardingFlow: View {
                 .task(id: ble.status) {
 #if DEBUG
                     guard ProcessInfo.processInfo.arguments.contains("--atria-ui-onboarding-complete-connected-strap") else { return }
-                    guard ble.status == .connected, !didComplete else { return }
+                    guard historyBootstrap.isCompleteForCurrentStrap, !didComplete else { return }
                     didComplete = true
                     AtriaDebugLog("ATRIADBG onboarding status=debug_complete_connected_strap action=complete")
                     try? await Task.sleep(nanoseconds: 700_000_000)
@@ -142,12 +153,14 @@ struct AtriaOnboardingFlow: View {
 
     init(profile: AthleteProfile,
          ble: AtriaBLEManager,
+         historyBootstrap: AtriaOnboardingHistoryBootstrap,
          debugInitialStep: String? = nil,
          onRestoreBackup: ((URL) async -> Bool)? = nil,
          onComplete: @escaping (AthleteProfile) -> Void) {
         _draft = State(initialValue: profile)
         _step = State(initialValue: Step(debugName: debugInitialStep) ?? .whatThisIs)
         self.ble = ble
+        self.historyBootstrap = historyBootstrap
         self.onRestoreBackup = onRestoreBackup
         self.onComplete = onComplete
     }
@@ -191,15 +204,27 @@ struct AtriaOnboardingFlow: View {
             .safeAreaBar(edge: .bottom) {
                 VStack(spacing: 8) {
                     progressDots
-                    PrimaryActionButton(ble: ble, step: step) {
-                        if step == .strap, ble.status != .connected {
-                            // “Connect” must be an honest action. Advancing to
-                            // profile setup while the status card still said
-                            // Searching made first-run setup look successful
-                            // even though no sensor source existed.
-                            ble.startScan(reason: "onboarding_primary_connect")
+                    PrimaryActionButton(ble: ble,
+                                        historyBootstrap: historyBootstrap,
+                                        step: step) {
+                        if step == .strap, !onboardingStrapIsReady {
+                            // “Connect” must be an honest action. A transport
+                            // connection can precede bond completion and the
+                            // first usable sample, so never advance until this
+                            // exact strap has produced fresh heart-rate data.
+                            if historyBootstrap.snapshot.phase == .failed {
+                                historyBootstrap.retry()
+                            } else if ble.status != .connected {
+                                ble.startScan(reason: "onboarding_primary_connect")
+                            } else {
+                                historyBootstrap.startOrResumeIfPossible()
+                            }
                         } else if step.isLast {
-                            onComplete(draft)
+                            if onboardingStrapIsReady {
+                                onComplete(draft)
+                            } else {
+                                move(to: .strap)
+                            }
                         } else {
                             move(to: Step(rawValue: step.rawValue + 1) ?? .expectations)
                         }
@@ -211,6 +236,8 @@ struct AtriaOnboardingFlow: View {
             }
         }
     }
+
+    private var onboardingStrapIsReady: Bool { historyBootstrap.isCompleteForCurrentStrap }
 
     private func move(to next: Step) {
         if reduceMotion {
@@ -278,14 +305,78 @@ struct AtriaOnboardingFlow: View {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
                 setupStepTile(1, title: "Charge strap", systemImage: "battery.100percent")
                 setupStepTile(2, title: "Close WHOOP", systemImage: "xmark.app")
-                setupStepTile(3, title: "Allow Bluetooth", systemImage: "antenna.radiowaves.left.and.right")
+                setupStepTile(3, title: "Tap until blue", systemImage: "hand.tap.fill")
             }
+            Text("Take the strap off, wait for its green sensor lights to stop, then tap the top repeatedly until the side light pulses blue. Atria will securely ask iPhone to pair; accept the system prompt, put the strap back on snugly, and keep it nearby. The strap stops its blue light when pairing finishes — Atria does not force the light off.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel("Pairing instructions")
             OnboardingConnectionStatusView(ble: ble)
-            ConnectedDebugObserver(ble: ble) {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Atria safely transfers the strap’s existing history first.",
+                      systemImage: "externaldrive.badge.icloud")
+                    .font(.subheadline.weight(.semibold))
+                Text("Before starting your new timeline, Atria imports all history stored on the strap. Each exact batch is cleared from the strap only after its records are safely stored on this iPhone. Setup waits for History Complete, prepares sleep, activities, steps, and your baseline, then verifies live collection has resumed. If interrupted, the import resumes; unseen data is never erased.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                onboardingHistoryStatus
+            }
+            .padding(14)
+            .atriaCard(emphasis: .soft)
+            ConnectedDebugObserver(ble: ble,
+                                   historyBootstrap: historyBootstrap) {
                 onComplete(draft)
             }
         }
-        .onAppear { ble.startScan(reason: "onboarding_strap") }
+        .onAppear {
+            ble.startScan(reason: "onboarding_strap")
+            historyBootstrap.startOrResumeIfPossible()
+        }
+        .onChange(of: ble.status) { _, _ in
+            historyBootstrap.startOrResumeIfPossible()
+        }
+        .onChange(of: ble.heartRate) { _, _ in
+            historyBootstrap.startOrResumeIfPossible()
+        }
+        .onChange(of: ble.onboardingPairingPreflightInFlight) { wasInFlight, isInFlight in
+            guard wasInFlight, !isInFlight else { return }
+            historyBootstrap.startOrResumeIfPossible()
+        }
+    }
+
+    @ViewBuilder
+    private var onboardingHistoryStatus: some View {
+        switch historyBootstrap.snapshot.phase {
+        case .waitingForStrap:
+            Label(historyBootstrap.snapshot.detail,
+                  systemImage: "dot.radiowaves.left.and.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.blue)
+        case .importing, .publishing:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(historyBootstrap.snapshot.detail)
+                    .font(.footnote.weight(.semibold))
+            }
+            Text("Keep Atria open and the strap nearby. If iPhone asks to pair, tap Pair.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .complete:
+            Label(historyBootstrap.snapshot.importedRows > 0
+                  ? "Ready · \(historyBootstrap.snapshot.importedRows) records safely added"
+                  : "Ready · strap history verified",
+                  systemImage: "checkmark.seal.fill")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.green)
+        case .failed:
+            Label(historyBootstrap.snapshot.detail,
+                  systemImage: "exclamationmark.triangle.fill")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var youPage: some View {

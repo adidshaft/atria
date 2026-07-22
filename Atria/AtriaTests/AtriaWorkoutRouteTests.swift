@@ -1086,11 +1086,21 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         let saveBody = String(source[saveStart.lowerBound..<deleteStart.lowerBound])
         let deleteBody = String(source[deleteStart.lowerBound..<routeCardStart.lowerBound])
 
-        let beginEdit = try XCTUnwrap(saveBody.range(of: "beginEditTransaction"))
-        let metadataEdit = try XCTUnwrap(saveBody.range(of: "store.editConfirmedWorkout"))
+        let beginEdit = try XCTUnwrap(saveBody.range(of: "beginEditTransactionAsync"))
+        // The first edit call belongs to the metadata-only fast path. That path
+        // deliberately does not touch route identity or route storage and
+        // therefore needs no cross-file transaction. Scope this assertion to
+        // the identity-changing path: its named `result` mutation must remain
+        // after the durable transaction marker has been persisted.
+        let metadataEdit = try XCTUnwrap(saveBody.range(
+            of: "let result = store.editConfirmedWorkout",
+            range: beginEdit.upperBound..<saveBody.endIndex
+        ))
         let routeEdit = try XCTUnwrap(saveBody.range(of: "AtriaWorkoutRouteStore.reconcile"))
         XCTAssertLessThan(beginEdit.lowerBound, metadataEdit.lowerBound)
         XCTAssertLessThan(metadataEdit.lowerBound, routeEdit.lowerBound)
+        XCTAssertTrue(saveBody.contains("await AtriaWorkoutRouteStore.beginEditTransactionAsync("),
+                      "durable intent persistence must complete before canonical metadata mutates")
         XCTAssertTrue(saveBody.contains("AtriaWorkoutRouteStore.clearPendingTransactionAsync()"))
         XCTAssertTrue(saveBody.contains("recoverPendingTransactionAsync("),
                       "A failed route write must drive the durable rollback recovery path")

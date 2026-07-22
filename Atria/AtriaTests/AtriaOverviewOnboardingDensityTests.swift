@@ -15,20 +15,34 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
 
         XCTAssertTrue(page.contains("LazyVGrid(columns: [GridItem(.adaptive(minimum: 92)"))
         XCTAssertEqual(page.components(separatedBy: "setupStepTile(").count - 1, 3)
+        XCTAssertTrue(page.contains("Tap until blue"))
+        XCTAssertTrue(page.contains("side light pulses blue"))
+        XCTAssertTrue(page.contains("The strap stops its blue light when pairing finishes"))
+        XCTAssertTrue(page.contains("Atria does not force the light off"))
         XCTAssertFalse(page.contains("StrapChargeIllustration"))
     }
 
-    func testConnectActionCannotAdvanceBeforeStrapConnection() throws {
+    func testConnectActionCannotAdvanceBeforeDurableHistoryBootstrap() throws {
         let source = try source("AtriaOnboardingFlow.swift")
-        let actionStart = try XCTUnwrap(source.range(of: "PrimaryActionButton(ble: ble, step: step)"))
-        let actionEnd = try XCTUnwrap(source.range(of: "}",
+        let actionStart = try XCTUnwrap(source.range(of: "PrimaryActionButton(ble: ble,"))
+        let actionEnd = try XCTUnwrap(source.range(of: ".padding(.horizontal, 20)",
                                                   range: actionStart.upperBound..<source.endIndex))
-        let action = String(source[actionStart.lowerBound...actionEnd.lowerBound])
+        let action = String(source[actionStart.lowerBound..<actionEnd.lowerBound])
 
-        XCTAssertTrue(action.contains("if step == .strap, ble.status != .connected"))
+        XCTAssertTrue(action.contains("if step == .strap, !onboardingStrapIsReady"))
         XCTAssertTrue(action.contains("ble.startScan(reason: \"onboarding_primary_connect\")"))
-        XCTAssertFalse(action.contains("move(to:"),
-                       "The disconnected Connect branch must stay on the strap step")
+        XCTAssertTrue(action.contains("if onboardingStrapIsReady {"))
+        XCTAssertTrue(action.contains("onComplete(draft)"))
+        XCTAssertTrue(action.contains("move(to: .strap)"),
+                      "Swiping past strap setup must route back instead of completing")
+
+        XCTAssertTrue(source.contains("historyBootstrap.isCompleteForCurrentStrap"),
+                      "Live HR alone must not bypass durable import and publication")
+        XCTAssertTrue(source.contains("imports all history stored on the strap"))
+        XCTAssertTrue(source.contains("Each exact batch is cleared from the strap only after its records are safely stored on this iPhone"))
+        XCTAssertTrue(source.contains("Setup waits for History Complete"))
+        XCTAssertTrue(source.contains("verifies live collection has resumed"))
+        XCTAssertTrue(source.contains("unseen data is never erased"))
     }
 
     func testCompactOnboardingHeadersKeepAccessibleCombinedTitles() throws {
@@ -137,13 +151,24 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
         let stageStart = try XCTUnwrap(content.range(of: "private enum OnboardingStage"))
         let stageEnd = try XCTUnwrap(content.range(of: "init(ble:", range: stageStart.upperBound..<content.endIndex))
         let stages = String(content[stageStart.lowerBound..<stageEnd.lowerBound])
+        let flow = try source("AtriaOnboardingFlow.swift")
+        let stepStart = try XCTUnwrap(flow.range(of: "private enum Step: Int, CaseIterable"))
+        let stepEnd = try XCTUnwrap(flow.range(of: "private struct PrimaryActionButton",
+                                               range: stepStart.upperBound..<flow.endIndex))
+        let steps = String(flow[stepStart.lowerBound..<stepEnd.lowerBound])
 
         XCTAssertTrue(stages.contains("case flow"))
         XCTAssertTrue(stages.contains("case sharingChoice(AthleteProfile)"))
         XCTAssertFalse(stages.contains("case nickname"))
         XCTAssertFalse(stages.contains("case ringPicker"))
         XCTAssertFalse(stages.contains("case womensHealth"))
-        XCTAssertTrue(content.contains("onboardingStage = .sharingChoice(profile)"))
+        XCTAssertEqual(steps.components(separatedBy: "\n        case ").count - 1, 5)
+        XCTAssertTrue(steps.contains("case whatThisIs"))
+        XCTAssertTrue(steps.contains("case strap"))
+        XCTAssertTrue(steps.contains("case you"))
+        XCTAssertTrue(steps.contains("case behaviors"))
+        XCTAssertTrue(steps.contains("case expectations"))
+        XCTAssertTrue(content.contains("onboardingStage = .sharingChoice("))
         XCTAssertFalse(content.contains("onboardingStage = .nickname(profile)"))
     }
 }
