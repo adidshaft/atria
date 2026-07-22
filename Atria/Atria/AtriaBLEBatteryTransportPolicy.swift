@@ -134,6 +134,18 @@ extension AtriaBLEManager {
         return .unavailable
     }
 
+    /// History owns the proprietary transport for the duration of a drain, but
+    /// subscribing to the independent standard Battery Level characteristic is
+    /// safe. Never turn an existing subscription off, issue a read, rediscover,
+    /// or reconnect from this policy.
+    nonisolated static func historyOwnedBatteryRefreshAction(
+        canNotify: Bool,
+        isNotifying: Bool
+    ) -> StandardBatteryRefreshAction {
+        guard canNotify else { return .unavailable }
+        return isNotifying ? .awaitNotification : .subscribe
+    }
+
     /// `CBCharacteristic.isNotifying` can be cached across a genuinely new BLE
     /// link. It is not proof that this connection completed its own CCCD
     /// subscription. Waiting on that flag alone strands a change-driven 2A19

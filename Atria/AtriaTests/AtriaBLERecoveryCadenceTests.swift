@@ -6613,6 +6613,30 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testHistoryOwnedBatteryRefreshOnlySubscribesToStandardNotifications() {
+        XCTAssertEqual(
+            AtriaBLEManager.historyOwnedBatteryRefreshAction(
+                canNotify: true,
+                isNotifying: false
+            ),
+            .subscribe
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.historyOwnedBatteryRefreshAction(
+                canNotify: true,
+                isNotifying: true
+            ),
+            .awaitNotification
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.historyOwnedBatteryRefreshAction(
+                canNotify: false,
+                isNotifying: false
+            ),
+            .unavailable
+        )
+    }
+
     func testDidConnectFastLaneHonorsThreadSafeHistoryPhaseFence() throws {
         let source = try leaseManagerSource()
         let start = try XCTUnwrap(source.range(

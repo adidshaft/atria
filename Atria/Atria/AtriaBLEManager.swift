@@ -4965,11 +4965,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     func requestStrapStatusRead(reason: String) {
-        guard Self.shouldAllowAncillaryGATTRefresh(
-            historyTransportOwnsLink: recoveredDataProjectionDeferralIsActive
-        ) else {
-            AtriaDebugLog("ATRIADBG strap_status_refresh status=deferred reason=%@ detail=history_transport_owned action=no_battery_read_subscription_or_discovery",
-                          reason)
+        if recoveredDataProjectionDeferralIsActive {
+            guard status == .connected,
+                  let peripheral,
+                  peripheral.state == .connected,
+                  let batteryLevelCharacteristic else {
+                AtriaDebugLog("ATRIADBG strap_status_refresh status=deferred reason=%@ detail=history_transport_owned action=no_battery_characteristic_or_discovery",
+                              reason)
+                return
+            }
+            let action = Self.historyOwnedBatteryRefreshAction(
+                canNotify: batteryLevelCharacteristic.properties.contains(.notify)
+                    || batteryLevelCharacteristic.properties.contains(.indicate),
+                isNotifying: batteryLevelCharacteristic.isNotifying
+            )
+            if action == .subscribe {
+                UserDefaults.standard.set(Date().timeIntervalSince1970,
+                                          forKey: BatteryDefaults.notificationRequestedAt)
+                peripheral.setNotifyValue(true, for: batteryLevelCharacteristic)
+                AtriaDebugLog("ATRIADBG strap_status_refresh status=requested reason=%@ detail=history_transport_owned source=2A19_new_subscription no_read=1",
+                              reason)
+            } else {
+                AtriaDebugLog("ATRIADBG strap_status_refresh status=deferred reason=%@ detail=history_transport_owned action=%@ no_read=1 no_discovery=1",
+                              reason,
+                              action == .awaitNotification ? "await_2A19_notification" : "2A19_unavailable")
+            }
             return
         }
         guard motionHandshakeDiagnostic == nil else {

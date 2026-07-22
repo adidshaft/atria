@@ -19,6 +19,7 @@ final class AtriaBLEBatteryTransportPolicyStructureTests: XCTestCase {
             "parseProprietaryBatteryResponse",
             "batteryNotificationRecoveryAction",
             "standardBatteryRefreshAction",
+            "historyOwnedBatteryRefreshAction",
             "existingBatteryNotificationAction",
             "batteryLevelIsFresh",
             "notificationLeaseSupportsBatteryDisplay",
