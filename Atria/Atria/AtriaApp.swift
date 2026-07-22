@@ -501,7 +501,8 @@ struct AtriaApp: App {
                 let priorArchiveRevision = store.recoveredDataArchiveRevisionSnapshot
                 historicalSyncSucceeded = await ble
                     .requestOfflineHistoricalSyncAwaitingCompletion(
-                        reason: "\(reason)_opportunistic"
+                        reason: "\(reason)_opportunistic",
+                        admitAutomaticConnectedHandoffIfEligible: true
                     )
                 if historicalSyncSucceeded {
                     historicalSyncSucceeded = await store.awaitRecoveredDataPublication(

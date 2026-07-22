@@ -7368,6 +7368,20 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "BGProcessing must not depend on a foreground-only timer to authorize exact-gap recovery")
     }
 
+    func testSceneBackgroundUsesTheSameAuditedConnectedHandoffGate() throws {
+        let appURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaApp.swift")
+        let app = try String(contentsOf: appURL, encoding: .utf8)
+        let start = try XCTUnwrap(app.range(of: "private func performSceneBackgroundMaintenance"))
+        let end = try XCTUnwrap(app.range(of: "private func scheduleBackgroundMaintenance",
+                                          range: start.upperBound..<app.endIndex))
+        let body = String(app[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("admitAutomaticConnectedHandoffIfEligible: true"),
+                      "scene backgrounding must use the audited exact-gap handoff before deferring to a later BGProcessing window")
+    }
+
     func testAutomaticConnectedHistoryHandoffUsesEvidenceGatesAtAnyHour() throws {
         let manager = try leaseManagerSource()
         let start = try XCTUnwrap(manager.range(
