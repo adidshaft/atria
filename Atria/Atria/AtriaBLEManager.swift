@@ -3411,6 +3411,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             migrateProtectedR10HistoryInterlockIfNeeded()
             migrateFailedProprietaryBatteryRefreshIfNeeded()
             isolateRecentProtectedR10DisconnectStormIfNeeded()
+            restoreInterruptedFullDrainLaunchIntentIfNeeded(defaults: defaults)
             let launchNow = Date()
             // A user-started workout is an explicit request for the strap's
             // motion stream.  Pure-HR fallback is the right fail-safe for
@@ -5624,6 +5625,58 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             force: pending.force,
             explicitResearchRequest: pending.explicitRequest
         )
+    }
+
+    nonisolated static func shouldResumeInterruptedFullDrainAtLaunch(
+        rangeLossBackfillPending: Bool,
+        authorityStatus: AtriaHistoricalFullDrainCoverageStore.Authority.Status?,
+        exactGapFingerprintStillPending: Bool
+    ) -> Bool {
+        rangeLossBackfillPending
+            && authorityStatus == .draining
+            && exactGapFingerprintStillPending
+    }
+
+    /// A full-drain authority is a durable transport transaction, not merely a
+    /// diagnostic snapshot. If iOS replaces the process before HISTORY_COMPLETE,
+    /// ordinary launch must reacquire the history owner from the already-fsynced
+    /// admission cursor. Otherwise the app silently falls back to live HR and
+    /// leaves the missing window pending forever unless a Mac supplies a debug
+    /// launch argument. Only `.draining` is eligible here: terminal authorities
+    /// resume their publication journal elsewhere and must never seize BLE again.
+    private func restoreInterruptedFullDrainLaunchIntentIfNeeded(
+        defaults: UserDefaults
+    ) {
+        let authority = try? historicalFullDrainCoverageStore.load()
+        let exactGapFingerprintStillPending = authority.flatMap { authority in
+            UUID(uuidString: authority.gap.gapIdentifier).flatMap { gapID in
+                AtriaHistoricalGapLedger.recoveryCandidate(
+                    id: gapID,
+                    startUnix: authority.gap.startUnix,
+                    endUnix: authority.gap.endUnix,
+                    reason: authority.gap.reason
+                )
+            }
+        } != nil
+        guard Self.shouldResumeInterruptedFullDrainAtLaunch(
+            rangeLossBackfillPending: defaults.bool(
+                forKey: OfflineSyncDefaults.rangeLossBackfillPending
+            ),
+            authorityStatus: authority?.status,
+            exactGapFingerprintStillPending: exactGapFingerprintStillPending
+        ) else { return }
+        explicitHistoryLaunchIntentPending = true
+        retainPendingOfflineHistoricalSyncRequest(
+            reason: "interrupted_full_drain_relaunch",
+            force: true,
+            explicitRequest: true
+        )
+        defaults.set("pending_interrupted_full_drain_relaunch",
+                     forKey: OfflineSyncDefaults.lastStatus)
+        defaults.set("interrupted_full_drain_relaunch",
+                     forKey: OfflineSyncDefaults.lastReason)
+        AtriaDebugLog("ATRIADBG offline_sync status=pending_interrupted_full_drain_relaunch authority=%@ action=await_current_epoch_hr_then_resume_durable_cursor",
+                      authority?.authorityIdentifier ?? "none")
     }
 
     @discardableResult

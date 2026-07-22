@@ -3322,6 +3322,44 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), "the accepted-HR path must persist first, then replay the forced request")
     }
 
+    func testInterruptedFullDrainRelaunchResumesOnlyPendingTransportAuthority() {
+        typealias Status = AtriaHistoricalFullDrainCoverageStore.Authority.Status
+
+        XCTAssertTrue(AtriaBLEManager.shouldResumeInterruptedFullDrainAtLaunch(
+            rangeLossBackfillPending: true,
+            authorityStatus: Status.draining,
+            exactGapFingerprintStillPending: true
+        ))
+        for terminalStatus in [
+            Status.historyComplete,
+            .coverageProven,
+            .gapResolvedConsumersPending,
+            .consumersCommitted,
+            .resolved
+        ] {
+            XCTAssertFalse(AtriaBLEManager.shouldResumeInterruptedFullDrainAtLaunch(
+                rangeLossBackfillPending: true,
+                authorityStatus: terminalStatus,
+                exactGapFingerprintStillPending: true
+            ), "terminal publication state must not reacquire the BLE history owner")
+        }
+        XCTAssertFalse(AtriaBLEManager.shouldResumeInterruptedFullDrainAtLaunch(
+            rangeLossBackfillPending: false,
+            authorityStatus: Status.draining,
+            exactGapFingerprintStillPending: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldResumeInterruptedFullDrainAtLaunch(
+            rangeLossBackfillPending: true,
+            authorityStatus: nil,
+            exactGapFingerprintStillPending: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldResumeInterruptedFullDrainAtLaunch(
+            rangeLossBackfillPending: true,
+            authorityStatus: Status.draining,
+            exactGapFingerprintStillPending: false
+        ))
+    }
+
     func testProductionHistoryOwnershipPersistsLiveJournalBeforePhaseCutover() throws {
         let source = try leaseManagerSource()
         let start = try XCTUnwrap(source.range(
