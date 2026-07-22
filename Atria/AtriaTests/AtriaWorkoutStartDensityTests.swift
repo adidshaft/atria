@@ -66,6 +66,8 @@ final class AtriaWorkoutStartDensityTests: XCTestCase {
                       "Reduce Motion must suppress optional selector transitions")
         XCTAssertTrue(sheet.contains(".accessibilityValue(configuration.activityType == type ? \"Selected\" : \"Not selected\")"))
         XCTAssertTrue(sheet.contains("AtriaWorkoutRecentActivityStore.recordStarted(value.activityType)"))
+        XCTAssertTrue(sheet.contains("await onPrepare()"),
+                      "Opening the picker should warm read-only workout authority before the Start tap")
         XCTAssertTrue(sheet.contains("if isStarting"))
         XCTAssertTrue(sheet.contains("ProgressView()"),
                       "The real authority wait needs visible native progress instead of a frozen button")
