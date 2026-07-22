@@ -17914,6 +17914,25 @@ final class SessionStore: ObservableObject {
             ) {
                 return replacement
             }
+            // A cached main-sleep review remains useful until newer evidence
+            // refines its boundary. A cached nap is different: it is a short,
+            // daytime claim that can be indistinguishable from quiet awake
+            // time after a cache survives a reconnect or aggregate refresh.
+            // Only carry it forward when this fresh pass independently finds
+            // an overlapping, motion-validated nap from the strap evidence.
+            // Do not treat HR-only aggregate candidates or an old snapshot's
+            // own confidence/source as that confirmation.
+            if latest.isNapEvidence {
+                let freshValidatedNapOverlaps = candidates.contains { candidate in
+                    candidate.kind == "nap_candidate"
+                        && candidate.motionEvidenceValidated
+                        && candidate.start < end
+                        && candidate.end > start
+                }
+                guard freshValidatedNapOverlaps else {
+                    return aggregateReview ?? physiologicalReview
+                }
+            }
             return latest
         }
         return aggregateReview ?? physiologicalReview

@@ -48,6 +48,40 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
                                           stageSegments: [])
     }
 
+    private func napReviewNight(id: String = "cached-nap") -> SleepHistorySnapshot.Night {
+        let start = date(day: 10, hour: 14)
+        return SleepHistorySnapshot.Night(id: id,
+                                          day: calendar.startOfDay(for: start),
+                                          start: start,
+                                          end: start.addingTimeInterval(60 * 60),
+                                          duration: 60 * 60,
+                                          restingHR: 62,
+                                          hrv: nil,
+                                          respiratoryRate: nil,
+                                          sleepEfficiency: 1,
+                                          confidence: "review_needed",
+                                          source: "nap_candidate",
+                                          confirmed: false,
+                                          stageSegments: [])
+    }
+
+    private func daytimeLowHRSession(start: Date,
+                                     validatedMotion: Bool) -> SavedSession {
+        let duration: TimeInterval = 60 * 60
+        var session = SavedSession(
+            id: UUID(),
+            start: start,
+            end: start.addingTimeInterval(duration),
+            label: "Daytime low-HR evidence",
+            points: stride(from: 0.0, through: duration, by: 60.0).map {
+                SavedSession.Point(t: $0, bpm: 62)
+            }
+        )
+        session.motionEvidenceSource = validatedMotion ? "validated_strap_motion" : "unavailable"
+        session.motionEvidenceValidated = validatedMotion
+        return session
+    }
+
     private func confirmedSleep(overlapping session: SavedSession) -> UserConfirmedSleep {
         UserConfirmedSleep(id: "confirmed-overlap",
                            createdAt: session.end,
@@ -188,6 +222,43 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
                                                                calendar: calendar)
 
         XCTAssertEqual(result, expected)
+    }
+
+    func testStaleCachedNapDoesNotSurviveActiveLowHRWithoutValidatedMotion() throws {
+        let cachedNap = napReviewNight()
+        let snapshot = SleepHistorySnapshot(nights: [cachedNap], confirmedCount: 0, candidateCount: 1)
+        let activeLowHR = daytimeLowHRSession(start: try XCTUnwrap(cachedNap.start),
+                                               validatedMotion: false)
+
+        let result = SessionStore.makeSleepReviewNightForCache(
+            snapshot: snapshot,
+            canonicalSessions: [activeLowHR],
+            confirmedSleeps: [],
+            rest: 62,
+            maxHR: 190,
+            calendar: calendar
+        )
+
+        XCTAssertNil(result,
+                     "a stale cached nap must not outlive a fresh active/low-HR pass without strap motion proof")
+    }
+
+    func testCachedNapSurvivesFreshOverlappingValidatedMotionEvidence() throws {
+        let cachedNap = napReviewNight(id: "motion-backed-cached-nap")
+        let snapshot = SleepHistorySnapshot(nights: [cachedNap], confirmedCount: 0, candidateCount: 1)
+        let motionBackedNap = daytimeLowHRSession(start: try XCTUnwrap(cachedNap.start),
+                                                   validatedMotion: true)
+
+        let result = SessionStore.makeSleepReviewNightForCache(
+            snapshot: snapshot,
+            canonicalSessions: [motionBackedNap],
+            confirmedSleeps: [],
+            rest: 62,
+            maxHR: 190,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(result, cachedNap)
     }
 
     func testGrowingResidentJournalAggregateReplacesFirstWakeSnapshot() throws {
