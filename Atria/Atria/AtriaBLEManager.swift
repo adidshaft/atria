@@ -5528,6 +5528,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             || explicitLaunchIntentPending
     }
 
+    /// A history owner belongs to the BLE epoch which armed it.  If that epoch
+    /// was interrupted, it must not suppress standard 2A37 discovery on the
+    /// replacement connection.  A deliberately armed fresh-owner cutover is
+    /// the sole exception: it is the one case allowed to carry history
+    /// ownership across a disconnect.
+    nonisolated static func shouldReleaseInterruptedHistoryOwnerForLiveReconnect(
+        offlineSyncInProgress: Bool,
+        historyPhaseActive: Bool,
+        disconnectObservedWithHistoryOwner: Bool,
+        freshOwnerCutoverPending: Bool,
+        freshOwnerAdmissionPending: Bool,
+        freshOwnerConnectionArmed: Bool
+    ) -> Bool {
+        guard disconnectObservedWithHistoryOwner,
+              offlineSyncInProgress || historyPhaseActive else {
+            return false
+        }
+        return !freshOwnerCutoverPending
+            && !freshOwnerAdmissionPending
+            && !freshOwnerConnectionArmed
+    }
+
     nonisolated static func shouldAllowAncillaryGATTRefresh(
         historyTransportOwnsLink: Bool
     ) -> Bool {
@@ -24933,6 +24955,54 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                               self.bleCallbackEpochFence.epoch,
                               peripheral.identifier.uuidString)
                 return
+            }
+            // `didDisconnect` can be delayed behind a Bluetooth-off/on state
+            // change.  In that ordering the synchronous fast lane above
+            // correctly sees the old history fence and declines to overlap
+            // proprietary history traffic, but there may be no valid history
+            // owner left to clear it.  Never let that stale epoch strand the
+            // replacement connection without 2A37: retain the durable gap,
+            // drop only the local owner, then rerun the enable-only HR fast
+            // lane.  A deliberately armed fresh-owner cutover remains the
+            // explicit exception and continues through its normal path below.
+            let disconnectObservedWithHistoryOwner = UserDefaults.standard.bool(
+                forKey: "atria.ble.disconnectOfflineSyncActive"
+            )
+            let staleHistoryPhase = self.historyTransportPhaseFence.snapshot().isActive
+            if Self.shouldReleaseInterruptedHistoryOwnerForLiveReconnect(
+                offlineSyncInProgress: self.offlineHistoricalSyncInProgress,
+                historyPhaseActive: staleHistoryPhase,
+                disconnectObservedWithHistoryOwner: disconnectObservedWithHistoryOwner,
+                freshOwnerCutoverPending: self.freshHistoryOwnerCutoverPending,
+                freshOwnerAdmissionPending: self.freshHistoryOwnerAdmissionPending,
+                freshOwnerConnectionArmed: self.freshHistoryOwnerConnectionGeneration != nil
+            ) {
+                let generation = self.offlineHistoricalSyncGeneration
+                if self.offlineHistoricalSyncInProgress {
+                    self.interruptOfflineHistoricalSyncForTransportLoss(
+                        reason: "interrupted_history_owner_reconnect_live_release"
+                    )
+                } else {
+                    self.cancelHistoryOnlyProbe(
+                        reason: "interrupted_history_owner_reconnect_live_release"
+                    )
+                    _ = self.historyTransportPhaseFence.deactivate()
+                }
+                UserDefaults.standard.set(false,
+                                          forKey: "atria.ble.disconnectOfflineSyncActive")
+                UserDefaults.standard.set(
+                    "interrupted_history_owner_released_for_live_reconnect",
+                    forKey: OfflineSyncDefaults.lastStatus
+                )
+                AtriaDebugLog("ATRIADBG offline_sync status=interrupted_owner_released_for_live_reconnect generation=%llu action=rerun_2a37_discovery_no_history_command",
+                              generation)
+                _ = self.beginSynchronousHeartRateDiscoveryFastLane(
+                    peripheral: peripheral,
+                    callbackEpoch: callbackEpoch,
+                    historyRecoveryActive: false,
+                    diagnosticActive: self.motionHandshakeDiagnostic != nil,
+                    reason: "did_connect_interrupted_history_owner_live_release"
+                )
             }
             // If CoreBluetooth completed the reconnect on its own, consume the
             // one-shot repair permit so a later unrelated reconnect is never
