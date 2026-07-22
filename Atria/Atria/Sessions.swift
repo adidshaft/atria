@@ -15745,6 +15745,21 @@ final class SessionStore: ObservableObject {
                           isoString(confirmed.end))
             return nil
         }
+        let auditSamples = canonicalSessions(includeActiveJournal: true).flatMap { session in
+            session.points.compactMap { point -> HRSample? in
+                let sample = HRSample(t: session.start.addingTimeInterval(max(0, point.t)), bpm: point.bpm)
+                return sample.t >= confirmed.start && sample.t <= confirmed.end && sample.bpm > 0
+                    ? sample : nil
+            }
+        }
+        Self.persistStrainConfirmationAudit(
+            confirmed: confirmed,
+            samples: auditSamples,
+            rest: rest,
+            maxHR: maxHR,
+            biologicalSex: profile.biologicalSex,
+            excludedIntervals: []
+        )
         clearDismissedWorkoutCandidates(overlappingStart: confirmed.start, end: confirmed.end)
         AtriaDebugLog("ATRIADBG workout_confirm status=confirmed id=%@ source=%@ candidate_source=%@ label=%@ start=%@ end=%@ duration_s=%.0f observed_s=%.0f chunks=%d samples=%d avg_hr=%d peak_hr=%d p95_hr=%d p99_hr=%d threshold_hr=%d stream_coverage_percent=%d confidence=%@ strain=%.2f active_energy_kcal=%.0f active_energy_confidence=%@ zone_rest_s=%.0f zone_warmup_s=%.0f zone_fat_burn_s=%.0f zone_aerobic_s=%.0f zone_anaerobic_s=%.0f zone_max_s=%.0f auto_gate_e_unchanged=1 healthkit_source=user_confirmed",
               confirmed.id,
@@ -16091,6 +16106,16 @@ final class SessionStore: ObservableObject {
                           isoString(confirmed.end))
             return nil
         }
+        Self.persistStrainConfirmationAudit(
+            confirmed: confirmed,
+            samples: prepared.points.map {
+                HRSample(t: request.start.addingTimeInterval(max(0, $0.t)), bpm: $0.bpm)
+            },
+            rest: request.rest,
+            maxHR: request.maxHR,
+            biologicalSex: request.profile.biologicalSex,
+            excludedIntervals: request.excludedIntervals
+        )
         settleWorkoutCandidateAfterCanonicalSave(
             confirmed: confirmed,
             originalCandidateWindow: request.settlingCandidateWindow
@@ -16353,6 +16378,16 @@ final class SessionStore: ObservableObject {
                           isoString(confirmed.end))
             return nil
         }
+        Self.persistStrainConfirmationAudit(
+            confirmed: confirmed,
+            samples: points.map {
+                HRSample(t: requestedStart.addingTimeInterval(max(0, $0.t)), bpm: $0.bpm)
+            },
+            rest: rest,
+            maxHR: maxHR,
+            biologicalSex: profile.biologicalSex,
+            excludedIntervals: excludedIntervals
+        )
         settleWorkoutCandidateAfterCanonicalSave(
             confirmed: confirmed,
             originalCandidateWindow: settlingCandidateWindow
@@ -16753,6 +16788,63 @@ final class SessionStore: ObservableObject {
                                   max: maxHR,
                                   sex: biologicalSex)
         }
+    }
+
+    /// Captures the measured inputs used by the already-confirmed strain
+    /// result. This audit is deliberately post-save and diagnostics-only: it
+    /// never recalculates, replaces, or gates the workout's stored score.
+    private static func persistStrainConfirmationAudit(
+        confirmed: UserConfirmedWorkout,
+        samples: [HRSample],
+        rest: Int,
+        maxHR: Int,
+        biologicalSex: AthleteProfile.BiologicalSex,
+        excludedIntervals: [ExcludedInterval]
+    ) {
+        let segments = AtriaAnalytics.Strain.contiguousSegments(
+            samples.sorted { $0.t < $1.t },
+            excluding: excludedIntervals
+        )
+        let rawTRIMP = confirmedWorkoutTRIMP(
+            segments: segments,
+            start: confirmed.start,
+            rest: rest,
+            maxHR: maxHR,
+            biologicalSex: biologicalSex
+        )
+        let gapAudit = segments.reduce(AtriaAnalytics.Strain.MaxHeartRateZoneSeconds.empty) {
+            total, segment in
+            total + AtriaAnalytics.Strain.maxHeartRateZoneSeconds(
+                segment.map { (t: $0.t.timeIntervalSince(confirmed.start), bpm: $0.bpm) },
+                maxHR: maxHR
+            )
+        }
+        let observed = gapAudit.storage.values.reduce(0, +)
+        let dropped = gapAudit.droppedGapSeconds
+        let result = confirmed.strain == nil ? "no_strain_from_available_hr" : "score_persisted"
+        let record = AtriaStrainConfirmationAuditRecord(
+            workoutID: confirmed.id,
+            recordedAt: Date(),
+            rawTRIMP: rawTRIMP,
+            integratedObservedSeconds: observed,
+            droppedGapSeconds: dropped,
+            restingHR: rest,
+            maxHR: maxHR,
+            strainScore: confirmed.strain,
+            result: result,
+            coveragePercent: confirmed.streamCoveragePercent
+        )
+        AtriaStrainConfirmationAuditLog.append(record)
+        AtriaDebugLog("ATRIADBG strain_confirmation_audit id=%@ raw_trimp=%.4f integrated_observed_s=%.0f dropped_gap_s=%.0f rest_hr=%d max_hr=%d strain=%.2f result=%@ coverage_percent=%d",
+                      record.workoutID,
+                      record.rawTRIMP,
+                      record.integratedObservedSeconds,
+                      record.droppedGapSeconds,
+                      record.restingHR,
+                      record.maxHR,
+                      record.strainScore ?? 0,
+                      record.result,
+                      record.coveragePercent)
     }
 
     private static func readConfirmedWorkouts() -> [UserConfirmedWorkout] {

@@ -69,6 +69,50 @@ enum DetectionEventLog {
     }
 }
 
+/// A private, bounded audit trail for the exact strain inputs present when a
+/// workout becomes canonical. This is intentionally separate from
+/// `DetectionEventLog`: it must not create a new user-facing History item or
+/// influence any score, eligibility gate, or presentation.
+struct AtriaStrainConfirmationAuditRecord: Codable, Equatable {
+    let workoutID: String
+    let recordedAt: Date
+    let rawTRIMP: Double
+    let integratedObservedSeconds: TimeInterval
+    let droppedGapSeconds: TimeInterval
+    let restingHR: Int
+    let maxHR: Int
+    let strainScore: Double?
+    let result: String
+    let coveragePercent: Int
+}
+
+enum AtriaStrainConfirmationAuditLog {
+    static let storageKey = "atria.strain.confirmation.audit.v1"
+    static let capacity = 40
+
+    /// Best-effort diagnostics only. A failure to write the audit trail must
+    /// never interrupt a confirmed-workout save.
+    static func append(_ record: AtriaStrainConfirmationAuditRecord,
+                       store: UserDefaults = .standard) {
+        var records = load(store: store)
+        records.insert(record, at: 0)
+        if records.count > capacity {
+            records.removeLast(records.count - capacity)
+        }
+        guard let data = try? JSONEncoder().encode(records) else { return }
+        store.set(data, forKey: storageKey)
+    }
+
+    static func load(store: UserDefaults = .standard) -> [AtriaStrainConfirmationAuditRecord] {
+        guard let data = store.data(forKey: storageKey),
+              let records = try? JSONDecoder().decode([AtriaStrainConfirmationAuditRecord].self,
+                                                       from: data) else {
+            return []
+        }
+        return records
+    }
+}
+
 /// Honest, non-fabricated copy for each machine reason code / kind. Never
 /// invent a reason not already produced by the detection pipeline itself.
 enum DetectionReasonCopy {
