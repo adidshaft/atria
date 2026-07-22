@@ -113,6 +113,41 @@ private final class PowerThermalGovernor {
 /// proprietary stream for later protocol decoding.
 @MainActor
 final class AtriaBLEManager: NSObject, ObservableObject {
+    /// Diagnostics-only accounting for the existing historical drain.  This is
+    /// deliberately kept on the main actor with the orchestrator: it observes
+    /// callback/order/persistence outcomes, but never participates in protocol
+    /// decisions or changes the reducer's state.
+    private struct HistoricalDrainTelemetry {
+        var generation: UInt64 = 0
+        var startedAt = Date()
+        var lastProgressAt = Date()
+        var stream5Received = 0
+        var admitted = 0
+        var decoded = 0
+        var decodeErrors = 0
+        var persisted = 0
+        var persistErrors = 0
+        var flushStarted = 0
+        var flushSucceeded = 0
+        var flushErrors = 0
+        var ackSent = 0
+        var ackSucceeded = 0
+        var ackErrors = 0
+        var pendingHighWater = 0
+
+        mutating func reset(generation: UInt64, now: Date = Date()) {
+            self = Self(generation: generation, startedAt: now, lastProgressAt: now)
+        }
+
+        mutating func observePending(_ depth: Int) {
+            pendingHighWater = max(pendingHighWater, max(0, depth))
+        }
+
+        mutating func noteProgress(now: Date = Date()) {
+            lastProgressAt = now
+        }
+    }
+
     /// Captured synchronously at CoreBluetooth delegate entry. Main-actor work
     /// must carry this token so callbacks queued by a dead link cannot mutate a
     /// newer history generation after reconnect.
@@ -1277,6 +1312,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var historicalArchiveWriteFailures = 0
     private var lastHistoricalArchivePath = ""
     private var historyDrain = AtriaWhoop4HistoryDrainState()
+    private var historicalDrainTelemetry = HistoricalDrainTelemetry()
+    private var historicalDrainTelemetryTask: Task<Void, Never>?
     private let historySequenceContinuityStore = AtriaWhoop4HistorySequenceContinuityStore()
     private var historySequenceContinuityStrapIdentifier: String?
     private var pendingHistoryEndACK: (key: String, payload: [UInt8])?
@@ -8071,6 +8108,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       selectedFullDrainGap?.window.id.uuidString ?? "none")
         prepareHistorySequenceContinuity(for: peripheral?.identifier.uuidString)
         _ = historyDrain.begin(generation: syncGeneration)
+        startHistoricalDrainTelemetry(generation: syncGeneration)
         historicalMetricDurabilityFence.begin(generation: syncGeneration)
         noteOfflineHistoricalSyncProgress(
             generation: syncGeneration,
@@ -8437,6 +8475,68 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return true
     }
 
+    private func startHistoricalDrainTelemetry(generation: UInt64) {
+        historicalDrainTelemetryTask?.cancel()
+        historicalDrainTelemetry.reset(generation: generation)
+        historicalDrainTelemetryTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(5))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled,
+                      let self,
+                      self.offlineHistoricalSyncInProgress,
+                      self.offlineHistoricalSyncGeneration == generation else {
+                    return
+                }
+                self.emitHistoricalDrainTelemetry(generation: generation,
+                                                  trigger: "periodic")
+            }
+        }
+    }
+
+    private func emitHistoricalDrainTelemetry(
+        generation: UInt64,
+        trigger: String,
+        now: Date = Date()
+    ) {
+        guard historicalDrainTelemetry.generation == generation else { return }
+        let pending = pendingHistoricalTransportEvents.count
+            + historyDrain.pendingPersistenceCount
+            + (historicalAdmissionBatchInFlight ? 1 : 0)
+        historicalDrainTelemetry.observePending(pending)
+        let lastProgressAge = max(0, now.timeIntervalSince(
+            historicalDrainTelemetry.lastProgressAt
+        ))
+        AtriaDebugLog("ATRIADBG historyDrainTelemetry trigger=%@ generation=%llu stream5_rx=%d admitted=%d decoded=%d decode_errors=%d persisted=%d persist_errors=%d pending=%d pending_high_water=%d flush_started=%d flush_ok=%d flush_errors=%d ack_sent=%d ack_ok=%d ack_errors=%d last_progress_age_s=%.1f phase=%@",
+                      trigger,
+                      generation,
+                      historicalDrainTelemetry.stream5Received,
+                      historicalDrainTelemetry.admitted,
+                      historicalDrainTelemetry.decoded,
+                      historicalDrainTelemetry.decodeErrors,
+                      historicalDrainTelemetry.persisted,
+                      historicalDrainTelemetry.persistErrors,
+                      pending,
+                      historicalDrainTelemetry.pendingHighWater,
+                      historicalDrainTelemetry.flushStarted,
+                      historicalDrainTelemetry.flushSucceeded,
+                      historicalDrainTelemetry.flushErrors,
+                      historicalDrainTelemetry.ackSent,
+                      historicalDrainTelemetry.ackSucceeded,
+                      historicalDrainTelemetry.ackErrors,
+                      lastProgressAge,
+                      historyDrain.phaseForDiagnostics)
+    }
+
+    private func finishHistoricalDrainTelemetry(generation: UInt64, trigger: String) {
+        emitHistoricalDrainTelemetry(generation: generation, trigger: trigger)
+        historicalDrainTelemetryTask?.cancel()
+        historicalDrainTelemetryTask = nil
+    }
+
     private func finishOfflineHistoricalSync(
         reason: String,
         generation: UInt64,
@@ -8481,6 +8581,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historyInitSweepCommands.removeAll()
         historySkipDataRangeRequest = false
         probeCommandMode = .withoutResponse
+        finishHistoricalDrainTelemetry(generation: generation, trigger: "finish")
         offlineHistoricalSyncInProgress = false
         // Keep the phase visible until the transaction is no longer active, so
         // an in-flight RX/stream4 callback is never dropped inside the drain.
@@ -19891,6 +19992,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
         recordResearchProbeCandidate(payload: payload, source: .historical)
+        if historicalDrainTelemetry.generation == generation {
+            historicalDrainTelemetry.stream5Received += 1
+            historicalDrainTelemetry.noteProgress()
+        }
         guard !historicalAdmissionFailed else { return }
         guard pendingHistoricalTransportEvents.count < 1_024 else {
             historicalAdmissionFailed = true
@@ -19913,6 +20018,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             clockAuthorityEnabled: historyClockSyncEnabled,
             strapIdentifier: strapIdentifier
         )))
+        if historicalDrainTelemetry.generation == generation {
+            historicalDrainTelemetry.observePending(
+                pendingHistoricalTransportEvents.count + historyDrain.pendingPersistenceCount
+            )
+        }
         scheduleHistoricalTransportEventDrain()
     }
 
@@ -20027,6 +20137,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let generation = frame.generation
         guard offlineHistoricalSyncInProgress,
               generation == offlineHistoricalSyncGeneration else { return }
+        if historicalDrainTelemetry.generation == generation {
+            historicalDrainTelemetry.admitted += 1
+            historicalDrainTelemetry.noteProgress()
+        }
         // The exact validated payload is a stable replay identity: WHOOP history
         // records include their device timestamp/counter, and the outer frame's
         // CRC has already been verified before this method is reached. Keeping
@@ -20068,6 +20182,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 clock: pipelineClock,
                 historyClockSyncEnabled: frame.clockAuthorityEnabled
             )
+            let decoded: Bool
+            if case .record = computation.payload {
+                decoded = true
+            } else {
+                decoded = false
+            }
             AtriaDebugLog("%@", computation.logMessage)
             let persistence = AtriaWhoop4HistoryArchivePipeline.persist(
                 computation,
@@ -20078,7 +20198,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 self?.applyHistoricalArchivePersistenceResult(
                     persistence,
                     generation: generation,
-                    frameKey: frameKey
+                    frameKey: frameKey,
+                    decoded: decoded
                 )
             }
         }
@@ -20129,7 +20250,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func applyHistoricalArchivePersistenceResult(
         _ result: AtriaWhoop4HistoryArchivePipeline.PersistenceResult,
                                                          generation: UInt64,
-                                                         frameKey: String) {
+                                                         frameKey: String,
+                                                         decoded: Bool) {
         guard offlineHistoricalSyncInProgress,
               historyDrain.generation == generation else {
             HistoricalArchive.endDurableDrain(generation: generation)
@@ -20143,6 +20265,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             frameKey: frameKey,
             succeeded: result.succeeded
         )
+        if historicalDrainTelemetry.generation == generation {
+            if decoded {
+                historicalDrainTelemetry.decoded += 1
+            } else {
+                historicalDrainTelemetry.decodeErrors += 1
+            }
+            if result.succeeded {
+                historicalDrainTelemetry.persisted += 1
+                historicalDrainTelemetry.noteProgress()
+            } else {
+                historicalDrainTelemetry.persistErrors += 1
+            }
+            historicalDrainTelemetry.observePending(
+                pendingHistoricalTransportEvents.count + historyDrain.pendingPersistenceCount
+            )
+        }
         if result.succeeded {
             if Self.historicalFrameRenewsIdleLease(
                 persistenceSucceeded: result.succeeded,
@@ -20275,6 +20413,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 guard offlineHistoricalSyncInProgress,
                       historyDrain.generation == generation,
                       !historyDurableFlushInFlight else { continue }
+                if historicalDrainTelemetry.generation == generation {
+                    historicalDrainTelemetry.flushStarted += 1
+                    historicalDrainTelemetry.observePending(
+                        pendingHistoricalTransportEvents.count
+                            + historyDrain.pendingPersistenceCount
+                    )
+                }
                 historyDurableFlushInFlight = true
                 let admissionFailed = historicalAdmissionFailed
                 let admissionLedger = historicalAdmissionLedger
@@ -20423,6 +20568,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             return
                         }
                         self.historyDurableFlushInFlight = false
+                        if self.historicalDrainTelemetry.generation == generation {
+                            if error == nil {
+                                self.historicalDrainTelemetry.flushSucceeded += 1
+                                self.historicalDrainTelemetry.noteProgress()
+                            } else {
+                                self.historicalDrainTelemetry.flushErrors += 1
+                            }
+                            self.historicalDrainTelemetry.observePending(
+                                self.pendingHistoricalTransportEvents.count
+                                    + self.historyDrain.pendingPersistenceCount
+                            )
+                        }
                         if let authorityResult {
                             self.latestFullDrainDurableStores = authorityResult.stores
                             if let boundaryID = authorityResult.boundaryID,
@@ -20505,6 +20662,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                               Self.hex(payload))
                 let commandSequence = cmdSeq
                 if sendCommand(Cmd.historicalDataResult, payload, mode: .withResponse) {
+                    if historicalDrainTelemetry.generation == generation {
+                        historicalDrainTelemetry.ackSent += 1
+                    }
                     historyACKGate.arm(.init(
                         generation: generation,
                         boundaryID: boundaryID,
@@ -22108,6 +22268,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard offlineHistoricalSyncInProgress,
               historyDrain.generation == identity.generation,
               pendingHistoryEndACK?.key == identity.boundaryID else { return }
+        if historicalDrainTelemetry.generation == identity.generation {
+            historicalDrainTelemetry.ackErrors += 1
+        }
         historyACKGate.reset()
         pendingHistoryEndACK = nil
         let discardedPostACKCallbacks = pendingHistoricalTransportEvents.count
@@ -22169,6 +22332,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         ackedHistoryAckKeys.insert(pendingHistoryEndACK.key)
         historicalArchiveRowsSinceAck = 0
+        if historicalDrainTelemetry.generation == ackIdentity.generation {
+            historicalDrainTelemetry.ackSucceeded += 1
+            historicalDrainTelemetry.noteProgress()
+            historicalDrainTelemetry.observePending(
+                pendingHistoricalTransportEvents.count + historyDrain.pendingPersistenceCount
+            )
+        }
         noteOfflineHistoricalSyncProgress(
             generation: ackIdentity.generation,
             reason: "history_ack_logically_accepted"
