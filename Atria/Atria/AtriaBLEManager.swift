@@ -6594,12 +6594,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func automaticConnectedHistoricalHandoffIsEligible(
         now: Date
     ) -> Bool {
-        // Never intentionally take a healthy live link away from sleep
-        // collection. A natural disconnect can still acquire the history
-        // owner before live restoration, and an explicit user/debug request
-        // remains available, but the automatic scheduler must not manufacture
-        // an overnight hole merely because a backlog has aged into readiness.
-        guard !isRRProtectedSleepWindow(now: now) else { return false }
+        // A genuine reconnect is the recovery opportunity for an overnight
+        // gap. Do not blanket-block it by clock hour: the policy below still
+        // requires a stable current epoch, fresh accepted HR, no active
+        // workout, an exact durable gap, a verified decoder, and cooldown.
+        // Those gates make one journaled fresh-owner handoff safe while also
+        // allowing the strap to fill a sleep-time outage.
         let defaults = UserDefaults.standard
         let currentPeripheralID = peripheral?.identifier.uuidString
         let verifiedPeripheralID = defaults.string(

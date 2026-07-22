@@ -7163,7 +7163,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "BGProcessing must not depend on a foreground-only timer to authorize exact-gap recovery")
     }
 
-    func testAutomaticConnectedHistoryHandoffCannotInterruptProtectedSleepWindow() throws {
+    func testAutomaticConnectedHistoryHandoffUsesEvidenceGatesAtAnyHour() throws {
         let manager = try leaseManagerSource()
         let start = try XCTUnwrap(manager.range(
             of: "private func automaticConnectedHistoricalHandoffIsEligible"
@@ -7173,10 +7173,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             range: start.upperBound..<manager.endIndex
         ))
         let admissionPrefix = String(manager[start.lowerBound..<end.lowerBound])
-        XCTAssertTrue(
-            admissionPrefix.contains("guard !isRRProtectedSleepWindow(now: now) else { return false }"),
-            "An aged backlog must not manufacture a live-data hole during the protected sleep window"
-        )
+        XCTAssertFalse(admissionPrefix.contains("isRRProtectedSleepWindow"))
     }
 
     func testBackgroundLinkAuditOnlyRoutesThroughAuditedPolicies() throws {
