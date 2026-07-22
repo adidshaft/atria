@@ -48,6 +48,13 @@ final class AtriaStrapPowerPolicyTests: XCTestCase {
             batteryLevel: 58,
             hasPlausibleRiseEvidence: true
         ), "a raw 2A1B powered bit cannot create or renew Charging")
+        XCTAssertEqual(AtriaBLEManager.acceptedBatteryChargeStatus(
+            .charging,
+            batteryLevel: 58,
+            hasPlausibleRiseEvidence: false,
+            currentConnectionPowerStateConfirmed: true
+        ), .charging,
+        "a current-link 2A1B notification must show an attached charger before SOC rises")
         XCTAssertEqual(AtriaBLEManager.acceptedBatteryEventChargeStatus(
             reportedIsCharging: true,
             batteryLevel: 58
@@ -90,6 +97,28 @@ final class AtriaStrapPowerPolicyTests: XCTestCase {
             batteryRecentlyDropping: true,
             now: now
         ), "a detected drop is immediate charger-removal evidence")
+    }
+
+    func testCurrentLinkBatteryStatusNotificationCanAuthorizeShortChargingLease() {
+        let connectedAt = Date(timeIntervalSince1970: 10_000)
+        XCTAssertTrue(AtriaBLEManager.batteryStatusNotificationCanAuthorizeCharging(
+            peripheralConnected: true,
+            connectionStartedAt: connectedAt,
+            notificationConfirmedAt: connectedAt.addingTimeInterval(1),
+            statusReceivedAt: connectedAt.addingTimeInterval(2)
+        ))
+        XCTAssertFalse(AtriaBLEManager.batteryStatusNotificationCanAuthorizeCharging(
+            peripheralConnected: true,
+            connectionStartedAt: connectedAt,
+            notificationConfirmedAt: connectedAt.addingTimeInterval(-1),
+            statusReceivedAt: connectedAt.addingTimeInterval(2)
+        ), "a cached prior-link confirmation cannot authorize charging")
+        XCTAssertFalse(AtriaBLEManager.batteryStatusNotificationCanAuthorizeCharging(
+            peripheralConnected: true,
+            connectionStartedAt: connectedAt,
+            notificationConfirmedAt: connectedAt.addingTimeInterval(3),
+            statusReceivedAt: connectedAt.addingTimeInterval(2)
+        ), "a status sample cannot be authorized by a later CCCD callback")
     }
 
     func testChargePersistenceDoesNotRefreshBatteryLevelTimestamp() throws {

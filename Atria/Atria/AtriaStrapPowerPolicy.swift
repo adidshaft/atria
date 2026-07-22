@@ -209,6 +209,22 @@ extension AtriaBLEManager {
         return receivedAt >= connectionStartedAt
     }
 
+    /// 2A1B is subscribed, never read. A value is therefore usable as a
+    /// present-power indication only if the CCCD enable completed in this
+    /// process and (when known) after the current link began.
+    nonisolated static func batteryStatusNotificationCanAuthorizeCharging(
+        peripheralConnected: Bool,
+        connectionStartedAt: Date?,
+        notificationConfirmedAt: Date?,
+        statusReceivedAt: Date
+    ) -> Bool {
+        guard peripheralConnected,
+              let notificationConfirmedAt,
+              notificationConfirmedAt <= statusReceivedAt else { return false }
+        guard let connectionStartedAt else { return true }
+        return notificationConfirmedAt >= connectionStartedAt
+    }
+
     nonisolated static func batteryEventAcceptanceDecision(
         previousLevel: Int,
         previousAcceptedAt: Date?,
@@ -314,19 +330,25 @@ extension AtriaBLEManager {
         return abs(previousLevel - incomingLevel) <= 5
     }
 
-    /// Raw 2A1B powered bits cannot originate Charging. Full is accepted only
-    /// after an independently admitted 100% level.
+    /// A 2A1B power-state update is useful only after this connection has
+    /// successfully enabled that characteristic's notifications. This excludes
+    /// restored/cache callbacks while still letting an attached charger appear
+    /// immediately (SOC can legitimately remain unchanged for a long time).
+    /// The caller still gives it a short lease, so a missing unplug update can
+    /// never leave the bolt on indefinitely. Full is accepted only after an
+    /// independently admitted 100% level.
     nonisolated static func acceptedBatteryChargeStatus(
         _ incoming: BatteryChargeStatus,
         batteryLevel: Int,
-        hasPlausibleRiseEvidence: Bool
+        hasPlausibleRiseEvidence: Bool,
+        currentConnectionPowerStateConfirmed: Bool = false
     ) -> BatteryChargeStatus? {
         _ = hasPlausibleRiseEvidence
         switch incoming {
         case .notCharging, .levelOnly:
             return incoming
         case .charging:
-            return nil
+            return currentConnectionPowerStateConfirmed ? .charging : nil
         case .full:
             return batteryLevel == 100 ? .full : nil
         }
