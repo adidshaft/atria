@@ -758,3 +758,52 @@ struct AtriaProfileStepperTile: View {
         .atriaInsetCard(tint: .white)
     }
 }
+
+/// The design handoff's live-heart beat (`@keyframes atria-heart`): a quick
+/// systole to 1.28x then straight back, followed by a long rest — one beat per
+/// 1.1s. Deliberately a KEYFRAME animation, not `.symbolEffect(.pulse)` (which
+/// fades opacity, reading as "signal strength" rather than a pulse) and not a
+/// `repeatForever(autoreverses:)` ease, which is a symmetric sine with no rest
+/// phase and so looks like breathing, not a heartbeat.
+///
+/// The rate is a fixed 1.1s on purpose and is NOT tied to the live BPM: the
+/// number beside it already states the real rate honestly, and at 170bpm a
+/// truthful 0.35s beat is frantic rather than legible.
+struct AtriaPulsingHeart: View, Equatable {
+    var font: Font = .headline.weight(.black)
+    var tint: Color = .red
+
+    /// One full cycle, matching the handoff's `atria-heart 1.1s`.
+    private static let cycle: TimeInterval = 1.1
+    private static let contract: TimeInterval = cycle * 0.15   // 0% -> 15%
+    private static let release: TimeInterval = cycle * 0.15    // 15% -> 30%
+    private static let rest: TimeInterval = cycle * 0.70       // 30% -> 100%
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static func == (lhs: AtriaPulsingHeart, rhs: AtriaPulsingHeart) -> Bool {
+        // Compare BOTH stored properties. Comparing tint alone would report two
+        // different-sized hearts as equal and let SwiftUI skip a real font change.
+        lhs.tint == rhs.tint && lhs.font == rhs.font
+    }
+
+    var body: some View {
+        let icon = Image(systemName: "heart.fill")
+            .font(font)
+            .foregroundStyle(tint)
+
+        if reduceMotion {
+            icon
+        } else {
+            icon.keyframeAnimator(initialValue: 1.0, repeating: true) { view, scale in
+                view.scaleEffect(scale)
+            } keyframes: { _ in
+                KeyframeTrack(\.self) {
+                    CubicKeyframe(1.28, duration: Self.contract)
+                    CubicKeyframe(1.0, duration: Self.release)
+                    LinearKeyframe(1.0, duration: Self.rest)
+                }
+            }
+        }
+    }
+}

@@ -2734,9 +2734,9 @@ private struct AtriaLiveWorkoutRouteMetricsHUD: View {
     var body: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                Image(systemName: "heart.fill")
-                    .font(.headline.weight(.black))
-                    .foregroundStyle(.red)
+                // Beats with the handoff's live-heart keyframe; the number
+                // beside it stays the honest reading.
+                AtriaPulsingHeart(font: .headline.weight(.black))
 
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text(heartRate > 0 ? "\(heartRate)" : "--")
@@ -2918,14 +2918,10 @@ private struct AtriaLiveWorkoutHeartBlock: View {
 
     @ViewBuilder
     private var pulsingHeartIcon: some View {
-        let icon = Image(systemName: "heart.fill")
-            .font(.title2)
-            .foregroundStyle(.red)
-        if reduceMotion {
-            icon
-        } else {
-            icon.symbolEffect(.pulse, options: .repeating)
-        }
+        // Was `.symbolEffect(.pulse)` — an opacity fade, which next to a live
+        // BPM read as a signal-strength indicator. Shares the one heartbeat
+        // keyframe with the compact hero so both live HR surfaces beat alike.
+        AtriaPulsingHeart(font: .title2)
     }
 
     private func zoneBandText(_ zone: HRZone) -> String {

@@ -452,7 +452,15 @@ struct AtriaTrendChartCard: View {
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
-                    .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    // Real Liquid Glass, per the handoff's "Graph Interactions"
+                    // scrub callout. This is the one place glass genuinely pays
+                    // off on Atria: the callout FLOATS OVER the chart, so it
+                    // refracts the line and gridlines beneath it instead of the
+                    // flat near-black/near-white page backdrop. It is also cheap
+                    // — it exists only while a scrub is active, so this is not
+                    // the dense always-on glass that costs scroll performance.
+                    // Radius snapped off the stray 8 onto the chip token.
+                    .atriaGlassCard(cornerRadius: AtriaDesignTokens.Radius.chip)
                 }
             }
         }

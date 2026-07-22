@@ -9927,8 +9927,10 @@ private struct AtriaPreparedMetricChart: View {
                             }
                         }
                         .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(Color(uiColor: .secondarySystemGroupedBackground),
-                                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        // Liquid Glass scrub callout — see AtriaTrendChart for why
+                        // this floating, transient surface is the right place for
+                        // real glass while scrolling cards stay opaque.
+                        .atriaGlassCard(cornerRadius: AtriaDesignTokens.Radius.chip)
                     }
                 PointMark(x: .value("Day", selectedPoint.day, unit: .day), y: .value(title, selectedPoint.value))
                     .foregroundStyle(tint).symbolSize(130)
