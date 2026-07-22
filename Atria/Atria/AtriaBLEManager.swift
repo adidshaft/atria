@@ -2897,6 +2897,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var batteryConfirmationReadLevel: Int?
     private var batteryLevelCharacteristic: CBCharacteristic?
     private var batteryStatusCharacteristic: CBCharacteristic?
+    /// A 2A1B update may create the short charging lease only after its CCCD
+    /// enable completed on this actual BLE link. The timestamp stays in memory:
+    /// an app relaunch must re-establish the subscription before trusting it.
+    private var batteryStatusNotificationConfirmedAt: Date?
     private var lastBatteryReadRequestedAt: Date?
     private var lastActiveBatteryChargeEvidenceAt: Date?
     private var lastPlausibleBatteryRiseEvidenceAt: Date?
@@ -26368,6 +26372,17 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         }
         AtriaDebugLog("ATRIADBG notifyState ch=%@ notifying=%d err=%@", characteristic.uuid.uuidString, notifying ? 1 : 0, error?.localizedDescription ?? "nil")
         Task { @MainActor in
+            if characteristic.uuid == Self.UUIDs.batteryLevelStatus {
+                if err == nil,
+                   notifying,
+                   self.peripheral?.identifier == peripheral.identifier,
+                   peripheral.state == .connected {
+                    self.batteryStatusNotificationConfirmedAt = Date()
+                    AtriaDebugLog("ATRIADBG battery_charge source=2A1B status=notify_confirmed")
+                } else if self.batteryStatusCharacteristic?.uuid == characteristic.uuid {
+                    self.batteryStatusNotificationConfirmedAt = nil
+                }
+            }
             if characteristic.uuid == Self.UUIDs.heartRateMeasure {
                 // Every CoreBluetooth completion settles the one shared enable
                 // request. Failure/inactive completion must clear it too so the
@@ -26841,7 +26856,14 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     guard let status = Self.acceptedBatteryChargeStatus(
                         proposedStatus,
                         batteryLevel: self.batteryLevel,
-                        hasPlausibleRiseEvidence: hasPlausibleRiseEvidence
+                        hasPlausibleRiseEvidence: hasPlausibleRiseEvidence,
+                        currentConnectionPowerStateConfirmed: Self.batteryStatusNotificationCanAuthorizeCharging(
+                            peripheralConnected: peripheral.state == .connected
+                                && self.status == .connected,
+                            connectionStartedAt: self.connectedAt,
+                            notificationConfirmedAt: self.batteryStatusNotificationConfirmedAt,
+                            statusReceivedAt: receivedAt
+                        )
                     ) else {
                         self.lastUncorroboratedChargingStatusAt = nil
                         if self.batteryChargeStatus == .charging,
