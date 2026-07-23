@@ -3752,6 +3752,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           diagnostic.sendR10IMUSequence ? 1 : 0)
         }
         applyEarlyHistoricalLaunchConfiguration(arguments: arguments)
+        reconcileOrphanedBackgroundHistoryLeaseAtLaunch()
         if motionHandshakeDiagnostic == nil {
             scheduleStaleArmedRangeLossBackfillReconciliation(reason: "ble_manager_init")
         }
@@ -8137,6 +8138,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set(status, forKey: OfflineSyncDefaults.backgroundLeaseStatus)
         defaults.set(Date().timeIntervalSince1970,
                      forKey: OfflineSyncDefaults.backgroundLeaseAt)
+    }
+
+    /// UIKit background-task identifiers are process-local. If iOS terminates
+    /// the process during a history serve, the persisted diagnostic must not
+    /// continue saying "active" on the next launch: there is no in-memory
+    /// owner and the durable gap is still pending. This is bookkeeping only;
+    /// it neither clears a gap nor issues a BLE command.
+    private func reconcileOrphanedBackgroundHistoryLeaseAtLaunch() {
+        let defaults = UserDefaults.standard
+        guard defaults.string(forKey: OfflineSyncDefaults.backgroundLeaseStatus) == "active" else {
+            return
+        }
+        defaults.set("orphaned_process_terminated",
+                     forKey: OfflineSyncDefaults.backgroundLeaseStatus)
+        defaults.set(Date().timeIntervalSince1970,
+                     forKey: OfflineSyncDefaults.backgroundLeaseAt)
+        AtriaDebugLog("ATRIADBG offline_sync background_lease=orphaned_process_terminated action=retain_gap_no_transport_mutation")
     }
 
     private func startOfflineHistoricalSync(reason: String,
