@@ -309,6 +309,12 @@ extension AtriaBLEManager {
             "atria.offlineSync.historyStartTimeoutGapFingerprint.v1"
         static let historyStartTimeoutGapAt =
             "atria.offlineSync.historyStartTimeoutGapAt.v1"
+        /// Binds a timeout circuit-breaker to the exact non-mutating bootstrap
+        /// profile that produced it. A later profile correction gets one fresh
+        /// recovery opportunity for the retained gap; the same profile does
+        /// not repeatedly churn a healthy live connection.
+        static let historyStartTimeoutProfileVersion =
+            "atria.offlineSync.historyStartTimeoutProfileVersion.v1"
         static let backgroundLeaseStatus = "atria.offlineSync.backgroundLeaseStatus.v1"
         static let backgroundLeaseAt = "atria.offlineSync.backgroundLeaseAt.v1"
         static let handshakeStatus = "atria.offlineSync.handshakeStatus.v1"
