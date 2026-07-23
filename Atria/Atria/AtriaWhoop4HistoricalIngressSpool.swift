@@ -160,6 +160,11 @@ final class AtriaWhoop4HistoricalIngressSpool {
               offset + UInt64(length) <= writeOffset else {
             throw SpoolError.corruptRecord
         }
+        // `length` includes its four-byte prefix. `readU32` above advances the
+        // handle, so seek back before reading the complete encoded record.
+        // Reading `length` bytes from the post-prefix position shifted every
+        // decode by four bytes and made any persisted spool look corrupt.
+        try handle.seek(toOffset: offset)
         let record = try handle.read(upToCount: Int(length)) ?? Data()
         guard record.count == Int(length) else { throw SpoolError.corruptRecord }
         return (try decode(record), length)
