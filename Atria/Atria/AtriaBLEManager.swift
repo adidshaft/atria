@@ -1291,6 +1291,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// This is intentionally in-memory: the next genuine connection boundary
     /// may reconsider the durable gap under normal automatic policy.
     private var deferInterruptedFullDrainForCurrentLiveConnection = false
+    /// A physical link loss may interrupt a full drain without terminating its
+    /// durable authority. Keep one process-local handoff intent so the next
+    /// live connection can use the same bounded reacquisition path as a launch
+    /// restore. This is deliberately never persisted: a process restart uses
+    /// the authority's existing launch reconciliation, and an app-owned
+    /// cancellation must not be replayed as a fresh history command.
+    private var interruptedFullDrainReacquisitionPendingAfterTransportLoss = false
     /// One retained, process-interrupted drain may reclaim history ownership
     /// after the restored live link has proved stable. The task is cancelled
     /// at the next physical disconnect; its durable fingerprint/cooldown is
@@ -6047,6 +6054,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             && !gapFingerprint.isEmpty
     }
 
+    /// Only an unexpected physical loss of the active full-drain owner earns a
+    /// later live-first reacquisition. Intentional cutovers, user disconnects,
+    /// and watchdog transport resets already have their own bounded ownership
+    /// paths and must never turn into an extra history-command loop.
+    nonisolated static func shouldRetainInterruptedFullDrainReacquisition(
+        fullDrainAuthorityActive: Bool,
+        userRequestedDisconnect: Bool,
+        recentAppCancel: Bool
+    ) -> Bool {
+        fullDrainAuthorityActive && !userRequestedDisconnect && !recentAppCancel
+    }
+
     nonisolated static func interruptedFullDrainGapFingerprint(
         _ gap: AtriaHistoricalFullDrainCoverageStore.PendingGap
     ) -> String {
@@ -6145,6 +6164,43 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 explicitResearchRequest: true
             )
         }
+    }
+
+    /// The launch path already turns a persisted `.draining` authority into a
+    /// deferred live-first handoff. A physical transport loss in the *same*
+    /// process needs the identical bridge; otherwise the exact authority is
+    /// retained safely but can wait behind generic range-loss policy forever.
+    /// This method issues no BLE command. It only arms the existing cooldown-
+    /// gated reacquirer after a fresh accepted HR proves this connection live.
+    private func resumeInterruptedFullDrainAfterTransportLossIfNeeded(
+        reason: String
+    ) {
+        guard interruptedFullDrainReacquisitionPendingAfterTransportLoss,
+              !offlineHistoricalSyncInProgress,
+              !AtriaPendingWorkoutIntent.isActiveForBLEContinuity(),
+              !historicalConsumerMaterializationInFlight,
+              peripheral?.state == .connected,
+              status == .connected,
+              let connectedAt,
+              let lastAcceptedHRAt,
+              lastAcceptedHRAt >= connectedAt else { return }
+
+        guard let authority = try? historicalFullDrainCoverageStore.load(),
+              authority.status == .draining else {
+            // A terminal authority is never permitted to reacquire BLE. The
+            // durable publication path owns it from here.
+            interruptedFullDrainReacquisitionPendingAfterTransportLoss = false
+            return
+        }
+
+        interruptedFullDrainReacquisitionPendingAfterTransportLoss = false
+        deferInterruptedFullDrainForCurrentLiveConnection = true
+        AtriaDebugLog("ATRIADBG offline_sync status=interrupted_full_drain_live_recovery_armed reason=%@ authority=%@ action=wait_stable_live_then_reacquire_existing_gap_once",
+                      reason,
+                      authority.authorityIdentifier)
+        scheduleInterruptedFullDrainReacquisitionIfNeeded(
+            reason: "interrupted_full_drain_transport_loss"
+        )
     }
 
     /// A full-drain authority is a durable transport transaction, not merely a
@@ -15796,6 +15852,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             resumePendingForcedHistoricalSyncAfterLivePersistenceIfNeeded(
                 reason: "accepted_hr"
             )
+            resumeInterruptedFullDrainAfterTransportLossIfNeeded(
+                reason: "accepted_hr"
+            )
             attemptQualifiedRangeLossBackfillAfterAcceptedHRIfNeeded(
                 now: sampleTime
             )
@@ -15864,6 +15923,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                             force: pendingDisplayForce)
         }
         resumePendingForcedHistoricalSyncAfterLivePersistenceIfNeeded(
+            reason: "accepted_hr_batch"
+        )
+        resumeInterruptedFullDrainAfterTransportLossIfNeeded(
             reason: "accepted_hr_batch"
         )
     }
@@ -27258,6 +27320,19 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                          forKey: "atria.ble.disconnectR10RetryActive")
             defaults.set(disconnectNow.timeIntervalSince1970,
                          forKey: "atria.ble.lastDisconnectDiagnosticAt")
+            // Preserve one interrupted full-drain handoff only for a physical
+            // loss. `recentAppCancel` covers intentional owner cutovers and
+            // watchdog resets; replaying either here would create an extra
+            // command/reconnect loop on the following live epoch.
+            if Self.shouldRetainInterruptedFullDrainReacquisition(
+                fullDrainAuthorityActive: offlineHistoricalSyncInProgress
+                    && activeFullDrainEventIdentity != nil,
+                userRequestedDisconnect: wasUserRequestedDisconnect,
+                recentAppCancel: recentAppCancel
+            ) {
+                interruptedFullDrainReacquisitionPendingAfterTransportLoss = true
+                AtriaDebugLog("ATRIADBG offline_sync status=interrupted_full_drain_transport_loss_retained action=await_fresh_accepted_hr_then_bounded_existing_authority_reacquisition")
+            }
             AtriaDebugLog("ATRIADBG ble_link disconnect_cause=%@ this_launch=%d total=%d",
                           disconnectCause,
                           defaults.integer(forKey: LinkDefaults.disconnectsThisLaunch),
