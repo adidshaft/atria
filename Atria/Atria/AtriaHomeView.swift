@@ -1828,9 +1828,7 @@ struct AtriaHomeView: View {
             return ble.ambulatoryWorkoutGyroStepCoordinate(now: now)
         }
         guard store.hasLoadedSavedSessions else { return nil }
-        let saved = store.homeSavedAggregate(
-            rest: store.baseline.restingInt ?? 60,
-            maxHR: store.profile.maxHR,
+        let saved = store.workoutSavedStepPrefix(
             activeSessionID: ble.currentLiveSessionID,
             now: now
         )
