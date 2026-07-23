@@ -3625,6 +3625,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG ble_manager_init status=suspended reason=restore_marker_retained")
             return
         }
+        // Retention must not depend on a history attempt eventually reaching a
+        // terminal callback: normal long wear can leave one attempt open for a
+        // long time. This starts one bounded, non-transport maintenance pass
+        // after launch; later lifecycle and terminal edges coalesce behind it.
+        scheduleHistoricalAdmissionLedgerMaintenance(reason: "manager_init")
         strapStepCalibrationCaptureUntil = AtriaStrapCalibrationArchive.configuredCaptureUntil(
             arguments: arguments
         )
