@@ -23186,8 +23186,15 @@ final class SessionStore: ObservableObject {
                     && hrSampleCoverageFraction >= 0.60
                     && rrSampleCoverageFraction >= 0.60
                     && hrObservedCoverageFraction >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction
-                    && maximumHRSampleGap <= 30
-                    && maximumAcceptedHRGap <= 30
+                    // This is a review-only shifted-sleep path, never an
+                    // automatic confirmation path. A short reconnect seam is
+                    // real missing observation and stays visible in the card,
+                    // but must not make an otherwise dense 3–5h sleep vanish.
+                    // Keep the allowance deliberately below the 20-minute
+                    // sleep-duration gap-credit ceiling and narrow it to this
+                    // already strict HR+RR/clock/physiology qualification.
+                    && maximumHRSampleGap <= 10 * 60
+                    && maximumAcceptedHRGap <= 60
                 // A complete sleep window can have short journal seams after
                 // reconnect, including shift-work sleep outside conventional
                 // hours. Preserve it for a *user review* when both HR and RR
