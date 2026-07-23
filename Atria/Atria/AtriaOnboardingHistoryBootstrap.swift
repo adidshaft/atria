@@ -2,6 +2,24 @@ import Combine
 import Foundation
 
 enum AtriaOnboardingHistoryBootstrapPolicy {
+    /// The setup contract is deliberately narrower than "erase the strap".
+    /// We have verified how to read and acknowledge a durable replay page, but
+    /// not a command that physically erases WHOOP flash.  Treating a cursor
+    /// acknowledgement as an erase would make a destructive claim we cannot
+    /// prove (and could lose a user's only copy of a night).
+    enum FreshStartPolicy {
+        static let title = "Start a new Atria timeline"
+        static let summary = "Atria reconciles any records the strap serves before starting live collection."
+        static let disclosure = "Your new Atria timeline starts after setup. Records already on the strap are saved on this iPhone before their verified replay pages are acknowledged. Atria does not send a physical-erase command: the current verified strap protocol does not provide one."
+        static let interruptionDisclosure = "If setup is interrupted, Atria resumes the same safe import. It never discards unseen strap data to force a fresh start."
+
+        static func completionDetail(importedRows: Int) -> String {
+            importedRows > 0
+                ? "Existing strap records were saved. Your new Atria timeline has started."
+                : "Strap history was verified. Your new Atria timeline has started."
+        }
+    }
+
     nonisolated static func canComplete(durableTransportAuthorityAndLiveRestored: Bool,
                                         recoveredDataPublished: Bool,
                                         requestedPeripheralIdentifier: String,
@@ -220,7 +238,9 @@ final class AtriaOnboardingHistoryBootstrap: ObservableObject {
                 to: .complete,
                 peripheralIdentifier: peripheralIdentifier,
                 importedRows: max(0, rowsAfter - rowsBefore),
-                detail: "Strap history transferred safely. Your new live timeline has started."
+                detail: FreshStartPolicy.completionDetail(
+                    importedRows: max(0, rowsAfter - rowsBefore)
+                )
             ) else {
                 self.snapshot.phase = .failed
                 self.snapshot.detail = "Setup finished safely, but its completion record could not be saved. Free storage space, then retry."

@@ -314,11 +314,19 @@ struct AtriaOnboardingFlow: View {
                 .accessibilityLabel("Pairing instructions")
             OnboardingConnectionStatusView(ble: ble)
             VStack(alignment: .leading, spacing: 8) {
-                Label("Atria safely transfers the strap’s existing history first.",
+                Label(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.title,
                       systemImage: "externaldrive.badge.icloud")
                     .font(.subheadline.weight(.semibold))
-                Text("Before starting your new timeline, Atria imports all history stored on the strap. Each exact batch is cleared from the strap only after its records are safely stored on this iPhone. Setup waits for History Complete, prepares sleep, activities, steps, and your baseline, then verifies live collection has resumed. If interrupted, the import resumes; unseen data is never erased.")
+                Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.summary)
                     .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.disclosure)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.interruptionDisclosure)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 onboardingHistoryStatus

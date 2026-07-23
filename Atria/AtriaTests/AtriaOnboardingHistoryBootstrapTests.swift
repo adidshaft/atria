@@ -29,6 +29,20 @@ final class AtriaOnboardingHistoryBootstrapTests: XCTestCase {
         ))
     }
 
+    func testFreshStartPolicyNeverClaimsAnUnverifiedPhysicalStrapErase() {
+        let policy = AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.self
+
+        XCTAssertEqual(policy.title, "Start a new Atria timeline")
+        XCTAssertTrue(policy.summary.contains("reconciles"))
+        XCTAssertTrue(policy.disclosure.contains("does not send a physical-erase command"))
+        XCTAssertTrue(policy.disclosure.contains("verified replay pages are acknowledged"))
+        XCTAssertTrue(policy.interruptionDisclosure.contains("never discards unseen strap data"))
+        XCTAssertEqual(policy.completionDetail(importedRows: 4),
+                       "Existing strap records were saved. Your new Atria timeline has started.")
+        XCTAssertEqual(policy.completionDetail(importedRows: 0),
+                       "Strap history was verified. Your new Atria timeline has started.")
+    }
+
     func testPersistedInFlightSnapshotCanBeReloadedForCrashResume() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -168,7 +182,7 @@ final class AtriaOnboardingHistoryBootstrapTests: XCTestCase {
         XCTAssertTrue(source.contains("fresh live HR"))
         XCTAssertTrue(source.contains("all five receipts"))
         XCTAssertTrue(source.contains("requestAndAwaitRecoveredDataPublication"))
-        XCTAssertTrue(source.contains("Your new live timeline has started"))
+        XCTAssertTrue(source.contains("Your new Atria timeline has started"))
     }
 
     func testOnboardingTransportAuthorityRequiresDurableTerminalOrVerifiedEmptyCursor() {
