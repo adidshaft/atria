@@ -8600,11 +8600,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG historyIngress status=deferred reason=orphan_identity_unverified action=retain_raw_no_new_generation")
             return true
         }
-        let orphanVault: AtriaWhoop4HistoricalOrphanVault
-        let sealedOrphans: [AtriaWhoop4HistoricalOrphanVault.Entry]
-        do {
-            orphanVault = try AtriaWhoop4HistoricalOrphanVault.production()
-            if FileManager.default.fileExists(atPath: ingressURL.path) {
+        // This method is also called from every accepted live HR callback. A
+        // non-nil spool belongs to the *current* history reducer and may still
+        // be receiving CoreBluetooth frames; never inspect or seal it here.
+        guard historicalIngressSpool == nil else {
+            return true
+        }
+        let hasIngressSource = FileManager.default.fileExists(atPath: ingressURL.path)
+        guard hasIngressSource || AtriaWhoop4HistoricalOrphanVault.hasPotentialProductionEntries() else {
+            return false
+        }
+        retainPendingOfflineHistoricalSyncRequest(
+            reason: reason, force: force, explicitRequest: explicitRequest
+        )
+        // Set this before dispatch so another HR callback cannot schedule a
+        // second reader while the first worker is hashing/copying the source.
+        orphanHistoricalIngressArchiveInFlight = true
+
+        let archiveWarmGroup = historicalArchiveWarmGroup
+        orphanHistoricalIngressArchiveQueue.async { [weak self] in
+            var openedVault: AtriaWhoop4HistoricalOrphanVault?
+            var sealedOrphans: [AtriaWhoop4HistoricalOrphanVault.Entry] = []
+            do {
+                let orphanVault = try AtriaWhoop4HistoricalOrphanVault.production()
+                openedVault = orphanVault
+                if hasIngressSource {
                 let orphanGeneration = try AtriaWhoop4HistoricalIngressSpool.generation(
                     at: ingressURL
                 )
@@ -8622,24 +8642,27 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                               orphanGeneration,
                               sealed.byteCount)
                 sealedOrphans = [sealed]
-            } else {
+                } else {
                 // A process may be suspended after seal but before its large
                 // canonical index becomes ready. Resume that verified raw
                 // vault on every later connection to the same paired strap.
                 sealedOrphans = try orphanVault.validatedEntries(for: strapIdentifier)
+                }
+                guard !sealedOrphans.isEmpty else {
+                    Task { @MainActor [weak self] in
+                        self?.orphanHistoricalIngressArchiveInFlight = false
+                    }
+                    return
+                }
+            } catch {
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.orphanHistoricalIngressArchiveInFlight = false
+                    AtriaDebugLog("ATRIADBG historyIngress status=deferred reason=orphan_vault_open_failed error=%@ action=retain_raw_no_ack_no_coverage", String(describing: error))
+                }
+                return
             }
-        } catch {
-            AtriaDebugLog("ATRIADBG historyIngress status=deferred reason=orphan_vault_open_failed error=%@ action=retain_raw_no_ack_no_coverage", String(describing: error))
-            return true
-        }
-        guard !sealedOrphans.isEmpty else { return false }
-        retainPendingOfflineHistoricalSyncRequest(
-            reason: reason, force: force, explicitRequest: explicitRequest
-        )
-
-        orphanHistoricalIngressArchiveInFlight = true
-        let archiveWarmGroup = historicalArchiveWarmGroup
-        orphanHistoricalIngressArchiveQueue.async { [weak self] in
+            guard let orphanVault = openedVault else { return }
             defer {
                 sealedOrphans.forEach { HistoricalArchive.endDurableDrain(generation: $0.generation) }
             }
