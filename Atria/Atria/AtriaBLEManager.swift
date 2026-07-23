@@ -23590,30 +23590,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return true
     }
 
-    nonisolated static func crossesEventCivilDay(sessionStart: Date,
-                                                 nextSampleTime: Date,
-                                                 eventTimeZoneIdentifier: String?,
-                                                 calendar: Calendar = .current) -> Bool {
-        let startDay = EventCivilTime.day(containing: sessionStart,
-                                          eventTimeZoneIdentifier: eventTimeZoneIdentifier,
-                                          outputCalendar: calendar)
-        let nextDay = EventCivilTime.day(containing: nextSampleTime,
-                                         eventTimeZoneIdentifier: eventTimeZoneIdentifier,
-                                         outputCalendar: calendar)
-        return startDay != nextDay
-    }
-
-    private func shouldRollActiveSessionAtCivilDayBoundary(nextSampleTime: Date) -> Bool {
-        guard longWearModeEnabled,
-              let first = session.first,
-              Self.crossesEventCivilDay(sessionStart: first.t,
-                                        nextSampleTime: nextSampleTime,
-                                        eventTimeZoneIdentifier: liveSessionEventTimeZoneIdentifier) else {
-            return false
-        }
-        return true
-    }
-
     /// Bound the live session during continuous all-day wear: once the current
     /// segment spans `longWearLiveSessionRetentionSpan`, finalize it to disk and
     /// segment-roll to a fresh one so the four live arrays can't grow unbounded
@@ -23669,13 +23645,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                         resetWhenUnsavable: true,
                                         firstBufferedInput: firstBufferedInput)
         }
-        if shouldRollActiveSessionAtCivilDayBoundary(nextSampleTime: nextSampleTime) {
-            return startSessionBoundary(label: label,
-                                        persistenceReason: "civil_day_boundary_rollover",
-                                        nextSessionStart: nextSampleTime,
-                                        resetWhenUnsavable: true,
-                                        firstBufferedInput: firstBufferedInput)
-        }
+        // A civil midnight is deliberately not a live-session boundary. Today
+        // is wake-to-wake, so forcing an asynchronous persistence/reset here
+        // can interrupt the very accumulator that must retain post-midnight
+        // activity until a completed main sleep establishes the next day.
+        // Memory remains bounded by the retention roll below; disconnect gaps
+        // still receive their own durable boundary above.
         guard longWearModeEnabled, let first = session.first,
               Self.shouldRollLiveSession(
                 spanSeconds: nextSampleTime.timeIntervalSince(first.t),

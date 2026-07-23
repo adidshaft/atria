@@ -88,6 +88,54 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
         XCTAssertFalse(day.overlaps(start: date(2, 1), end: date(2, 2)))
     }
 
+    func testPostMidnightActivityRemainsInPriorWakeCycleUntilCompletedSleep() {
+        let prior = sleep(id: "prior", start: date(1, 23), end: date(2, 7))
+        let beforeNextSleep = date(3, 2)
+        let cycle = AtriaPhysiologicalCycle.current(now: beforeNextSleep,
+                                                     confirmedSleeps: [prior],
+                                                     calendar: calendar)
+        let postMidnightWalk = SavedSession(
+            id: UUID(),
+            start: date(3, 1),
+            end: date(3, 2),
+            label: "Post-midnight walk",
+            points: stride(from: 0.0, through: 3_600.0, by: 10).map {
+                SavedSession.Point(t: $0, bpm: 120)
+            },
+            strapStepResearchCount: 80
+        )
+
+        let beforeSleep = SessionStore.homeSavedAggregate(
+            from: [postMidnightWalk],
+            rest: 50,
+            maxHR: 190,
+            biologicalSex: .unspecified,
+            calendar: calendar,
+            now: beforeNextSleep,
+            cycleStart: cycle.start
+        )
+        XCTAssertEqual(cycle.start, prior.end)
+        XCTAssertEqual(beforeSleep.savedTodayStrapSteps, 80)
+        XCTAssertGreaterThan(beforeSleep.savedTodayTRIMP, 0)
+
+        let completed = sleep(id: "completed", start: date(3, 2), end: date(3, 7))
+        let afterWake = AtriaPhysiologicalCycle.current(now: date(3, 8),
+                                                         confirmedSleeps: [prior, completed],
+                                                         calendar: calendar)
+        let afterSleep = SessionStore.homeSavedAggregate(
+            from: [postMidnightWalk],
+            rest: 50,
+            maxHR: 190,
+            biologicalSex: .unspecified,
+            calendar: calendar,
+            now: date(3, 8),
+            cycleStart: afterWake.start
+        )
+        XCTAssertEqual(afterWake.start, completed.end)
+        XCTAssertEqual(afterSleep.savedTodayStrapSteps, 0)
+        XCTAssertEqual(afterSleep.savedTodayTRIMP, 0)
+    }
+
     func testPhysiologicalDayNapNeverResetsBoundary() {
         let main = sleep(id: "main", start: date(1, 0), end: date(1, 7))
         let nap = sleep(id: "nap", start: date(1, 15), end: date(1, 16), source: "manual_nap")

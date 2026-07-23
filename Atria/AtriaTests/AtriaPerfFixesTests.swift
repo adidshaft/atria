@@ -362,26 +362,6 @@ final class AtriaPerfFixesTests: XCTestCase {
                       "the committed boundary must not leave restart durability to a later live callback")
     }
 
-    func testLongWearSessionRollsAtRecordedCivilMidnight() {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let beforeMidnightIST = Date(timeIntervalSince1970: 1_783_708_140) // 2026-07-10 23:59 IST
-        let midnightIST = beforeMidnightIST.addingTimeInterval(60)
-
-        XCTAssertFalse(AtriaBLEManager.crossesEventCivilDay(
-            sessionStart: beforeMidnightIST.addingTimeInterval(-60),
-            nextSampleTime: beforeMidnightIST,
-            eventTimeZoneIdentifier: "Asia/Kolkata",
-            calendar: calendar
-        ))
-        XCTAssertTrue(AtriaBLEManager.crossesEventCivilDay(
-            sessionStart: beforeMidnightIST,
-            nextSampleTime: midnightIST,
-            eventTimeZoneIdentifier: "Asia/Kolkata",
-            calendar: calendar
-        ))
-    }
-
     func testBLEBacklogTrimKeepsFreshestUnconsumedEntries() {
         var queue = Array(0..<10)
         var consumed = 3
