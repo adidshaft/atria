@@ -1899,6 +1899,9 @@ private struct AtriaLiveWorkoutRouteCard: View {
                 Label(paceText(distance: route.distanceMeters,
                                movingDuration: routeRecorder.movingDuration()),
                       systemImage: "speedometer")
+                if let speed = route.currentSpeedMetersPerSecond {
+                    Label(speedText(speed), systemImage: "gauge.with.dots.needle.67percent")
+                }
             }
             .font(.caption.weight(.black).monospacedDigit())
             .foregroundStyle(.white)
@@ -1932,6 +1935,10 @@ private struct AtriaLiveWorkoutRouteCard: View {
         let seconds = max(1, movingDuration) / (distance / 1_000)
         let minutes = Int(seconds) / 60
         return "\(minutes):\(String(format: "%02d", Int(seconds) % 60))/km"
+    }
+
+    private func speedText(_ metersPerSecond: Double) -> String {
+        String(format: "%.1f km/h", max(0, metersPerSecond) * 3.6)
     }
 }
 
