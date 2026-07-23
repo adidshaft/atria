@@ -3692,6 +3692,29 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testPhysicalFullDrainLossRetainsOneLiveFirstReacquisitionButAppCancelsDoNot() {
+        XCTAssertTrue(AtriaBLEManager.shouldRetainInterruptedFullDrainReacquisition(
+            fullDrainAuthorityActive: true,
+            userRequestedDisconnect: false,
+            recentAppCancel: false
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldRetainInterruptedFullDrainReacquisition(
+            fullDrainAuthorityActive: false,
+            userRequestedDisconnect: false,
+            recentAppCancel: false
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldRetainInterruptedFullDrainReacquisition(
+            fullDrainAuthorityActive: true,
+            userRequestedDisconnect: true,
+            recentAppCancel: false
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldRetainInterruptedFullDrainReacquisition(
+            fullDrainAuthorityActive: true,
+            userRequestedDisconnect: false,
+            recentAppCancel: true
+        ))
+    }
+
     func testProductionHistoryOwnershipPersistsLiveJournalBeforePhaseCutover() throws {
         let source = try leaseManagerSource()
         let start = try XCTUnwrap(source.range(
