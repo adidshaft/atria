@@ -7754,14 +7754,13 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(body.contains("Cmd.abortHistoricalTransmits"))
     }
 
-    func testExplicitHistoryRepairUsesCompleteListenerProfileAndBondOnly() throws {
+    func testExplicitHistoryRepairUsesCaptureProvenMinimalServedProfile() throws {
         let source = try leaseManagerSource()
-        XCTAssertTrue(source.contains("return [Self.UUIDs.strapRX, Self.UUIDs.strapStream4,\n                    Self.UUIDs.strapStream5]"))
-        XCTAssertTrue(source.contains("if historyTransportPhaseFence.snapshot().usesExplicitHistoryProfile {\n                // The strap's verified offload profile"))
-        XCTAssertTrue(source.contains("command: Cmd.getBatteryLevel"))
-        XCTAssertTrue(source.contains("payload: [0x00]"))
-        XCTAssertTrue(source.contains("Task.sleep(for: .milliseconds(1500))"))
-        XCTAssertTrue(source.contains("listeners=03,04,05 action=allow_1600"))
+        XCTAssertTrue(source.contains("22/00, a 2.1-second settle, then 16/00"))
+        XCTAssertTrue(source.contains("reason=explicit_minimal_served_profile action=preserve_2200_settle_1600"))
+        XCTAssertFalse(source.contains("explicit_profile_bond_confirmed"))
+        XCTAssertFalse(source.contains("listeners=03,04,05 action=allow_1600"))
+        XCTAssertFalse(source.contains("command: Cmd.getBatteryLevel,\n                    payload: [0x00],\n                    generation: syncGeneration"))
         XCTAssertFalse(source.contains("command: Cmd.forceTrim"))
         XCTAssertFalse(source.contains("command: Cmd.abortHistoricalTransmits"))
         XCTAssertFalse(source.contains("command: Cmd.reboot"))

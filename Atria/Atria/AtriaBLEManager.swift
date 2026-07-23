@@ -1683,14 +1683,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private nonisolated var requiredProductionHistoryNotifications: [CBUUID] {
-        // The explicitly user-approved repair uses the known-good complete
-        // proprietary listener set. Automatic reconnect recovery deliberately
-        // stays on its narrower proven profile until this path has physically
-        // demonstrated rows on the user's strap.
-        if historyTransportPhaseFence.snapshot().usesExplicitHistoryProfile {
-            return [Self.UUIDs.strapRX, Self.UUIDs.strapStream4,
-                    Self.UUIDs.strapStream5]
-        }
+        // A direct capture that actually served rows used RX + stream 5 only:
+        // 22/00, a 2.1-second settle, then 16/00.  An explicit repair must
+        // retain that same minimal listener set.  Stream 4 did not carry a
+        // row in the capture, and adding its CCCD is not an evidence-backed
+        // prerequisite for the serve transaction.
         return Self.UUIDs.historyNotifyCharacteristics(
             observeMotionChannels: observesHistoricalMotionChannels
         )
@@ -6827,10 +6824,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         freshHistoryOwnerConnectionGeneration = nil
         // The phase was already activated when the explicit request acquired
-        // its generation, before the live-owner cutover. Re-activating it on
-        // the fresh CoreBluetooth connection must retain that scoped profile;
-        // otherwise this reconnect silently falls back to RX + stream5 and
-        // skips the explicit 0x1A compatibility handshake just before 0x16.
+        // its generation, before the live-owner cutover. Re-activate its
+        // ownership token on the fresh CoreBluetooth connection without
+        // changing the proven RX + stream-5 listener or command profile.
         let usesExplicitHistoryProfile = historyTransportPhaseFence.snapshot()
             .usesExplicitHistoryProfile
         historyOnlyProbeEnabled = true
@@ -17986,6 +17982,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                               syncGeneration)
             }
             if historyClockSyncEnabled {
+                // Do not combine an RTC mutation with the only served WHOOP 4
+                // transaction we have captured.  The concrete successful
+                // trace is exactly 22/00 -> 2.1s -> 16/00; it contains neither
+                // SET_CLOCK nor GET_CLOCK.  Retain the approval outcome for
+                // inspection, but move into the capture-proven serve sequence
+                // rather than claiming the unverified mutation is required.
+                if historyTransportPhaseFence.snapshot().usesExplicitHistoryProfile {
+                    historyClockSyncEnabled = false
+                    UserDefaults.standard.set(
+                        "deferred_minimal_served_profile",
+                        forKey: "atria.offlineSync.clockRepairStatus.v1"
+                    )
+                    AtriaDebugLog("ATRIADBG historyClock status=deferred reason=explicit_minimal_served_profile action=preserve_2200_settle_1600")
+                } else {
                 // This is deliberately opt-in at launch for the one
                 // user-approved recovery repair. The WHOOP 4 historical
                 // transport uses the strap RTC as part of its durable backlog
@@ -18003,6 +18013,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         result: clockResult
                     )
                     return
+                }
                 }
             }
             if historySkipDataRangeRequest {
@@ -18096,45 +18107,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         return
                     }
                 }
-            }
-            if historyTransportPhaseFence.snapshot().usesExplicitHistoryProfile {
-                // The strap's verified offload profile is RX + stream4 +
-                // stream5, followed by one confirmed proprietary battery
-                // request immediately before SEND_HISTORICAL. This is an
-                // explicit-repair-only compatibility handshake: it performs no
-                // trim/ack/abort/realtime transition and cannot run during
-                // ordinary reconnect recovery until physical rows prove it.
-                let bondResult = await sendHistoryCommandAwaitingWriteConfirmation(
-                    command: Cmd.getBatteryLevel,
-                    payload: [0x00],
-                    generation: syncGeneration
-                )
-                guard bondResult == .confirmed else {
-                    UserDefaults.standard.set(
-                        "bond_\(String(describing: bondResult))",
-                        forKey: "atria.offlineSync.explicitHistoryProfile.v1"
-                    )
-                    failHistoryHandshakeWrite(
-                        generation: syncGeneration,
-                        command: Cmd.getBatteryLevel,
-                        result: bondResult
-                    )
-                    return
-                }
-                UserDefaults.standard.set(
-                    "bond_write_confirmed",
-                    forKey: "atria.offlineSync.explicitHistoryProfile.v1"
-                )
-                try? await Task.sleep(for: .milliseconds(1500))
-                guard !Task.isCancelled,
-                      historyOnlyProbeArmed,
-                      historyOnlyProbeEpoch == probeEpoch,
-                      offlineHistoricalSyncInProgress,
-                      offlineHistoricalSyncGeneration == syncGeneration else {
-                    return
-                }
-                AtriaDebugLog("ATRIADBG historyServe status=explicit_profile_bond_confirmed generation=%llu command=1a00 settle_ms=1500 listeners=03,04,05 action=allow_1600",
-                              syncGeneration)
             }
             if !historyInitSweepCommands.isEmpty {
                 AtriaDebugLog("ATRIADBG historyOnly status=send_init_sweep commands=%d mode=%@",
