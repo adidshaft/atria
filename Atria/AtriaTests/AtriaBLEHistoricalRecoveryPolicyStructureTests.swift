@@ -37,6 +37,41 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         ))
     }
 
+    func testNoRowsRecoveryIsDurablyScopedToTheAdmittedGapAndNeverBlocksManualRetry() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
+        let manager = try String(
+            contentsOf: appDirectory.appendingPathComponent("AtriaBLEManager.swift"),
+            encoding: .utf8
+        )
+
+        let requestStart = try XCTUnwrap(manager.range(
+            of: "func requestOfflineHistoricalSyncIfNeeded("
+        )?.lowerBound)
+        let requestEnd = try XCTUnwrap(manager.range(
+            of: "private func armHistoryCapabilityQualification(",
+            range: requestStart..<manager.endIndex
+        )?.lowerBound)
+        let request = String(manager[requestStart..<requestEnd])
+        XCTAssertTrue(request.contains("shouldSuppressAutomaticHistoricalNoRowsRetry("))
+        XCTAssertTrue(request.contains("explicitUserRequest: explicitHistoricalRequest"))
+        XCTAssertTrue(request.contains("no_rows_gap_retained"))
+        XCTAssertTrue(request.contains("action=suppress_automatic_reentry_preserve_live_radio"))
+
+        let finalizerStart = try XCTUnwrap(manager.range(
+            of: "private func finalizeOfflineHistoricalSyncAfterLiveRestoration("
+        )?.lowerBound)
+        let finalizerEnd = try XCTUnwrap(manager.range(
+            of: "private func interruptOfflineHistoricalSyncForTransportLoss(",
+            range: finalizerStart..<manager.endIndex
+        )?.lowerBound)
+        let finalizer = String(manager[finalizerStart..<finalizerEnd])
+        XCTAssertTrue(finalizer.contains("offlineHistoricalSyncReachedTerminal"))
+        XCTAssertTrue(finalizer.contains("OfflineSyncDefaults.noRowsGapFingerprint"))
+        XCTAssertTrue(finalizer.contains("!noRowsForDurableGap"),
+                      "a no-rows result must not schedule an automatic reentry")
+    }
+
     func testHistoryArmCannotCancelOrMutateBeforeRealtimeReconnectFence() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
