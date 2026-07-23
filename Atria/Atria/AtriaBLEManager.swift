@@ -1298,6 +1298,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// raw gap. It is persisted after rows land so the same finite strap backlog
     /// is not requested again on every later connection edge.
     private var offlineHistoricalSyncRawOnlyGapFingerprint: String?
+    /// Snapshot the durable gap set at admission, before any radio mutation.
+    /// Completion must never attach a no-rows result to a newer gap that closed
+    /// while this transaction was running.
+    private var offlineHistoricalSyncGapFingerprint: String?
     /// True only when this sync appended metric-usable HR inside the exact
     /// workout-recovery window. This is progress evidence, not completion:
     /// SessionStore owns completion after it rebuilds the matching workout and
@@ -6048,6 +6052,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
         let rawGapAlreadyArchived = gapFingerprint != nil
             && gapFingerprint == defaults.string(forKey: OfflineSyncDefaults.rawArchivedGapFingerprint)
+        if Self.shouldSuppressAutomaticHistoricalNoRowsRetry(
+            exactGapPending: recoverableGapPending,
+            explicitUserRequest: explicitHistoricalRequest,
+            currentGapFingerprint: gapFingerprint,
+            noRowsGapFingerprint: defaults.string(
+                forKey: OfflineSyncDefaults.noRowsGapFingerprint
+            )
+        ) {
+            retainPendingOfflineHistoricalSyncRequest(
+                reason: reason,
+                force: force,
+                explicitRequest: false
+            )
+            defaults.set("no_rows_gap_retained", forKey: OfflineSyncDefaults.lastStatus)
+            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            AtriaDebugLog("ATRIADBG offline_sync status=no_rows_gap_retained reason=%@ detail=unchanged_durable_gap action=suppress_automatic_reentry_preserve_live_radio explicit=0",
+                          reason)
+            return false
+        }
         let rawOnlyDisconnectedRecovery = Self.shouldAttemptRawOnlyHistoricalRecovery(
             exactGapPending: recoverableGapPending,
             rawHistoryVerified: verifiedHistoryCapability,
@@ -6344,6 +6367,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             connectedChunkedBackfill: connectedChunkedBackfill,
             attemptAt: now,
             rawOnlyGapFingerprint: rawOnlyDisconnectedRecovery ? gapFingerprint : nil,
+            gapFingerprint: gapFingerprint,
             freshOwnerCutoverCompleted: freshOwnerCutoverCompleted
         )
     }
@@ -7926,7 +7950,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                         Self.isExplicitUserOfflineSyncReason(reason),
                                        connectedChunkedBackfill: false,
                                        attemptAt: Date(),
-                                       rawOnlyGapFingerprint: nil)
+                                       rawOnlyGapFingerprint: nil,
+                                       gapFingerprint: nil)
     }
 
     /// CoreBluetooth can wake the app in the background, but iOS may suspend
@@ -7982,6 +8007,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                             connectedChunkedBackfill: Bool,
                                             attemptAt: Date,
                                             rawOnlyGapFingerprint: String?,
+                                            gapFingerprint: String?,
                                             freshOwnerCutoverCompleted: Bool = false) -> Bool {
         // Automatic recovery is subordinate to a visible live dashboard. The
         // request stays pending and can run after backgrounding or a later
@@ -8033,6 +8059,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set("starting", forKey: OfflineSyncDefaults.lastStatus)
         defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
         offlineHistoricalSyncRawOnlyGapFingerprint = rawOnlyGapFingerprint
+        offlineHistoricalSyncGapFingerprint = gapFingerprint
         if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) {
             defaults.set(attemptAt.timeIntervalSince1970,
                          forKey: OfflineSyncDefaults.rangeLossBackfillStartedAt)
@@ -8629,6 +8656,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         let rawOnlyGapFingerprint = offlineHistoricalSyncRawOnlyGapFingerprint
         offlineHistoricalSyncRawOnlyGapFingerprint = nil
+        let gapFingerprint = offlineHistoricalSyncGapFingerprint
+        offlineHistoricalSyncGapFingerprint = nil
         let rows = historicalArchiveRows
         let newRows = max(0, rows - offlineHistoricalSyncStartRows)
         historyOnlyProbeEnabled = false
@@ -8722,6 +8751,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 rows: rows,
                 newRows: newRows,
                 rawOnlyGapFingerprint: rawOnlyGapFingerprint,
+                gapFingerprint: gapFingerprint,
                 requestedWindowMetricProgress: requestedWindowMetricProgress,
                 ledgerCoverageResolved: ledgerCoverageResolved,
                 terminalAndLiveRestored: false,
@@ -8783,6 +8813,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 rows: rows,
                 newRows: newRows,
                 rawOnlyGapFingerprint: rawOnlyGapFingerprint,
+                gapFingerprint: gapFingerprint,
                 requestedWindowMetricProgress: requestedWindowMetricProgress,
                 ledgerCoverageResolved: ledgerCoverageResolved,
                 terminalAndLiveRestored: restored,
@@ -8797,6 +8828,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         rows: Int,
         newRows: Int,
         rawOnlyGapFingerprint: String?,
+        gapFingerprint: String?,
         requestedWindowMetricProgress: Bool,
         ledgerCoverageResolved: Bool,
         terminalAndLiveRestored: Bool,
@@ -8838,7 +8870,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             defaults.set(Date().timeIntervalSince1970,
                          forKey: OfflineSyncDefaults.rawArchivedGapAt)
         }
-        defaults.set(effectiveCompletionStatus, forKey: OfflineSyncDefaults.lastStatus)
+        let noRowsForDurableGap = terminalAndLiveRestored
+            && (offlineHistoricalSyncReachedTerminal
+                || verifiedEmptyHistoryCursorGeneration == generation)
+            && newRows == 0
+            && gapFingerprint != nil
+        if let gapFingerprint, noRowsForDurableGap {
+            defaults.set(gapFingerprint, forKey: OfflineSyncDefaults.noRowsGapFingerprint)
+            defaults.set(Date().timeIntervalSince1970, forKey: OfflineSyncDefaults.noRowsGapAt)
+        }
+        let publishedCompletionStatus = noRowsForDurableGap
+            ? "no_rows_gap_retained"
+            : effectiveCompletionStatus
+        defaults.set(publishedCompletionStatus, forKey: OfflineSyncDefaults.lastStatus)
         defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
         let rangeLossResolved = terminalAndLiveRestored
             && reconcileRangeLossBackfillPendingWithArchive(
@@ -8847,6 +8891,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 requestedWindowMetricProgress: requestedWindowMetricProgress,
                 ledgerCoverageResolved: ledgerCoverageResolved
             )
+        if rangeLossResolved {
+            defaults.removeObject(forKey: OfflineSyncDefaults.noRowsGapFingerprint)
+            defaults.removeObject(forKey: OfflineSyncDefaults.noRowsGapAt)
+        }
         if terminalAndLiveRestored && offlineHistoricalSyncReachedTerminal {
             if activeFullDrainEventIdentity?.transportGeneration == generation
                 || activeHistoricalRequestBinding?.transportGeneration == generation {
@@ -8860,11 +8908,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 transportGeneration: generation
             )
         }
-        if !rangeLossResolved && !rawOnlyGapArchived && !forwardCursorCaughtUp {
+        if !rangeLossResolved && !rawOnlyGapArchived && !forwardCursorCaughtUp && !noRowsForDurableGap {
             scheduleRangeLossBackfillRetry(reason: reason)
         }
         AtriaDebugLog("ATRIADBG offline_sync status=%@ reason=%@ generation=%llu rows=%d new_rows=%d live_restored=%d action=%@",
-                      effectiveCompletionStatus,
+                      publishedCompletionStatus,
                       reason,
                       generation,
                       rows,
@@ -17823,12 +17871,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                               syncGeneration)
             }
             if historyClockSyncEnabled {
-                // Clock-form probing is diagnostic-only and has no validated
-                // place in the connected full-drain transaction. Do not put a
-                // nonessential WR ahead of 16/00; archive the strap timestamp
-                // without claiming a verified clock correction instead.
-                historyClockSyncEnabled = false
-                AtriaDebugLog("ATRIADBG historyClock status=skipped reason=nonessential_before_full_drain action=preserve_single_flight_pipe")
+                // This is deliberately opt-in at launch for the one
+                // user-approved recovery repair. The WHOOP 4 historical
+                // transport uses the strap RTC as part of its durable backlog
+                // workflow. Keep the mutation inside the same single-flight
+                // history generation: write-confirm it, allow the strap to
+                // settle, then continue with the normal matched cursor and
+                // page-ACK path. It is never part of automatic recovery.
+                let clockResult = await performUserApprovedHistoryClockSync(
+                    generation: syncGeneration
+                )
+                guard clockResult == .confirmed else {
+                    failHistoryHandshakeWrite(
+                        generation: syncGeneration,
+                        command: Cmd.setClock,
+                        result: clockResult
+                    )
+                    return
+                }
             }
             if historySkipDataRangeRequest {
                 guard beginProductionHistoricalAdmissionAttempt(
@@ -18564,6 +18624,49 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           Int(expected.sequence))
             return .failure(.timedOut)
         }
+    }
+
+    /// Performs the one user-approved RTC synchronization immediately before a
+    /// bounded historical repair. The payload is the WHOOP 4 clock form
+    /// `<unix seconds: u32 LE><subseconds: u32 LE>`. This method is reachable
+    /// only through the explicit launch approval flag; automatic range-loss
+    /// recovery always leaves `historyClockSyncEnabled` false.
+    private func performUserApprovedHistoryClockSync(
+        generation: UInt64
+    ) async -> AwaitedHistoryWriteResult {
+        guard historyClockSyncEnabled else { return .confirmed }
+        let unixSeconds = UInt32(clamping: Int(Date().timeIntervalSince1970))
+        let payload = withUnsafeBytes(of: unixSeconds.littleEndian) {
+            Array($0)
+        } + [0, 0, 0, 0]
+        AtriaDebugLog("ATRIADBG historyClock status=user_approved_set_clock_requested generation=%llu unix=%u payload=%@ action=await_write_confirmation",
+                      generation,
+                      unixSeconds,
+                      Self.hex(payload))
+        let result = await sendHistoryCommandAwaitingWriteConfirmation(
+            command: Cmd.setClock,
+            payload: payload,
+            generation: generation
+        )
+        guard result == .confirmed else {
+            AtriaDebugLog("ATRIADBG historyClock status=user_approved_set_clock_failed generation=%llu result=%@ action=retain_gap_no_history_command",
+                          generation,
+                          String(describing: result))
+            return result
+        }
+        // A bounded settling interval prevents the subsequent cursor request
+        // from racing the strap's RTC update. No UI work or live subscription
+        // runs on this task while it waits.
+        try? await Task.sleep(for: .milliseconds(800))
+        guard !Task.isCancelled,
+              offlineHistoricalSyncInProgress,
+              offlineHistoricalSyncGeneration == generation else {
+            return .failed
+        }
+        historyClockSyncEnabled = false
+        AtriaDebugLog("ATRIADBG historyClock status=user_approved_set_clock_confirmed generation=%llu settle_ms=800 action=continue_matched_cursor_then_1600",
+                      generation)
+        return .confirmed
     }
 
     /// Sends the one response-proven GET_CLOCK form after 22/00 has already
