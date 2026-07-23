@@ -62,6 +62,20 @@ final class AtriaWhoop4HistoricalOrphanVault {
         )
     }
 
+    /// Cheap MainActor admission check. Full manifest/hash validation remains
+    /// on the archive worker; this merely avoids scheduling empty work from
+    /// every accepted heart-rate callback.
+    static func hasPotentialProductionEntries(fileManager: FileManager = .default) -> Bool {
+        let root = fileManager.urls(for: .applicationSupportDirectory,
+                                    in: .userDomainMask)[0]
+            .appendingPathComponent(productionDirectoryName, isDirectory: true)
+        return (try? fileManager.contentsOfDirectory(at: root,
+                                                      includingPropertiesForKeys: nil,
+                                                      options: [.skipsHiddenFiles]))?.contains {
+            $0.lastPathComponent.hasSuffix(".manifest.json")
+        } ?? false
+    }
+
     /// Copies and fsyncs a previously closed ingress spool before returning a
     /// manifest-bound entry. The caller must retain the source until this call
     /// succeeds, and may then remove it only after re-validating the returned
