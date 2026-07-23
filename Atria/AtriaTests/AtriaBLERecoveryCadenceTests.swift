@@ -7767,4 +7767,21 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(source.contains("command: Cmd.reboot"))
     }
 
+    func testFreshHistoryOwnerReconnectRetainsExplicitListenerProfile() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(of:
+            "private func resumeFreshHistoryOwnerConnectionIfNeeded"
+        ))
+        let end = try XCTUnwrap(source.range(of: "private func", options: [],
+                                              range: start.upperBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(body.contains(
+            "let usesExplicitHistoryProfile = historyTransportPhaseFence.snapshot()\n            .usesExplicitHistoryProfile"
+        ))
+        XCTAssertTrue(body.contains(
+            "usesExplicitHistoryProfile: usesExplicitHistoryProfile"
+        ))
+    }
+
 }
