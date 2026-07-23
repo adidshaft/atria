@@ -648,6 +648,18 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         ))
     }
 
+    func testLiveSpeedUsesAValidGPSFixEvenWhenItDoesNotAddRouteDistance() {
+        XCTAssertEqual(AtriaWorkoutRouteRecorder.usableGroundSpeed(0, accuracy: 0.8), 0,
+                       "A valid stationary fix must clear a prior moving speed rather than leaving it stale")
+        XCTAssertEqual(AtriaWorkoutRouteRecorder.usableGroundSpeed(3.4, accuracy: 1.2), 3.4)
+        XCTAssertNil(AtriaWorkoutRouteRecorder.usableGroundSpeed(-1, accuracy: 1),
+                     "Core Location uses a negative speed when velocity is unknown")
+        XCTAssertNil(AtriaWorkoutRouteRecorder.usableGroundSpeed(3.4, accuracy: -1),
+                     "Core Location uses a negative accuracy when speed is unknown")
+        XCTAssertNil(AtriaWorkoutRouteRecorder.usableGroundSpeed(3.4, accuracy: 5.1),
+                     "Do not display a falsely precise speed from a very noisy fix")
+    }
+
     func testGPXUsesSeparateTrackSegmentsAcrossPauseBoundary() throws {
         let start = Date(timeIntervalSince1970: 1_000)
         let points = [
