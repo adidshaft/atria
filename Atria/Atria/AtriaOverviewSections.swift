@@ -9330,6 +9330,15 @@ struct AtriaMetricDetailSheet: View {
                 ForEach(workouts.prefix(4), id: \.id) { workout in
                     AtriaStrainWorkoutRow(workout: workout)
                 }
+
+                // A workout row is deliberately a bounded activity window.
+                // The hero above is the physiological day (sleep-to-sleep),
+                // so calling both simply "strain" made a real 60-minute gym
+                // window look like an under-reported day score.
+                Text("Each value is this workout’s heart-rate strain. Day strain above combines your full sleep-to-sleep day.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(14)
@@ -10052,7 +10061,7 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
                         .minimumScaleFactor(0.7)
                         .layoutPriority(1)
                     Text(AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout)
-                         ? "metrics" : "strain")
+                         ? "metrics" : "workout strain")
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
