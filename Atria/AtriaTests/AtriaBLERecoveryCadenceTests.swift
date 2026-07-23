@@ -3604,6 +3604,70 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testInterruptedFullDrainReacquisitionIsStableWorkoutSafeAndCooldownBounded() {
+        let now: TimeInterval = 2_000_000_000
+        XCTAssertTrue(AtriaBLEManager.shouldReacquireInterruptedFullDrain(
+            stableLiveSeconds: 60,
+            requiredStableLiveSeconds: 60,
+            activeExplicitWorkout: false,
+            historySyncInProgress: false,
+            consumerMaterializationInFlight: false,
+            gapFingerprint: "gap-a",
+            lastReacquisitionGapFingerprint: nil,
+            lastReacquisitionAtUnix: nil,
+            nowUnix: now,
+            cooldown: 300
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldReacquireInterruptedFullDrain(
+            stableLiveSeconds: 59.9,
+            requiredStableLiveSeconds: 60,
+            activeExplicitWorkout: false,
+            historySyncInProgress: false,
+            consumerMaterializationInFlight: false,
+            gapFingerprint: "gap-a",
+            lastReacquisitionGapFingerprint: nil,
+            lastReacquisitionAtUnix: nil,
+            nowUnix: now,
+            cooldown: 300
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldReacquireInterruptedFullDrain(
+            stableLiveSeconds: 90,
+            requiredStableLiveSeconds: 60,
+            activeExplicitWorkout: true,
+            historySyncInProgress: false,
+            consumerMaterializationInFlight: false,
+            gapFingerprint: "gap-a",
+            lastReacquisitionGapFingerprint: nil,
+            lastReacquisitionAtUnix: nil,
+            nowUnix: now,
+            cooldown: 300
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldReacquireInterruptedFullDrain(
+            stableLiveSeconds: 90,
+            requiredStableLiveSeconds: 60,
+            activeExplicitWorkout: false,
+            historySyncInProgress: false,
+            consumerMaterializationInFlight: false,
+            gapFingerprint: "gap-a",
+            lastReacquisitionGapFingerprint: "gap-a",
+            lastReacquisitionAtUnix: now - 299,
+            nowUnix: now,
+            cooldown: 300
+        ))
+        XCTAssertTrue(AtriaBLEManager.shouldReacquireInterruptedFullDrain(
+            stableLiveSeconds: 90,
+            requiredStableLiveSeconds: 60,
+            activeExplicitWorkout: false,
+            historySyncInProgress: false,
+            consumerMaterializationInFlight: false,
+            gapFingerprint: "gap-b",
+            lastReacquisitionGapFingerprint: "gap-a",
+            lastReacquisitionAtUnix: now - 1,
+            nowUnix: now,
+            cooldown: 300
+        ))
+    }
+
     func testProductionHistoryOwnershipPersistsLiveJournalBeforePhaseCutover() throws {
         let source = try leaseManagerSource()
         let start = try XCTUnwrap(source.range(

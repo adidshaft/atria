@@ -315,6 +315,14 @@ extension AtriaBLEManager {
         /// not repeatedly churn a healthy live connection.
         static let historyStartTimeoutProfileVersion =
             "atria.offlineSync.historyStartTimeoutProfileVersion.v1"
+        /// An iOS process expiry can interrupt an otherwise valid full-drain
+        /// transaction after HISTORY_START. Remember the exact durable gap
+        /// that has consumed the one automatic post-reconnect re-acquisition,
+        /// so restoring live HR never turns into a reconnect loop.
+        static let interruptedFullDrainReacquisitionGapFingerprint =
+            "atria.offlineSync.interruptedFullDrainReacquisitionGapFingerprint.v1"
+        static let interruptedFullDrainReacquisitionAt =
+            "atria.offlineSync.interruptedFullDrainReacquisitionAt.v1"
         static let backgroundLeaseStatus = "atria.offlineSync.backgroundLeaseStatus.v1"
         static let backgroundLeaseAt = "atria.offlineSync.backgroundLeaseAt.v1"
         static let handshakeStatus = "atria.offlineSync.handshakeStatus.v1"

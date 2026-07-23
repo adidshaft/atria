@@ -5959,6 +5959,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG offline_sync status=deferred_interrupted_full_drain_live_priority reason=%@ trigger=%@ action=retain_exact_gap_no_fresh_owner_cutover",
                           pending.reason,
                           reason)
+            scheduleInterruptedFullDrainReacquisitionIfNeeded(reason: pending.reason)
             return
         }
         _ = takePendingOfflineHistoricalSyncRequest()
@@ -5988,6 +5989,157 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         pendingReason: String
     ) -> Bool {
         pendingReason == "interrupted_full_drain_relaunch"
+    }
+
+    /// A process expiry is not a terminal no-rows result. Permit exactly one
+    /// later re-acquisition for the same durable authority only after the
+    /// current link has been stable long enough to establish that live capture
+    /// recovered. A changed gap gets a fresh opportunity; the same gap is
+    /// held for the persisted cooldown to avoid reconnect churn.
+    nonisolated static func shouldReacquireInterruptedFullDrain(
+        stableLiveSeconds: TimeInterval,
+        requiredStableLiveSeconds: TimeInterval,
+        activeExplicitWorkout: Bool,
+        historySyncInProgress: Bool,
+        consumerMaterializationInFlight: Bool,
+        gapFingerprint: String,
+        lastReacquisitionGapFingerprint: String?,
+        lastReacquisitionAtUnix: TimeInterval?,
+        nowUnix: TimeInterval,
+        cooldown: TimeInterval
+    ) -> Bool {
+        guard stableLiveSeconds.isFinite,
+              requiredStableLiveSeconds.isFinite,
+              requiredStableLiveSeconds >= 0,
+              stableLiveSeconds >= requiredStableLiveSeconds,
+              !activeExplicitWorkout,
+              !historySyncInProgress,
+              !consumerMaterializationInFlight,
+              !gapFingerprint.isEmpty,
+              nowUnix.isFinite,
+              cooldown.isFinite,
+              cooldown >= 0 else { return false }
+        guard gapFingerprint == lastReacquisitionGapFingerprint,
+              let lastReacquisitionAtUnix,
+              lastReacquisitionAtUnix.isFinite,
+              nowUnix >= lastReacquisitionAtUnix else {
+            return true
+        }
+        return nowUnix - lastReacquisitionAtUnix >= cooldown
+    }
+
+    nonisolated static func interruptedFullDrainGapFingerprint(
+        _ gap: AtriaHistoricalFullDrainCoverageStore.PendingGap
+    ) -> String {
+        "\(gap.gapIdentifier)|\(gap.gapLedgerGeneration)|\(gap.startUnix)|\(gap.endUnix)|\(gap.reason)"
+    }
+
+    /// The initial live-first deferral below protects a just-restored strap
+    /// connection. Do not leave a durable `.draining` authority parked
+    /// forever, though: when iOS killed the process mid-drain, no terminal
+    /// transport result exists. This resumes the existing exact gap once, not
+    /// a selector sweep or a new protocol variant.
+    private func scheduleInterruptedFullDrainReacquisitionIfNeeded(
+        reason: String
+    ) {
+        guard interruptedFullDrainReacquisitionTask == nil,
+              deferInterruptedFullDrainForCurrentLiveConnection,
+              !offlineHistoricalSyncInProgress,
+              !AtriaPendingWorkoutIntent.isActiveForBLEContinuity(),
+              !historicalConsumerMaterializationInFlight,
+              peripheral?.state == .connected,
+              status == .connected,
+              let connectedAt,
+              let lastAcceptedHRAt,
+              lastAcceptedHRAt >= connectedAt,
+              let authority = try? historicalFullDrainCoverageStore.load(),
+              authority.status == .draining else { return }
+
+        let fingerprint = Self.interruptedFullDrainGapFingerprint(authority.gap)
+        let defaults = UserDefaults.standard
+        let now = Date()
+        let stableSeconds = now.timeIntervalSince(connectedAt)
+        guard Self.shouldReacquireInterruptedFullDrain(
+            stableLiveSeconds: stableSeconds,
+            requiredStableLiveSeconds: automaticConnectedHistoryStableInterval,
+            activeExplicitWorkout: false,
+            historySyncInProgress: false,
+            consumerMaterializationInFlight: false,
+            gapFingerprint: fingerprint,
+            lastReacquisitionGapFingerprint: defaults.string(
+                forKey: OfflineSyncDefaults.interruptedFullDrainReacquisitionGapFingerprint
+            ),
+            lastReacquisitionAtUnix: defaults.object(
+                forKey: OfflineSyncDefaults.interruptedFullDrainReacquisitionAt
+            ) as? Double,
+            nowUnix: now.timeIntervalSince1970,
+            cooldown: interruptedFullDrainReacquisitionCooldown
+        ) else {
+            defaults.set("interrupted_full_drain_reacquisition_cooldown",
+                         forKey: OfflineSyncDefaults.lastStatus)
+            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            return
+        }
+
+        let wait = max(0, automaticConnectedHistoryStableInterval - stableSeconds)
+        interruptedFullDrainReacquisitionTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+            defer { self.interruptedFullDrainReacquisitionTask = nil }
+            guard !Task.isCancelled,
+                  self.deferInterruptedFullDrainForCurrentLiveConnection,
+                  !self.offlineHistoricalSyncInProgress,
+                  !AtriaPendingWorkoutIntent.isActiveForBLEContinuity(),
+                  !self.historicalConsumerMaterializationInFlight,
+                  self.peripheral?.state == .connected,
+                  self.status == .connected,
+                  let currentConnectedAt = self.connectedAt,
+                  let currentAcceptedAt = self.lastAcceptedHRAt,
+                  currentAcceptedAt >= currentConnectedAt,
+                  let currentAuthority = try? self.historicalFullDrainCoverageStore.load(),
+                  currentAuthority.status == .draining else { return }
+            let currentFingerprint = Self.interruptedFullDrainGapFingerprint(
+                currentAuthority.gap
+            )
+            let now = Date()
+            guard Self.shouldReacquireInterruptedFullDrain(
+                stableLiveSeconds: now.timeIntervalSince(currentConnectedAt),
+                requiredStableLiveSeconds: self.automaticConnectedHistoryStableInterval,
+                activeExplicitWorkout: false,
+                historySyncInProgress: false,
+                consumerMaterializationInFlight: false,
+                gapFingerprint: currentFingerprint,
+                lastReacquisitionGapFingerprint: UserDefaults.standard.string(
+                    forKey: OfflineSyncDefaults.interruptedFullDrainReacquisitionGapFingerprint
+                ),
+                lastReacquisitionAtUnix: UserDefaults.standard.object(
+                    forKey: OfflineSyncDefaults.interruptedFullDrainReacquisitionAt
+                ) as? Double,
+                nowUnix: now.timeIntervalSince1970,
+                cooldown: self.interruptedFullDrainReacquisitionCooldown
+            ) else { return }
+
+            UserDefaults.standard.set(
+                currentFingerprint,
+                forKey: OfflineSyncDefaults.interruptedFullDrainReacquisitionGapFingerprint
+            )
+            UserDefaults.standard.set(
+                now.timeIntervalSince1970,
+                forKey: OfflineSyncDefaults.interruptedFullDrainReacquisitionAt
+            )
+            self.deferInterruptedFullDrainForCurrentLiveConnection = false
+            UserDefaults.standard.set("interrupted_full_drain_reacquisition_started",
+                                      forKey: OfflineSyncDefaults.lastStatus)
+            UserDefaults.standard.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            AtriaDebugLog("ATRIADBG offline_sync status=interrupted_full_drain_reacquisition_started reason=%@ stable_s=%.1f action=reacquire_existing_gap_once_no_new_protocol",
+                          reason,
+                          now.timeIntervalSince(currentConnectedAt))
+            _ = self.requestOfflineHistoricalSyncIfNeeded(
+                reason: "interrupted_full_drain_bounded_reacquisition",
+                force: true,
+                explicitResearchRequest: true
+            )
+        }
     }
 
     /// A full-drain authority is a durable transport transaction, not merely a
@@ -26896,6 +27048,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             // gap retry.  It never starts history here; realtime reconnect is
             // still installed first below.
             self.deferInterruptedFullDrainForCurrentLiveConnection = false
+            self.interruptedFullDrainReacquisitionTask?.cancel()
+            self.interruptedFullDrainReacquisitionTask = nil
             if self.readOnlyHistoryRestoreCutoverPending {
                 self.readOnlyHistoryRestoreCutoverPending = false
                 self.writeCompletionLedger.reset()
