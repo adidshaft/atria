@@ -1469,6 +1469,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// already-confirmed ACK may arm this bounded 0x16 continuation. Any next
     /// row or history marker cancels it, so an in-flight page is never prodded.
     private var historicalPageContinuationTask: Task<Void, Never>?
+    /// A HISTORY_START without even one stream-5 frame is a distinct failed
+    /// serve state. It must not inherit the 30-minute whole-drain idle budget:
+    /// no bytes have begun moving, so retaining the command owner that long
+    /// starves live collection for no recovery benefit.
+    private var historyFirstFrameWatchdogTask: Task<Void, Never>?
+    private var historyFirstFrameReceivedGeneration: UInt64?
+    private let historyFirstFrameTimeout: TimeInterval = 30
     private var historicalReplayACKTask: Task<Void, Never>?
     private var historicalReplayACKBoundaryID: String?
     /// A first-seen forward record jump is deliberately failed closed. Keep a
@@ -8300,6 +8307,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         acceptedHistoryDataRangeResponseUptime = nil
         acceptedHistoryStartSequence = nil
         acceptedHistoryStartAtUnix = nil
+        historyFirstFrameWatchdogTask?.cancel()
+        historyFirstFrameWatchdogTask = nil
+        historyFirstFrameReceivedGeneration = nil
         pendingFullDrainCommandRequestedAtUnix = nil
         activeFullDrainEventIdentity = nil
         historicalIngressSpool?.remove()
@@ -8357,6 +8367,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historyACKGate.reset()
         historicalPageContinuationTask?.cancel()
         historicalPageContinuationTask = nil
+        historyFirstFrameWatchdogTask?.cancel()
+        historyFirstFrameWatchdogTask = nil
+        historyFirstFrameReceivedGeneration = nil
         historicalReplayACKTask?.cancel()
         historicalReplayACKTask = nil
         historicalReplayACKBoundaryID = nil
@@ -8813,6 +8826,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historyACKGate.reset()
         historicalPageContinuationTask?.cancel()
         historicalPageContinuationTask = nil
+        historyFirstFrameWatchdogTask?.cancel()
+        historyFirstFrameWatchdogTask = nil
+        historyFirstFrameReceivedGeneration = nil
         historicalReplayACKTask?.cancel()
         historicalReplayACKTask = nil
         historicalReplayACKBoundaryID = nil
@@ -20366,6 +20382,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             acceptedHistoryStartSequence = sequence
             acceptedHistoryStartAtUnix = startAt
         }
+        armHistoryFirstFrameWatchdogIfNeeded(generation: generation)
         guard activeFullDrainEventIdentity == nil,
               let selected = selectedFullDrainGap,
               let gapEnd = selected.window.end,
@@ -20457,6 +20474,53 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
 
+    /// Once HISTORY_START arrives, the strap should emit a stream-5 row
+    /// promptly. A deep flash selection may delay the start marker itself
+    /// (handled by the separate 75-second serve-start wait), but a marker with
+    /// no subsequent row is not an active drain. Release the radio after this
+    /// bounded interval while retaining the exact gap and without ACK/abort.
+    private func armHistoryFirstFrameWatchdogIfNeeded(generation: UInt64) {
+        guard historyFirstFrameReceivedGeneration != generation,
+              historyFirstFrameWatchdogTask == nil else { return }
+        historyFirstFrameWatchdogTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: .seconds(self.historyFirstFrameTimeout))
+            guard !Task.isCancelled,
+                  self.offlineHistoricalSyncInProgress,
+                  self.offlineHistoricalSyncGeneration == generation,
+                  self.historyFirstFrameReceivedGeneration != generation else {
+                return
+            }
+            let defaults = UserDefaults.standard
+            defaults.set("history_first_frame_timeout",
+                         forKey: OfflineSyncDefaults.handshakeStatus)
+            defaults.set(Date().timeIntervalSince1970,
+                         forKey: OfflineSyncDefaults.handshakeAt)
+            if let gapFingerprint = self.offlineHistoricalSyncGapFingerprint {
+                defaults.set(gapFingerprint,
+                             forKey: OfflineSyncDefaults.historyStartTimeoutGapFingerprint)
+                defaults.set(Date().timeIntervalSince1970,
+                             forKey: OfflineSyncDefaults.historyStartTimeoutGapAt)
+                defaults.set(Self.productionHistoryServeProfileVersion,
+                             forKey: OfflineSyncDefaults.historyStartTimeoutProfileVersion)
+            }
+            AtriaDebugLog("ATRIADBG historyServe status=first_frame_timeout generation=%llu wait_s=%.0f action=rebuild_link_without_ack_or_abort_retain_gap",
+                          generation,
+                          self.historyFirstFrameTimeout)
+            self.historyFirstFrameWatchdogTask = nil
+            if let peripheral = self.peripheral, peripheral.state == .connected {
+                self.cancelPeripheralConnection(
+                    peripheral,
+                    reason: "history_first_frame_timeout_transport_reset"
+                )
+            } else {
+                self.interruptOfflineHistoricalSyncForTransportLoss(
+                    reason: "history_first_frame_timeout"
+                )
+            }
+        }
+    }
+
     private func handleHistoricalData(
         _ payload: [UInt8],
         historyPhase: AtriaBLEHistoryTransportPhaseFence.Snapshot
@@ -20466,6 +20530,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
         recordResearchProbeCandidate(payload: payload, source: .historical)
+        if historyFirstFrameReceivedGeneration != generation {
+            historyFirstFrameReceivedGeneration = generation
+            historyFirstFrameWatchdogTask?.cancel()
+            historyFirstFrameWatchdogTask = nil
+            UserDefaults.standard.set(
+                "history_first_frame_received",
+                forKey: OfflineSyncDefaults.handshakeStatus
+            )
+            UserDefaults.standard.set(
+                Date().timeIntervalSince1970,
+                forKey: OfflineSyncDefaults.handshakeAt
+            )
+            AtriaDebugLog("ATRIADBG historyServe status=first_frame generation=%llu action=continue_durable_drain",
+                          generation)
+        }
         if historicalDrainTelemetry.generation == generation {
             historicalDrainTelemetry.stream5Received += 1
             historicalDrainTelemetry.noteProgress()
