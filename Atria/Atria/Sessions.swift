@@ -3208,6 +3208,10 @@ struct AggregateSleepCandidate {
     /// floor and the five-hour HR-only automatic-confirmation floor. This may
     /// surface for user review but is never auto-confirmable by itself.
     let denseMorningHROnlyReviewQualified: Bool
+    /// A complete overnight sleep-shaped HR/RR cluster with a short journal or
+    /// reconnect seam. It is review-only: no motion evidence means it can never
+    /// update recovery until the wearer confirms it.
+    let denseOvernightHROnlyReviewQualified: Bool
 }
 
 struct SleepEvidenceStatus {
@@ -9201,6 +9205,7 @@ final class SessionStore: ObservableObject {
     nonisolated static func isReviewWorthySleepCandidate(_ candidate: AggregateSleepCandidate) -> Bool {
         if candidate.kind == "nap_candidate" { return true }
         if candidate.denseMorningHROnlyReviewQualified { return true }
+        if candidate.denseOvernightHROnlyReviewQualified { return true }
         if candidate.motionEvidenceValidated {
             // Low motion is necessary evidence, not proof of sleep. For a
             // shorter night, require the robust HR shape and majority overlap
@@ -9270,7 +9275,8 @@ final class SessionStore: ObservableObject {
     private nonisolated static func isStrapOnlyMainSleepReviewCandidate(_ candidate: AggregateSleepCandidate) -> Bool {
         candidate.kind != "nap_candidate"
             && !candidate.motionEvidenceValidated
-            && (candidate.duration >= AggregateSleepCandidate.strictMinimumDuration
+            && (candidate.denseOvernightHROnlyReviewQualified
+                || candidate.duration >= AggregateSleepCandidate.strictMinimumDuration
                 || (candidate.duration >= AggregateSleepCandidate.fragmentedMinimumDuration
                     && candidate.span >= AggregateSleepCandidate.fragmentedMinimumSpan))
     }
@@ -23062,10 +23068,30 @@ final class SessionStore: ObservableObject {
                     && hrObservedCoverageFraction >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction
                     && maximumHRSampleGap <= 30
                     && maximumAcceptedHRGap <= 30
+                // A complete overnight window can have short journal seams
+                // after reconnect. Preserve it for a *user review* when both
+                // HR and RR remain dense across the entire span. It is never an
+                // automatic sleep/recovery path: there is no validated motion.
+                let denseOvernightHROnlyReviewReady = !napPhysiologyReady
+                    && totalDuration >= AggregateSleepCandidate.minimumAutoConfirmMainSleepDuration
+                    && span <= totalDuration + 10 * 60
+                    && clusterOvernightReviewWindow
+                    && avg <= rest + 18
+                    && hrStandardDeviation <= 9.5
+                    && medianHR <= rest + 12
+                    && hrP90 <= rest + 35
+                    && elevatedSampleFraction < 0.10
+                    && elevatedSampleFraction * totalDuration < 20 * 60
+                    && hrSampleCoverageFraction >= 0.60
+                    && rrSampleCoverageFraction >= 0.60
+                    && hrObservedCoverageFraction >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction
+                    && maximumHRSampleGap <= 10 * 60
+                    && maximumAcceptedHRGap <= 60
                 guard strictDurationReady
                         || fragmentedFallbackReady
                         || napPhysiologyReady
-                        || denseMorningHROnlyReviewReady else { return nil }
+                        || denseMorningHROnlyReviewReady
+                        || denseOvernightHROnlyReviewReady else { return nil }
                 let motionHintCount = cluster.reduce(0) { $0 + $1.motionHintCountValue }
                 let motionHintKinds = Self.motionHintKindsSummary(for: cluster)
                 let recoveredEpochs = cluster.flatMap { $0.recoveredMotionEpochs ?? [] }
@@ -23154,7 +23180,8 @@ final class SessionStore: ObservableObject {
                         || motionValidatedMainSleepReady
                         || stableHROnlyMainSleepReady
                         || degradedHROnlyMainSleepReviewReady
-                        || denseMorningHROnlyReviewReady else {
+                        || denseMorningHROnlyReviewReady
+                        || denseOvernightHROnlyReviewReady else {
                     return nil
                 }
                 let motionReason = motionValidated
@@ -23173,6 +23200,8 @@ final class SessionStore: ObservableObject {
                     reason = "HR-only daytime nap candidate; user confirmation required; \(motionReason)"
                 } else if denseMorningHROnlyReviewReady {
                     reason = "HR+RR dense morning sleep candidate below the 5h automatic-confirmation floor; user confirmation required; \(motionReason)"
+                } else if denseOvernightHROnlyReviewReady {
+                    reason = "HR+RR dense overnight sleep candidate with short reconnect seams; user confirmation required; \(motionReason)"
                 } else if cluster.count > 1 {
                     reason = "HR-only broken overnight review aggregate; user confirmation required; \(motionReason)"
                 } else {
@@ -23222,7 +23251,8 @@ final class SessionStore: ObservableObject {
                                                historicalMotionArchiveLastUnix: historicalMotion.archiveLastUnix,
                                                historicalMotionNearestSeparationSeconds: historicalMotion.nearestSeparationSeconds,
                                                historicalMotionValidated: historicalMotion.lowMotionReady,
-                                               denseMorningHROnlyReviewQualified: denseMorningHROnlyReviewReady)
+                                               denseMorningHROnlyReviewQualified: denseMorningHROnlyReviewReady,
+                                               denseOvernightHROnlyReviewQualified: denseOvernightHROnlyReviewReady)
         }
         return candidates
         .sorted { $0.day > $1.day }

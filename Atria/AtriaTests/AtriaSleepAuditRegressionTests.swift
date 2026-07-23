@@ -283,6 +283,30 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         ), "a sub-five-hour HR-only window must remain review-only even with a trusted baseline")
     }
 
+    func testDenseOvernightSleepWithShortReconnectSeamSurfacesForReviewOnly() throws {
+        // A verified long sleep may span a brief journal/reconnect seam. Dense
+        // HR+RR remains eligible for a review card, but no-motion evidence can
+        // never silently update recovery.
+        let first = denseHRRRSession(
+            start: date(2032, 7, 9, 2, 11),
+            end: date(2032, 7, 9, 4, 44),
+            bpm: 65
+        )
+        let resumed = denseHRRRSession(
+            start: date(2032, 7, 9, 4, 49),
+            end: date(2032, 7, 9, 7, 22),
+            bpm: 65
+        )
+
+        let candidate = try XCTUnwrap(candidates([first, resumed], rest: 55).first)
+        XCTAssertTrue(candidate.denseOvernightHROnlyReviewQualified)
+        XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(candidate))
+        XCTAssertFalse(SessionStore.isAutoConfirmableMainSleepCandidate(
+            candidate,
+            baselineRestingIsTrusted: true
+        ), "a no-motion reconnect path must require the wearer's confirmation")
+    }
+
     func testDenseMorningReviewSurvivesASeamlessReconnectSplit() throws {
         let first = denseHRRRSession(
             start: date(2032, 7, 10, 5, 51),
