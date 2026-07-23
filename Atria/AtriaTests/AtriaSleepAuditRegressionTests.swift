@@ -299,12 +299,35 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         )
 
         let candidate = try XCTUnwrap(candidates([first, resumed], rest: 55).first)
-        XCTAssertTrue(candidate.denseOvernightHROnlyReviewQualified)
+        XCTAssertTrue(candidate.denseLongHROnlyReviewQualified)
         XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(candidate))
         XCTAssertFalse(SessionStore.isAutoConfirmableMainSleepCandidate(
             candidate,
             baselineRestingIsTrusted: true
         ), "a no-motion reconnect path must require the wearer's confirmation")
+    }
+
+    func testDenseShiftedSleepWithShortReconnectSeamSurfacesForReviewOnly() throws {
+        // The same evidence must not disappear merely because the wearer sleeps
+        // outside a conventional night window. This is still review-only.
+        let first = denseHRRRSession(
+            start: date(2032, 7, 9, 8, 0),
+            end: date(2032, 7, 9, 10, 33),
+            bpm: 65
+        )
+        let resumed = denseHRRRSession(
+            start: date(2032, 7, 9, 10, 38),
+            end: date(2032, 7, 9, 13, 11),
+            bpm: 65
+        )
+
+        let candidate = try XCTUnwrap(candidates([first, resumed], rest: 55).first)
+        XCTAssertTrue(candidate.denseLongHROnlyReviewQualified)
+        XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(candidate))
+        XCTAssertFalse(SessionStore.isAutoConfirmableMainSleepCandidate(
+            candidate,
+            baselineRestingIsTrusted: true
+        ))
     }
 
     func testDenseMorningReviewSurvivesASeamlessReconnectSplit() throws {

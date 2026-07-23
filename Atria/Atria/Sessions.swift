@@ -3208,10 +3208,10 @@ struct AggregateSleepCandidate {
     /// floor and the five-hour HR-only automatic-confirmation floor. This may
     /// surface for user review but is never auto-confirmable by itself.
     let denseMorningHROnlyReviewQualified: Bool
-    /// A complete overnight sleep-shaped HR/RR cluster with a short journal or
-    /// reconnect seam. It is review-only: no motion evidence means it can never
-    /// update recovery until the wearer confirms it.
-    let denseOvernightHROnlyReviewQualified: Bool
+    /// A complete sleep-shaped HR/RR cluster with a short journal or reconnect
+    /// seam. It is review-only: no motion evidence means it can never update
+    /// recovery until the wearer confirms it, regardless of clock time.
+    let denseLongHROnlyReviewQualified: Bool
 }
 
 struct SleepEvidenceStatus {
@@ -9205,7 +9205,7 @@ final class SessionStore: ObservableObject {
     nonisolated static func isReviewWorthySleepCandidate(_ candidate: AggregateSleepCandidate) -> Bool {
         if candidate.kind == "nap_candidate" { return true }
         if candidate.denseMorningHROnlyReviewQualified { return true }
-        if candidate.denseOvernightHROnlyReviewQualified { return true }
+        if candidate.denseLongHROnlyReviewQualified { return true }
         if candidate.motionEvidenceValidated {
             // Low motion is necessary evidence, not proof of sleep. For a
             // shorter night, require the robust HR shape and majority overlap
@@ -9275,7 +9275,7 @@ final class SessionStore: ObservableObject {
     private nonisolated static func isStrapOnlyMainSleepReviewCandidate(_ candidate: AggregateSleepCandidate) -> Bool {
         candidate.kind != "nap_candidate"
             && !candidate.motionEvidenceValidated
-            && (candidate.denseOvernightHROnlyReviewQualified
+            && (candidate.denseLongHROnlyReviewQualified
                 || candidate.duration >= AggregateSleepCandidate.strictMinimumDuration
                 || (candidate.duration >= AggregateSleepCandidate.fragmentedMinimumDuration
                     && candidate.span >= AggregateSleepCandidate.fragmentedMinimumSpan))
@@ -22955,10 +22955,20 @@ final class SessionStore: ObservableObject {
                 && standardDeviation(sessionHR.map(Double.init)) <= 9.5
                 && sessionP90 <= rest + 18
                 && elevatedFraction < 0.05
+            // A full shift-work sleep can arrive in several one-to-three-hour
+            // journal chunks. The aggregate still demands five dense hours and
+            // is review-only; this only admits independently dense fragments.
+            let denseLongHROnlyReviewFragment = session.duration >= 60 * 60
+                && session.avg <= rest + 18
+                && standardDeviation(sessionHR.map(Double.init)) <= 9.5
+                && sessionP90 <= rest + 35
+                && elevatedFraction < 0.12
+                && Double(session.rrPoints?.count ?? 0) / max(1, session.duration) >= 0.60
             let notWorkout = !session.workoutReadiness(rest: rest, maxHR: maxHR).ready
             return ((overnight && lowHR)
                 || longOvernightReviewLike
                 || longStableHROnlyMainSleepLike
+                || denseLongHROnlyReviewFragment
                 || napLike
                 || shortLowHRNapLike) && notWorkout
         }
@@ -23077,14 +23087,14 @@ final class SessionStore: ObservableObject {
                     && hrObservedCoverageFraction >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction
                     && maximumHRSampleGap <= 30
                     && maximumAcceptedHRGap <= 30
-                // A complete overnight window can have short journal seams
-                // after reconnect. Preserve it for a *user review* when both
-                // HR and RR remain dense across the entire span. It is never an
-                // automatic sleep/recovery path: there is no validated motion.
-                let denseOvernightHROnlyReviewReady = !napPhysiologyReady
+                // A complete sleep window can have short journal seams after
+                // reconnect, including shift-work sleep outside conventional
+                // hours. Preserve it for a *user review* when both HR and RR
+                // remain dense across the entire span. It is never automatic:
+                // there is no validated motion.
+                let denseLongHROnlyReviewReady = !napPhysiologyReady
                     && totalDuration >= AggregateSleepCandidate.minimumAutoConfirmMainSleepDuration
                     && span <= totalDuration + 10 * 60
-                    && clusterOvernightReviewWindow
                     && avg <= rest + 18
                     && hrStandardDeviation <= 9.5
                     && medianHR <= rest + 12
@@ -23100,7 +23110,7 @@ final class SessionStore: ObservableObject {
                         || fragmentedFallbackReady
                         || napPhysiologyReady
                         || denseMorningHROnlyReviewReady
-                        || denseOvernightHROnlyReviewReady else { return nil }
+                        || denseLongHROnlyReviewReady else { return nil }
                 let motionHintCount = cluster.reduce(0) { $0 + $1.motionHintCountValue }
                 let motionHintKinds = Self.motionHintKindsSummary(for: cluster)
                 let recoveredEpochs = cluster.flatMap { $0.recoveredMotionEpochs ?? [] }
@@ -23190,7 +23200,7 @@ final class SessionStore: ObservableObject {
                         || stableHROnlyMainSleepReady
                         || degradedHROnlyMainSleepReviewReady
                         || denseMorningHROnlyReviewReady
-                        || denseOvernightHROnlyReviewReady else {
+                        || denseLongHROnlyReviewReady else {
                     return nil
                 }
                 let motionReason = motionValidated
@@ -23209,8 +23219,8 @@ final class SessionStore: ObservableObject {
                     reason = "HR-only daytime nap candidate; user confirmation required; \(motionReason)"
                 } else if denseMorningHROnlyReviewReady {
                     reason = "HR+RR dense morning sleep candidate below the 5h automatic-confirmation floor; user confirmation required; \(motionReason)"
-                } else if denseOvernightHROnlyReviewReady {
-                    reason = "HR+RR dense overnight sleep candidate with short reconnect seams; user confirmation required; \(motionReason)"
+                } else if denseLongHROnlyReviewReady {
+                    reason = "HR+RR dense sleep candidate with short reconnect seams; user confirmation required; \(motionReason)"
                 } else if cluster.count > 1 {
                     reason = "HR-only broken overnight review aggregate; user confirmation required; \(motionReason)"
                 } else {
@@ -23261,7 +23271,7 @@ final class SessionStore: ObservableObject {
                                                historicalMotionNearestSeparationSeconds: historicalMotion.nearestSeparationSeconds,
                                                historicalMotionValidated: historicalMotion.lowMotionReady,
                                                denseMorningHROnlyReviewQualified: denseMorningHROnlyReviewReady,
-                                               denseOvernightHROnlyReviewQualified: denseOvernightHROnlyReviewReady)
+                                               denseLongHROnlyReviewQualified: denseLongHROnlyReviewReady)
         }
         return candidates
         .sorted { $0.day > $1.day }
