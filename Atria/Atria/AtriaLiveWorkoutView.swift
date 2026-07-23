@@ -1022,6 +1022,13 @@ final class AtriaPendingWorkoutIntentStore: @unchecked Sendable {
     private let legacyDefaults: UserDefaults?
     private let ioQueue: DispatchQueue
     private let stateLock = NSLock()
+    /// Progress checkpoints are valuable crash-recovery detail, but they are
+    /// never allowed to form an unbounded FIFO in front of the user's End
+    /// intent.  The token is protected separately from `stateLock` because it
+    /// governs queue admission, not the durable authority itself.
+    private let progressSchedulingLock = NSLock()
+    private var queuedProgressID: UUID?
+    private var cancelledProgressIDs = Set<UUID>()
     private var state: PreparedState = .unprepared
     private var persistenceWasOnMainThread = false
 
@@ -1102,7 +1109,7 @@ final class AtriaPendingWorkoutIntentStore: @unchecked Sendable {
     }
 
     func createIfAbsent(_ intent: AtriaPendingWorkoutIntent) async -> Bool {
-        await performIO {
+        return await performIO {
             guard self.prepareLocked(), self.currentLocked() == nil else { return false }
             return self.commitLocked(intent)
         }
@@ -1123,8 +1130,10 @@ final class AtriaPendingWorkoutIntentStore: @unchecked Sendable {
     /// and reject a terminal authority so late sets/pause bindings cannot reopen
     /// a workout whose exact end has already committed.
     func persistProgress(_ intent: AtriaPendingWorkoutIntent) async -> Bool {
-        await performIO {
-            self.persistProgressLocked(intent)
+        await withCheckedContinuation { continuation in
+            enqueueProgress(intent) { saved in
+                continuation.resume(returning: saved)
+            }
         }
     }
 
@@ -1134,19 +1143,73 @@ final class AtriaPendingWorkoutIntentStore: @unchecked Sendable {
         _ intent: AtriaPendingWorkoutIntent,
         completion: @escaping @MainActor @Sendable (Bool) -> Void
     ) {
+        let id = UUID()
+        let queuedAt = ProcessInfo.processInfo.systemUptime
+        progressSchedulingLock.lock()
+        if let previous = queuedProgressID {
+            // Its closure may already be present in the serial queue, but has
+            // not begun an atomic write.  Mark it cancelled rather than making
+            // End wait for stale sets/pause state.
+            cancelledProgressIDs.insert(previous)
+        }
+        queuedProgressID = id
+        progressSchedulingLock.unlock()
         ioQueue.async {
+            self.progressSchedulingLock.lock()
+            let cancelled = self.cancelledProgressIDs.remove(id) != nil
+            if self.queuedProgressID == id {
+                self.queuedProgressID = nil
+            }
+            guard !cancelled else {
+                self.progressSchedulingLock.unlock()
+                Task { @MainActor in completion(false) }
+                return
+            }
+            // From this point the write is the single current atomic operation
+            // and must finish; a terminal write will be placed immediately
+            // behind it rather than risking a torn authority.
+            self.progressSchedulingLock.unlock()
+            let beganAt = ProcessInfo.processInfo.systemUptime
             let saved = self.persistProgressLocked(intent)
+            AtriaDebugLog("ATRIADBG workout_intent_write operation=progress queue_wait_ms=%d write_ms=%d revision=%llu saved=%d",
+                          Int(((beganAt - queuedAt) * 1_000).rounded()),
+                          Int(((ProcessInfo.processInfo.systemUptime - beganAt) * 1_000).rounded()),
+                          intent.persistenceRevision,
+                          saved ? 1 : 0)
             Task { @MainActor in completion(saved) }
         }
     }
 
     func persistTerminal(_ requested: AtriaPendingWorkoutIntent) async -> AtriaPendingWorkoutIntent? {
-        await performIO {
-            guard self.prepareLocked(),
-                  requested.endedAt != nil,
-                  let current = self.currentLocked(),
-                  current.startedAt == requested.startedAt,
-                  current.endedAt == nil else { return nil }
+        let requestedAt = ProcessInfo.processInfo.systemUptime
+        // Cancel only work that has not begun.  An in-flight atomic progress
+        // write remains valid recovery evidence and is allowed to complete;
+        // terminal is the very next meaningful write after it.
+        progressSchedulingLock.lock()
+        if let queued = queuedProgressID {
+            cancelledProgressIDs.insert(queued)
+            queuedProgressID = nil
+        }
+        progressSchedulingLock.unlock()
+        return await performIO {
+            let beganAt = ProcessInfo.processInfo.systemUptime
+            let result = self.persistTerminalLocked(requested)
+            AtriaDebugLog("ATRIADBG workout_intent_write operation=terminal queue_wait_ms=%d write_ms=%d terminal_saved=%d",
+                          Int(((beganAt - requestedAt) * 1_000).rounded()),
+                          Int(((ProcessInfo.processInfo.systemUptime - beganAt) * 1_000).rounded()),
+                          result == nil ? 0 : 1)
+            return result
+        }
+    }
+
+    /// Must run only on ioQueue. The final write includes the same atomic
+    /// write/readback/decode proof as every other intent mutation.
+    private func persistTerminalLocked(_ requested: AtriaPendingWorkoutIntent) -> AtriaPendingWorkoutIntent? {
+        guard prepareLocked(),
+              requested.endedAt != nil,
+              let current = currentLocked(),
+              current.startedAt == requested.startedAt,
+              current.endedAt == nil else { return nil }
             // The serial queue may have committed a newer Lock Screen pause or
             // resume immediately before End. Preserve that canonical metadata
             // and apply only terminal evidence from the End tap.
@@ -1188,7 +1251,6 @@ final class AtriaPendingWorkoutIntentStore: @unchecked Sendable {
             }
             terminal.persistenceRevision = .max
             return self.commitLocked(terminal) ? terminal : nil
-        }
     }
 
     func clearIfUnchanged(_ expected: AtriaPendingWorkoutIntent) async -> Bool {
