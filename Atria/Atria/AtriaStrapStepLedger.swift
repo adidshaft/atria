@@ -320,8 +320,16 @@ enum AtriaStrapStepLedger {
               record.state.map({ $0.count <= 80 }) ?? true else {
             return false
         }
-        if record.segmentRawSteps == 0, record.segmentSteps != 0 { return false }
-        if record.segmentRawSteps > 0 {
+        // Legacy records store an acceleration-derived primary count and its
+        // raw peak count, so their ratio is an integrity check. Promoted R10
+        // gyro records intentionally retain raw peaks only as diagnostics;
+        // forcing a cross-detector ratio would reject a valid durable walking
+        // prefix (and lose it on relaunch).
+        let usesPromotedGyroCoordinate = record.state == "r10_live_validated"
+        if !usesPromotedGyroCoordinate,
+           record.segmentRawSteps == 0,
+           record.segmentSteps != 0 { return false }
+        if !usesPromotedGyroCoordinate, record.segmentRawSteps > 0 {
             let ratio = Double(record.segmentSteps) / Double(record.segmentRawSteps)
             guard ratio >= 0.5, ratio <= 2 else { return false }
         }
