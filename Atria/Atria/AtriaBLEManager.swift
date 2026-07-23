@@ -18026,10 +18026,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         // A WHOOP 4 with a nearly full flash ring can emit an
                         // old data record immediately, then delay the matching
                         // HISTORY_START while it settles the serve cursor. The
-                        // physical strap took 25.2 seconds in this state. Keep
-                        // the transaction fail-closed, but allow enough time
-                        // for its already accepted command to declare the start.
-                        let initialServeDeadline = Date().addingTimeInterval(30)
+                        // Physical straps can spend more than 25 seconds
+                        // selecting a deep flash backlog before they emit the
+                        // matching HISTORY_START. The prior 30-second cutoff
+                        // was itself the observed disconnect cause: Atria
+                        // cancelled a healthy link immediately before the
+                        // strap could serve actual rows. This remains a
+                        // passive, background wait—no retry, ACK, abort, or
+                        // UI work runs here—and a missing start still retains
+                        // the exact gap rather than fabricating coverage.
+                        let initialServeWaitSeconds: TimeInterval = 75
+                        let initialServeDeadline = Date().addingTimeInterval(
+                            initialServeWaitSeconds
+                        )
                         while acceptedHistoryStartSequence == nil,
                               Date() < initialServeDeadline {
                             try? await Task.sleep(for: .milliseconds(250))
@@ -18042,9 +18051,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             }
                         }
                         guard acceptedHistoryStartSequence != nil else {
-                            AtriaDebugLog("ATRIADBG historyServe status=start_timeout generation=%llu pending=%u wait_s=30 action=rebuild_link_without_ack_or_abort_retain_gap",
+                            AtriaDebugLog("ATRIADBG historyServe status=start_timeout generation=%llu pending=%u wait_s=%.0f action=rebuild_link_without_ack_or_abort_retain_gap",
                                           syncGeneration,
-                                          cursorRange.pendingRecords)
+                                          cursorRange.pendingRecords,
+                                          initialServeWaitSeconds)
                             if let peripheral, peripheral.state == .connected {
                                 cancelPeripheralConnection(
                                     peripheral,

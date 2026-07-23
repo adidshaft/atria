@@ -7722,4 +7722,17 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "generation setup must not erase the explicit clock-repair approval")
     }
 
+    func testHistoryServeWaitDoesNotCancelADeepBacklogAtThirtySeconds() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(of: "let initialServeWaitSeconds: TimeInterval = 75"))
+        let end = try XCTUnwrap(source.range(of: "guard acceptedHistoryStartSequence != nil else",
+                                              range: start.upperBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(body.contains("Date().addingTimeInterval(\n                            initialServeWaitSeconds\n                        )"))
+        XCTAssertFalse(body.contains("sendHistoryCommand"),
+                       "waiting for a served page must not issue a second command")
+        XCTAssertFalse(body.contains("Cmd.abortHistoricalTransmits"))
+    }
+
 }
