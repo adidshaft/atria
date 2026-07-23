@@ -3611,6 +3611,25 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), "a transaction-boundary reconnect race must retain the full forced request")
     }
 
+    func testAutomaticRangeRecoveryCannotRaceExplicitSequenceConfirmationReplay() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "func requestOfflineHistoricalSyncIfNeeded("
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "private func startOfflineHistoricalSync(reason: String,",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("historySequenceConfirmationRetryTask != nil"))
+        XCTAssertTrue(body.contains("!explicitHistoricalRequest"))
+        XCTAssertTrue(body.contains("deferred_sequence_confirmation_replay"))
+        XCTAssertTrue(body.contains("retain_automatic_gap_until_explicit_replay_finishes"))
+        XCTAssertTrue(source.contains(
+            "reason: retryReason,\n                    force: true,\n                    explicitResearchRequest: true"
+        ), "the exact sequence-confirmation replay must retain explicit authority")
+    }
+
     func testProductionHistoricalRecoveryQuietsOnlyR10ThenSendsHistory() {
         let commands = AtriaBLEManager.productionHistoricalRecoveryInitCommands()
 

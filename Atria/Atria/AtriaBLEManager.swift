@@ -5944,6 +5944,27 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let connectingLink = peripheral?.state == .connecting
         let explicitUserRequest = Self.isExplicitUserOfflineSyncReason(reason)
         let explicitHistoricalRequest = explicitUserRequest || explicitResearchRequest
+        // A sequence-confirmation retry is an explicit, bounded replay of the
+        // exact transition which previously failed closed. An automatic
+        // range-loss retry must not acquire another history generation while
+        // that replay is waiting for its fresh-HR boundary: doing so can
+        // replace the retained cursor and turn one diagnostic retry into
+        // competing history owners. Explicit user/repair requests remain the
+        // only allowed owner during this window.
+        if historySequenceConfirmationRetryTask != nil,
+           !explicitHistoricalRequest {
+            retainPendingOfflineHistoricalSyncRequest(
+                reason: reason,
+                force: force,
+                explicitRequest: false
+            )
+            defaults.set("deferred_sequence_confirmation_replay",
+                         forKey: OfflineSyncDefaults.lastStatus)
+            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            AtriaDebugLog("ATRIADBG offline_sync status=deferred_sequence_confirmation_replay reason=%@ action=retain_automatic_gap_until_explicit_replay_finishes",
+                          reason)
+            return false
+        }
         // Aged automatic retries can carry `force`, so force alone must not
         // bypass this gate. Preserve the durable request and the live radio
         // while iOS reports serious/critical pressure; the governor schedules
