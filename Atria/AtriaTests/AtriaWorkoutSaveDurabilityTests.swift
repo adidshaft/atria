@@ -870,7 +870,8 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         let original = pendingAtomicIntent(start: start)
         let store = AtriaPendingWorkoutIntentStore(directoryURL: directory,
                                                    legacyDefaults: nil)
-        XCTAssertTrue(await store.createIfAbsent(original))
+        let created = await store.createIfAbsent(original)
+        XCTAssertTrue(created)
 
         // Exercise the coalesced UI path, rather than calling persistProgress
         // after End has already returned. Depending on which serial operation
