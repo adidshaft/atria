@@ -26044,6 +26044,15 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     // services on the inherited encryption/command epoch.
                     AtriaDebugLog("ATRIADBG readOnlyHistory status=restored_epoch_held reason=central_powered_on commands=0")
                 } else if let peripheral, peripheral.state == .connected {
+                    // Some restored links reach the central powered-on path
+                    // before `willRestoreState` has delivered its MainActor
+                    // work. Preserve the orphan journal before this branch can
+                    // hand off to a motion-profile cutover.
+                    _ = archiveOrphanHistoricalIngressIfNeeded(
+                        reason: "central_powered_on_orphan_ingress_replay",
+                        force: false,
+                        explicitRequest: false
+                    )
                     if !beginMotionHandshakeLaunchConnectionCutoverIfNeeded(
                         peripheral: peripheral,
                         central: central,
