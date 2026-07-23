@@ -8781,6 +8781,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     self.orphanHistoricalIngressArchiveInFlight = false
                     AtriaDebugLog("ATRIADBG historyIngress status=archived_orphan frames=%d metadata=%d entries=%d action=raw_only_no_ack_no_coverage",
                                   archivedFrames, ignoredMetadata, sealedOrphans.count)
+                    // A first accepted HR callback can start a replay that
+                    // retires only the vault entries observed at worker open.
+                    // Do not strand a second sealed journal until another
+                    // unrelated HR packet arrives: schedule the next bounded,
+                    // identity-verified vault pass only after this canonical
+                    // durability boundary succeeded. This remains raw-only;
+                    // it has no ACK, cursor, or gap-coverage authority.
+                    _ = self.archiveOrphanHistoricalIngressIfNeeded(
+                        reason: "orphan_vault_follow_up_after_canonical_replay",
+                        force: false,
+                        explicitRequest: false
+                    )
                     if let pending = self.takePendingOfflineHistoricalSyncRequest() {
                         _ = self.requestOfflineHistoricalSyncIfNeeded(
                             reason: pending.reason,
