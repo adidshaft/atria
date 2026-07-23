@@ -4,7 +4,7 @@ import XCTest
 final class AtriaWorkoutGyroStepSourceTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 2_000_000_000)
 
-    func testOnlyFreshAmbulatoryStartFreezesGyroSource() {
+    func testReadyAmbulatoryStartFreezesGyroSourceBeforeFirstMotionFrame() {
         let fresh = coordinate(count: 900, capturedAt: now)
         XCTAssertEqual(AtriaWorkoutStepSourceVersion.frozen(for: .walking,
                                                             gyroCoordinate: fresh),
@@ -16,9 +16,30 @@ final class AtriaWorkoutGyroStepSourceTests: XCTestCase {
                                                             gyroCoordinate: fresh),
                        .strapGyroCadenceAmbulatoryV1)
 
-        let stale = coordinate(count: 900, capturedAt: now.addingTimeInterval(-3))
+        // A workout begins from stillness, so there may be no fresh R10
+        // sample at the Start tap.  Link readiness—not a prior step—is the
+        // source-selection gate.  Completion still independently requires a
+        // fresh detector coordinate.
+        let stale = coordinate(count: 0, capturedAt: now.addingTimeInterval(-3))
         XCTAssertEqual(AtriaWorkoutStepSourceVersion.frozen(for: .walking,
                                                             gyroCoordinate: stale),
+                       .strapGyroCadenceAmbulatoryV1)
+        XCTAssertFalse(stale.isLiveForCompletion)
+    }
+
+    func testUnavailableAmbulatoryStartRetainsAccelerometerCoordinate() {
+        let disconnected = AtriaWorkoutStepCoordinate.makeCumulative(
+            savedPrefixHydrated: true,
+            cumulativeCount: 0,
+            hasEvidence: false,
+            capturedAt: nil,
+            isConnected: false,
+            reconnectPending: false,
+            rangeLossBackfillPending: false,
+            now: now
+        )
+        XCTAssertEqual(AtriaWorkoutStepSourceVersion.frozen(for: .walking,
+                                                            gyroCoordinate: disconnected),
                        .strapAccelerometerV1)
     }
 
