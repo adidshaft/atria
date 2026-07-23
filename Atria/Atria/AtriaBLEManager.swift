@@ -26235,7 +26235,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         imuGravityValidatedFrameCount = snapshot.gravityValidatedFrames
         imuSampleRateHzSum = Double(AtriaStrapPedometer.sampleRateHz)
         imuSampleRateHzCount = 1
-        let gyroCadenceSteps = currentGyroCadenceResearchSessionSteps()
+        // The snapshot was already evaluated on the R10 serial queue. Do not
+        // synchronously rescan its entire open motion span on MainActor here:
+        // that can delay live application long enough to make an otherwise
+        // continuous workout boundary appear stale.
+        let gyroCadenceSteps = snapshot.gyroCadenceResearchSteps
         let reconciledTotals = Self.monotonicStrapStepTotals(
             currentSteps: strapStepResearchCount,
             currentRawSteps: strapStepResearchPeakCount,
@@ -26257,13 +26261,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 incoming: snapshot.deviceTimestamp
             )
         }
-        strapStepResearchState = "r10_live_validated"
+        // Preserve the pipeline's provenance. The gyro detector remains a
+        // preliminary strap-only source until it passes the controlled
+        // physical walking acceptance run; do not advertise a different
+        // state internally than the UI publishes.
+        strapStepResearchState = snapshot.state
         if let capturedAt = snapshot.receivedAt,
            liveStrapStepCountCapturedAt.map({ capturedAt >= $0 }) ?? true {
             assignIfChanged(\.liveStrapStepCountCapturedAt, capturedAt)
         }
         publishLiveStrapStepResearchIfNeeded(now: now)
-        assignIfChanged(\.liveStrapStepResearchState, snapshot.state)
+        assignIfChanged(\.liveStrapStepResearchState, strapStepResearchState)
         imuValidationState = "r10_fixed_layout_calibrating"
         if schedulesCheckpoint {
             scheduleStrapStepLedgerCheckpoint(now: now)

@@ -1375,7 +1375,7 @@ struct AtriaSettingsView: View {
                             tint: batterySaver ? .green : .orange,
                             title: batterySaver ? "Heart rate + strap motion" : "Diagnostic full protocol",
                             detail: batterySaver
-                                ? "Recommended. Keeps live heart rate and verified strap motion on the stable connection. When strap steps are unavailable, Atria can use clearly labelled iPhone steps for periods when you carried the phone."
+                                ? "Recommended. Keeps live heart rate and verified strap motion on the stable connection. When strap steps are unavailable, Atria marks them unavailable rather than substituting phone steps."
                                 : "Enables additional proprietary streams for diagnostics. This may be less stable and use more strap battery.")
             // Static handoff compatibility marker for the old detail:
             // Keeps richer strap streams available for beat-to-beat, HRV, Recovery and sleep research.

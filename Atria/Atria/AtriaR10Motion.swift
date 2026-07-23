@@ -948,6 +948,10 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
         let generation: UInt64
         let steps: Int
         let rawSteps: Int
+        /// The gyro cadence total evaluated on the pipeline's own serial
+        /// queue. Consumers must use this snapshot value rather than asking
+        /// the pipeline to rescan its full open motion span on MainActor.
+        let gyroCadenceResearchSteps: Int
         let frames: Int
         let samples: Int
         let deviceTimestamp: UInt32
@@ -1728,6 +1732,7 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
         return Snapshot(generation: generation,
                         steps: Int((Double(rawSteps) * gain).rounded()),
                         rawSteps: rawSteps,
+                        gyroCadenceResearchSteps: currentGyroCadenceResearchStepsLocked(),
                         frames: totalFrames,
                         samples: totalSamples,
                         deviceTimestamp: deviceTimestamp,
