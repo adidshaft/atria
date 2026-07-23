@@ -2,6 +2,16 @@ import XCTest
 @testable import Atria
 
 final class AtriaStrainDetailPresentationTests: XCTestCase {
+    func testWorkoutRowsDistinguishBoundedWorkoutStrainFromDayStrain() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaOverviewSections.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertTrue(source.contains("workout strain"))
+        XCTAssertTrue(source.contains("Each value is this workout’s heart-rate strain. Day strain above combines your full sleep-to-sleep day."))
+    }
+
     func testTargetRailUsesWhoopScaleAndTwoPointTargetBand() {
         XCTAssertEqual(AtriaStrainTargetPresentation.progress(for: 10.5), 0.5, accuracy: 0.0001)
         XCTAssertEqual(AtriaStrainTargetPresentation.progress(for: 30), 1, accuracy: 0.0001)
