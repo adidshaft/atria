@@ -1683,7 +1683,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private nonisolated var requiredProductionHistoryNotifications: [CBUUID] {
-        Self.UUIDs.historyNotifyCharacteristics(
+        // The explicitly user-approved repair uses the known-good complete
+        // proprietary listener set. Automatic reconnect recovery deliberately
+        // stays on its narrower proven profile until this path has physically
+        // demonstrated rows on the user's strap.
+        if historyTransportPhaseFence.snapshot().usesExplicitHistoryProfile {
+            return [Self.UUIDs.strapRX, Self.UUIDs.strapStream4,
+                    Self.UUIDs.strapStream5]
+        }
+        return Self.UUIDs.historyNotifyCharacteristics(
             observeMotionChannels: observesHistoricalMotionChannels
         )
     }
@@ -8078,7 +8086,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historicalConsumerReceiptedGenerations.remove(syncGeneration)
         // Publish callback ownership before discovery or any history command can
         // produce a notification. Delegate readers observe this through a lock.
-        _ = historyTransportPhaseFence.activate(generation: syncGeneration)
+        _ = historyTransportPhaseFence.activate(
+            generation: syncGeneration,
+            usesExplicitHistoryProfile: explicitRequest
+        )
         offlineHistoricalSyncInProgress = true
         suspendWorkoutMotionLeaseForHistoricalSync()
         historyRealtimeStopRequestedGeneration = nil
@@ -17988,6 +17999,45 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         return
                     }
                 }
+            }
+            if historyTransportPhaseFence.snapshot().usesExplicitHistoryProfile {
+                // The strap's verified offload profile is RX + stream4 +
+                // stream5, followed by one confirmed proprietary battery
+                // request immediately before SEND_HISTORICAL. This is an
+                // explicit-repair-only compatibility handshake: it performs no
+                // trim/ack/abort/realtime transition and cannot run during
+                // ordinary reconnect recovery until physical rows prove it.
+                let bondResult = await sendHistoryCommandAwaitingWriteConfirmation(
+                    command: Cmd.getBatteryLevel,
+                    payload: [0x00],
+                    generation: syncGeneration
+                )
+                guard bondResult == .confirmed else {
+                    UserDefaults.standard.set(
+                        "bond_\(String(describing: bondResult))",
+                        forKey: "atria.offlineSync.explicitHistoryProfile.v1"
+                    )
+                    failHistoryHandshakeWrite(
+                        generation: syncGeneration,
+                        command: Cmd.getBatteryLevel,
+                        result: bondResult
+                    )
+                    return
+                }
+                UserDefaults.standard.set(
+                    "bond_write_confirmed",
+                    forKey: "atria.offlineSync.explicitHistoryProfile.v1"
+                )
+                try? await Task.sleep(for: .milliseconds(1500))
+                guard !Task.isCancelled,
+                      historyOnlyProbeArmed,
+                      historyOnlyProbeEpoch == probeEpoch,
+                      offlineHistoricalSyncInProgress,
+                      offlineHistoricalSyncGeneration == syncGeneration else {
+                    return
+                }
+                AtriaDebugLog("ATRIADBG historyServe status=explicit_profile_bond_confirmed generation=%llu command=1a00 settle_ms=1500 listeners=03,04,05 action=allow_1600",
+                              syncGeneration)
             }
             if !historyInitSweepCommands.isEmpty {
                 AtriaDebugLog("ATRIADBG historyOnly status=send_init_sweep commands=%d mode=%@",
