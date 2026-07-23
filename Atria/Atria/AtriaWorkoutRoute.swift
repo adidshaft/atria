@@ -235,6 +235,11 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
         var pointCount = 0
         var distanceMeters: Double = 0
         var elevationGainMeters: Double = 0
+        /// The current GPS-derived speed. This stays optional rather than
+        /// estimating from wrist cadence: the WHOOP strap has no distance or
+        /// velocity signal, while Core Location reports a real ground speed
+        /// whenever a route workout has a valid fix.
+        var currentSpeedMetersPerSecond: Double?
         var lastError: String?
 
         var latestCoordinate: CLLocationCoordinate2D? {
@@ -498,6 +503,9 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
                 }
             }
             if coverageStartedAt == nil { coverageStartedAt = location.timestamp }
+            snapshot.currentSpeedMetersPerSecond = location.speed >= 0
+                ? location.speed
+                : nil
             points.append(AtriaWorkoutRoute.Point(latitude: location.coordinate.latitude,
                                                   longitude: location.coordinate.longitude,
                                                   altitude: location.altitude,
