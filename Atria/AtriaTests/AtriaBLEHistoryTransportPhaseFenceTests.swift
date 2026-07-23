@@ -25,6 +25,23 @@ final class AtriaBLEHistoryTransportPhaseFenceTests: XCTestCase {
         XCTAssertFalse(fence.deactivate(ifMatching: 11).isActive)
     }
 
+    func testExplicitHistoryProfileIsScopedToItsOwningGeneration() {
+        let fence = AtriaBLEHistoryTransportPhaseFence()
+        let explicit = fence.activate(generation: 21, usesExplicitHistoryProfile: true)
+        XCTAssertTrue(explicit.usesExplicitHistoryProfile)
+        XCTAssertTrue(fence.snapshot().usesExplicitHistoryProfile)
+
+        // A stale completion must neither release nor clear the active repair.
+        XCTAssertTrue(fence.deactivate(ifMatching: 20).usesExplicitHistoryProfile)
+        XCTAssertTrue(fence.snapshot().usesExplicitHistoryProfile)
+
+        XCTAssertFalse(fence.deactivate(ifMatching: 21).isActive)
+        XCTAssertFalse(fence.snapshot().usesExplicitHistoryProfile)
+
+        // Ordinary recovery starts clean, even after an explicit repair.
+        XCTAssertFalse(fence.activate(generation: 22).usesExplicitHistoryProfile)
+    }
+
     func testProtectedV9HistoryDiscoveryUsesGenericHistoryRoute() {
         XCTAssertFalse(AtriaBLEManager.shouldUseProtectedV9CharacteristicHandler(
             standardHROnlyMode: true,
