@@ -6081,6 +6081,41 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
         let rawGapAlreadyArchived = gapFingerprint != nil
             && gapFingerprint == defaults.string(forKey: OfflineSyncDefaults.rawArchivedGapFingerprint)
+        // Migrate the last production timeout recorded before the exact-gap
+        // circuit breaker existed. The guard binds the app-owned timeout,
+        // confirmed 16/00 write, recovery attempt and current gap to one short
+        // history-owner epoch; it must never infer a timeout from an unrelated
+        // app cancellation. Explicit repair is deliberately never blocked.
+        if !explicitHistoricalRequest,
+           defaults.string(forKey: OfflineSyncDefaults.historyStartTimeoutGapFingerprint) == nil {
+            let newestClosedGapEndUnix = AtriaHistoricalGapLedger
+                .newestClosedRecoveryCandidate(defaults: defaults)?
+                .window.end?.timeIntervalSince1970
+            if Self.shouldMigrateHistoryStartTimeoutCircuitBreaker(
+                lastAppCancelReason: defaults.string(forKey: "atria.ble.lastAppCancelReason"),
+                lastAppCancelAtUnix: defaults.double(forKey: "atria.ble.lastAppCancelAt"),
+                handshakeStatus: defaults.string(forKey: OfflineSyncDefaults.handshakeStatus),
+                handshakeAtUnix: defaults.double(forKey: OfflineSyncDefaults.handshakeAt),
+                backfillStartedAtUnix: defaults.double(
+                    forKey: OfflineSyncDefaults.rangeLossBackfillStartedAt
+                ),
+                newestClosedGapEndUnix: newestClosedGapEndUnix
+            ), let gapFingerprint {
+                defaults.set(
+                    gapFingerprint,
+                    forKey: OfflineSyncDefaults.historyStartTimeoutGapFingerprint
+                )
+                defaults.set(
+                    defaults.double(forKey: "atria.ble.lastAppCancelAt"),
+                    forKey: OfflineSyncDefaults.historyStartTimeoutGapAt
+                )
+                defaults.set("history_start_timeout_gap_migrated",
+                             forKey: OfflineSyncDefaults.lastStatus)
+                defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+                AtriaDebugLog("ATRIADBG offline_sync status=history_start_timeout_gap_migrated reason=%@ action=preserve_exact_gap_suppress_automatic_owner_manual_repair_available",
+                              reason)
+            }
+        }
         if Self.shouldSuppressAutomaticHistoricalNoRowsRetry(
             exactGapPending: recoverableGapPending,
             explicitUserRequest: explicitHistoricalRequest,

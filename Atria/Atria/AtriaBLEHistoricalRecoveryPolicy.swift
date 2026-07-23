@@ -273,6 +273,31 @@ extension AtriaBLEManager {
             && currentGapFingerprint == historyStartTimeoutGapFingerprint
     }
 
+    /// Migrates an install that recorded the pre-circuit-breaker timeout but
+    /// did not yet persist its exact-gap marker. All timestamps must describe
+    /// the same short history-owner epoch; the current newest closed gap must
+    /// predate that epoch so an unrelated later loss is never suppressed.
+    nonisolated static func shouldMigrateHistoryStartTimeoutCircuitBreaker(
+        lastAppCancelReason: String?,
+        lastAppCancelAtUnix: Double,
+        handshakeStatus: String?,
+        handshakeAtUnix: Double,
+        backfillStartedAtUnix: Double,
+        newestClosedGapEndUnix: Double?
+    ) -> Bool {
+        guard lastAppCancelReason == "history_start_timeout_transport_reset",
+              handshakeStatus == "full_drain_write_confirmed",
+              lastAppCancelAtUnix > 0,
+              handshakeAtUnix > 0,
+              backfillStartedAtUnix > 0,
+              handshakeAtUnix >= backfillStartedAtUnix,
+              lastAppCancelAtUnix >= handshakeAtUnix,
+              lastAppCancelAtUnix - backfillStartedAtUnix <= 5 * 60 else {
+            return false
+        }
+        return newestClosedGapEndUnix.map { $0 <= backfillStartedAtUnix } ?? true
+    }
+
     /// Even before a historical payload layout is metric-validated, a natural
     /// disconnect is a safe opportunity to copy the strap's raw backlog. This
     /// never promotes HR/RR, never interrupts a connected realtime pipe, and

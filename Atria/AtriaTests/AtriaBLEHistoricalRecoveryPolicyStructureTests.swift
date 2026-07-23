@@ -66,6 +66,50 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         ))
     }
 
+    func testTimeoutCircuitMigrationRequiresOneConfirmedHistoryOwnerEpoch() {
+        XCTAssertTrue(AtriaBLEManager.shouldMigrateHistoryStartTimeoutCircuitBreaker(
+            lastAppCancelReason: "history_start_timeout_transport_reset",
+            lastAppCancelAtUnix: 1_120,
+            handshakeStatus: "full_drain_write_confirmed",
+            handshakeAtUnix: 1_045,
+            backfillStartedAtUnix: 1_000,
+            newestClosedGapEndUnix: 999
+        ))
+
+        XCTAssertFalse(AtriaBLEManager.shouldMigrateHistoryStartTimeoutCircuitBreaker(
+            lastAppCancelReason: "user_requested",
+            lastAppCancelAtUnix: 1_120,
+            handshakeStatus: "full_drain_write_confirmed",
+            handshakeAtUnix: 1_045,
+            backfillStartedAtUnix: 1_000,
+            newestClosedGapEndUnix: 999
+        ), "an unrelated app cancellation cannot seed the circuit breaker")
+        XCTAssertFalse(AtriaBLEManager.shouldMigrateHistoryStartTimeoutCircuitBreaker(
+            lastAppCancelReason: "history_start_timeout_transport_reset",
+            lastAppCancelAtUnix: 1_120,
+            handshakeStatus: "bond_write_confirmed",
+            handshakeAtUnix: 1_045,
+            backfillStartedAtUnix: 1_000,
+            newestClosedGapEndUnix: 999
+        ), "the full-drain write must be confirmed")
+        XCTAssertFalse(AtriaBLEManager.shouldMigrateHistoryStartTimeoutCircuitBreaker(
+            lastAppCancelReason: "history_start_timeout_transport_reset",
+            lastAppCancelAtUnix: 1_120,
+            handshakeStatus: "full_drain_write_confirmed",
+            handshakeAtUnix: 1_045,
+            backfillStartedAtUnix: 1_000,
+            newestClosedGapEndUnix: 1_060
+        ), "a newer closed gap needs its own automatic recovery opportunity")
+        XCTAssertFalse(AtriaBLEManager.shouldMigrateHistoryStartTimeoutCircuitBreaker(
+            lastAppCancelReason: "history_start_timeout_transport_reset",
+            lastAppCancelAtUnix: 1_400,
+            handshakeStatus: "full_drain_write_confirmed",
+            handshakeAtUnix: 1_045,
+            backfillStartedAtUnix: 1_000,
+            newestClosedGapEndUnix: 999
+        ), "the cancellation must be inside the same bounded history epoch")
+    }
+
     func testNoRowsRecoveryIsDurablyScopedToTheAdmittedGapAndNeverBlocksManualRetry() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
@@ -91,6 +135,10 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         ))
         XCTAssertTrue(request.contains("history_start_timeout_gap_retained"))
         XCTAssertTrue(request.contains("preserve_live_r10"))
+        XCTAssertTrue(request.contains(
+            "shouldMigrateHistoryStartTimeoutCircuitBreaker("
+        ))
+        XCTAssertTrue(request.contains("history_start_timeout_gap_migrated"))
 
         let finalizerStart = try XCTUnwrap(manager.range(
             of: "private func finalizeOfflineHistoricalSyncAfterLiveRestoration("
