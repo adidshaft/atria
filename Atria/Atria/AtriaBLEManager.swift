@@ -1991,6 +1991,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var replayingBufferedSessionInputs = false
     private nonisolated let historicalArchiveQueue = DispatchQueue(label: "com.adidshaft.atria.historical-archive",
                                                                    qos: .utility)
+    /// Admission-ledger retention is deliberately scheduled away from both
+    /// CoreBluetooth callbacks and the terminal history reducer. A pass only
+    /// touches already durable, inactive identities and has a fixed I/O budget.
+    private var historicalAdmissionMaintenanceScheduled = false
     /// A prior history drain may have left its serial worker occupied when the
     /// process died. Orphaned raw bytes must not sit behind that abandoned
     /// generation; HistoricalArchive still serializes its own durable store.
@@ -5879,6 +5883,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         reassertHeartRateNotificationsIfConnected(reason: reason)
         reassertR10NotificationIfConnected(reason: reason)
+        scheduleHistoricalAdmissionLedgerMaintenance(reason: "\(reason)_lifecycle")
         AtriaDebugLog("ATRIADBG long_wear_mode foreground_interactive=0 action=background_keep_link reason=%@ connected=%d",
               reason,
               status == .connected ? 1 : 0)
@@ -21929,16 +21934,64 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historicalArchiveQueue.async {
             do {
                 try ledger.finish(attempt, succeeded: succeeded)
-                let prune = try ledger.prune()
-                AtriaDebugLog("ATRIADBG historyAdmission status=%@ generation=%llu pruned=%d protected_above_limit=%d",
+                AtriaDebugLog("ATRIADBG historyAdmission status=%@ generation=%llu action=terminal_state_durable",
                               succeeded ? "finished" : "failed",
-                              generation,
-                              prune.removedForAge + prune.removedForCount,
-                              prune.protectedRowsAboveLimit)
+                              generation)
+                Task { @MainActor [weak self] in
+                    self?.scheduleHistoricalAdmissionLedgerMaintenance(
+                        reason: "attempt_terminal"
+                    )
+                }
             } catch {
                 AtriaDebugLog("ATRIADBG historyAdmission status=finish_failed generation=%llu error=%@ action=retain_gap",
                               generation,
                               String(describing: error))
+            }
+        }
+    }
+
+    /// Schedules one bounded derived-store retention pass. This method never
+    /// writes to the strap, changes an admission attempt state, or performs
+    /// maintenance inline with a BLE callback. If the app is suspended before
+    /// the pass runs, the ledger remains exact and the next lifecycle/terminal
+    /// opportunity retries it.
+    private func scheduleHistoricalAdmissionLedgerMaintenance(reason: String) {
+        guard !historicalAdmissionMaintenanceScheduled else {
+            AtriaDebugLog("ATRIADBG historyAdmissionMaintenance status=coalesced reason=%@",
+                          reason)
+            return
+        }
+        guard let ledger = historicalAdmissionLedger else {
+            AtriaDebugLog("ATRIADBG historyAdmissionMaintenance status=unavailable reason=%@",
+                          reason)
+            return
+        }
+        historicalAdmissionMaintenanceScheduled = true
+        historicalArchiveQueue.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self, ledger] in
+            let result: Result<AtriaWhoop4HistoryAdmissionLedger.PruneResult, Error>
+            do {
+                result = .success(try ledger.prune())
+            } catch {
+                result = .failure(error)
+            }
+            Task { @MainActor [weak self] in
+                self?.historicalAdmissionMaintenanceScheduled = false
+                switch result {
+                case .success(let prune):
+                    AtriaDebugLog("ATRIADBG historyAdmissionMaintenance status=complete reason=%@ pruned=%d deferred_eligible_above_limit=%d protected_above_limit=%d remaining=%d",
+                                  reason,
+                                  prune.deletedRows,
+                                  prune.deferredEligibleRowsAboveLimit,
+                                  prune.protectedRowsAboveLimit,
+                                  prune.remainingRows)
+                case .failure(let error):
+                    // Retention must fail open: an error retains exact
+                    // duplicate authority and is retried on a future safe
+                    // lifecycle boundary.
+                    AtriaDebugLog("ATRIADBG historyAdmissionMaintenance status=failed reason=%@ error=%@ action=retain_exact_authority",
+                                  reason,
+                                  String(describing: error))
+                }
             }
         }
     }

@@ -823,6 +823,47 @@ final class AtriaWhoop4HistoryAdmissionLedgerTests: XCTestCase {
         XCTAssertEqual(result.protectedRowsAboveLimit, 0)
     }
 
+    func testRetentionDefersEligibleRowsAcrossBoundedMaintenancePasses() throws {
+        let fixture = try Fixture()
+        let ledger = try fixture.ledger()
+        let attempt = try ledger.beginAttempt(strapIdentifier: "strap-bounded-prune")
+        for value in 0..<5 {
+            _ = try ledger.classify(
+                frame: Data([UInt8(value)]),
+                attempt: attempt,
+                now: Date(timeIntervalSince1970: TimeInterval(value + 1))
+            )
+        }
+        _ = try ledger.markCurrentPrefixArchiveDurableWithReceipt(
+            attempt: attempt,
+            through: 4,
+            archiveReceipt: fixture.archiveReceipt(recordCount: 5)
+        )
+        try ledger.finish(attempt, succeeded: true)
+
+        let first = try ledger.prune(
+            now: Date(),
+            identityRetention: .greatestFiniteMagnitude,
+            maximumRows: 2,
+            maximumDeletesPerPass: 2
+        )
+        XCTAssertEqual(first.removedForCount, 2)
+        XCTAssertEqual(first.remainingRows, 3)
+        XCTAssertEqual(first.deferredEligibleRowsAboveLimit, 1)
+        XCTAssertEqual(first.protectedRowsAboveLimit, 0,
+                       "eligible durable rows are deferred, not mislabeled as protected")
+
+        let second = try ledger.prune(
+            now: Date(),
+            identityRetention: .greatestFiniteMagnitude,
+            maximumRows: 2,
+            maximumDeletesPerPass: 2
+        )
+        XCTAssertEqual(second.removedForCount, 1)
+        XCTAssertEqual(second.remainingRows, 2)
+        XCTAssertEqual(second.deferredEligibleRowsAboveLimit, 0)
+    }
+
     func testRetentionReportsProtectedPressureInsteadOfDeletingUnsafeRows() throws {
         let fixture = try Fixture()
         let ledger = try fixture.ledger()

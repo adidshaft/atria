@@ -33,6 +33,14 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
     /// not-yet-archive-durable rows remain protected above it and are reported
     /// as pressure rather than discarded.
     static let productionMaximumIdentityRows = 96_000
+    /// Retention is maintenance, never an excuse to make a terminal history
+    /// callback expensive.  Bound one pass so a large legacy ledger is reduced
+    /// across ordinary background opportunities instead of monopolising its
+    /// serial archive lane.
+    static let productionMaximumPruneDeletesPerPass = 4_096
+    /// `incremental_vacuum` can only release tail pages, but it can still do
+    /// meaningful I/O. Keep each maintenance pass deliberately small.
+    static let productionMaximumIncrementalVacuumPagesPerPass = 128
     static let maximumClassificationBatch = 256
     /// Covers the maximum 13-day recovery window (1,123,200 one-Hz rows) with
     /// headroom. Enumeration is streaming, so this is a safety ceiling rather
@@ -97,6 +105,10 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
         let removedForAge: Int
         let removedForCount: Int
         let remainingRows: Int
+        /// Eligible durable rows which remain above the requested bound solely
+        /// because this bounded maintenance pass yielded. A later pass may
+        /// remove them; this is not a durability-pressure signal.
+        let deferredEligibleRowsAboveLimit: Int
         /// Nonzero means active-attempt or not-yet-archive-durable rows alone
         /// exceed the requested bound. They are intentionally retained: disk
         /// pressure can delay work, but can never authorize data loss.
@@ -803,28 +815,43 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
     func prune(
         now: Date = Date(),
         identityRetention: TimeInterval = AtriaWhoop4HistoryAdmissionLedger.productionIdentityRetention,
-        maximumRows: Int = AtriaWhoop4HistoryAdmissionLedger.productionMaximumIdentityRows
+        maximumRows: Int = AtriaWhoop4HistoryAdmissionLedger.productionMaximumIdentityRows,
+        maximumDeletesPerPass: Int = AtriaWhoop4HistoryAdmissionLedger.productionMaximumPruneDeletesPerPass
     ) throws -> PruneResult {
         lock.lock()
         defer { lock.unlock() }
         let result = try transaction { () -> PruneResult in
             let cutoff = now.timeIntervalSince1970 - max(0, identityRetention)
-            try execute(
-                """
-                DELETE FROM history_frame
-                WHERE archive_durable = 1
-                  AND last_seen_unix < ?
-                  AND last_attempt_id NOT IN
-                      (SELECT id FROM history_attempt WHERE state = 0)
-                """,
-                bindings: [.double(cutoff)]
-            )
-            let removedForAge = Int(sqlite3_changes(database))
+            let deletionBudget = max(0, maximumDeletesPerPass)
+            var remainingDeletionBudget = deletionBudget
+            var removedForAge = 0
+            if remainingDeletionBudget > 0 {
+                // Use a selected exact primary-key set rather than a broad
+                // DELETE so even an unexpectedly old ledger advances in
+                // bounded chunks. Active and undurable rows remain excluded.
+                try execute(
+                    """
+                    DELETE FROM history_frame
+                    WHERE (strap_id, frame) IN (
+                        SELECT strap_id, frame FROM history_frame
+                        WHERE archive_durable = 1
+                          AND last_seen_unix < ?
+                          AND last_attempt_id NOT IN
+                              (SELECT id FROM history_attempt WHERE state = 0)
+                        ORDER BY last_seen_unix ASC, strap_id ASC, frame ASC
+                        LIMIT ?
+                    )
+                    """,
+                    bindings: [.double(cutoff), .int64(Int64(remainingDeletionBudget))]
+                )
+                removedForAge = Int(sqlite3_changes(database))
+                remainingDeletionBudget -= removedForAge
+            }
             let afterAge = try scalarInt("SELECT COUNT(*) FROM history_frame")
             let requestedMaximum = max(0, maximumRows)
             let excess = max(0, afterAge - requestedMaximum)
             var removedForCount = 0
-            if excess > 0 {
+            if excess > 0, remainingDeletionBudget > 0 {
                 try execute(
                     """
                     DELETE FROM history_frame
@@ -837,16 +864,26 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
                         LIMIT ?
                     )
                     """,
-                    bindings: [.int64(Int64(excess))]
+                    bindings: [.int64(Int64(min(excess, remainingDeletionBudget)))]
                 )
                 removedForCount = Int(sqlite3_changes(database))
             }
             let remaining = try scalarInt("SELECT COUNT(*) FROM history_frame")
+            let rowsAboveLimit = max(0, remaining - requestedMaximum)
+            let eligibleRowsRemaining = try scalarInt(
+                """
+                SELECT COUNT(*) FROM history_frame
+                WHERE archive_durable = 1
+                  AND last_attempt_id NOT IN
+                      (SELECT id FROM history_attempt WHERE state = 0)
+                """
+            )
             return PruneResult(
                 removedForAge: removedForAge,
                 removedForCount: removedForCount,
                 remainingRows: remaining,
-                protectedRowsAboveLimit: max(0, remaining - requestedMaximum)
+                deferredEligibleRowsAboveLimit: min(rowsAboveLimit, eligibleRowsRemaining),
+                protectedRowsAboveLimit: max(0, rowsAboveLimit - eligibleRowsRemaining)
             )
         }
         // Deleted pages remain reusable even when an older database was not
@@ -854,7 +891,7 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
         // tail pages to the filesystem, and WAL truncation prevents a second
         // unbounded sidecar from accumulating.
         try execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        try execute("PRAGMA incremental_vacuum(1024)")
+        try execute("PRAGMA incremental_vacuum(\(Self.productionMaximumIncrementalVacuumPagesPerPass))")
         return result
     }
 
