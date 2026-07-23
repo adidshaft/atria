@@ -18717,6 +18717,15 @@ final class SessionStore: ObservableObject {
                 if !deferDerivedPublication {
                     self.refreshHistorySnapshotCache(deferred: true)
                 }
+                // A foreground/wake settlement that is not strong enough to
+                // auto-save may still have a review-only sleep candidate. Build
+                // that projection immediately on the utility queue so opening
+                // Home after waking does not wait for a later UI invalidation.
+                self.scheduleSleepReviewCacheRefresh(
+                    rest: self.baseline.restingInt ?? 60,
+                    calendar: .current,
+                    reason: "foreground_settlement_\(reason)"
+                )
                 if !saved && persistenceSucceeded && !inExtendReCheckWindow {
                     // Back the rate limit off to ~10 min on failure so a
                     // transient blocker does not cost the whole 30-minute window.
