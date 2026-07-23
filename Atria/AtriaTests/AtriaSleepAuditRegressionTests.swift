@@ -283,22 +283,27 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         ), "a sub-five-hour HR-only window must remain review-only even with a trusted baseline")
     }
 
-    func testDenseShiftedThreeHourSleepSurfacesForReviewOnly() throws {
-        // Physical 2026-07-23 shape: a real 10:05am–1:51pm sleep arrived in
-        // two dense HR/RR journal sessions separated by a short reconnect
-        // seam. It must be reviewable, but cannot alter recovery until saved.
+    func testDenseShiftedSleepWithVerifiedReconnectSeamSurfacesForReviewOnly() throws {
+        // Physical 2026-07-23 shape: 10:05am–2:19pm sleep arrived in two
+        // dense HR/RR journal sessions separated by a 4m21s reconnect seam,
+        // with one 47.8s accepted-HR gap in the first session. This must be a
+        // review card, but cannot alter recovery until the wearer saves it.
         let first = denseHRRRSession(
             start: date(2032, 7, 9, 10, 5),
             end: date(2032, 7, 9, 11, 15),
             bpm: 60
         )
+        var seamFirst = first
+        seamFirst.hrMaxAcceptedGap = 47.8
         let resumed = denseHRRRSession(
             start: date(2032, 7, 9, 11, 19),
-            end: date(2032, 7, 9, 13, 51),
+            end: date(2032, 7, 9, 14, 19),
             bpm: 60
         )
 
-        let candidate = try XCTUnwrap(candidates([first, resumed], rest: 61).first)
+        let candidate = try XCTUnwrap(candidates([seamFirst, resumed], rest: 61).first)
+        XCTAssertEqual(candidate.maximumHRSampleGap, 4 * 60, accuracy: 2)
+        XCTAssertEqual(candidate.hrMaxAcceptedGap, 47.8, accuracy: 0.1)
         XCTAssertTrue(candidate.denseMorningHROnlyReviewQualified)
         XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(candidate))
         XCTAssertFalse(SessionStore.isAutoConfirmableMainSleepCandidate(
