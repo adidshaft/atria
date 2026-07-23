@@ -16564,6 +16564,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return .rediscover
     }
 
+    /// A fallback transport may keep 2A37 heart-rate healthy after the dense
+    /// R10 stream has been deliberately withdrawn.  That is a valid safety
+    /// state, but an all-day/workout lease must not retain a durable `live`
+    /// coverage claim from the last dense epoch.  This is only an accounting
+    /// decision: it neither re-enables a CCCD nor reconnects the strap.
+    nonisolated static func shouldOpenWorkoutMotionGapForUnavailableR10(
+        motionLeaseHeld: Bool,
+        historyOwnsTransport: Bool,
+        r10TransportExpected: Bool,
+        lastFrameAt: Date?,
+        now: Date,
+        staleInterval: TimeInterval = AtriaDailyStepPresentation.liveEvidenceMaximumAge
+    ) -> Bool {
+        guard motionLeaseHeld,
+              !historyOwnsTransport,
+              !r10TransportExpected,
+              staleInterval > 0 else { return false }
+        guard let lastFrameAt else { return true }
+        let age = now.timeIntervalSince(lastFrameAt)
+        return age > staleInterval
+    }
+
     nonisolated static func shouldRepairR10Notification(
         expected: Bool,
         connected: Bool,
@@ -17124,6 +17146,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         restoreWorkoutMotionLeaseIfNeeded(reason: "\(reason)_lease_audit")
         let connected = status == .connected && peripheral?.state == .connected
         let eligible = r10TransportIsExpected
+        if Self.shouldOpenWorkoutMotionGapForUnavailableR10(
+            motionLeaseHeld: workoutMotionOwnerStartedAt != nil,
+            historyOwnsTransport: offlineHistoricalSyncInProgress || historyOnlyProbeMode,
+            r10TransportExpected: eligible,
+            lastFrameAt: lastR10MotionFrameAt,
+            now: now
+        ) {
+            // The stream is intentionally unavailable in this fallback. Mark
+            // the gap honestly, but do not attempt an unsafe background
+            // requalification or disturb the healthy heart-rate connection.
+            markWorkoutMotionGapIfNeeded(
+                now: now,
+                reason: "\(reason)_r10_transport_unavailable"
+            )
+        }
         if eligible, connected, !strapStream5NotifyConfirmed {
             reassertR10NotificationIfConnected(reason: "\(reason)_stream5_unconfirmed", now: now)
             return
