@@ -29,6 +29,22 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
         XCTAssertNil(AtriaCompletedWorkoutStepEvidence.select(strap: nil))
     }
 
+    func testCompletedStepSelectionFailsClosedForPreliminaryOrUnstampedStrapData() {
+        let preliminary = AtriaCompletedWorkoutStepEvidence(
+            count: 612,
+            isEstimated: true,
+            capturedAt: Date(timeIntervalSince1970: 100)
+        )
+        let unstamped = AtriaCompletedWorkoutStepEvidence(
+            count: 0,
+            isEstimated: false,
+            capturedAt: nil
+        )
+
+        XCTAssertNil(AtriaCompletedWorkoutStepEvidence.select(strap: preliminary))
+        XCTAssertNil(AtriaCompletedWorkoutStepEvidence.select(strap: unstamped))
+    }
+
     func testHeadlessPausePersistsCanonicalPauseAndStepAnchor() throws {
         let start = Date(timeIntervalSince1970: 2_000_000_000)
         let original = makeIntent(startedAt: start)

@@ -147,7 +147,16 @@ struct AtriaCompletedWorkoutStepEvidence: Equatable {
     let capturedAt: Date?
 
     static func select(strap: Self?) -> Self? {
-        strap.map(sanitized)
+        // Workout totals are a product claim, not a research readout.  Until
+        // the frozen strap detector has a fresh, validated boundary, retain
+        // no total at all.  In particular, do not turn an unavailable R10
+        // interval into `~0 steps` or carry a preliminary strap estimate into
+        // the saved workout/share card.  There is intentionally no phone
+        // pedometer alternative here.
+        guard let strap,
+              strap.isEstimated == false,
+              strap.capturedAt != nil else { return nil }
+        return sanitized(strap)
     }
 
     private static func sanitized(_ evidence: Self) -> Self {
@@ -364,6 +373,18 @@ final class AtriaWorkoutRuntime {
         )
         guard AtriaPendingWorkoutIntent.load() == intent else { return true }
 
+        // An intent can survive an app update. Reapply the same strict
+        // strap-only admission rule used by the foreground End path so an old
+        // preliminary estimate cannot be materialized after relaunch.
+        let stepEvidence = AtriaCompletedWorkoutStepEvidence.select(
+            strap: intent.completedStepCount.map {
+                AtriaCompletedWorkoutStepEvidence(
+                    count: $0,
+                    isEstimated: intent.completedStepsAreEstimated ?? true,
+                    capturedAt: intent.completedStepsCapturedAt
+                )
+            }
+        )
         let confirmed = await store.confirmWorkoutWindowForUIAsync(
             start: intent.startedAt,
             end: endedAt,
@@ -377,9 +398,9 @@ final class AtriaWorkoutRuntime {
             activityType: intent.resolvedActivityType == .other ? nil : intent.activityType,
             strengthSets: intent.strengthSets,
             excludedIntervals: intent.finalizedExcludedIntervals(),
-            workoutSteps: intent.completedStepCount,
-            workoutStepsAreEstimated: intent.completedStepsAreEstimated,
-            workoutStepsCapturedAt: intent.completedStepsCapturedAt
+            workoutSteps: stepEvidence?.count,
+            workoutStepsAreEstimated: stepEvidence?.isEstimated,
+            workoutStepsCapturedAt: stepEvidence?.capturedAt
         )
         guard let confirmed else { return false }
 
