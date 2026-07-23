@@ -972,19 +972,21 @@ enum AtriaAnalytics {
 
         /// Map cumulative TRIMP to the 0–21 strain scale (saturating exponential).
         ///
-        /// Time constant recalibrated 2026-07-07 from 40 to 250 after real-device
-        /// data showed a mostly-light all-day (TRIMP 132, only ~2.4min in zone 3)
-        /// reading 20.23 — the /40 curve saturated by TRIMP≈120, so any full day
-        /// of wear pinned near max. WHOOP's 0–21 strain is logarithmic precisely
-        /// to keep "long, easy days from inflating the score" (Light 0–9, Moderate
-        /// 10–13, High 14–17, All Out 18–21). /250 spreads the curve onto those
-        /// zones: that light day now reads ~8.6 (Light), a hard workout day
-        /// (~TRIMP 400) ~16.8 (High), an all-out day (~TRIMP 600) ~19.1 (All Out),
-        /// and truly sedentary (~TRIMP 37) ~2.9. The concave (saturating) shape is
-        /// kept — climbing 10→20 stays much harder than 0→10, as on WHOOP.
+        /// The 0–21 display curve is calibrated separately from the Banister
+        /// evidence integral.  A prior /250 mapping avoided saturation but made
+        /// verified sustained training look implausibly light: a recent 64-minute
+        /// strength window with 3,820 observed HR seconds, mean HR 131, peak 170,
+        /// and TRIMP 65.6 displayed as only 4.85.  The same session should land in
+        /// the moderate training range (about 7–9 once its adjacent cycling and
+        /// walk are included), not be treated like a short easy walk.  /150 gives
+        /// that observed session 7.44 while retaining the logarithmic shape and
+        /// still requiring substantially more work to climb 10→20 than 0→10.
+        ///
+        /// This changes only how measured TRIMP is *presented*; it neither fills
+        /// telemetry gaps nor adds activity-specific or estimated load.
         static func score(fromTRIMP trimp: Double) -> Double {
             guard trimp > 0 else { return 0 }
-            return min(21.0 * (1 - exp(-trimp / 250.0)), 21.0)
+            return min(21.0 * (1 - exp(-trimp / 150.0)), 21.0)
         }
 
     }
@@ -1891,7 +1893,7 @@ enum AtriaAnalytics {
 
         static let strainTRIMP = Check(name: "banister_strain_score",
                                        actual: Strain.score(fromTRIMP: 50),
-                                       expected: 3.81,
+                                       expected: 5.94,
                                        tolerance: 0.05)
 
         static let strainEdwards = Check(name: "edwards_strain_score",

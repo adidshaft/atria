@@ -83,6 +83,13 @@ final class AtriaAnalyticsTests: XCTestCase {
         }
     }
 
+    func testMeasuredSustainedStrengthLoadUsesModerateStrainRange() {
+        // Regression point from a real 64-minute strength window: 3,820 seconds
+        // of observed strap HR, mean 131 bpm, peak 170 bpm, rest 68, max 190.
+        // The input is the measured Banister integral, not a workout estimate.
+        XCTAssertEqual(Metrics.strain(fromTRIMP: 65.6037), 7.44, accuracy: 0.02)
+    }
+
     func testSleepStagesIncludeREMInUserFacingOrder() {
         XCTAssertTrue(SleepStageKind.allCases.contains(.rem))
         XCTAssertEqual(SleepStageKind.rem.label, "REM")
