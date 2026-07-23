@@ -6100,6 +6100,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           reason)
             return false
         }
+        // A confirmed 16/00 can time out before HISTORY_START on this strap.
+        // That result is not permission to erase or mark the gap recovered,
+        // but an automatic retry of the exact same gap would repeat the same
+        // fresh-owner disconnect and can starve R10/live collection. Manual
+        // repair remains authoritative and a materially new gap is eligible.
+        if Self.shouldSuppressAutomaticHistoryStartTimeoutRetry(
+            exactGapPending: recoverableGapPending,
+            explicitUserRequest: explicitHistoricalRequest,
+            currentGapFingerprint: gapFingerprint,
+            historyStartTimeoutGapFingerprint: defaults.string(
+                forKey: OfflineSyncDefaults.historyStartTimeoutGapFingerprint
+            )
+        ) {
+            retainPendingOfflineHistoricalSyncRequest(
+                reason: reason,
+                force: force,
+                explicitRequest: false
+            )
+            defaults.set("history_start_timeout_gap_retained",
+                         forKey: OfflineSyncDefaults.lastStatus)
+            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            AtriaDebugLog("ATRIADBG offline_sync status=history_start_timeout_gap_retained reason=%@ detail=unchanged_durable_gap action=suppress_automatic_reentry_preserve_live_r10 explicit=0",
+                          reason)
+            return false
+        }
         let rawOnlyDisconnectedRecovery = Self.shouldAttemptRawOnlyHistoricalRecovery(
             exactGapPending: recoverableGapPending,
             rawHistoryVerified: verifiedHistoryCapability,
@@ -8943,6 +8968,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if rangeLossResolved {
             defaults.removeObject(forKey: OfflineSyncDefaults.noRowsGapFingerprint)
             defaults.removeObject(forKey: OfflineSyncDefaults.noRowsGapAt)
+            defaults.removeObject(
+                forKey: OfflineSyncDefaults.historyStartTimeoutGapFingerprint
+            )
+            defaults.removeObject(
+                forKey: OfflineSyncDefaults.historyStartTimeoutGapAt
+            )
         }
         if terminalAndLiveRestored && offlineHistoricalSyncReachedTerminal {
             if activeFullDrainEventIdentity?.transportGeneration == generation
@@ -18132,6 +18163,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             }
                         }
                         guard acceptedHistoryStartSequence != nil else {
+                            // This is a transport failure, not evidence that
+                            // the strap lacks records. Retain the ledger gap,
+                            // but circuit-break automatic retries for exactly
+                            // this gap so they cannot churn the live/R10 owner.
+                            // Explicit repair continues to bypass this marker.
+                            if let gapFingerprint = offlineHistoricalSyncGapFingerprint {
+                                let defaults = UserDefaults.standard
+                                defaults.set(
+                                    gapFingerprint,
+                                    forKey: OfflineSyncDefaults.historyStartTimeoutGapFingerprint
+                                )
+                                defaults.set(
+                                    Date().timeIntervalSince1970,
+                                    forKey: OfflineSyncDefaults.historyStartTimeoutGapAt
+                                )
+                            }
                             AtriaDebugLog("ATRIADBG historyServe status=start_timeout generation=%llu pending=%u wait_s=%.0f action=rebuild_link_without_ack_or_abort_retain_gap",
                                           syncGeneration,
                                           cursorRange.pendingRecords,
