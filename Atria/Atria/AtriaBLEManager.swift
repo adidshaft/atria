@@ -9735,6 +9735,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             : effectiveCompletionStatus
         defaults.set(publishedCompletionStatus, forKey: OfflineSyncDefaults.lastStatus)
         defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+        // Capture the exact durable gap-ledger state on both sides of the
+        // completion decision.  Archive row counts alone cannot establish
+        // whether this transaction covered the phone-away interval, so this
+        // read-only evidence is the terminal counterpart to the request,
+        // persistence, and ACK logs above.  `windowsForEvidence` deliberately
+        // does not repair, migrate, or otherwise mutate the ledger.
+        let gapCoverageBeforeCompletion = AtriaHistoricalGapLedger
+            .windowsForEvidence(defaults: defaults)
         let rangeLossResolved = terminalAndLiveRestored
             && reconcileRangeLossBackfillPendingWithArchive(
                 reason: reason,
@@ -9742,6 +9750,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 requestedWindowMetricProgress: requestedWindowMetricProgress,
                 ledgerCoverageResolved: ledgerCoverageResolved
             )
+        emitHistoricalGapCoverageEvidence(
+            generation: generation,
+            stage: "before_completion_reconcile",
+            windows: gapCoverageBeforeCompletion
+        )
+        emitHistoricalGapCoverageEvidence(
+            generation: generation,
+            stage: "after_completion_reconcile",
+            windows: AtriaHistoricalGapLedger.windowsForEvidence(defaults: defaults)
+        )
         if rangeLossResolved {
             historicalRecoveryPresentation = .verified
         } else if newRows > 0 {
@@ -9802,6 +9820,39 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             reason: "offline_sync_terminal_\(reason)"
         )
         onHistoricalTransportOwnershipReleased?("offline_sync_terminal_\(reason)")
+    }
+
+    /// Emits only read-only per-gap coverage evidence at a history
+    /// transaction boundary.  This makes a support trace auditable from
+    /// request → persisted rows → durable flush/ACK → exact coverage outcome
+    /// without turning diagnostics into another BLE or archive owner.
+    private func emitHistoricalGapCoverageEvidence(
+        generation: UInt64,
+        stage: String,
+        windows: [AtriaHistoricalGapLedger.Window]
+    ) {
+        guard !windows.isEmpty else {
+            AtriaDebugLog("ATRIADBG historical_gap_coverage generation=%llu stage=%@ windows=0",
+                          generation,
+                          stage)
+            return
+        }
+        for window in windows {
+            let continuity = AtriaHistoricalGapLedger.continuity(for: window)
+            AtriaDebugLog("ATRIADBG historical_gap_coverage generation=%llu stage=%@ gap=%@ start=%.3f end=%.3f reason=%@ observed_s=%d expected_s=%d density_percent=%d maximum_gap_s=%d p95_gap_s=%d continuous=%d",
+                          generation,
+                          stage,
+                          window.id.uuidString,
+                          window.start.timeIntervalSince1970,
+                          window.end?.timeIntervalSince1970 ?? -1,
+                          window.reason,
+                          continuity.observedSeconds,
+                          continuity.expectedSeconds,
+                          continuity.densityPercent,
+                          continuity.maximumGapSeconds,
+                          continuity.p95GapSeconds,
+                          continuity.continuous ? 1 : 0)
+        }
     }
 
     private func interruptOfflineHistoricalSyncForTransportLoss(reason: String) {
