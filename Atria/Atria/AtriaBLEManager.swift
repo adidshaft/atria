@@ -5999,8 +5999,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// superseded by another launch-time recovery task before the first HR
     /// callback, even though the durable authority and exact gap are still
     /// valid.  A fresh accepted HR is the safe place to reconcile that state:
-    /// it can only arm the existing live-first/cooldown-gated reacquisition;
-    /// it never sends a BLE command directly.
+    /// it may admit only the existing live-first/cooldown-gated reacquisition.
     nonisolated static func shouldRearmPersistedInterruptedFullDrainFromFreshHR(
         rangeLossBackfillPending: Bool,
         authorityStatus: AtriaHistoricalFullDrainCoverageStore.Authority.Status?,

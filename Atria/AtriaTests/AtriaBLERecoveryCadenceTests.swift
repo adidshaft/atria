@@ -3720,6 +3720,31 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testPersistedInterruptedDrainUsesDurableAuthorityAndFreshHRPath() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded"
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "/// The launch path already turns a persisted `.draining` authority",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("authority.gap.pending"),
+                      "the fsynced drain authority must remain resumable even if a secondary ledger was compacted")
+        XCTAssertTrue(body.contains("shouldReacquireInterruptedFullDrain("))
+        XCTAssertTrue(body.contains("requiredStableLiveSeconds: automaticConnectedHistoryStableInterval"))
+        XCTAssertTrue(body.contains("interruptedFullDrainReacquisitionCooldown"))
+        XCTAssertTrue(body.contains("explicitResearchRequest: true"))
+
+        XCTAssertTrue(source.contains(
+            "rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded(\n                reason: \"accepted_hr\""
+        ))
+        XCTAssertTrue(source.contains(
+            "rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded(\n            reason: \"accepted_hr_batch\""
+        ))
+    }
+
     func testPhysicalFullDrainLossRetainsOneLiveFirstReacquisitionButAppCancelsDoNot() {
         XCTAssertTrue(AtriaBLEManager.shouldRetainInterruptedFullDrainReacquisition(
             fullDrainAuthorityActive: true,
