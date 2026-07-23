@@ -8549,12 +8549,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
         guard !orphanHistoricalIngressArchiveInFlight else { return true }
 
-        // The v1 spool header contains no strap identifier. Do not associate
-        // its bytes with a newly paired/unverified peripheral.
-        guard let strapIdentifier = peripheral?.identifier.uuidString,
-              strapIdentifier == UserDefaults.standard.string(
-                forKey: OfflineSyncDefaults.verifiedHistoryPeripheralID
-              ) else {
+        // The v1 spool header contains no strap identifier. Prefer the
+        // terminally verified history owner, but a process killed during its
+        // *first* successful serve has no such terminal record yet. In that
+        // narrow case, the existing live-link identity is the app's only
+        // persisted pairing proof: require it to match the saved connected
+        // peripheral before archiving. It is still raw-only archival, never a
+        // history protocol authorization or gap-coverage assertion.
+        guard let strapIdentifier = peripheral?.identifier.uuidString else {
+            AtriaDebugLog("ATRIADBG historyIngress status=deferred reason=orphan_no_connected_owner action=retain_raw_no_new_generation")
+            return true
+        }
+        let defaults = UserDefaults.standard
+        let terminallyVerifiedOwner = defaults.string(
+            forKey: OfflineSyncDefaults.verifiedHistoryPeripheralID
+        )
+        let currentLinkedOwner = defaults.string(forKey: LinkDefaults.savedPeripheralUUID)
+        guard strapIdentifier == terminallyVerifiedOwner
+                || strapIdentifier == currentLinkedOwner else {
             AtriaDebugLog("ATRIADBG historyIngress status=deferred reason=orphan_identity_unverified action=retain_raw_no_new_generation")
             return true
         }
