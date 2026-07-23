@@ -294,6 +294,12 @@ extension AtriaBLEManager {
         static let verifiedHistoryPeripheralID = "atria.offlineSync.verifiedHistoryPeripheralID"
         static let rawArchivedGapFingerprint = "atria.offlineSync.rawArchivedGapFingerprint.v1"
         static let rawArchivedGapAt = "atria.offlineSync.rawArchivedGapAt.v1"
+        /// A terminal, live-restored history transaction returned no durable
+        /// rows for this exact gap set. Retain the gap and diagnostic evidence,
+        /// but do not let automatic reconnect recovery seize the radio again
+        /// until the gap fingerprint changes. Explicit user retries bypass it.
+        static let noRowsGapFingerprint = "atria.offlineSync.noRowsGapFingerprint.v1"
+        static let noRowsGapAt = "atria.offlineSync.noRowsGapAt.v1"
         static let backgroundLeaseStatus = "atria.offlineSync.backgroundLeaseStatus.v1"
         static let backgroundLeaseAt = "atria.offlineSync.backgroundLeaseAt.v1"
         static let handshakeStatus = "atria.offlineSync.handshakeStatus.v1"

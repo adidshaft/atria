@@ -238,6 +238,24 @@ extension AtriaBLEManager {
             : "raw_archived_metric_unverified"
     }
 
+    /// A verified historical transaction that reached its terminal state,
+    /// restored live collection, and still yielded no new durable rows has
+    /// established negative evidence for its *exact* durable gap set. Keep the
+    /// gap visible for diagnostics and manual retry, but suppress only the
+    /// automatic path for that unchanged fingerprint. A new closed interval
+    /// necessarily changes the fingerprint and becomes eligible again.
+    nonisolated static func shouldSuppressAutomaticHistoricalNoRowsRetry(
+        exactGapPending: Bool,
+        explicitUserRequest: Bool,
+        currentGapFingerprint: String?,
+        noRowsGapFingerprint: String?
+    ) -> Bool {
+        exactGapPending
+            && !explicitUserRequest
+            && currentGapFingerprint != nil
+            && currentGapFingerprint == noRowsGapFingerprint
+    }
+
     /// Even before a historical payload layout is metric-validated, a natural
     /// disconnect is a safe opportunity to copy the strap's raw backlog. This
     /// never promotes HR/RR, never interrupts a connected realtime pipe, and
