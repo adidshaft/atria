@@ -555,15 +555,15 @@ extension AtriaBLEManager {
         return true
     }
 
-    /// Quiet the proprietary R10/R11 raw stream before asking the strap to
-    /// serve history. This does not stop the standard 2A37 HR/RR stream. A
-    /// physical WHOOP 4.0 comparison found that plain 16/00 served historical
-    /// rows while a competing proprietary raw stream could suppress them.
-    /// Keep both writes ordered and callback-confirmed; never add high-frequency
-    /// sync, abort, trim, rewind, or clock mutation to this bootstrap.
+    /// The production bootstrap must stay byte-for-byte aligned with the only
+    /// physical WHOOP 4 trace that actually served historical rows:
+    /// `22/00 -> post-response settle -> 16/00`. In particular, do not insert
+    /// an R10/R11 stop between range and serve: that extra write was never part
+    /// of the served trace and changes the strap command epoch. Standard 2A37
+    /// remains subscribed throughout. High-frequency sync, abort, trim,
+    /// rewind, and clock mutation are likewise excluded.
     nonisolated static func productionHistoricalRecoveryInitCommands() -> [[UInt8]] {
         [
-            [Cmd.sendR10R11Realtime, 0x00],
             [Cmd.sendHistoricalData, 0x00],
         ]
     }

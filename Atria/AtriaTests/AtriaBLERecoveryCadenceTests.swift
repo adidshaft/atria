@@ -3630,11 +3630,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), "the exact sequence-confirmation replay must retain explicit authority")
     }
 
-    func testProductionHistoricalRecoveryQuietsOnlyR10ThenSendsHistory() {
+    func testProductionHistoricalRecoverySendsOnlyServedHistoryCommand() {
         let commands = AtriaBLEManager.productionHistoricalRecoveryInitCommands()
 
         XCTAssertEqual(commands, [
-            [AtriaBLEManager.Cmd.sendR10R11Realtime, 0x00],
             [AtriaBLEManager.Cmd.sendHistoricalData, 0x00],
         ])
         XCTAssertEqual(commands.last, [AtriaBLEManager.Cmd.sendHistoricalData, 0x00])
@@ -3657,6 +3656,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 historyStartReceived: true
             )
         )
+        XCTAssertFalse(commands.contains { $0.first == AtriaBLEManager.Cmd.sendR10R11Realtime })
         XCTAssertFalse(commands.contains { $0.first == AtriaBLEManager.Cmd.toggleRealtimeHR })
         XCTAssertFalse(commands.contains { $0.first == AtriaBLEManager.Cmd.abortHistoricalTransmits })
         XCTAssertFalse(commands.contains { $0.first == AtriaBLEManager.Cmd.enterHighFreqSync })
