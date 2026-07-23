@@ -22461,6 +22461,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                   prune.deferredEligibleRowsAboveLimit,
                                   prune.protectedRowsAboveLimit,
                                   prune.remainingRows)
+                    // One pass deliberately removes only a bounded number of
+                    // already-durable rows.  If it yielded with more such
+                    // rows, continue on the same delayed maintenance lane so
+                    // a large completed drain converges without waiting for
+                    // an unrelated lifecycle event.  Protected rows never
+                    // enter this branch, preserving the no-data-loss rule.
+                    if prune.deferredEligibleRowsAboveLimit > 0 {
+                        self?.scheduleHistoricalAdmissionLedgerMaintenance(
+                            reason: "\(reason)_continued"
+                        )
+                    }
                 case .failure(let error):
                     // Retention must fail open: an error retains exact
                     // duplicate authority and is retried on a future safe
