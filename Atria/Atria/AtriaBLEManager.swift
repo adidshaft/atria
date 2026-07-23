@@ -8577,12 +8577,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let ingressURL = ingressDirectory.appendingPathComponent(
             AtriaWhoop4HistoricalIngressSpool.productionFileName
         )
-        guard FileManager.default.fileExists(atPath: ingressURL.path) else {
-            return false
-        }
-        retainPendingOfflineHistoricalSyncRequest(
-            reason: reason, force: force, explicitRequest: explicitRequest
-        )
         guard !orphanHistoricalIngressArchiveInFlight else { return true }
 
         // The v1 spool header contains no strap identifier. Prefer the
@@ -8606,56 +8600,61 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG historyIngress status=deferred reason=orphan_identity_unverified action=retain_raw_no_new_generation")
             return true
         }
-        let orphanGeneration: UInt64
-        do {
-            orphanGeneration = try AtriaWhoop4HistoricalIngressSpool.generation(
-                at: ingressURL
-            )
-        } catch {
-            AtriaDebugLog("ATRIADBG historyIngress status=deferred reason=orphan_header_invalid error=%@ action=retain_raw_no_new_generation", String(describing: error))
-            return true
-        }
-
-        // Do not make protection of real, previously received strap frames
-        // depend on opening the large canonical identity index. Seal the raw
-        // spool into its own bounded fsynced vault first; the normal archive
-        // replay below remains the only route that can ever grant durability
-        // to an ACK gate or historical coverage.
         let orphanVault: AtriaWhoop4HistoricalOrphanVault
-        let sealedOrphan: AtriaWhoop4HistoricalOrphanVault.Entry
+        let sealedOrphans: [AtriaWhoop4HistoricalOrphanVault.Entry]
         do {
             orphanVault = try AtriaWhoop4HistoricalOrphanVault.production()
-            sealedOrphan = try orphanVault.seal(
-                sourceURL: ingressURL,
-                strapIdentifier: strapIdentifier,
-                generation: orphanGeneration
-            )
-            // Revalidation happens inside `seal`; only a manifest-bound,
-            // byte-identical copy permits releasing the reusable ingress name.
-            try FileManager.default.removeItem(at: ingressURL)
-            AtriaDebugLog("ATRIADBG historyIngress status=sealed_to_orphan_vault generation=%llu bytes=%llu action=raw_only_no_ack_no_coverage",
-                          orphanGeneration,
-                          sealedOrphan.byteCount)
+            if FileManager.default.fileExists(atPath: ingressURL.path) {
+                let orphanGeneration = try AtriaWhoop4HistoricalIngressSpool.generation(
+                    at: ingressURL
+                )
+                // Do not make protection of real, previously received strap
+                // frames depend on opening the large canonical identity index.
+                // Seal the raw spool first; canonical replay below remains the
+                // sole route that can ever grant ACK or coverage authority.
+                let sealed = try orphanVault.seal(
+                    sourceURL: ingressURL,
+                    strapIdentifier: strapIdentifier,
+                    generation: orphanGeneration
+                )
+                try FileManager.default.removeItem(at: ingressURL)
+                AtriaDebugLog("ATRIADBG historyIngress status=sealed_to_orphan_vault generation=%llu bytes=%llu action=raw_only_no_ack_no_coverage",
+                              orphanGeneration,
+                              sealed.byteCount)
+                sealedOrphans = [sealed]
+            } else {
+                // A process may be suspended after seal but before its large
+                // canonical index becomes ready. Resume that verified raw
+                // vault on every later connection to the same paired strap.
+                sealedOrphans = try orphanVault.validatedEntries(for: strapIdentifier)
+            }
         } catch {
-            AtriaDebugLog("ATRIADBG historyIngress status=deferred reason=orphan_vault_seal_failed error=%@ action=retain_raw_no_ack_no_coverage",
-                          String(describing: error))
+            AtriaDebugLog("ATRIADBG historyIngress status=deferred reason=orphan_vault_open_failed error=%@ action=retain_raw_no_ack_no_coverage", String(describing: error))
             return true
         }
+        guard !sealedOrphans.isEmpty else { return false }
+        retainPendingOfflineHistoricalSyncRequest(
+            reason: reason, force: force, explicitRequest: explicitRequest
+        )
 
         orphanHistoricalIngressArchiveInFlight = true
         let archiveWarmGroup = historicalArchiveWarmGroup
         orphanHistoricalIngressArchiveQueue.async { [weak self] in
-            defer { HistoricalArchive.endDurableDrain(generation: orphanGeneration) }
+            defer {
+                sealedOrphans.forEach { HistoricalArchive.endDurableDrain(generation: $0.generation) }
+            }
             var archivedFrames = 0
             var ignoredMetadata = 0
             do {
-                AtriaDebugLog("ATRIADBG historyIngress status=replay_waiting_for_identity_store generation=%llu", orphanGeneration)
+                AtriaDebugLog("ATRIADBG historyIngress status=replay_waiting_for_identity_store entries=%d", sealedOrphans.count)
                 archiveWarmGroup.wait()
-                AtriaDebugLog("ATRIADBG historyIngress status=replay_identity_store_ready generation=%llu", orphanGeneration)
-                AtriaDebugLog("ATRIADBG historyIngress status=replay_worker_started generation=%llu", orphanGeneration)
-                let spool = try orphanVault.spool(for: sealedOrphan)
-                AtriaDebugLog("ATRIADBG historyIngress status=replay_journal_opened pending=%d generation=%llu", spool.pendingCount, orphanGeneration)
-                while let event = try spool.popFirst() {
+                AtriaDebugLog("ATRIADBG historyIngress status=replay_identity_store_ready entries=%d", sealedOrphans.count)
+                for sealedOrphan in sealedOrphans {
+                    let orphanGeneration = sealedOrphan.generation
+                    AtriaDebugLog("ATRIADBG historyIngress status=replay_worker_started generation=%llu", orphanGeneration)
+                    let spool = try orphanVault.spool(for: sealedOrphan)
+                    AtriaDebugLog("ATRIADBG historyIngress status=replay_journal_opened pending=%d generation=%llu", spool.pendingCount, orphanGeneration)
+                    while let event = try spool.popFirst() {
                     switch event {
                     case let .frame(payload, clock, clockAuthorityEnabled):
                         let reference = clock.map { clock in
@@ -8699,19 +8698,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     case .metadata:
                         ignoredMetadata += 1
                     }
+                    }
+                    // `persist` is per-frame durable; synchronize the
+                    // canonical archive once more before retiring this source
+                    // journal. This does not imply gap coverage.
+                    AtriaDebugLog("ATRIADBG historyIngress status=replay_flush_started frames=%d generation=%llu", archivedFrames, orphanGeneration)
+                    _ = try HistoricalArchive.synchronizeDurableStorage(
+                        generation: orphanGeneration
+                    )
+                    try orphanVault.retire(sealedOrphan)
                 }
-                // `persist` is per-frame durable; synchronize the canonical
-                // archive once more before retiring this source journal.
-                AtriaDebugLog("ATRIADBG historyIngress status=replay_flush_started frames=%d generation=%llu", archivedFrames, orphanGeneration)
-                _ = try HistoricalArchive.synchronizeDurableStorage(
-                    generation: orphanGeneration
-                )
-                try orphanVault.retire(sealedOrphan)
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     self.orphanHistoricalIngressArchiveInFlight = false
-                    AtriaDebugLog("ATRIADBG historyIngress status=archived_orphan frames=%d metadata=%d generation=%llu action=raw_only_no_ack_no_coverage",
-                                  archivedFrames, ignoredMetadata, orphanGeneration)
+                    AtriaDebugLog("ATRIADBG historyIngress status=archived_orphan frames=%d metadata=%d entries=%d action=raw_only_no_ack_no_coverage",
+                                  archivedFrames, ignoredMetadata, sealedOrphans.count)
                     if let pending = self.takePendingOfflineHistoricalSyncRequest() {
                         _ = self.requestOfflineHistoricalSyncIfNeeded(
                             reason: pending.reason,
