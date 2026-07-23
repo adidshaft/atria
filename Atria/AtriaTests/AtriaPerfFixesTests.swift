@@ -381,6 +381,29 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertEqual(healthyConsumed, 2)
     }
 
+    func testHeartRateIngressOverflowIsDurableMissingDataRatherThanSilentDrop() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let enqueueStart = try XCTUnwrap(source.range(of: "private nonisolated func enqueueHeartRateUpdate"))
+        let dequeueStart = try XCTUnwrap(source.range(of: "private nonisolated func dequeuePendingHeartRateUpdateBatch",
+                                                       range: enqueueStart.upperBound..<source.endIndex))
+        let enqueue = String(source[enqueueStart.lowerBound..<dequeueStart.lowerBound])
+        XCTAssertTrue(enqueue.contains("pendingHeartRateIngressOverflow"))
+        XCTAssertTrue(enqueue.contains("firstDroppedAt"))
+        XCTAssertTrue(enqueue.contains("lastDroppedAt"))
+
+        let markerStart = try XCTUnwrap(source.range(of: "private func recordHeartRateIngressOverflow"))
+        let markerEnd = try XCTUnwrap(source.range(of: "private func handleParsedRealtimePacket",
+                                                    range: markerStart.upperBound..<source.endIndex))
+        let marker = String(source[markerStart.lowerBound..<markerEnd.lowerBound])
+        XCTAssertTrue(marker.contains("AtriaHistoricalGapLedger.recordObservedGap"))
+        XCTAssertTrue(marker.contains("markRangeLossBackfillRequired"))
+        XCTAssertTrue(marker.contains("persistActiveSessionJournalIfNeeded"))
+        XCTAssertTrue(marker.contains("no_interpolation"))
+    }
+
     func testLiveStrapStepResearchPublishesEveryChangedPipelineSnapshot() {
         XCTAssertFalse(AtriaBLEManager.shouldPublishLiveStrapStepResearch(currentCount: 12,
                                                                           publishedCount: 12))
