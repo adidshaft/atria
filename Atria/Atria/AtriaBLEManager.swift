@@ -6766,8 +6766,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return false
         }
         freshHistoryOwnerConnectionGeneration = nil
+        // The phase was already activated when the explicit request acquired
+        // its generation, before the live-owner cutover. Re-activating it on
+        // the fresh CoreBluetooth connection must retain that scoped profile;
+        // otherwise this reconnect silently falls back to RX + stream5 and
+        // skips the explicit 0x1A compatibility handshake just before 0x16.
+        let usesExplicitHistoryProfile = historyTransportPhaseFence.snapshot()
+            .usesExplicitHistoryProfile
         historyOnlyProbeEnabled = true
-        _ = historyTransportPhaseFence.activate(generation: generation)
+        _ = historyTransportPhaseFence.activate(
+            generation: generation,
+            usesExplicitHistoryProfile: usesExplicitHistoryProfile
+        )
         peripheral.discoverServices(Self.UUIDs.productionHistoryServices)
         noteOfflineHistoricalSyncProgress(
             generation: generation,
