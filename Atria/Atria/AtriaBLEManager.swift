@@ -1395,6 +1395,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var pendingHistoryClockCommandSequence: UInt8?
     private var pendingHistoryClockCommandRequestedAtUnix: TimeInterval?
     private var pendingHistoryClockWriteCompletedAtUnix: TimeInterval?
+    /// Increment only when the production command sequence itself changes.
+    /// This is persisted with a start-timeout marker so a corrected bootstrap
+    /// can retry an otherwise retained exact gap once, without reopening the
+    /// repeated-retry failure mode for an unchanged sequence.
+    private static let productionHistoryServeProfileVersion =
+        "matched_2200_settle_1600.v2"
     private var productionHistoryReadPreflightRequired = false
     private var historyReadPreflightGate = AtriaWhoop4HistoryReadPreflightGate()
     private var acceptedHistoryReadPreflightIdentity:
@@ -6162,13 +6168,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // but an automatic retry of the exact same gap would repeat the same
         // fresh-owner disconnect and can starve R10/live collection. Manual
         // repair remains authoritative and a materially new gap is eligible.
+        let timeoutFingerprintForCurrentProfile =
+            defaults.string(forKey: OfflineSyncDefaults.historyStartTimeoutProfileVersion)
+                == Self.productionHistoryServeProfileVersion
+                ? defaults.string(
+                    forKey: OfflineSyncDefaults.historyStartTimeoutGapFingerprint
+                )
+                : nil
         if Self.shouldSuppressAutomaticHistoryStartTimeoutRetry(
             exactGapPending: recoverableGapPending,
             explicitUserRequest: explicitHistoricalRequest,
             currentGapFingerprint: gapFingerprint,
-            historyStartTimeoutGapFingerprint: defaults.string(
-                forKey: OfflineSyncDefaults.historyStartTimeoutGapFingerprint
-            )
+            historyStartTimeoutGapFingerprint: timeoutFingerprintForCurrentProfile
         ) {
             retainPendingOfflineHistoricalSyncRequest(
                 reason: reason,
@@ -9029,6 +9040,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
             defaults.removeObject(
                 forKey: OfflineSyncDefaults.historyStartTimeoutGapAt
+            )
+            defaults.removeObject(
+                forKey: OfflineSyncDefaults.historyStartTimeoutProfileVersion
             )
         }
         if terminalAndLiveRestored && offlineHistoricalSyncReachedTerminal {
@@ -18218,6 +18232,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                 defaults.set(
                                     Date().timeIntervalSince1970,
                                     forKey: OfflineSyncDefaults.historyStartTimeoutGapAt
+                                )
+                                defaults.set(
+                                    Self.productionHistoryServeProfileVersion,
+                                    forKey: OfflineSyncDefaults.historyStartTimeoutProfileVersion
                                 )
                             }
                             AtriaDebugLog("ATRIADBG historyServe status=start_timeout generation=%llu pending=%u wait_s=%.0f action=rebuild_link_without_ack_or_abort_retain_gap",
