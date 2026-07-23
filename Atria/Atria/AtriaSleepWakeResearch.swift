@@ -40,6 +40,10 @@ enum AtriaSleepWakeResearch {
                          imuStillnessRatio: Double?,
                          imuMovementIntensity: Double?,
                          strapSteps: Int?,
+                         /// A zero step count is useful only after at least one
+                         /// strap-motion frame established that the step channel
+                         /// was actually observed.  `nil`/false is not zero.
+                         strapStepEvidenceAvailable: Bool = false,
                          windowStart: Date? = nil,
                          hrStandardDeviation: Double? = nil,
                          calendar: Calendar = .current) -> Result {
@@ -58,7 +62,16 @@ enum AtriaSleepWakeResearch {
         }
         let lowMotion = imuStillnessRatio >= 0.72 && imuMovementIntensity <= 0.18
         let lowHR = averageHR <= restingHR + 18
-        let lowSteps = (strapSteps ?? 0) <= max(8, Int(duration / 600))
+        // Do not turn an absent R10 step channel into a measured zero.  That
+        // previously let a quiet-looking HR/IMU interval from active wear
+        // become `sleep_research`, which can surface as a false nap and can
+        // suppress normal activity accounting.  Overnight HR-only handling is
+        // deliberately separate above; this is the motion-backed path and
+        // requires its independent strap-step evidence.
+        guard strapStepEvidenceAvailable, let strapSteps else {
+            return Result(state: "learning", confidence: "none", reason: "strap_steps_missing")
+        }
+        let lowSteps = strapSteps <= max(8, Int(duration / 600))
         if lowMotion && lowHR && lowSteps {
             return Result(state: "sleep_research", confidence: "research", reason: "low_motion_low_hr")
         }

@@ -24511,6 +24511,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
              sampleRateHz: Optional(Double(AtriaStrapPedometer.sampleRateHz)))
         } ?? imuFeatureSummary()
         let snapshotStrapSteps = motionSnapshotOverride?.steps ?? strapStepResearchCount
+        // A count of zero is valid evidence only after this session has
+        // received at least one strap R10 motion frame.  Keep unknown separate
+        // from zero so sleep detection cannot mistake a missing step channel
+        // for stillness.
+        let strapStepEvidenceAvailable = (motionSnapshotOverride?.frames
+            ?? protocolIMUFrameCount) > 0
         // Historical-gravity motion evidence NEVER parses the archive on the
         // MainActor here (device-reported tab-switch freeze, 2026-07-09): it reads
         // the background-refreshed off-main cache (`cachedHistoricalMotion`, keyed by
@@ -24558,7 +24564,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                                         restingHR: restingHeartRate,
                                                         imuStillnessRatio: classifierIMUStillnessRatio,
                                                         imuMovementIntensity: classifierIMUMovementIntensity,
-                                                        strapSteps: snapshotStrapSteps > 0 ? snapshotStrapSteps : nil,
+                                                        strapSteps: strapStepEvidenceAvailable ? snapshotStrapSteps : nil,
+                                                        strapStepEvidenceAvailable: strapStepEvidenceAvailable,
                                                         windowStart: start,
                                                         hrStandardDeviation: hrStandardDeviation)
         let respiratoryRate = sleepWake.state == "sleep_research" && hrvSnapshot?.isReady == true
