@@ -58,6 +58,35 @@ final class AtriaRecoveryProjectionCadenceTests: XCTestCase {
         XCTAssertNil(cache.entry)
     }
 
+    func testScorelessFrozenSummaryDoesNotSuppressMeasuredRecoveryProjection() {
+        let scoreless = Metrics.RecoveryEstimate(
+            percent: nil,
+            confidence: .learning,
+            usesHRV: false,
+            detail: "legacy summary had no qualified HRV",
+            contributors: []
+        )
+        let measuredSleep = Metrics.recoveryV2(
+            hrvSnapshot: nil,
+            fallbackRMSSD: nil,
+            restingNow: nil,
+            baseline: PersonalBaseline(),
+            sleepEfficiency: 0.91,
+            sleepDurationHours: 7.4
+        )
+
+        XCTAssertNil(SessionStore.numericFrozenRecovery(scoreless),
+                     "a scoreless legacy summary is not an authoritative score")
+        XCTAssertNotNil(measuredSleep.percent,
+                        "measured sleep must keep a day-one recovery visible without HRV")
+        XCTAssertEqual(measuredSleep.confidence, .unverified)
+        XCTAssertFalse(measuredSleep.usesHRV)
+
+        let numeric = estimate(73)
+        XCTAssertEqual(SessionStore.numericFrozenRecovery(numeric), numeric,
+                       "an actual frozen morning score must remain immutable")
+    }
+
     func testMissingSleepPublishesLimitedEstimateInsteadOfBlankingDayOne() {
         var cache = SessionStore.RecoveryProjectionCache()
         var evaluations = 0
