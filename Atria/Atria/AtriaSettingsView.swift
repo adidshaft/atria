@@ -1534,7 +1534,7 @@ private struct AtriaDataSettingsDefaultsScope<Content: View>: View {
 /// Destination-only scope for the all-day motion default: the observer
 /// registers when the Strap page appears, never on the Settings hub frame.
 private struct AtriaStrapMotionDefaultsScope<Content: View>: View {
-    @AppStorage("atria.allDayMotion.enabled") private var allDayMotionEnabled = true
+    @AppStorage("atria.allDayMotion.enabled") private var allDayMotionEnabled = false
 
     private let content: (Binding<Bool>) -> Content
 

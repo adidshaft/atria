@@ -1291,10 +1291,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// This is intentionally in-memory: the next genuine connection boundary
     /// may reconsider the durable gap under normal automatic policy.
     private var deferInterruptedFullDrainForCurrentLiveConnection = false
+    /// One retained, process-interrupted drain may reclaim history ownership
+    /// after the restored live link has proved stable. The task is cancelled
+    /// at the next physical disconnect; its durable fingerprint/cooldown is
+    /// the cross-launch loop brake.
+    private var interruptedFullDrainReacquisitionTask: Task<Void, Never>?
     private let offlineHistoricalSyncMinimumInterval: TimeInterval = 6 * 60 * 60
     private let offlineSyncLiveAcceptedHRProtectionWindow: TimeInterval = 45
     private let rangeLossBackfillReadyForceInterval: TimeInterval = 90
     private let automaticConnectedHistoryStableInterval: TimeInterval = 60
+    private let interruptedFullDrainReacquisitionCooldown: TimeInterval = 5 * 60
     // A retained gap must not turn one failed automatic history handoff into a
     // reconnect loop. Five minutes is long enough to prove live restoration
     // and avoid churn, while still meeting the product requirement that a
@@ -17423,10 +17429,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return leaseHeld ? .release : .none
     }
 
+    /// Dense R10 is currently an explicit-workout capability.  It must not
+    /// silently take ownership after a workout ends (or on a normal
+    /// reconnect), because the proof profile can interrupt an otherwise
+    /// healthy HR link.  Sleep, recovery and HR continuity do not depend on
+    /// this background motion lease.  A user who deliberately enables the
+    /// experimental all-day motion setting keeps that choice.
+    nonisolated static func allDayMotionCaptureEnabled(
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        defaults.object(forKey: WorkoutMotionDefaults.allDayEnabled) as? Bool ?? false
+    }
+
     var allDayMotionCaptureEnabled: Bool {
-        UserDefaults.standard.object(
-            forKey: WorkoutMotionDefaults.allDayEnabled
-        ) as? Bool ?? true
+        Self.allDayMotionCaptureEnabled()
     }
 
     private var allDayMotionSuspendedForBattery: Bool {
