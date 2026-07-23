@@ -3668,6 +3668,30 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testInterruptedFullDrainReacquisitionArmsFromFirstFreshHR() {
+        // The first accepted sample is normally milliseconds after didConnect,
+        // not 60 seconds later.  The timer must be armed at that edge and keep
+        // the stability/cooldown decision for its delayed execution.
+        XCTAssertTrue(AtriaBLEManager.shouldScheduleInterruptedFullDrainReacquisition(
+            activeExplicitWorkout: false,
+            historySyncInProgress: false,
+            consumerMaterializationInFlight: false,
+            gapFingerprint: "gap-a"
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldScheduleInterruptedFullDrainReacquisition(
+            activeExplicitWorkout: true,
+            historySyncInProgress: false,
+            consumerMaterializationInFlight: false,
+            gapFingerprint: "gap-a"
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldScheduleInterruptedFullDrainReacquisition(
+            activeExplicitWorkout: false,
+            historySyncInProgress: false,
+            consumerMaterializationInFlight: false,
+            gapFingerprint: ""
+        ))
+    }
+
     func testProductionHistoryOwnershipPersistsLiveJournalBeforePhaseCutover() throws {
         let source = try leaseManagerSource()
         let start = try XCTUnwrap(source.range(

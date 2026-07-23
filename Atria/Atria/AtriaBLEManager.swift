@@ -6028,6 +6028,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return nowUnix - lastReacquisitionAtUnix >= cooldown
     }
 
+    /// The first accepted HR after a reconnect necessarily arrives before the
+    /// live-stability interval.  It is nevertheless the one reliable moment
+    /// to arm the bounded timer: the deferred launch intent is consumed by
+    /// that callback, so requiring the interval *here* leaves no later event
+    /// that can schedule the existing drain.  Eligibility and cooldown remain
+    /// checked again when the timer fires, immediately before BLE ownership is
+    /// reacquired.
+    nonisolated static func shouldScheduleInterruptedFullDrainReacquisition(
+        activeExplicitWorkout: Bool,
+        historySyncInProgress: Bool,
+        consumerMaterializationInFlight: Bool,
+        gapFingerprint: String
+    ) -> Bool {
+        !activeExplicitWorkout
+            && !historySyncInProgress
+            && !consumerMaterializationInFlight
+            && !gapFingerprint.isEmpty
+    }
+
     nonisolated static func interruptedFullDrainGapFingerprint(
         _ gap: AtriaHistoricalFullDrainCoverageStore.PendingGap
     ) -> String {
@@ -6056,31 +6075,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               authority.status == .draining else { return }
 
         let fingerprint = Self.interruptedFullDrainGapFingerprint(authority.gap)
-        let defaults = UserDefaults.standard
-        let now = Date()
-        let stableSeconds = now.timeIntervalSince(connectedAt)
-        guard Self.shouldReacquireInterruptedFullDrain(
-            stableLiveSeconds: stableSeconds,
-            requiredStableLiveSeconds: automaticConnectedHistoryStableInterval,
+        guard Self.shouldScheduleInterruptedFullDrainReacquisition(
             activeExplicitWorkout: false,
             historySyncInProgress: false,
             consumerMaterializationInFlight: false,
-            gapFingerprint: fingerprint,
-            lastReacquisitionGapFingerprint: defaults.string(
-                forKey: OfflineSyncDefaults.interruptedFullDrainReacquisitionGapFingerprint
-            ),
-            lastReacquisitionAtUnix: defaults.object(
-                forKey: OfflineSyncDefaults.interruptedFullDrainReacquisitionAt
-            ) as? Double,
-            nowUnix: now.timeIntervalSince1970,
-            cooldown: interruptedFullDrainReacquisitionCooldown
+            gapFingerprint: fingerprint
         ) else {
-            defaults.set("interrupted_full_drain_reacquisition_cooldown",
-                         forKey: OfflineSyncDefaults.lastStatus)
-            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
             return
         }
 
+        let now = Date()
+        let stableSeconds = now.timeIntervalSince(connectedAt)
         let wait = max(0, automaticConnectedHistoryStableInterval - stableSeconds)
         interruptedFullDrainReacquisitionTask = Task { @MainActor [weak self] in
             guard let self else { return }
