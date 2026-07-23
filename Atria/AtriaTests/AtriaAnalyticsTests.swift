@@ -445,6 +445,7 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                          imuStillnessRatio: summary.stillnessRatio,
                                                          imuMovementIntensity: summary.movementIntensity,
                                                          strapSteps: 0,
+                                                         strapStepEvidenceAvailable: true,
                                                          windowStart: start,
                                                          hrStandardDeviation: 2)
             XCTAssertEqual(result.state, "sleep_research")
@@ -465,6 +466,23 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                              reason: "fixture")
         XCTAssertFalse(summary.lowMotionReady,
                        "a few quiet rows cannot validate hours of sleep-like stillness")
+    }
+
+    /// A missing strap-step stream is not a zero-step stream.  Without this
+    /// guard, a short active-wear window could be labelled sleep simply because
+    /// the R10 channel had not supplied any frames yet.
+    func testSleepClassifyDoesNotTreatMissingStrapStepsAsStillness() {
+        let result = AtriaSleepWakeResearch.classify(duration: 60 * 60,
+                                                     averageHR: 58,
+                                                     restingHR: 52,
+                                                     imuStillnessRatio: 0.95,
+                                                     imuMovementIntensity: 0.03,
+                                                     strapSteps: nil,
+                                                     strapStepEvidenceAvailable: false)
+
+        XCTAssertEqual(result.state, "learning")
+        XCTAssertEqual(result.confidence, "none")
+        XCTAssertEqual(result.reason, "strap_steps_missing")
     }
 
     func testBoundedMotionSummaryRequiresDenseValidatedThirtyMinuteEvidence() {
