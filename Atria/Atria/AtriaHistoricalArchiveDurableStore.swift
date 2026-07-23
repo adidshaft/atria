@@ -852,13 +852,22 @@ final class AtriaHistoricalArchiveDurableStore {
         defer { try? handle.close() }
         var buffer = Data()
         var bufferOffset: UInt64 = 0
+        // Keep the file offset separate from the unread position. Removing
+        // each JSONL row from the front of `Data` shifts every remaining byte,
+        // turning a large cold rebuild into quadratic work. The archive can be
+        // hundreds of megabytes, so consume by index and compact only after a
+        // chunk-sized prefix has been processed.
+        var unreadStart = 0
+        let compactionThreshold = 64 * 1024
         var entries: [IndexEntry] = []
 
         while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
             buffer.append(chunk)
-            while let newline = buffer.firstIndex(of: 0x0a) {
-                let lineLength = buffer.distance(from: buffer.startIndex, to: newline) + 1
-                let line = Data(buffer.prefix(lineLength))
+            while unreadStart < buffer.count {
+                let lineStart = buffer.index(buffer.startIndex, offsetBy: unreadStart)
+                guard let newline = buffer[lineStart...].firstIndex(of: 0x0a) else { break }
+                let lineLength = buffer.distance(from: lineStart, to: newline) + 1
+                let line = Data(buffer[lineStart...newline])
                 // Durable rows are written with a canonical identity prefix.
                 // Parse that prefix directly instead of JSON-decoding every
                 // legacy archive row. A physical archive can contain hundreds
@@ -870,12 +879,21 @@ final class AtriaHistoricalArchiveDurableStore {
                                               key: identity.key,
                                               observedAtUnix: identity.observedAtUnix,
                                               archivePath: url.standardizedFileURL.path,
-                                              lineOffset: bufferOffset,
+                                              lineOffset: bufferOffset + UInt64(unreadStart),
                                               lineLength: lineLength,
                                               lineCRC32: checksum(line)))
                 }
-                buffer.removeFirst(lineLength)
-                bufferOffset += UInt64(lineLength)
+                unreadStart += lineLength
+            }
+
+            // Preserve a possible partial final row but release already-read
+            // storage in bounded batches. `bufferOffset` is advanced only when
+            // those bytes are physically discarded, keeping index offsets
+            // identical to the previous implementation.
+            if unreadStart >= compactionThreshold {
+                buffer.removeFirst(unreadStart)
+                bufferOffset += UInt64(unreadStart)
+                unreadStart = 0
             }
         }
         return entries
