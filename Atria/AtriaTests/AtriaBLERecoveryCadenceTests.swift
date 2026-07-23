@@ -7370,6 +7370,16 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), .none)
     }
 
+    func testAllDayMotionIsOptInSoItCannotInheritAnEndedWorkoutLease() {
+        let suite = "AtriaBLERecoveryCadenceTests.allDayMotionDefault.\(UUID().uuidString)"
+        let defaults = try! XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        XCTAssertFalse(AtriaBLEManager.allDayMotionCaptureEnabled(defaults: defaults))
+        defaults.set(true, forKey: "atria.allDayMotion.enabled")
+        XCTAssertTrue(AtriaBLEManager.allDayMotionCaptureEnabled(defaults: defaults))
+    }
+
     func testAllDayMotionWantsHoldUsesProvenBatteryPolicyWithResumeHysteresis() {
         // Same physically derived gate that protects HR continuity: a 13%
         // proof delivered frames but destabilized the link within seconds.
