@@ -3343,6 +3343,34 @@ final class AtriaAnalyticsTests: XCTestCase {
         #endif
     }
 
+    @MainActor
+    func testCarriedRecoveryNamesItsPreviousSleepSource() {
+        let estimate = Metrics.RecoveryEstimate(percent: 75,
+                                                confidence: .personalBaseline,
+                                                usesHRV: true,
+                                                detail: "saved morning score",
+                                                contributors: [])
+
+        XCTAssertEqual(
+            AtriaHomeModel.HeroSnapshot.recoveryDetailText(
+                recoveryEstimate: estimate,
+                recoveryIsProvisional: false,
+                recoveryIsFromPreviousSleep: true,
+                recoveryLiftedAfterNap: false
+            ),
+            "Previous sleep score · awaiting today’s sleep"
+        )
+        XCTAssertEqual(
+            AtriaHomeModel.HeroSnapshot.recoveryDetailText(
+                recoveryEstimate: estimate,
+                recoveryIsProvisional: false,
+                recoveryIsFromPreviousSleep: false,
+                recoveryLiftedAfterNap: false
+            ),
+            Metrics.RecoveryEstimate.Confidence.personalBaseline.rawValue
+        )
+    }
+
     func testSavedSleepUnlocksUnverifiedRecoveryBeforeHRVBaselineMatures() {
         let now = Date()
         let sampleCount = 10

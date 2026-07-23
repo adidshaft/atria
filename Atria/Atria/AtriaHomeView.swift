@@ -7906,6 +7906,11 @@ final class AtriaHomeModel {
     struct HeroSnapshot: Equatable {
         let recoveryEstimate: Metrics.RecoveryEstimate
         let recoveryIsProvisional: Bool
+        /// A numeric score may remain visible through the next civil day while
+        /// the new overnight sleep has not yet been found or confirmed. Keep
+        /// the score (it is still real), but never imply it belongs to today's
+        /// sleep cycle.
+        let recoveryIsFromPreviousSleep: Bool
         let recoveryLiftedAfterNap: Bool
         let strain: Double
         let strainConfidence: String
@@ -7944,6 +7949,24 @@ final class AtriaHomeModel {
         }
 
         var recoveryDetail: String {
+            Self.recoveryDetailText(recoveryEstimate: recoveryEstimate,
+                                    recoveryIsProvisional: recoveryIsProvisional,
+                                    recoveryIsFromPreviousSleep: recoveryIsFromPreviousSleep,
+                                    recoveryLiftedAfterNap: recoveryLiftedAfterNap)
+        }
+
+        /// One shared, testable wording policy for the hero, Today, sharing,
+        /// and StandBy. This is presentation only; it never changes which
+        /// Recovery estimate is selected or when a physiological day advances.
+        static func recoveryDetailText(
+            recoveryEstimate: Metrics.RecoveryEstimate,
+            recoveryIsProvisional: Bool,
+            recoveryIsFromPreviousSleep: Bool,
+            recoveryLiftedAfterNap: Bool
+        ) -> String {
+            if recoveryIsFromPreviousSleep {
+                return "Previous sleep score · awaiting today’s sleep"
+            }
             if recoveryEstimate.confidence == .unverified,
                recoveryEstimate.detail.localizedCaseInsensitiveContains("HRV unavailable") {
                 return recoveryLiftedAfterNap
@@ -7976,6 +7999,7 @@ final class AtriaHomeModel {
                 && lhs.recoveryEstimate.confidence == rhs.recoveryEstimate.confidence
                 && lhs.recoveryEstimate.detail == rhs.recoveryEstimate.detail
                 && lhs.recoveryIsProvisional == rhs.recoveryIsProvisional
+                && lhs.recoveryIsFromPreviousSleep == rhs.recoveryIsFromPreviousSleep
                 && lhs.recoveryLiftedAfterNap == rhs.recoveryLiftedAfterNap
                 && lhs.strainConfidence == rhs.strainConfidence
                 && lhs.guidance == rhs.guidance
@@ -9520,6 +9544,10 @@ final class AtriaHomeModel {
         let recoveryIsProvisional = sleepRecoveryIsProvisional
             || recovery.confidence == .unverified
             || recovery.confidence == .learning
+        let recoveryIsFromPreviousSleep = recovery.percent != nil
+            && latestSleep.flatMap({ $0.end ?? $0.day }).map {
+                !calendar.isDateInToday($0)
+            } == true
         let stress = stressState(ble: ble, baseline: store.baseline)
         let liveTRIMP = live.liveTRIMP
         let totalTRIMP = SessionStore.mergedTodayTRIMP(
@@ -9573,6 +9601,7 @@ final class AtriaHomeModel {
                                    frozenRecovery: frozenTarget?.recovery)
         return HeroSnapshot(recoveryEstimate: recovery,
                             recoveryIsProvisional: recoveryIsProvisional,
+                            recoveryIsFromPreviousSleep: recoveryIsFromPreviousSleep,
                             recoveryLiftedAfterNap: false,
                             strain: strain,
                             strainConfidence: strainConfidence,
@@ -9668,6 +9697,7 @@ final class AtriaHomeModel {
         let guidance = Coach.guide(recovery: recovery, strain: strain, load: .learning)
         return HeroSnapshot(recoveryEstimate: recovery,
                             recoveryIsProvisional: !night.confirmed,
+                            recoveryIsFromPreviousSleep: false,
                             recoveryLiftedAfterNap: false,
                             strain: strain,
                             strainConfidence: "local",
@@ -9906,6 +9936,7 @@ final class AtriaHomeModel {
                                                                        detail: "learning: reconnecting",
                                                                        contributors: []),
                             recoveryIsProvisional: false,
+                            recoveryIsFromPreviousSleep: false,
                             recoveryLiftedAfterNap: false,
                             strain: 0,
                             strainConfidence: "standby",
