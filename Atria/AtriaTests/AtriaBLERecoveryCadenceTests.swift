@@ -3732,10 +3732,9 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let body = String(source[start.lowerBound..<end.lowerBound])
         XCTAssertTrue(body.contains("authority.gap.pending"),
                       "the fsynced drain authority must remain resumable even if a secondary ledger was compacted")
-        XCTAssertTrue(body.contains("shouldReacquireInterruptedFullDrain("))
-        XCTAssertTrue(body.contains("requiredStableLiveSeconds: automaticConnectedHistoryStableInterval"))
-        XCTAssertTrue(body.contains("interruptedFullDrainReacquisitionCooldown"))
-        XCTAssertTrue(body.contains("explicitResearchRequest: true"))
+        XCTAssertTrue(body.contains("deferred_locked_reconnect_acceptance"))
+        XCTAssertFalse(body.contains("requestOfflineHistoricalSyncIfNeeded("),
+                       "locked reconnect acceptance must preserve live transport, not start history")
 
         XCTAssertTrue(source.contains(
             "rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded(\n                reason: \"accepted_hr\""

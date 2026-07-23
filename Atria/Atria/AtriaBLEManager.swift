@@ -6243,52 +6243,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             consumerMaterializationInFlight: historicalConsumerMaterializationInFlight
         ) else { return }
 
-        // Do not rely on a delayed task surviving an iOS relaunch/background
-        // edge. Every accepted HR is an observed execution opportunity, so it
-        // can safely evaluate the exact same stable-live and cooldown gates.
-        // Until the stability window elapses we only keep the live-first
-        // interlock; after it elapses, exactly one explicit, durable recovery
-        // attempt is admitted for this exact authority.
+        // During the locked-reconnect acceptance gate, history recovery must
+        // never seize a live link.  The retained authority is still durable,
+        // but this HR-driven path is intentionally hold-only until live
+        // reconnect has been physically accepted.  That keeps a history drain
+        // from being mistaken for, or disrupting, automatic live recovery.
         let now = Date()
         let stableSeconds = now.timeIntervalSince(connectedAt)
-        guard Self.shouldReacquireInterruptedFullDrain(
-            stableLiveSeconds: stableSeconds,
-            requiredStableLiveSeconds: automaticConnectedHistoryStableInterval,
-            activeExplicitWorkout: false,
-            historySyncInProgress: false,
-            consumerMaterializationInFlight: false,
-            gapFingerprint: Self.interruptedFullDrainGapFingerprint(authority.gap),
-            lastReacquisitionGapFingerprint: UserDefaults.standard.string(
-                forKey: OfflineSyncDefaults.interruptedFullDrainReacquisitionGapFingerprint
-            ),
-            lastReacquisitionAtUnix: UserDefaults.standard.object(
-                forKey: OfflineSyncDefaults.interruptedFullDrainReacquisitionAt
-            ) as? Double,
-            nowUnix: now.timeIntervalSince1970,
-            cooldown: interruptedFullDrainReacquisitionCooldown
-        ) else {
-            deferInterruptedFullDrainForCurrentLiveConnection = true
-            return
-        }
-
-        let fingerprint = Self.interruptedFullDrainGapFingerprint(authority.gap)
-        UserDefaults.standard.set(fingerprint,
-                                  forKey: OfflineSyncDefaults.interruptedFullDrainReacquisitionGapFingerprint)
-        UserDefaults.standard.set(now.timeIntervalSince1970,
-                                  forKey: OfflineSyncDefaults.interruptedFullDrainReacquisitionAt)
-        deferInterruptedFullDrainForCurrentLiveConnection = false
-        UserDefaults.standard.set("interrupted_full_drain_live_reconciliation_started",
+        interruptedFullDrainReacquisitionTask?.cancel()
+        interruptedFullDrainReacquisitionTask = nil
+        deferInterruptedFullDrainForCurrentLiveConnection = true
+        UserDefaults.standard.set("deferred_locked_reconnect_acceptance",
                                   forKey: OfflineSyncDefaults.lastStatus)
         UserDefaults.standard.set(reason, forKey: OfflineSyncDefaults.lastReason)
-        AtriaDebugLog("ATRIADBG offline_sync status=interrupted_full_drain_live_reconciliation_started reason=%@ authority=%@ stable_s=%.1f action=reacquire_existing_gap_after_fresh_hr",
+        AtriaDebugLog("ATRIADBG offline_sync status=deferred_locked_reconnect_acceptance reason=%@ authority=%@ stable_s=%.1f action=retain_exact_gap_preserve_live_link",
                       reason,
                       authority.authorityIdentifier,
                       stableSeconds)
-        _ = requestOfflineHistoricalSyncIfNeeded(
-            reason: "interrupted_full_drain_persisted_reconciliation",
-            force: true,
-            explicitResearchRequest: true
-        )
     }
 
     /// The launch path already turns a persisted `.draining` authority into a
