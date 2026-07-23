@@ -1202,6 +1202,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var offlineHistoricalSyncGeneration: UInt64 = 0
     private var offlineHistoricalSyncBackgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var offlineHistoricalSyncBackgroundTaskGeneration: UInt64?
+    /// The derived replay index is intentionally not BLE authority, but a
+    /// cold rebuild can be large enough that iOS suspends it as soon as the
+    /// app backgrounds. Keep a finite execution lease solely while that
+    /// read-only warmup is running, so the next verified ingress replay does
+    /// not repeatedly pay the same restart-from-zero cost.
+    private var historicalArchiveWarmBackgroundTask: UIBackgroundTaskIdentifier = .invalid
     private lazy var historicalRequestAuthorityStore = AtriaBLEHistoryRequestAuthorityStore(
         directoryURL: FileManager.default.urls(for: .documentDirectory,
                                                in: .userDomainMask)[0]
@@ -1998,7 +2004,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// frame append or on the BLE/main queues.
     private nonisolated let historicalArchiveWarmQueue = DispatchQueue(
         label: "com.adidshaft.atria.historical-archive-warm",
-        qos: .utility
+        // This is still isolated from BLE and contains no protocol work. A
+        // user-initiated QoS is deliberate: a utility rebuild of hundreds of
+        // MB can be suspended on every lock edge, leaving sealed raw ingress
+        // unable to reach its canonical durability boundary indefinitely.
+        qos: .userInitiated
     )
     private nonisolated let historicalArchiveWarmGroup = DispatchGroup()
     private var peripheral: CBPeripheral?
@@ -3565,10 +3575,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // rebuilding the exact-identity index over every retained raw chunk.
         // This lane is deliberately detached from CoreBluetooth and performs
         // no transport work or recovery-state mutation.
+        beginHistoricalArchiveWarmBackgroundLease()
         historicalArchiveWarmGroup.enter()
         let archiveWarmGroup = historicalArchiveWarmGroup
-        historicalArchiveWarmQueue.async {
-            defer { archiveWarmGroup.leave() }
+        historicalArchiveWarmQueue.async { [weak self] in
+            defer {
+                archiveWarmGroup.leave()
+                Task { @MainActor [weak self] in
+                    self?.endHistoricalArchiveWarmBackgroundLease(status: "finished")
+                }
+            }
             do {
                 AtriaDebugLog("ATRIADBG historical_archive_warm status=started action=identity_store_open_only")
                 try HistoricalArchive.warmDurableIdentityStoreForBackgroundRecovery()
@@ -8181,6 +8197,35 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set(status, forKey: OfflineSyncDefaults.backgroundLeaseStatus)
         defaults.set(Date().timeIntervalSince1970,
                      forKey: OfflineSyncDefaults.backgroundLeaseAt)
+    }
+
+    /// Extends only the read-only derived-index warmup across a lock edge.
+    /// The lease has no history generation, no ACK path, and no recovery
+    /// state authority. If iOS expires it, the atomic snapshot is simply not
+    /// published and the canonical raw/vault bytes remain untouched.
+    private func beginHistoricalArchiveWarmBackgroundLease() {
+        endHistoricalArchiveWarmBackgroundLease(status: "replaced")
+        historicalArchiveWarmBackgroundTask = UIApplication.shared.beginBackgroundTask(
+            withName: "Atria history identity index warmup"
+        ) { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                AtriaDebugLog("ATRIADBG historical_archive_warm background_lease=expired action=retain_raw_and_retry_no_ack_no_coverage")
+                self.endHistoricalArchiveWarmBackgroundLease(status: "expired")
+            }
+        }
+        AtriaDebugLog("ATRIADBG historical_archive_warm background_lease=%@ application_state=%ld",
+                      historicalArchiveWarmBackgroundTask == .invalid ? "unavailable" : "active",
+                      UIApplication.shared.applicationState.rawValue)
+    }
+
+    private func endHistoricalArchiveWarmBackgroundLease(status: String) {
+        let task = historicalArchiveWarmBackgroundTask
+        historicalArchiveWarmBackgroundTask = .invalid
+        if task != .invalid {
+            UIApplication.shared.endBackgroundTask(task)
+        }
+        AtriaDebugLog("ATRIADBG historical_archive_warm background_lease=%@", status)
     }
 
     /// UIKit background-task identifiers are process-local. If iOS terminates
