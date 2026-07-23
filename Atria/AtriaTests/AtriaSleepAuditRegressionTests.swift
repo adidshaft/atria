@@ -364,6 +364,20 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertEqual(rollup.sleepReady, 0)
         XCTAssertNil(rollup.sleepStart)
         XCTAssertNil(rollup.sleepEnd)
+
+        let sessionsSource = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/Sessions.swift"),
+            encoding: .utf8
+        )
+        let liveStart = try XCTUnwrap(sessionsSource.range(of: "func dailyRollups("))
+        let liveEnd = try XCTUnwrap(sessionsSource.range(of: "private nonisolated static func preferredSleepCandidatesByDay",
+                                                          range: liveStart.upperBound..<sessionsSource.endIndex))
+        let liveRollups = String(sessionsSource[liveStart.lowerBound..<liveEnd.lowerBound])
+        XCTAssertTrue(liveRollups.contains(".filter(Self.isReviewWorthySleepCandidate)"),
+                      "Live rollups must not surface diagnostic-only sleep candidates")
     }
 
     func testReportedMorningResumptionMergesIntoOneMainSleep() throws {
