@@ -193,6 +193,41 @@ final class AtriaStrapStepLedgerTests: XCTestCase {
         XCTAssertTrue(AtriaStrapStepLedger.isValid(decoded, now: now))
     }
 
+    func testLegacyGyroLedgerCanBePromotedWithoutReinterpretingPeakTotal() throws {
+        let segment = UUID()
+        // This is the shape written before the daily migration: the primary
+        // number is a peak-detector coordinate, while the gyro total is an
+        // independent, durable R10 coordinate. They must never be added.
+        let legacy = try AtriaStrapStepLedger.checkpoint(
+            segmentID: segment,
+            segmentStartedAt: now.addingTimeInterval(-120),
+            segmentSteps: 17,
+            segmentRawSteps: 15,
+            deviceTimestamp: 8_000,
+            state: "r10_live_preliminary",
+            gyroCadenceResearchSteps: 500,
+            now: now,
+            at: target
+        )
+        XCTAssertEqual(legacy.segmentSteps, 17)
+        XCTAssertEqual(legacy.segmentGyroCadenceResearchSteps, 500)
+
+        let migrated = try AtriaStrapStepLedger.checkpoint(
+            segmentID: segment,
+            segmentStartedAt: now.addingTimeInterval(-120),
+            segmentSteps: 512,
+            segmentRawSteps: 15,
+            deviceTimestamp: 8_001,
+            state: "r10_live_validated",
+            gyroCadenceResearchSteps: 512,
+            now: now.addingTimeInterval(1),
+            at: target
+        )
+        XCTAssertEqual(migrated.cumulativeSteps, 512)
+        XCTAssertEqual(migrated.cumulativeGyroCadenceResearchSteps, 512)
+        XCTAssertNotEqual(migrated.cumulativeSteps, 17 + 512)
+    }
+
     func testUnhandedBoundaryResegmentsPrefixAndFutureCheckpointAdvances() throws {
         let first = UUID()
         let second = UUID()

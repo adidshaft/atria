@@ -1521,8 +1521,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var strapStepResearchState = "research_unvalidated"
     private var strapStepResearchDay = Calendar.current.startOfDay(for: Date())
     private var strapStepResearchDayBaseline = 0
-    /// RESEARCH-ONLY gyro cadence is owned by the atomic R10 pipeline and
-    /// checkpointed beside (but never substituted for) production steps.
+    /// The R10 gyro cadence coordinate is owned by the atomic pipeline. It is
+    /// the only coordinate promoted to the daily strap-only total for this
+    /// device; the parallel acceleration-peak counter remains diagnostic.
     private var researchProbeFrameCount = 0
     private var researchProbeOxygenCandidateFrames = 0
     private var researchProbeTemperatureCandidateFrames = 0
@@ -10079,7 +10080,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         researchProbeTemperatureCandidateFrames = researchAggregates.skinTempCandidateFrames
         researchProbeTemperatureCandidateValueSum = researchAggregates.skinTempCandidateValueSum
         researchProbeTemperatureCandidateValueCount = researchAggregates.skinTempCandidateValueCount
-        strapStepResearchCount = max(researchAggregates.strapSteps, restoredStepTotals.steps)
+        // Never splice a legacy acceleration-peak subtotal into the promoted
+        // gyro coordinate. A journal that predates gyro evidence contributes
+        // no daily steps here; the durable ledger seed carries a validated
+        // gyro prefix when one exists.
+        strapStepResearchCount = max(
+            researchAggregates.gyroCadenceResearchSteps ?? 0,
+            currentGyroCadenceResearchSessionSteps()
+        )
         strapStepResearchPeakCount = max(researchAggregates.strapRawSteps, restoredStepTotals.rawSteps)
         // A fresh snapshot may have reached MainActor while the FIFO seed was
         // awaiting the motion queue. Preserve that newer replay watermark; a
@@ -10088,7 +10096,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             existing: researchAggregates.strapDeviceTimestamp,
             incoming: strapStepResearchDeviceTimestamp
         )
-        strapStepResearchState = researchAggregates.strapStepState ?? "research_unvalidated"
+        strapStepResearchState = researchAggregates.gyroCadenceResearchSteps == nil
+            ? "research_unvalidated"
+            : "r10_live_validated"
         publishLiveStrapStepResearchIfNeeded(now: now, force: true)
         assignIfChanged(\.liveStrapStepResearchState, strapStepResearchState)
         activeJournalDirtySamples = 0
@@ -24539,7 +24549,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
              movementIntensity: Optional($0.movementIntensity),
              sampleRateHz: Optional(Double(AtriaStrapPedometer.sampleRateHz)))
         } ?? imuFeatureSummary()
-        let snapshotStrapSteps = motionSnapshotOverride?.steps ?? strapStepResearchCount
+        // `Snapshot.steps` is the legacy accelerometer-peak coordinate. The
+        // saved Session must use the same gyro coordinate as Home so a segment
+        // roll/relaunch cannot reintroduce the inferior source.
+        let snapshotStrapSteps = max(
+            strapStepResearchCount,
+            currentGyroCadenceResearchSessionSteps()
+        )
         // A count of zero is valid evidence only after this session has
         // received at least one strap R10 motion frame.  Keep unknown separate
         // from zero so sleep detection cannot mistake a missing step channel
@@ -24634,7 +24650,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             strapStepResearchCount: snapshotStrapSteps > 0 ? snapshotStrapSteps : nil,
                             strapStepResearchAgreement: nil,
                             strapStepResearchState: snapshotStrapSteps > 0
-                                ? (motionSnapshotOverride?.state ?? strapStepResearchState) : nil,
+                                ? strapStepResearchState : nil,
                             sleepWakeResearchState: sleepWake.state == "learning" ? nil : sleepWake.state,
                             sleepWakeResearchConfidence: sleepWake.confidence == "none" ? nil : sleepWake.confidence,
                             sleepWakeResearchReason: sleepWake.reason,
@@ -24687,11 +24703,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         rollStrapStepResearchDayIfNeeded(now: now, currentSessionCount: strapStepResearchCount)
         let stepEstimate = AtriaStrapStepResearch.estimate(samples: decoded.samples,
                                                            sampleRateHz: imuFeatureSummary().sampleRateHz)
-        strapStepResearchCount += stepEstimate.steps
+        // This decoder path is not the validated fixed-layout R10 pipeline.
+        // Preserve its peaks solely as diagnostics; it may never advance the
+        // user-facing daily total as a fallback.
         strapStepResearchPeakCount += stepEstimate.peaks
-        strapStepResearchState = stepEstimate.state
-        publishLiveStrapStepResearchIfNeeded(now: now)
-        assignIfChanged(\.liveStrapStepResearchState, strapStepResearchState)
+        if strapStepResearchCount == 0 {
+            strapStepResearchState = stepEstimate.state
+            assignIfChanged(\.liveStrapStepResearchState, strapStepResearchState)
+        }
         imuStillnessRatioSum += decoded.stillnessRatio
         imuMovementIntensitySum += decoded.movementIntensity
         imuActivityBurstCount += decoded.activityBursts
@@ -24745,7 +24764,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 self.liveSessionID = record.segmentID
                 self.sessionStart = min(self.sessionStart, record.segmentStartedAt)
             }
-            self.strapStepResearchCount = max(self.strapStepResearchCount, restored.steps)
+            // Existing ledgers may contain a legacy `segmentSteps` peak value.
+            // Promote only their independently checkpointed gyro total; absent
+            // gyro evidence fails closed instead of silently changing history.
+            self.strapStepResearchCount = max(
+                self.strapStepResearchCount,
+                record.segmentGyroCadenceResearchSteps ?? 0
+            )
             self.strapStepResearchPeakCount = max(self.strapStepResearchPeakCount, restored.rawSteps)
             self.strapStepResearchDeviceTimestamp = Self.newestR10DeviceTimestamp(
                 existing: record.deviceTimestamp,
@@ -25015,7 +25040,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         strapStepLedgerCheckpointTask?.cancel()
         strapStepLedgerCheckpointTask = nil
         let now = Date()
-        let finalizedSteps = finalizedSnapshot?.steps ?? 0
+        // `Snapshot.steps` remains the diagnostic accelerometer coordinate.
+        // The primary ledger field now tracks the same validated gyro total
+        // exposed by Home; raw peak steps stay in their own field for audits.
+        let finalizedSteps = finalizedGyroCadenceResearchSteps ?? 0
         let finalizedRawSteps = finalizedSnapshot?.rawSteps ?? 0
         let deviceTimestamp = finalizedSnapshot.flatMap {
             $0.deviceTimestamp > 0 ? $0.deviceTimestamp : nil
@@ -25079,9 +25107,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         strapStepLedgerCheckpointTask?.cancel()
         strapStepLedgerCheckpointTask = nil
         let now = Date()
-        let observedSteps = observedSnapshot?.steps ?? 0
+        let observedSteps = observedGyroCadenceResearchSteps ?? 0
         let observedRawSteps = observedSnapshot?.rawSteps ?? 0
-        let carriedSteps = carriedSnapshot?.steps ?? 0
+        let carriedSteps = carriedGyroCadenceResearchSteps ?? 0
         let carriedRawSteps = carriedSnapshot?.rawSteps ?? 0
         let deviceTimestamp = observedSnapshot.flatMap {
             $0.deviceTimestamp > 0 ? $0.deviceTimestamp : nil
@@ -25163,10 +25191,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         imuGravityValidatedFrameCount = snapshot.gravityValidatedFrames
         imuSampleRateHzSum = Double(AtriaStrapPedometer.sampleRateHz)
         imuSampleRateHzCount = 1
+        let gyroCadenceSteps = currentGyroCadenceResearchSessionSteps()
         let reconciledTotals = Self.monotonicStrapStepTotals(
             currentSteps: strapStepResearchCount,
             currentRawSteps: strapStepResearchPeakCount,
-            incomingSteps: snapshot.steps,
+            incomingSteps: gyroCadenceSteps,
             incomingRawSteps: snapshot.rawSteps
         )
         // R10 work runs on its own serial queue and publishes back to the main
@@ -25184,7 +25213,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 incoming: snapshot.deviceTimestamp
             )
         }
-        strapStepResearchState = snapshot.state
+        strapStepResearchState = "r10_live_validated"
         if let capturedAt = snapshot.receivedAt,
            liveStrapStepCountCapturedAt.map({ capturedAt >= $0 }) ?? true {
             assignIfChanged(\.liveStrapStepCountCapturedAt, capturedAt)

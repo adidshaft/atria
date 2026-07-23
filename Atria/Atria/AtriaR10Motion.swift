@@ -319,7 +319,7 @@ enum AtriaStrapPedometer {
     }
 }
 
-/// RESEARCH-ONLY gyroscope-cadence pedometer. Never feeds a production count.
+/// Gyroscope-cadence pedometer for the validated Strap 4 R10 layout.
 ///
 /// Physical basis (2026-07-17 card session, exact counted truth): during
 /// walking, the wrist's rotation-rate MAGNITUDE oscillates at the true step
@@ -339,7 +339,9 @@ enum AtriaStrapPedometer {
 /// which is what keeps rest-stage transients (wrist adjustments) at exactly
 /// zero steps.
 ///
-/// Offline evaluation, never promoted without the full fitter gates.
+/// The retained, manually counted Strap 4 control covers 500 walking steps
+/// plus stillness negatives. Its fixed parameters are promoted only for this
+/// exact R10 layout; a different layout must not inherit that authority.
 /// Card session (shuttle, 0/100/100/100/200/0 truth), with parabolic peak
 /// interpolation and the 0.6 turn discount: 100.5 / 93.1 / 102.6 / 198.8
 /// steps → mean walk error 2.6%, max 6.9%, rest false steps 0.
@@ -467,10 +469,10 @@ enum AtriaGyroCadenceResearchPedometer {
     }
 }
 
-/// RESEARCH-ONLY all-day shadow accumulator for
-/// `AtriaGyroCadenceResearchPedometer`. It never feeds a user-facing count;
-/// its total exists solely so that every future counted ground truth
-/// automatically doubles as validation evidence for the gyro-cadence family.
+/// All-day accumulator for `AtriaGyroCadenceResearchPedometer`. Its name is
+/// retained for storage compatibility, but its Strap 4 R10 total is the
+/// promoted daily strap-only step coordinate. Future labelled captures remain
+/// regression evidence; they do not rewrite prior user totals.
 ///
 /// The batch detector is only defined over physically contiguous
 /// rotation-magnitude segments, so this accumulator buffers samples per
