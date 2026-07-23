@@ -206,6 +206,27 @@ final class AtriaHistoricalArchiveDurableStore {
         let modificationMilliseconds: Int64
     }
 
+    /// A restart hint for the derived exact-identity index.  It is deliberately
+    /// not a durability authority: a missing, stale, or malformed snapshot
+    /// simply makes launch rebuild from the raw JSONL archives.  Its only job
+    /// is to prove that the index being loaded names the exact same archive
+    /// files that were present after the last successful archive/index flush.
+    private struct DerivedIndexSnapshot: Codable, Equatable {
+        let version: Int
+        let archives: [ArchiveFingerprint]
+        let indexByteCount: UInt64
+        let indexSHA256: String
+    }
+
+    private struct ArchiveFingerprint: Codable, Equatable {
+        let path: String
+        let exists: Bool
+        let volume: UInt64
+        let inode: UInt64
+        let size: UInt64
+        let modificationMilliseconds: Int64
+    }
+
     private struct ReceiptCore: Codable, Equatable {
         let batchIdentifier: String
         let raw: DurableSeal
@@ -238,6 +259,7 @@ final class AtriaHistoricalArchiveDurableStore {
     private let lock = NSLock()
     private let fileManager: FileManager
     private let indexURL: URL
+    private let indexSnapshotURL: URL
     private let receiptStateURL: URL
     private let encoder: JSONEncoder
     private let fileSynchronizer: (URL) throws -> Void
@@ -262,6 +284,9 @@ final class AtriaHistoricalArchiveDurableStore {
          maximumReceiptBatchIdentities: Int = AtriaHistoricalArchiveDurableStore.productionMaximumReceiptBatchIdentities) throws {
         precondition(maximumReceiptBatchIdentities > 0)
         self.indexURL = indexURL.standardizedFileURL
+        self.indexSnapshotURL = indexURL.deletingPathExtension()
+            .appendingPathExtension("snapshot.json")
+            .standardizedFileURL
         self.receiptStateURL = indexURL.deletingPathExtension()
             .appendingPathExtension("durability.json")
             .standardizedFileURL
@@ -275,23 +300,41 @@ final class AtriaHistoricalArchiveDurableStore {
         self.encoder = JSONEncoder()
         self.encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
 
-        var discovered: [String: IndexEntry] = [:]
-        for archiveURL in existingArchiveURLs {
+        let canonicalArchiveURLs = Array(Set(existingArchiveURLs.map(\.standardizedFileURL)))
+            .sorted { $0.path < $1.path }
+        for archiveURL in canonicalArchiveURLs {
             let canonical = archiveURL.standardizedFileURL
             registeredArchivePaths.insert(canonical.path)
-            guard fileManager.fileExists(atPath: canonical.path) else { continue }
-            _ = try Self.repairTornJSONLTail(at: canonical)
-            for entry in try Self.scanArchive(at: canonical) {
-                if let existing = discovered[entry.key],
-                   existing.observedAtUnix >= entry.observedAtUnix {
-                    continue
-                }
-                discovered[entry.key] = entry
-            }
         }
 
         let cutoff = now().timeIntervalSince1970 - max(0, identityRetention)
-        discovered = discovered.filter { $0.value.observedAtUnix >= cutoff }
+        let discovered: [String: IndexEntry]
+        if let cached = try loadValidatedDerivedIndex(archiveURLs: canonicalArchiveURLs,
+                                                      cutoff: cutoff) {
+            discovered = cached
+            AtriaDebugLog("ATRIADBG historical_identity_index status=reused entries=%d archives=%d",
+                          discovered.count,
+                          canonicalArchiveURLs.count)
+        } else {
+            var rebuilt: [String: IndexEntry] = [:]
+            for archiveURL in canonicalArchiveURLs {
+                guard fileManager.fileExists(atPath: archiveURL.path) else { continue }
+                _ = try Self.repairTornJSONLTail(at: archiveURL)
+                for entry in try Self.scanArchive(at: archiveURL) {
+                    if let existing = rebuilt[entry.key],
+                       existing.observedAtUnix >= entry.observedAtUnix {
+                        continue
+                    }
+                    rebuilt[entry.key] = entry
+                }
+            }
+            discovered = rebuilt.filter { $0.value.observedAtUnix >= cutoff }
+            try rebuildDerivedIndex(with: Array(discovered.values))
+            persistDerivedIndexSnapshotBestEffort()
+            AtriaDebugLog("ATRIADBG historical_identity_index status=rebuilt entries=%d archives=%d",
+                          discovered.count,
+                          canonicalArchiveURLs.count)
+        }
 
         // A complete line proves replay identity, not that its archive inode was
         // synchronized before the prior process died. Rebuild and synchronize
@@ -300,7 +343,6 @@ final class AtriaHistoricalArchiveDurableStore {
         // synchronize both the archive and index before it can report a durable
         // duplicate eligible for ACK.
         statesByKey = discovered.mapValues { KeyState(entry: $0, indexed: true, durable: false) }
-        try rebuildDerivedIndex(with: Array(discovered.values))
         try loadAndVerifyReceiptState()
     }
 
@@ -528,6 +570,10 @@ final class AtriaHistoricalArchiveDurableStore {
         receiptChainSHA256 = chain
         batch.lastReceipt = receipt
         openBatches.removeValue(forKey: batch.identifier)
+        // This snapshot is strictly an acceleration cache.  The receipt above
+        // remains the ACK authority, so a snapshot write failure must never
+        // turn already-fsynced raw data into a failed history transaction.
+        persistDerivedIndexSnapshotBestEffort()
         let maintenanceNow = now()
         if maintenanceNow.timeIntervalSince1970 - lastPruneAtUnix >= 6 * 60 * 60 {
             do {
@@ -577,6 +623,7 @@ final class AtriaHistoricalArchiveDurableStore {
         for key in expired { retained.removeValue(forKey: key) }
         try rebuildDerivedIndex(with: retained.values.map(\.entry))
         statesByKey = retained
+        persistDerivedIndexSnapshotBestEffort()
         return expired.count
     }
 
@@ -626,6 +673,162 @@ final class AtriaHistoricalArchiveDurableStore {
             // not part of the startup index rebuild. Require one durability
             // boundary that adds its identity to the index before ACK.
             statesByKey[entry.key] = KeyState(entry: entry, indexed: false, durable: false)
+        }
+    }
+
+    /// Returns a restart-safe index only after proving three independent facts:
+    /// (1) the registered archive set did not change, (2) the index file is
+    /// exactly the snapshot that was written after a successful flush, and
+    /// (3) every index offset still points at its CRC-checked decorated raw
+    /// row.  Any failed proof returns `nil`, intentionally taking the existing
+    /// raw-archive rebuild path rather than risking a false replay duplicate.
+    private func loadValidatedDerivedIndex(archiveURLs: [URL],
+                                           cutoff: TimeInterval) throws -> [String: IndexEntry]? {
+        let currentArchives = try archiveURLs.map { try archiveFingerprint($0) }
+            .sorted { $0.path < $1.path }
+        guard fileManager.fileExists(atPath: indexURL.path),
+              fileManager.fileExists(atPath: indexSnapshotURL.path),
+              let snapshot = try? JSONDecoder().decode(DerivedIndexSnapshot.self,
+                                                       from: Data(contentsOf: indexSnapshotURL)),
+              snapshot.version == 1,
+              snapshot.indexSHA256.count == 64,
+              snapshot.archives == currentArchives
+        else {
+            return nil
+        }
+
+        let decoded = try decodedIndexEntriesAndDigest()
+        guard decoded.byteCount == snapshot.indexByteCount,
+              decoded.sha256 == snapshot.indexSHA256 else {
+            return nil
+        }
+
+        var entries: [String: IndexEntry] = [:]
+        for entry in decoded.entries {
+            // The index is derived, so duplicates, out-of-horizon entries and
+            // paths outside the registered raw set all invalidate the shortcut.
+            // They are rebuilt from raw rather than silently selecting a row.
+            guard entry.version == 2,
+                  entry.observedAtUnix.isFinite,
+                  entry.observedAtUnix >= cutoff,
+                  registeredArchivePaths.contains(entry.archivePath),
+                  entries[entry.key] == nil,
+                  try indexEntryMatchesRawArchive(entry) else {
+                return nil
+            }
+            entries[entry.key] = entry
+        }
+        return entries
+    }
+
+    private func decodedIndexEntriesAndDigest() throws -> (entries: [IndexEntry], byteCount: UInt64, sha256: String) {
+        let handle = try FileHandle(forReadingFrom: indexURL)
+        defer { try? handle.close() }
+        let decoder = JSONDecoder()
+        var hasher = SHA256()
+        var entries: [IndexEntry] = []
+        var buffer = Data()
+        var unreadStart = 0
+        var byteCount: UInt64 = 0
+        let compactionThreshold = 64 * 1024
+
+        while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
+            hasher.update(data: chunk)
+            byteCount &+= UInt64(chunk.count)
+            buffer.append(chunk)
+            while unreadStart < buffer.count {
+                let lineStart = buffer.index(buffer.startIndex, offsetBy: unreadStart)
+                guard let newline = buffer[lineStart...].firstIndex(of: 0x0a) else { break }
+                let line = Data(buffer[lineStart...newline])
+                guard let entry = try? decoder.decode(IndexEntry.self, from: line) else {
+                    return ([], 0, "")
+                }
+                entries.append(entry)
+                unreadStart += line.count
+            }
+            if unreadStart >= compactionThreshold {
+                buffer.removeFirst(unreadStart)
+                unreadStart = 0
+            }
+        }
+        // A JSONL index without a terminating newline is never a valid cache.
+        guard unreadStart == buffer.count else { return ([], 0, "") }
+        return (entries, byteCount, Self.hex(hasher.finalize()))
+    }
+
+    private func indexEntryMatchesRawArchive(_ entry: IndexEntry) throws -> Bool {
+        guard entry.lineLength > 0 else { return false }
+        let url = URL(fileURLWithPath: entry.archivePath).standardizedFileURL
+        guard fileManager.fileExists(atPath: url.path) else { return false }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: entry.lineOffset)
+        guard let line = try handle.read(upToCount: entry.lineLength),
+              line.count == entry.lineLength,
+              Self.checksum(line) == entry.lineCRC32,
+              let identity = Self.decoratedIdentity(from: line),
+              identity.key == entry.key,
+              identity.observedAtUnix == entry.observedAtUnix else {
+            return false
+        }
+        return true
+    }
+
+    private func archiveFingerprint(_ url: URL) throws -> ArchiveFingerprint {
+        let canonical = url.standardizedFileURL
+        guard fileManager.fileExists(atPath: canonical.path) else {
+            return ArchiveFingerprint(path: canonical.path,
+                                      exists: false,
+                                      volume: 0,
+                                      inode: 0,
+                                      size: 0,
+                                      modificationMilliseconds: 0)
+        }
+        let attributes = try fileManager.attributesOfItem(atPath: canonical.path)
+        let volume = (attributes[.systemNumber] as? NSNumber)?.uint64Value ?? 0
+        let inode = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
+        let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+        let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        return ArchiveFingerprint(path: canonical.path,
+                                  exists: true,
+                                  volume: volume,
+                                  inode: inode,
+                                  size: size,
+                                  modificationMilliseconds: Int64((modified * 1_000).rounded(.towardZero)))
+    }
+
+    private func persistDerivedIndexSnapshotBestEffort() {
+        do {
+            let archiveURLs = registeredArchivePaths.map { URL(fileURLWithPath: $0) }
+                .sorted { $0.path < $1.path }
+            let index = try decodedIndexEntriesAndDigest()
+            guard index.byteCount > 0 || statesByKey.isEmpty else { return }
+            let snapshot = DerivedIndexSnapshot(
+                version: 1,
+                archives: try archiveURLs.map(archiveFingerprint),
+                indexByteCount: index.byteCount,
+                indexSHA256: index.sha256
+            )
+            try fileManager.createDirectory(at: indexSnapshotURL.deletingLastPathComponent(),
+                                            withIntermediateDirectories: true)
+            let temporaryURL = indexSnapshotURL.deletingLastPathComponent()
+                .appendingPathComponent(".\(indexSnapshotURL.lastPathComponent).\(UUID().uuidString).tmp")
+            do {
+                try encoder.encode(snapshot).write(to: temporaryURL, options: [])
+                try Self.synchronizeFile(at: temporaryURL)
+                if fileManager.fileExists(atPath: indexSnapshotURL.path) {
+                    _ = try fileManager.replaceItemAt(indexSnapshotURL, withItemAt: temporaryURL)
+                } else {
+                    try fileManager.moveItem(at: temporaryURL, to: indexSnapshotURL)
+                }
+                try Self.synchronizeDirectory(indexSnapshotURL.deletingLastPathComponent())
+            } catch {
+                try? fileManager.removeItem(at: temporaryURL)
+                throw error
+            }
+        } catch {
+            AtriaDebugLog("ATRIADBG historical_identity_index status=snapshot_deferred error=%@",
+                          error.localizedDescription)
         }
     }
 

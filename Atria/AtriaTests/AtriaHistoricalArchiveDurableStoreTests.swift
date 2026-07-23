@@ -158,6 +158,41 @@ final class AtriaHistoricalArchiveDurableStoreTests: XCTestCase {
         XCTAssertEqual(Set(try store.flush(replay).synchronizedFiles), Set([archive, index]))
     }
 
+    func testSnapshotMismatchFallsBackToRawArchiveBeforeRejectingReplay() throws {
+        let directory = try temporaryDirectory()
+        let archive = directory.appendingPathComponent("historical.jsonl")
+        let index = directory.appendingPathComponent("historical.index.jsonl")
+        let identity = frameIdentity(payload: Data([0x41, 0x42, 0x43]))
+
+        var store = try AtriaHistoricalArchiveDurableStore(indexURL: index,
+                                                           existingArchiveURLs: [archive])
+        let first = store.beginDrainBatch()
+        _ = try store.append(identity: identity,
+                             encodedJSONObject: record(sequence: 11),
+                             to: archive,
+                             batch: first)
+        _ = try store.flush(first)
+        let snapshot = directory.appendingPathComponent("historical.index.snapshot.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: snapshot.path))
+
+        // This changes the registered raw archive after the snapshot.  A stale
+        // index must never be trusted merely because it still decodes; launch
+        // scans the authoritative JSONL and still rejects the known replay.
+        let handle = try FileHandle(forWritingTo: archive)
+        _ = try handle.seekToEnd()
+        try handle.write(contentsOf: Data("{\"legacy\":true}\n".utf8))
+        try handle.close()
+
+        store = try AtriaHistoricalArchiveDurableStore(indexURL: index,
+                                                        existingArchiveURLs: [archive])
+        let replay = store.beginDrainBatch()
+        XCTAssertEqual(try store.append(identity: identity,
+                                        encodedJSONObject: record(sequence: 11),
+                                        to: archive,
+                                        batch: replay), .duplicate(durable: false))
+        XCTAssertEqual(try lineCount(at: archive), 2)
+    }
+
     func testOneBatchFlushSynchronizesEveryRotatedFileAndTheIndex() throws {
         let directory = try temporaryDirectory()
         let firstArchive = directory.appendingPathComponent("base.jsonl")
