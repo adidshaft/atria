@@ -23060,7 +23060,7 @@ final class SessionStore: ObservableObject {
                 let rrSampleCount = cluster.reduce(0) { $0 + ($1.rrPoints?.count ?? 0) }
                 let rrSampleCoverageFraction = min(1, Double(rrSampleCount) / max(1, totalDuration))
                 let maximumAcceptedHRGap = cluster.map(\.hrMaxAcceptedGapValue).max() ?? 0
-                // Dense independent HR + RR can support a truthful morning
+                // Dense independent HR + RR can support a truthful sleep
                 // review prompt before the stricter five-hour HR-only automatic
                 // confirmation floor. Previously this exception stopped at the
                 // exact three-hour boundary: a 2h59m window appeared, then the
@@ -23069,13 +23069,22 @@ final class SessionStore: ObservableObject {
                 // Reconnect fragments are allowed only when the actual sample
                 // timeline is still dense; a missing interval cannot be hidden
                 // merely because every individual chunk reports a small gap.
+                // A sleep can be shifted well into the day. Keep this narrow:
+                // broadening this to all daytime quietness would recreate the
+                // false nap/quiet-awake prompts we explicitly reject below.
+                // This remains review-only until the wearer confirms it.
+                let denseReviewClockWindow = (clusterStartHour >= 3
+                                               && clusterStartHour <= 8
+                                               && clusterEndHour <= 11)
+                    || (clusterStartHour >= 8
+                        && clusterStartHour <= 13
+                        && clusterEndHour <= 16)
                 let denseMorningHROnlyReviewReady = !napPhysiologyReady
                     && totalDuration >= AggregateSleepCandidate.strictMinimumDuration
                         - AggregateSleepCandidate.nearStrictMorningReviewTolerance
                     && totalDuration < AggregateSleepCandidate.minimumAutoConfirmMainSleepDuration
                     && span <= totalDuration + AggregateSleepCandidate.nearStrictMorningReviewTolerance
-                    && clusterStartHour >= 3 && clusterStartHour <= 8
-                    && clusterEndHour <= 11
+                    && denseReviewClockWindow
                     && avg <= rest + 12
                     && hrStandardDeviation <= 9.5
                     && medianHR <= rest + 10
