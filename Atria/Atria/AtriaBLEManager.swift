@@ -1439,6 +1439,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var historicalIngressSpool: AtriaWhoop4HistoricalIngressSpool?
     private var historicalIngressStrapIdentifier = "unknown-whoop4"
     private var historicalIngressSpoolFailure: String?
+    /// A terminated process can leave raw stream-5 frames on disk after they
+    /// crossed CoreBluetooth but before the archive callback ran. This replay
+    /// is separate from a live generation and never recreates ACK/coverage
+    /// authority from an orphaned journal.
+    private var orphanHistoricalIngressArchiveInFlight = false
     /// At most one decoded metadata barrier may sit ahead of a classifier
     /// batch. This is the sole RAM ingress item and preserves disk ordering.
     private var historicalIngressDeferredEvent: AtriaWhoop4HistoricalIngressSpool.Event?
@@ -3540,10 +3545,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         debugForceUnknownStrapGeneration = false
 #endif
         super.init()
-        // A process crash cannot resume the old reducer/ACK gate. Preserve its
-        // bounded ingress journal for a finite diagnostic window, then retire
-        // only that raw non-authoritative cache. This deliberately runs before
-        // CoreBluetooth can restore a connection or start a new generation.
+        // A process crash cannot resume the old reducer/ACK gate. Preserve the
+        // bounded ingress journal until a later verified owner can archive its
+        // exact raw frames. It is not ACK/coverage authority, but it can still
+        // contain real strap rows not yet in the canonical archive. The single
+        // journal has a hard 32 MiB cap, so retaining it across a disconnected
+        // launch cannot grow user storage without bound.
         let ingressDirectory = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -3554,8 +3561,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let orphanIngressURL = ingressDirectory.appendingPathComponent(
             AtriaWhoop4HistoricalIngressSpool.productionFileName
         )
-        if AtriaWhoop4HistoricalIngressSpool.removeExpiredOrphan(at: orphanIngressURL) {
-            AtriaDebugLog("ATRIADBG historyIngress status=retired reason=expired_orphan retention_days=7 action=retain_archive_ledger_and_gap")
+        if FileManager.default.fileExists(atPath: orphanIngressURL.path) {
+            AtriaDebugLog("ATRIADBG historyIngress status=retained reason=orphan_pending_archive action=await_verified_owner_no_ack_no_coverage")
         }
         guard startsBluetooth else {
             bluetoothStartupSuspended = true
@@ -8165,6 +8172,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                             rawOnlyGapFingerprint: String?,
                                             gapFingerprint: String?,
                                             freshOwnerCutoverCompleted: Bool = false) -> Bool {
+        // Never overwrite a raw ingress journal from a terminated process.
+        // Its replay has no reducer/ACK authority, but preserves real frames
+        // that otherwise disappear at the next generation boundary.
+        if archiveOrphanHistoricalIngressIfNeeded(
+            reason: reason,
+            force: force,
+            explicitRequest: explicitRequest
+        ) {
+            return false
+        }
         // Automatic recovery is subordinate to a visible live dashboard. The
         // request stays pending and can run after backgrounding or a later
         // natural link loss; an explicit user import remains allowed.
@@ -8347,10 +8364,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let ingressURL = ingressDirectory.appendingPathComponent(
             AtriaWhoop4HistoricalIngressSpool.productionFileName
         )
-        // An old generation can never establish a new terminal proof. Drop it
-        // before arming this fresh generation; the strap receives no ACK for
-        // any row it had not already durably archived.
-        try? FileManager.default.removeItem(at: ingressURL)
+        // The orphan replay above is the sole retirement path for a prior
+        // generation. If one still exists, fail closed rather than silently
+        // replacing it with a new spool.
+        if FileManager.default.fileExists(atPath: ingressURL.path) {
+            historicalAdmissionFailed = true
+            historicalIngressSpoolFailure = "orphan_ingress_not_retired"
+            AtriaDebugLog("ATRIADBG historyIngress status=failed generation=%llu reason=orphan_not_archived action=withhold_ack_retain_gap", syncGeneration)
+        }
         do {
             historicalIngressSpool = try AtriaWhoop4HistoricalIngressSpool(
                 url: ingressURL,
@@ -8495,6 +8516,140 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             generation: syncGeneration,
             reason: reason
         )
+        return true
+    }
+
+    /// Replays a previous-process spool before a new generation can reuse its
+    /// filename. Only exact frame bytes are archived. Metadata cannot safely
+    /// reconstruct an old reducer boundary, so it is intentionally ignored;
+    /// this path never writes an ACK, cursor, admission record, terminal proof,
+    /// or gap-coverage evidence. Any error retains the complete original file
+    /// for an idempotent later retry (archive identities deduplicate frames).
+    @discardableResult
+    private func archiveOrphanHistoricalIngressIfNeeded(
+        reason: String,
+        force: Bool,
+        explicitRequest: Bool
+    ) -> Bool {
+        let ingressDirectory = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0].appendingPathComponent(
+            AtriaWhoop4HistoricalIngressSpool.productionDirectoryName,
+            isDirectory: true
+        )
+        let ingressURL = ingressDirectory.appendingPathComponent(
+            AtriaWhoop4HistoricalIngressSpool.productionFileName
+        )
+        guard FileManager.default.fileExists(atPath: ingressURL.path) else {
+            return false
+        }
+        retainPendingOfflineHistoricalSyncRequest(
+            reason: reason, force: force, explicitRequest: explicitRequest
+        )
+        guard !orphanHistoricalIngressArchiveInFlight else { return true }
+
+        // The v1 spool header contains no strap identifier. Do not associate
+        // its bytes with a newly paired/unverified peripheral.
+        guard let strapIdentifier = peripheral?.identifier.uuidString,
+              strapIdentifier == UserDefaults.standard.string(
+                forKey: OfflineSyncDefaults.verifiedHistoryPeripheralID
+              ) else {
+            AtriaDebugLog("ATRIADBG historyIngress status=deferred reason=orphan_identity_unverified action=retain_raw_no_new_generation")
+            return true
+        }
+        let orphanGeneration: UInt64
+        do {
+            orphanGeneration = try AtriaWhoop4HistoricalIngressSpool.generation(
+                at: ingressURL
+            )
+        } catch {
+            AtriaDebugLog("ATRIADBG historyIngress status=deferred reason=orphan_header_invalid error=%@ action=retain_raw_no_new_generation", String(describing: error))
+            return true
+        }
+
+        orphanHistoricalIngressArchiveInFlight = true
+        historicalArchiveQueue.async { [weak self] in
+            defer { HistoricalArchive.endDurableDrain(generation: orphanGeneration) }
+            var archivedFrames = 0
+            var ignoredMetadata = 0
+            do {
+                let spool = try AtriaWhoop4HistoricalIngressSpool(
+                    url: ingressURL,
+                    generation: orphanGeneration
+                )
+                while let event = try spool.popFirst() {
+                    switch event {
+                    case let .frame(payload, clock, clockAuthorityEnabled):
+                        let reference = clock.map { clock in
+                            let drift = Int(clock.wall) - Int(clock.device)
+                            let snapped: Int
+                            if abs(drift) >= 86_400 {
+                                let granularity = 300
+                                snapped = drift >= 0
+                                    ? ((drift + granularity / 2) / granularity) * granularity
+                                    : ((drift - granularity / 2) / granularity) * granularity
+                            } else {
+                                snapped = drift
+                            }
+                            return AtriaWhoop4HistoryArchivePipeline.ClockReference(
+                                device: clock.device,
+                                wall: clock.wall,
+                                driftSeconds: drift,
+                                snappedDriftSeconds: snapped
+                            )
+                        }
+                        let computation = AtriaWhoop4HistoryArchivePipeline.prepare(
+                            payload: payload,
+                            clock: reference,
+                            historyClockSyncEnabled: clockAuthorityEnabled
+                        )
+                        let persisted = AtriaWhoop4HistoryArchivePipeline.persist(
+                            computation,
+                            strapIdentifier: strapIdentifier,
+                            generation: orphanGeneration
+                        )
+                        guard persisted.succeeded else {
+                            throw NSError(
+                                domain: "AtriaOrphanHistoricalIngress",
+                                code: 1,
+                                userInfo: [NSLocalizedDescriptionKey:
+                                    persisted.errorDescription ?? "archive_persist_failed"]
+                            )
+                        }
+                        archivedFrames += 1
+                    case .metadata:
+                        ignoredMetadata += 1
+                    }
+                }
+                // `persist` is per-frame durable; synchronize the canonical
+                // archive once more before retiring this source journal.
+                _ = try HistoricalArchive.synchronizeDurableStorage(
+                    generation: orphanGeneration
+                )
+                spool.remove()
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.orphanHistoricalIngressArchiveInFlight = false
+                    AtriaDebugLog("ATRIADBG historyIngress status=archived_orphan frames=%d metadata=%d generation=%llu action=raw_only_no_ack_no_coverage",
+                                  archivedFrames, ignoredMetadata, orphanGeneration)
+                    if let pending = self.takePendingOfflineHistoricalSyncRequest() {
+                        _ = self.requestOfflineHistoricalSyncIfNeeded(
+                            reason: pending.reason,
+                            force: pending.force,
+                            explicitResearchRequest: pending.explicitRequest
+                        )
+                    }
+                }
+            } catch {
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.orphanHistoricalIngressArchiveInFlight = false
+                    AtriaDebugLog("ATRIADBG historyIngress status=deferred reason=orphan_archive_failed error=%@ action=retain_raw_no_ack_no_coverage",
+                                  String(describing: error))
+                }
+            }
+        }
         return true
     }
 

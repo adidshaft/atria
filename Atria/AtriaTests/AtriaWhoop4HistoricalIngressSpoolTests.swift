@@ -37,6 +37,20 @@ final class AtriaWhoop4HistoricalIngressSpoolTests: XCTestCase {
         XCTAssertNil(try reopened.popFirst())
     }
 
+    func testOrphanHeaderGenerationCanBeReadWithoutRemovingJournal() throws {
+        let url = directory.appendingPathComponent("orphan.bin")
+        let spool = try AtriaWhoop4HistoricalIngressSpool(url: url, generation: 91)
+        try spool.append(.frame(payload: [0x2f, 9], clock: nil,
+                                clockAuthorityEnabled: false))
+        try spool.synchronize()
+
+        XCTAssertEqual(try AtriaWhoop4HistoricalIngressSpool.generation(at: url), 91)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertEqual(try AtriaWhoop4HistoricalIngressSpool(
+            url: url, generation: 91
+        ).pendingCount, 1)
+    }
+
     func testReopenDropsOnlyTornFinalRecord() throws {
         let url = directory.appendingPathComponent("torn.bin")
         let spool = try AtriaWhoop4HistoricalIngressSpool(url: url, generation: 6)
