@@ -19,7 +19,14 @@ enum AtriaWorkoutStepSourceVersion: String, Codable, Equatable, Sendable {
     ) -> Self {
         switch activityType {
         case .walking, .running, .hiking:
-            return gyroCoordinate?.isLiveForCompletion == true
+            // A walk usually starts from stillness, before its first R10
+            // frame can have produced a fresh count.  Requiring an existing
+            // count here permanently froze such walks onto the
+            // accelerometer-peak coordinate, which measures arm swings and
+            // can undercount normal wrist gait by roughly half.  The cadence
+            // source is still wholly strap-native; this merely chooses it
+            // when the strap link is ready to capture the forthcoming walk.
+            return gyroCoordinate?.isCaptureLinkReady == true
                 ? .strapGyroCadenceAmbulatoryV1
                 : .strapAccelerometerV1
         default:
@@ -47,6 +54,11 @@ struct AtriaWorkoutStepCoordinate: Equatable {
     let hasEvidence: Bool
     let isEstimated: Bool
     let capturedAt: Date?
+    /// Link readiness is distinct from evidence freshness.  It permits a
+    /// newly-started ambulatory workout to select its strap cadence source
+    /// before its first motion frame exists, while action boundaries still
+    /// require `isLiveForCompletion` and therefore never invent a step.
+    let isCaptureLinkReady: Bool
     let isLiveForCompletion: Bool
 
     static func make(savedPrefixHydrated: Bool,
@@ -78,6 +90,9 @@ struct AtriaWorkoutStepCoordinate: Equatable {
             hasEvidence: hasEvidence,
             isEstimated: hasEvidence && !isValidated,
             capturedAt: capturedAt,
+            isCaptureLinkReady: isConnected
+                && !reconnectPending
+                && !rangeLossBackfillPending,
             isLiveForCompletion: hasEvidence
                 && fresh
                 && isConnected
@@ -110,6 +125,9 @@ struct AtriaWorkoutStepCoordinate: Equatable {
             hasEvidence: hasEvidence,
             isEstimated: hasEvidence,
             capturedAt: capturedAt,
+            isCaptureLinkReady: isConnected
+                && !reconnectPending
+                && !rangeLossBackfillPending,
             isLiveForCompletion: hasEvidence
                 && fresh
                 && isConnected
