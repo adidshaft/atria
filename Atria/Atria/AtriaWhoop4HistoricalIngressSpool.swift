@@ -52,6 +52,18 @@ final class AtriaWhoop4HistoricalIngressSpool {
     private var writeHandle: FileHandle?
     private var readHandle: FileHandle?
 
+    /// Reads only the immutable journal header. Callers use this before
+    /// reopening a spool left by another process; it never authorizes an ACK
+    /// or changes the journal's read state.
+    static func generation(at url: URL) throws -> UInt64 {
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        guard data.count >= headerBytes,
+              data.prefix(8) == magic else {
+            throw SpoolError.corruptRecord
+        }
+        return Self.readU64(data, offset: 8)
+    }
+
     init(url: URL, generation: UInt64, maximumBytes: UInt64 = productionMaximumBytes) throws {
         self.url = url
         self.generation = generation
@@ -190,7 +202,7 @@ final class AtriaWhoop4HistoricalIngressSpool {
         let data = try Data(contentsOf: url, options: .mappedIfSafe)
         guard data.count >= Self.headerBytes,
               data.prefix(8) == Self.magic,
-              readU64(data, offset: 8) == generation else {
+              Self.readU64(data, offset: 8) == generation else {
             throw SpoolError.generationMismatch
         }
         guard UInt64(data.count) <= maximumBytes else { throw SpoolError.capacityExceeded }
@@ -253,7 +265,7 @@ final class AtriaWhoop4HistoricalIngressSpool {
         let type = record[4]
         let authority = record[5] != 0
         let payloadLength = Int(readU16(record, offset: 6))
-        let eventGeneration = readU64(record, offset: 8)
+        let eventGeneration = Self.readU64(record, offset: 8)
         let hasClock = record[16] != 0
         let clockBytes = hasClock ? 8 : 0
         let payloadOffset = 20 + clockBytes
@@ -287,7 +299,7 @@ final class AtriaWhoop4HistoricalIngressSpool {
         UInt32(data[offset]) | (UInt32(data[offset + 1]) << 8)
             | (UInt32(data[offset + 2]) << 16) | (UInt32(data[offset + 3]) << 24)
     }
-    private func readU64(_ data: Data, offset: Int) -> UInt64 {
+    private static func readU64(_ data: Data, offset: Int) -> UInt64 {
         (0..<8).reduce(UInt64(0)) { partial, index in
             partial | (UInt64(data[offset + index]) << UInt64(index * 8))
         }
