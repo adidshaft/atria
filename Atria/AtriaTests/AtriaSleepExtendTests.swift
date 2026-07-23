@@ -30,7 +30,7 @@ final class AtriaSleepExtendTests: XCTestCase {
             historicalMotionArchiveLastUnix: 0, historicalMotionNearestSeparationSeconds: 0,
             historicalMotionValidated: false,
             denseMorningHROnlyReviewQualified: false,
-            denseOvernightHROnlyReviewQualified: false)
+            denseLongHROnlyReviewQualified: false)
     }
 
     private func sleep(source: String = "auto_sleep", start: Date, end: Date) -> UserConfirmedSleep {
