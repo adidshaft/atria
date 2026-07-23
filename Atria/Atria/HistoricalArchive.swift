@@ -685,6 +685,24 @@ enum HistoricalArchive {
         try catalogStoreLocked().activeChunkDescriptor().chunkID
     }
 
+    /// A read-only cap-pressure probe for the foreground maintenance scheduler.
+    /// It deliberately has no compaction or deletion authority: its sole job is
+    /// to avoid a once-daily lease leaving an already-over-cap archive idle for
+    /// almost a full day while live capture continues to append.
+    static func highVolumeMaintenancePressure() -> AtriaHistoricalHighVolumeDiagnosticsCoordinator.Report? {
+        do {
+            let catalog = try catalogStoreLocked().snapshotVerifiedAgainstFiles()
+            return try AtriaHistoricalHighVolumeDiagnosticsCoordinator.evaluate(
+                archiveRoot: archiveDirectory,
+                catalog: catalog
+            )
+        } catch {
+            AtriaDebugLog("ATRIADBG archive_storage_pressure status=unavailable error=%@ mutation_authority=0",
+                          String(describing: error))
+            return nil
+        }
+    }
+
     /// Reconciles a staged journal across the catalog-seal boundary. If the
     /// expected chunk is still active it performs the seal; if it was already
     /// sealed before a crash it rebuilds and verifies the same immutable seal.

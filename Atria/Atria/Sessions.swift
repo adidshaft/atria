@@ -11647,14 +11647,20 @@ final class SessionStore: ObservableObject {
     /// lease.
     private static let archiveCompactionLastRunKey = "atria.archiveCompaction.lastRunAt"
     private static var archiveCompactionInFlight = false
+    private static var archiveCompactionPressureProbeInFlight = false
 
-    func compactHistoricalArchiveIfUseful(reason: String, now: Date = Date()) {
+    func compactHistoricalArchiveIfUseful(reason: String,
+                                          now: Date = Date(),
+                                          bypassDailyLease: Bool = false) {
         guard !Self.archiveCompactionInFlight else { return }
         let forced = ProcessInfo.processInfo.arguments.contains("--atria-compact-archive")
         let defaults = UserDefaults.standard
-        if !forced {
+        if !forced, !bypassDailyLease {
             let lastRun = defaults.double(forKey: Self.archiveCompactionLastRunKey)
-            guard now.timeIntervalSince1970 - lastRun >= 24 * 60 * 60 else { return }
+            guard now.timeIntervalSince1970 - lastRun >= 24 * 60 * 60 else {
+                scheduleArchiveCapPressureProbe(reason: reason)
+                return
+            }
         }
         Self.archiveCompactionInFlight = true
         var pinned: [(start: Date, end: Date)] = confirmedSleeps.map { ($0.start, $0.end) }
@@ -11707,6 +11713,43 @@ final class SessionStore: ObservableObject {
                 }
             }
         }
+    }
+
+    /// The normal daily lease avoids repeatedly scanning a healthy archive.
+    /// Once the exact, read-only accounting reports pressure, however, keep
+    /// producing one proof-gated retention transaction at a time. A purely
+    /// active-writer overage cannot be reclaimed yet, so wait for its next seal
+    /// instead of scheduling an expensive no-op scan on every live append.
+    private func scheduleArchiveCapPressureProbe(reason: String) {
+        guard !Self.archiveCompactionPressureProbeInFlight,
+              !Self.archiveCompactionInFlight else { return }
+        Self.archiveCompactionPressureProbeInFlight = true
+        Task.detached(priority: .utility) { [weak self] in
+            let report = HistoricalArchive.highVolumeMaintenancePressure()
+            let bypass = report.map { Self.shouldBypassDailyArchiveCompactionLease(
+                highVolumeBytes: $0.accounting.highVolumeBytes,
+                maximumHighVolumeBytes: $0.plan.maximumHighVolumeBytes,
+                state: $0.plan.state
+            ) } ?? false
+            await MainActor.run {
+                Self.archiveCompactionPressureProbeInFlight = false
+                guard let self, bypass else { return }
+                self.compactHistoricalArchiveIfUseful(
+                    reason: "\(reason)_cap_pressure",
+                    now: Date(),
+                    bypassDailyLease: true
+                )
+            }
+        }
+    }
+
+    nonisolated static func shouldBypassDailyArchiveCompactionLease(
+        highVolumeBytes: UInt64,
+        maximumHighVolumeBytes: UInt64,
+        state: AtriaHistoricalHighVolumeStoragePlanner.State
+    ) -> Bool {
+        highVolumeBytes > maximumHighVolumeBytes
+            && state != .protectedActiveException
     }
 
     /// Builds the >90-day compact session tier from a legacy source only before
