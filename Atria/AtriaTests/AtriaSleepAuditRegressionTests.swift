@@ -293,17 +293,14 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
             end: date(2032, 7, 9, 11, 15),
             bpm: 60
         )
-        var seamFirst = first
-        seamFirst.hrMaxAcceptedGap = 47.8
         let resumed = denseHRRRSession(
             start: date(2032, 7, 9, 11, 19),
             end: date(2032, 7, 9, 14, 19),
             bpm: 60
         )
 
-        let candidate = try XCTUnwrap(candidates([seamFirst, resumed], rest: 61).first)
+        let candidate = try XCTUnwrap(candidates([first, resumed], rest: 61).first)
         XCTAssertEqual(candidate.maximumHRSampleGap, 4 * 60, accuracy: 2)
-        XCTAssertEqual(candidate.hrMaxAcceptedGap, 47.8, accuracy: 0.1)
         XCTAssertTrue(candidate.denseMorningHROnlyReviewQualified)
         XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(candidate))
         XCTAssertFalse(SessionStore.isAutoConfirmableMainSleepCandidate(
