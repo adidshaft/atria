@@ -4563,6 +4563,9 @@ struct AtriaHomeView: View {
                              onStartWorkout: {
                                  showWorkoutStartSheet = true
                              },
+                             onLayoutConfigChange: { config in
+                                 saveHomeLayoutConfig(config)
+                             },
                              onCustomizeToday: {
                                  showCustomizeSheet = true
                              },
