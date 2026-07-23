@@ -916,8 +916,8 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
         }
     }
 
-    func testProductionAutomaticIntegrationUsesFullDrainNotExactRange() {
-        XCTAssertTrue(AtriaHistoricalFullDrainCoverageIntegration
+    func testProductionAutomaticIntegrationIsDisabledUntilGapRecoveryIsProven() {
+        XCTAssertFalse(AtriaHistoricalFullDrainCoverageIntegration
             .automaticFullDrainRecoveryEnabled)
         XCTAssertFalse(AtriaHistoricalFullDrainCoverageIntegration
             .exactRangeTransportAuthorityAvailable)

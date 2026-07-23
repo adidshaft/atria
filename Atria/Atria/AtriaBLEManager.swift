@@ -6375,6 +6375,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let connectingLink = peripheral?.state == .connecting
         let explicitUserRequest = Self.isExplicitUserOfflineSyncReason(reason)
         let explicitHistoricalRequest = explicitUserRequest || explicitResearchRequest
+        // Physical acceptance showed that the available 22/00 + 16/00 path
+        // replays old flash history and cannot request the current local gap.
+        // Do not let an explicit button, pull-to-refresh, or automatic retry
+        // turn that stale replay into a competing BLE owner. Keep the durable
+        // gap for a future, protocol-proven repair and leave realtime alone.
+        // An already-running transaction is never interrupted here.
+        if !Self.productionHistoricalFullDrainGapRecoveryEnabled,
+           !offlineHistoricalSyncInProgress {
+            if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) {
+                retainPendingOfflineHistoricalSyncRequest(
+                    reason: reason,
+                    force: force,
+                    explicitRequest: explicitHistoricalRequest
+                )
+            }
+            historicalRecoveryPresentation = .needsAttention
+            defaults.set("gap_retained_exact_recovery_unproven",
+                         forKey: OfflineSyncDefaults.lastStatus)
+            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            AtriaDebugLog("ATRIADBG offline_sync status=gap_retained_exact_recovery_unproven reason=%@ explicit=%d action=no_full_drain_command_preserve_live",
+                          reason,
+                          explicitHistoricalRequest ? 1 : 0)
+            return false
+        }
         // A sequence-confirmation retry is an explicit, bounded replay of the
         // exact transition which previously failed closed. An automatic
         // range-loss retry must not acquire another history generation while
