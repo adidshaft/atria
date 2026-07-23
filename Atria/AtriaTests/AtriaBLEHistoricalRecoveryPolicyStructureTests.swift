@@ -2,6 +2,41 @@ import XCTest
 @testable import Atria
 
 final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
+    func testNoRowsFingerprintSuppressesOnlyAutomaticRetryForUnchangedGap() {
+        let fingerprint = "gap-v1"
+
+        XCTAssertTrue(AtriaBLEManager.shouldSuppressAutomaticHistoricalNoRowsRetry(
+            exactGapPending: true,
+            explicitUserRequest: false,
+            currentGapFingerprint: fingerprint,
+            noRowsGapFingerprint: fingerprint
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldSuppressAutomaticHistoricalNoRowsRetry(
+            exactGapPending: true,
+            explicitUserRequest: true,
+            currentGapFingerprint: fingerprint,
+            noRowsGapFingerprint: fingerprint
+        ), "a deliberate retry must remain available")
+        XCTAssertFalse(AtriaBLEManager.shouldSuppressAutomaticHistoricalNoRowsRetry(
+            exactGapPending: true,
+            explicitUserRequest: false,
+            currentGapFingerprint: "gap-v2",
+            noRowsGapFingerprint: fingerprint
+        ), "a materially new closed gap must be eligible")
+        XCTAssertFalse(AtriaBLEManager.shouldSuppressAutomaticHistoricalNoRowsRetry(
+            exactGapPending: false,
+            explicitUserRequest: false,
+            currentGapFingerprint: fingerprint,
+            noRowsGapFingerprint: fingerprint
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldSuppressAutomaticHistoricalNoRowsRetry(
+            exactGapPending: true,
+            explicitUserRequest: false,
+            currentGapFingerprint: nil,
+            noRowsGapFingerprint: fingerprint
+        ))
+    }
+
     func testHistoryArmCannotCancelOrMutateBeforeRealtimeReconnectFence() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
