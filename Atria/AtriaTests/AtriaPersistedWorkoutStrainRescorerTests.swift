@@ -9,7 +9,9 @@ final class AtriaPersistedWorkoutStrainRescorerTests: XCTestCase {
         let first = AtriaPersistedWorkoutStrainRescorer.rescore(workouts: [workout], audits: [audit])
 
         XCTAssertEqual(first.rescoredWorkoutIDs, ["verified"])
-        XCTAssertEqual(first.workouts[0].strain, Metrics.strain(fromTRIMP: 65.6), accuracy: 0.000_001)
+        XCTAssertEqual(try XCTUnwrap(first.workouts[0].strain),
+                       Metrics.strain(fromTRIMP: 65.6),
+                       accuracy: 0.000_001)
         XCTAssertEqual(first.workouts[0].strainCalibrationVersion,
                        AtriaAnalytics.Strain.displayCalibrationVersion)
 
