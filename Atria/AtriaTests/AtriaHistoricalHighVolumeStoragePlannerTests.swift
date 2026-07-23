@@ -298,6 +298,29 @@ final class AtriaHistoricalHighVolumeStoragePlannerTests: XCTestCase {
         ))
     }
 
+    func testOverCapSealedArchiveBypassesDailyLeaseButActiveOnlyExceptionDoesNot() {
+        XCTAssertTrue(SessionStore.shouldBypassDailyArchiveCompactionLease(
+            highVolumeBytes: 513 * 1_024 * 1_024,
+            maximumHighVolumeBytes: 512 * 1_024 * 1_024,
+            state: .blocked
+        ), "A same-day append over the cap must start a proof-gated maintenance pass")
+        XCTAssertTrue(SessionStore.shouldBypassDailyArchiveCompactionLease(
+            highVolumeBytes: 513 * 1_024 * 1_024,
+            maximumHighVolumeBytes: 512 * 1_024 * 1_024,
+            state: .progressOnly
+        ))
+        XCTAssertFalse(SessionStore.shouldBypassDailyArchiveCompactionLease(
+            highVolumeBytes: 513 * 1_024 * 1_024,
+            maximumHighVolumeBytes: 512 * 1_024 * 1_024,
+            state: .protectedActiveException
+        ), "An overage that only the active writer causes cannot yet be reclaimed")
+        XCTAssertFalse(SessionStore.shouldBypassDailyArchiveCompactionLease(
+            highVolumeBytes: 512 * 1_024 * 1_024,
+            maximumHighVolumeBytes: 512 * 1_024 * 1_024,
+            state: .blocked
+        ))
+    }
+
     private func makeRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("AtriaHistoricalHighVolumeStoragePlannerTests")
