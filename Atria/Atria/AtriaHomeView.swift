@@ -47,6 +47,25 @@ private final class AtriaWorkoutStartAuthorityDeadline {
     }
 }
 
+/// A deliberately tiny first frame for a Start tap whose durable intent is
+/// still being committed. It avoids presenting a fake live workout while
+/// making a busy disk/serial queue visibly distinct from an ignored tap.
+private struct AtriaSecuringWorkoutStartView: View {
+    var body: some View {
+        VStack(spacing: 16) {
+            ProgressView().controlSize(.large)
+            Text("Securing workout…").font(.title3.weight(.semibold))
+            Text("Saving your start safely")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(uiColor: .systemBackground))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Securing workout start")
+    }
+}
+
 /// Settings presentation must not be owned by `AtriaHomeView`'s value state.
 /// Toggling a root `@State` rebuilt the complete Home/TabView hierarchy before
 /// SwiftUI could present the sheet, which made the gear appear to freeze while
@@ -835,6 +854,10 @@ struct AtriaHomeView: View {
     @State private var workoutSession: AtriaWorkoutSession?
     @State private var workoutPersistenceRevision: UInt64 = 0
     @State private var showWorkoutStartSheet = false
+    /// A tap must be visibly acknowledged before the crash-safe intent write
+    /// completes. This is deliberately not a workout: no clock, metrics, or
+    /// motion lease is published until the atomic intent has read back.
+    @State private var isSecuringWorkoutStart = false
     @State private var showWorkoutStartPersistenceError = false
     @State private var liveWorkoutLoggedSets: [LoggedSet] = []
     @State private var liveWorkoutStrengthHistory: StrengthHistoryProjection = .empty
@@ -1305,7 +1328,11 @@ struct AtriaHomeView: View {
                 liveWorkoutLoggedSets = []
                 liveWorkoutExcludedIntervals = []
                 liveWorkoutMinimized = false
-                return await beginWorkoutSession(configuration: configuration)
+                isSecuringWorkoutStart = true
+                showWorkoutStartSheet = false
+                let started = await beginWorkoutSession(configuration: configuration)
+                isSecuringWorkoutStart = false
+                return started
             }
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
@@ -1354,8 +1381,11 @@ struct AtriaHomeView: View {
                                                                        activityType: session.activityType,
                                                                        strengthSets: liveWorkoutLoggedSets,
                                                                        excludedIntervals: liveWorkoutExcludedIntervals) })
+            } else if isSecuringWorkoutStart {
+                AtriaSecuringWorkoutStartView()
             }
         }
+        .interactiveDismissDisabled(isSecuringWorkoutStart)
         .sheet(item: $workoutReviewDraft) { draft in
             AtriaWorkoutReviewFlow(draft: draft) {
                 workoutReviewDraft = nil
@@ -1718,7 +1748,7 @@ struct AtriaHomeView: View {
 
     private var liveWorkoutPresentationBinding: Binding<Bool> {
         Binding {
-            workoutSession != nil && !liveWorkoutMinimized
+            isSecuringWorkoutStart || (workoutSession != nil && !liveWorkoutMinimized)
         } set: { presented in
             if !presented, workoutSession != nil {
                 liveWorkoutMinimized = true
@@ -1883,6 +1913,7 @@ struct AtriaHomeView: View {
     private func makeWorkoutSession(
         configuration: AtriaWorkoutStartConfiguration = .init()
     ) async -> AtriaWorkoutSession? {
+        let requestedUptime = ProcessInfo.processInfo.systemUptime
         // The foreground Start button must use the same merged all-day
         // coordinate as headless controls. On a cold launch the UI projection
         // can publish before sessions.json finishes decoding, so await that
@@ -1950,6 +1981,8 @@ struct AtriaHomeView: View {
             AtriaDebugLog("ATRIADBG live_workout_start status=intent_persistence_failed")
             return nil
         }
+        AtriaDebugLog("ATRIADBG live_workout_start_latency phase=intent_durable elapsed_ms=%d",
+                      Int(((ProcessInfo.processInfo.systemUptime - requestedUptime) * 1_000).rounded()))
         workoutPersistenceRevision = intent.persistenceRevision
         // Seal the pre-workout all-day segment at the persisted exact start so
         // no later save can relabel it. The commit runs off the start tap so a
@@ -1969,6 +2002,7 @@ struct AtriaHomeView: View {
 
     @discardableResult
     private func beginWorkoutSession(configuration: AtriaWorkoutStartConfiguration = .init()) async -> Bool {
+        let requestedUptime = ProcessInfo.processInfo.systemUptime
         guard workoutSession == nil else { return false }
         guard await prepareWorkoutStartAuthority() else {
             AtriaDebugLog("ATRIADBG live_workout_start status=intent_authority_unavailable action=fail_fast_retry_after_warm")
@@ -1998,6 +2032,8 @@ struct AtriaHomeView: View {
             return false
         }
         workoutSession = session
+        AtriaDebugLog("ATRIADBG live_workout_start_latency phase=ui_session_published elapsed_ms=%d",
+                      Int(((ProcessInfo.processInfo.systemUptime - requestedUptime) * 1_000).rounded()))
         synchronizeWorkoutZoneHaptics(workoutZoneHapticConfiguration)
         if session.activityType.supportsRouteRecording {
             // The activity picker commits its type before the workout exists,
