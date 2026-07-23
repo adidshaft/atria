@@ -6815,6 +6815,22 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), .missingConnectionEpoch)
     }
 
+    func testProtectedPureHRFallbackKeepsLeaseOutOfBringUpPath() {
+        let connectedAt = Date(timeIntervalSince1970: 2_000)
+        XCTAssertEqual(AtriaBLEManager.workoutMotionLeaseAction(
+            leaseStartedAt: Date(timeIntervalSince1970: 1_000),
+            connected: true,
+            connectedAt: connectedAt,
+            stream5Confirmed: false,
+            hrNotifying: true,
+            lastFrameAt: nil,
+            denseFrameCount: 0,
+            lastActivationConnectionAt: nil,
+            protectedPureHRFallback: true,
+            now: connectedAt.addingTimeInterval(60)
+        ), .unavailablePureHRFallback)
+    }
+
     func testConnectAndRestoreUseCommonHRFirstEpochCoordinator() throws {
         let source = try leaseManagerSource()
         let restore = try XCTUnwrap(source.range(of: "state_restore_connected"))
