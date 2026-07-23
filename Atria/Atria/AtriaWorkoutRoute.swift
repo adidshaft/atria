@@ -433,6 +433,9 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
         manager.stopUpdatingLocation()
         snapshot.isRecording = false
         snapshot.isPaused = true
+        // A last GPS value is not a current speed once tracking is paused.
+        // Leave it absent instead of allowing the route HUD to imply motion.
+        snapshot.currentSpeedMetersPerSecond = nil
         persistCheckpoint(at: now, finalizedAt: nil, synchronously: false, force: true)
     }
 
@@ -477,6 +480,14 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
                 workoutStartedAt: startedAt,
                 deliveredAt: now
             ) else { continue }
+            // Speed belongs to the accepted GPS fix, not to a distance segment.
+            // In particular, a standing user can produce an accurate zero-speed
+            // fix which must replace the previous moving value even though it
+            // contributes no route distance.
+            snapshot.currentSpeedMetersPerSecond = Self.usableGroundSpeed(
+                location.speed,
+                accuracy: location.speedAccuracy
+            )
             let startsNewSegment = points.isEmpty || needsNewRouteSegment
             if let previousPoint = points.last, !startsNewSegment {
                 let previous = previousPoint.location
@@ -503,9 +514,6 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
                 }
             }
             if coverageStartedAt == nil { coverageStartedAt = location.timestamp }
-            snapshot.currentSpeedMetersPerSecond = location.speed >= 0
-                ? location.speed
-                : nil
             points.append(AtriaWorkoutRoute.Point(latitude: location.coordinate.latitude,
                                                   longitude: location.coordinate.longitude,
                                                   altitude: location.altitude,
@@ -568,6 +576,20 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
         default: maximumSpeed = 12
         }
         return distance / seconds <= maximumSpeed
+    }
+
+    /// Core Location uses a negative speed or speed accuracy for an unknown
+    /// value. Treat an imprecise fix as unavailable rather than displaying a
+    /// number that looks exact. Five metres/second remains permissive enough
+    /// for normal outdoor walking, running and cycling acquisition.
+    nonisolated static func usableGroundSpeed(_ speed: CLLocationSpeed,
+                                              accuracy: CLLocationSpeedAccuracy) -> CLLocationSpeed? {
+        guard speed.isFinite,
+              accuracy.isFinite,
+              speed >= 0,
+              accuracy >= 0,
+              accuracy <= 5 else { return nil }
+        return speed
     }
 
     nonisolated static func shouldRequestTemporaryFullAccuracy(
@@ -668,6 +690,7 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
         manager.stopUpdatingLocation()
         snapshot.isRecording = false
         snapshot.isPaused = false
+        snapshot.currentSpeedMetersPerSecond = nil
     }
 
     private func settlePause(at now: Date) {
