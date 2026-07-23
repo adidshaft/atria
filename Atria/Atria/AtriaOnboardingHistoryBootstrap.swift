@@ -238,7 +238,7 @@ final class AtriaOnboardingHistoryBootstrap: ObservableObject {
                 to: .complete,
                 peripheralIdentifier: peripheralIdentifier,
                 importedRows: max(0, rowsAfter - rowsBefore),
-                detail: FreshStartPolicy.completionDetail(
+                detail: AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.completionDetail(
                     importedRows: max(0, rowsAfter - rowsBefore)
                 )
             ) else {

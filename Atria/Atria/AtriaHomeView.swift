@@ -3215,7 +3215,6 @@ struct AtriaHomeView: View {
             return
         }
         guard scenePhase == .active else { return }
-        guard selectedTab == .overview else { return }
         guard workoutSession == nil else {
             setWorkoutDetectionPromptIfChanged(nil)
             return
