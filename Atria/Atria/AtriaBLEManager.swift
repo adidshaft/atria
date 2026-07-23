@@ -26169,6 +26169,14 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     AtriaDebugLog("ATRIADBG readOnlyHistory status=restored_epoch_rejected action=cancel_then_fresh_scan commands=0 request_preserved=1")
                     return
                 }
+                // Run raw-only ingress replay before any restored-link motion
+                // cutover can return early. CoreBluetooth commonly restores an
+                // already-connected strap without ever producing didConnect.
+                _ = self.archiveOrphanHistoricalIngressIfNeeded(
+                    reason: "state_restore_orphan_ingress_replay",
+                    force: false,
+                    explicitRequest: false
+                )
                 self.protectedR10InitialProfilePeripheralID = nil
                 self.protectedR10InitialProfileNotificationRequested = false
                 let savedPeripheralIdentifier = UserDefaults.standard
@@ -26214,15 +26222,6 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     return
                 }
                 self.recordLinkObservedConnected(reason: "state_restore_connected", peripheral: restoredPeripheral)
-                // A CoreBluetooth restoration does not emit `didConnect`, so
-                // run the same raw-only orphan replay eligibility check here.
-                // It is deliberately before any deferred range-recovery
-                // request that could otherwise encounter the reused filename.
-                _ = self.archiveOrphanHistoricalIngressIfNeeded(
-                    reason: "state_restore_orphan_ingress_replay",
-                    force: false,
-                    explicitRequest: false
-                )
                 self.scheduleRangeLossBackfillIfNeeded(reason: "state_restore_connected")
                 if self.beginRetiredBatteryProbeRecoveryIfNeeded(restoredPeripheral) {
                     return
