@@ -1158,6 +1158,7 @@ struct AtriaTodayScreen: View {
         let guidance = Coach.guide(recovery: recovery, strain: strain, load: .learning)
         return AtriaHomeModel.HeroSnapshot(recoveryEstimate: recovery,
                                            recoveryIsProvisional: false,
+                                           recoveryIsFromPreviousSleep: false,
                                            recoveryLiftedAfterNap: arguments[valueIndex] == "recovery-after-nap",
                                            strain: strain,
                                            strainConfidence: "local",
