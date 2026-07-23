@@ -3602,6 +3602,34 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             authorityStatus: Status.draining,
             exactGapFingerprintStillPending: false
         ))
+
+        XCTAssertTrue(AtriaBLEManager
+            .shouldRearmPersistedInterruptedFullDrainFromFreshHR(
+                rangeLossBackfillPending: true,
+                authorityStatus: .draining,
+                exactGapFingerprintStillPending: true,
+                activeExplicitWorkout: false,
+                historySyncInProgress: false,
+                consumerMaterializationInFlight: false
+            ))
+        XCTAssertFalse(AtriaBLEManager
+            .shouldRearmPersistedInterruptedFullDrainFromFreshHR(
+                rangeLossBackfillPending: true,
+                authorityStatus: .draining,
+                exactGapFingerprintStillPending: true,
+                activeExplicitWorkout: true,
+                historySyncInProgress: false,
+                consumerMaterializationInFlight: false
+            ))
+        XCTAssertFalse(AtriaBLEManager
+            .shouldRearmPersistedInterruptedFullDrainFromFreshHR(
+                rangeLossBackfillPending: true,
+                authorityStatus: .historyComplete,
+                exactGapFingerprintStillPending: true,
+                activeExplicitWorkout: false,
+                historySyncInProgress: false,
+                consumerMaterializationInFlight: false
+            ))
     }
 
     func testInterruptedFullDrainReacquisitionIsStableWorkoutSafeAndCooldownBounded() {

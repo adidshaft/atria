@@ -1241,6 +1241,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         AtriaHistoricalFullDrainCoverageStore.EventIdentity?
     private var activeHistoricalRequestBinding: AtriaBLEHistoryRequestAuthorityStore.Binding?
     private var historicalConsumerMaterializationInFlight = false
+    /// Last compact decision record for the persisted-drain recovery bridge.
+    /// This is intentionally state-change-only (not per-HR) so field
+    /// diagnostics can identify a parked recovery without growing storage.
+    private var lastPersistedDrainRearmDiagnostic = ""
     /// Historical replay temporarily owns the proprietary command pipeline, but
     /// it must not change the user's radio choice when that replay finishes.
     /// In particular, changing profiles here tears down the live R10 transport
@@ -5990,6 +5994,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             && exactGapFingerprintStillPending
     }
 
+    /// Launch restoration normally carries the interrupted authority through
+    /// `pendingOfflineHistoricalSyncRequest`.  That in-memory handoff can be
+    /// superseded by another launch-time recovery task before the first HR
+    /// callback, even though the durable authority and exact gap are still
+    /// valid.  A fresh accepted HR is the safe place to reconcile that state:
+    /// it can only arm the existing live-first/cooldown-gated reacquisition;
+    /// it never sends a BLE command directly.
+    nonisolated static func shouldRearmPersistedInterruptedFullDrainFromFreshHR(
+        rangeLossBackfillPending: Bool,
+        authorityStatus: AtriaHistoricalFullDrainCoverageStore.Authority.Status?,
+        exactGapFingerprintStillPending: Bool,
+        activeExplicitWorkout: Bool,
+        historySyncInProgress: Bool,
+        consumerMaterializationInFlight: Bool
+    ) -> Bool {
+        shouldResumeInterruptedFullDrainAtLaunch(
+            rangeLossBackfillPending: rangeLossBackfillPending,
+            authorityStatus: authorityStatus,
+            exactGapFingerprintStillPending: exactGapFingerprintStillPending
+        )
+        && !activeExplicitWorkout
+        && !historySyncInProgress
+        && !consumerMaterializationInFlight
+    }
+
     /// The launch marker restores a durable recovery candidate, not permission
     /// to interrupt the first healthy live connection after a radio outage.
     nonisolated static func shouldDeferInterruptedFullDrainRelaunchAfterLivePersistence(
@@ -6164,6 +6193,103 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 explicitResearchRequest: true
             )
         }
+    }
+
+    /// Reconcile the persisted authority after a process relaunch.  This is
+    /// deliberately separate from the pending-request path above so an
+    /// unrelated launch recovery cannot consume the in-memory handoff and
+    /// strand a durable `.draining` authority forever.  The same 60-second
+    /// stable-live window and persisted five-minute cooldown remain the sole
+    /// path to a new history owner.
+    private func rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded(
+        reason: String
+    ) {
+        let linkLive = peripheral?.state == .connected && status == .connected
+        let freshLiveSample: Bool = {
+            guard let connectedAt, let lastAcceptedHRAt else { return false }
+            return lastAcceptedHRAt >= connectedAt
+        }()
+        let workoutActive = AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
+        let authority = try? historicalFullDrainCoverageStore.load()
+        let authorityStatus = authority?.status.rawValue ?? "none"
+        let diagnostic = "link=\(linkLive ? 1 : 0) fresh=\(freshLiveSample ? 1 : 0) workout=\(workoutActive ? 1 : 0) sync=\(offlineHistoricalSyncInProgress ? 1 : 0) materializing=\(historicalConsumerMaterializationInFlight ? 1 : 0) authority=\(authorityStatus) defer=\(deferInterruptedFullDrainForCurrentLiveConnection ? 1 : 0)"
+        if diagnostic != lastPersistedDrainRearmDiagnostic {
+            lastPersistedDrainRearmDiagnostic = diagnostic
+            UserDefaults.standard.set(diagnostic,
+                                      forKey: "atria.offlineSync.persistedDrainRearmDiagnostic")
+            AtriaDebugLog("ATRIADBG offline_sync persisted_drain_rearm %@", diagnostic)
+        }
+        guard linkLive,
+              freshLiveSample,
+              !workoutActive,
+              !offlineHistoricalSyncInProgress,
+              !historicalConsumerMaterializationInFlight,
+              let connectedAt,
+              let authority else { return }
+
+        // The coverage authority is fsynced alongside every accepted history
+        // boundary and is the ownership record being resumed.  A compacted or
+        // migrated secondary gap-ledger index must not be allowed to strand
+        // that authority after a process restart; `pending` on this exact
+        // authority remains the durable proof that it has not completed.
+        let exactGapStillPending = authority.gap.pending
+        guard Self.shouldRearmPersistedInterruptedFullDrainFromFreshHR(
+            rangeLossBackfillPending: UserDefaults.standard.bool(
+                forKey: OfflineSyncDefaults.rangeLossBackfillPending
+            ),
+            authorityStatus: authority.status,
+            exactGapFingerprintStillPending: exactGapStillPending,
+            activeExplicitWorkout: AtriaPendingWorkoutIntent.isActiveForBLEContinuity(),
+            historySyncInProgress: offlineHistoricalSyncInProgress,
+            consumerMaterializationInFlight: historicalConsumerMaterializationInFlight
+        ) else { return }
+
+        // Do not rely on a delayed task surviving an iOS relaunch/background
+        // edge. Every accepted HR is an observed execution opportunity, so it
+        // can safely evaluate the exact same stable-live and cooldown gates.
+        // Until the stability window elapses we only keep the live-first
+        // interlock; after it elapses, exactly one explicit, durable recovery
+        // attempt is admitted for this exact authority.
+        let now = Date()
+        let stableSeconds = now.timeIntervalSince(connectedAt)
+        guard Self.shouldReacquireInterruptedFullDrain(
+            stableLiveSeconds: stableSeconds,
+            requiredStableLiveSeconds: automaticConnectedHistoryStableInterval,
+            activeExplicitWorkout: false,
+            historySyncInProgress: false,
+            consumerMaterializationInFlight: false,
+            gapFingerprint: Self.interruptedFullDrainGapFingerprint(authority.gap),
+            lastReacquisitionGapFingerprint: UserDefaults.standard.string(
+                forKey: OfflineSyncDefaults.interruptedFullDrainReacquisitionGapFingerprint
+            ),
+            lastReacquisitionAtUnix: UserDefaults.standard.object(
+                forKey: OfflineSyncDefaults.interruptedFullDrainReacquisitionAt
+            ) as? Double,
+            nowUnix: now.timeIntervalSince1970,
+            cooldown: interruptedFullDrainReacquisitionCooldown
+        ) else {
+            deferInterruptedFullDrainForCurrentLiveConnection = true
+            return
+        }
+
+        let fingerprint = Self.interruptedFullDrainGapFingerprint(authority.gap)
+        UserDefaults.standard.set(fingerprint,
+                                  forKey: OfflineSyncDefaults.interruptedFullDrainReacquisitionGapFingerprint)
+        UserDefaults.standard.set(now.timeIntervalSince1970,
+                                  forKey: OfflineSyncDefaults.interruptedFullDrainReacquisitionAt)
+        deferInterruptedFullDrainForCurrentLiveConnection = false
+        UserDefaults.standard.set("interrupted_full_drain_live_reconciliation_started",
+                                  forKey: OfflineSyncDefaults.lastStatus)
+        UserDefaults.standard.set(reason, forKey: OfflineSyncDefaults.lastReason)
+        AtriaDebugLog("ATRIADBG offline_sync status=interrupted_full_drain_live_reconciliation_started reason=%@ authority=%@ stable_s=%.1f action=reacquire_existing_gap_after_fresh_hr",
+                      reason,
+                      authority.authorityIdentifier,
+                      stableSeconds)
+        _ = requestOfflineHistoricalSyncIfNeeded(
+            reason: "interrupted_full_drain_persisted_reconciliation",
+            force: true,
+            explicitResearchRequest: true
+        )
     }
 
     /// The launch path already turns a persisted `.draining` authority into a
@@ -15852,6 +15978,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             resumePendingForcedHistoricalSyncAfterLivePersistenceIfNeeded(
                 reason: "accepted_hr"
             )
+            rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded(
+                reason: "accepted_hr"
+            )
             resumeInterruptedFullDrainAfterTransportLossIfNeeded(
                 reason: "accepted_hr"
             )
@@ -15923,6 +16052,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                             force: pendingDisplayForce)
         }
         resumePendingForcedHistoricalSyncAfterLivePersistenceIfNeeded(
+            reason: "accepted_hr_batch"
+        )
+        rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded(
             reason: "accepted_hr_batch"
         )
         resumeInterruptedFullDrainAfterTransportLossIfNeeded(
