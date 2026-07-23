@@ -862,6 +862,40 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertEqual(store.snapshot, terminal)
     }
 
+    func testPendingWorkoutQueuedProgressCannotOverwriteTerminalAuthority() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pending-terminal-queued-progress-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let start = Date(timeIntervalSince1970: 2_000_125_000)
+        let original = pendingAtomicIntent(start: start)
+        let store = AtriaPendingWorkoutIntentStore(directoryURL: directory,
+                                                   legacyDefaults: nil)
+        XCTAssertTrue(await store.createIfAbsent(original))
+
+        // Exercise the coalesced UI path, rather than calling persistProgress
+        // after End has already returned. Depending on which serial operation
+        // begins first, this checkpoint is either cancelled or completes just
+        // before End; in both cases it must never survive the terminal write.
+        var queuedProgress = original
+        queuedProgress.targetStrain = 12
+        queuedProgress.persistenceRevision = 1
+        let progressCompletion = expectation(description: "queued progress completed")
+        store.enqueueProgress(queuedProgress) { _ in
+            progressCompletion.fulfill()
+        }
+
+        var terminal = original
+        terminal.endedAt = start.addingTimeInterval(600)
+        terminal.activityType = AtriaWorkoutActivityType.walking.rawValue
+        terminal.persistenceRevision = .max
+        let savedTerminal = await store.persistTerminal(terminal)
+        XCTAssertEqual(savedTerminal, terminal)
+
+        await fulfillment(of: [progressCompletion], timeout: 1)
+        XCTAssertEqual(store.snapshot, terminal,
+                       "a queued checkpoint must not reopen or overwrite a saved terminal workout")
+    }
+
     func testPendingWorkoutAtomicStoreTerminalRebasesOnNewestCanonicalProgress() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("pending-terminal-race-\(UUID().uuidString)", isDirectory: true)
