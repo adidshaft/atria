@@ -1060,7 +1060,10 @@ final class AtriaPendingWorkoutIntentStore: @unchecked Sendable {
         self.directoryURL = root
         self.fileURL = root.appendingPathComponent("pending-workout-intent-v1.json")
         self.legacyDefaults = legacyDefaults
-        self.ioQueue = DispatchQueue(label: queueLabel, qos: .utility)
+        // Start/End is a direct user action. This tiny atomic intent is the
+        // crash-recovery authority for a workout, so do not leave it behind
+        // broad utility work while the UI is waiting for acknowledgement.
+        self.ioQueue = DispatchQueue(label: queueLabel, qos: .userInitiated)
     }
 
     var snapshot: AtriaPendingWorkoutIntent? {
@@ -1121,9 +1124,21 @@ final class AtriaPendingWorkoutIntentStore: @unchecked Sendable {
     }
 
     func createIfAbsent(_ intent: AtriaPendingWorkoutIntent) async -> Bool {
+        let requestedAt = ProcessInfo.processInfo.systemUptime
         return await performIO {
-            guard self.prepareLocked(), self.currentLocked() == nil else { return false }
-            return self.commitLocked(intent)
+            let beganAt = ProcessInfo.processInfo.systemUptime
+            let saved: Bool
+            if self.prepareLocked(), self.currentLocked() == nil {
+                saved = self.commitLocked(intent)
+            } else {
+                saved = false
+            }
+            AtriaDebugLog("ATRIADBG workout_intent_write operation=create queue_wait_ms=%d write_ms=%d revision=%llu saved=%d",
+                          Int(((beganAt - requestedAt) * 1_000).rounded()),
+                          Int(((ProcessInfo.processInfo.systemUptime - beganAt) * 1_000).rounded()),
+                          intent.persistenceRevision,
+                          saved ? 1 : 0)
+            return saved
         }
     }
 
