@@ -60,6 +60,15 @@ struct AtriaHistoricalHighVolumeStorageAccounting {
     }
 
     private static let replayDirectoryPrefix = "retired-replay-v1/"
+    // This is the live, exact 14-day replay-deduplication index. Its entries
+    // contain the complete frame identity, so on a continuously worn strap it
+    // is a high-volume store in its own right (the on-device index is already
+    // tens of MiB). Treating it as generic managed storage made the advertised
+    // raw + replay ceiling undercount the very evidence required to safely
+    // reject a replay. It cannot be deleted independently of its 14-day
+    // horizon, but including it here correctly makes the raw-retirement
+    // planner reclaim sealed raw earlier when necessary.
+    private static let liveReplayIdentityIndexFilename = "historical-archive.identity.jsonl"
     private static let compactDirectoryPrefixes = [
         "aggregates-v2/",
         "retention-manifests-v2/",
@@ -192,6 +201,9 @@ struct AtriaHistoricalHighVolumeStorageAccounting {
         catalogRawRelativePaths: Set<String>
     ) -> Category {
         if catalogRawRelativePaths.contains(relativePath) { return .raw }
+        if relativePath == liveReplayIdentityIndexFilename {
+            return .replayEvidence
+        }
         if relativePath.hasPrefix(replayDirectoryPrefix) {
             // Includes SQLite, -wal and -shm without filename assumptions.
             return .replayEvidence
