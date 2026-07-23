@@ -69,6 +69,14 @@ struct AtriaHistoricalHighVolumeStorageAccounting {
     // horizon, but including it here correctly makes the raw-retirement
     // planner reclaim sealed raw earlier when necessary.
     private static let liveReplayIdentityIndexFilename = "historical-archive.identity.jsonl"
+    // Rebuilding the live identity index uses an atomic same-directory
+    // replacement.  While that replacement is in progress, the temporary is
+    // a second full copy of exact replay evidence.  Count only this narrowly
+    // identified file in the high-volume envelope; treating every `.tmp` as
+    // retained evidence would let unrelated short-lived work distort the raw
+    // retirement plan.
+    private static let liveReplayIdentityIndexTemporaryPrefix =
+        ".\(liveReplayIdentityIndexFilename)."
     private static let compactDirectoryPrefixes = [
         "aggregates-v2/",
         "retention-manifests-v2/",
@@ -204,6 +212,9 @@ struct AtriaHistoricalHighVolumeStorageAccounting {
         if relativePath == liveReplayIdentityIndexFilename {
             return .replayEvidence
         }
+        if isLiveReplayIdentityIndexTemporary(relativePath) {
+            return .replayEvidence
+        }
         if relativePath.hasPrefix(replayDirectoryPrefix) {
             // Includes SQLite, -wal and -shm without filename assumptions.
             return .replayEvidence
@@ -223,6 +234,16 @@ struct AtriaHistoricalHighVolumeStorageAccounting {
             return .compactLongTermTyped
         }
         return .otherManaged
+    }
+
+    private static func isLiveReplayIdentityIndexTemporary(_ relativePath: String) -> Bool {
+        // `rebuildDerivedIndex` creates this exact sibling form before an
+        // atomic replace.  It is deliberately root-only: no nested payload
+        // gets to claim replay-evidence accounting merely by sharing a name.
+        !relativePath.contains("/")
+            && relativePath.hasPrefix(liveReplayIdentityIndexTemporaryPrefix)
+            && relativePath.hasSuffix(".tmp")
+            && relativePath.count > liveReplayIdentityIndexTemporaryPrefix.count + ".tmp".count
     }
 
     private static func adding(_ lhs: UInt64, _ rhs: UInt64) throws -> UInt64 {
