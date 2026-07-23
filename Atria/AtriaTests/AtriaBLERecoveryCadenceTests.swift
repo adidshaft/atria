@@ -7700,11 +7700,26 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(body.contains("payload = withUnsafeBytes(of: unixSeconds.littleEndian)"))
         XCTAssertTrue(body.contains("+ [0, 0, 0, 0]"))
         XCTAssertTrue(body.contains("Task.sleep(for: .milliseconds(800))"))
+        XCTAssertTrue(body.contains("atria.offlineSync.clockRepairStatus.v1"),
+                      "the physical repair must leave a durable, inspectable write outcome")
         XCTAssertTrue(body.contains("historyClockSyncEnabled = false"),
                       "an explicit approval is single-use and must not leak into automatic recovery")
         XCTAssertFalse(body.contains("Cmd.forceTrim"))
         XCTAssertFalse(body.contains("Cmd.abortHistoricalTransmits"))
         XCTAssertFalse(body.contains("Cmd.reboot"))
+    }
+
+    func testClockRepairApprovalSurvivesHistoryGenerationSetup() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(of: "let preserveUserApprovedHistoryClockRepair"))
+        let end = try XCTUnwrap(source.range(of: "probeCommandMode = .withResponse",
+                                              range: start.upperBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(body.contains("preserveUserApprovedHistoryClockRepair = historyClockSyncEnabled"))
+        XCTAssertTrue(body.contains("historyClockSyncEnabled = preserveDebugHistoryRangeProbe"))
+        XCTAssertTrue(body.contains("|| preserveUserApprovedHistoryClockRepair"),
+                      "generation setup must not erase the explicit clock-repair approval")
     }
 
 }

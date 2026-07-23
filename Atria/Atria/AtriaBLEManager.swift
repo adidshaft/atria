@@ -8228,6 +8228,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historicalReplayACKBoundaryID = nil
         historyDurableFlushInFlight = false
         historicalArchiveWriteFailures = 0
+        // Preserve the explicit, user-approved one-shot clock repair across
+        // generation setup. This flag is set from the launch argument before
+        // the generation is created; resetting it here used to silently turn
+        // the approved repair back into an ordinary 0x16 history request.
+        // Automatic recovery never sets this flag.
+        let preserveUserApprovedHistoryClockRepair = historyClockSyncEnabled
         let preserveDebugHistoryRangeProbe = historyOnlyProbeEnabled
             && (historySelectorSweepEnabled || historyDataRangeSweepEnabled)
             && !historySkipDataRangeRequest
@@ -8239,6 +8245,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // full-drain command. Production archives the strap's record timestamp
         // directly; explicit selector/range diagnostics may retain clock probes.
         historyClockSyncEnabled = preserveDebugHistoryRangeProbe
+            || preserveUserApprovedHistoryClockRepair
         probeCommandMode = .withResponse
         if preserveDebugHistoryRangeProbe {
             if historyInitSweepCommands.isEmpty {
@@ -18635,6 +18642,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         generation: UInt64
     ) async -> AwaitedHistoryWriteResult {
         guard historyClockSyncEnabled else { return .confirmed }
+        UserDefaults.standard.set("requested",
+                                  forKey: "atria.offlineSync.clockRepairStatus.v1")
+        UserDefaults.standard.set(Date().timeIntervalSince1970,
+                                  forKey: "atria.offlineSync.clockRepairAt.v1")
         let unixSeconds = UInt32(clamping: Int(Date().timeIntervalSince1970))
         let payload = withUnsafeBytes(of: unixSeconds.littleEndian) {
             Array($0)
@@ -18649,6 +18660,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             generation: generation
         )
         guard result == .confirmed else {
+            UserDefaults.standard.set("write_\(String(describing: result))",
+                                      forKey: "atria.offlineSync.clockRepairStatus.v1")
             AtriaDebugLog("ATRIADBG historyClock status=user_approved_set_clock_failed generation=%llu result=%@ action=retain_gap_no_history_command",
                           generation,
                           String(describing: result))
@@ -18664,6 +18677,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return .failed
         }
         historyClockSyncEnabled = false
+        UserDefaults.standard.set("write_confirmed",
+                                  forKey: "atria.offlineSync.clockRepairStatus.v1")
         AtriaDebugLog("ATRIADBG historyClock status=user_approved_set_clock_confirmed generation=%llu settle_ms=800 action=continue_matched_cursor_then_1600",
                       generation)
         return .confirmed
