@@ -22,6 +22,9 @@ final class AtriaHistoricalHighVolumeStoragePlannerTests: XCTestCase {
         try write(bytes: 31,
                   relativePath: "consumer-receipts-v1/consumer-artifact-replay_identity-a.bin",
                   root: root)
+        try write(bytes: 41,
+                  relativePath: "historical-archive.identity.jsonl",
+                  root: root)
         try write(bytes: 37, relativePath: "historical-archive.catalog-v2.json", root: root)
 
         let snapshot = try AtriaHistoricalHighVolumeStorageAccounting(
@@ -30,12 +33,12 @@ final class AtriaHistoricalHighVolumeStoragePlannerTests: XCTestCase {
         ).measure()
 
         XCTAssertEqual(snapshot.rawBytes, 11)
-        XCTAssertEqual(snapshot.replayEvidenceBytes, 13 + 17 + 19 + 31)
-        XCTAssertEqual(snapshot.highVolumeBytes, 11 + 13 + 17 + 19 + 31)
+        XCTAssertEqual(snapshot.replayEvidenceBytes, 13 + 17 + 19 + 31 + 41)
+        XCTAssertEqual(snapshot.highVolumeBytes, 11 + 13 + 17 + 19 + 31 + 41)
         XCTAssertEqual(snapshot.compactLongTermTypedBytes, 23 + 29)
         XCTAssertEqual(snapshot.otherManagedBytes, 37)
-        XCTAssertEqual(snapshot.scannedFileCount, 8)
-        XCTAssertEqual(snapshot.scannedByteCount, 180)
+        XCTAssertEqual(snapshot.scannedFileCount, 9)
+        XCTAssertEqual(snapshot.scannedByteCount, 221)
     }
 
     func testSymlinkAnywhereInManagedTreeFailsClosed() throws {
@@ -271,6 +274,28 @@ final class AtriaHistoricalHighVolumeStoragePlannerTests: XCTestCase {
         XCTAssertFalse(diagnosticsSource.contains("markRetired"))
         XCTAssertFalse(diagnosticsSource.contains("deleteSourceAfterCommit"))
         XCTAssertFalse(diagnosticsSource.contains("removeItem"))
+    }
+
+    func testArchiveUpdatesAlsoEvaluateRetentionDuringLongForegroundCollection() throws {
+        let testsURL = URL(fileURLWithPath: #filePath)
+        let projectRoot = testsURL.deletingLastPathComponent().deletingLastPathComponent()
+        let sessionsSource = try String(
+            contentsOf: projectRoot.appendingPathComponent("Atria/Sessions.swift"),
+            encoding: .utf8
+        )
+        let observerStart = try XCTUnwrap(sessionsSource.range(of:
+            "self.historicalArchiveStatusObserver = NotificationCenter.default.addObserver"
+        ))
+        let observerEnd = try XCTUnwrap(sessionsSource.range(of:
+            "self.systemTimeZoneObserver = NotificationCenter.default.addObserver",
+            range: observerStart.lowerBound..<sessionsSource.endIndex
+        ))
+        let observerBody = String(sessionsSource[observerStart.lowerBound..<observerEnd.lowerBound])
+
+        XCTAssertTrue(observerBody.contains("HistoricalArchive.didUpdateNotification"))
+        XCTAssertTrue(observerBody.contains(
+            "compactHistoricalArchiveIfUseful(reason: \"archive_did_update\")"
+        ))
     }
 
     private func makeRoot() throws -> URL {

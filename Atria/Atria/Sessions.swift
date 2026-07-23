@@ -10205,7 +10205,15 @@ final class SessionStore: ObservableObject {
                                                                                       object: nil,
                                                                                       queue: .main) { [weak self] _ in
             Task { @MainActor in
-                self?.requestRecoveredDataRecomputation(reason: "archive_did_update")
+                guard let self else { return }
+                self.requestRecoveredDataRecomputation(reason: "archive_did_update")
+                // A terminal history drain can seal a raw chunk while the app
+                // stays in the foreground for days. Do not rely only on a
+                // future launch or opportunistic BGTask to notice the 14-day /
+                // 512-MiB policy. The compactor's daily lease and in-flight
+                // guard make this notification-path check cheap; actual work
+                // remains off-main and is still fully verification-gated.
+                self.compactHistoricalArchiveIfUseful(reason: "archive_did_update")
             }
         }
         self.systemTimeZoneObserver = NotificationCenter.default.addObserver(forName: NSNotification.Name.NSSystemTimeZoneDidChange,
