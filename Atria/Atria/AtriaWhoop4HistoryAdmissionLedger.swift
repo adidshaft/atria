@@ -25,7 +25,14 @@ import SQLite3
 final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
     typealias RetiredReplayLookup = (_ strapIdentifier: String, _ frame: Data) throws -> Bool
     static let productionIdentityRetention: TimeInterval = 14 * 24 * 60 * 60
-    static let productionMaximumIdentityRows = 524_288
+    /// The admission ledger stores complete WHOOP frames as SQLite BLOBs, so a
+    /// frame-count budget also has to be a realistic on-device byte budget.
+    /// 96k rows retains ample exact replay authority after a completed drain
+    /// while keeping the derived ledger materially below the raw-history
+    /// budget.  This is deliberately *not* a hard deletion limit: active or
+    /// not-yet-archive-durable rows remain protected above it and are reported
+    /// as pressure rather than discarded.
+    static let productionMaximumIdentityRows = 96_000
     static let maximumClassificationBatch = 256
     /// Covers the maximum 13-day recovery window (1,123,200 one-Hz rows) with
     /// headroom. Enumeration is streaming, so this is a safety ceiling rather
