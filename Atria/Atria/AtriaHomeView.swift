@@ -838,6 +838,11 @@ struct AtriaHomeView: View {
     @State private var showWorkoutStartPersistenceError = false
     @State private var liveWorkoutLoggedSets: [LoggedSet] = []
     @State private var liveWorkoutStrengthHistory: StrengthHistoryProjection = .empty
+    // Strength history is display-only context (PRs / recent sets), never an
+    // authority required to start a workout. Keep its archive scan out of the
+    // Start tap so a long-lived session store cannot make the control hang.
+    @State private var liveWorkoutStrengthHistoryPreparationTask: Task<Void, Never>?
+    @State private var liveWorkoutStrengthHistoryPreparationID = UUID()
     @State private var liveWorkoutExcludedIntervals: [ExcludedInterval] = []
     @State private var suppressNextExcludedIntervalPersistence = false
     @State private var liveWorkoutPauseStartedAt: Date?
@@ -1293,6 +1298,7 @@ struct AtriaHomeView: View {
                 // Warm the two authorities while the picker is on screen.
                 // This is strictly read-only: Start still requires both the
                 // exact persisted intent and a hydrated strap-step ledger.
+                prewarmLiveWorkoutStrengthHistory()
                 _ = await AtriaPendingWorkoutIntent.preparePersistence()
                 await store.waitForDeferredSessionLoadIfNeeded(timeoutSeconds: 1)
             }) { configuration in
@@ -1983,7 +1989,10 @@ struct AtriaHomeView: View {
             schedulePendingWorkoutRecoveryRetries()
             return false
         }
-        liveWorkoutStrengthHistory = AtriaStrengthLog.historyProjection(in: store.sessions)
+        // `liveWorkoutStrengthHistory` is prepared while the activity picker
+        // is visible. Starting with `.empty` is safe if the user taps before
+        // that best-effort projection completes: it only suppresses historical
+        // PR context briefly; it cannot alter workout timing, sets or steps.
         guard let session = await makeWorkoutSession(configuration: configuration) else {
             showWorkoutStartPersistenceError = true
             return false
@@ -1998,6 +2007,27 @@ struct AtriaHomeView: View {
                                         startedAt: session.start)
         }
         return true
+    }
+
+    /// Prepares strength-only display context off the main actor while the
+    /// activity picker is open. The immutable `SavedSession` snapshot keeps
+    /// the projection coherent even if live capture appends a later session.
+    /// This deliberately does not await from the Start button.
+    private func prewarmLiveWorkoutStrengthHistory() {
+        liveWorkoutStrengthHistoryPreparationTask?.cancel()
+        let preparationID = UUID()
+        liveWorkoutStrengthHistoryPreparationID = preparationID
+        let sessions = store.sessions
+        liveWorkoutStrengthHistoryPreparationTask = Task { @MainActor [sessions] in
+            let projection = await Task.detached(priority: .userInitiated) {
+                AtriaStrengthLog.historyProjection(in: sessions)
+            }.value
+            guard !Task.isCancelled,
+                  preparationID == liveWorkoutStrengthHistoryPreparationID else {
+                return
+            }
+            liveWorkoutStrengthHistory = projection
+        }
     }
 
     private func persistPendingWorkoutProgress(endedAt: Date? = nil) {
