@@ -26468,6 +26468,17 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             }
             dbgMTU = mtu
             recordLinkConnected(peripheral: peripheral)
+            // If the previous process was terminated between receiving stream-5
+            // bytes and its archive callback, claim those exact bytes as soon
+            // as the same verified strap reconnects. This work stays entirely
+            // off the BLE callback path and never promotes a historical gap to
+            // covered; it merely prevents a later recovery generation from
+            // replacing the journal before it is durably archived.
+            _ = archiveOrphanHistoricalIngressIfNeeded(
+                reason: "did_connect_orphan_ingress_replay",
+                force: false,
+                explicitRequest: false
+            )
             if self.freshHistoryOwnerAdmissionPending {
                 self.freshHistoryOwnerAdmissionPending = false
                 if let pending = self.takePendingOfflineHistoricalSyncRequest() {
