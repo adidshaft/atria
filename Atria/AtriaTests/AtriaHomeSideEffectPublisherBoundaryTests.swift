@@ -34,4 +34,21 @@ final class AtriaHomeSideEffectPublisherBoundaryTests: XCTestCase {
         }
         XCTAssertTrue(widget.contains("pulseLiveStore.$state"))
     }
+
+    func testLiveWorkoutDetectionIsNotDisabledAwayFromOverview() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private func updateWorkoutDetectionPrompt"))
+        let end = try XCTUnwrap(source.range(of: "private func setWorkoutDetectionPromptIfChanged",
+                                              range: start.upperBound..<source.endIndex))
+        let implementation = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertFalse(implementation.contains("selectedTab == .overview"),
+                       "A live strap effort must keep being evaluated while the wearer uses Activity, History, or another in-app tab; only its banner presentation is overview-scoped.")
+        XCTAssertTrue(implementation.contains("guard scenePhase == .active else { return }"),
+                      "This remains foreground-only: background execution cannot be represented as continuous automatic detection.")
+        XCTAssertTrue(implementation.contains("guard workoutSession == nil else"),
+                      "An explicit live workout must remain the sole owner of its session.")
+    }
 }
