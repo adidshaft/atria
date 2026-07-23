@@ -173,6 +173,10 @@ struct AtriaTodayScreen: View {
     let onOpenJournal: () -> Void
     let onOpenShare: () -> Void
     let onStartWorkout: () -> Void
+    /// The Home owner persists the layout. Today only proposes small, local
+    /// presentation changes (add, remove, reorder), so it never subscribes to
+    /// the noisy dotted UserDefaults key directly.
+    let onLayoutConfigChange: (AtriaHomeLayoutConfig) -> Void
     let onCustomizeToday: () -> Void
     /// The workout/sleep review items, built by AtriaHomeView (which owns
     /// their state) and rendered INSIDE the plan section — the user's strict
@@ -186,6 +190,8 @@ struct AtriaTodayScreen: View {
     @AtriaDefault("atria.today.sectionOrder") private var todaySectionOrderCSV: String = ""
     @State private var showWeeklyReport = false
     @State private var showBreathworkSession = false
+    @State private var isEditingGlance = false
+    @State private var showAddGlanceMetrics = false
     @State private var ringShareRoute: AtriaRingShareRoute?
     // Apple-Fitness-style scroll shrink state now lives inside
     // `AtriaTodayHeroShrink` (perf pass, 2026-07-06): it owns its own
@@ -301,6 +307,20 @@ struct AtriaTodayScreen: View {
             AtriaWeeklyReportSheet(report: weeklyReport)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showAddGlanceMetrics) {
+            AtriaTodayAddMetricsSheet(selectedKeys: layoutConfig.validated().glanceMetrics,
+                                      onToggle: { metric, isSelected in
+                var config = layoutConfig
+                if isSelected {
+                    guard !config.glanceMetrics.contains(metric.rawValue),
+                          config.glanceMetrics.count < AtriaHomeLayoutConfig.maxTodayCards else { return }
+                    config.glanceMetrics.append(metric.rawValue)
+                } else {
+                    config.glanceMetrics.removeAll { $0 == metric.rawValue }
+                }
+                onLayoutConfigChange(config)
+            })
         }
         .sheet(item: $ringShareRoute) { route in
             AtriaShareSheet(snapshot: route.snapshot)
@@ -439,6 +459,80 @@ struct AtriaTodayScreen: View {
         }
     }
 
+    /// The Today deck is its own editor: the same native long-press that starts
+    /// a drag can be held in place to reveal removal controls. There is no
+    /// second "Customize Today" destination on this surface.
+    private func interactiveGlanceTile(for metric: AtriaTodayMetric,
+                                       isBar: Bool = false) -> some View {
+        glanceTile(for: metric, isBar: isBar)
+            .overlay(alignment: .topTrailing) {
+                if isEditingGlance {
+                    Button(role: .destructive) {
+                        removeGlanceMetric(metric)
+                    } label: {
+                        Image(systemName: "minus.circle.fill")
+                            .font(.title3.weight(.bold))
+                    }
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.circle)
+                    .tint(.red)
+                    .padding(8)
+                    .accessibilityLabel("Remove \(metric.label)")
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip,
+                                           style: .continuous))
+            .onLongPressGesture(minimumDuration: 0.45) {
+                withAnimation(.snappy(duration: 0.2)) {
+                    isEditingGlance = true
+                }
+            }
+            .draggable(metric.dragPayload)
+            .dropDestination(for: String.self) { payloads, _ in
+                guard let payload = payloads.first,
+                      let dragged = AtriaTodayMetric.draggedMetric(from: payload),
+                      dragged != metric else { return false }
+                var config = layoutConfig
+                config.moveGlanceMetric(dragged.rawValue, before: metric.rawValue)
+                onLayoutConfigChange(config)
+                return true
+            }
+            .accessibilityAction(named: Text("Move \(metric.label) up")) {
+                shiftGlanceMetric(metric, direction: -1)
+            }
+            .accessibilityAction(named: Text("Move \(metric.label) down")) {
+                shiftGlanceMetric(metric, direction: 1)
+            }
+    }
+
+    private var glanceAddMetricControl: some View {
+        Button {
+            showAddGlanceMetrics = true
+        } label: {
+            Label("Add metric", systemImage: "plus")
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: 48)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.roundedRectangle(radius: AtriaDesignTokens.Radius.chip))
+        .accessibilityHint("Shows metrics that are not currently on Today at a glance.")
+    }
+
+    private func removeGlanceMetric(_ metric: AtriaTodayMetric) {
+        var config = layoutConfig
+        config.glanceMetrics.removeAll { $0 == metric.rawValue }
+        onLayoutConfigChange(config)
+        if config.glanceMetrics.isEmpty {
+            isEditingGlance = false
+        }
+    }
+
+    private func shiftGlanceMetric(_ metric: AtriaTodayMetric, direction: Int) {
+        var config = layoutConfig
+        config.shiftGlanceMetric(metric.rawValue, direction: direction)
+        onLayoutConfigChange(config)
+    }
+
     private var orderedTodaySections: [AtriaTodaySection] {
         if glanceMemo.todaySectionOrderCSV == todaySectionOrderCSV,
            let cached = glanceMemo.todaySectionOrderValue {
@@ -507,25 +601,18 @@ struct AtriaTodayScreen: View {
                         // Bars layout: one full-width horizontal bar per metric.
                         VStack(spacing: 10) {
                             ForEach(glanceMetrics) { metric in
-                                glanceTile(for: metric, isBar: true)
-                                    .contextMenu {
-                                        Button(action: onCustomizeToday) {
-                                            Label("Customize Today", systemImage: "slider.horizontal.3")
-                                        }
-                                    }
+                                interactiveGlanceTile(for: metric, isBar: true)
                             }
+                            glanceAddMetricControl
                         }
                     } else {
                         LazyVGrid(columns: glanceColumns, spacing: 10) {
                             ForEach(glanceMetrics) { metric in
-                                glanceTile(for: metric)
+                                interactiveGlanceTile(for: metric)
                                     .gridCellColumns(glanceColumnSpan(for: metric))
-                                    .contextMenu {
-                                        Button(action: onCustomizeToday) {
-                                            Label("Customize Today", systemImage: "slider.horizontal.3")
-                                        }
-                                    }
                             }
+                            glanceAddMetricControl
+                                .gridCellColumns(2)
                         }
                     }
                 }
@@ -557,7 +644,11 @@ struct AtriaTodayScreen: View {
     private var glanceKicker: some View {
         HStack(spacing: 8) {
             sectionKicker("At a glance")
-            Button(action: onCustomizeToday) {
+            Button {
+                withAnimation(.snappy(duration: 0.2)) {
+                    isEditingGlance.toggle()
+                }
+            } label: {
                 Image(systemName: "arrow.up.arrow.down")
                     .font(.caption.weight(.bold))
                     .frame(width: 32, height: 32)
@@ -565,8 +656,8 @@ struct AtriaTodayScreen: View {
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
             .controlSize(.small)
-            .accessibilityLabel("Reorder At a glance")
-            .accessibilityHint("Opens drag and drop metric ordering")
+            .accessibilityLabel(isEditingGlance ? "Finish editing At a glance" : "Edit At a glance")
+            .accessibilityHint("Lets you drag cards to reorder and remove cards.")
         }
     }
 
@@ -601,9 +692,6 @@ struct AtriaTodayScreen: View {
                     } label: {
                         Label(glanceLayoutBars ? "Show as grid" : "Show as bars",
                               systemImage: glanceLayoutBars ? "square.grid.2x2" : "rectangle.grid.1x2")
-                    }
-                    Button(action: onCustomizeToday) {
-                        Label("Customize Today", systemImage: "slider.horizontal.3")
                     }
                     Menu {
                         ForEach(Array(ringSlots.enumerated()), id: \.offset) { position, current in
@@ -2307,6 +2395,48 @@ private struct AtriaTodayCompactTriRing: View {
         }
         .drawingGroup(opaque: false, colorMode: .linear)
         .accessibilityHidden(true)
+    }
+}
+
+private struct AtriaTodayAddMetricsSheet: View {
+    let selectedKeys: [String]
+    let onToggle: (AtriaTodayMetric, Bool) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(AtriaTodayMetric.defaultGlanceOrder) { metric in
+                        Toggle(isOn: selectionBinding(for: metric)) {
+                            Label(metric.label, systemImage: metric.systemImage)
+                        }
+                        .disabled(!selectedKeys.contains(metric.rawValue)
+                                  && selectedKeys.count >= AtriaHomeLayoutConfig.maxTodayCards)
+                    }
+                } header: {
+                    Text("Add or remove metrics")
+                } footer: {
+                    Text("Showing \(selectedKeys.count) of \(AtriaHomeLayoutConfig.maxTodayCards) metrics. Changes appear on Today immediately.")
+                }
+            }
+            .navigationTitle("Today metrics")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .fontWeight(.semibold)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func selectionBinding(for metric: AtriaTodayMetric) -> Binding<Bool> {
+        Binding(get: { selectedKeys.contains(metric.rawValue) },
+                set: { onToggle(metric, $0) })
     }
 }
 
