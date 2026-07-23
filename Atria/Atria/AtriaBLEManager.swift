@@ -17260,6 +17260,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     enum WorkoutMotionLeaseAction: Equatable {
         case none
+        /// The link is intentionally in the protected pure-HR fallback.  A
+        /// lease remains durable and its missing motion interval remains
+        /// honest, but it must not repeatedly try a profile that safety logic
+        /// has explicitly isolated for this connection.
+        case unavailablePureHRFallback
         case missingConnectionEpoch
         case awaitHeartRate
         case beginBringUp
@@ -17309,6 +17314,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         lastFrameAt: Date?,
         denseFrameCount: Int,
         lastActivationConnectionAt: Date?,
+        protectedPureHRFallback: Bool = false,
         graceInterval: TimeInterval = protectedR10PassiveGraceDuration,
         freshFrameWindow: TimeInterval = 10,
         denseFrameThreshold: Int = workoutMotionDenseFrameThreshold,
@@ -17316,6 +17322,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     ) -> WorkoutMotionLeaseAction {
         guard let leaseStartedAt, connected else { return .none }
         guard let connectedAt else { return .missingConnectionEpoch }
+        // This is not a transient missing frame.  The protected owner has
+        // already observed a physical instability and deliberately selected
+        // an HR-only central.  Retain the workout and its R10 gap, but do not
+        // generate a fresh bring-up evaluation every second.  A later,
+        // explicitly started workout is the only bounded route that may earn
+        // another fresh-owner qualification.
+        if protectedPureHRFallback { return .unavailablePureHRFallback }
         guard hrNotifying else { return .awaitHeartRate }
         if let lastFrameAt,
            lastFrameAt >= connectedAt,
@@ -17715,8 +17728,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             lastFrameAt: lastR10MotionFrameAt,
             denseFrameCount: workoutMotionDenseFrameCount(now: now),
             lastActivationConnectionAt: lastActivationConnectionAt,
+            protectedPureHRFallback: protectedR10StreamSuppressed
+                && (protectedR10CleanOwner == .pureHRV8
+                    || protectedR10CleanOwner == .pureHRV10)
+                && (protectedR10CleanOwnerState == .fallbackActive
+                    || protectedR10CleanOwnerState == .fallbackPending),
             now: now
         )
+        // A pure-HR fallback is an intentional, stable terminal state for
+        // this lease evaluation—not an invitation to keep appending trace
+        // lines or to schedule more work.  The durable workout and any open
+        // R10 interval stay intact; no BLE operation occurs here.
+        if action == .unavailablePureHRFallback {
+            markWorkoutMotionGapIfNeeded(now: now,
+                                         reason: "protected_pure_hr_fallback")
+            if workoutMotionStatus != "unavailable_pure_hr_fallback" {
+                setWorkoutMotionStatus("unavailable_pure_hr_fallback", at: now)
+                AtriaDebugLog("ATRIADBG r10_step_lease status=unavailable_pure_hr_fallback action=retain_lease_and_gap_no_transport_retry")
+            }
+            return
+        }
         // Honest on-device decision trail: Release builds strip debug logging,
         // so every evaluation persists its exact inputs and outcome where the
         // copy-only pull can read them (bounded: one rolling string).
@@ -17743,6 +17774,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         switch action {
         case .none:
             markWorkoutMotionGapIfNeeded(now: now, reason: "\(reason)_transport_unavailable")
+        case .unavailablePureHRFallback:
+            // Handled before trace persistence so a stable fallback cannot
+            // create a per-second preferences write loop.
+            return
         case .missingConnectionEpoch:
             defaults.set("missing_connected_at", forKey: "atria.workoutMotion.invariantFailure")
             defaults.set(now.timeIntervalSince1970,
