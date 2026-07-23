@@ -2753,7 +2753,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
-    func testProductionAutomaticHistoryCapabilityUsesVerifiedFullDrainPath() {
+    func testProductionHistoryRecoveryFailsClosedUntilExactGapProofExists() {
         XCTAssertFalse(
             AtriaBLEManager.productionHistoricalExactRangeTransportEnabledAndProven
         )
@@ -2767,10 +2767,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             fullDrainGapRecoveryEnabled:
                 AtriaBLEManager.productionHistoricalFullDrainGapRecoveryEnabled
         )
-        XCTAssertTrue(transactionReady)
+        XCTAssertFalse(transactionReady)
 
         let now = Date(timeIntervalSince1970: 100_000)
-        XCTAssertTrue(AtriaBLEManager.shouldAttemptAutomaticConnectedHistoricalHandoff(
+        XCTAssertFalse(AtriaBLEManager.shouldAttemptAutomaticConnectedHistoricalHandoff(
             linkConnected: true,
             exactGapPending: true,
             verifiedMetricRecovery: transactionReady,
@@ -2783,14 +2783,14 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             requestedAt: now.addingTimeInterval(-120),
             lastAttemptAt: nil,
             now: now
-        ), "a verified exact gap may use the journaled fresh-owner handoff after the live-link safety gates pass")
-        XCTAssertFalse(AtriaBLEManager.shouldDeferAutomaticOfflineSyncForConnectedLink(
+        ), "an unproven full drain must not seize a healthy live connection")
+        XCTAssertTrue(AtriaBLEManager.shouldDeferAutomaticOfflineSyncForConnectedLink(
             linkConnected: true,
             explicitUserRequest: false,
             exactGapPending: true,
             verifiedMetricRecovery: transactionReady,
             automaticConnectedHandoffAllowed: true
-        ))
+        ), "an unproven recovery transport remains deferred even when the link is live")
     }
 
     func testRawOnlyGapArchiveRunsOnceAtASafeNaturalDisconnect() {

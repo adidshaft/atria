@@ -1,10 +1,10 @@
 import Foundation
 
-/// Production capability describes the implemented, fail-closed full-flash
-/// path. It does not claim an exact-range selector exists; that experiment
-/// remains isolated from automatic recovery.
+/// Production capability is disabled until a physical acceptance proves that
+/// the strap serves the current missing interval. A full-flash replay that
+/// yields old rows is not gap recovery and must not own the live radio.
 enum AtriaHistoricalFullDrainCoverageIntegration {
-    static let automaticFullDrainRecoveryEnabled = true
+    static let automaticFullDrainRecoveryEnabled = false
     static let exactRangeTransportAuthorityAvailable = false
 }
 
