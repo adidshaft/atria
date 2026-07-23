@@ -10613,11 +10613,15 @@ final class SessionStore: ObservableObject {
         calendar: Calendar = .current,
         maximumPendingAge: TimeInterval = 24 * 60 * 60
     ) -> Metrics.RecoveryEstimate {
-        // A pending detector review is weaker than every already-numeric
-        // canonical tier. It exists solely to replace the empty Learning state;
-        // it must never downgrade an unverified canonical score, a personal
-        // baseline score, or a validated score.
-        guard authoritative.confidence == .learning,
+        // A pending detector review is weaker than every settled recovery tier.
+        // The single presentation exception is an explicitly structured,
+        // RHR-only "sleep unavailable" estimate. That score is useful while
+        // no detector evidence exists, but once a current-cycle sleep is ready
+        // for review, displaying it as today's recovery hides the more relevant
+        // sleep-derived provisional result. This never changes the canonical
+        // estimate: the replacement stays in this presentation-only method.
+        guard authoritative.confidence == .learning
+                || Self.isRHROnlyNoSleepPresentationEstimate(authoritative),
               !hasConfirmedMainSleep, !hasFrozenRecovery,
               let pending = pendingSleepRecoveryEstimate(
                 pendingSleepReview,
@@ -10631,6 +10635,29 @@ final class SessionStore: ObservableObject {
             return authoritative
         }
         return pending
+    }
+
+    /// Recognizes only the narrow Recovery v2 state produced from a real RHR
+    /// reading when both sleep and HRV were unavailable. Do not infer this from
+    /// prose: contributor weights are the structured calculation record. This
+    /// protects any unverified score that contains actual sleep or HRV evidence
+    /// from being replaced by a detector review.
+    nonisolated static func isRHROnlyNoSleepPresentationEstimate(
+        _ estimate: Metrics.RecoveryEstimate
+    ) -> Bool {
+        guard estimate.percent != nil,
+              estimate.confidence == .unverified,
+              !estimate.usesHRV,
+              let sleep = estimate.contributors.first(where: { $0.kind == .sleep }),
+              sleep.weight == 0,
+              let hrv = estimate.contributors.first(where: { $0.kind == .hrv }),
+              hrv.weight == 0,
+              estimate.contributors.contains(where: {
+                  $0.kind == .restingHeartRate && $0.weight > 0
+              }) else {
+            return false
+        }
+        return true
     }
 
     /// Converts a detector-owned review into a display-only estimate. This gate
@@ -10703,7 +10730,7 @@ final class SessionStore: ObservableObject {
             percent: estimate.percent,
             confidence: .unverified,
             usesHRV: estimate.usesHRV,
-            detail: "Limited confidence · pending sleep review · \(estimate.detail)",
+            detail: "Today · pending sleep review · limited confidence · \(estimate.detail)",
             contributors: estimate.contributors
         )
     }

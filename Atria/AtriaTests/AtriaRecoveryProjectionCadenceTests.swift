@@ -263,6 +263,50 @@ final class AtriaRecoveryProjectionCadenceTests: XCTestCase {
         XCTAssertNotEqual(projected, authoritative)
     }
 
+    func testPendingSleepReviewReplacesOnlyStructuredRHROnlyNoSleepDisplayEstimate() throws {
+        let pending = pendingNight(end: start, duration: 4 * 60 * 60)
+        let rhrOnlyNoSleep = Metrics.RecoveryEstimate(
+            percent: 66,
+            confidence: .unverified,
+            usesHRV: false,
+            detail: "Limited confidence · sleep and HRV unavailable · conservative RHR-only estimate",
+            contributors: [
+                .init(kind: .hrv,
+                      zScore: 0,
+                      weight: 0,
+                      detail: "HRV unavailable; excluded",
+                      displayValue: "HRV unavailable"),
+                .init(kind: .restingHeartRate,
+                      zScore: 1.1,
+                      weight: 0.2,
+                      detail: "RHR 1.1σ",
+                      displayValue: "Resting HR 61 bpm"),
+                .init(kind: .sleep,
+                      zScore: 0,
+                      weight: 0,
+                      detail: "Sleep unavailable; excluded",
+                      displayValue: "Sleep unavailable")
+            ]
+        )
+
+        let projected = SessionStore.presentationRecoveryEstimate(
+            authoritative: rhrOnlyNoSleep,
+            hasConfirmedMainSleep: false,
+            hasFrozenRecovery: false,
+            pendingSleepReview: pending,
+            baseline: PersonalBaseline(),
+            respiratoryBaseline: nil,
+            now: start.addingTimeInterval(60),
+            physiologicalCycle: makeCycle(start: start)
+        )
+
+        XCTAssertNotEqual(projected, rhrOnlyNoSleep)
+        XCTAssertEqual(projected.confidence, .unverified)
+        XCTAssertTrue(projected.detail.hasPrefix("Today · pending sleep review · limited confidence"))
+        XCTAssertEqual(rhrOnlyNoSleep.percent, 66,
+                       "the canonical RHR-only estimate is immutable; this is display selection only")
+    }
+
     func testPendingReviewCanNeverOverrideConfirmedOrFrozenRecovery() {
         let pending = pendingNight(end: start, duration: 4 * 60 * 60)
         let confirmed = estimate(82)
