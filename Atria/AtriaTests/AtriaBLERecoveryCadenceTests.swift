@@ -50,6 +50,46 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testUnavailableFallbackOpensCoverageGapWithoutTreatingHistoryAsLoss() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+
+        XCTAssertTrue(AtriaBLEManager.shouldOpenWorkoutMotionGapForUnavailableR10(
+            motionLeaseHeld: true,
+            historyOwnsTransport: false,
+            r10TransportExpected: false,
+            lastFrameAt: now.addingTimeInterval(-16),
+            now: now
+        ))
+        XCTAssertTrue(AtriaBLEManager.shouldOpenWorkoutMotionGapForUnavailableR10(
+            motionLeaseHeld: true,
+            historyOwnsTransport: false,
+            r10TransportExpected: false,
+            lastFrameAt: nil,
+            now: now
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldOpenWorkoutMotionGapForUnavailableR10(
+            motionLeaseHeld: true,
+            historyOwnsTransport: false,
+            r10TransportExpected: false,
+            lastFrameAt: now.addingTimeInterval(-15),
+            now: now
+        ), "the exact live boundary is still fresh")
+        XCTAssertFalse(AtriaBLEManager.shouldOpenWorkoutMotionGapForUnavailableR10(
+            motionLeaseHeld: true,
+            historyOwnsTransport: true,
+            r10TransportExpected: false,
+            lastFrameAt: now.addingTimeInterval(-60),
+            now: now
+        ), "history ownership is a deliberate handoff, not a movement gap")
+        XCTAssertFalse(AtriaBLEManager.shouldOpenWorkoutMotionGapForUnavailableR10(
+            motionLeaseHeld: true,
+            historyOwnsTransport: false,
+            r10TransportExpected: true,
+            lastFrameAt: now.addingTimeInterval(-60),
+            now: now
+        ), "an expected live transport remains owned by its liveness repair policy")
+    }
+
     func testUnexpectedLongWearDisconnectDefersHistoryUntilRealtimeReconnectIsInstalled() {
         XCTAssertTrue(AtriaBLEManager.shouldDeferAutomaticHistoryUntilAfterRealtimeReconnect(
             preservesLongWearSession: true,
