@@ -22383,9 +22383,17 @@ final class SessionStore: ObservableObject {
                 loadSessionsByDay[day, default: []].append(session)
             }
         }
-        let aggregateSleeps = Self.preferredSleepCandidatesByDay(aggregateSleepCandidates(rest: rest,
-                                                                                         calendar: calendar,
-                                                                                         historicalMotionPolicy: .boundedRecent))
+        // Live and historical projections must apply the identical user-facing
+        // sleep review gate. Raw aggregation deliberately retains ambiguous
+        // quiet/rest windows for diagnostics; letting that raw set reach the
+        // live rollup could resurrect a candidate the history view correctly
+        // rejected as not review-worthy.
+        let aggregateSleeps = Self.preferredSleepCandidatesByDay(
+            aggregateSleepCandidates(rest: rest,
+                                     calendar: calendar,
+                                     historicalMotionPolicy: .boundedRecent)
+                .filter(Self.isReviewWorthySleepCandidate)
+        )
         let aggregateCandidatesByDay = Dictionary(grouping: aggregateWorkoutCandidates(rest: rest, maxHR: maxHR, calendar: calendar).filter {
             $0.readiness.ready || $0.readiness.reviewWorthyCandidate
         }) { candidate in
