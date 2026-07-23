@@ -23440,7 +23440,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             _ = await r10MotionPipeline.abortBoundary(token)
             return false
         }
-        await waitForSessionInputBatchesToDrain()
+        // A terminal workout intent is already durable before this checkpoint
+        // begins.  Do not let a continuously arriving BLE batch hold the
+        // post-End UI path forever: aborting this *secondary* boundary keeps
+        // the live journal and every buffered sample intact for recovery.
+        guard await waitForSessionInputBatchesToDrainForWorkoutCompletion() else {
+            await abortSessionBoundary(id: id, token: token)
+            AtriaDebugLog("ATRIADBG session_checkpoint status=deferred reason=input_batches_busy source=live_workout_end action=retain_live_journal")
+            return false
+        }
         let ownership = Self.workoutCheckpointLabel(
             requested: label,
             allDayLabel: captureLabel.isEmpty ? "All-day wear" : captureLabel,
@@ -23807,6 +23815,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         while acceptedHeartRateBatchDepth > 0 || realtimePacketBatchDepth > 0 {
             await Task.yield()
         }
+    }
+
+    /// A normal segmentation boundary can wait until its input FIFO is quiet:
+    /// it owns the stream transition.  Explicit workout completion is
+    /// different—the user's terminal intent has already been atomically
+    /// persisted, so its UI must not be held hostage by a never-empty realtime
+    /// stream.  A timeout aborts only this optional checkpoint; the old live
+    /// journal and buffered packets remain the recovery authority.
+    private func waitForSessionInputBatchesToDrainForWorkoutCompletion(
+        timeout: Duration = .milliseconds(250)
+    ) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while acceptedHeartRateBatchDepth > 0 || realtimePacketBatchDepth > 0 {
+            guard clock.now < deadline else {
+                AtriaDebugLog("ATRIADBG session_checkpoint status=input_batches_timeout hr_depth=%d realtime_depth=%d source=live_workout_end",
+                              acceptedHeartRateBatchDepth,
+                              realtimePacketBatchDepth)
+                return false
+            }
+            await Task.yield()
+        }
+        return true
     }
 
     /// Prevents an incremental write captured from the old live session from

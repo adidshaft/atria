@@ -85,6 +85,31 @@ final class AtriaWorkoutEndResponsivenessTests: XCTestCase {
         }
     }
 
+    func testTerminalCheckpointIsBoundedAndStrainAuditLeavesTheMainActor() throws {
+        let ble = try appSource("AtriaBLEManager.swift")
+        let checkpoint = try XCTUnwrap(ble.range(of: "func checkpointCurrentSession(label:"))
+        let checkpointEnd = try XCTUnwrap(ble.range(of: "private func shouldRollActiveSessionAfterLongGap",
+                                                     range: checkpoint.upperBound..<ble.endIndex))
+        let checkpointBody = String(ble[checkpoint.lowerBound..<checkpointEnd.lowerBound])
+        XCTAssertTrue(checkpointBody.contains("waitForSessionInputBatchesToDrainForWorkoutCompletion"))
+        XCTAssertTrue(checkpointBody.contains("await abortSessionBoundary(id: id, token: token)"))
+
+        let boundedWait = try XCTUnwrap(ble.range(of: "private func waitForSessionInputBatchesToDrainForWorkoutCompletion("))
+        let boundedWaitEnd = try XCTUnwrap(ble.range(of: "private func beginActiveJournalBoundaryFence",
+                                                       range: boundedWait.upperBound..<ble.endIndex))
+        let boundedWaitBody = String(ble[boundedWait.lowerBound..<boundedWaitEnd.lowerBound])
+        XCTAssertTrue(boundedWaitBody.contains("timeout: Duration = .milliseconds(250)"))
+        XCTAssertTrue(boundedWaitBody.contains("return false"))
+
+        let sessions = try appSource("Sessions.swift")
+        let commit = try XCTUnwrap(sessions.range(of: "private func commitPreparedWorkoutWindowConfirmation("))
+        let commitEnd = try XCTUnwrap(sessions.range(of: "private func confirmWorkoutWindow(",
+                                                      range: commit.upperBound..<sessions.endIndex))
+        let commitBody = String(sessions[commit.lowerBound..<commitEnd.lowerBound])
+        XCTAssertTrue(commitBody.contains("Task.detached(priority: .utility)"))
+        XCTAssertTrue(commitBody.contains("Self.persistStrainConfirmationAudit"))
+    }
+
     func testEndNeverQueriesPhoneStepsWhenStrapEvidenceIsUnavailable() throws {
         let home = try appSource("AtriaHomeView.swift")
         let start = try XCTUnwrap(home.range(of: "private func endWorkoutSession(startedAt: Date,"))
