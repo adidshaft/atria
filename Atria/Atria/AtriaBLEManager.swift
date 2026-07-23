@@ -1985,6 +1985,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var replayingBufferedSessionInputs = false
     private nonisolated let historicalArchiveQueue = DispatchQueue(label: "com.adidshaft.atria.historical-archive",
                                                                    qos: .utility)
+    /// A prior history drain may have left its serial worker occupied when the
+    /// process died. Orphaned raw bytes must not sit behind that abandoned
+    /// generation; HistoricalArchive still serializes its own durable store.
+    private nonisolated let orphanHistoricalIngressArchiveQueue = DispatchQueue(
+        label: "com.adidshaft.atria.orphan-historical-ingress-archive",
+        qos: .utility
+    )
     private var peripheral: CBPeripheral?
     private let maxFrames = 200
     struct MotionHandshakeDiagnosticConfiguration: Equatable {
@@ -8581,7 +8588,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
 
         orphanHistoricalIngressArchiveInFlight = true
-        historicalArchiveQueue.async { [weak self] in
+        orphanHistoricalIngressArchiveQueue.async { [weak self] in
             defer { HistoricalArchive.endDurableDrain(generation: orphanGeneration) }
             var archivedFrames = 0
             var ignoredMetadata = 0
