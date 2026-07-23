@@ -46,19 +46,20 @@ Do not skip Step 0 — it determines whether the rest is possible.
    - **0–60 s after connect:** the full connection setup + every command write.
    - **2–5 min steady state:** to measure the official app's RR-frame rate.
    - If the app has a "reprocess / sync / view HRV" action, trigger it to force a
-     **historical sync** and capture the `0x06`-family request + any `0x2f` frames.
+     **historical sync** and capture the preceding writes + any `0x2f` frames.
 6. Stop capture; **File → Save As** `whoop_official.pcapng`.
 
-## STEP 3 — Export the ATT layer and analyze
+## STEP 3 — Decode the ATT layer and analyze
 
 ```bash
-tshark -r whoop_official.pcapng -Y btatt -T json \
-  -e frame.time_relative -e btatt.opcode -e btatt.handle -e btatt.value > att.json
-
-./tools/analyze_sniffer.py att.json
+./tools/decode_whoop_att_capture.py whoop_official.pcapng \
+  --output docs/evidence/gate-b/sniffer/<timestamp>/whoop-att.csv
+./summarize_sniffer_trace.py \
+  docs/evidence/gate-b/sniffer/<timestamp>/whoop-att.csv
 ```
 
-Keep both `whoop_official.pcapng` and `att.json` in an ignored local evidence
+Keep both `whoop_official.pcapng`, `whoop-att.csv`, and its undecoded-byte sidecar
+in an ignored local evidence
 folder such as `docs/evidence/gate-b/sniffer/<timestamp>/`. Do not commit raw
 captures to the public repo.
 
@@ -71,9 +72,9 @@ fraction**. Two possible wins:
    diff its write sequence against ours (we send only `aa0800a82300030199bce9cf`).
    The extra/different writes before sustained RR are the missing step → replicate
    them in `AtriaBLEManager.armRealtime`.
-2. **Historical transfer:** if `0x2f` frames appear, capture the exact `0x06`-family
-   request bytes that preceded them → replicate to pull stored RR (clean 5-min
-   windows without live continuity).
+2. **Historical transfer:** if `0x2f` frames appear, preserve every preceding write
+   as protocol evidence. Do not label or replay any request until the sequence is
+   independently reviewed against a controlled outage.
 
 ## STEP 5 — Then close Gate B
 
