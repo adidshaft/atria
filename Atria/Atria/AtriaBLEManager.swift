@@ -26254,8 +26254,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             isConnected: status == .connected,
             reconnectPending: pendingKnownReconnectStartedAt != nil,
             rangeLossBackfillPending: rangeLossBackfillPending,
+            hasContinuousValidatedMotion: hasContinuousValidatedWorkoutMotion(now: now),
             now: now
         )
+    }
+
+    /// A step detector timestamp alone is deliberately insufficient for a
+    /// workout step boundary.  The physical strap can emit a lone passive R10
+    /// frame while the dense stream is unavailable.  Require the same current
+    /// connection density proof used by the motion lease before exposing a
+    /// strap-only count as ready or saving it on workout completion.
+    func hasContinuousValidatedWorkoutMotion(now: Date = Date()) -> Bool {
+        guard status == .connected,
+              peripheral?.state == .connected,
+              workoutMotionOwnerStartedAt != nil,
+              !rangeLossBackfillPending,
+              pendingKnownReconnectStartedAt == nil else {
+            return false
+        }
+        return workoutMotionDenseFrameCount(now: now)
+            >= Self.workoutMotionDenseFrameThreshold
     }
 
     /// Pure compatibility helper retained for calibration tests and older

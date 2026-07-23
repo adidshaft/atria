@@ -1849,6 +1849,7 @@ struct AtriaHomeView: View {
             isConnected: ble.status == .connected,
             reconnectPending: ble.pendingKnownReconnectStartedAt != nil,
             rangeLossBackfillPending: ble.rangeLossBackfillPending,
+            hasContinuousValidatedMotion: ble.hasContinuousValidatedWorkoutMotion(now: now),
             now: now
         )
     }
@@ -3135,7 +3136,7 @@ struct AtriaHomeView: View {
             pausedCount: session.pausedStepCount,
             pauseStartedCount: session.pauseStartedStepCount,
             hasStepEvidence: session.stepAccountingIsComplete
-                && selectedCoordinate?.hasEvidence == true,
+                && selectedCoordinate?.isLiveForCompletion == true,
             isValidated: selectedCoordinate?.isEstimated == false,
             capturedAt: capturedAt,
             isReconnecting: isReconnecting,
@@ -3162,6 +3163,7 @@ struct AtriaHomeView: View {
                 capturedAt: ble.liveStrapMotionCapturedAt.flatMap {
                     $0 >= session.start ? $0 : nil
                 },
+                hasContinuousValidatedMotion: ble.hasContinuousValidatedWorkoutMotion(now: now),
                 isReconnecting: isReconnecting,
                 now: now
             ),

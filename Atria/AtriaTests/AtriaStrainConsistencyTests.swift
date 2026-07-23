@@ -836,6 +836,15 @@ final class AtriaStrainConsistencyTests: XCTestCase {
         XCTAssertEqual(live.compactLabel, "Motion live")
         XCTAssertEqual(live.ageSeconds, 3)
 
+        let qualifying = AtriaLiveWorkoutMotionProjection.make(
+            capturedAt: now.addingTimeInterval(-3),
+            hasContinuousValidatedMotion: false,
+            isReconnecting: false,
+            now: now
+        )
+        XCTAssertEqual(qualifying.availability, .unavailable)
+        XCTAssertEqual(qualifying.compactLabel, "Motion qualifying")
+
         let gap = AtriaLiveWorkoutMotionProjection.make(
             capturedAt: now.addingTimeInterval(-19),
             isReconnecting: false,

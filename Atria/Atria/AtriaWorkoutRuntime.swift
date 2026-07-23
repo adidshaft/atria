@@ -72,6 +72,7 @@ struct AtriaWorkoutStepCoordinate: Equatable {
                      isConnected: Bool,
                      reconnectPending: Bool,
                      rangeLossBackfillPending: Bool,
+                     hasContinuousValidatedMotion: Bool = true,
                      now: Date) -> Self? {
         guard savedPrefixHydrated else { return nil }
         let cumulativeCount = AtriaHomeModel.mergedStrapStepResearchCount(
@@ -95,6 +96,10 @@ struct AtriaWorkoutStepCoordinate: Equatable {
                 && !rangeLossBackfillPending,
             isLiveForCompletion: hasEvidence
                 && fresh
+                // A fresh detector timestamp can follow a single sparse R10
+                // frame. That is useful diagnostic context, not a trustworthy
+                // strap-only workout-step boundary.
+                && hasContinuousValidatedMotion
                 && isConnected
                 && !reconnectPending
                 && !rangeLossBackfillPending
@@ -112,6 +117,7 @@ struct AtriaWorkoutStepCoordinate: Equatable {
         isConnected: Bool,
         reconnectPending: Bool,
         rangeLossBackfillPending: Bool,
+        hasContinuousValidatedMotion: Bool = true,
         now: Date
     ) -> Self? {
         guard savedPrefixHydrated else { return nil }
@@ -130,6 +136,7 @@ struct AtriaWorkoutStepCoordinate: Equatable {
                 && !rangeLossBackfillPending,
             isLiveForCompletion: hasEvidence
                 && fresh
+                && hasContinuousValidatedMotion
                 && isConnected
                 && !reconnectPending
                 && !rangeLossBackfillPending
