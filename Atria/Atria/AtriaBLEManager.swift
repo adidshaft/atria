@@ -215,6 +215,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private struct PendingHeartRateUpdate {
         let packet: ParsedHeartRatePacket?
         let rawData: Data
+        /// Callback receipt time is separate from the decoded frame timestamp.
+        /// It is the only honest boundary available if a queued callback is
+        /// discarded before MainActor processing.
+        let receivedAt: Date
+    }
+
+    private struct HeartRateIngressOverflow {
+        let droppedCount: Int
+        let firstDroppedAt: Date
+        let lastDroppedAt: Date
+
+        func merged(with next: HeartRateIngressOverflow) -> HeartRateIngressOverflow {
+            HeartRateIngressOverflow(
+                droppedCount: droppedCount + next.droppedCount,
+                firstDroppedAt: min(firstDroppedAt, next.firstDroppedAt),
+                lastDroppedAt: max(lastDroppedAt, next.lastDroppedAt)
+            )
+        }
+    }
+
+    private struct PendingHeartRateDrainBatch {
+        let updates: [PendingHeartRateUpdate]
+        let overflow: HeartRateIngressOverflow?
     }
 
     private struct LongWearSupervisorConfig: Equatable {
@@ -885,6 +908,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private nonisolated let heartRatePacketQueueLock = NSLock()
     private nonisolated(unsafe) var pendingHeartRateUpdates: [PendingHeartRateUpdate] = []
     private nonisolated(unsafe) var pendingHeartRateUpdateHead = 0
+    private nonisolated(unsafe) var pendingHeartRateIngressOverflow: HeartRateIngressOverflow?
     private nonisolated(unsafe) var heartRatePacketDrainScheduled = false
     // Keep per-packet work off the callback queue, but avoid tiny main-actor
     // batches that spend more time handing off than applying data.
@@ -24232,9 +24256,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         var shouldScheduleDrain = false
         heartRatePacketQueueLock.lock()
         pendingHeartRateUpdates.append(update)
-        Self.trimPendingQueue(&pendingHeartRateUpdates,
-                              consumedCount: &pendingHeartRateUpdateHead,
-                              limit: Self.pendingHeartRateUpdateLimit)
+        let unconsumedCount = pendingHeartRateUpdates.count - pendingHeartRateUpdateHead
+        let overflowCount = max(0, unconsumedCount - Self.pendingHeartRateUpdateLimit)
+        if overflowCount > 0 {
+            let first = pendingHeartRateUpdates[pendingHeartRateUpdateHead].receivedAt
+            let last = pendingHeartRateUpdates[
+                pendingHeartRateUpdateHead + overflowCount - 1
+            ].receivedAt
+            let overflow = HeartRateIngressOverflow(droppedCount: overflowCount,
+                                                     firstDroppedAt: first,
+                                                     lastDroppedAt: last)
+            pendingHeartRateIngressOverflow = pendingHeartRateIngressOverflow
+                .map { $0.merged(with: overflow) } ?? overflow
+        }
+        let removed = Self.trimPendingQueue(&pendingHeartRateUpdates,
+                                            consumedCount: &pendingHeartRateUpdateHead,
+                                            limit: Self.pendingHeartRateUpdateLimit)
+        assert(removed == overflowCount)
         if !heartRatePacketDrainScheduled {
             heartRatePacketDrainScheduled = true
             shouldScheduleDrain = true
@@ -24246,8 +24284,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
 
-    private nonisolated func dequeuePendingHeartRateUpdateBatch(limit: Int) -> [PendingHeartRateUpdate] {
+    private nonisolated func dequeuePendingHeartRateUpdateBatch(
+        limit: Int
+    ) -> PendingHeartRateDrainBatch {
         heartRatePacketQueueLock.lock()
+        let overflow = pendingHeartRateIngressOverflow
+        pendingHeartRateIngressOverflow = nil
         let availableCount = pendingHeartRateUpdates.count - pendingHeartRateUpdateHead
         let count = min(limit, availableCount)
         let batch = count > 0
@@ -24265,7 +24307,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             }
         }
         heartRatePacketQueueLock.unlock()
-        return batch
+        return PendingHeartRateDrainBatch(updates: batch, overflow: overflow)
     }
 
     private nonisolated func finishHeartRatePacketDrainIfIdle() -> Bool {
@@ -24283,14 +24325,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private nonisolated func drainPendingHeartRateUpdates() async {
         var batchesSinceRunLoopTurn = 0
         while true {
-            let batch = dequeuePendingHeartRateUpdateBatch(limit: Self.heartRatePacketBatchSize)
-            if batch.isEmpty {
+            let drained = dequeuePendingHeartRateUpdateBatch(limit: Self.heartRatePacketBatchSize)
+            if let overflow = drained.overflow {
+                await recordHeartRateIngressOverflow(overflow)
+            }
+            if drained.updates.isEmpty {
                 if finishHeartRatePacketDrainIfIdle() {
                     return
                 }
                 continue
             }
-            await applyPendingHeartRateUpdates(batch)
+            await applyPendingHeartRateUpdates(drained.updates)
             batchesSinceRunLoopTurn += 1
             if batchesSinceRunLoopTurn >= 8 {
                 batchesSinceRunLoopTurn = 0
@@ -24303,6 +24348,50 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func applyPendingHeartRateUpdates(_ updates: [PendingHeartRateUpdate]) async {
         await handlePendingHeartRateUpdates(updates)
+    }
+
+    /// A bounded ingress queue protects the callback thread, but it must never
+    /// turn overload into an invisible health-data hole. Persist the exact
+    /// receive-time envelope, queue verified history recovery, and force the
+    /// live journal checkpoint. No samples are manufactured or interpolated.
+    private func recordHeartRateIngressOverflow(_ overflow: HeartRateIngressOverflow) {
+        let start = lastAcceptedHRAt ?? overflow.firstDroppedAt
+        let end = max(start, overflow.lastDroppedAt)
+        let gap = end.timeIntervalSince(start)
+        sessionRawHRGaps += 1
+        sessionAcceptedHRGaps += 1
+        sessionMaxRawHRGap = max(sessionMaxRawHRGap, gap)
+        sessionMaxAcceptedHRGap = max(sessionMaxAcceptedHRGap, gap)
+        sampleDiagnostics.rawGaps += 1
+        sampleDiagnostics.acceptedGaps += 1
+        sampleDiagnostics.maxRawGap = max(sampleDiagnostics.maxRawGap, gap)
+        sampleDiagnostics.maxAcceptedGap = max(sampleDiagnostics.maxAcceptedGap, gap)
+        setSampleDiagnosticsStatus("ingress_overflow", reason: "heart_rate_queue_drop")
+        let continuityRelevant = Self.isBLEContinuityRelevant(
+            longWearEnabled: longWearModeEnabled,
+            activeExplicitWorkout: AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
+        )
+        let recordedGap = continuityRelevant && AtriaHistoricalGapLedger.recordObservedGap(
+            start: start,
+            end: end,
+            reason: "heart_rate_ingress_overflow",
+            minimumDuration: SavedSession.workoutContinuityGapLimit
+        )
+        if recordedGap {
+            markRangeLossBackfillRequired(
+                reason: AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
+                    ? "explicit_workout_range_loss" : "long_wear_range_loss"
+            )
+            scheduleRangeLossBackfillIfNeeded(reason: "heart_rate_ingress_overflow")
+        }
+        AtriaDebugLog("ATRIADBG hr_ingress_overflow dropped=%d start_unix=%.3f end_unix=%.3f gap_s=%.3f ledger_gap=%d action=retain_missing_window_no_interpolation",
+                      overflow.droppedCount,
+                      start.timeIntervalSince1970,
+                      end.timeIntervalSince1970,
+                      gap,
+                      recordedGap ? 1 : 0)
+        persistActiveSessionJournalIfNeeded(reason: "heart_rate_ingress_overflow", force: true)
+        flushSampleDiagnostics()
     }
 
     private func handleParsedRealtimePacket(_ packet: ParsedRealtimePacket) {
@@ -27727,7 +27816,9 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     self.noteDutyCycleHeartRate(parsed.hr)
                 }
             }
-            enqueueHeartRateUpdate(PendingHeartRateUpdate(packet: parsed, rawData: data))
+            enqueueHeartRateUpdate(PendingHeartRateUpdate(packet: parsed,
+                                                          rawData: data,
+                                                          receivedAt: receivedAt))
             return
         }
         if uuid == UUIDs.batteryLevel {
