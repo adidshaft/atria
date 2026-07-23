@@ -4655,10 +4655,6 @@ struct AtriaHomeView: View {
             AtriaMissedDataBanner(protectsLiveStream: missedDataBackfillIsDeferredForLiveStream) {
                 missedDataBannerDismissedUntil = Date().addingTimeInterval(60 * 60)
             } onSync: {
-                guard !missedDataBackfillIsDeferredForLiveStream else {
-                    missedDataBannerDismissedUntil = Date().addingTimeInterval(15 * 60)
-                    return
-                }
                 missedDataBannerDismissedUntil = nil
                 _ = ble.requestOfflineHistoricalSyncIfNeeded(reason: "home_missed_data_banner",
                                                              force: true)
@@ -5226,28 +5222,18 @@ private struct AtriaMissedDataBanner: View, Equatable {
 
     @ViewBuilder
     private var compactState: some View {
-        if protectsLiveStream {
-            Text("Live")
+        Button(action: onSync) {
+            Image(systemName: "arrow.triangle.2.circlepath")
                 .font(.caption.weight(.bold))
-                .foregroundStyle(.cyan)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
-                .background(AtriaIconTileBackground(cornerRadius: 10, tint: .cyan))
-                .accessibilityLabel("Live heart rate protected")
-        } else {
-            Button(action: onSync) {
-                Image(systemName: "arrow.triangle.2.circlepath")
-                    .font(.caption.weight(.bold))
-                    // 44pt hit area (UX-quality audit 2026-07-07): the glyph
-                    // stays 16pt, the target doesn't.
-                    .frame(width: 32, height: 32)
-                    .contentShape(.rect)
-            }
-            .atriaCardAction(prominent: false, tint: .cyan)
-            .accessibilityLabel("Check strap for missed data")
+                // 44pt hit area (UX-quality audit 2026-07-07): the glyph
+                // stays 16pt, the target doesn't.
+                .frame(width: 32, height: 32)
+                .contentShape(.rect)
         }
+        .atriaCardAction(prominent: false, tint: .cyan)
+        .accessibilityLabel(protectsLiveStream
+                            ? "Sync missed data now; live heart rate may pause during recovery"
+                            : "Check strap for missed data")
     }
 
     private var dismissButton: some View {
