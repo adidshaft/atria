@@ -620,6 +620,20 @@ final class AtriaPerfFixesTests: XCTestCase {
                        accuracy: 0.000_001)
     }
 
+    func testWorkoutStepPrefixUsesOnlyCanonicalStrapStepAnchors() {
+        let active = savedAggregateSession(start: t0, stepCount: 42)
+        let completed = savedAggregateSession(start: t0.addingTimeInterval(60), stepCount: 100)
+        let prefix = SessionStore.workoutSavedStepPrefix(
+            from: [active, completed],
+            activeSessionID: active.id,
+            now: completed.end.addingTimeInterval(1)
+        )
+
+        XCTAssertEqual(prefix.savedTodayStrapSteps, 142)
+        XCTAssertEqual(prefix.savedActiveSessionStrapSteps, 42)
+        XCTAssertEqual(prefix.savedActiveSessionTotalStrapSteps, 42)
+    }
+
     func testLiveTRIMPMergeReplacesCheckpointedActivePrefix() {
         XCTAssertEqual(SessionStore.mergedTodayTRIMP(savedToday: 32,
                                                       savedActiveSession: 12,

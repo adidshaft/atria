@@ -5360,6 +5360,18 @@ final class SessionStore: ObservableObject {
         let sessionsCount: Int
     }
 
+    /// The exact saved strap-step prefix needed at a workout action boundary.
+    /// Keep this deliberately separate from `HomeSavedAggregate`: starting a
+    /// workout must never synchronously calculate archive HR segmentation,
+    /// TRIMP, calories, or physiological-day state just to establish a step
+    /// anchor.
+    struct WorkoutSavedStepPrefix: Equatable {
+        let day: Date
+        let savedTodayStrapSteps: Int
+        let savedActiveSessionStrapSteps: Int
+        let savedActiveSessionTotalStrapSteps: Int
+    }
+
     private nonisolated static let behaviorCorrelationWindowDays = 90
     nonisolated static let biologicalAgeCacheSchema = 5
     nonisolated static let biologicalAgeCacheTTL: TimeInterval = 7 * 24 * 60 * 60
@@ -11241,6 +11253,40 @@ final class SessionStore: ObservableObject {
                                                 rawSessionCount: sessions.count)
         cachedHomeSavedAggregate = aggregate
         return aggregate
+    }
+
+    func workoutSavedStepPrefix(activeSessionID: UUID? = nil,
+                                calendar: Calendar = .current,
+                                now: Date = Date()) -> WorkoutSavedStepPrefix {
+        Self.workoutSavedStepPrefix(
+            from: canonicalSessions(),
+            activeSessionID: activeSessionID,
+            calendar: calendar,
+            now: now
+        )
+    }
+
+    nonisolated static func workoutSavedStepPrefix(
+        from canonicalSessions: [SavedSession],
+        activeSessionID: UUID? = nil,
+        calendar: Calendar = .current,
+        now: Date = Date()
+    ) -> WorkoutSavedStepPrefix {
+        let day = calendar.startOfDay(for: now)
+        let interval = DateInterval(start: day, end: now)
+        let todaySessions = canonicalSessions.filter { $0.end > day && $0.start < now }
+        let savedToday = todaySessions.reduce(0) { total, session in
+            total + session.attributedStrapSteps(within: interval)
+        }
+        let active = activeSessionID.flatMap { activeID in
+            todaySessions.first(where: { $0.id == activeID })
+        }
+        return WorkoutSavedStepPrefix(
+            day: day,
+            savedTodayStrapSteps: savedToday,
+            savedActiveSessionStrapSteps: active?.attributedStrapSteps(within: interval) ?? 0,
+            savedActiveSessionTotalStrapSteps: max(0, active?.strapStepResearchCount ?? 0)
+        )
     }
 
     nonisolated static func homeSavedAggregate(from canonicalSessions: [SavedSession],
