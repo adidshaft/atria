@@ -10440,11 +10440,13 @@ final class SessionStore: ObservableObject {
                                                     confirmedSleeps: cachedConfirmedSleeps,
                                                     calendar: calendar)
         let latestSleep = currentPhysiologicalMainSleep(on: now, calendar: calendar)
-        let frozen = DailyRecoveryResolver.summary(rollups: dailyRollupHistory,
-                                                   metrics: dailyMetricHistory,
-                                                   physiologicalCycle: cycle,
-                                                   anchorSleep: latestSleep,
-                                                   calendar: calendar)?.recoveryEstimate
+        let frozen = Self.numericFrozenRecovery(
+            DailyRecoveryResolver.summary(rollups: dailyRollupHistory,
+                                          metrics: dailyMetricHistory,
+                                          physiologicalCycle: cycle,
+                                          anchorSleep: latestSleep,
+                                          calendar: calendar)?.recoveryEstimate
+        )
         // Preserve lazy semantics even for the terminal paths. The cache's
         // autoclosure contract is covered by counter tests so future refactors
         // cannot accidentally run Recovery v2 before checking frozen recovery.
@@ -10521,6 +10523,21 @@ final class SessionStore: ObservableObject {
                 respiratoryBaseline: respiratoryBaseline
             )
         )
+    }
+
+    /// A persisted recovery summary with no score is useful audit context, but
+    /// it is not a morning score. Treating it as an immutable freeze made an
+    /// old "Learning" row keep the Recovery card grey even after a measured
+    /// sleep supplied enough evidence for the conservative, no-HRV estimate.
+    ///
+    /// Numeric frozen scores still win exactly as before. This only reopens the
+    /// projection for a scoreless legacy/partial summary; the projection itself
+    /// still fails closed when it has no real sleep, RHR, or HRV evidence.
+    nonisolated static func numericFrozenRecovery(
+        _ candidate: Metrics.RecoveryEstimate?
+    ) -> Metrics.RecoveryEstimate? {
+        guard let candidate, candidate.percent != nil else { return nil }
+        return candidate
     }
 
     /// Presentation-only recovery for Home's live rings and cards.
