@@ -7683,4 +7683,28 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), .revoke(.expired))
     }
 
+    func testUserApprovedClockRepairIsExplicitAndSingleFlight() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func performUserApprovedHistoryClockSync"
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "private func performProductionHistoryReadPreflight",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(body.contains("guard historyClockSyncEnabled else { return .confirmed }"))
+        XCTAssertTrue(body.contains("command: Cmd.setClock"))
+        XCTAssertTrue(body.contains("sendHistoryCommandAwaitingWriteConfirmation"))
+        XCTAssertTrue(body.contains("payload = withUnsafeBytes(of: unixSeconds.littleEndian)"))
+        XCTAssertTrue(body.contains("+ [0, 0, 0, 0]"))
+        XCTAssertTrue(body.contains("Task.sleep(for: .milliseconds(800))"))
+        XCTAssertTrue(body.contains("historyClockSyncEnabled = false"),
+                      "an explicit approval is single-use and must not leak into automatic recovery")
+        XCTAssertFalse(body.contains("Cmd.forceTrim"))
+        XCTAssertFalse(body.contains("Cmd.abortHistoricalTransmits"))
+        XCTAssertFalse(body.contains("Cmd.reboot"))
+    }
+
 }
