@@ -864,6 +864,27 @@ final class AtriaWhoop4HistoryAdmissionLedgerTests: XCTestCase {
         XCTAssertEqual(second.deferredEligibleRowsAboveLimit, 0)
     }
 
+    func testManagerContinuesBoundedMaintenanceForDeferredEligibleRows() throws {
+        let testsURL = URL(fileURLWithPath: #filePath)
+        let projectRoot = testsURL.deletingLastPathComponent().deletingLastPathComponent()
+        let managerSource = try String(
+            contentsOf: projectRoot.appendingPathComponent("Atria/AtriaBLEManager.swift"),
+            encoding: .utf8
+        )
+        let methodStart = try XCTUnwrap(managerSource.range(of:
+            "private func scheduleHistoricalAdmissionLedgerMaintenance(reason: String)"
+        ))
+        let methodEnd = try XCTUnwrap(managerSource.range(of:
+            "private func finalizeFullDrainTerminalAuthority(",
+            range: methodStart.lowerBound..<managerSource.endIndex
+        ))
+        let method = String(managerSource[methodStart.lowerBound..<methodEnd.lowerBound])
+
+        XCTAssertTrue(method.contains("prune.deferredEligibleRowsAboveLimit > 0"))
+        XCTAssertTrue(method.contains("reason: \"\\(reason)_continued\""),
+                      "a bounded prune must schedule its next safe pass instead of waiting for lifecycle")
+    }
+
     func testRetentionReportsProtectedPressureInsteadOfDeletingUnsafeRows() throws {
         let fixture = try Fixture()
         let ledger = try fixture.ledger()
