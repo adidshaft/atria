@@ -7735,4 +7735,17 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(body.contains("Cmd.abortHistoricalTransmits"))
     }
 
+    func testExplicitHistoryRepairUsesCompleteListenerProfileAndBondOnly() throws {
+        let source = try leaseManagerSource()
+        XCTAssertTrue(source.contains("return [Self.UUIDs.strapRX, Self.UUIDs.strapStream4,\n                    Self.UUIDs.strapStream5]"))
+        XCTAssertTrue(source.contains("if historyTransportPhaseFence.snapshot().usesExplicitHistoryProfile {\n                // The strap's verified offload profile"))
+        XCTAssertTrue(source.contains("command: Cmd.getBatteryLevel"))
+        XCTAssertTrue(source.contains("payload: [0x00]"))
+        XCTAssertTrue(source.contains("Task.sleep(for: .milliseconds(1500))"))
+        XCTAssertTrue(source.contains("listeners=03,04,05 action=allow_1600"))
+        XCTAssertFalse(source.contains("command: Cmd.forceTrim"))
+        XCTAssertFalse(source.contains("command: Cmd.abortHistoricalTransmits"))
+        XCTAssertFalse(source.contains("command: Cmd.reboot"))
+    }
+
 }

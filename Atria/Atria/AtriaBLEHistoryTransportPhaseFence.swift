@@ -10,17 +10,27 @@ import Foundation
 final class AtriaBLEHistoryTransportPhaseFence: @unchecked Sendable {
     struct Snapshot: Equatable, Sendable {
         let generation: UInt64?
+        let usesExplicitHistoryProfile: Bool
+
+        init(generation: UInt64?, usesExplicitHistoryProfile: Bool = false) {
+            self.generation = generation
+            self.usesExplicitHistoryProfile = usesExplicitHistoryProfile
+        }
 
         var isActive: Bool { generation != nil }
     }
 
     private let lock = NSLock()
     private var generation: UInt64?
+    private var usesExplicitHistoryProfile = false
 
-    func activate(generation: UInt64) -> Snapshot {
+    func activate(generation: UInt64,
+                  usesExplicitHistoryProfile: Bool = false) -> Snapshot {
         lock.lock()
         self.generation = generation
-        let snapshot = Snapshot(generation: generation)
+        self.usesExplicitHistoryProfile = usesExplicitHistoryProfile
+        let snapshot = Snapshot(generation: generation,
+                                usesExplicitHistoryProfile: usesExplicitHistoryProfile)
         lock.unlock()
         return snapshot
     }
@@ -30,15 +40,18 @@ final class AtriaBLEHistoryTransportPhaseFence: @unchecked Sendable {
         lock.lock()
         if expectedGeneration == nil || generation == expectedGeneration {
             generation = nil
+            usesExplicitHistoryProfile = false
         }
-        let snapshot = Snapshot(generation: generation)
+        let snapshot = Snapshot(generation: generation,
+                                usesExplicitHistoryProfile: usesExplicitHistoryProfile)
         lock.unlock()
         return snapshot
     }
 
     func snapshot() -> Snapshot {
         lock.lock()
-        let snapshot = Snapshot(generation: generation)
+        let snapshot = Snapshot(generation: generation,
+                                usesExplicitHistoryProfile: usesExplicitHistoryProfile)
         lock.unlock()
         return snapshot
     }
