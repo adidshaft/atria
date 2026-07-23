@@ -15414,6 +15414,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func acceptHeartRate(_ rate: Int, at sampleTime: Date) {
         let shouldForceFirstJournalSave = longWearModeEnabled && session.isEmpty
         recordAcceptedHRSample(rate: rate, at: sampleTime)
+        // A restored CoreBluetooth link can bypass both didConnect and the
+        // central powered-on handoff. The first accepted 2A37 packet is the
+        // final, unambiguous proof that this saved strap is live; use it to
+        // schedule only raw orphan archival, never a history command or ACK.
+        _ = archiveOrphanHistoricalIngressIfNeeded(
+            reason: "first_accepted_hr_orphan_ingress_replay",
+            force: false,
+            explicitRequest: false
+        )
         if resumeFullDrainPublicationAfterFreshHR {
             resumeFullDrainPublicationAfterFreshHR = false
             resumePendingFullDrainPublicationIfNeeded(
