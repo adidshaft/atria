@@ -202,12 +202,17 @@ struct AtriaLiveWorkoutMotionProjection: Equatable {
     let capturedAt: Date?
     let availability: AtriaLiveSensorAvailability
     let ageSeconds: Int?
+    /// A fresh individual frame is not enough to call workout-step motion
+    /// ready. The workout lease supplies this only after its dense R10 proof.
+    let hasContinuousValidatedMotion: Bool
 
     static let unavailable = AtriaLiveWorkoutMotionProjection(capturedAt: nil,
                                                                availability: .unavailable,
-                                                               ageSeconds: nil)
+                                                               ageSeconds: nil,
+                                                               hasContinuousValidatedMotion: false)
 
     static func make(capturedAt: Date?,
+                     hasContinuousValidatedMotion: Bool = true,
                      isReconnecting: Bool,
                      now: Date = Date()) -> Self {
         let age = capturedAt.map { max(0, now.timeIntervalSince($0)) }
@@ -216,10 +221,15 @@ struct AtriaLiveWorkoutMotionProjection: Equatable {
                 && now.timeIntervalSince($0) <= freshnessInterval
         } ?? false
         let availability: AtriaLiveSensorAvailability
-        if isFresh {
+        if isFresh && hasContinuousValidatedMotion {
             availability = .live
         } else if isReconnecting {
             availability = .reconnecting
+        } else if isFresh {
+            // A new frame arrived, but the 12-of-15-second proof has not
+            // completed. Keep steps unavailable rather than implying a count
+            // can already be trusted.
+            availability = .unavailable
         } else if capturedAt != nil {
             availability = .stale
         } else {
@@ -227,7 +237,8 @@ struct AtriaLiveWorkoutMotionProjection: Equatable {
         }
         return Self(capturedAt: capturedAt,
                     availability: availability,
-                    ageSeconds: age.map { Int($0.rounded(.down)) })
+                    ageSeconds: age.map { Int($0.rounded(.down)) },
+                    hasContinuousValidatedMotion: hasContinuousValidatedMotion)
     }
 
     var compactLabel: String {
@@ -236,7 +247,8 @@ struct AtriaLiveWorkoutMotionProjection: Equatable {
         case .reconnecting: return "Motion syncing"
         case .stale:
             return ageSeconds.map { "Motion gap · \($0)s" } ?? "Motion gap"
-        case .unavailable: return "Motion pending"
+        case .unavailable:
+            return capturedAt == nil ? "Motion pending" : "Motion qualifying"
         }
     }
 

@@ -278,6 +278,25 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
         ))
     }
 
+    func testFreshStepCoordinateIsNotCompletionReadyBeforeContinuousStrapMotion() throws {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let coordinate = try XCTUnwrap(AtriaWorkoutStepCoordinate.makeCumulative(
+            savedPrefixHydrated: true,
+            cumulativeCount: 240,
+            hasEvidence: true,
+            capturedAt: now,
+            isConnected: true,
+            reconnectPending: false,
+            rangeLossBackfillPending: false,
+            hasContinuousValidatedMotion: false,
+            now: now
+        ))
+
+        XCTAssertTrue(coordinate.hasEvidence)
+        XCTAssertFalse(coordinate.isLiveForCompletion,
+                       "A lone fresh strap frame must not make workout steps ready")
+    }
+
     func testHeadlessEndOmitsStaleOrBackfillPendingStepTotals() throws {
         let start = Date(timeIntervalSince1970: 2_000_000_000)
         let endAt = start.addingTimeInterval(120)
