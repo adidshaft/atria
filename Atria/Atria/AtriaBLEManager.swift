@@ -1992,6 +1992,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         label: "com.adidshaft.atria.orphan-historical-ingress-archive",
         qos: .utility
     )
+    /// Cold opening the exact-history identity store can scan all retained raw
+    /// chunks. Start it on its own utility lane at launch so a recovered raw
+    /// ingress journal never performs that one-time cost inside its first
+    /// frame append or on the BLE/main queues.
+    private nonisolated let historicalArchiveWarmQueue = DispatchQueue(
+        label: "com.adidshaft.atria.historical-archive-warm",
+        qos: .utility
+    )
+    private nonisolated let historicalArchiveWarmGroup = DispatchGroup()
     private var peripheral: CBPeripheral?
     private let maxFrames = 200
     struct MotionHandshakeDiagnosticConfiguration: Equatable {
@@ -3552,6 +3561,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         debugForceUnknownStrapGeneration = false
 #endif
         super.init()
+        // Do not let the first recovered history frame pay the cost of
+        // rebuilding the exact-identity index over every retained raw chunk.
+        // This lane is deliberately detached from CoreBluetooth and performs
+        // no transport work or recovery-state mutation.
+        historicalArchiveWarmGroup.enter()
+        let archiveWarmGroup = historicalArchiveWarmGroup
+        historicalArchiveWarmQueue.async {
+            defer { archiveWarmGroup.leave() }
+            do {
+                AtriaDebugLog("ATRIADBG historical_archive_warm status=started action=identity_store_open_only")
+                try HistoricalArchive.warmDurableIdentityStoreForBackgroundRecovery()
+                AtriaDebugLog("ATRIADBG historical_archive_warm status=ready action=no_archive_append_no_ack_no_coverage")
+            } catch {
+                // The replay journal remains intact. A later retry will reopen
+                // the store normally and still cannot send an ACK from this
+                // background warmup failure.
+                AtriaDebugLog("ATRIADBG historical_archive_warm status=deferred error=%@ action=retain_orphan_raw_no_ack_no_coverage",
+                              String(describing: error))
+            }
+        }
         // A process crash cannot resume the old reducer/ACK gate. Preserve the
         // bounded ingress journal until a later verified owner can archive its
         // exact raw frames. It is not ACK/coverage authority, but it can still
@@ -8588,15 +8617,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
 
         orphanHistoricalIngressArchiveInFlight = true
+        let archiveWarmGroup = historicalArchiveWarmGroup
         orphanHistoricalIngressArchiveQueue.async { [weak self] in
             defer { HistoricalArchive.endDurableDrain(generation: orphanGeneration) }
             var archivedFrames = 0
             var ignoredMetadata = 0
             do {
+                AtriaDebugLog("ATRIADBG historyIngress status=replay_waiting_for_identity_store generation=%llu", orphanGeneration)
+                archiveWarmGroup.wait()
+                AtriaDebugLog("ATRIADBG historyIngress status=replay_identity_store_ready generation=%llu", orphanGeneration)
+                AtriaDebugLog("ATRIADBG historyIngress status=replay_worker_started generation=%llu", orphanGeneration)
                 let spool = try AtriaWhoop4HistoricalIngressSpool(
                     url: ingressURL,
                     generation: orphanGeneration
                 )
+                AtriaDebugLog("ATRIADBG historyIngress status=replay_journal_opened pending=%d generation=%llu", spool.pendingCount, orphanGeneration)
                 while let event = try spool.popFirst() {
                     switch event {
                     case let .frame(payload, clock, clockAuthorityEnabled):
@@ -8637,12 +8672,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             )
                         }
                         archivedFrames += 1
+                        AtriaDebugLog("ATRIADBG historyIngress status=replay_frame_persisted count=%d generation=%llu", archivedFrames, orphanGeneration)
                     case .metadata:
                         ignoredMetadata += 1
                     }
                 }
                 // `persist` is per-frame durable; synchronize the canonical
                 // archive once more before retiring this source journal.
+                AtriaDebugLog("ATRIADBG historyIngress status=replay_flush_started frames=%d generation=%llu", archivedFrames, orphanGeneration)
                 _ = try HistoricalArchive.synchronizeDurableStorage(
                     generation: orphanGeneration
                 )

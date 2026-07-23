@@ -623,6 +623,17 @@ enum HistoricalArchive {
         return receipt
     }
 
+    /// Opens the exact-history identity store before a recovery drain needs its
+    /// first append. The initial open may rebuild its derived index by scanning
+    /// retained raw chunks, which can be substantial after a long wear period.
+    /// Call this only from a background queue: it performs no append, terminal
+    /// publication, ACK, cursor, or gap-coverage mutation.
+    static func warmDurableIdentityStoreForBackgroundRecovery() throws {
+        durableStoreLock.lock()
+        defer { durableStoreLock.unlock() }
+        _ = try durableStoreLocked()
+    }
+
     /// Production-facing bridge for the terminal history-drain callback.
     /// It flushes the exact drain batch, derives authoritative bounds through
     /// the canonical aggregate builder, and atomically rotates the active raw
