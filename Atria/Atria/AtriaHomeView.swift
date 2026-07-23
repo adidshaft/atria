@@ -4224,6 +4224,9 @@ struct AtriaHomeView: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
                     topChrome
+                    AtriaHomeRecoveryStatusHost(coreLiveStore: model.coreLiveStore)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 6)
                     if showConnectivityPill {
                         connectivityPill
                             .padding(.horizontal, 16)
@@ -4394,6 +4397,96 @@ struct AtriaHomeView: View {
                     showConnectivityPill = false
                 }
             }
+        }
+    }
+
+    /// The header owns the outcome of a history transaction; the recovery
+    /// surface merely renders that small, already-published truth between the
+    /// strap pill and greeting. It intentionally has no action, so a glance at
+    /// a pending gap cannot launch another competing recovery attempt.
+    private struct AtriaHomeRecoveryStatusHost: View {
+        @ObservedObject var coreLiveStore: AtriaHomeModel.CoreLiveStore
+
+        var body: some View {
+            TimelineView(.periodic(from: .now, by: 12)) { context in
+                if let status = status(now: context.date) {
+                    GlassEffectContainer(spacing: 0) {
+                        Label(status.title, systemImage: status.symbol)
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.82)
+                            .foregroundStyle(status.tint)
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 7)
+                            .glassEffect(.regular.tint(status.tint.opacity(0.16)), in: .capsule)
+                            .accessibilityLabel(status.accessibilityLabel)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+            .animation(.snappy(duration: 0.2), value: coreLiveStore.state.historicalRecoveryPresentation)
+        }
+
+        private func status(now: Date) -> Status? {
+            let live = coreLiveStore.state
+            switch live.historicalRecoveryPresentation {
+            case .syncing(let savedRecords):
+                let suffix = savedRecords > 0 ? " · \(savedRecords) saved" : ""
+                return Status(title: "Syncing strap history\(suffix)",
+                              symbol: "arrow.triangle.2.circlepath",
+                              tint: .cyan,
+                              accessibilityLabel: savedRecords > 0
+                                ? "History sync in progress. \(savedRecords) records durably saved; missing data is not yet verified."
+                                : "History sync in progress. Missing data is not yet verified.")
+            case .verified:
+                return Status(title: "Recovery verified",
+                              symbol: "checkmark.seal.fill",
+                              tint: .green,
+                              accessibilityLabel: "Historical recovery verified for the pending data gap.")
+            case .partial(let savedRecords):
+                let suffix = savedRecords > 0 ? " · \(savedRecords) saved" : ""
+                return Status(title: "Recovery partial\(suffix)",
+                              symbol: "exclamationmark.triangle.fill",
+                              tint: .yellow,
+                              accessibilityLabel: "History sync saved \(savedRecords) records, but recovery of the missing interval is not verified.")
+            case .needsAttention:
+                guard live.rangeLossBackfillPending else {
+                    return liveProtectedStatus(live, now: now)
+                }
+                return Status(title: "Missed data needs review",
+                              symbol: "exclamationmark.triangle.fill",
+                              tint: .orange,
+                              accessibilityLabel: "Missed strap data needs review. It has not been verified as recovered.")
+            case .idle:
+                if live.rangeLossBackfillPending {
+                    return Status(title: "Missed data needs review",
+                                  symbol: "exclamationmark.triangle.fill",
+                                  tint: .orange,
+                                  accessibilityLabel: "Missed strap data needs review. It has not been verified as recovered.")
+                }
+                return liveProtectedStatus(live, now: now)
+            }
+        }
+
+        private func liveProtectedStatus(_ live: AtriaHomeModel.CoreLiveState,
+                                         now: Date) -> Status? {
+            guard live.status == .connected,
+                  live.hasRecentHeartRateSample,
+                  live.lastReadingAt.map({ now.timeIntervalSince($0) <= 15 }) == true else {
+                return nil
+            }
+            return Status(title: "Live capture protected",
+                          symbol: "checkmark.shield.fill",
+                          tint: .green,
+                          accessibilityLabel: "Live heart-rate capture is protected.")
+        }
+
+        private struct Status {
+            let title: String
+            let symbol: String
+            let tint: Color
+            let accessibilityLabel: String
         }
     }
 
@@ -7641,6 +7734,7 @@ final class AtriaHomeModel {
         var pendingKnownReconnectStartedAt: Date?
         var pendingKnownReconnectReason: String
         var rangeLossBackfillPending: Bool
+        var historicalRecoveryPresentation: AtriaBLEManager.HistoricalRecoveryPresentation
 
         var batteryText: String { batteryLevel >= 0 ? "\(batteryLevel)%" : "—" }
         var batteryChargeText: String {
@@ -8631,7 +8725,8 @@ final class AtriaHomeModel {
             ble.$lastScanMatchAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$pendingKnownReconnectStartedAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$pendingKnownReconnectReason.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            ble.$rangeLossBackfillPending.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
+            ble.$rangeLossBackfillPending.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$historicalRecoveryPresentation.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
         ])
         .throttle(for: .milliseconds(400), scheduler: RunLoop.main, latest: true)
 
@@ -9400,7 +9495,8 @@ final class AtriaHomeModel {
                              lastScanMatchAt: ble.lastScanMatchAt,
                              pendingKnownReconnectStartedAt: ble.pendingKnownReconnectStartedAt,
                              pendingKnownReconnectReason: ble.pendingKnownReconnectReason,
-                             rangeLossBackfillPending: ble.rangeLossBackfillPending)
+                             rangeLossBackfillPending: ble.rangeLossBackfillPending,
+                             historicalRecoveryPresentation: ble.historicalRecoveryPresentation)
     }
 
     nonisolated static func mergedStrapStepResearchCount(savedToday: Int,

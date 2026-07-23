@@ -537,6 +537,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     enum Status: String { case poweredOff = "Bluetooth off", scanning = "Scanning…",
         connecting = "Connecting…", connected = "Connected", disconnected = "Disconnected" }
 
+    /// User-facing recovery state. This deliberately represents only transport
+    /// progress and durable coverage, never a conclusion inferred from rows.
+    enum HistoricalRecoveryPresentation: Equatable {
+        case idle
+        case syncing(savedRecords: Int)
+        case verified
+        case partial(savedRecords: Int)
+        case needsAttention
+    }
+
     enum OfficialAppCoexistenceRisk: String {
         case advisory
         case suspected
@@ -604,6 +614,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var isActivelyScanning = false
     @Published private(set) var officialAppCoexistenceRisk: OfficialAppCoexistenceRisk = OfficialAppCoexistenceRisk.load()
     @Published private(set) var rangeLossBackfillPending = UserDefaults.standard.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending)
+    @Published private(set) var historicalRecoveryPresentation: HistoricalRecoveryPresentation = .idle
     @Published var deviceName: String = "—"
     @Published var heartRate: Int = 0
     @Published var batteryLevel: Int = -1
@@ -8662,6 +8673,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             usesExplicitHistoryProfile: explicitRequest
         )
         offlineHistoricalSyncInProgress = true
+        historicalRecoveryPresentation = .syncing(savedRecords: 0)
         suspendWorkoutMotionLeaseForHistoricalSync()
         historyRealtimeStopRequestedGeneration = nil
         historyRealtimeStopCompletedGeneration = nil
@@ -9707,6 +9719,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 ledgerCoverageResolved: ledgerCoverageResolved
             )
         if rangeLossResolved {
+            historicalRecoveryPresentation = .verified
+        } else if newRows > 0 {
+            // Rows are factual progress, not proof that the exact interval was
+            // recovered. Leave the gap visibly unresolved until authority clears.
+            historicalRecoveryPresentation = .partial(savedRecords: newRows)
+        } else {
+            historicalRecoveryPresentation = .needsAttention
+        }
+        if rangeLossResolved {
             defaults.removeObject(forKey: OfflineSyncDefaults.noRowsGapFingerprint)
             defaults.removeObject(forKey: OfflineSyncDefaults.noRowsGapAt)
             defaults.removeObject(
@@ -9830,6 +9851,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set(true, forKey: OfflineSyncDefaults.rangeLossBackfillPending)
         defaults.set(reason, forKey: OfflineSyncDefaults.rangeLossBackfillReason)
         assignIfChanged(\.rangeLossBackfillPending, true)
+        historicalRecoveryPresentation = .needsAttention
         retainPendingOfflineHistoricalSyncRequest(
             reason: reason,
             force: false,
@@ -21727,6 +21749,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             if result.inserted {
                 historicalArchiveRows += 1
                 historicalArchiveRowsSinceAck += 1
+                historicalRecoveryPresentation = .syncing(
+                    savedRecords: max(0, historicalArchiveRows - offlineHistoricalSyncStartRows)
+                )
             }
             // Appending a row is not durability. Hold metric evidence behind
             // the reducer's fsync boundary so a crash or disconnect cannot
