@@ -16114,16 +16114,28 @@ final class SessionStore: ObservableObject {
                           isoString(confirmed.end))
             return nil
         }
-        Self.persistStrainConfirmationAudit(
-            confirmed: confirmed,
-            samples: prepared.points.map {
-                HRSample(t: request.start.addingTimeInterval(max(0, $0.t)), bpm: $0.bpm)
-            },
-            rest: request.rest,
-            maxHR: request.maxHR,
-            biologicalSex: request.profile.biologicalSex,
-            excludedIntervals: request.excludedIntervals
-        )
+        // The canonical workout has already been atomically saved above.  The
+        // audit is diagnostics-only, so sorting/integrating its samples on the
+        // main actor can only make the End transition feel frozen; it must not
+        // share that interaction frame.
+        let auditSamples = prepared.points.map {
+            HRSample(t: request.start.addingTimeInterval(max(0, $0.t)), bpm: $0.bpm)
+        }
+        let auditConfirmed = confirmed
+        let auditRest = request.rest
+        let auditMaxHR = request.maxHR
+        let auditSex = request.profile.biologicalSex
+        let auditExclusions = request.excludedIntervals
+        Task.detached(priority: .utility) {
+            Self.persistStrainConfirmationAudit(
+                confirmed: auditConfirmed,
+                samples: auditSamples,
+                rest: auditRest,
+                maxHR: auditMaxHR,
+                biologicalSex: auditSex,
+                excludedIntervals: auditExclusions
+            )
+        }
         settleWorkoutCandidateAfterCanonicalSave(
             confirmed: confirmed,
             originalCandidateWindow: request.settlingCandidateWindow
@@ -16801,7 +16813,7 @@ final class SessionStore: ObservableObject {
     /// Captures the measured inputs used by the already-confirmed strain
     /// result. This audit is deliberately post-save and diagnostics-only: it
     /// never recalculates, replaces, or gates the workout's stored score.
-    private static func persistStrainConfirmationAudit(
+    private nonisolated static func persistStrainConfirmationAudit(
         confirmed: UserConfirmedWorkout,
         samples: [HRSample],
         rest: Int,
