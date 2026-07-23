@@ -25,6 +25,12 @@ final class AtriaHistoricalHighVolumeStoragePlannerTests: XCTestCase {
         try write(bytes: 41,
                   relativePath: "historical-archive.identity.jsonl",
                   root: root)
+        try write(bytes: 43,
+                  relativePath: ".historical-archive.identity.jsonl.rebuild-uuid.tmp",
+                  root: root)
+        try write(bytes: 47,
+                  relativePath: ".historical-archive.identity.jsonl.tmp",
+                  root: root)
         try write(bytes: 37, relativePath: "historical-archive.catalog-v2.json", root: root)
 
         let snapshot = try AtriaHistoricalHighVolumeStorageAccounting(
@@ -33,12 +39,13 @@ final class AtriaHistoricalHighVolumeStoragePlannerTests: XCTestCase {
         ).measure()
 
         XCTAssertEqual(snapshot.rawBytes, 11)
-        XCTAssertEqual(snapshot.replayEvidenceBytes, 13 + 17 + 19 + 31 + 41)
-        XCTAssertEqual(snapshot.highVolumeBytes, 11 + 13 + 17 + 19 + 31 + 41)
+        XCTAssertEqual(snapshot.replayEvidenceBytes, 13 + 17 + 19 + 31 + 41 + 43)
+        XCTAssertEqual(snapshot.highVolumeBytes, 11 + 13 + 17 + 19 + 31 + 41 + 43)
         XCTAssertEqual(snapshot.compactLongTermTypedBytes, 23 + 29)
-        XCTAssertEqual(snapshot.otherManagedBytes, 37)
-        XCTAssertEqual(snapshot.scannedFileCount, 9)
-        XCTAssertEqual(snapshot.scannedByteCount, 221)
+        XCTAssertEqual(snapshot.otherManagedBytes, 37 + 47,
+                       "A malformed identity temp name must not inflate replay evidence")
+        XCTAssertEqual(snapshot.scannedFileCount, 11)
+        XCTAssertEqual(snapshot.scannedByteCount, 311)
     }
 
     func testSymlinkAnywhereInManagedTreeFailsClosed() throws {
