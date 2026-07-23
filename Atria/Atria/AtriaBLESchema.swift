@@ -300,6 +300,15 @@ extension AtriaBLEManager {
         /// until the gap fingerprint changes. Explicit user retries bypass it.
         static let noRowsGapFingerprint = "atria.offlineSync.noRowsGapFingerprint.v1"
         static let noRowsGapAt = "atria.offlineSync.noRowsGapAt.v1"
+        /// A confirmed full-drain request can still time out before HISTORY_START.
+        /// That is not proof the strap has no data, so the gap remains pending;
+        /// it is, however, enough evidence that automatic ownership must not
+        /// keep disconnecting a healthy live link for this unchanged gap.
+        /// Explicit user repairs intentionally bypass this circuit breaker.
+        static let historyStartTimeoutGapFingerprint =
+            "atria.offlineSync.historyStartTimeoutGapFingerprint.v1"
+        static let historyStartTimeoutGapAt =
+            "atria.offlineSync.historyStartTimeoutGapAt.v1"
         static let backgroundLeaseStatus = "atria.offlineSync.backgroundLeaseStatus.v1"
         static let backgroundLeaseAt = "atria.offlineSync.backgroundLeaseAt.v1"
         static let handshakeStatus = "atria.offlineSync.handshakeStatus.v1"

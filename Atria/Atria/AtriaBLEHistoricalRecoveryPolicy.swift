@@ -256,6 +256,23 @@ extension AtriaBLEManager {
             && currentGapFingerprint == noRowsGapFingerprint
     }
 
+    /// A history-start timeout after the command write was confirmed is weaker
+    /// than a terminal no-rows response: the strap may still hold the data.
+    /// Keep the exact durable gap visible and preserve manual retry, but do not
+    /// repeatedly take the live BLE owner for the identical failed automatic
+    /// handoff. A changed gap fingerprint gets one new automatic opportunity.
+    nonisolated static func shouldSuppressAutomaticHistoryStartTimeoutRetry(
+        exactGapPending: Bool,
+        explicitUserRequest: Bool,
+        currentGapFingerprint: String?,
+        historyStartTimeoutGapFingerprint: String?
+    ) -> Bool {
+        exactGapPending
+            && !explicitUserRequest
+            && currentGapFingerprint != nil
+            && currentGapFingerprint == historyStartTimeoutGapFingerprint
+    }
+
     /// Even before a historical payload layout is metric-validated, a natural
     /// disconnect is a safe opportunity to copy the strap's raw backlog. This
     /// never promotes HR/RR, never interrupts a connected realtime pipe, and

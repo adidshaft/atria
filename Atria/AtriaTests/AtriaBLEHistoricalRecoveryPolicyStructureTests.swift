@@ -37,6 +37,35 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         ))
     }
 
+    func testHistoryStartTimeoutCircuitBreakerKeepsGapAndManualRepairAvailable() {
+        let fingerprint = "gap-v1"
+
+        XCTAssertTrue(AtriaBLEManager.shouldSuppressAutomaticHistoryStartTimeoutRetry(
+            exactGapPending: true,
+            explicitUserRequest: false,
+            currentGapFingerprint: fingerprint,
+            historyStartTimeoutGapFingerprint: fingerprint
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldSuppressAutomaticHistoryStartTimeoutRetry(
+            exactGapPending: true,
+            explicitUserRequest: true,
+            currentGapFingerprint: fingerprint,
+            historyStartTimeoutGapFingerprint: fingerprint
+        ), "manual repair must remain available after an automatic timeout")
+        XCTAssertFalse(AtriaBLEManager.shouldSuppressAutomaticHistoryStartTimeoutRetry(
+            exactGapPending: true,
+            explicitUserRequest: false,
+            currentGapFingerprint: "gap-v2",
+            historyStartTimeoutGapFingerprint: fingerprint
+        ), "a new durable gap must get a fresh automatic opportunity")
+        XCTAssertFalse(AtriaBLEManager.shouldSuppressAutomaticHistoryStartTimeoutRetry(
+            exactGapPending: false,
+            explicitUserRequest: false,
+            currentGapFingerprint: fingerprint,
+            historyStartTimeoutGapFingerprint: fingerprint
+        ))
+    }
+
     func testNoRowsRecoveryIsDurablyScopedToTheAdmittedGapAndNeverBlocksManualRetry() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
@@ -57,6 +86,11 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         XCTAssertTrue(request.contains("explicitUserRequest: explicitHistoricalRequest"))
         XCTAssertTrue(request.contains("no_rows_gap_retained"))
         XCTAssertTrue(request.contains("action=suppress_automatic_reentry_preserve_live_radio"))
+        XCTAssertTrue(request.contains(
+            "shouldSuppressAutomaticHistoryStartTimeoutRetry("
+        ))
+        XCTAssertTrue(request.contains("history_start_timeout_gap_retained"))
+        XCTAssertTrue(request.contains("preserve_live_r10"))
 
         let finalizerStart = try XCTUnwrap(manager.range(
             of: "private func finalizeOfflineHistoricalSyncAfterLiveRestoration("
@@ -70,6 +104,9 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         XCTAssertTrue(finalizer.contains("OfflineSyncDefaults.noRowsGapFingerprint"))
         XCTAssertTrue(finalizer.contains("!noRowsForDurableGap"),
                       "a no-rows result must not schedule an automatic reentry")
+        XCTAssertTrue(finalizer.contains(
+            "OfflineSyncDefaults.historyStartTimeoutGapFingerprint"
+        ), "successful coverage must release only the matching timeout circuit")
     }
 
     func testHistoryArmCannotCancelOrMutateBeforeRealtimeReconnectFence() throws {
