@@ -599,6 +599,11 @@ enum AtriaAnalytics {
     }
 
     enum Strain {
+        /// Bump only when the public 0–21 presentation curve changes. Persisted
+        /// workout cards use this to re-score from their original HR evidence
+        /// exactly once, without pretending a metadata-only workout had data.
+        static let displayCalibrationVersion = 2
+
         /// Shared evidence boundary for every cardiovascular-load integrator.
         /// This matches `SavedSession.workoutContinuityGapLimit`: standard
         /// 2A37 packets may arrive in short bursts, but a longer absence must

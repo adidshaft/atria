@@ -1697,6 +1697,10 @@ struct UserConfirmedWorkout: Codable, Identifiable, Equatable {
     /// `label`/`activityType` remain the mutable canonical truth.
     var activityCalibrationEvidence: AtriaActivityCalibrationEvidence? = nil
     var strain: Double? = nil
+    /// Version of `AtriaAnalytics.Strain`'s 0–21 display curve used for this
+    /// persisted detail value. Nil is a legacy record and is only migrated when
+    /// its original window still has sufficient strap HR evidence.
+    var strainCalibrationVersion: Int? = nil
     var activeEnergyKilocalories: Double? = nil
     var activeEnergyConfidence: String? = nil
     var zoneSeconds: [String: TimeInterval]? = nil
@@ -10255,6 +10259,7 @@ final class SessionStore: ObservableObject {
         loadPersistedSessionsDeferred()
         loadPersistedDailyMetrics()
         refreshSessionDerivedCaches()
+        rescorePersistedConfirmedWorkoutStrainIfVerified()
         refreshMaxHRSuggestion(reason: "init", force: true)
         recomputeCollectionResearchSummaries()
         sleepHistorySnapshot = SleepHistorySnapshot(rollups: [],
@@ -15806,6 +15811,9 @@ final class SessionStore: ObservableObject {
                                              observedDuration: trimmedStats?.observedDuration ?? summary.bestObservedDuration,
                                              reason: summary.bestReason,
                                              strain: enriched.strain,
+                                             strainCalibrationVersion: enriched.strain == nil
+                                                ? nil
+                                                : AtriaAnalytics.Strain.displayCalibrationVersion,
                                              activeEnergyKilocalories: enriched.activeEnergyKilocalories,
                                              activeEnergyConfidence: enriched.activeEnergyConfidence,
                                              zoneSeconds: enriched.zoneSeconds,
@@ -16163,6 +16171,9 @@ final class SessionStore: ObservableObject {
             reviewCandidateID: cleanedReviewCandidateID,
             activityCalibrationEvidence: prepared.activityCalibrationEvidence,
             strain: prepared.strain,
+            strainCalibrationVersion: prepared.strain == nil
+                ? nil
+                : AtriaAnalytics.Strain.displayCalibrationVersion,
             activeEnergyKilocalories: prepared.activeEnergyKilocalories,
             activeEnergyConfidence: prepared.activeEnergyConfidence,
             zoneSeconds: prepared.zoneSeconds,
@@ -16448,6 +16459,9 @@ final class SessionStore: ObservableObject {
                                              reviewCandidateID: cleanedReviewCandidateID,
                                              activityCalibrationEvidence: calibrationEvidence,
                                              strain: enriched.strain,
+                                             strainCalibrationVersion: enriched.strain == nil
+                                                ? nil
+                                                : AtriaAnalytics.Strain.displayCalibrationVersion,
                                              activeEnergyKilocalories: enriched.activeEnergyKilocalories,
                                              activeEnergyConfidence: enriched.activeEnergyConfidence,
                                              zoneSeconds: enriched.zoneSeconds,
@@ -16876,6 +16890,65 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// Migrates only a persisted detail score whose original workout window can
+    /// still be re-integrated from real strap HR.  A card saved without enough
+    /// HR remains exactly as it was: the migration never derives strain from
+    /// duration, activity type, steps, or a later all-day average.
+    ///
+    /// The per-record version makes this idempotent and intentionally leaves
+    /// unavailable legacy windows eligible for a later pass if their raw source
+    /// becomes resident or is recovered from the archive.
+    nonisolated static func rescoredConfirmedWorkoutsForCurrentStrainCalibration(
+        _ workouts: [UserConfirmedWorkout],
+        sourceSessions: [SavedSession],
+        rest: Int,
+        maxHR: Int,
+        biologicalSex: AthleteProfile.BiologicalSex
+    ) -> [UserConfirmedWorkout] {
+        guard maxHR > rest else { return workouts }
+        let targetVersion = AtriaAnalytics.Strain.displayCalibrationVersion
+        let canonical = makeCanonicalSessions(from: sourceSessions)
+        guard !canonical.isEmpty else { return workouts }
+
+        return workouts.map { workout in
+            guard workout.strain != nil,
+                  workout.strainCalibrationVersion != targetVersion,
+                  workout.end > workout.start else {
+                return workout
+            }
+            var samples: [HRSample] = []
+            for session in canonical where session.end > workout.start && session.start < workout.end {
+                for point in session.points where point.bpm > 0 {
+                    let timestamp = session.start.addingTimeInterval(max(0, point.t))
+                    guard timestamp >= workout.start, timestamp <= workout.end else { continue }
+                    samples.append(HRSample(t: timestamp, bpm: point.bpm))
+                }
+            }
+            samples.sort { $0.t < $1.t }
+            let segments = AtriaAnalytics.Strain.contiguousSegments(
+                samples,
+                excluding: workout.excludedIntervals
+            )
+            guard segments.contains(where: { $0.count > 1 }) else { return workout }
+
+            let trimp = confirmedWorkoutTRIMP(
+                segments: segments,
+                start: workout.start,
+                rest: rest,
+                maxHR: maxHR,
+                biologicalSex: biologicalSex
+            )
+            guard trimp.isFinite, trimp > 0 else { return workout }
+            let score = Metrics.strain(fromTRIMP: trimp)
+            guard score.isFinite, (0...21).contains(score) else { return workout }
+
+            var rescored = workout
+            rescored.strain = score
+            rescored.strainCalibrationVersion = targetVersion
+            return rescored
+        }
+    }
+
     /// Captures the measured inputs used by the already-confirmed strain
     /// result. This audit is deliberately post-save and diagnostics-only: it
     /// never recalculates, replaces, or gates the workout's stored score.
@@ -16943,6 +17016,25 @@ final class SessionStore: ObservableObject {
             return []
         }
         return decoded.sorted { $0.start > $1.start }
+    }
+
+    /// The strain display curve can be calibrated without changing the raw
+    /// Banister/TRIMP evidence. Re-score only records with an exact persisted
+    /// confirmation audit; summaries or current live HR are never substituted
+    /// for missing historical evidence.
+    private func rescorePersistedConfirmedWorkoutStrainIfVerified() {
+        let result = AtriaPersistedWorkoutStrainRescorer.rescore(
+            workouts: cachedConfirmedWorkouts,
+            audits: AtriaStrainConfirmationAuditLog.load()
+        )
+        guard result.changed else { return }
+        guard saveConfirmedWorkouts(result.workouts, deferDerivedPublication: true) else {
+            AtriaDebugLog("ATRIADBG confirmed_workout_strain_rescore status=store_failed verified=%d",
+                          result.rescoredWorkoutIDs.count)
+            return
+        }
+        AtriaDebugLog("ATRIADBG confirmed_workout_strain_rescore status=applied verified=%d",
+                      result.rescoredWorkoutIDs.count)
     }
 
     @discardableResult
@@ -28045,6 +28137,8 @@ final class SessionStore: ObservableObject {
         // maintenance time.
         compactHistoricalArchiveIfUseful(reason: "deferred_session_load")
 
+        reapplyConfirmedWorkoutStrainCalibrationIfNeeded(sourceSessions: merged)
+
         let didRequalifyConfirmedSleepHRV = requalifyPersistedConfirmedSleepHRVFromSessionsIfNeeded(
             merged,
             reason: "deferred_session_load"
@@ -28096,6 +28190,50 @@ final class SessionStore: ObservableObject {
         #if DEBUG
         seedDebugStrengthWorkoutProofIfRequested(arguments: ProcessInfo.processInfo.arguments)
         #endif
+    }
+
+    /// The source scan is intentionally detached from launch's render path.
+    /// It writes only after proving that no concurrent user action changed the
+    /// confirmed-workout collection it was based on.
+    private func reapplyConfirmedWorkoutStrainCalibrationIfNeeded(
+        sourceSessions: [SavedSession]
+    ) {
+        let before = cachedConfirmedWorkouts
+        let targetVersion = AtriaAnalytics.Strain.displayCalibrationVersion
+        guard before.contains(where: {
+            $0.strain != nil && $0.strainCalibrationVersion != targetVersion
+        }) else { return }
+        let rest = baseline.restingInt ?? 60
+        let maxHR = profile.maxHR
+        let biologicalSex = profile.biologicalSex
+
+        Task.detached(priority: .utility) { [weak self, before, sourceSessions, rest, maxHR, biologicalSex] in
+            let rescored = Self.rescoredConfirmedWorkoutsForCurrentStrainCalibration(
+                before,
+                sourceSessions: sourceSessions,
+                rest: rest,
+                maxHR: maxHR,
+                biologicalSex: biologicalSex
+            )
+            guard rescored != before else { return }
+            await MainActor.run {
+                guard let self,
+                      self.cachedConfirmedWorkouts == before else {
+                    return
+                }
+                guard self.saveConfirmedWorkouts(rescored, deferDerivedPublication: true) else {
+                    return
+                }
+                let changed = zip(before, rescored).reduce(0) { count, pair in
+                    count + (pair.0.strain != pair.1.strain ? 1 : 0)
+                }
+                AtriaDebugLog("ATRIADBG confirmed_workout_strain_migration status=applied version=%d workouts=%d rescored=%d source_sessions=%d",
+                              targetVersion,
+                              rescored.count,
+                              changed,
+                              sourceSessions.count)
+            }
+        }
     }
 
     /// Exact launch-time proof that the three card families are looking at the
