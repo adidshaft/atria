@@ -3121,6 +3121,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var lastCanonicalCheckpointAt: Date?
     private let reconnectWatchdogSeconds: TimeInterval = 20
     private var reconnectWatchdogTask: Task<Void, Never>?
+    private var backgroundReconnectLeaseTask: Task<Void, Never>?
+    private var backgroundReconnectLease: UIBackgroundTaskIdentifier = .invalid
+    private var backgroundReconnectLeaseReissueUsed = false
+    private var postReconnectHRReassertTask: Task<Void, Never>?
+    /// Locked-background reconnects die silently after `didConnect`: with the
+    /// prior epoch's notify subscriptions gone, no pipeline callback
+    /// (service/characteristic discovery) is a wake-class CoreBluetooth event,
+    /// so one suspension between `discoverServices` and its response strands a
+    /// connected-but-silent link until the user foregrounds the app
+    /// (2026-07-24 cycle-1 evidence, stage frozen at
+    /// `did_connect_background_safe_requested`). The stream lease keeps the
+    /// process runnable from `didConnect` until the first accepted HR sample
+    /// of the new connection epoch, and its watchdog may spend one bounded
+    /// cancel/reconnect per gap episode.
+    private var postReconnectStreamWatchdogTask: Task<Void, Never>?
+    /// Bounded budget, NOT per-epoch: a strap can sit connected and
+    /// ATT-silent for hours legitimately (off-wrist/charging — historical max
+    /// raw gap 12525s), so an every-epoch permit would churn the link for the
+    /// whole session. Two spends cover the observed double-zombie edge
+    /// (range-edge connect, then a second silent connect on true return);
+    /// only a fresh accepted HR sample refills the budget.
+    private var postReconnectSilentStreamRepairsSpent = 0
+    private static let postReconnectSilentStreamRepairBudget = 2
+    private let postReconnectStreamWatchdogSeconds: TimeInterval = 12
     /// A history-serving link can time out while CoreBluetooth leaves the
     /// subsequent saved-peripheral connect permanently in `.connecting`.
     /// Permit exactly one cancel/reissue for that known failure; ordinary
@@ -14697,9 +14721,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func cancelPeripheralConnection(_ peripheral: CBPeripheral, reason: String) {
+        endBackgroundReconnectLease(reason: "app_cancel_\(reason)")
+        postReconnectHRReassertTask?.cancel()
+        postReconnectHRReassertTask = nil
         let defaults = UserDefaults.standard
         defaults.set(reason, forKey: "atria.ble.lastAppCancelReason")
         defaults.set(Date().timeIntervalSince1970, forKey: "atria.ble.lastAppCancelAt")
+        // (endBackgroundReconnectLease above also stops the silent-stream
+        // watchdog; an app-owned cancel means this epoch's recovery is over.)
         defaults.set(defaults.integer(forKey: "atria.ble.appCancelCount") + 1,
                      forKey: "atria.ble.appCancelCount")
         backgroundReconnectFence.markAppOwnedCancellation(
@@ -14854,6 +14883,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         backgroundReconnectFence.markAppOwnedCancellation(
             peripheralID: peripheral.identifier
         )
+        endBackgroundReconnectLease(reason: "protected_r10_workout_cutover")
         central.cancelPeripheralConnection(peripheral)
         AtriaDebugLog("ATRIADBG protected_r10 status=clean_owner_launch_cutover owner=%@ reason=%@ action=single_disconnect_then_didconnect_profile_no_history",
                       protectedR10CleanOwner.rawValue,
@@ -14956,6 +14986,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         backgroundReconnectFence.markAppOwnedCancellation(
             peripheralID: peripheral.identifier
         )
+        endBackgroundReconnectLease(reason: "motion_handshake_cutover")
         central.cancelPeripheralConnection(peripheral)
         AtriaDebugLog("ATRIADBG protected_r10 status=v8_workout_cutover_started reason=%@ workout_start=%d action=single_disconnect_then_fresh_v9_central_no_cccd_no_command_no_history",
                       reason,
@@ -15106,6 +15137,459 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                   reason,
                   reconnectWatchdogSeconds)
             self.startScan(reason: "\(reason)_watchdog_recovery")
+        }
+    }
+
+    private func beginBackgroundReconnectLeaseIfNeeded(
+        peripheral: CBPeripheral,
+        error: Error?
+    ) {
+        guard hasSavedStrap,
+              !backgroundReconnectLeaseReissueUsed,
+              let error,
+              (error as NSError).domain == CBErrorDomain,
+              (error as NSError).code == CBError.connectionTimeout.rawValue else { return }
+        backgroundReconnectLeaseTask?.cancel()
+        postReconnectStreamWatchdogTask?.cancel()
+        postReconnectStreamWatchdogTask = nil
+        if backgroundReconnectLease != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundReconnectLease)
+            backgroundReconnectLease = .invalid
+        }
+        backgroundReconnectLease = UIApplication.shared.beginBackgroundTask(
+            withName: "Atria bounded BLE reconnect repair"
+        ) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.handleReconnectLeaseExpiry()
+            }
+        }
+        guard backgroundReconnectLease != .invalid else {
+            recordReconnectLeaseStage("away_lease_begin_invalid",
+                                      detail: "remote_range_loss")
+            return
+        }
+        recordReconnectLeaseStage("away_lease_begun",
+                                  detail: "remote_range_loss")
+        AtriaDebugLog("ATRIADBG ble_link reconnect_lease=status_active reason=remote_range_loss duration_s=%.0f action=await_one_bounded_reissue",
+                      reconnectWatchdogSeconds)
+        backgroundReconnectLeaseTask = Task { @MainActor [weak self, weak peripheral] in
+            try? await Task.sleep(for: .seconds(self?.reconnectWatchdogSeconds ?? 20))
+            guard let self, !Task.isCancelled, let peripheral,
+                  self.peripheral === peripheral,
+                  self.status == .connecting,
+                  peripheral.state == .connecting else {
+                return
+            }
+            self.backgroundReconnectLeaseReissueUsed = true
+            self.recordReconnectLeaseStage("away_stuck_connect_reissue",
+                                           detail: "state=\(peripheral.state.rawValue)")
+            // Keep the UIKit assertion alive across the cancel/reconnect:
+            // ending it here can suspend the process before the delayed
+            // reconnect below re-arms the standing connect, stranding the
+            // strap with no pending connection while locked.
+            self.backgroundReconnectLeaseTask = nil
+            self.backgroundReconnectFence.markAppOwnedCancellation(
+                peripheralID: peripheral.identifier
+            )
+            self.central.cancelPeripheralConnection(peripheral)
+            AtriaDebugLog("ATRIADBG ble_link reconnect_lease=action_reissue reason=remote_range_loss_bounded_reconnect peripheral_state=%d",
+                          peripheral.state.rawValue)
+            Task { @MainActor [weak self, weak peripheral] in
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, let peripheral,
+                      self.peripheral?.identifier == peripheral.identifier,
+                      peripheral.state == .disconnected else { return }
+                self.reconnectKnownPeripheralImmediately(
+                    peripheral,
+                    reason: "remote_range_loss_bounded_reconnect"
+                )
+            }
+        }
+    }
+
+    /// State-restoration relaunches run without debug launch arguments, so
+    /// UserDefaults scalars are the only forensics for which lease stage
+    /// actually executed before the locked process suspended.
+    private nonisolated func recordReconnectLeaseStage(_ stage: String,
+                                                       detail: String) {
+        let defaults = UserDefaults.standard
+        let now = Date().timeIntervalSince1970
+        defaults.set(stage, forKey: ReconnectLeaseDefaults.stage)
+        defaults.set(detail, forKey: ReconnectLeaseDefaults.detail)
+        defaults.set(now, forKey: ReconnectLeaseDefaults.at)
+        let entry = "\(Int(now))|\(stage)|\(detail)"
+        let previous = defaults.string(forKey: ReconnectLeaseDefaults.trail) ?? ""
+        let combined = previous.isEmpty ? entry : previous + "\n" + entry
+        defaults.set(String(combined.suffix(1600)),
+                     forKey: ReconnectLeaseDefaults.trail)
+    }
+
+    private func endBackgroundReconnectLease(reason: String) {
+        backgroundReconnectLeaseTask?.cancel()
+        backgroundReconnectLeaseTask = nil
+        postReconnectStreamWatchdogTask?.cancel()
+        postReconnectStreamWatchdogTask = nil
+        let task = backgroundReconnectLease
+        backgroundReconnectLease = .invalid
+        if task != .invalid {
+            UIApplication.shared.endBackgroundTask(task)
+            recordReconnectLeaseStage("lease_ended", detail: reason)
+            AtriaDebugLog("ATRIADBG ble_link reconnect_lease=status_ended reason=%@", reason)
+        }
+    }
+
+    /// Pure gate for holding the post-`didConnect` stream lease: only a saved
+    /// strap with continuous capture wanted, outside history recovery and
+    /// diagnostics, on the currently accepted connection epoch.
+    nonisolated static func shouldHoldPostReconnectStreamLease(
+        hasSavedStrap: Bool,
+        continuousCaptureWanted: Bool,
+        historyRecoveryActive: Bool,
+        diagnosticActive: Bool,
+        callbackAccepted: Bool
+    ) -> Bool {
+        hasSavedStrap
+            && continuousCaptureWanted
+            && !historyRecoveryActive
+            && !diagnosticActive
+            && callbackAccepted
+    }
+
+    /// Recovery is complete only when an accepted HR sample belongs to the
+    /// current connection epoch — `did_connect` alone is never success.
+    nonisolated static func acceptedHRIsFreshForConnectionEpoch(
+        lastAcceptedHRAt: Date?,
+        connectedAt: Date?
+    ) -> Bool {
+        guard let lastAcceptedHRAt, let connectedAt else { return false }
+        return lastAcceptedHRAt >= connectedAt
+    }
+
+    enum PostReconnectSilentStreamRepairDisposition: Equatable {
+        /// Healthy stream, stale epoch, or a state the repair must not touch.
+        case standDown
+        /// Still silent but the single bounded repair was already spent.
+        case awaitLeaseExpiry
+        /// Spend the one bounded cancel/reconnect for this gap episode.
+        case reissueConnect
+    }
+
+    nonisolated static func postReconnectSilentStreamRepairDisposition(
+        callbackAccepted: Bool,
+        continuousCaptureWanted: Bool,
+        historyRecoveryActive: Bool,
+        diagnosticActive: Bool,
+        freshAcceptedHR: Bool,
+        repairPermitAvailable: Bool
+    ) -> PostReconnectSilentStreamRepairDisposition {
+        guard callbackAccepted,
+              continuousCaptureWanted,
+              !historyRecoveryActive,
+              !diagnosticActive else { return .standDown }
+        if freshAcceptedHR { return .standDown }
+        return repairPermitAvailable ? .reissueConnect : .awaitLeaseExpiry
+    }
+
+    /// Holds the process runnable across the `didConnect` -> discovery ->
+    /// 2A37 notify -> first accepted HR pipeline. Ending the lease at
+    /// `did_connect` is exactly the proven locked failure: none of the
+    /// pipeline callbacks are wake-class events, so a single suspension
+    /// strands a connected-but-silent link.
+    private func beginPostReconnectStreamLeaseIfNeeded(
+        peripheral: CBPeripheral,
+        callbackEpoch: UInt64,
+        reason: String
+    ) {
+        let historyRecoveryActive = historyOnlyProbeMode
+            || historyTransportPhaseFence.snapshot().isActive
+            || offlineHistoricalSyncInProgress
+        guard Self.shouldHoldPostReconnectStreamLease(
+            hasSavedStrap: hasSavedStrap,
+            continuousCaptureWanted: heartRateCaptureIntent.snapshot(),
+            historyRecoveryActive: historyRecoveryActive,
+            diagnosticActive: motionHandshakeDiagnostic != nil,
+            callbackAccepted: acceptsBLECallback(
+                epoch: callbackEpoch,
+                peripheral: peripheral
+            )
+        ) else {
+            recordReconnectLeaseStage("stream_lease_not_needed", detail: reason)
+            endBackgroundReconnectLease(reason: "post_connect_lease_not_needed")
+            return
+        }
+        backgroundReconnectLeaseTask?.cancel()
+        backgroundReconnectLeaseTask = nil
+        postReconnectStreamWatchdogTask?.cancel()
+        // A reissue keeps the original UIKit assertion alive across its
+        // cancel/reconnect so the replacement connection reuses the remaining
+        // budget; only begin a fresh assertion when none is held.
+        if backgroundReconnectLease == .invalid {
+            backgroundReconnectLease = UIApplication.shared.beginBackgroundTask(
+                withName: "Atria post-reconnect HR stream repair"
+            ) { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.handleReconnectLeaseExpiry()
+                }
+            }
+        }
+        recordReconnectLeaseStage(
+            backgroundReconnectLease == .invalid
+                ? "stream_lease_begin_invalid"
+                : "stream_lease_begun",
+            detail: reason
+        )
+        AtriaDebugLog("ATRIADBG ble_link reconnect_lease=status_stream_active reason=%@ watchdog_s=%.0f action=hold_until_fresh_accepted_hr",
+                      reason,
+                      postReconnectStreamWatchdogSeconds)
+        postReconnectStreamWatchdogTask = Task { @MainActor [weak self, weak peripheral] in
+            try? await Task.sleep(for: .seconds(self?.postReconnectStreamWatchdogSeconds ?? 12))
+            guard let self, !Task.isCancelled, let peripheral else { return }
+            self.runPostReconnectSilentStreamRepairIfNeeded(
+                peripheral: peripheral,
+                callbackEpoch: callbackEpoch,
+                trigger: "watchdog"
+            )
+        }
+    }
+
+    /// Lease expiry is the last guaranteed execution moment before
+    /// suspension; delayed tasks may never run again (2026-07-24 cycle-2: the
+    /// +12s watchdog died suspended and a zombie `connected` link produced no
+    /// further wake events, regardless of which lease created the assertion).
+    /// UIKit calls expiration handlers on the main thread, so the bounded
+    /// repair runs synchronously against the LIVE epoch — captured epochs can
+    /// be stale when the assertion outlives the connection that armed it.
+    private func handleReconnectLeaseExpiry() {
+        recordReconnectLeaseStage(
+            "expiry_fired",
+            detail: "peripheral_state=\(peripheral?.state.rawValue ?? -1)"
+        )
+        if let peripheral {
+            runPostReconnectSilentStreamRepairIfNeeded(
+                peripheral: peripheral,
+                callbackEpoch: bleCallbackEpochFence.epoch,
+                trigger: "lease_expiry"
+            )
+            ensureStandingConnectAtLeaseExpiryIfNeeded(peripheral: peripheral)
+        }
+        endBackgroundReconnectLease(reason: "expired")
+    }
+
+    /// Terminal insurance at the last guaranteed runtime moment: never let
+    /// the locked process go dormant with no live stream AND no pending
+    /// connect. A standing connect is passive, loop-free, and the only
+    /// primitive that survives suspension and jetsam (2026-07-24 cycle-3:
+    /// a stale silent epoch stood down and nothing remained armed, so the
+    /// strap's true return could never wake the app).
+    private func ensureStandingConnectAtLeaseExpiryIfNeeded(
+        peripheral: CBPeripheral
+    ) {
+        guard hasSavedStrap,
+              heartRateCaptureIntent.snapshot(),
+              !historyOnlyProbeMode,
+              !historyTransportPhaseFence.snapshot().isActive,
+              !offlineHistoricalSyncInProgress,
+              motionHandshakeDiagnostic == nil,
+              self.peripheral?.identifier == peripheral.identifier,
+              !Self.acceptedHRIsFreshForConnectionEpoch(
+                  lastAcceptedHRAt: lastAcceptedHRAt,
+                  connectedAt: connectedAt
+              ) else { return }
+        switch peripheral.state {
+        case .disconnected:
+            recordReconnectLeaseStage("expiry_standing_connect_armed",
+                                      detail: "was_disconnected")
+            reconnectKnownPeripheralImmediately(
+                peripheral,
+                reason: "lease_expiry_standing_connect"
+            )
+        case .disconnecting:
+            // The imminent didDisconnect runs the synchronous
+            // standing-reconnect fast lane in its own wake slice.
+            recordReconnectLeaseStage("expiry_awaiting_disconnect_fast_lane",
+                                      detail: "was_disconnecting")
+        case .connecting:
+            recordReconnectLeaseStage("expiry_pending_connect_already_armed",
+                                      detail: "was_connecting")
+        case .connected:
+            // Silent but nominally connected with the repair budget already
+            // spent (a permitted repair would have cancelled above). Another
+            // cancel here would recur at every lease era and churn the link
+            // for legitimately silent straps (off-wrist/charging), so record
+            // and accept dormancy — the budget already allowed two cancels.
+            recordReconnectLeaseStage("expiry_connected_silent_no_budget",
+                                      detail: "repairs_spent=\(postReconnectSilentStreamRepairsSpent)")
+        @unknown default:
+            recordReconnectLeaseStage("expiry_unknown_peripheral_state",
+                                      detail: "raw=\(peripheral.state.rawValue)")
+        }
+    }
+
+    private func runPostReconnectSilentStreamRepairIfNeeded(
+        peripheral: CBPeripheral,
+        callbackEpoch: UInt64,
+        trigger: String
+    ) {
+        let callbackAccepted = acceptsBLECallback(
+            epoch: callbackEpoch,
+            peripheral: peripheral
+        )
+        guard callbackAccepted else {
+            // A newer connection epoch (or a disconnect) owns the lease
+            // lifecycle now; a stale watchdog must not touch it.
+            recordReconnectLeaseStage(
+                "repair_skipped_stale_epoch",
+                detail: "\(trigger) peripheral_state=\(peripheral.state.rawValue)"
+            )
+            return
+        }
+        let historyRecoveryActive = historyOnlyProbeMode
+            || historyTransportPhaseFence.snapshot().isActive
+            || offlineHistoricalSyncInProgress
+        let freshAcceptedHR = Self.acceptedHRIsFreshForConnectionEpoch(
+            lastAcceptedHRAt: lastAcceptedHRAt,
+            connectedAt: connectedAt
+        )
+        let disposition = Self.postReconnectSilentStreamRepairDisposition(
+            callbackAccepted: callbackAccepted,
+            continuousCaptureWanted: heartRateCaptureIntent.snapshot(),
+            historyRecoveryActive: historyRecoveryActive,
+            diagnosticActive: motionHandshakeDiagnostic != nil,
+            freshAcceptedHR: freshAcceptedHR,
+            repairPermitAvailable: postReconnectSilentStreamRepairsSpent
+                < Self.postReconnectSilentStreamRepairBudget
+        )
+        recordReconnectLeaseStage(
+            "repair_\(disposition)",
+            detail: "\(trigger) fresh=\(freshAcceptedHR ? 1 : 0) spent=\(postReconnectSilentStreamRepairsSpent)"
+        )
+        switch disposition {
+        case .standDown:
+            endBackgroundReconnectLease(reason: freshAcceptedHR
+                ? "fresh_accepted_hr_watchdog"
+                : "post_connect_repair_stand_down")
+        case .awaitLeaseExpiry:
+            // Permit spent, stream still silent: no further radio action.
+            // The lease deliberately runs out its remaining iOS-bounded
+            // budget so a slow second pipeline can still land; it ends via
+            // fresh accepted HR, the expiry handler, or a lifecycle event.
+            AtriaDebugLog("ATRIADBG ble_link post_connect_repair=exhausted reason=silent_stream_no_permit action=await_lease_expiry")
+        case .reissueConnect:
+            postReconnectSilentStreamRepairsSpent += 1
+            if postReconnectSilentStreamRepairsSpent
+                >= Self.postReconnectSilentStreamRepairBudget {
+                // Second (final) slot: the first cancel provably changed
+                // nothing — the link still reads `connected` and silent, the
+                // signature of a wedged bluetoothd session that swallows
+                // commands and callbacks (2026-07-24 v4 cycle-2: cancel
+                // produced no didDisconnect at all). The only in-process
+                // escape is a fresh CBCentralManager, whose poweredOn
+                // callback re-enters the ordinary launch standing-connect
+                // path for the saved strap.
+                rebuildCentralForWedgedSessionOnce(trigger: trigger)
+                return
+            }
+            let discoveryObserved = serviceDiscoveryCallbackObservedForConnection
+            AtriaDebugLog("ATRIADBG ble_link post_connect_repair=action_reissue trigger=%@ reason=silent_stream_no_fresh_hr discovery_observed=%d peripheral_state=%d action=single_cancel_then_synchronous_standing_reconnect",
+                          trigger,
+                          discoveryObserved ? 1 : 0,
+                          peripheral.state.rawValue)
+            // Deliberately NOT marked app-owned: the didDisconnect this cancel
+            // produces is a wake-class callback whose fast lane installs the
+            // standing connect synchronously inside the delegate slice. That
+            // pending connect is the only re-arm that survives suspension and
+            // process death (2026-07-24 cycle-2 zombie link: every delayed
+            // Task died suspended; only a standing connect can wake Atria on
+            // the strap's return).
+            central.cancelPeripheralConnection(peripheral)
+        }
+    }
+
+    /// A wedged bluetoothd session reports `connected` while swallowing every
+    /// command and delivering no callbacks — cancels void, discovery never
+    /// answers, and no wake event can ever arrive. The only in-process escape
+    /// is a fresh CBCentralManager (a new XPC session): its poweredOn
+    /// callback synchronously re-enters the ordinary saved-strap
+    /// standing-connect path, which survives suspension and process death.
+    /// Bounded to the final repair-budget slot of a gap episode; the budget
+    /// refills only on fresh accepted HR. Mirrors the proven in-process
+    /// central swap used by the v10 clean-owner cutover.
+    private func rebuildCentralForWedgedSessionOnce(trigger: String) {
+        recordReconnectLeaseStage("repair_central_rebuild", detail: trigger)
+        let defaults = UserDefaults.standard
+        defaults.set(defaults.integer(forKey: KeepaliveDefaults.stallReconnects) + 1,
+                     forKey: KeepaliveDefaults.stallReconnects)
+        defaults.set(Date().timeIntervalSince1970,
+                     forKey: KeepaliveDefaults.lastStallReconnectAt)
+        AtriaDebugLog("ATRIADBG ble_link post_connect_repair=action_central_rebuild trigger=%@ reason=wedged_session_cancel_voided action=fresh_central_then_launch_standing_connect",
+                      trigger)
+        bleCallbackEpochFence.invalidate()
+        peripheral?.delegate = nil
+        peripheral = nil
+        heartRateCharacteristic = nil
+        txCharacteristic = nil
+        dbgTxReady = false
+        realtimeArmed = false
+        isActivelyScanning = false
+        central.delegate = nil
+        central = CBCentralManager(delegate: self,
+                                   queue: centralQueue,
+                                   options: [
+                                       CBCentralManagerOptionRestoreIdentifierKey: centralRestoreIdentifier,
+                                       CBCentralManagerOptionShowPowerAlertKey: true
+                                   ])
+        recomputeConnectionStatus(reason: "event")
+    }
+
+    /// The only success terminal for a reconnect epoch: a fresh accepted HR
+    /// sample. Releases the lease and restores both bounded-repair permits.
+    private func completePostReconnectStreamRecoveryIfNeeded() {
+        if postReconnectSilentStreamRepairsSpent > 0 || backgroundReconnectLeaseReissueUsed {
+            postReconnectSilentStreamRepairsSpent = 0
+            backgroundReconnectLeaseReissueUsed = false
+        }
+        guard backgroundReconnectLease != .invalid
+                || backgroundReconnectLeaseTask != nil
+                || postReconnectStreamWatchdogTask != nil
+                || postReconnectHRReassertTask != nil else { return }
+        postReconnectHRReassertTask?.cancel()
+        postReconnectHRReassertTask = nil
+        endBackgroundReconnectLease(reason: "fresh_accepted_hr")
+    }
+
+    /// CoreBluetooth can preserve a stale `isNotifying == true` bit across a
+    /// range-loss reconnect even though the strap is no longer delivering
+    /// 2A37. Give the new link one delayed, data-gated reassertion; a healthy
+    /// stream is never toggled.
+    private func schedulePostReconnectHRReassertion(
+        peripheral: CBPeripheral,
+        reason: String
+    ) {
+        postReconnectHRReassertTask?.cancel()
+        postReconnectHRReassertTask = Task { @MainActor [weak self, weak peripheral] in
+            try? await Task.sleep(for: .seconds(6))
+            guard let self, !Task.isCancelled, let peripheral,
+                  self.peripheral === peripheral,
+                  peripheral.state == .connected,
+                  self.heartRateCaptureIntent.snapshot(),
+                  !self.historyOnlyProbeMode,
+                  !self.historyTransportPhaseFence.snapshot().isActive,
+                  !self.offlineHistoricalSyncInProgress,
+                  self.motionHandshakeDiagnostic == nil,
+                  let characteristic = self.heartRateCharacteristic,
+                  characteristic.properties.contains(.notify)
+                    || characteristic.properties.contains(.indicate) else { return }
+            let rawAge = self.lastRawHRNotificationAt.map {
+                Date().timeIntervalSince($0)
+            } ?? .infinity
+            guard rawAge >= 4 else {
+                AtriaDebugLog("ATRIADBG ble_notify_reassert status=not_needed reason=%@ raw_age_s=%.1f",
+                              reason, rawAge)
+                return
+            }
+            peripheral.setNotifyValue(true, for: characteristic)
+            AtriaDebugLog("ATRIADBG ble_notify_reassert status=requested reason=%@ raw_age_s=%.1f action=post_reconnect_stale_cccd",
+                          reason, rawAge)
         }
     }
 
@@ -15804,6 +16288,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func recordAcceptedHRSample(rate: Int, at sampleTime: Date) {
+        completePostReconnectStreamRecoveryIfNeeded()
         sessionAcceptedHRSamples += 1
         recordWorkoutPromptQualityEvent(.accepted, at: sampleTime)
         sampleDiagnostics.acceptedSamples += 1
@@ -26722,12 +27207,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set(cachedMeasurement != nil,
                      forKey: BackgroundHRDiscoveryDefaults.cachedCharacteristic)
         if let cachedMeasurement,
-           Self.shouldSynchronouslyEnableDiscoveredHeartRateNotification(
+           continuousCaptureWanted,
+           !historyRecoveryActive,
+           (cachedMeasurement.properties.contains(.notify)
+               || cachedMeasurement.properties.contains(.indicate)),
+           (Self.shouldSynchronouslyEnableDiscoveredHeartRateNotification(
                continuousCaptureWanted: continuousCaptureWanted,
                supportsNotifications: cachedMeasurement.properties.contains(.notify)
                    || cachedMeasurement.properties.contains(.indicate),
                isNotifying: cachedMeasurement.isNotifying
-           ) {
+           ) || reason.contains("did_connect")) {
             peripheral.setNotifyValue(true, for: cachedMeasurement)
             defaults.set("\(reason)_cached_2a37_notify_requested",
                          forKey: BackgroundHRDiscoveryDefaults.stage)
@@ -27078,6 +27567,20 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             reason: "did_connect_background_safe"
         )
         Task { @MainActor in
+            // Do NOT end the reconnect lease at `did_connect`: the stream is
+            // not recovered until an accepted HR sample lands on this epoch.
+            // Ending here is the proven locked-background failure (2026-07-24
+            // cycle 1: connected, discovery response never processed, counter
+            // frozen until the app was foregrounded).
+            self.beginPostReconnectStreamLeaseIfNeeded(
+                peripheral: peripheral,
+                callbackEpoch: callbackEpoch,
+                reason: "did_connect_background_safe"
+            )
+            self.schedulePostReconnectHRReassertion(
+                peripheral: peripheral,
+                reason: "did_connect_background_safe"
+            )
             guard self.acceptsBLECallback(
                 epoch: callbackEpoch,
                 peripheral: peripheral
@@ -27164,6 +27667,11 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 failProprietaryBatteryRefresh(reason: "stale_pending_request_after_connect")
             }
             reconnectWatchdogTask?.cancel()
+            // `backgroundReconnectLeaseReissueUsed` is deliberately NOT reset
+            // here: `did_connect` is not recovery. Both bounded-repair permits
+            // are restored only by a fresh accepted HR sample
+            // (`completePostReconnectStreamRecoveryIfNeeded`), so a
+            // connect/stall cycle can never loop repairs.
             freshScanFallbackTask?.cancel()
             freshScanFallbackTask = nil
             isActivelyScanning = false
@@ -27339,6 +27847,13 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             central.connect(peripheral, options: nil)
             AtriaDebugLog("ATRIADBG ble_link status=reconnect_requested_sync reason=did_disconnect_background_safe peripheral=%@",
                           peripheral.identifier.uuidString)
+            Task { @MainActor [weak self, weak peripheral] in
+                guard let self, let peripheral else { return }
+                self.beginBackgroundReconnectLeaseIfNeeded(
+                    peripheral: peripheral,
+                    error: error
+                )
+            }
         } else {
             AtriaDebugLog("ATRIADBG ble_link status=reconnect_fast_lane_suppressed reason=%@ peripheral_state=%d",
                           String(describing: fastLaneDisposition),
@@ -27812,6 +28327,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                               peripheral.identifier.uuidString)
                 return
             }
+            self.endBackgroundReconnectLease(reason: "connect_failed")
             self.writeCompletionLedger.reset()
             reconnectWatchdogTask?.cancel()
             freshScanFallbackTask?.cancel()

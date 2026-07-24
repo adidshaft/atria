@@ -7823,6 +7823,323 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testLockedRangeLossLeaseIsBoundedAndOnlyHandlesCoreBluetoothTimeout() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func beginBackgroundReconnectLeaseIfNeeded("
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "    private func endBackgroundReconnectLease(reason: String)",
+            range: start.upperBound..<source.endIndex
+        ))
+        let lease = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(lease.contains("(error as NSError).domain == CBErrorDomain"))
+        XCTAssertTrue(lease.contains("CBError.connectionTimeout.rawValue"))
+        XCTAssertTrue(lease.contains("backgroundReconnectLeaseReissueUsed"))
+        XCTAssertTrue(lease.contains("Task.sleep(for: .seconds"))
+        XCTAssertTrue(lease.contains("central.cancelPeripheralConnection(peripheral)"))
+        XCTAssertTrue(lease.contains("reconnectKnownPeripheralImmediately"))
+        XCTAssertFalse(lease.contains("peripheral.state == .connecting,\n              let error"),
+                       "the callback must arm after the synchronous standing connect is installed")
+    }
+
+    func testPostReconnectStreamLeaseGateRequiresLiveCaptureEpoch() {
+        XCTAssertTrue(AtriaBLEManager.shouldHoldPostReconnectStreamLease(
+            hasSavedStrap: true,
+            continuousCaptureWanted: true,
+            historyRecoveryActive: false,
+            diagnosticActive: false,
+            callbackAccepted: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldHoldPostReconnectStreamLease(
+            hasSavedStrap: false,
+            continuousCaptureWanted: true,
+            historyRecoveryActive: false,
+            diagnosticActive: false,
+            callbackAccepted: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldHoldPostReconnectStreamLease(
+            hasSavedStrap: true,
+            continuousCaptureWanted: false,
+            historyRecoveryActive: false,
+            diagnosticActive: false,
+            callbackAccepted: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldHoldPostReconnectStreamLease(
+            hasSavedStrap: true,
+            continuousCaptureWanted: true,
+            historyRecoveryActive: true,
+            diagnosticActive: false,
+            callbackAccepted: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldHoldPostReconnectStreamLease(
+            hasSavedStrap: true,
+            continuousCaptureWanted: true,
+            historyRecoveryActive: false,
+            diagnosticActive: true,
+            callbackAccepted: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldHoldPostReconnectStreamLease(
+            hasSavedStrap: true,
+            continuousCaptureWanted: true,
+            historyRecoveryActive: false,
+            diagnosticActive: false,
+            callbackAccepted: false
+        ))
+    }
+
+    func testAcceptedHRFreshnessIsScopedToTheConnectionEpoch() {
+        let connectedAt = Date(timeIntervalSince1970: 2_000)
+        XCTAssertTrue(AtriaBLEManager.acceptedHRIsFreshForConnectionEpoch(
+            lastAcceptedHRAt: connectedAt.addingTimeInterval(3),
+            connectedAt: connectedAt
+        ))
+        XCTAssertTrue(AtriaBLEManager.acceptedHRIsFreshForConnectionEpoch(
+            lastAcceptedHRAt: connectedAt,
+            connectedAt: connectedAt
+        ))
+        // Counter growth from before the reconnect is never success.
+        XCTAssertFalse(AtriaBLEManager.acceptedHRIsFreshForConnectionEpoch(
+            lastAcceptedHRAt: connectedAt.addingTimeInterval(-1),
+            connectedAt: connectedAt
+        ))
+        XCTAssertFalse(AtriaBLEManager.acceptedHRIsFreshForConnectionEpoch(
+            lastAcceptedHRAt: nil,
+            connectedAt: connectedAt
+        ))
+        XCTAssertFalse(AtriaBLEManager.acceptedHRIsFreshForConnectionEpoch(
+            lastAcceptedHRAt: connectedAt,
+            connectedAt: nil
+        ))
+    }
+
+    func testSilentStreamRepairIsSingleShotAndDataGated() {
+        // Healthy stream: never repaired.
+        XCTAssertEqual(AtriaBLEManager.postReconnectSilentStreamRepairDisposition(
+            callbackAccepted: true,
+            continuousCaptureWanted: true,
+            historyRecoveryActive: false,
+            diagnosticActive: false,
+            freshAcceptedHR: true,
+            repairPermitAvailable: true
+        ), .standDown)
+        // Silent stream with the permit available: exactly one reissue.
+        XCTAssertEqual(AtriaBLEManager.postReconnectSilentStreamRepairDisposition(
+            callbackAccepted: true,
+            continuousCaptureWanted: true,
+            historyRecoveryActive: false,
+            diagnosticActive: false,
+            freshAcceptedHR: false,
+            repairPermitAvailable: true
+        ), .reissueConnect)
+        // Permit spent: no loop — wait out the bounded lease.
+        XCTAssertEqual(AtriaBLEManager.postReconnectSilentStreamRepairDisposition(
+            callbackAccepted: true,
+            continuousCaptureWanted: true,
+            historyRecoveryActive: false,
+            diagnosticActive: false,
+            freshAcceptedHR: false,
+            repairPermitAvailable: false
+        ), .awaitLeaseExpiry)
+        // History ownership, diagnostics, capture-off, stale epoch: hands off.
+        XCTAssertEqual(AtriaBLEManager.postReconnectSilentStreamRepairDisposition(
+            callbackAccepted: true,
+            continuousCaptureWanted: true,
+            historyRecoveryActive: true,
+            diagnosticActive: false,
+            freshAcceptedHR: false,
+            repairPermitAvailable: true
+        ), .standDown)
+        XCTAssertEqual(AtriaBLEManager.postReconnectSilentStreamRepairDisposition(
+            callbackAccepted: true,
+            continuousCaptureWanted: false,
+            historyRecoveryActive: false,
+            diagnosticActive: false,
+            freshAcceptedHR: false,
+            repairPermitAvailable: true
+        ), .standDown)
+        XCTAssertEqual(AtriaBLEManager.postReconnectSilentStreamRepairDisposition(
+            callbackAccepted: false,
+            continuousCaptureWanted: true,
+            historyRecoveryActive: false,
+            diagnosticActive: false,
+            freshAcceptedHR: false,
+            repairPermitAvailable: true
+        ), .standDown)
+        XCTAssertEqual(AtriaBLEManager.postReconnectSilentStreamRepairDisposition(
+            callbackAccepted: true,
+            continuousCaptureWanted: true,
+            historyRecoveryActive: false,
+            diagnosticActive: true,
+            freshAcceptedHR: false,
+            repairPermitAvailable: true
+        ), .standDown)
+    }
+
+    func testDidConnectHoldsStreamLeaseUntilFreshAcceptedHR() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {"
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "nonisolated func centralManager(_ central: CBCentralManager,\n                        didDisconnectPeripheral",
+            range: start.upperBound..<source.endIndex
+        ))
+        let didConnect = String(source[start.lowerBound..<end.lowerBound])
+
+        // The lease must begin (not end) at did_connect: the locked failure
+        // signature was `connected/did_connect` with the discovery stage
+        // frozen and the accepted counter never advancing.
+        XCTAssertTrue(didConnect.contains("beginPostReconnectStreamLeaseIfNeeded("))
+        XCTAssertFalse(didConnect.contains("endBackgroundReconnectLease(reason: \"connected\")"))
+        // did_connect is not recovery: both repair budgets refill only on a
+        // fresh accepted HR sample, never in the connect callback — otherwise
+        // a connect/stall cycle could loop repairs forever.
+        XCTAssertFalse(didConnect.contains("backgroundReconnectLeaseReissueUsed = false"))
+        XCTAssertFalse(didConnect.contains("postReconnectSilentStreamRepairsSpent = 0"))
+    }
+
+    func testSilentStreamRepairArmsAtExpiryAndUsesStandingReconnect() throws {
+        let source = try leaseManagerSource()
+
+        // Expiry is the last guaranteed execution moment: both lease begin
+        // sites must run the synchronous live-epoch expiry handler, never an
+        // async hop that dies when the process suspends.
+        XCTAssertEqual(
+            source.components(separatedBy: "self?.handleReconnectLeaseExpiry()").count - 1,
+            2,
+            "both reconnect leases must share the synchronous expiry repair"
+        )
+        let expiry = try XCTUnwrap(source.range(
+            of: "private func handleReconnectLeaseExpiry() {"
+        ))
+        let expiryEnd = try XCTUnwrap(source.range(
+            of: "private func runPostReconnectSilentStreamRepairIfNeeded(",
+            range: expiry.upperBound..<source.endIndex
+        ))
+        let expiryBody = String(source[expiry.lowerBound..<expiryEnd.lowerBound])
+        XCTAssertTrue(expiryBody.contains("bleCallbackEpochFence.epoch"),
+                      "expiry must evaluate the live epoch, not a captured one")
+        XCTAssertTrue(expiryBody.contains("endBackgroundReconnectLease(reason: \"expired\")"))
+
+        // The reissue must rely on the synchronous standing-reconnect fast
+        // lane in didDisconnect (suspension-proof pending connect), so the
+        // cancel is deliberately NOT marked app-owned and no delayed Task
+        // carries the reconnect.
+        let repair = try XCTUnwrap(source.range(
+            of: "case .reissueConnect:"
+        ))
+        let repairEnd = try XCTUnwrap(source.range(
+            of: "private func completePostReconnectStreamRecoveryIfNeeded()",
+            range: repair.upperBound..<source.endIndex
+        ))
+        let repairBody = String(source[repair.lowerBound..<repairEnd.lowerBound])
+        XCTAssertTrue(repairBody.contains("central.cancelPeripheralConnection(peripheral)"))
+        XCTAssertFalse(repairBody.contains("markAppOwnedCancellation"),
+                       "an app-owned mark would suppress the synchronous standing reconnect")
+        XCTAssertFalse(repairBody.contains("Task.sleep"),
+                       "delayed reconnects die when the locked process suspends")
+
+        // A strap can legitimately sit connected and ATT-silent for hours
+        // (off-wrist/charging), so the repair budget must be a small fixed
+        // bound refilled only by fresh accepted HR — never per epoch.
+        XCTAssertTrue(source.contains(
+            "postReconnectSilentStreamRepairBudget = 2"
+        ))
+    }
+
+    func testLeaseExpiryNeverGoesDormantWithoutAStandingConnect() throws {
+        let source = try leaseManagerSource()
+        let expiry = try XCTUnwrap(source.range(
+            of: "private func handleReconnectLeaseExpiry() {"
+        ))
+        let insurance = try XCTUnwrap(source.range(
+            of: "private func ensureStandingConnectAtLeaseExpiryIfNeeded(",
+            range: expiry.upperBound..<source.endIndex
+        ))
+        let expiryBody = String(source[expiry.lowerBound..<insurance.lowerBound])
+        XCTAssertTrue(expiryBody.contains("ensureStandingConnectAtLeaseExpiryIfNeeded(peripheral: peripheral)"),
+                      "expiry must arm terminal insurance before the process goes dormant")
+
+        let insuranceEnd = try XCTUnwrap(source.range(
+            of: "private func runPostReconnectSilentStreamRepairIfNeeded(",
+            range: insurance.upperBound..<source.endIndex
+        ))
+        let body = String(source[insurance.lowerBound..<insuranceEnd.lowerBound])
+        // Disconnected with nothing pending -> arm the standing connect.
+        XCTAssertTrue(body.contains("reconnectKnownPeripheralImmediately"))
+        // Silent-but-connected with the budget spent must NOT cancel again —
+        // that would churn every lease era on legitimately silent straps.
+        XCTAssertFalse(body.contains("cancelPeripheralConnection"))
+        // It must stand down for history ownership and diagnostics.
+        XCTAssertTrue(body.contains("historyTransportPhaseFence"))
+        XCTAssertTrue(body.contains("motionHandshakeDiagnostic == nil"))
+    }
+
+    func testWedgedSessionEscalatesToOneBoundedCentralRebuild() throws {
+        let source = try leaseManagerSource()
+
+        // The final repair-budget slot must escalate to a fresh central: a
+        // wedged bluetoothd session swallows cancels (2026-07-24 v4 cycle-2:
+        // cancel produced no didDisconnect), so repeating the cancel can
+        // never recover. The rebuild is once per gap episode by construction
+        // because the budget refills only on fresh accepted HR.
+        let reissue = try XCTUnwrap(source.range(of: "case .reissueConnect:"))
+        let reissueEnd = try XCTUnwrap(source.range(
+            of: "private func rebuildCentralForWedgedSessionOnce(",
+            range: reissue.upperBound..<source.endIndex
+        ))
+        let branch = String(source[reissue.lowerBound..<reissueEnd.lowerBound])
+        XCTAssertTrue(branch.contains(">= Self.postReconnectSilentStreamRepairBudget"))
+        XCTAssertTrue(branch.contains("rebuildCentralForWedgedSessionOnce(trigger: trigger)"))
+
+        let rebuild = try XCTUnwrap(source.range(
+            of: "private func rebuildCentralForWedgedSessionOnce(trigger: String) {"
+        ))
+        let rebuildEnd = try XCTUnwrap(source.range(
+            of: "private func completePostReconnectStreamRecoveryIfNeeded()",
+            range: rebuild.upperBound..<source.endIndex
+        ))
+        let body = String(source[rebuild.lowerBound..<rebuildEnd.lowerBound])
+        // Fresh XPC session with the SAME restore identifier so state
+        // restoration and relaunch semantics are unchanged.
+        XCTAssertTrue(body.contains("central = CBCentralManager(delegate: self"))
+        XCTAssertTrue(body.contains("CBCentralManagerOptionRestoreIdentifierKey: centralRestoreIdentifier"))
+        // The old epoch must be fenced off and no scan started — the
+        // poweredOn handler owns the saved-strap standing connect.
+        XCTAssertTrue(body.contains("bleCallbackEpochFence.invalidate()"))
+        XCTAssertFalse(body.contains("startScan"))
+    }
+
+    func testAcceptedHRSampleIsTheOnlyRecoveryTerminal() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func recordAcceptedHRSample(rate: Int, at sampleTime: Date) {"
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "completePostReconnectStreamRecoveryIfNeeded()",
+            range: start.upperBound..<source.endIndex
+        ))
+        XCTAssertLessThan(
+            source.distance(from: start.upperBound, to: end.lowerBound),
+            80,
+            "accepted-HR bookkeeping must complete the reconnect recovery immediately"
+        )
+
+        let completion = try XCTUnwrap(source.range(
+            of: "private func completePostReconnectStreamRecoveryIfNeeded() {"
+        ))
+        let completionEnd = try XCTUnwrap(source.range(
+            of: "private func schedulePostReconnectHRReassertion(",
+            range: completion.upperBound..<source.endIndex
+        ))
+        let body = String(source[completion.lowerBound..<completionEnd.lowerBound])
+        XCTAssertTrue(body.contains("postReconnectSilentStreamRepairsSpent = 0"))
+        XCTAssertTrue(body.contains("backgroundReconnectLeaseReissueUsed = false"))
+        XCTAssertTrue(body.contains("endBackgroundReconnectLease(reason: \"fresh_accepted_hr\")"))
+    }
+
     func testHistoricalFramesRemainQueuedAcrossDurableBatchBoundary() throws {
         let source = try leaseManagerSource()
         let start = try XCTUnwrap(source.range(
