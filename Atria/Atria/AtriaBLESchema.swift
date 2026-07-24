@@ -121,6 +121,20 @@ extension AtriaBLEManager {
     /// Callback-stage breadcrumbs for locked reconnect forensics. These are
     /// deliberately tiny scalars so recording the final CoreBluetooth callback
     /// execution slice never depends on the MainActor or app log collection.
+    /// Locked-reconnect lease forensics. State-restoration relaunches carry
+    /// no debug launch arguments, so these tiny scalars are the only record
+    /// of which lease stage actually executed before suspension.
+    enum ReconnectLeaseDefaults {
+        static let stage = "atria.reconnectLease.stage"
+        static let at = "atria.reconnectLease.at"
+        static let detail = "atria.reconnectLease.detail"
+        /// Rolling newline-separated `unix|stage|detail` tail. A single
+        /// latest-stage key proved insufficient: one locked recovery writes
+        /// several stages in one runtime slice and the last overwrite hid
+        /// which repair disposition actually executed.
+        static let trail = "atria.reconnectLease.trail"
+    }
+
     enum BackgroundHRDiscoveryDefaults {
         static let stage = "atria.backgroundHRDiscovery.stage"
         static let at = "atria.backgroundHRDiscovery.at"
