@@ -1322,6 +1322,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private let offlineSyncLiveAcceptedHRProtectionWindow: TimeInterval = 45
     private let rangeLossBackfillReadyForceInterval: TimeInterval = 90
     private let automaticConnectedHistoryStableInterval: TimeInterval = 60
+    /// Restart tax after the drain's OWN transport loss. A productive drain
+    /// session that died mid-serve (strap idle-kill / CBError 6) does not
+    /// indicate live-capture trouble; charging the full 60s stability window
+    /// per ~150-450-row session made the window the dominant recovery cost.
+    /// Fresh accepted HR on the new connection is still mandatory — this
+    /// only shortens how long it must have been flowing.
+    private let productiveDrainRestartStableInterval: TimeInterval = 15
+    private var requiredInterruptedDrainStableInterval: TimeInterval {
+        UserDefaults.standard.bool(
+            forKey: OfflineSyncDefaults.lastDrainAttemptYieldedRows
+        ) ? productiveDrainRestartStableInterval
+          : automaticConnectedHistoryStableInterval
+    }
     private let interruptedFullDrainReacquisitionCooldown: TimeInterval = 5 * 60
     // A retained gap must not turn one failed automatic history handoff into a
     // reconnect loop. Five minutes is long enough to prove live restoration
@@ -6191,7 +6204,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
         let now = Date()
         let stableSeconds = now.timeIntervalSince(connectedAt)
-        let wait = max(0, automaticConnectedHistoryStableInterval - stableSeconds)
+        let wait = max(0, requiredInterruptedDrainStableInterval - stableSeconds)
         interruptedFullDrainReacquisitionTask = Task { @MainActor [weak self] in
             guard let self else { return }
             if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
@@ -6214,7 +6227,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             let now = Date()
             guard Self.shouldReacquireInterruptedFullDrain(
                 stableLiveSeconds: now.timeIntervalSince(currentConnectedAt),
-                requiredStableLiveSeconds: self.automaticConnectedHistoryStableInterval,
+                requiredStableLiveSeconds: self.requiredInterruptedDrainStableInterval,
                 activeExplicitWorkout: false,
                 historySyncInProgress: false,
                 consumerMaterializationInFlight: false,
@@ -9549,7 +9562,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               historicalDrainTelemetry.stream5Received > 0,
               historicalDrainTelemetry.ackErrors == 0,
               historicalDrainTelemetry.ackSent == historicalDrainTelemetry.ackSucceeded,
-              Date().timeIntervalSince(historicalDrainTelemetry.lastProgressAt) >= 1.5
+              Date().timeIntervalSince(historicalDrainTelemetry.lastProgressAt) >= 0.7
         else { return }
         guard historicalDrainTelemetry.stream5Received
                 > historyDrainContinueRowsAtLastReissue else {
