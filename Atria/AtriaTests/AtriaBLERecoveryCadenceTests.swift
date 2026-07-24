@@ -3643,6 +3643,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             gapFingerprint: "gap-a",
             lastReacquisitionGapFingerprint: nil,
             lastReacquisitionAtUnix: nil,
+            priorAttemptYieldedRows: false,
             nowUnix: now,
             cooldown: 300
         ))
@@ -3655,6 +3656,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             gapFingerprint: "gap-a",
             lastReacquisitionGapFingerprint: nil,
             lastReacquisitionAtUnix: nil,
+            priorAttemptYieldedRows: false,
             nowUnix: now,
             cooldown: 300
         ))
@@ -3667,6 +3669,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             gapFingerprint: "gap-a",
             lastReacquisitionGapFingerprint: nil,
             lastReacquisitionAtUnix: nil,
+            priorAttemptYieldedRows: false,
             nowUnix: now,
             cooldown: 300
         ))
@@ -3679,6 +3682,37 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             gapFingerprint: "gap-a",
             lastReacquisitionGapFingerprint: "gap-a",
             lastReacquisitionAtUnix: now - 299,
+            priorAttemptYieldedRows: false,
+            nowUnix: now,
+            cooldown: 300
+        ))
+        // A PRODUCTIVE prior attempt is exempt from the cooldown: the strap
+        // provably serves rows, and throttling it capped recovery at ~73 days
+        // for a 14-day ring (measured 2026-07-24, 350 rows/30min).
+        XCTAssertTrue(AtriaBLEManager.shouldReacquireInterruptedFullDrain(
+            stableLiveSeconds: 90,
+            requiredStableLiveSeconds: 60,
+            activeExplicitWorkout: false,
+            historySyncInProgress: false,
+            consumerMaterializationInFlight: false,
+            gapFingerprint: "gap-a",
+            lastReacquisitionGapFingerprint: "gap-a",
+            lastReacquisitionAtUnix: now - 299,
+            priorAttemptYieldedRows: true,
+            nowUnix: now,
+            cooldown: 300
+        ))
+        // Productivity never overrides the stability window itself.
+        XCTAssertFalse(AtriaBLEManager.shouldReacquireInterruptedFullDrain(
+            stableLiveSeconds: 30,
+            requiredStableLiveSeconds: 60,
+            activeExplicitWorkout: false,
+            historySyncInProgress: false,
+            consumerMaterializationInFlight: false,
+            gapFingerprint: "gap-a",
+            lastReacquisitionGapFingerprint: "gap-a",
+            lastReacquisitionAtUnix: now - 299,
+            priorAttemptYieldedRows: true,
             nowUnix: now,
             cooldown: 300
         ))
@@ -3691,6 +3725,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             gapFingerprint: "gap-b",
             lastReacquisitionGapFingerprint: "gap-a",
             lastReacquisitionAtUnix: now - 1,
+            priorAttemptYieldedRows: false,
             nowUnix: now,
             cooldown: 300
         ))

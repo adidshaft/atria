@@ -6081,7 +6081,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// later re-acquisition for the same durable authority only after the
     /// current link has been stable long enough to establish that live capture
     /// recovered. A changed gap gets a fresh opportunity; the same gap is
-    /// held for the persisted cooldown to avoid reconnect churn.
+    /// held for the persisted cooldown to avoid reconnect churn — but only
+    /// when the previous attempt yielded nothing. A session that advanced the
+    /// flash cursor is proof of a serving strap, and holding it five minutes
+    /// per ~269-row session caps recovery at ~73 days for a 14-day ring
+    /// (measured 2026-07-24: 350 rows/30min). Productivity, not time, is the
+    /// churn guard — identical to the in-session continue-chain rule.
     nonisolated static func shouldReacquireInterruptedFullDrain(
         stableLiveSeconds: TimeInterval,
         requiredStableLiveSeconds: TimeInterval,
@@ -6091,6 +6096,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         gapFingerprint: String,
         lastReacquisitionGapFingerprint: String?,
         lastReacquisitionAtUnix: TimeInterval?,
+        priorAttemptYieldedRows: Bool,
         nowUnix: TimeInterval,
         cooldown: TimeInterval
     ) -> Bool {
@@ -6111,6 +6117,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               nowUnix >= lastReacquisitionAtUnix else {
             return true
         }
+        if priorAttemptYieldedRows { return true }
         return nowUnix - lastReacquisitionAtUnix >= cooldown
     }
 
@@ -6218,6 +6225,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 lastReacquisitionAtUnix: UserDefaults.standard.object(
                     forKey: OfflineSyncDefaults.interruptedFullDrainReacquisitionAt
                 ) as? Double,
+                priorAttemptYieldedRows: UserDefaults.standard.bool(
+                    forKey: OfflineSyncDefaults.lastDrainAttemptYieldedRows
+                ),
                 nowUnix: now.timeIntervalSince1970,
                 cooldown: self.interruptedFullDrainReacquisitionCooldown
             ) else { return }
@@ -9611,6 +9621,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func finishHistoricalDrainTelemetry(generation: UInt64, trigger: String) {
         emitHistoricalDrainTelemetry(generation: generation, trigger: trigger)
+        if historicalDrainTelemetry.generation == generation {
+            UserDefaults.standard.set(
+                historicalDrainTelemetry.stream5Received > 0,
+                forKey: OfflineSyncDefaults.lastDrainAttemptYieldedRows
+            )
+        }
         historicalDrainTelemetryTask?.cancel()
         historicalDrainTelemetryTask = nil
     }
