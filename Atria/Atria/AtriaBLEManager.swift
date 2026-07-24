@@ -1379,6 +1379,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var historyDrain = AtriaWhoop4HistoryDrainState()
     private var historicalDrainTelemetry = HistoricalDrainTelemetry()
     private var historicalDrainTelemetryTask: Task<Void, Never>?
+    /// Productivity-bounded in-session 1600 continue chain (see
+    /// reissueHistoryDrainContinueIfBurstSettled). Reset per drain generation.
+    private var historyDrainContinueRowsAtLastReissue = 0
+    private var historyDrainContinueReissues = 0
+    private var historyDrainContinueDryLogged = false
     private let historySequenceContinuityStore = AtriaWhoop4HistorySequenceContinuityStore()
     private var historySequenceContinuityStrapIdentifier: String?
     private var pendingHistoryEndACK: (key: String, payload: [UInt8])?
@@ -6061,6 +6066,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         pendingReason == "interrupted_full_drain_relaunch"
     }
 
+    /// The only reasons allowed through the disabled-production gate, and only
+    /// while a durable `.draining` authority with a pending exact gap exists.
+    /// Both resume an already-admitted transport transaction; neither can
+    /// start a new full-flash drain for a new gap.
+    nonisolated static func isPersistedDrainAuthorityResumeReason(
+        _ reason: String
+    ) -> Bool {
+        reason == "interrupted_full_drain_bounded_reacquisition"
+            || reason == "interrupted_full_drain_relaunch"
+    }
+
     /// A process expiry is not a terminal no-rows result. Permit exactly one
     /// later re-acquisition for the same durable authority only after the
     /// current link has been stable long enough to establish that live capture
@@ -6278,23 +6294,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             consumerMaterializationInFlight: historicalConsumerMaterializationInFlight
         ) else { return }
 
-        // During the locked-reconnect acceptance gate, history recovery must
-        // never seize a live link.  The retained authority is still durable,
-        // but this HR-driven path is intentionally hold-only until live
-        // reconnect has been physically accepted.  That keeps a history drain
-        // from being mistaken for, or disrupting, automatic live recovery.
+        // Live-first ordering: history recovery must never seize a link that
+        // is still proving itself. The hold is no longer unconditional —
+        // locked live reconnect was physically accepted (3 consecutive passes,
+        // 2026-07-24, commit 0c1fcff) — so this path now arms the SAME bounded
+        // reacquisition every other resume uses: >=60s stable live HR plus
+        // the persisted five-minute cooldown, at most one attempt per gap
+        // fingerprint per cooldown. Cancelling the timer here on every
+        // accepted-HR batch was the freeze that kept a durable `.draining`
+        // authority held forever (observed stable_s=600 with no action).
         let now = Date()
         let stableSeconds = now.timeIntervalSince(connectedAt)
-        interruptedFullDrainReacquisitionTask?.cancel()
-        interruptedFullDrainReacquisitionTask = nil
         deferInterruptedFullDrainForCurrentLiveConnection = true
-        UserDefaults.standard.set("deferred_locked_reconnect_acceptance",
-                                  forKey: OfflineSyncDefaults.lastStatus)
-        UserDefaults.standard.set(reason, forKey: OfflineSyncDefaults.lastReason)
-        AtriaDebugLog("ATRIADBG offline_sync status=deferred_locked_reconnect_acceptance reason=%@ authority=%@ stable_s=%.1f action=retain_exact_gap_preserve_live_link",
-                      reason,
-                      authority.authorityIdentifier,
-                      stableSeconds)
+        if interruptedFullDrainReacquisitionTask == nil {
+            UserDefaults.standard.set("deferred_awaiting_stable_live_reacquisition",
+                                      forKey: OfflineSyncDefaults.lastStatus)
+            UserDefaults.standard.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            AtriaDebugLog("ATRIADBG offline_sync status=deferred_awaiting_stable_live_reacquisition reason=%@ authority=%@ stable_s=%.1f action=arm_bounded_reacquisition_preserve_live_link",
+                          reason,
+                          authority.authorityIdentifier,
+                          stableSeconds)
+        }
+        scheduleInterruptedFullDrainReacquisitionIfNeeded(
+            reason: "persisted_drain_stable_live_\(reason)"
+        )
     }
 
     /// The launch path already turns a persisted `.draining` authority into a
@@ -6405,8 +6428,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // turn that stale replay into a competing BLE owner. Keep the durable
         // gap for a future, protocol-proven repair and leave realtime alone.
         // An already-running transaction is never interrupted here.
+        //
+        // Resuming a persisted `.draining` authority is the one carved-out
+        // lane: that transport transaction was already admitted, physically
+        // reached its first history frame (2026-07-23 handshake evidence),
+        // and its exact-gap fingerprint is still pending. Refusing the resume
+        // here is what stranded the authority behind this gate; it is not a
+        // new full-flash decision.
+        let resumingPersistedDrainAuthority = Self
+            .isPersistedDrainAuthorityResumeReason(reason)
+            && (try? historicalFullDrainCoverageStore.load())
+                .map { $0.status == .draining && $0.gap.pending } == true
         if !Self.productionHistoricalFullDrainGapRecoveryEnabled,
-           !offlineHistoricalSyncInProgress {
+           !offlineHistoricalSyncInProgress,
+           !resumingPersistedDrainAuthority {
             if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) {
                 retainPendingOfflineHistoricalSyncRequest(
                     reason: reason,
@@ -9454,10 +9489,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func startHistoricalDrainTelemetry(generation: UInt64) {
         historicalDrainTelemetryTask?.cancel()
         historicalDrainTelemetry.reset(generation: generation)
+        historyDrainContinueRowsAtLastReissue = 0
+        historyDrainContinueReissues = 0
+        historyDrainContinueDryLogged = false
         historicalDrainTelemetryTask = Task { @MainActor [weak self] in
+            var tick = 0
             while !Task.isCancelled {
                 do {
-                    try await Task.sleep(for: .seconds(5))
+                    // 1s cadence: the strap kills an idle drain link at ~10s,
+                    // and a 5s tick + 3s threshold lost the race by design
+                    // (2026-07-24 20:15:12 continue sent as CBError 6 landed).
+                    try await Task.sleep(for: .seconds(1))
                 } catch {
                     return
                 }
@@ -9467,9 +9509,69 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       self.offlineHistoricalSyncGeneration == generation else {
                     return
                 }
-                self.emitHistoricalDrainTelemetry(generation: generation,
-                                                  trigger: "periodic")
+                tick += 1
+                if tick % 5 == 0 {
+                    self.emitHistoricalDrainTelemetry(generation: generation,
+                                                      trigger: "periodic")
+                }
+                self.reissueHistoryDrainContinueIfBurstSettled(
+                    generation: generation
+                )
             }
+        }
+    }
+
+    /// The strap serves one bounded burst (~80-130 rows) per 1600 START and
+    /// then idles; ~10s of idle kills the link with a supervision timeout
+    /// (2026-07-24 19:29:02 "connection timed out unexpectedly",
+    /// stream5_rx=83 phase=listening ack_ok=3). Each session restart costs
+    /// the 60s stable window plus the 5-minute cooldown, capping recovery at
+    /// ~0.4x realtime — a 14-day flash ring can never drain. Re-issuing the
+    /// SAME verified 1600 continue inside the session keeps the burst chain
+    /// alive. Productivity-bounded, not count-bounded: every re-issue must
+    /// have yielded new rows since the previous one, so a dry cursor stops
+    /// the chain after exactly one unproductive re-issue and can never loop.
+    private func reissueHistoryDrainContinueIfBurstSettled(generation: UInt64) {
+        guard offlineHistoricalSyncInProgress,
+              offlineHistoricalSyncGeneration == generation,
+              peripheral?.state == .connected,
+              historicalDrainTelemetry.generation == generation,
+              historicalDrainTelemetry.stream5Received > 0,
+              historicalDrainTelemetry.ackErrors == 0,
+              historicalDrainTelemetry.ackSent == historicalDrainTelemetry.ackSucceeded,
+              Date().timeIntervalSince(historicalDrainTelemetry.lastProgressAt) >= 1.5
+        else { return }
+        guard historicalDrainTelemetry.stream5Received
+                > historyDrainContinueRowsAtLastReissue else {
+            if !historyDrainContinueDryLogged {
+                historyDrainContinueDryLogged = true
+                AtriaDebugLog("ATRIADBG historyDrain status=continue_dry generation=%llu stream5_rx=%d reissues=%d action=let_session_settle_terminal",
+                              generation,
+                              historicalDrainTelemetry.stream5Received,
+                              historyDrainContinueReissues)
+            }
+            return
+        }
+        historyDrainContinueRowsAtLastReissue = historicalDrainTelemetry.stream5Received
+        historyDrainContinueReissues += 1
+        let reissue = historyDrainContinueReissues
+        AtriaDebugLog("ATRIADBG historyDrain status=continue_reissue generation=%llu reissue=%d stream5_rx=%d action=resend_verified_1600_same_session",
+                      generation,
+                      reissue,
+                      historicalDrainTelemetry.stream5Received)
+        Task { @MainActor [weak self] in
+            guard let self,
+                  self.offlineHistoricalSyncInProgress,
+                  self.offlineHistoricalSyncGeneration == generation else { return }
+            let result = await self.sendHistoryCommandAwaitingWriteConfirmation(
+                command: Cmd.sendHistoricalData,
+                payload: [0x00],
+                generation: generation
+            )
+            AtriaDebugLog("ATRIADBG historyDrain status=continue_reissue_result generation=%llu reissue=%d result=%@",
+                          generation,
+                          reissue,
+                          String(describing: result))
         }
     }
 
@@ -9939,6 +10041,33 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       archiveDiagnostics.metricUsableRows,
                       archiveDiagnostics.currentSessionUsableRows)
         return true
+    }
+
+    /// The recovery pill must always be derivable from durable state. A
+    /// latched `.needsAttention`/`.partial` that outlives its cause reads as
+    /// "sync is permanently broken" and erodes trust in every real alert.
+    /// This only ever downgrades to `.idle` when nothing actionable remains:
+    /// no resolvable ledger window (the legacy ambiguous envelope is
+    /// permanently non-actionable by design) and no pending backfill flag.
+    /// Escalation continues to happen only at real events.
+    private func reconcileHistoricalRecoveryPresentation(reason: String) {
+        guard !offlineHistoricalSyncInProgress,
+              !historicalConsumerMaterializationInFlight else { return }
+        switch historicalRecoveryPresentation {
+        case .needsAttention, .partial:
+            break
+        case .idle, .syncing, .verified:
+            return
+        }
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) else { return }
+        let actionable = AtriaHistoricalGapLedger
+            .windows(defaults: defaults)
+            .contains { !AtriaHistoricalGapLedger.isLegacyCoalescedWindow($0) }
+        guard !actionable else { return }
+        historicalRecoveryPresentation = .idle
+        AtriaDebugLog("ATRIADBG offline_sync status=recovery_presentation_cleared reason=%@ action=no_actionable_windows_no_pending_backfill",
+                      reason)
     }
 
     private func markRangeLossBackfillRequired(reason: String) {
@@ -10469,6 +10598,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               dbgMTU,
               peripheral.name ?? deviceName)
         scheduleRangeLossBackfillIfNeeded(reason: "did_connect")
+        reconcileHistoricalRecoveryPresentation(reason: "did_connect")
     }
 
     private func recordLinkObservedConnected(reason: String, peripheral: CBPeripheral) {
@@ -16315,6 +16445,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             _ = reconcileRangeLossBackfillPendingWithArchive(
                 reason: "accepted_hr_closed_covered_gap",
                 ledgerCoverageResolved: true
+            )
+            reconcileHistoricalRecoveryPresentation(
+                reason: "accepted_hr_closed_covered_gap"
             )
         }
         if let lastAcceptedHRAt {
