@@ -337,6 +337,11 @@ extension AtriaBLEManager {
             "atria.offlineSync.interruptedFullDrainReacquisitionGapFingerprint.v1"
         static let interruptedFullDrainReacquisitionAt =
             "atria.offlineSync.interruptedFullDrainReacquisitionAt.v1"
+        /// True when the most recent drain attempt received at least one
+        /// stream-5 row. A productive strap is exempt from the reacquisition
+        /// cooldown; only a no-rows attempt is throttled.
+        static let lastDrainAttemptYieldedRows =
+            "atria.offlineSync.lastDrainAttemptYieldedRows.v1"
         static let backgroundLeaseStatus = "atria.offlineSync.backgroundLeaseStatus.v1"
         static let backgroundLeaseAt = "atria.offlineSync.backgroundLeaseAt.v1"
         static let handshakeStatus = "atria.offlineSync.handshakeStatus.v1"
