@@ -3732,9 +3732,15 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let body = String(source[start.lowerBound..<end.lowerBound])
         XCTAssertTrue(body.contains("authority.gap.pending"),
                       "the fsynced drain authority must remain resumable even if a secondary ledger was compacted")
-        XCTAssertTrue(body.contains("deferred_locked_reconnect_acceptance"))
+        // Pin migrated 2026-07-24: locked-reconnect acceptance completed
+        // (3 consecutive physical passes, commit 0c1fcff), so the hold-only
+        // "deferred_locked_reconnect_acceptance" state became the bounded
+        // stable-live reacquisition arm. Live transport is still never seized
+        // directly from this per-sample path.
+        XCTAssertTrue(body.contains("deferred_awaiting_stable_live_reacquisition"))
+        XCTAssertTrue(body.contains("scheduleInterruptedFullDrainReacquisitionIfNeeded("))
         XCTAssertFalse(body.contains("requestOfflineHistoricalSyncIfNeeded("),
-                       "locked reconnect acceptance must preserve live transport, not start history")
+                       "the per-sample rearm must preserve live transport, not start history inline")
 
         XCTAssertTrue(source.contains(
             "rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded(\n                reason: \"accepted_hr\""
@@ -7821,6 +7827,107 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(source.contains(
             "reason: \"post_history_stuck_connect_reissue\""
         ))
+    }
+
+    func testDrainContinueChainIsProductivityBoundedAndSameSession() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func reissueHistoryDrainContinueIfBurstSettled(generation: UInt64) {"
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "private func emitHistoricalDrainTelemetry(",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        // Every re-issue must have yielded new rows since the previous one —
+        // a dry cursor stops the chain after one unproductive re-issue, so
+        // the continue can never loop against an empty or wedged strap.
+        XCTAssertTrue(body.contains("> historyDrainContinueRowsAtLastReissue"))
+        XCTAssertTrue(body.contains("status=continue_dry"))
+        // Only the already-verified 1600 continue is ever re-sent; the chain
+        // must not touch 0x22 range requests, CCCDs, or the link itself.
+        XCTAssertTrue(body.contains("command: Cmd.sendHistoricalData"))
+        XCTAssertTrue(body.contains("payload: [0x00]"))
+        XCTAssertFalse(body.contains("getDataRange"))
+        XCTAssertFalse(body.contains("setNotifyValue"))
+        XCTAssertFalse(body.contains("cancelPeripheralConnection"))
+        // ACK health gates the chain: an unsettled or failing ACK stream must
+        // never be papered over by more START commands.
+        XCTAssertTrue(body.contains("ackErrors == 0"))
+        XCTAssertTrue(body.contains("ackSent == historicalDrainTelemetry.ackSucceeded"))
+    }
+
+    func testPersistedDrainRearmArmsBoundedReacquisitionInsteadOfFreezing() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded("
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "/// The launch path already turns a persisted `.draining` authority",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        // Cancelling the reacquisition timer on every accepted-HR batch was
+        // the freeze that held a durable `.draining` authority forever
+        // (observed stable_s=600 with no action, 2026-07-24).
+        XCTAssertFalse(body.contains("interruptedFullDrainReacquisitionTask?.cancel()"),
+                       "the per-sample rearm path must never kill the resume timer")
+        XCTAssertTrue(body.contains(
+            "scheduleInterruptedFullDrainReacquisitionIfNeeded("
+        ), "the hold must arm the same bounded stable-live reacquisition")
+        XCTAssertTrue(body.contains("deferInterruptedFullDrainForCurrentLiveConnection = true"),
+                      "live-first ordering stays: the current link is never seized directly")
+    }
+
+    func testPersistedDrainResumeLaneIsReasonAndAuthorityScoped() throws {
+        // Only the two already-admitted resume reasons may pass the disabled
+        // production gate, and only alongside a durable pending authority.
+        XCTAssertTrue(AtriaBLEManager.isPersistedDrainAuthorityResumeReason(
+            "interrupted_full_drain_bounded_reacquisition"
+        ))
+        XCTAssertTrue(AtriaBLEManager.isPersistedDrainAuthorityResumeReason(
+            "interrupted_full_drain_relaunch"
+        ))
+        XCTAssertFalse(AtriaBLEManager.isPersistedDrainAuthorityResumeReason(
+            "long_wear_range_loss"
+        ))
+        XCTAssertFalse(AtriaBLEManager.isPersistedDrainAuthorityResumeReason(
+            "home_missed_data_banner"
+        ))
+
+        let source = try leaseManagerSource()
+        let gate = try XCTUnwrap(source.range(
+            of: "let resumingPersistedDrainAuthority = Self"
+        ))
+        let gateEnd = try XCTUnwrap(source.range(
+            of: "gap_retained_exact_recovery_unproven",
+            range: gate.upperBound..<source.endIndex
+        ))
+        let body = String(source[gate.lowerBound..<gateEnd.lowerBound])
+        XCTAssertTrue(body.contains(".status == .draining && $0.gap.pending"),
+                      "the carve-out requires a durable draining authority with a pending gap")
+        XCTAssertTrue(body.contains("!resumingPersistedDrainAuthority"),
+                      "the gate must keep retaining every non-resume request")
+    }
+
+    func testRecoveryPresentationDowngradesOnlyWhenNothingIsActionable() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func reconcileHistoricalRecoveryPresentation(reason: String) {"
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "private func markRangeLossBackfillRequired(",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        // Deterministic pill: clears only with no pending backfill and no
+        // resolvable ledger window; a running sync always owns the state.
+        XCTAssertTrue(body.contains("guard !offlineHistoricalSyncInProgress"))
+        XCTAssertTrue(body.contains("rangeLossBackfillPending"))
+        XCTAssertTrue(body.contains("isLegacyCoalescedWindow"))
+        XCTAssertTrue(body.contains("historicalRecoveryPresentation = .idle"))
+        XCTAssertFalse(body.contains("= .needsAttention"),
+                       "reconciliation only downgrades; escalation stays at real events")
     }
 
     func testLockedRangeLossLeaseIsBoundedAndOnlyHandlesCoreBluetoothTimeout() throws {
