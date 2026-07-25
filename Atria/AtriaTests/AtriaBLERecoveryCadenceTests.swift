@@ -24,6 +24,116 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
     }
 
+    func testRepeatedDurableEndRetainsEarlierContinuationDeadline() {
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRetainHistoricalPageContinuation(
+                existingGeneration: 7,
+                existingBoundaryID: "enddata:abcd",
+                existingHasFutureAttempt: true,
+                requestedGeneration: 7,
+                requestedBoundaryID: "enddata:abcd"
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRetainHistoricalPageContinuation(
+                existingGeneration: 7,
+                existingBoundaryID: "enddata:abcd",
+                existingHasFutureAttempt: true,
+                requestedGeneration: 7,
+                requestedBoundaryID: "enddata:ef01"
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRetainHistoricalPageContinuation(
+                existingGeneration: nil,
+                existingBoundaryID: nil,
+                existingHasFutureAttempt: false,
+                requestedGeneration: 7,
+                requestedBoundaryID: "enddata:abcd"
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRetainHistoricalPageContinuation(
+                existingGeneration: 7,
+                existingBoundaryID: "enddata:abcd",
+                existingHasFutureAttempt: false,
+                requestedGeneration: 7,
+                requestedBoundaryID: "enddata:abcd"
+            ),
+            "a replay ACK during the final send must arm a replacement deadline"
+        )
+    }
+
+    func testHistoryBurstContinueNeverCompetesWithTerminalDurabilityOrWrites() {
+        let clear = AtriaBLEManager.shouldSendHistoryDrainBurstContinue(
+            pendingHistoryEndACK: false,
+            ackCallbackDeferred: false,
+            durableFlushInFlight: false,
+            admissionBatchInFlight: false,
+            pendingTransportEvents: false,
+            pendingPersistenceCount: 0,
+            writeInFlight: false,
+            pageContinuationArmed: false,
+            replayACKArmed: false
+        )
+        XCTAssertTrue(clear)
+
+        func decision(
+            pendingHistoryEndACK: Bool = false,
+            ackCallbackDeferred: Bool = false,
+            durableFlushInFlight: Bool = false,
+            admissionBatchInFlight: Bool = false,
+            pendingTransportEvents: Bool = false,
+            pendingPersistenceCount: Int = 0,
+            writeInFlight: Bool = false,
+            pageContinuationArmed: Bool = false,
+            replayACKArmed: Bool = false
+        ) -> Bool {
+            AtriaBLEManager.shouldSendHistoryDrainBurstContinue(
+                pendingHistoryEndACK: pendingHistoryEndACK,
+                ackCallbackDeferred: ackCallbackDeferred,
+                durableFlushInFlight: durableFlushInFlight,
+                admissionBatchInFlight: admissionBatchInFlight,
+                pendingTransportEvents: pendingTransportEvents,
+                pendingPersistenceCount: pendingPersistenceCount,
+                writeInFlight: writeInFlight,
+                pageContinuationArmed: pageContinuationArmed,
+                replayACKArmed: replayACKArmed
+            )
+        }
+
+        XCTAssertFalse(decision(pendingHistoryEndACK: true))
+        XCTAssertFalse(decision(ackCallbackDeferred: true))
+        XCTAssertFalse(decision(durableFlushInFlight: true))
+        XCTAssertFalse(decision(admissionBatchInFlight: true))
+        XCTAssertFalse(decision(pendingTransportEvents: true))
+        XCTAssertFalse(decision(pendingPersistenceCount: 1))
+        XCTAssertFalse(decision(writeInFlight: true))
+        XCTAssertFalse(decision(pageContinuationArmed: true))
+        XCTAssertFalse(decision(replayACKArmed: true))
+    }
+
+    func testPageContinuationWaitsForReplayACKSingleFlightPipe() {
+        XCTAssertTrue(
+            AtriaBLEManager.shouldSendHistoricalPageContinuation(
+                replayACKArmed: false,
+                writeInFlight: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldSendHistoricalPageContinuation(
+                replayACKArmed: true,
+                writeInFlight: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldSendHistoricalPageContinuation(
+                replayACKArmed: false,
+                writeInFlight: true
+            )
+        )
+    }
+
     func testStandardHeartRateParserPreservesOptionalRRAndContactFlags() throws {
         // RR present + sensor-contact supported/detected + uint8 HR.
         let contactAndRR = try XCTUnwrap(AtriaBLEManager.parseHeartRateMeasurement(
@@ -2529,6 +2639,35 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             thermalPressure: true,
             explicitUserRequest: true
         ), "an explicit user/research request remains authoritative")
+    }
+
+    func testHistoricalSyncWaitsForCanonicalArchiveWarmup() {
+        XCTAssertTrue(
+            AtriaBLEManager.shouldDeferHistoricalSyncUntilArchiveWarmReady(
+                warmState: .warming,
+                syncInProgress: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldDeferHistoricalSyncUntilArchiveWarmReady(
+                warmState: .failed,
+                syncInProgress: false
+            ),
+            "a failed warmup must remain fail-closed"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDeferHistoricalSyncUntilArchiveWarmReady(
+                warmState: .ready,
+                syncInProgress: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDeferHistoricalSyncUntilArchiveWarmReady(
+                warmState: .warming,
+                syncInProgress: true
+            ),
+            "an already active generation owns its terminal path"
+        )
     }
 
     func testThermalHistoryDeferralRetainsAndReschedulesRangeLossRecovery() throws {
