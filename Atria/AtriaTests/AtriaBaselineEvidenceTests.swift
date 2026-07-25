@@ -85,4 +85,37 @@ final class AtriaBaselineEvidenceTests: XCTestCase {
         XCTAssertFalse(evidence.accepted)
         XCTAssertEqual(evidence.reason, "avg_hr_above_rest_window")
     }
+
+    func testRestingBaselineMaturityQualifierShowsProgressFromDayOne() {
+        // A wearer must see a reading and how mature it is on day one, not a
+        // blank until the baseline is trusted. Mirrors AtriaFitnessAge's
+        // "Early estimate · day N of M" phrasing so the caveat reads the same
+        // wherever it is surfaced.
+        let now = Date(timeIntervalSince1970: 1_784_000_000)
+        func baseline(days: Int) -> PersonalBaseline {
+            var value = PersonalBaseline()
+            value.updated = now
+            value.samples = (0..<days).map { index in
+                PersonalBaseline.BaselineSample(
+                    date: now.addingTimeInterval(TimeInterval(-index) * 86_400),
+                    restingHR: 60,
+                    rmssd: nil,
+                    overnight: false
+                )
+            }
+            return value
+        }
+        XCTAssertEqual(
+            baseline(days: 1).restingBaselineMaturityQualifierText(now: now),
+            "Learning · day 1 of 14"
+        )
+        XCTAssertEqual(
+            baseline(days: 5).restingBaselineMaturityQualifierText(now: now),
+            "Learning · day 5 of 14"
+        )
+        // Once trusted the qualifier disappears entirely — one caveat, and only
+        // while it is true.
+        XCTAssertNil(baseline(days: 14).restingBaselineMaturityQualifierText(now: now))
+    }
+
 }
