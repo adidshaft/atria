@@ -26576,7 +26576,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // entirely under thermal / Low-Power pressure (shouldDeferNonEssentialAnalysis),
         // mirroring the long-wear supervisor's own autosave/diagnostic deferral.
         let historicalIMU: HistoricalArchive.MotionFeatureSummary?
-        if liveIMU.stillnessRatio != nil || powerThermalGovernor.shouldDeferNonEssentialAnalysis {
+        // A live stillness value must NOT suppress the historical cache. The
+        // classifier below reads its features only from `historicalIMU`, so
+        // nulling it whenever live motion happened to decode meant the live
+        // value blocked the one accepted source and was then discarded itself
+        // — every such session recorded motionEvidenceSource=unavailable and
+        // classified as `imu_missing` (observed 106 of 107 sessions). Thermal
+        // and Low-Power deferral remain, since those are about not doing the
+        // work at all.
+        if powerThermalGovernor.shouldDeferNonEssentialAnalysis {
             historicalIMU = nil
         } else if cachedHistoricalMotionOrigin == start {
             historicalIMU = cachedHistoricalMotion
