@@ -1329,8 +1329,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// Fresh accepted HR on the new connection is still mandatory — this
     /// only shortens how long it must have been flowing.
     private let productiveDrainRestartStableInterval: TimeInterval = 15
+    /// Attended selector-seek runs only. Never used by any autonomous lane.
+    private let attendedSelectorSeekStableInterval: TimeInterval = 5
     private var requiredInterruptedDrainStableInterval: TimeInterval {
-        UserDefaults.standard.bool(
+        // The attended seek experiment must be able to arm at all. This strap
+        // drops the link with CBError 6 roughly every 50-65 s, and after such
+        // a drop accepted HR does not reliably return on the same launch, so
+        // in practice there is ONE arming window per launch. A 15 s wait
+        // missed it by 0.6 s when the task armed 51 s into a 64 s connection
+        // (observed 2026-07-24 21:51Z). Five seconds is the smallest window
+        // that still requires a genuinely established live stream, and it is
+        // used only for the operator-supervised selector-sweep run.
+        if historySelectorSweepEnabled {
+            return attendedSelectorSeekStableInterval
+        }
+        return UserDefaults.standard.bool(
             forKey: OfflineSyncDefaults.lastDrainAttemptYieldedRows
         ) ? productiveDrainRestartStableInterval
           : automaticConnectedHistoryStableInterval
@@ -3009,6 +3022,36 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historyCapabilityQualificationPeripheralID = nil
         historyCapabilityQualificationDiscoveryIssued = false
         serviceDiscoveryCallbackObservedForConnection = false
+        // The silent-stream repair budget bounds repairs WITHIN one reconnect
+        // The repair budget used to be cleared ONLY by
+        // `completePostReconnectStreamRecoveryIfNeeded`, whose own comment
+        // calls fresh accepted HR "the only success terminal" — precisely what
+        // a wedged discovery prevents, so the budget self-locked and the app
+        // sat on a connected-but-silent link showing "Connecting" forever.
+        //
+        // Refilling on every epoch is NOT the fix: the repair's own
+        // `central.cancelPeripheralConnection` produces a didDisconnect whose
+        // fast lane reconnects, which lands right back here ~2 s later. A
+        // naive refill therefore rearms the repair every watchdog tick — a
+        // ~14 s cancel/reconnect loop that also makes
+        // `rebuildCentralForWedgedSessionOnce` (only reached at spent >=
+        // budget) permanently unreachable. Rate-limit the refill instead, so a
+        // repair-induced epoch keeps the spend and only a genuinely quiet
+        // interval restores it. Bound: at most `budget` radio actions per
+        // refill interval, regardless of how many epochs occur.
+        if Self.shouldRestoreSilentStreamRepairBudget(
+            spent: postReconnectSilentStreamRepairsSpent,
+            lastSpendAt: lastSilentStreamRepairSpentAt,
+            now: now,
+            refillInterval: Self.silentStreamRepairBudgetRefillInterval
+        ) {
+            recordReconnectLeaseStage(
+                "repair_budget_restored_new_epoch",
+                detail: "spent=\(postReconnectSilentStreamRepairsSpent) reason=\(reason)"
+            )
+            postReconnectSilentStreamRepairsSpent = 0
+            lastSilentStreamRepairSpentAt = nil
+        }
         connectedAt = now
         UserDefaults.standard.set(now.timeIntervalSince1970,
                                   forKey: "atria.ble.connectionEpochAt")
@@ -3163,6 +3206,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var postReconnectSilentStreamRepairsSpent = 0
     private static let postReconnectSilentStreamRepairBudget = 2
     private let postReconnectStreamWatchdogSeconds: TimeInterval = 12
+    /// Bounded re-evaluations of a silent post-reconnect stream (12 s apart,
+    /// so ~1 minute of cover). Radio actions stay capped by the per-epoch
+    /// repair budget; this only stops a single missed tick from stranding the
+    /// epoch on a connected-but-silent link.
+    private static let postReconnectStreamWatchdogMaxTicks = 5
+    /// A repair-induced reconnect returns within seconds, so only a genuinely
+    /// quiet interval may restore the silent-stream repair permits. This is
+    /// what keeps the escape from the self-locking budget without turning it
+    /// into a cancel/reconnect loop.
+    private static let silentStreamRepairBudgetRefillInterval: TimeInterval = 5 * 60
+    private var lastSilentStreamRepairSpentAt: Date?
+
+    nonisolated static func shouldRestoreSilentStreamRepairBudget(
+        spent: Int,
+        lastSpendAt: Date?,
+        now: Date,
+        refillInterval: TimeInterval
+    ) -> Bool {
+        guard spent > 0 else { return false }
+        guard let lastSpendAt else { return true }
+        return now.timeIntervalSince(lastSpendAt) >= refillInterval
+    }
     /// A history-serving link can time out while CoreBluetooth leaves the
     /// subsequent saved-peripheral connect permanently in `.connecting`.
     /// Permit exactly one cancel/reissue for that known failure; ordinary
@@ -6010,7 +6075,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               lastAcceptedHRAt >= connectedAt else { return }
         if Self.shouldDeferInterruptedFullDrainRelaunchAfterLivePersistence(
             pendingReason: pending.reason
-        ) {
+        ), persistedDrainResumeAllowed {
             _ = takePendingOfflineHistoricalSyncRequest()
             explicitHistoryLaunchIntentPending = false
             deferInterruptedFullDrainForCurrentLiveConnection = true
@@ -6176,21 +6241,61 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// forever, though: when iOS killed the process mid-drain, no terminal
     /// transport result exists. This resumes the existing exact gap once, not
     /// a selector sweep or a new protocol variant.
+    /// The autonomous resume lane is paused (see
+    /// `AtriaHistoricalFullDrainCoverageIntegration.persistedDrainResumeEnabled`).
+    /// An attended seek experiment still needs a real armed drain to intercept,
+    /// so the debug selector-sweep launch argument re-opens the lane for that
+    /// bounded, operator-supervised run only.
+    nonisolated static func persistedDrainResumeAllowed(
+        integrationEnabled: Bool,
+        attendedSelectorSweepEnabled: Bool
+    ) -> Bool {
+        integrationEnabled || attendedSelectorSweepEnabled
+    }
+
+    private var persistedDrainResumeAllowed: Bool {
+        Self.persistedDrainResumeAllowed(
+            integrationEnabled: AtriaHistoricalFullDrainCoverageIntegration
+                .persistedDrainResumeEnabled,
+            attendedSelectorSweepEnabled: historySelectorSweepEnabled
+        )
+    }
+
     private func scheduleInterruptedFullDrainReacquisitionIfNeeded(
         reason: String
     ) {
-        guard interruptedFullDrainReacquisitionTask == nil,
-              deferInterruptedFullDrainForCurrentLiveConnection,
-              !offlineHistoricalSyncInProgress,
-              !AtriaPendingWorkoutIntent.isActiveForBLEContinuity(),
-              !historicalConsumerMaterializationInFlight,
-              peripheral?.state == .connected,
-              status == .connected,
-              let connectedAt,
-              let lastAcceptedHRAt,
-              lastAcceptedHRAt >= connectedAt,
-              let authority = try? historicalFullDrainCoverageStore.load(),
-              authority.status == .draining else { return }
+        guard persistedDrainResumeAllowed else {
+            AtriaDebugLog("ATRIADBG offline_sync status=persisted_drain_resume_paused reason=%@ action=preserve_live_no_cutover",
+                          reason)
+            return
+        }
+        // Every one of these refusals used to be silent, which made a
+        // non-arming drain undiagnosable in the field: the only observable was
+        // the absence of a log line. Name the first failing precondition.
+        let scheduleAuthority = try? historicalFullDrainCoverageStore.load()
+        let scheduleBlocker: String? = {
+            if interruptedFullDrainReacquisitionTask != nil { return "task_already_scheduled" }
+            if !deferInterruptedFullDrainForCurrentLiveConnection { return "no_deferred_drain_for_this_connection" }
+            if offlineHistoricalSyncInProgress { return "history_sync_in_progress" }
+            if AtriaPendingWorkoutIntent.isActiveForBLEContinuity() { return "explicit_workout_active" }
+            if historicalConsumerMaterializationInFlight { return "consumer_materialization_in_flight" }
+            if peripheral?.state != .connected { return "peripheral_not_connected" }
+            if status != .connected { return "status_not_connected" }
+            if connectedAt == nil { return "no_connected_at" }
+            guard let lastAcceptedHRAt else { return "no_accepted_hr_this_connection" }
+            if let connectedAt, lastAcceptedHRAt < connectedAt { return "accepted_hr_older_than_connection" }
+            guard let scheduleAuthority else { return "authority_unreadable" }
+            if scheduleAuthority.status != .draining {
+                return "authority_status_\(scheduleAuthority.status.rawValue)"
+            }
+            return nil
+        }()
+        if let scheduleBlocker {
+            AtriaDebugLog("ATRIADBG offline_sync status=reacquisition_not_scheduled reason=%@ blocker=%@",
+                          reason, scheduleBlocker)
+            return
+        }
+        guard let connectedAt, let authority = scheduleAuthority else { return }
 
         let fingerprint = Self.interruptedFullDrainGapFingerprint(authority.gap)
         guard Self.shouldScheduleInterruptedFullDrainReacquisition(
@@ -6199,6 +6304,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             consumerMaterializationInFlight: false,
             gapFingerprint: fingerprint
         ) else {
+            AtriaDebugLog("ATRIADBG offline_sync status=reacquisition_not_scheduled reason=%@ blocker=policy_declined fingerprint=%@",
+                          reason, fingerprint)
             return
         }
 
@@ -6209,18 +6316,35 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             guard let self else { return }
             if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
             defer { self.interruptedFullDrainReacquisitionTask = nil }
-            guard !Task.isCancelled,
-                  self.deferInterruptedFullDrainForCurrentLiveConnection,
-                  !self.offlineHistoricalSyncInProgress,
-                  !AtriaPendingWorkoutIntent.isActiveForBLEContinuity(),
-                  !self.historicalConsumerMaterializationInFlight,
-                  self.peripheral?.state == .connected,
-                  self.status == .connected,
-                  let currentConnectedAt = self.connectedAt,
-                  let currentAcceptedAt = self.lastAcceptedHRAt,
-                  currentAcceptedAt >= currentConnectedAt,
-                  let currentAuthority = try? self.historicalFullDrainCoverageStore.load(),
-                  currentAuthority.status == .draining else { return }
+            // Same rule as the scheduling guard: a refusal after the stability
+            // wait must say which precondition lapsed. A link that drops
+            // mid-wait is the common case and used to look identical to a
+            // never-scheduled task.
+            let firedAuthority = try? self.historicalFullDrainCoverageStore.load()
+            let fireBlocker: String? = {
+                if Task.isCancelled { return "task_cancelled" }
+                if !self.deferInterruptedFullDrainForCurrentLiveConnection { return "defer_cleared_by_disconnect" }
+                if self.offlineHistoricalSyncInProgress { return "history_sync_in_progress" }
+                if AtriaPendingWorkoutIntent.isActiveForBLEContinuity() { return "explicit_workout_active" }
+                if self.historicalConsumerMaterializationInFlight { return "consumer_materialization_in_flight" }
+                if self.peripheral?.state != .connected { return "peripheral_not_connected" }
+                if self.status != .connected { return "status_not_connected" }
+                guard let currentConnectedAt = self.connectedAt else { return "no_connected_at" }
+                guard let currentAcceptedAt = self.lastAcceptedHRAt else { return "no_accepted_hr_this_connection" }
+                if currentAcceptedAt < currentConnectedAt { return "accepted_hr_older_than_connection" }
+                guard let firedAuthority else { return "authority_unreadable" }
+                if firedAuthority.status != .draining {
+                    return "authority_status_\(firedAuthority.status.rawValue)"
+                }
+                return nil
+            }()
+            if let fireBlocker {
+                AtriaDebugLog("ATRIADBG offline_sync status=reacquisition_not_fired reason=%@ blocker=%@ waited_s=%.1f",
+                              reason, fireBlocker, wait)
+                return
+            }
+            guard let currentConnectedAt = self.connectedAt,
+                  let currentAuthority = firedAuthority else { return }
             let currentFingerprint = Self.interruptedFullDrainGapFingerprint(
                 currentAuthority.gap
             )
@@ -6243,7 +6367,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 ),
                 nowUnix: now.timeIntervalSince1970,
                 cooldown: self.interruptedFullDrainReacquisitionCooldown
-            ) else { return }
+            ) else {
+                AtriaDebugLog("ATRIADBG offline_sync status=reacquisition_not_fired reason=%@ blocker=policy_declined stable_s=%.1f required_s=%.1f yielded_rows=%d fingerprint=%@",
+                              reason,
+                              now.timeIntervalSince(currentConnectedAt),
+                              self.requiredInterruptedDrainStableInterval,
+                              UserDefaults.standard.bool(
+                                  forKey: OfflineSyncDefaults.lastDrainAttemptYieldedRows
+                              ) ? 1 : 0,
+                              currentFingerprint)
+                return
+            }
 
             UserDefaults.standard.set(
                 currentFingerprint,
@@ -6328,6 +6462,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // authority held forever (observed stable_s=600 with no action).
         let now = Date()
         let stableSeconds = now.timeIntervalSince(connectedAt)
+        // Only claim this connection for a persisted drain if that drain can
+        // actually run. While the resume lane is paused nothing will ever
+        // consume the claim, and the flag would otherwise latch on every
+        // accepted-HR sample and permanently starve the ordinary range-loss
+        // backfill lane, which gates on it at
+        // `scheduleRangeLossBackfillIfNeeded` and
+        // `attemptQualifiedRangeLossBackfillAfterAcceptedHRIfNeeded`.
+        guard persistedDrainResumeAllowed else {
+            AtriaDebugLog("ATRIADBG offline_sync status=persisted_drain_resume_paused reason=%@ action=no_live_connection_claim_range_loss_lane_free",
+                          reason)
+            return
+        }
         deferInterruptedFullDrainForCurrentLiveConnection = true
         if interruptedFullDrainReacquisitionTask == nil {
             UserDefaults.standard.set("deferred_awaiting_stable_live_reacquisition",
@@ -6371,6 +6517,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
 
         interruptedFullDrainReacquisitionPendingAfterTransportLoss = false
+        guard persistedDrainResumeAllowed else {
+            AtriaDebugLog("ATRIADBG offline_sync status=persisted_drain_resume_paused reason=%@ action=no_live_connection_claim_range_loss_lane_free",
+                          reason)
+            return
+        }
         deferInterruptedFullDrainForCurrentLiveConnection = true
         AtriaDebugLog("ATRIADBG offline_sync status=interrupted_full_drain_live_recovery_armed reason=%@ authority=%@ action=wait_stable_live_then_reacquire_existing_gap_once",
                       reason,
@@ -6390,6 +6541,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func restoreInterruptedFullDrainLaunchIntentIfNeeded(
         defaults: UserDefaults
     ) {
+        guard persistedDrainResumeAllowed else {
+            AtriaDebugLog("ATRIADBG offline_sync status=persisted_drain_resume_paused reason=interrupted_full_drain_relaunch action=preserve_live_no_cutover")
+            return
+        }
         let authority = try? historicalFullDrainCoverageStore.load()
         let exactGapFingerprintStillPending = authority.flatMap { authority in
             UUID(uuidString: authority.gap.gapIdentifier).flatMap { gapID in
@@ -6462,9 +6617,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             .isPersistedDrainAuthorityResumeReason(reason)
             && (try? historicalFullDrainCoverageStore.load())
                 .map { $0.status == .draining && $0.gap.pending } == true
+        // Operator-supervised seek trial only. The exact-recovery fence exists
+        // because a full-flash replay of old rows is not gap recovery — and
+        // that fence is exactly what makes the seek question unanswerable:
+        // proving a seek requires an armed drain the fence refuses to grant.
+        // `--atria-history-selector-sweep` is never set by any autonomous
+        // lane, so this admits one attended drain whose 0x22 response drives
+        // the 0x21/0x16 selector probe, and nothing else.
+        let attendedSelectorSeekTrial = historySelectorSweepEnabled
         if !Self.productionHistoricalFullDrainGapRecoveryEnabled,
            !offlineHistoricalSyncInProgress,
-           !resumingPersistedDrainAuthority {
+           !resumingPersistedDrainAuthority,
+           !attendedSelectorSeekTrial {
             if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) {
                 retainPendingOfflineHistoricalSyncRequest(
                     reason: reason,
@@ -15501,13 +15665,75 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       reason,
                       postReconnectStreamWatchdogSeconds)
         postReconnectStreamWatchdogTask = Task { @MainActor [weak self, weak peripheral] in
-            try? await Task.sleep(for: .seconds(self?.postReconnectStreamWatchdogSeconds ?? 12))
-            guard let self, !Task.isCancelled, let peripheral else { return }
-            self.runPostReconnectSilentStreamRepairIfNeeded(
-                peripheral: peripheral,
-                callbackEpoch: callbackEpoch,
-                trigger: "watchdog"
-            )
+            // A single 12 s shot used to be the only scheduled trigger, and
+            // every exit from it was silent. Observed 2026-07-24 22:17:33Z:
+            // `stream_lease_begun` followed by 14 MINUTES with no `repair_*`
+            // stage, no expiry, and a connected-but-silent link — the app sat
+            // on "Connecting" and never attempted its own documented escape.
+            // Re-evaluate on a bounded schedule so one missed or suspended
+            // tick cannot strand the epoch. This cannot churn the radio: the
+            // disposition only returns `.reissueConnect` while a repair permit
+            // remains (budget 2 per epoch), and returns `.awaitLeaseExpiry`
+            // once spent, so at most two radio actions occur per epoch no
+            // matter how many times this loop evaluates.
+            for tick in 0..<Self.postReconnectStreamWatchdogMaxTicks {
+                try? await Task.sleep(
+                    for: .seconds(self?.postReconnectStreamWatchdogSeconds ?? 12)
+                )
+                guard let self else { return }
+                guard !Task.isCancelled else {
+                    // Cancellation is the NORMAL success path: fresh accepted
+                    // HR ends the lease and cancels this task, and a new epoch
+                    // cancels it too. `try? await Task.sleep` swallows the
+                    // cancellation, so this continuation resumes afterwards
+                    // and would stamp `watchdog_exit_cancelled` on top of
+                    // `lease_ended|fresh_accepted_hr` — making a successful
+                    // reconnect read, in the very breadcrumb channel used to
+                    // validate 0c1fcffd, exactly like the failure being
+                    // investigated. Only record when no fresh HR arrived.
+                    if !Self.acceptedHRIsFreshForConnectionEpoch(
+                        lastAcceptedHRAt: self.lastAcceptedHRAt,
+                        connectedAt: self.connectedAt
+                    ) {
+                        self.recordReconnectLeaseStage(
+                            "watchdog_exit_cancelled",
+                            detail: "tick=\(tick) no_repair_attempted"
+                        )
+                    }
+                    return
+                }
+                // The captured reference is weak, so ARC can release it while
+                // the epoch is still live — observed 2026-07-24 22:44:44Z,
+                // which stranded a connected-but-silent link with no repair
+                // and nothing left to re-arm it. The manager's own peripheral
+                // is the authoritative reference for the current epoch; only
+                // give up when it too is gone.
+                guard let livePeripheral = peripheral ?? self.peripheral else {
+                    self.recordReconnectLeaseStage(
+                        "watchdog_exit_peripheral_released",
+                        detail: "tick=\(tick) no_repair_attempted"
+                    )
+                    return
+                }
+                if peripheral == nil {
+                    self.recordReconnectLeaseStage(
+                        "watchdog_peripheral_recovered_from_manager",
+                        detail: "tick=\(tick)"
+                    )
+                }
+                // Fresh accepted HR is the success terminal; stop evaluating.
+                if Self.acceptedHRIsFreshForConnectionEpoch(
+                    lastAcceptedHRAt: self.lastAcceptedHRAt,
+                    connectedAt: self.connectedAt
+                ) {
+                    return
+                }
+                self.runPostReconnectSilentStreamRepairIfNeeded(
+                    peripheral: livePeripheral,
+                    callbackEpoch: callbackEpoch,
+                    trigger: tick == 0 ? "watchdog" : "watchdog_tick_\(tick)"
+                )
+            }
         }
     }
 
@@ -15635,6 +15861,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG ble_link post_connect_repair=exhausted reason=silent_stream_no_permit action=await_lease_expiry")
         case .reissueConnect:
             postReconnectSilentStreamRepairsSpent += 1
+            // Stamped before any radio action so the epoch this repair is
+            // about to create cannot refill the permit it just spent.
+            lastSilentStreamRepairSpentAt = Date()
             if postReconnectSilentStreamRepairsSpent
                 >= Self.postReconnectSilentStreamRepairBudget {
                 // Second (final) slot: the first cancel provably changed

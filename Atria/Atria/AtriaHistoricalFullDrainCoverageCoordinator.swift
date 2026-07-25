@@ -6,6 +6,19 @@ import Foundation
 enum AtriaHistoricalFullDrainCoverageIntegration {
     static let automaticFullDrainRecoveryEnabled = false
     static let exactRangeTransportAuthorityAvailable = false
+
+    /// The persisted-authority resume lane is paused because it is measurably
+    /// net-harmful on this transport. Over 5.27 h of continuous draining the
+    /// flash cursor advanced at 1.054x realtime (R^2 0.9974) while the lag
+    /// behind live shrank by only 11 minutes -- the read pointer is pinned to
+    /// the oldest surviving record of a ~14.26-day ring, so the oldest-first
+    /// replay closes 0.036 days of lag per day (~309 days to the first
+    /// resolvable window). Over the same period the cutovers it performs
+    /// created 13 new disconnect gaps totalling 66.4 min of missing live
+    /// coverage (45.5% of wall time) while closing zero seconds of the ledger.
+    /// Re-enable only once a seek (0x21 read pointer or an exact-range 0x16)
+    /// is physically proven to reposition the cursor.
+    static let persistedDrainResumeEnabled = false
 }
 
 /// Side-effect-free-with-respect-to-BLE coordinator for the durable authority.
