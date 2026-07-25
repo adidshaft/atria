@@ -15305,8 +15305,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let priorCutoverLeaseAt = defaults.object(
             forKey: Self.protectedR10V8WorkoutInProcessCutoverLeaseKey
         ) as? Double
-        guard standardHROnlyMode,
-              !historyOnlyProbeMode,
+        // Deliberately NOT gated on `standardHROnlyMode`. That flag is the
+        // user/radio configuration; what actually matters here is whether the
+        // protected stream is suppressed, which
+        // `protectedR10V8WorkoutCutoverMayStart` already requires alongside a
+        // fallback owner, a fallback state, an active manual workout and a
+        // prior qualification. A strap in `full_protocol` mode whose clean
+        // owner has fallen back is exactly the case this escape hatch exists
+        // for, and the extra conjunct made it unreachable precisely there.
+        //
+        // Observed 2026-07-25 on a counted 660-step walk: every may-start
+        // condition held — streamSuppressed=true, cleanOwner=pure_hr_v10,
+        // state=fallback_active, stableTransportQualifiedAt=20:45:58 during the
+        // walk, prior cutover lease from 07-23 — and `radio.standardHROnly`
+        // being false alone blocked the cutover. The R10 stream never started
+        // (protocol_imu_frames=2), the step ledger stayed frozen at 19:55:57,
+        // and the walk recorded 0 of 660 steps.
+        guard !historyOnlyProbeMode,
               !offlineHistoricalSyncInProgress,
               let peripheral,
               peripheral.state == .connected,
