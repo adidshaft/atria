@@ -15079,6 +15079,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         backgroundReconnectFence.markAppOwnedCancellation(
             peripheralID: peripheral.identifier
         )
+        recordReconnectLeaseStage("app_cancel_wrapper", detail: reason)
         central.cancelPeripheralConnection(peripheral)
         AtriaDebugLog("ATRIADBG ble_link status=cancel_requested reason=%@ app_cancel_count=%d",
                       reason,
@@ -15229,6 +15230,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             peripheralID: peripheral.identifier
         )
         endBackgroundReconnectLease(reason: "protected_r10_workout_cutover")
+        // A locked/background process leaves no console, so the only forensics
+        // for which path tore a live link down are the persisted breadcrumbs.
+        recordReconnectLeaseStage("app_cancel_r10_launch_cutover", detail: reason)
         central.cancelPeripheralConnection(peripheral)
         AtriaDebugLog("ATRIADBG protected_r10 status=clean_owner_launch_cutover owner=%@ reason=%@ action=single_disconnect_then_didconnect_profile_no_history",
                       protectedR10CleanOwner.rawValue,
@@ -15332,6 +15336,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             peripheralID: peripheral.identifier
         )
         endBackgroundReconnectLease(reason: "motion_handshake_cutover")
+        recordReconnectLeaseStage("app_cancel_r10_v8_workout_cutover", detail: reason)
         central.cancelPeripheralConnection(peripheral)
         AtriaDebugLog("ATRIADBG protected_r10 status=v8_workout_cutover_started reason=%@ workout_start=%d action=single_disconnect_then_fresh_v9_central_no_cccd_no_command_no_history",
                       reason,
@@ -15401,6 +15406,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         backgroundReconnectFence.markAppOwnedCancellation(
             peripheralID: peripheral.identifier
         )
+        recordReconnectLeaseStage("app_cancel_motion_handshake_cutover", detail: reason)
         central.cancelPeripheralConnection(peripheral)
         recordMotionHandshakeEvidence(
             event: "fresh_connection_cutover",
@@ -15449,6 +15455,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 self.backgroundReconnectFence.markAppOwnedCancellation(
                     peripheralID: peripheral.identifier
                 )
+                self.recordReconnectLeaseStage("app_cancel_history_stuck_connect",
+                                               detail: reason)
                 self.central.cancelPeripheralConnection(peripheral)
                 AtriaDebugLog("ATRIADBG ble_link watchdog reason=%@ action=cancel_stuck_post_history_connect_once peripheral_state=%d",
                               reason,
