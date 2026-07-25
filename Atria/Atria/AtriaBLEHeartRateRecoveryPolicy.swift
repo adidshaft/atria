@@ -177,6 +177,24 @@ extension AtriaBLEManager {
         !isSparseSentinel && disposition == .rebuildConnection
     }
 
+    /// In the background there may be only one watchdog execution slice. If
+    /// both 2A37 and every other app-observed GATT channel are already stale,
+    /// spending that slice on a soft rediscovery can strand the app forever.
+    /// Replace the client session immediately; foreground recovery retains the
+    /// gentler staged policy because it is guaranteed another evaluation.
+    nonisolated static func shouldReplaceCoreBluetoothSessionForSilentStream(
+        applicationActive: Bool,
+        peripheralConnected: Bool,
+        rawHeartRateGap: TimeInterval,
+        usefulGattGap: TimeInterval,
+        adaptiveTimeout: TimeInterval
+    ) -> Bool {
+        !applicationActive
+            && peripheralConnected
+            && rawHeartRateGap >= max(0, adaptiveTimeout)
+            && usefulGattGap >= max(0, adaptiveTimeout)
+    }
+
     nonisolated static func shouldSuppressWatchdogForStrapStreamState(
         _ state: StrapStreamState
     ) -> Bool {

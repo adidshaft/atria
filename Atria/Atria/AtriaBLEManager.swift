@@ -3339,6 +3339,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var pendingRecoveryReconnectReason: String?
     private var pendingRecoveryIntent: AutomaticRecoveryIntent = .repairPipeline
     private var lastStalledStreamRepairAt: Date?
+    /// One fresh CoreBluetooth client session per unresolved HR outage. A real
+    /// accepted sample is the only success evidence that re-arms this permit.
+    private var silentStreamCentralRebuildIssued = false
     /// Timers do not reliably run while the phone is locked. Dense R10
     /// callbacks are therefore also a low-cost clock for repairing a silent
     /// standard heart-rate subscription.
@@ -11923,18 +11926,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       risk == .suspected ? "show_user_uninstall_guidance" : "continue")
     }
 
-    /// Zombie-link recovery requests a stronger intent from the same coalescer
-    /// used by every soft watchdog. The coalescer performs at most one cancel;
-    /// didDisconnectPeripheral then restores the known strap and subscriptions.
+    /// Zombie-link recovery normally requests a stronger intent from the same
+    /// coalescer used by every soft watchdog. A connected background zombie is
+    /// different: replace its CoreBluetooth client session immediately because
+    /// another background evaluation is not guaranteed.
     private func forceHardReconnectForPacketStall(
         peripheral target: CBPeripheral,
         reason: String,
         immediateConnectedRebuild: Bool = false
     ) {
         let now = Date()
-        let cancelImmediately = immediateConnectedRebuild
+        let replaceWedgedSession = immediateConnectedRebuild
             && target.state == .connected
-        if !cancelImmediately,
+        if replaceWedgedSession, silentStreamCentralRebuildIssued {
+            AtriaDebugLog("ATRIADBG ble_link status=central_rebuild_coalesced reason=%@ action=await_fresh_hr",
+                          reason)
+            return
+        }
+        if !replaceWedgedSession,
            let lastStallHardReconnectAt,
            now.timeIntervalSince(lastStallHardReconnectAt) < 120 {
             AtriaDebugLog("ATRIADBG ble_link status=hard_reconnect_cooldown reason=%@ remaining_s=%.0f action=keep_existing_rebuild",
@@ -11943,35 +11952,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
         lastStallHardReconnectAt = now
-        let defaults = UserDefaults.standard
-        defaults.set(defaults.integer(forKey: KeepaliveDefaults.stallReconnects) + 1,
-                     forKey: KeepaliveDefaults.stallReconnects)
-        defaults.set(now.timeIntervalSince1970, forKey: KeepaliveDefaults.lastStallReconnectAt)
-        defaults.synchronize()
         preserveLongWearRangeLossRecovery(reason: reason)
-        if cancelImmediately {
-            // A BGTask can be suspended as soon as its completion handler
-            // returns. Deferring this cancel through `freshScanFallbackTask`
-            // therefore strands a CoreBluetooth-connected but notification-
-            // silent link: the delayed Task never gets CPU time and neither HR
-            // nor the disconnect edge can wake Atria. The gap and active
-            // journal are already durable before this call. Cancel the zombie
-            // link inside the granted background window; didDisconnect owns
-            // the ordinary standing reconnect to the known strap.
+        if replaceWedgedSession {
+            // Physical locked-phone evidence (2026-07-26) showed bluetoothd
+            // continuing to dispatch dense indications while the old client
+            // session swallowed both value callbacks and its requested
+            // disconnect. Recreate the central/XPC session in this background-
+            // granted execution slice. The replacement's powered-on callback
+            // installs the saved-peripheral standing connect; no delayed Task,
+            // scan, Bluetooth toggle, or user foregrounding is required.
+            silentStreamCentralRebuildIssued = true
             freshScanFallbackTask?.cancel()
             freshScanFallbackTask = nil
             pendingRecoveryReconnectReason = nil
             pendingRecoveryIntent = .repairPipeline
             forceFreshScanAfterDisconnect = false
-            cancelPeripheralConnection(
-                target,
-                reason: "\(reason)_background_immediate_rebuild"
-            )
-            AtriaDebugLog("ATRIADBG ble_link status=hard_reconnect reason=%@ action=background_cancel_now_then_reconnect_known stall_reconnects=%d",
-                          reason,
-                          defaults.integer(forKey: KeepaliveDefaults.stallReconnects))
+            rebuildCentralForWedgedSessionOnce(trigger: reason)
+            AtriaDebugLog("ATRIADBG ble_link status=hard_reconnect reason=%@ action=replace_wedged_corebluetooth_session_then_connect_known",
+                          reason)
             return
         }
+        let defaults = UserDefaults.standard
+        defaults.set(defaults.integer(forKey: KeepaliveDefaults.stallReconnects) + 1,
+                     forKey: KeepaliveDefaults.stallReconnects)
+        defaults.set(now.timeIntervalSince1970, forKey: KeepaliveDefaults.lastStallReconnectAt)
+        defaults.synchronize()
         AtriaDebugLog("ATRIADBG ble_link status=hard_reconnect reason=%@ action=coalesce_rebuild_request stall_reconnects=%d",
                       reason,
                       defaults.integer(forKey: KeepaliveDefaults.stallReconnects))
@@ -13541,18 +13546,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let usefulGattGap = usefulGattReference.map { max(0, now.timeIntervalSince($0)) }
             ?? max(0, rawGap)
         let characteristic = heartRateCharacteristic
-        let disposition = Self.heartRateContinuityRecoveryDisposition(
-            rawHeartRateGap: max(0, rawGap),
-            usefulGattGap: usefulGattGap,
-            adaptiveTimeout: timeout,
-            peripheralConnected: peripheral.state == .connected,
-            hasHeartRateCharacteristic: characteristic != nil,
-            heartRateIsNotifying: characteristic?.isNotifying == true,
-            canReadHeartRate: characteristic?.properties.contains(.read) == true,
-            canNotifyHeartRate: characteristic?.properties.contains(.notify) == true,
-            denseStreamFresh: denseStreamFresh,
-            acceptedHeartRateGap: acceptedGap
-        )
+        let replaceSilentBackgroundSession =
+            Self.shouldReplaceCoreBluetoothSessionForSilentStream(
+                applicationActive: UIApplication.shared.applicationState == .active,
+                peripheralConnected: peripheral.state == .connected,
+                rawHeartRateGap: max(0, rawGap),
+                usefulGattGap: usefulGattGap,
+                adaptiveTimeout: timeout
+            )
+        let disposition: HeartRateContinuityRecoveryDisposition =
+            replaceSilentBackgroundSession
+            ? .rebuildConnection
+            : Self.heartRateContinuityRecoveryDisposition(
+                rawHeartRateGap: max(0, rawGap),
+                usefulGattGap: usefulGattGap,
+                adaptiveTimeout: timeout,
+                peripheralConnected: peripheral.state == .connected,
+                hasHeartRateCharacteristic: characteristic != nil,
+                heartRateIsNotifying: characteristic?.isNotifying == true,
+                canReadHeartRate: characteristic?.properties.contains(.read) == true,
+                canNotifyHeartRate: characteristic?.properties.contains(.notify) == true,
+                denseStreamFresh: denseStreamFresh,
+                acceptedHeartRateGap: acceptedGap
+            )
 
         if disposition == .observe {
             persistHRContinuityWatchdogResult(status: actionStatus,
@@ -13623,8 +13639,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             }
             forceHardReconnectForPacketStall(
                 peripheral: peripheral,
-                reason: "hr_continuity_all_gatt_silent_120s",
+                reason: "hr_continuity_background_all_gatt_silent",
                 immediateConnectedRebuild: immediateConnectedRebuild
+                    || replaceSilentBackgroundSession
             )
             action = "rebuild_all_gatt_silent"
         case .reconnectKnownPeripheral:
@@ -16211,6 +16228,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// The only success terminal for a reconnect epoch: a fresh accepted HR
     /// sample. Releases the lease and restores both bounded-repair permits.
     private func completePostReconnectStreamRecoveryIfNeeded() {
+        silentStreamCentralRebuildIssued = false
         if postReconnectSilentStreamRepairsSpent > 0 || backgroundReconnectLeaseReissueUsed {
             postReconnectSilentStreamRepairsSpent = 0
             backgroundReconnectLeaseReissueUsed = false

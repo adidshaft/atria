@@ -245,6 +245,37 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), .rebuildConnection)
     }
 
+    func testCallbackDrivenConnectedStallReplacesWedgedCoreBluetoothSession() {
+        XCTAssertTrue(AtriaBLEManager.shouldReplaceCoreBluetoothSessionForSilentStream(
+            applicationActive: false,
+            peripheralConnected: true,
+            rawHeartRateGap: 50.222,
+            usefulGattGap: 111,
+            adaptiveTimeout: 30
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldReplaceCoreBluetoothSessionForSilentStream(
+            applicationActive: true,
+            peripheralConnected: true,
+            rawHeartRateGap: 50.222,
+            usefulGattGap: 111,
+            adaptiveTimeout: 30
+        ), "foreground repair keeps the ordinary bounded reconnect path")
+        XCTAssertFalse(AtriaBLEManager.shouldReplaceCoreBluetoothSessionForSilentStream(
+            applicationActive: false,
+            peripheralConnected: false,
+            rawHeartRateGap: 50.222,
+            usefulGattGap: 111,
+            adaptiveTimeout: 30
+        ), "a real disconnect reconnects the known peripheral instead")
+        XCTAssertFalse(AtriaBLEManager.shouldReplaceCoreBluetoothSessionForSilentStream(
+            applicationActive: false,
+            peripheralConnected: true,
+            rawHeartRateGap: 50.222,
+            usefulGattGap: 29.999,
+            adaptiveTimeout: 30
+        ), "fresh non-HR GATT traffic retains the staged 2A37-only repair")
+    }
+
     func testDenseCallbackAuditRunsOnlyWhenHRIsStaleAndPaced() {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         XCTAssertFalse(AtriaBLEManager.shouldRunCallbackDrivenHeartRateAudit(
@@ -7914,7 +7945,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(body.contains("connect("))
     }
 
-    func testBackgroundZombieLinkRebuildCancelsInsideGrantedExecutionWindow() throws {
+    func testBackgroundZombieLinkRebuildReplacesWedgedClientSessionInsideGrantedWindow() throws {
         let source = try leaseManagerSource()
         let start = try XCTUnwrap(source.range(
             of: "private func forceHardReconnectForPacketStall"
@@ -7925,24 +7956,26 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
         let body = String(source[start.lowerBound..<end.lowerBound])
         let immediate = try XCTUnwrap(body.range(
-            of: "let cancelImmediately = immediateConnectedRebuild"
+            of: "let replaceWedgedSession = immediateConnectedRebuild"
         ))
-        XCTAssertTrue(body.contains("if !cancelImmediately,"),
+        XCTAssertTrue(body.contains("if !replaceWedgedSession,"),
                       "A previously deferred watchdog request must not cooldown-block the BGTask's immediate repair")
-        let cancel = try XCTUnwrap(body.range(
-            of: "cancelPeripheralConnection(",
+        let replacement = try XCTUnwrap(body.range(
+            of: "rebuildCentralForWedgedSessionOnce(",
             range: immediate.upperBound..<body.endIndex
         ))
         let deferred = try XCTUnwrap(body.range(
             of: "requestFreshScanReconnect(",
-            range: cancel.upperBound..<body.endIndex
+            range: replacement.upperBound..<body.endIndex
         ))
-        XCTAssertLessThan(cancel.lowerBound, deferred.lowerBound,
-                          "The background branch must cancel before the ordinary deferred backoff path")
+        XCTAssertLessThan(replacement.lowerBound, deferred.lowerBound,
+                          "The background branch must replace the dead XPC client before the deferred path")
         XCTAssertTrue(body.contains("forceFreshScanAfterDisconnect = false"),
-                      "didDisconnect must reconnect the known peripheral instead of entering an open scan")
+                      "the replacement must retrieve/connect the known peripheral instead of entering an open scan")
         XCTAssertTrue(body.contains("pendingRecoveryReconnectReason = nil"))
         XCTAssertTrue(body.contains("freshScanFallbackTask?.cancel()"))
+        XCTAssertTrue(body.contains("silentStreamCentralRebuildIssued = true"),
+                      "a silent epoch receives only one central replacement")
     }
 
     func testDiagnosticClockParserBindsWHOOPRequestSequenceEcho() throws {
