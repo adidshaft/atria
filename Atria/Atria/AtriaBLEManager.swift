@@ -18496,12 +18496,27 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                              mode: CommandWriteMode,
                              explicitWorkoutHaptic: Bool = false,
                              onboardingPairingPreflight: Bool = false) -> Bool {
-        if readOnlyHistoryCaptureRequested,
-           !AtriaBLEReadOnlyHistoryCapturePolicy.allows(opcode: cmd, payload: data) {
-            AtriaDebugLog("ATRIADBG readOnlyHistory status=write_blocked command=%02x payload=%@ reason=outside_exact_allowlist action=no_write",
-                          cmd,
-                          Self.hex(data))
-            return false
+        if readOnlyHistoryCaptureRequested {
+            let allowed: Bool
+            if readOnlyExactRangeCaptureRequested,
+               let exactPayload = readOnlyExactRangePayload {
+                allowed = AtriaBLEReadOnlyExactRangeCapturePolicy.allows(
+                    opcode: cmd,
+                    payload: data,
+                    exactPayload: exactPayload
+                )
+            } else {
+                allowed = AtriaBLEReadOnlyHistoryCapturePolicy.allows(
+                    opcode: cmd,
+                    payload: data
+                )
+            }
+            guard allowed else {
+                AtriaDebugLog("ATRIADBG readOnlyHistory status=write_blocked command=%02x payload=%@ reason=outside_exact_allowlist action=no_write",
+                              cmd,
+                              Self.hex(data))
+                return false
+            }
         }
         guard motionHandshakeDiagnostic == nil else {
             recordMotionHandshakeEvidence(event: "proprietary_tx_blocked",

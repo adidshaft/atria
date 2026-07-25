@@ -234,4 +234,23 @@ final class AtriaBLEReadOnlyHistoryCaptureTests: XCTestCase {
         XCTAssertTrue(captureBody.contains("handleProprietary("))
         XCTAssertTrue(captureBody.contains("continue"))
     }
+
+    func testSharedCommandSenderUsesExactRangeFirewallWhenRequested() throws {
+        let managerURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: managerURL, encoding: .utf8)
+        let sendStart = try XCTUnwrap(source.range(
+            of: "private func sendCommand("
+        ))
+        let sendEnd = try XCTUnwrap(source.range(
+            of: "private func sendHistoryCommandAwaitingWriteConfirmation",
+            range: sendStart.upperBound..<source.endIndex
+        ))
+        let body = String(source[sendStart.lowerBound..<sendEnd.lowerBound])
+        XCTAssertTrue(body.contains("readOnlyExactRangeCaptureRequested"))
+        XCTAssertTrue(body.contains("AtriaBLEReadOnlyExactRangeCapturePolicy.allows"))
+        XCTAssertTrue(body.contains("AtriaBLEReadOnlyHistoryCapturePolicy.allows"))
+    }
 }
