@@ -8171,6 +8171,24 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testReconnectLeaseTrailOutlastsAFullLockedReconnectRun() throws {
+        // A locked run is three 90 s cycles plus setup, and the trail is the
+        // only forensic channel for a backgrounded process. At 1600 bytes the
+        // first two cycles of the 2026-07-25 run had already rotated out before
+        // the pull, which made that run unreadable rather than merely failed.
+        let entry = "1784979427|watchdog_exit_peripheral_released|tick=0 resolved_state=0\n"
+        let densestObservedEventsPerSecond = 1.0 / 5.0
+        let runSeconds = 3.0 * 2.0 * 90.0 + 120.0
+        let needed = Int(runSeconds * densestObservedEventsPerSecond) * entry.count
+        XCTAssertGreaterThan(AtriaBLEManager.reconnectLeaseTrailByteBudget, needed,
+                            "trail must outlast the run it is used to judge")
+
+        // And the writer must actually use the budget rather than a literal.
+        let source = try leaseManagerSource()
+        XCTAssertTrue(source.contains("combined.suffix(Self.reconnectLeaseTrailByteBudget)"))
+        XCTAssertFalse(source.contains("combined.suffix(1600)"))
+    }
+
     func testWatchdogPeripheralReleasedRearmsPassivelyWithoutTheRevertedChurn() throws {
         // The foreground has no other escape: UIKit fires lease-expiry handlers
         // only for a backgrounded app, so the released-peripheral `return` was

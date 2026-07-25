@@ -15563,6 +15563,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// State-restoration relaunches run without debug launch arguments, so
     /// UserDefaults scalars are the only forensics for which lease stage
     /// actually executed before the locked process suspended.
+    /// Sized so a full locked-reconnect run (three 90 s cycles plus setup)
+    /// survives even while a link is churning at roughly one event every five
+    /// seconds — about forty minutes of the densest trail observed.
+    nonisolated static let reconnectLeaseTrailByteBudget = 24_000
+
     private nonisolated func recordReconnectLeaseStage(_ stage: String,
                                                        detail: String) {
         let defaults = UserDefaults.standard
@@ -15573,7 +15578,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let entry = "\(Int(now))|\(stage)|\(detail)"
         let previous = defaults.string(forKey: ReconnectLeaseDefaults.trail) ?? ""
         let combined = previous.isEmpty ? entry : previous + "\n" + entry
-        defaults.set(String(combined.suffix(1600)),
+        // 1600 bytes held about four minutes of a churning link, which is less
+        // than one locked out-of-range run: on 2026-07-25 the first two of
+        // three 90 s cycles had already rotated out before the trail could be
+        // pulled, making that run unreadable rather than merely failed. This
+        // is the only forensic channel for a backgrounded process, so it has
+        // to outlast the longest evidence window it is used to judge.
+        defaults.set(String(combined.suffix(Self.reconnectLeaseTrailByteBudget)),
                      forKey: ReconnectLeaseDefaults.trail)
     }
 
