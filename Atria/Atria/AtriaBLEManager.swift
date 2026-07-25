@@ -4011,6 +4011,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                 ? "stable_hr_r10_launch"
                                 : "explicit_full_protocol_launch")
         }
+        if motionHandshakeDiagnostic == nil,
+           Self.shouldForceStableTransportForSuppressedR10(
+                streamSuppressed: protectedR10StreamSuppressed,
+                explicitFullProtocolDiagnostic:
+                    arguments.contains("--atria-full-protocol-mode")
+           ) {
+            // Physical e3bc545 evidence: the durable pure-HR fallback and the
+            // old explicit full-protocol preference coexisted. Every reconnect
+            // delivered 9-14 valid HR samples, then timed out in ~13 seconds
+            // because discovery expanded back into proprietary services. The
+            // safety fuse must govern the effective runtime profile without
+            // overwriting the user's stored preference; an explicit motion
+            // requalification owns clearing the fuse later.
+            if !standardHROnlyMode {
+                forceFreshScanOnRestore = true
+            }
+            standardHROnlyMode = true
+            standardHROnlyEnabled = true
+            recordRadioMode(
+                "pure_hr_fallback",
+                reason: "r10_stream_suppressed_transport_fuse"
+            )
+        }
         if let diagnostic = motionHandshakeDiagnostic {
             // This is an isolated transport experiment, not a persisted radio
             // preference. Normal long-wear supervisors, offline recovery and
@@ -4771,6 +4794,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         userSelectedBatterySaver ? persistedStandardHROnly : true
     }
 
+    /// The disconnect-storm fuse is a transport safety decision, not a UI
+    /// preference. Once it has isolated proprietary R10, a stale persisted
+    /// "full protocol" choice must not rediscover the very services the fuse
+    /// removed. A command-line diagnostic may still opt into that profile
+    /// explicitly; ordinary launches stay on standard HR + battery until a
+    /// bounded motion requalification clears the fuse.
+    nonisolated static func shouldForceStableTransportForSuppressedR10(
+        streamSuppressed: Bool,
+        explicitFullProtocolDiagnostic: Bool
+    ) -> Bool {
+        streamSuppressed && !explicitFullProtocolDiagnostic
+    }
+
     /// A temporary diagnostic full-protocol override must restore the exact
     /// prior profile. The automatic prior is now the stable R10-capable mode,
     /// so user ownership no longer changes the restoration result.
@@ -4903,7 +4939,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if enabled {
             let standardOnly = Self.shouldUseStandardHROnlyInProtectedBackground(
                 userSelectedBatterySaver: UserDefaults.standard.bool(forKey: RadioDefaults.standardHROnlyUserSelected),
-                persistedStandardHROnly: UserDefaults.standard.bool(forKey: RadioDefaults.standardHROnly)
+                persistedStandardHROnly: UserDefaults.standard.bool(forKey: RadioDefaults.standardHROnly),
+                streamSuppressed: protectedR10StreamSuppressed
             )
             applyStandardHROnly(enabled: standardOnly, persist: false, reconnect: true, reason: "long_wear")
             startLongWearMode(rest: rest, maxHR: maxHR, reason: "user_toggle")
@@ -4937,7 +4974,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         let standardOnly = Self.shouldUseStandardHROnlyInProtectedBackground(
             userSelectedBatterySaver: UserDefaults.standard.bool(forKey: RadioDefaults.standardHROnlyUserSelected),
-            persistedStandardHROnly: UserDefaults.standard.bool(forKey: RadioDefaults.standardHROnly)
+            persistedStandardHROnly: UserDefaults.standard.bool(forKey: RadioDefaults.standardHROnly),
+            streamSuppressed: protectedR10StreamSuppressed
         )
         applyStandardHROnly(enabled: standardOnly, persist: false, reconnect: false, reason: "long_wear_persisted")
         if !standardOnly {
@@ -5065,7 +5103,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard !offlineHistoricalSyncInProgress else { return }
         let standardOnly = Self.shouldUseStandardHROnlyInProtectedBackground(
             userSelectedBatterySaver: UserDefaults.standard.bool(forKey: RadioDefaults.standardHROnlyUserSelected),
-            persistedStandardHROnly: UserDefaults.standard.bool(forKey: RadioDefaults.standardHROnly)
+            persistedStandardHROnly: UserDefaults.standard.bool(forKey: RadioDefaults.standardHROnly),
+            streamSuppressed: protectedR10StreamSuppressed
         )
         // Already in the desired mode: leave the active proprietary stream and
         // HR subscription untouched. Rediscovery resets realtimeArmed and would
@@ -10616,10 +10655,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// mode itself.
     nonisolated static func shouldUseStandardHROnlyInProtectedBackground(
         userSelectedBatterySaver: Bool,
-        persistedStandardHROnly: Bool
+        persistedStandardHROnly: Bool,
+        streamSuppressed: Bool = false
     ) -> Bool {
         _ = userSelectedBatterySaver
-        return persistedStandardHROnly
+        return streamSuppressed || persistedStandardHROnly
     }
 
     /// Session durability, workout analysis and link recovery are independent
@@ -18666,7 +18706,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private var r10MotionIsEligible: Bool {
         let motionBattery = motionEligibilityBatteryLevel()
-        return !standardHROnlyMode
+        return !protectedR10StreamSuppressed
+            && !standardHROnlyMode
             && !historyOnlyProbeEnabled
             && Self.shouldArmHighFrequencyMotion(
                 batteryLevel: motionBattery,
@@ -28505,6 +28546,18 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                               peripheral.identifier.uuidString)
                 return
             }
+            // A fresh CBCentralManager's powered-on fast lane can connect the
+            // saved strap without ever passing through `attach`. Retain that
+            // exact connected object immediately. The e3bc545 physical run
+            // otherwise reached the foreground keepalive with
+            // `self.peripheral == nil`, which rediscovered a retrieved copy as
+            // "missing_peripheral" while valid HR was already arriving and
+            // helped turn every connection into a short reconnect burst.
+            peripheral.delegate = self
+            self.connectedPeripheralRetainer.retain(peripheral)
+            self.peripheral = peripheral
+            self.assignIfChanged(\.deviceName, peripheral.name ?? self.deviceName)
+            self.recomputeConnectionStatus(reason: "did_connect_retained")
             // `didDisconnect` can be delayed behind a Bluetooth-off/on state
             // change.  In that ordering the synchronous fast lane above
             // correctly sees the old history fence and declines to overlap
@@ -29173,14 +29226,11 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 AtriaDebugLog("ATRIADBG ble_link status=disconnected reason=user_disconnect action=stay_disconnected")
                 return
             }
-            // The explicit-workout v8 escape hatch owns this disconnect. Do
-            // not let ordinary reconnect logic reuse the old pure-HR central:
-            // the fresh v9 manager must establish stream 5 only through its
-            // own didConnect/profile path.
-            if self.peripheral === peripheral {
-                self.peripheral = nil
-            }
-            self.recomputeConnectionStatus(reason: "event")
+            // The explicit-workout v8 escape hatch clears the old owner inside
+            // its successful cutover. Ordinary standing reconnects reuse this
+            // exact CBPeripheral; clearing it before we know a cutover applies
+            // produces the proven `connected` callbacks + nil manager owner
+            // contradiction on every automatic reconnect.
             if self.completeProtectedR10V8WorkoutCutoverIfNeeded(
                 reason: "manual_workout_old_owner_disconnected"
             ) {
