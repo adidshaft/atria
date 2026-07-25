@@ -65,7 +65,17 @@ def summarise(sessions: list[dict], tz: dt.tzinfo) -> dict[str, dict]:
         if end <= start:
             continue
         duration = end - start
-        accepted = float(session.get("hrAccepted") or 0)
+        # `hrAccepted` is a summary counter that is finalised when the session
+        # is closed, so for the newest session it can lag the samples actually
+        # recorded (observed 223 vs 1525 points). The points array is the
+        # sample record itself; prefer it and keep the counter as the fallback
+        # for any session that stores no points.
+        points = session.get("points")
+        accepted = (
+            float(len(points))
+            if isinstance(points, list) and points
+            else float(session.get("hrAccepted") or 0)
+        )
 
         cursor = start
         while cursor < end:
