@@ -4,6 +4,33 @@ import XCTest
 final class AtriaHistoricalArchiveDurableStoreTests: XCTestCase {
     private var temporaryDirectories: [URL] = []
 
+    func testDerivedSnapshotRefreshStaysOffPerPageACKHotPath() {
+        XCTAssertFalse(
+            AtriaHistoricalArchiveDurableStore.shouldRefreshDerivedSnapshot(
+                durableSequence: 1,
+                interval: 512
+            )
+        )
+        XCTAssertFalse(
+            AtriaHistoricalArchiveDurableStore.shouldRefreshDerivedSnapshot(
+                durableSequence: 511,
+                interval: 512
+            )
+        )
+        XCTAssertTrue(
+            AtriaHistoricalArchiveDurableStore.shouldRefreshDerivedSnapshot(
+                durableSequence: 512,
+                interval: 512
+            )
+        )
+        XCTAssertFalse(
+            AtriaHistoricalArchiveDurableStore.shouldRefreshDerivedSnapshot(
+                durableSequence: 512,
+                interval: 0
+            )
+        )
+    }
+
     override func tearDownWithError() throws {
         for url in temporaryDirectories {
             try? FileManager.default.removeItem(at: url)

@@ -1159,6 +1159,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var historySelectorSweepSent = false
     private var historySelectorMode = "current-unix-bare"
     private var historySelectorRangeIndex: Int?
+    /// Attended Gate 2 proof only. This admits the verified oldest-first
+    /// 22/00 -> 16/00 -> durable page -> 17/token transport without enabling
+    /// the disproven timestamp payload or the unproven 0x21 seek path.
+    private var gate2FullDrainProofEnabled = false
+    private var gate2FullDrainRequestedGapID: UUID?
     /// Set when a standing connect was wanted but the central had not reached
     /// `.poweredOn`, so `retrievePeripherals` came back empty. Consumed by
     /// `centralManagerDidUpdateState`; it exists so that window ends in a retry
@@ -4115,6 +4120,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func applyEarlyHistoricalLaunchConfiguration(arguments: [String]) {
+        if arguments.contains("--atria-gate2-full-drain-proof") {
+            let gapID: UUID? = {
+                guard let index = arguments.firstIndex(
+                    of: "--atria-gate2-full-drain-gap-id"
+                ) else { return nil }
+                let valueIndex = arguments.index(after: index)
+                guard arguments.indices.contains(valueIndex) else { return nil }
+                return UUID(uuidString: arguments[valueIndex])
+            }()
+            gate2FullDrainRequestedGapID = gapID
+            gate2FullDrainProofEnabled = gapID != nil
+            AtriaDebugLog(
+                "ATRIADBG gate2_full_drain status=%@ gap=%@ selector=0 exact_16_payload=0 automatic=0 action=%@",
+                gapID == nil ? "rejected_missing_gap_id" : "configured",
+                gapID?.uuidString ?? "none",
+                gapID == nil
+                    ? "no_transport"
+                    : "attended_verified_page_transport_only"
+            )
+        }
         if arguments.contains("--atria-read-only-history-capture")
             || arguments.contains("--atria-read-only-exact-range-capture") {
             readOnlyHistoryCaptureRequested = true
@@ -6757,6 +6782,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let connectingLink = peripheral?.state == .connecting
         let explicitUserRequest = Self.isExplicitUserOfflineSyncReason(reason)
         let explicitHistoricalRequest = explicitUserRequest || explicitResearchRequest
+        if gate2FullDrainProofEnabled {
+            guard explicitHistoricalRequest,
+                  let requestedGapID = gate2FullDrainRequestedGapID,
+                  AtriaHistoricalGapLedger.allClosedRecoveryCandidates()
+                    .contains(where: { $0.window.id == requestedGapID }) else {
+                AtriaDebugLog(
+                    "ATRIADBG gate2_full_drain status=rejected reason=missing_explicit_exact_gap gap=%@ action=no_transport",
+                    gate2FullDrainRequestedGapID?.uuidString ?? "none"
+                )
+                return false
+            }
+            if let authority = try? historicalFullDrainCoverageStore.load(),
+               authority.status == .draining,
+               authority.gap.gapIdentifier.caseInsensitiveCompare(
+                    requestedGapID.uuidString
+               ) != .orderedSame {
+                AtriaDebugLog(
+                    "ATRIADBG gate2_full_drain status=rejected reason=other_drain_authority gap=%@ authority_gap=%@ action=no_transport",
+                    requestedGapID.uuidString,
+                    authority.gap.gapIdentifier
+                )
+                return false
+            }
+        }
         // Physical acceptance showed that the available 22/00 + 16/00 path
         // replays old flash history and cannot request the current local gap.
         // Do not let an explicit button, pull-to-refresh, or automatic retry
@@ -6782,10 +6831,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // lane, so this admits one attended drain whose 0x22 response drives
         // the 0x21/0x16 selector probe, and nothing else.
         let attendedSelectorSeekTrial = historySelectorSweepEnabled
+        let attendedGate2FullDrainProof = gate2FullDrainProofEnabled
+            && gate2FullDrainRequestedGapID != nil
+            && explicitHistoricalRequest
         if !Self.productionHistoricalFullDrainGapRecoveryEnabled,
            !offlineHistoricalSyncInProgress,
            !resumingPersistedDrainAuthority,
-           !attendedSelectorSeekTrial {
+           !attendedSelectorSeekTrial,
+           !attendedGate2FullDrainProof {
             if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) {
                 retainPendingOfflineHistoricalSyncRequest(
                     reason: reason,
@@ -9157,9 +9210,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             // outages. Older intervals remain in the durable ledger and are
             // never discarded; only this transaction's coverage authority is
             // scoped to the newest exact candidate.
-            selectedFullDrainGap = explicitRequest
-                ? AtriaHistoricalGapLedger.oldestClosedRecoveryCandidate()
-                : AtriaHistoricalGapLedger.newestClosedRecoveryCandidate()
+            if gate2FullDrainProofEnabled,
+               let requestedGapID = gate2FullDrainRequestedGapID {
+                selectedFullDrainGap = AtriaHistoricalGapLedger
+                    .allClosedRecoveryCandidates()
+                    .first { $0.window.id == requestedGapID }
+            } else {
+                selectedFullDrainGap = explicitRequest
+                    ? AtriaHistoricalGapLedger.oldestClosedRecoveryCandidate()
+                    : AtriaHistoricalGapLedger.newestClosedRecoveryCandidate()
+            }
         }
         fullDrainTransportNonce = UUID().uuidString.lowercased()
         pendingHistoryClockCommandSequence = nil
