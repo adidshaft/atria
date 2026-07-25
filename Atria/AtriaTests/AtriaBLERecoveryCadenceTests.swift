@@ -8171,6 +8171,63 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testWorkoutCutoverEscapesFallbackWithoutRequiringStandardHROnlyMode() throws {
+        // 2026-07-25, counted 660-step walk: every may-start condition held and
+        // `radio.standardHROnly=false` alone blocked the escape, so the R10
+        // stream never started and 0 of 660 steps were recorded.
+        XCTAssertTrue(AtriaBLEManager.protectedR10V8WorkoutCutoverMayStart(
+            owner: .pureHRV10,
+            state: .fallbackActive,
+            streamSuppressed: true,
+            manualWorkoutActive: true,
+            priorQualifiedAt: 1_784_992_558.12,
+            priorCutoverLeaseAt: 1_784_800_975.375,
+            workoutStartedAt: Date(timeIntervalSince1970: 1_784_992_347)
+        ), "the observed device state must permit the cutover")
+
+        // The radio-configuration flag must not appear in the guard; stream
+        // suppression is the accurate signal and the pure gate already checks it.
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func beginProtectedR10V8WorkoutCutoverIfNeeded("
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "else { return false }", range: start.upperBound..<source.endIndex
+        ))
+        let guardBody = String(source[start.lowerBound..<end.upperBound])
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        XCTAssertFalse(guardBody.contains("standardHROnlyMode"),
+                       "a full_protocol strap in fallback must still be able to escape")
+        XCTAssertTrue(guardBody.contains("protectedR10V8WorkoutCutoverMayStart("))
+        XCTAssertTrue(guardBody.contains("streamSuppressed: protectedR10StreamSuppressed"))
+    }
+
+    func testWorkoutCutoverStillRefusesWhenTheOwnerIsHealthyOrUnqualified() {
+        let started = Date(timeIntervalSince1970: 1_784_992_347)
+        // Not in fallback: nothing to escape from.
+        XCTAssertFalse(AtriaBLEManager.protectedR10V8WorkoutCutoverMayStart(
+            owner: .protectedV9, state: .qualified, streamSuppressed: false,
+            manualWorkoutActive: true, priorQualifiedAt: 1_784_992_558.12,
+            priorCutoverLeaseAt: nil, workoutStartedAt: started))
+        // Never qualified: a cutover would be an unproven promotion.
+        XCTAssertFalse(AtriaBLEManager.protectedR10V8WorkoutCutoverMayStart(
+            owner: .pureHRV10, state: .fallbackActive, streamSuppressed: true,
+            manualWorkoutActive: true, priorQualifiedAt: nil,
+            priorCutoverLeaseAt: nil, workoutStartedAt: started))
+        // No manual workout: the all-day governor owns the radio.
+        XCTAssertFalse(AtriaBLEManager.protectedR10V8WorkoutCutoverMayStart(
+            owner: .pureHRV10, state: .fallbackActive, streamSuppressed: true,
+            manualWorkoutActive: false, priorQualifiedAt: 1_784_992_558.12,
+            priorCutoverLeaseAt: nil, workoutStartedAt: started))
+        // Same workout already used its one cutover: no loop.
+        XCTAssertFalse(AtriaBLEManager.protectedR10V8WorkoutCutoverMayStart(
+            owner: .pureHRV10, state: .fallbackActive, streamSuppressed: true,
+            manualWorkoutActive: true, priorQualifiedAt: 1_784_992_558.12,
+            priorCutoverLeaseAt: 1_784_992_347, workoutStartedAt: started))
+    }
+
     func testReconnectLeaseTrailOutlastsAFullLockedReconnectRun() throws {
         // A locked run is three 90 s cycles plus setup, and the trail is the
         // only forensic channel for a backgrounded process. At 1600 bytes the
