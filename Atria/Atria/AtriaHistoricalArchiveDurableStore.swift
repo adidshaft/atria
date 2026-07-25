@@ -15,6 +15,13 @@ final class AtriaHistoricalArchiveDurableStore {
     static let identityObservedAtProperty = "_atriaHistoryObservedAtUnix"
     static let productionIdentityRetention: TimeInterval = 14 * 24 * 60 * 60
     static let productionMaximumReceiptBatchIdentities = 65_536
+    /// The derived index snapshot is only a launch accelerator. Rebuilding it
+    /// after every ~50-record HISTORY_END page put a full index read/hash in
+    /// the ACK critical path and let the strap's serve session expire before
+    /// the acknowledgement arrived. Raw, index, receipt-chain and admission
+    /// fsyncs remain unchanged; a missing/stale snapshot simply rebuilds at
+    /// next launch.
+    static let productionDerivedSnapshotFlushInterval: UInt64 = 512
 
     struct FrameIdentity: Hashable, Sendable {
         let strapIdentifier: String
@@ -570,10 +577,15 @@ final class AtriaHistoricalArchiveDurableStore {
         receiptChainSHA256 = chain
         batch.lastReceipt = receipt
         openBatches.removeValue(forKey: batch.identifier)
-        // This snapshot is strictly an acceleration cache.  The receipt above
-        // remains the ACK authority, so a snapshot write failure must never
-        // turn already-fsynced raw data into a failed history transaction.
-        persistDerivedIndexSnapshotBestEffort()
+        // This snapshot is strictly an acceleration cache. Keep its O(total
+        // index size) rebuild out of almost every page ACK; the receipt above
+        // is already the restart-safe durability authority.
+        if Self.shouldRefreshDerivedSnapshot(
+            durableSequence: nextSequence,
+            interval: Self.productionDerivedSnapshotFlushInterval
+        ) {
+            persistDerivedIndexSnapshotBestEffort()
+        }
         let maintenanceNow = now()
         if maintenanceNow.timeIntervalSince1970 - lastPruneAtUnix >= 6 * 60 * 60 {
             do {
@@ -586,6 +598,13 @@ final class AtriaHistoricalArchiveDurableStore {
             }
         }
         return receipt
+    }
+
+    nonisolated static func shouldRefreshDerivedSnapshot(
+        durableSequence: UInt64,
+        interval: UInt64
+    ) -> Bool {
+        interval > 0 && durableSequence > 0 && durableSequence.isMultiple(of: interval)
     }
 
     func contains(_ identity: FrameIdentity) -> Bool {
