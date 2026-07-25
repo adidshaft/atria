@@ -4222,11 +4222,12 @@ struct AtriaHomeView: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
                     topChrome
+                    // The card carries its own inset, so an extra gap here just
+                    // pushes the greeting down for no reason.
                     AtriaHomeRecoveryStatusHost(
                         coreLiveStore: model.coreLiveStore,
                         maturityText: { store.baseline.restingBaselineMaturityQualifierText() }
                     )
-                    .padding(.bottom, 6)
                     if showConnectivityPill {
                         connectivityPill
                             .padding(.horizontal, 16)
@@ -4448,24 +4449,29 @@ struct AtriaHomeView: View {
                         }
                     }
                     .padding(.horizontal, 16)
-                    .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     .background {
-                        // Glass earns its keep here specifically because this
-                        // banner sits above the scrolling deck and refracts it;
-                        // Atria's flat near-black/near-white content backdrops
-                        // are why glass stays subtle elsewhere in the app.
+                        // A floating, inset card rather than edge-to-edge
+                        // chrome: this is a passing notice, not a permanent
+                        // header, and full-bleed chrome reads as far heavier
+                        // than the thing it is reporting. Glass earns its keep
+                        // because the card sits above the scrolling deck and
+                        // refracts it — Atria's flat near-black/near-white
+                        // content backdrops are why glass stays subtle
+                        // elsewhere in the app.
+                        let shape = RoundedRectangle(
+                            cornerRadius: AtriaDesignTokens.Radius.card,
+                            style: .continuous
+                        )
                         if reduceTransparency {
-                            Rectangle().fill(.background)
+                            shape.fill(.background)
                         } else {
-                            Rectangle()
+                            shape
                                 .fill(Color.clear)
-                                .glassEffect(.regular, in: Rectangle())
+                                .glassEffect(.regular, in: shape)
                         }
                     }
-                    .overlay(alignment: .bottom) {
-                        Divider()
-                            .opacity(0.35)
-                    }
+                    .padding(.horizontal, 12)
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(notices.count > 1
                                         ? "\(status.accessibilityLabel) Notice \(index + 1) of \(notices.count)."
