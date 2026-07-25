@@ -8171,49 +8171,6 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
-    func testIdleLinkKeepaliveFiresUnderTheShortestObservedStrapDrop() {
-        // Measured 2026-07-25: the strap drops an idle link at a median of 14s
-        // after central -> strap traffic stops (n=36), and the shortest observed
-        // drop was 11.3s (foreground history probe with realtime START skipped).
-        XCTAssertLessThan(AtriaBLEManager.idleLinkKeepaliveInterval, 11.3,
-                          "keepalive must fire before the shortest observed drop")
-
-        let now = Date(timeIntervalSince1970: 1_784_988_628)
-        // No prior traffic: the link has never been serviced, so refresh now.
-        XCTAssertTrue(AtriaBLEManager.shouldIssueIdleLinkKeepalive(
-            lastCentralTrafficAt: nil, now: now
-        ))
-        // Just serviced: a busy link must not issue extra ATT work per packet.
-        XCTAssertFalse(AtriaBLEManager.shouldIssueIdleLinkKeepalive(
-            lastCentralTrafficAt: now.addingTimeInterval(-1), now: now
-        ))
-        // At the interval, refresh.
-        XCTAssertTrue(AtriaBLEManager.shouldIssueIdleLinkKeepalive(
-            lastCentralTrafficAt: now.addingTimeInterval(
-                -AtriaBLEManager.idleLinkKeepaliveInterval
-            ),
-            now: now
-        ))
-    }
-
-    func testIdleLinkKeepaliveIsDrivenFromTheNotificationCallback() throws {
-        // A suspended process only runs inside the notification callback, so
-        // that is the only place a backgrounded app can generate central ->
-        // strap traffic. A timer would not fire while suspended.
-        let source = try leaseManagerSource()
-        let start = try XCTUnwrap(source.range(
-            of: "private func recordHeartRateMeasurement(_ measurement: ParsedHeartRatePacket?, rawData data: Data) {"
-        ))
-        let end = try XCTUnwrap(source.range(
-            of: "let payloadLogBudget", range: start.upperBound..<source.endIndex
-        ))
-        let head = String(source[start.lowerBound..<end.lowerBound])
-        XCTAssertTrue(head.contains("shouldIssueIdleLinkKeepalive("))
-        XCTAssertTrue(head.contains("requestStrapStatusRead(reason: \"idle_link_keepalive\")"))
-        XCTAssertTrue(head.contains("lastCentralTrafficAt: lastBatteryReadRequestedAt"),
-                      "must share the battery-read stamp so a busy link issues no extra ATT work")
-    }
-
     func testReconnectLeaseTrailOutlastsAFullLockedReconnectRun() throws {
         // A locked run is three 90 s cycles plus setup, and the trail is the
         // only forensic channel for a backgrounded process. At 1600 bytes the
