@@ -8171,6 +8171,44 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testProofDisconnectBlamesTheOwnerOnlyWhenItBeatsAmbientChurn() {
+        func decide(proofDuration: TimeInterval, ambient: TimeInterval?)
+            -> AtriaBLEManager.ProtectedR10ProofDisconnectDecision {
+            AtriaBLEManager.protectedR10ProofDisconnectDecision(
+                proofWasActive: true, cleanOwner: .protectedV9,
+                activationWasSent: true, framesAfterActivation: 40,
+                proofDuration: proofDuration, lastFrameAge: 1,
+                userRequestedDisconnect: false,
+                atriaOwnedOfflineSyncDisconnect: false,
+                ambientDisconnectInterval: ambient)
+        }
+
+        // 2026-07-26: the link drops ~17s in pure_hr_v10 with no protected
+        // profile active. A proof surviving as long as the ambient cadence is
+        // not evidence the owner caused anything.
+        XCTAssertEqual(decide(proofDuration: 17, ambient: 17), .none)
+        XCTAssertEqual(decide(proofDuration: 20, ambient: 17), .none)
+
+        // Demonstrably worse than baseline still incriminates the owner —
+        // this is the disconnect-storm protection and it must survive.
+        XCTAssertEqual(decide(proofDuration: 5, ambient: 60), .fallbackToPureHR)
+        XCTAssertEqual(decide(proofDuration: 3, ambient: 17), .fallbackToPureHR)
+
+        // No usable ambient measurement falls through to original behaviour.
+        XCTAssertEqual(decide(proofDuration: 5, ambient: nil), .fallbackToPureHR)
+        XCTAssertEqual(decide(proofDuration: 5, ambient: 0), .fallbackToPureHR)
+
+        // Unrelated guards are untouched: a user-requested disconnect never
+        // blames the owner regardless of timing.
+        XCTAssertEqual(AtriaBLEManager.protectedR10ProofDisconnectDecision(
+            proofWasActive: true, cleanOwner: .protectedV9,
+            activationWasSent: true, framesAfterActivation: 40,
+            proofDuration: 3, lastFrameAge: 1,
+            userRequestedDisconnect: true,
+            atriaOwnedOfflineSyncDisconnect: false,
+            ambientDisconnectInterval: 60), .none)
+    }
+
     func testDensityProofQualifiesOnEvidenceRatherThanElapsedTime() {
         // Measured 2026-07-25, band worn 30cm from the phone at -52 dBm: the
         // link survives 15-18s, so a 90s elapsed-time precondition is
