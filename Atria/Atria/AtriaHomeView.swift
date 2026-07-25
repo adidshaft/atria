@@ -4213,10 +4213,11 @@ struct AtriaHomeView: View {
                 // space on the sides" — three inset layers stacked to
                 // 44-46pt/side; this is the shared knob).
                 .padding(.horizontal, 12)
-                // The status card above already ends in its own inset, so a
-                // further 12pt here stacked into a visible void between the
-                // card and the greeting.
-                .padding(.top, 4)
+                // Back to the standard gutter: the 4pt here, and the negative
+                // bottom padding on the notice, both existed only to close the
+                // void that a floating inset card opened above the greeting.
+                // Edge-to-edge chrome ends flush, so content spaces normally.
+                .padding(.top, 12)
                 .padding(.bottom, scrollBottomClearance)
                 .frame(maxWidth: .infinity)
             }
@@ -4225,8 +4226,8 @@ struct AtriaHomeView: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
                     topChrome
-                    // The card carries its own inset, so an extra gap here just
-                    // pushes the greeting down for no reason.
+                    // Full-bleed: the notice spans the width flush against the
+                    // chrome above it, so it takes no inset or gap of its own.
                     AtriaHomeRecoveryStatusHost(
                         coreLiveStore: model.coreLiveStore,
                         maturityText: { store.baseline.restingBaselineMaturityQualifierText() }
@@ -4454,31 +4455,20 @@ struct AtriaHomeView: View {
                     .padding(.horizontal, 16)
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     .background {
-                        // A floating, inset card rather than edge-to-edge
-                        // chrome: this is a passing notice, not a permanent
-                        // header, and full-bleed chrome reads as far heavier
-                        // than the thing it is reporting. Glass earns its keep
-                        // because the card sits above the scrolling deck and
-                        // refracts it — Atria's flat near-black/near-white
-                        // content backdrops are why glass stays subtle
-                        // elsewhere in the app.
-                        let shape = RoundedRectangle(
-                            cornerRadius: AtriaDesignTokens.Radius.card,
-                            style: .continuous
-                        )
+                        // Edge-to-edge chrome, not a floating inset card. A
+                        // sync notice is app status rather than content, and a
+                        // card floating over the scrolling deck read as a
+                        // dismissible object competing with the cards below it.
+                        // Full-bleed also removes the reason the surface was
+                        // tinted at all: spanning the width already separates
+                        // it from content, so it stays neutral and lets the
+                        // label carry the meaning.
                         if reduceTransparency {
-                            shape.fill(.background)
+                            Rectangle().fill(.background)
                         } else {
-                            shape
-                                .fill(Color.clear)
-                                .glassEffect(.regular, in: shape)
+                            Rectangle().fill(.bar)
                         }
                     }
-                    .padding(.horizontal, 12)
-                    // Pulls the greeting up under the card. Scoped here rather
-                    // than to the shared scroll gutter so a screen showing no
-                    // notice keeps its original spacing.
-                    .padding(.bottom, -12)
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(notices.count > 1
                                         ? "\(status.accessibilityLabel) Notice \(index + 1) of \(notices.count)."

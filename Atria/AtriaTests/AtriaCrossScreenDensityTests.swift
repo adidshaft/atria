@@ -481,6 +481,35 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertTrue(share.contains("route-present"))
     }
 
+    func testSyncNoticeIsFullBleedNeutralChromeRatherThanAnInsetCard() throws {
+        let home = try source("AtriaHomeView.swift")
+        let start = try XCTUnwrap(home.range(
+            of: "private struct AtriaHomeRecoveryStatusHost: View {"
+        ))
+        let end = try XCTUnwrap(home.range(
+            of: "static func rotationIndex(", range: start.upperBound..<home.endIndex
+        ))
+        let host = String(home[start.lowerBound..<end.lowerBound])
+
+        // Full width: an unclipped rectangle spanning the frame, with no outer
+        // horizontal inset. The 16pt inset is the label's own, so it stays.
+        XCTAssertTrue(host.contains("Rectangle().fill(.bar)"))
+        XCTAssertTrue(host.contains(".frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)"))
+        XCTAssertFalse(host.contains(".padding(.horizontal, 12)"),
+                       "an outer gutter would float the notice off the screen edges")
+
+        // Not a card: no corner radius, and no tinted glass surface.
+        XCTAssertFalse(host.contains("RoundedRectangle"))
+        XCTAssertFalse(host.contains("glassEffect"))
+        // Neutral: the label carries meaning, the surface is not tinted by state.
+        XCTAssertFalse(host.contains("status.tint"))
+        XCTAssertTrue(host.contains(".foregroundStyle(.primary)"))
+
+        // The negative bottom padding existed only to close the void the
+        // floating card opened above the greeting; edge-to-edge ends flush.
+        XCTAssertFalse(host.contains(".padding(.bottom, -12)"))
+    }
+
     func testCustomizeCommitsOnceWithSaveAndDoesNotInventUnavailableVitals() throws {
         let source = try source("AtriaCustomizeSheet.swift")
 
