@@ -85,6 +85,76 @@ enum AtriaBLEReadOnlyHistoryCapturePolicy {
     }
 }
 
+/// Separate command firewall for the single exact-range transport proof.
+///
+/// The production full-drain command remains `[0x16, 0x00]`. This policy only
+/// admits a caller-supplied, bounded UTC interval encoded as
+/// `startUnixLE32 + endUnixLE32`, plus the already-audited 22/00 preflight and
+/// 14/00 abort. It deliberately has no ACK, seek, clock-write, or retry sweep.
+enum AtriaBLEReadOnlyExactRangeCapturePolicy {
+    static let maximumIntervalSeconds: UInt32 = 15 * 60
+    static let captureTimeout: TimeInterval = 75
+
+    static func payload(startUnix: UInt32, endUnix: UInt32) -> [UInt8]? {
+        guard startUnix > 0,
+              endUnix > startUnix,
+              endUnix - startUnix <= maximumIntervalSeconds else {
+            return nil
+        }
+        return le32(startUnix) + le32(endUnix)
+    }
+
+    static func allows(opcode: UInt8,
+                       payload: [UInt8],
+                       exactPayload: [UInt8]) -> Bool {
+        switch opcode {
+        case AtriaBLEReadOnlyHistoryCapturePolicy.getDataRange.opcode,
+             AtriaBLEReadOnlyHistoryCapturePolicy.abort.opcode:
+            return payload == [0x00]
+        case AtriaBLEReadOnlyHistoryCapturePolicy.sendHistorical.opcode:
+            return payload == exactPayload
+                && payload.count == 8
+                && decodedInterval(payload) != nil
+        default:
+            return false
+        }
+    }
+
+    static func contains(timestamp: UInt32,
+                         startUnix: UInt32,
+                         endUnix: UInt32) -> Bool {
+        timestamp >= startUnix && timestamp <= endUnix
+    }
+
+    private static func decodedInterval(_ payload: [UInt8]) -> (UInt32, UInt32)? {
+        guard payload.count == 8 else { return nil }
+        let start = u32le(payload, offset: 0)
+        let end = u32le(payload, offset: 4)
+        guard start > 0,
+              end > start,
+              end - start <= maximumIntervalSeconds else {
+            return nil
+        }
+        return (start, end)
+    }
+
+    private static func le32(_ value: UInt32) -> [UInt8] {
+        [
+            UInt8(value & 0xff),
+            UInt8((value >> 8) & 0xff),
+            UInt8((value >> 16) & 0xff),
+            UInt8((value >> 24) & 0xff),
+        ]
+    }
+
+    private static func u32le(_ bytes: [UInt8], offset: Int) -> UInt32 {
+        UInt32(bytes[offset])
+            | (UInt32(bytes[offset + 1]) << 8)
+            | (UInt32(bytes[offset + 2]) << 16)
+            | (UInt32(bytes[offset + 3]) << 24)
+    }
+}
+
 /// A small, bounded, fsynced evidence stream kept separate from the production
 /// archive. JSONL makes every captured callback independently inspectable.
 final class AtriaBLEReadOnlyHistoryCaptureStore {

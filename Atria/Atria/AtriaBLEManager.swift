@@ -1184,6 +1184,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var readOnlyHistoryCaptureGeneration: UInt64 = 0
     private var readOnlyHistoryCaptureTask: Task<Void, Never>?
     private var readOnlyHistoryCaptureStore: AtriaBLEReadOnlyHistoryCaptureStore?
+    private var readOnlyExactRangeCaptureRequested = false
+    private var readOnlyExactRangeRequestedGapID: UUID?
+    private var readOnlyExactRangeCandidate:
+        AtriaHistoricalGapLedger.RecoveryCandidate?
+    private var readOnlyExactRangePayload: [UInt8]?
+    private var readOnlyExactRangeStartUnix: UInt32?
+    private var readOnlyExactRangeEndUnix: UInt32?
+    private var readOnlyExactRangeDecodedRows = 0
+    private var readOnlyExactRangeInWindowRows = 0
     private var readOnlyHistoryRangeSequence: UInt8?
     private var readOnlyHistoryRangeWriteConfirmed = false
     private var readOnlyHistoryRangeResponse: AtriaWhoop4HistoryCursorRange?
@@ -4106,15 +4115,34 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func applyEarlyHistoricalLaunchConfiguration(arguments: [String]) {
-        if arguments.contains("--atria-read-only-history-capture") {
+        if arguments.contains("--atria-read-only-history-capture")
+            || arguments.contains("--atria-read-only-exact-range-capture") {
             readOnlyHistoryCaptureRequested = true
+            readOnlyExactRangeCaptureRequested = arguments.contains(
+                "--atria-read-only-exact-range-capture"
+            )
+            if readOnlyExactRangeCaptureRequested,
+               let index = arguments.firstIndex(
+                    of: "--atria-read-only-exact-range-gap-id"
+               ) {
+                let valueIndex = arguments.index(after: index)
+                if arguments.indices.contains(valueIndex) {
+                    readOnlyExactRangeRequestedGapID = UUID(
+                        uuidString: arguments[valueIndex]
+                    )
+                }
+            }
             historyOnlyProbeEnabled = true
             // Select only the physically verified RX + stream-5 notification
             // profile. The dedicated runner still sends 22/00 itself.
             historySkipDataRangeRequest = true
             _ = historyTransportPhaseFence.activate(generation: 0)
             realtimeStartRetries = 0
-            AtriaDebugLog("ATRIADBG readOnlyHistory status=configured allowlist=2200,1600,1400 ack=0 clock=0 realtime_stop=0 mode_change=0")
+            AtriaDebugLog("ATRIADBG readOnlyHistory status=configured mode=%@ allowlist=%@ ack=0 clock_write=0 seek=0 realtime_stop=0 mode_change=0",
+                          readOnlyExactRangeCaptureRequested ? "exact_range" : "full_drain_observation",
+                          readOnlyExactRangeCaptureRequested
+                              ? "2200,16<start_le32+end_le32>,1400"
+                              : "2200,1600,1400")
         }
         if arguments.contains("--atria-history-clock-handshake") || arguments.contains("--atria-history-clock-sync") {
             historyClockSyncEnabled = true
@@ -20535,6 +20563,50 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard readOnlyHistoryCaptureRequested,
               !readOnlyHistoryCaptureActive,
               readOnlyHistoryCaptureTask == nil else { return }
+        if readOnlyExactRangeCaptureRequested {
+            let candidate: AtriaHistoricalGapLedger.RecoveryCandidate?
+            if let wanted = readOnlyExactRangeRequestedGapID {
+                candidate = AtriaHistoricalGapLedger
+                    .allClosedRecoveryCandidates()
+                    .first { $0.window.id == wanted }
+            } else {
+                candidate = AtriaHistoricalGapLedger
+                    .newestClosedRecoveryCandidate()
+            }
+            guard let candidate,
+                  let end = candidate.window.end else {
+                AtriaDebugLog("ATRIADBG readOnlyHistory status=not_started mode=exact_range reason=no_closed_nonlegacy_gap action=no_command")
+                readOnlyHistoryCaptureRequested = false
+                readOnlyExactRangeCaptureRequested = false
+                historyOnlyProbeEnabled = false
+                return
+            }
+            let startUnix = UInt32(clamping: Int(
+                floor(candidate.window.start.timeIntervalSince1970)
+            ))
+            let endUnix = UInt32(clamping: Int(
+                ceil(end.timeIntervalSince1970)
+            ))
+            guard let exactPayload =
+                    AtriaBLEReadOnlyExactRangeCapturePolicy.payload(
+                        startUnix: startUnix,
+                        endUnix: endUnix
+                    ) else {
+                AtriaDebugLog("ATRIADBG readOnlyHistory status=not_started mode=exact_range reason=invalid_interval gap=%@ duration_s=%.3f action=no_command",
+                              candidate.window.id.uuidString,
+                              end.timeIntervalSince(candidate.window.start))
+                readOnlyHistoryCaptureRequested = false
+                readOnlyExactRangeCaptureRequested = false
+                historyOnlyProbeEnabled = false
+                return
+            }
+            readOnlyExactRangeCandidate = candidate
+            readOnlyExactRangePayload = exactPayload
+            readOnlyExactRangeStartUnix = startUnix
+            readOnlyExactRangeEndUnix = endUnix
+            readOnlyExactRangeDecodedRows = 0
+            readOnlyExactRangeInWindowRows = 0
+        }
         readOnlyHistoryCaptureGeneration &+= 1
         let generation = readOnlyHistoryCaptureGeneration
         readOnlyHistoryCaptureActive = true
@@ -20558,7 +20630,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
             try readOnlyHistoryCaptureStore?.append(
                 event: "capture_started",
-                fields: ["generation": generation, "reason": reason]
+                fields: [
+                    "generation": generation,
+                    "reason": reason,
+                    "mode": readOnlyExactRangeCaptureRequested
+                        ? "exact_range" : "full_drain_observation",
+                    "gap_id": readOnlyExactRangeCandidate?
+                        .window.id.uuidString ?? "none",
+                    "requested_start_unix":
+                        readOnlyExactRangeStartUnix.map(Int.init) ?? 0,
+                    "requested_end_unix":
+                        readOnlyExactRangeEndUnix.map(Int.init) ?? 0,
+                    "ledger_generation": readOnlyExactRangeCandidate?
+                        .ledgerGeneration ?? 0,
+                    "ledger_sha256": readOnlyExactRangeCandidate?
+                        .ledgerSnapshotSHA256 ?? "none",
+                ]
             )
         } catch {
             readOnlyHistoryCaptureActive = false
@@ -20687,8 +20774,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                                   reason: "settle_under_2_seconds")
                 return
             }
+            let servePayload = self.readOnlyExactRangePayload ?? [0x00]
             let serve = await self.sendReadOnlyHistoryCommandAwaitingConfirmation(
                 opcode: Cmd.sendHistoricalData,
+                payload: servePayload,
                 generation: generation
             )
             guard serve == .confirmed else {
@@ -20701,15 +20790,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 event: "serve_confirmed",
                 fields: [
                     "opcode": "16",
-                    "payload": "00",
+                    "payload": Self.hex(servePayload),
+                    "mode": self.readOnlyExactRangeCaptureRequested
+                        ? "exact_range" : "full_drain_observation",
                     "range_response_to_serve_seconds": responseToServe,
                 ]
             )
-            AtriaDebugLog("ATRIADBG readOnlyHistory status=serve_confirmed generation=%llu command=1600 response_to_serve_s=%.3f action=capture_bounded_raw",
+            AtriaDebugLog("ATRIADBG readOnlyHistory status=serve_confirmed generation=%llu command=16 payload=%@ mode=%@ response_to_serve_s=%.3f action=capture_bounded_raw",
                           generation,
+                          Self.hex(servePayload),
+                          self.readOnlyExactRangeCaptureRequested
+                              ? "exact_range" : "full_drain_observation",
                           responseToServe)
             let deadline = Date().addingTimeInterval(
-                AtriaBLEReadOnlyHistoryCapturePolicy.captureTimeout
+                self.readOnlyExactRangeCaptureRequested
+                    ? AtriaBLEReadOnlyExactRangeCapturePolicy.captureTimeout
+                    : AtriaBLEReadOnlyHistoryCapturePolicy.captureTimeout
             )
             while self.readOnlyHistoryCaptureActive,
                   self.readOnlyHistoryCaptureGeneration == generation,
@@ -20726,17 +20822,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func sendReadOnlyHistoryCommandAwaitingConfirmation(
         opcode: UInt8,
+        payload: [UInt8] = [0x00],
         generation: UInt64
     ) async -> AtriaBLEReadOnlyHistoryCapturePolicy.WriteConfirmationResult {
+        let commandAllowed: Bool
+        if readOnlyExactRangeCaptureRequested,
+           let exactPayload = readOnlyExactRangePayload {
+            commandAllowed = AtriaBLEReadOnlyExactRangeCapturePolicy.allows(
+                opcode: opcode,
+                payload: payload,
+                exactPayload: exactPayload
+            )
+        } else {
+            commandAllowed = AtriaBLEReadOnlyHistoryCapturePolicy.allows(
+                opcode: opcode,
+                payload: payload
+            )
+        }
         guard readOnlyHistoryCaptureActive,
               readOnlyHistoryCaptureGeneration == generation,
-              AtriaBLEReadOnlyHistoryCapturePolicy.allows(opcode: opcode,
-                                                          payload: [0x00]) else { return .interrupted }
+              commandAllowed else { return .interrupted }
         lastProprietaryWriteCompletion = nil
-        guard sendCommand(opcode, [0x00], mode: .withResponse),
+        guard sendCommand(opcode, payload, mode: .withResponse),
               let expected = writeCompletionLedger.pending.first,
               expected.command == opcode,
-              expected.payload == [0x00] else { return .failed }
+              expected.payload == payload else { return .failed }
         if opcode == Cmd.getDataRange {
             readOnlyHistoryRangeSequence = expected.sequence
             readOnlyHistoryRangeWriteConfirmed = false
@@ -20747,7 +20857,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             event: "command",
             fields: [
                 "opcode": String(format: "%02x", opcode),
-                "payload": "00",
+                "payload": Self.hex(payload),
                 "sequence": expected.sequence,
             ]
         )
@@ -20760,7 +20870,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             if let completion = lastProprietaryWriteCompletion,
                completion.entry.sequence == expected.sequence,
                completion.entry.command == opcode,
-               completion.entry.payload == [0x00] {
+               completion.entry.payload == payload {
                 return AtriaBLEReadOnlyHistoryCapturePolicy.classifyWriteCompletion(
                     succeeded: completion.succeeded,
                     errorDomain: completion.errorDomain,
@@ -20808,6 +20918,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     "abort_confirmed": abortConfirmed,
                     "serve_write_confirmed": self.readOnlyHistoryServeWriteConfirmed,
                     "history_started": self.readOnlyHistoryStarted,
+                    "mode": self.readOnlyExactRangeCaptureRequested
+                        ? "exact_range" : "full_drain_observation",
+                    "gap_id": self.readOnlyExactRangeCandidate?
+                        .window.id.uuidString ?? "none",
+                    "requested_start_unix":
+                        self.readOnlyExactRangeStartUnix.map(Int.init) ?? 0,
+                    "requested_end_unix":
+                        self.readOnlyExactRangeEndUnix.map(Int.init) ?? 0,
+                    "decoded_rows": self.readOnlyExactRangeDecodedRows,
+                    "in_window_rows": self.readOnlyExactRangeInWindowRows,
                 ]
             )
             try? self.readOnlyHistoryCaptureStore?.close()
@@ -20815,6 +20935,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             self.readOnlyHistoryCaptureStore = nil
             self.readOnlyHistoryCaptureActive = false
             self.readOnlyHistoryCaptureRequested = false
+            self.readOnlyExactRangeCaptureRequested = false
+            self.readOnlyExactRangeRequestedGapID = nil
+            self.readOnlyExactRangeCandidate = nil
+            self.readOnlyExactRangePayload = nil
+            self.readOnlyExactRangeStartUnix = nil
+            self.readOnlyExactRangeEndUnix = nil
             self.readOnlyHistoryCaptureTask = nil
             self.historyOnlyProbeEnabled = false
             _ = self.historyTransportPhaseFence.deactivate(ifMatching: generation)
@@ -20852,6 +20978,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         readOnlyHistoryCaptureStore = nil
         readOnlyHistoryCaptureActive = false
         readOnlyHistoryCaptureRequested = false
+        readOnlyExactRangeCaptureRequested = false
+        readOnlyExactRangeRequestedGapID = nil
+        readOnlyExactRangeCandidate = nil
+        readOnlyExactRangePayload = nil
+        readOnlyExactRangeStartUnix = nil
+        readOnlyExactRangeEndUnix = nil
         readOnlyHistoryAbortIssued = true
         historyOnlyProbeEnabled = false
         _ = historyTransportPhaseFence.deactivate(ifMatching: generation)
@@ -21606,11 +21738,39 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                               reason: "frame_limit")
                 return
             }
+            let decoded = AtriaWhoop4HistoricalRecordDecoder.decode(payload)
+            let decodedTimestamp = decoded.decodedRecord?.timestampSeconds
+            let inRequestedWindow: Bool?
+            if let decodedTimestamp,
+               let startUnix = readOnlyExactRangeStartUnix,
+               let endUnix = readOnlyExactRangeEndUnix {
+                readOnlyExactRangeDecodedRows += 1
+                let accepted =
+                    AtriaBLEReadOnlyExactRangeCapturePolicy.contains(
+                        timestamp: decodedTimestamp,
+                        startUnix: startUnix,
+                        endUnix: endUnix
+                    )
+                if accepted {
+                    readOnlyExactRangeInWindowRows += 1
+                }
+                inRequestedWindow = accepted
+            } else {
+                inRequestedWindow = nil
+            }
             do {
                 try readOnlyHistoryCaptureStore?.append(
                     event: "historical_frame",
                     payload: payload,
-                    fields: ["source_uuid": sourceUUID.uuidString]
+                    fields: [
+                        "source_uuid": sourceUUID.uuidString,
+                        "decoded_timestamp_unix":
+                            decodedTimestamp.map(Int.init) ?? 0,
+                        "in_requested_window":
+                            inRequestedWindow ?? false,
+                        "requested_window_applicable":
+                            inRequestedWindow != nil,
+                    ]
                 )
             } catch {
                 AtriaDebugLog("ATRIADBG readOnlyHistory status=store_write_failed generation=%llu error=%@ action=abort_no_ack",
@@ -21618,6 +21778,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                               String(describing: error))
                 finishReadOnlyHistoryCapture(generation: generation,
                                               reason: "store_write_failed")
+                return
+            }
+            if readOnlyExactRangeCaptureRequested,
+               inRequestedWindow == false {
+                AtriaDebugLog("ATRIADBG readOnlyHistory status=exact_range_rejected generation=%llu decoded_unix=%u requested_start=%u requested_end=%u action=abort_no_ack_preserve_gap",
+                              generation,
+                              decodedTimestamp ?? 0,
+                              readOnlyExactRangeStartUnix ?? 0,
+                              readOnlyExactRangeEndUnix ?? 0)
+                finishReadOnlyHistoryCapture(
+                    generation: generation,
+                    reason: "exact_range_out_of_window_record"
+                )
                 return
             }
             let frames = readOnlyHistoryCaptureStore?.frameCount ?? 0

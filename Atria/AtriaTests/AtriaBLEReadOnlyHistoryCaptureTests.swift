@@ -159,6 +159,56 @@ final class AtriaBLEReadOnlyHistoryCaptureTests: XCTestCase {
         )
     }
 
+    func testExactRangeFirewallAllowsOnlyBoundedEightByteInterval() throws {
+        let start: UInt32 = 1_785_020_018
+        let end: UInt32 = 1_785_020_070
+        let payload = try XCTUnwrap(
+            AtriaBLEReadOnlyExactRangeCapturePolicy.payload(
+                startUnix: start,
+                endUnix: end
+            )
+        )
+        XCTAssertEqual(payload.count, 8)
+        XCTAssertTrue(AtriaBLEReadOnlyExactRangeCapturePolicy.allows(
+            opcode: 0x22, payload: [0x00], exactPayload: payload
+        ))
+        XCTAssertTrue(AtriaBLEReadOnlyExactRangeCapturePolicy.allows(
+            opcode: 0x16, payload: payload, exactPayload: payload
+        ))
+        XCTAssertTrue(AtriaBLEReadOnlyExactRangeCapturePolicy.allows(
+            opcode: 0x14, payload: [0x00], exactPayload: payload
+        ))
+        for forbidden in [UInt8(0x03), 0x0a, 0x0b, 0x17, 0x19, 0x21, 0x60] {
+            XCTAssertFalse(AtriaBLEReadOnlyExactRangeCapturePolicy.allows(
+                opcode: forbidden, payload: [0x00], exactPayload: payload
+            ))
+        }
+        XCTAssertFalse(AtriaBLEReadOnlyExactRangeCapturePolicy.allows(
+            opcode: 0x16, payload: [0x00], exactPayload: payload
+        ))
+        XCTAssertNil(AtriaBLEReadOnlyExactRangeCapturePolicy.payload(
+            startUnix: start,
+            endUnix: start + 901
+        ))
+    }
+
+    func testExactRangeTimestampGateIsInclusive() {
+        let start: UInt32 = 100
+        let end: UInt32 = 150
+        XCTAssertTrue(AtriaBLEReadOnlyExactRangeCapturePolicy.contains(
+            timestamp: start, startUnix: start, endUnix: end
+        ))
+        XCTAssertTrue(AtriaBLEReadOnlyExactRangeCapturePolicy.contains(
+            timestamp: end, startUnix: start, endUnix: end
+        ))
+        XCTAssertFalse(AtriaBLEReadOnlyExactRangeCapturePolicy.contains(
+            timestamp: 99, startUnix: start, endUnix: end
+        ))
+        XCTAssertFalse(AtriaBLEReadOnlyExactRangeCapturePolicy.contains(
+            timestamp: 151, startUnix: start, endUnix: end
+        ))
+    }
+
     func testActiveCaptureOwnsRawFramesBeforeProductionParsedUpdates() throws {
         let managerURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
