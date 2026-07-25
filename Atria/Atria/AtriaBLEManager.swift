@@ -1566,6 +1566,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// already-confirmed ACK may arm this bounded 0x16 continuation. Any next
     /// row or history marker cancels it, so an in-flight page is never prodded.
     private var historicalPageContinuationTask: Task<Void, Never>?
+    private var historicalPageContinuationGeneration: UInt64?
+    private var historicalPageContinuationBoundaryID: String?
+    private var historicalPageContinuationArmNonce: UInt64 = 0
+    private var historicalPageContinuationHasFutureAttempt = false
     /// Learns the minimum safe 0x16 continuation settle for the current
     /// generation. A duplicate HISTORY_END proves the last kick was early;
     /// exact re-ACK is already durability-gated, so the next kick backs off.
@@ -2105,6 +2109,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         qos: .userInitiated
     )
     private nonisolated let historicalArchiveWarmGroup = DispatchGroup()
+    enum HistoricalArchiveWarmState: Equatable {
+        case warming
+        case ready
+        case failed
+    }
+    /// History transport cannot outrun the canonical identity store on a cold
+    /// restore. The derived index can take minutes to rebuild over retained
+    /// raw chunks, while received strap frames need its lock to become durable.
+    private var historicalArchiveWarmState: HistoricalArchiveWarmState = .warming
+    private var historicalArchiveWarmFailure: String?
     private var peripheral: CBPeripheral?
     /// `peripheral` is not the only object CoreBluetooth can be holding a live
     /// link for: the reconnect fast lane connects the callback's peripheral
@@ -3831,12 +3845,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 AtriaDebugLog("ATRIADBG historical_archive_warm status=started action=identity_store_open_only")
                 try HistoricalArchive.warmDurableIdentityStoreForBackgroundRecovery()
                 AtriaDebugLog("ATRIADBG historical_archive_warm status=ready action=no_archive_append_no_ack_no_coverage")
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.historicalArchiveWarmState = .ready
+                    self.historicalArchiveWarmFailure = nil
+                    self.resumePendingForcedHistoricalSyncAfterLivePersistenceIfNeeded(
+                        reason: "historical_archive_warm_ready"
+                    )
+                }
             } catch {
                 // The replay journal remains intact. A later retry will reopen
                 // the store normally and still cannot send an ACK from this
                 // background warmup failure.
                 AtriaDebugLog("ATRIADBG historical_archive_warm status=deferred error=%@ action=retain_orphan_raw_no_ack_no_coverage",
                               String(describing: error))
+                Task { @MainActor [weak self] in
+                    self?.historicalArchiveWarmState = .failed
+                    self?.historicalArchiveWarmFailure = String(describing: error)
+                }
             }
         }
         // A process crash cannot resume the old reducer/ACK gate. Preserve the
@@ -6767,6 +6793,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       authority?.authorityIdentifier ?? "none")
     }
 
+    nonisolated static func shouldDeferHistoricalSyncUntilArchiveWarmReady(
+        warmState: HistoricalArchiveWarmState,
+        syncInProgress: Bool
+    ) -> Bool {
+        warmState != .ready && !syncInProgress
+    }
+
     @discardableResult
     func requestOfflineHistoricalSyncIfNeeded(
         reason: String,
@@ -6813,6 +6846,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 )
                 return false
             }
+        }
+        if Self.shouldDeferHistoricalSyncUntilArchiveWarmReady(
+            warmState: historicalArchiveWarmState,
+            syncInProgress: offlineHistoricalSyncInProgress
+        ) {
+            retainPendingOfflineHistoricalSyncRequest(
+                reason: reason,
+                force: force,
+                explicitRequest: explicitHistoricalRequest
+            )
+            defaults.set(
+                historicalArchiveWarmState == .failed
+                    ? "deferred_archive_warm_failed"
+                    : "deferred_archive_warm",
+                forKey: OfflineSyncDefaults.lastStatus
+            )
+            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=deferred_archive_warm reason=%@ state=%@ error=%@ action=retain_request_preserve_live_no_history_command",
+                reason,
+                String(describing: historicalArchiveWarmState),
+                historicalArchiveWarmFailure ?? "none"
+            )
+            return false
         }
         // Physical acceptance showed that the available 22/00 + 16/00 path
         // replays old flash history and cannot request the current local gap.
@@ -9077,6 +9134,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                             rawOnlyGapFingerprint: String?,
                                             gapFingerprint: String?,
                                             freshOwnerCutoverCompleted: Bool = false) -> Bool {
+        guard historicalArchiveWarmState == .ready else {
+            retainPendingOfflineHistoricalSyncRequest(
+                reason: reason,
+                force: force,
+                explicitRequest: explicitRequest
+            )
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=deferred_archive_warm_at_transaction_boundary reason=%@ state=%@ action=no_attempt_no_generation_no_lease_no_command",
+                reason,
+                String(describing: historicalArchiveWarmState)
+            )
+            return false
+        }
         // Never overwrite a raw ingress journal from a terminated process.
         // Its replay has no reducer/ACK authority, but preserves real frames
         // that otherwise disappear at the next generation boundary.
@@ -9319,6 +9389,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historyACKGate.reset()
         historicalPageContinuationTask?.cancel()
         historicalPageContinuationTask = nil
+        historicalPageContinuationGeneration = nil
+        historicalPageContinuationBoundaryID = nil
+        historicalPageContinuationHasFutureAttempt = false
         historicalPageContinuationReplayBackoffStep = 0
         historyFirstFrameWatchdogTask?.cancel()
         historyFirstFrameWatchdogTask = nil
@@ -9658,6 +9731,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             || reason == "history_complete" {
             historicalPageContinuationTask?.cancel()
             historicalPageContinuationTask = nil
+            historicalPageContinuationGeneration = nil
+            historicalPageContinuationBoundaryID = nil
+            historicalPageContinuationHasFutureAttempt = false
         }
         offlineHistoricalSyncLastProgressUptime = ProcessInfo.processInfo.systemUptime
         if reason != "historical_frame" {
@@ -9954,6 +10030,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               historicalDrainTelemetry.ackSent == historicalDrainTelemetry.ackSucceeded,
               Date().timeIntervalSince(historicalDrainTelemetry.lastProgressAt) >= 0.7
         else { return }
+        guard Self.shouldSendHistoryDrainBurstContinue(
+            pendingHistoryEndACK: pendingHistoryEndACK != nil,
+            ackCallbackDeferred: historyACKGate.requiresHistoryCallbackDeferral,
+            durableFlushInFlight: historyDurableFlushInFlight,
+            admissionBatchInFlight: historicalAdmissionBatchInFlight,
+            pendingTransportEvents: hasPendingHistoricalTransportEvents,
+            pendingPersistenceCount: historyDrain.pendingPersistenceCount,
+            writeInFlight: !writeCompletionLedger.pending.isEmpty,
+            pageContinuationArmed: historicalPageContinuationTask != nil,
+            replayACKArmed: historicalReplayACKTask != nil
+        ) else { return }
         guard historicalDrainTelemetry.stream5Received
                 > historyDrainContinueRowsAtLastReissue else {
             if !historyDrainContinueDryLogged {
@@ -9965,17 +10052,37 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             }
             return
         }
-        historyDrainContinueRowsAtLastReissue = historicalDrainTelemetry.stream5Received
-        historyDrainContinueReissues += 1
-        let reissue = historyDrainContinueReissues
-        AtriaDebugLog("ATRIADBG historyDrain status=continue_reissue generation=%llu reissue=%d stream5_rx=%d action=resend_verified_1600_same_session",
-                      generation,
-                      reissue,
-                      historicalDrainTelemetry.stream5Received)
         Task { @MainActor [weak self] in
             guard let self,
                   self.offlineHistoricalSyncInProgress,
-                  self.offlineHistoricalSyncGeneration == generation else { return }
+                  self.offlineHistoricalSyncGeneration == generation,
+                  Self.shouldSendHistoryDrainBurstContinue(
+                    pendingHistoryEndACK: self.pendingHistoryEndACK != nil,
+                    ackCallbackDeferred:
+                        self.historyACKGate.requiresHistoryCallbackDeferral,
+                    durableFlushInFlight: self.historyDurableFlushInFlight,
+                    admissionBatchInFlight:
+                        self.historicalAdmissionBatchInFlight,
+                    pendingTransportEvents:
+                        self.hasPendingHistoricalTransportEvents,
+                    pendingPersistenceCount:
+                        self.historyDrain.pendingPersistenceCount,
+                    writeInFlight:
+                        !self.writeCompletionLedger.pending.isEmpty,
+                    pageContinuationArmed:
+                        self.historicalPageContinuationTask != nil,
+                    replayACKArmed: self.historicalReplayACKTask != nil
+                  ),
+                  self.historicalDrainTelemetry.stream5Received
+                    > self.historyDrainContinueRowsAtLastReissue else { return }
+            self.historyDrainContinueRowsAtLastReissue =
+                self.historicalDrainTelemetry.stream5Received
+            self.historyDrainContinueReissues += 1
+            let reissue = self.historyDrainContinueReissues
+            AtriaDebugLog("ATRIADBG historyDrain status=continue_reissue generation=%llu reissue=%d stream5_rx=%d action=resend_verified_1600_same_session",
+                          generation,
+                          reissue,
+                          self.historicalDrainTelemetry.stream5Received)
             let result = await self.sendHistoryCommandAwaitingWriteConfirmation(
                 command: Cmd.sendHistoricalData,
                 payload: [0x00],
@@ -9986,6 +10093,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           reissue,
                           String(describing: result))
         }
+    }
+
+    nonisolated static func shouldSendHistoryDrainBurstContinue(
+        pendingHistoryEndACK: Bool,
+        ackCallbackDeferred: Bool,
+        durableFlushInFlight: Bool,
+        admissionBatchInFlight: Bool,
+        pendingTransportEvents: Bool,
+        pendingPersistenceCount: Int,
+        writeInFlight: Bool,
+        pageContinuationArmed: Bool,
+        replayACKArmed: Bool
+    ) -> Bool {
+        !pendingHistoryEndACK
+            && !ackCallbackDeferred
+            && !durableFlushInFlight
+            && !admissionBatchInFlight
+            && !pendingTransportEvents
+            && pendingPersistenceCount == 0
+            && !writeInFlight
+            && !pageContinuationArmed
+            && !replayACKArmed
     }
 
     private func emitHistoricalDrainTelemetry(
@@ -10065,6 +10194,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historyACKGate.reset()
         historicalPageContinuationTask?.cancel()
         historicalPageContinuationTask = nil
+        historicalPageContinuationGeneration = nil
+        historicalPageContinuationBoundaryID = nil
+        historicalPageContinuationHasFutureAttempt = false
         historicalPageContinuationReplayBackoffStep = 0
         historyFirstFrameWatchdogTask?.cancel()
         historyFirstFrameWatchdogTask = nil
@@ -22835,12 +22967,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
 
         case .historyEnd(let sequence, let opaqueStatusWord, let token):
-            noteOfflineHistoricalSyncProgress(
-                generation: generation,
-                reason: "history_end"
-            )
             let ackKey = "enddata:\(Self.hex(token.bytes))"
             let acked = ackedHistoryAckKeys.contains(ackKey)
+            noteOfflineHistoricalSyncProgress(
+                generation: generation,
+                reason: acked ? "history_end_replay" : "history_end"
+            )
             AtriaDebugLog("ATRIADBG historyMeta status=end sequence=%d status_word=%u received_records=%d sequence_restarts=%d token=%@ acked=%d payload=%@",
                           Int(sequence), opaqueStatusWord, historyDrain.currentBatchFrameCountForDiagnostics,
                           historyDrain.sequenceRestartCount, Self.hex(token.bytes),
@@ -25698,9 +25830,37 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         generation: UInt64,
         boundaryID: String
     ) {
+        if Self.shouldRetainHistoricalPageContinuation(
+            existingGeneration: historicalPageContinuationGeneration,
+            existingBoundaryID: historicalPageContinuationBoundaryID,
+            existingHasFutureAttempt:
+                historicalPageContinuationHasFutureAttempt,
+            requestedGeneration: generation,
+            requestedBoundaryID: boundaryID
+        ) {
+            AtriaDebugLog(
+                "ATRIADBG historyContinue status=retained generation=%llu boundary=%@ action=keep_earlier_deadline",
+                generation,
+                boundaryID
+            )
+            return
+        }
         historicalPageContinuationTask?.cancel()
+        historicalPageContinuationGeneration = generation
+        historicalPageContinuationBoundaryID = boundaryID
+        historicalPageContinuationHasFutureAttempt = true
+        historicalPageContinuationArmNonce &+= 1
+        let armNonce = historicalPageContinuationArmNonce
         historicalPageContinuationTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            defer {
+                if self.historicalPageContinuationArmNonce == armNonce {
+                    self.historicalPageContinuationTask = nil
+                    self.historicalPageContinuationGeneration = nil
+                    self.historicalPageContinuationBoundaryID = nil
+                    self.historicalPageContinuationHasFutureAttempt = false
+                }
+            }
             // Start promptly instead of imposing a fixed one-minute stall on
             // every page. If the strap replays this already-durable boundary,
             // reackDurableHistoricalReplay backs the next attempt off
@@ -25720,8 +25880,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       !self.hasPendingHistoricalTransportEvents,
                       !self.historicalAdmissionBatchInFlight,
                       self.peripheral?.state == .connected else { return }
+                guard Self.shouldSendHistoricalPageContinuation(
+                    replayACKArmed: self.historicalReplayACKTask != nil,
+                    writeInFlight: !self.writeCompletionLedger.pending.isEmpty
+                ) else {
+                    // A replay ACK owns the single-flight pipe. End this arm
+                    // before that ACK's completion rearms the same boundary;
+                    // retaining this task here would let its 0x16 race 0x17.
+                    self.historicalPageContinuationHasFutureAttempt = false
+                    AtriaDebugLog(
+                        "ATRIADBG historyContinue status=deferred generation=%llu boundary=%@ reason=replay_ack_or_write_in_flight action=await_confirmed_ack_rearm",
+                        generation,
+                        boundaryID
+                    )
+                    return
+                }
 
                 let attempt = index + 1
+                self.historicalPageContinuationHasFutureAttempt =
+                    attempt < delays.count
                 AtriaDebugLog("ATRIADBG historyContinue status=sending generation=%llu boundary=%@ attempt=%d silence_s=%.0f command=1600 authority=acked_durable_boundary",
                               generation,
                               boundaryID,
@@ -25748,8 +25925,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                 ? "await_history_or_bounded_retry"
                                 : "await_history_idle_watchdog")
             }
-            self.historicalPageContinuationTask = nil
         }
+    }
+
+    nonisolated static func shouldRetainHistoricalPageContinuation(
+        existingGeneration: UInt64?,
+        existingBoundaryID: String?,
+        existingHasFutureAttempt: Bool,
+        requestedGeneration: UInt64,
+        requestedBoundaryID: String
+    ) -> Bool {
+        existingGeneration == requestedGeneration
+            && existingBoundaryID == requestedBoundaryID
+            && existingHasFutureAttempt
+    }
+
+    nonisolated static func shouldSendHistoricalPageContinuation(
+        replayACKArmed: Bool,
+        writeInFlight: Bool
+    ) -> Bool {
+        !replayACKArmed && !writeInFlight
     }
 
     nonisolated static func historicalPageContinuationDelays(
