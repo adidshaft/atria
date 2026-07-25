@@ -199,6 +199,24 @@ struct PersonalBaseline: Codable {
         freshHRVSampleCount(now: now) >= Self.trustedMinimumSamples && !isStale(now: now)
     }
 
+    /// Display-ready maturity qualifier for the resting baseline, e.g.
+    /// "Learning · day 5 of 14". `nil` once the baseline is trusted.
+    ///
+    /// Deliberately mirrors `AtriaFitnessAge`'s "Early estimate · day N of M":
+    /// a value is shown from the first day and the qualifier discloses how far
+    /// the baseline has matured, rather than withholding the reading until it
+    /// is confident. Withholding is not more honest — it just leaves the wearer
+    /// with nothing while the app silently waits.
+    ///
+    /// This is the ONE place the maturity state should be read from, so the
+    /// caveat can be surfaced in a single location instead of being repeated
+    /// against every derived number.
+    func restingBaselineMaturityQualifierText(now: Date = Date()) -> String? {
+        guard !hasTrustedRestingBaseline(now: now) else { return nil }
+        let days = min(freshRestingSampleCount(now: now), Self.trustedMinimumSamples)
+        return "Learning · day \(days) of \(Self.trustedMinimumSamples)"
+    }
+
     var restingStats: (mean: Double, sd: Double, count: Int)? {
         restingStats(now: Date())
     }
