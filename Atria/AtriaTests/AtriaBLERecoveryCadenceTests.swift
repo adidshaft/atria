@@ -219,7 +219,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), .rediscoverHeartRateService)
     }
 
-    func testFreshR10EvidencePreventsTeardownDuringSixtySecondHRGap() {
+    func testFreshR10EvidenceEscalatesToRediscoveryDuringSixtySecondHRGap() {
         XCTAssertEqual(AtriaBLEManager.heartRateContinuityRecoveryDisposition(
             rawHeartRateGap: 60,
             usefulGattGap: 2,
@@ -229,7 +229,48 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             heartRateIsNotifying: true,
             canReadHeartRate: true,
             canNotifyHeartRate: true
-        ), .readHeartRate)
+        ), .rediscoverHeartRateService)
+    }
+
+    func testFreshR10CannotVetoRebuildAfterNinetySecondHRGap() {
+        XCTAssertEqual(AtriaBLEManager.heartRateContinuityRecoveryDisposition(
+            rawHeartRateGap: 90,
+            usefulGattGap: 1,
+            adaptiveTimeout: 30,
+            peripheralConnected: true,
+            hasHeartRateCharacteristic: true,
+            heartRateIsNotifying: true,
+            canReadHeartRate: true,
+            canNotifyHeartRate: true
+        ), .rebuildConnection)
+    }
+
+    func testDenseCallbackAuditRunsOnlyWhenHRIsStaleAndPaced() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        XCTAssertFalse(AtriaBLEManager.shouldRunCallbackDrivenHeartRateAudit(
+            rawHeartRateGap: 29,
+            timeout: 30,
+            lastAuditAt: nil,
+            now: now
+        ))
+        XCTAssertTrue(AtriaBLEManager.shouldRunCallbackDrivenHeartRateAudit(
+            rawHeartRateGap: 30,
+            timeout: 30,
+            lastAuditAt: nil,
+            now: now
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldRunCallbackDrivenHeartRateAudit(
+            rawHeartRateGap: 60,
+            timeout: 30,
+            lastAuditAt: now.addingTimeInterval(-29),
+            now: now
+        ))
+        XCTAssertTrue(AtriaBLEManager.shouldRunCallbackDrivenHeartRateAudit(
+            rawHeartRateGap: 60,
+            timeout: 30,
+            lastAuditAt: now.addingTimeInterval(-30),
+            now: now
+        ))
     }
 
     func testAllUsefulGattSilenceAtTwoMinutesRequestsOneRebuild() {
