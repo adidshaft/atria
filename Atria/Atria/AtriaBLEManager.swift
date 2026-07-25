@@ -1167,6 +1167,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// cleared inside `centralManagerDidUpdateState`, which CoreBluetooth
     /// delivers off the main actor.
     private nonisolated(unsafe) var standingConnectAwaitingCentralPowerOn = false
+    /// Durable-forensics marker for the one-shot silent-stream central
+    /// replacement. CoreBluetooth state callbacks arrive off the main actor,
+    /// so this mirrors the synchronization contract of the standing-connect
+    /// marker immediately above it.
+    private nonisolated(unsafe) var silentStreamCentralRebuildAwaitingPowerOn = false
     private var historyOnlyProbeEnabled = false
     private var historyOnlyProbeArmed = false
     private var historyOnlyProbeTask: Task<Void, Never>?
@@ -3237,6 +3242,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var backgroundReconnectLeaseTask: Task<Void, Never>?
     private var backgroundReconnectLease: UIBackgroundTaskIdentifier = .invalid
     private var backgroundReconnectLeaseReissueUsed = false
+    /// A background soft 2A37 repair gets one execution-backed follow-up. If
+    /// HR has not resumed after the bounded delay, the same live lease
+    /// escalates to the one-shot fresh CoreBluetooth client replacement.
+    private var backgroundSoftHRRepairEscalationTask: Task<Void, Never>?
     private var postReconnectHRReassertTask: Task<Void, Never>?
     /// Locked-background reconnects die silently after `didConnect`: with the
     /// prior epoch's notify subscriptions gone, no pipeline callback
@@ -13546,9 +13555,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let usefulGattGap = usefulGattReference.map { max(0, now.timeIntervalSince($0)) }
             ?? max(0, rawGap)
         let characteristic = heartRateCharacteristic
+        let applicationActive = UIApplication.shared.applicationState == .active
         let replaceSilentBackgroundSession =
             Self.shouldReplaceCoreBluetoothSessionForSilentStream(
-                applicationActive: UIApplication.shared.applicationState == .active,
+                applicationActive: applicationActive,
                 peripheralConnected: peripheral.state == .connected,
                 rawHeartRateGap: max(0, rawGap),
                 usefulGattGap: usefulGattGap,
@@ -13606,6 +13616,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                     samples: session.count,
                                     checkpoint: "not_applicable")
             return
+        }
+        if !applicationActive, peripheral.state == .connected {
+            switch disposition {
+            case .readHeartRate, .enableHeartRateNotifications,
+                 .rediscoverHeartRateService:
+                armBackgroundSoftHRRepairEscalationIfNeeded(
+                    peripheral: peripheral,
+                    trigger: "hr_continuity_background_soft_repair",
+                    repairStartedAt: now
+                )
+            case .observe, .rebuildConnection, .reconnectKnownPeripheral:
+                break
+            }
         }
         let action: String
         switch disposition {
@@ -15684,6 +15707,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func endBackgroundReconnectLease(reason: String) {
         backgroundReconnectLeaseTask?.cancel()
         backgroundReconnectLeaseTask = nil
+        backgroundSoftHRRepairEscalationTask?.cancel()
+        backgroundSoftHRRepairEscalationTask = nil
         postReconnectStreamWatchdogTask?.cancel()
         postReconnectStreamWatchdogTask = nil
         let task = backgroundReconnectLease
@@ -16196,6 +16221,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// central swap used by the v10 clean-owner cutover.
     private func rebuildCentralForWedgedSessionOnce(trigger: String) {
         recordReconnectLeaseStage("repair_central_rebuild", detail: trigger)
+        // `CBCentralManager` reaches `.poweredOn` asynchronously. The
+        // 2026-07-26 locked soak proved that constructing the replacement in a
+        // background maintenance slice and then returning is insufficient:
+        // iOS suspended Atria before the powered-on callback, so no saved-strap
+        // standing connect was installed and HR remained stale for 402 s.
+        //
+        // Hold one UIKit execution assertion across replacement -> poweredOn
+        // -> standing connect -> didConnect -> first accepted HR. The existing
+        // post-reconnect path reuses this assertion and only a fresh accepted
+        // HR ends it; the expiration handler remains the bounded terminal
+        // insurance if iOS revokes the assertion first.
+        _ = rotateSilentStreamRecoveryExecutionLeaseIfNeeded(trigger: trigger)
         let defaults = UserDefaults.standard
         defaults.set(defaults.integer(forKey: KeepaliveDefaults.stallReconnects) + 1,
                      forKey: KeepaliveDefaults.stallReconnects)
@@ -16216,6 +16253,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         realtimeArmed = false
         isActivelyScanning = false
         central.delegate = nil
+        // Set these only after the obsolete central is fenced. Otherwise a
+        // late state callback from that central can consume the replacement's
+        // powered-on markers before the new instance exists.
+        standingConnectAwaitingCentralPowerOn = true
+        silentStreamCentralRebuildAwaitingPowerOn = true
         central = CBCentralManager(delegate: self,
                                    queue: centralQueue,
                                    options: [
@@ -16225,9 +16267,107 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         recomputeConnectionStatus(reason: "event")
     }
 
+    @discardableResult
+    private func rotateSilentStreamRecoveryExecutionLeaseIfNeeded(
+        trigger: String
+    ) -> Bool {
+        guard UIApplication.shared.applicationState != .active else {
+            recordReconnectLeaseStage("silent_stream_lease_not_needed",
+                                      detail: "\(trigger) app_active")
+            return false
+        }
+        // A non-invalid identifier is not evidence that UIKit still grants
+        // execution. The failed soak retained an 80-minute-old lease ID with
+        // no expiry breadcrumb. A one-shot central replacement always rotates
+        // it to a fresh assertion rather than trusting stale in-memory state.
+        backgroundReconnectLeaseTask?.cancel()
+        backgroundReconnectLeaseTask = nil
+        postReconnectStreamWatchdogTask?.cancel()
+        postReconnectStreamWatchdogTask = nil
+        if backgroundReconnectLease != .invalid {
+            let staleLease = backgroundReconnectLease
+            backgroundReconnectLease = .invalid
+            UIApplication.shared.endBackgroundTask(staleLease)
+            recordReconnectLeaseStage("silent_stream_lease_rotated",
+                                      detail: trigger)
+        }
+        backgroundReconnectLease = UIApplication.shared.beginBackgroundTask(
+            withName: "Atria silent HR stream repair"
+        ) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.handleReconnectLeaseExpiry()
+            }
+        }
+        recordReconnectLeaseStage(
+            backgroundReconnectLease == .invalid
+                ? "silent_stream_lease_begin_invalid"
+                : "silent_stream_lease_begun",
+            detail: trigger
+        )
+        return backgroundReconnectLease != .invalid
+    }
+
+    private func armBackgroundSoftHRRepairEscalationIfNeeded(
+        peripheral: CBPeripheral,
+        trigger: String,
+        repairStartedAt: Date
+    ) {
+        guard UIApplication.shared.applicationState != .active,
+              peripheral.state == .connected,
+              backgroundSoftHRRepairEscalationTask == nil else { return }
+        guard rotateSilentStreamRecoveryExecutionLeaseIfNeeded(trigger: trigger) else {
+            recordReconnectLeaseStage("soft_hr_repair_escalated_immediately",
+                                      detail: "\(trigger) lease_invalid")
+            escalateBackgroundSoftHRRepair(peripheral: peripheral)
+            return
+        }
+        recordReconnectLeaseStage("soft_hr_repair_escalation_armed",
+                                  detail: trigger)
+        backgroundSoftHRRepairEscalationTask = Task { @MainActor [weak self, weak peripheral] in
+            try? await Task.sleep(for: .seconds(12))
+            guard let self, !Task.isCancelled else { return }
+            let target = peripheral ?? self.peripheral
+            guard let target,
+                  target.state == .connected,
+                  self.peripheral?.identifier == target.identifier else {
+                self.backgroundSoftHRRepairEscalationTask = nil
+                return
+            }
+            if self.lastAcceptedHRAt.map({ $0 > repairStartedAt }) == true {
+                self.backgroundSoftHRRepairEscalationTask = nil
+                self.recordReconnectLeaseStage("soft_hr_repair_recovered",
+                                               detail: trigger)
+                return
+            }
+            self.backgroundSoftHRRepairEscalationTask = nil
+            self.recordReconnectLeaseStage("soft_hr_repair_escalated",
+                                           detail: trigger)
+            self.escalateBackgroundSoftHRRepair(peripheral: target)
+        }
+    }
+
+    private func escalateBackgroundSoftHRRepair(peripheral: CBPeripheral) {
+        persistActiveSessionJournalIfNeeded(
+            reason: "hr_continuity_background_soft_repair_failed",
+            force: true
+        )
+        if session.count < 2 {
+            clearUnsavableActiveJournalIfNeeded(
+                reason: "hr_continuity_background_soft_repair_unsavable"
+            )
+        }
+        forceHardReconnectForPacketStall(
+            peripheral: peripheral,
+            reason: "hr_continuity_background_soft_repair_failed",
+            immediateConnectedRebuild: true
+        )
+    }
+
     /// The only success terminal for a reconnect epoch: a fresh accepted HR
     /// sample. Releases the lease and restores both bounded-repair permits.
     private func completePostReconnectStreamRecoveryIfNeeded() {
+        backgroundSoftHRRepairEscalationTask?.cancel()
+        backgroundSoftHRRepairEscalationTask = nil
         silentStreamCentralRebuildIssued = false
         if postReconnectSilentStreamRepairsSpent > 0 || backgroundReconnectLeaseReissueUsed {
             postReconnectSilentStreamRepairsSpent = 0
@@ -27976,6 +28116,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 // MARK: - CBCentralManagerDelegate
 extension AtriaBLEManager: CBCentralManagerDelegate {
     nonisolated func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        if silentStreamCentralRebuildAwaitingPowerOn {
+            recordReconnectLeaseStage(
+                "central_rebuild_state_\(central.state.rawValue)",
+                detail: "callback_received"
+            )
+        }
         // CORE FIX (launch-start timing): issue the standing connect to the
         // saved strap directly on centralQueue, synchronously, BEFORE hopping
         // to @MainActor. At cold start the main actor can be saturated by the
@@ -28023,6 +28169,17 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 }
             } else {
                 AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=powered_on_precheck action=no_saved_uuid saved_uuid=0")
+            }
+            if silentStreamCentralRebuildAwaitingPowerOn {
+                recordReconnectLeaseStage(
+                    earlyPendingConnect == nil
+                        ? "central_rebuild_standing_connect_not_issued"
+                        : "central_rebuild_standing_connect_issued",
+                    detail: earlyPendingConnect == nil
+                        ? "saved_peripheral_not_disconnected"
+                        : "pending_connect"
+                )
+                silentStreamCentralRebuildAwaitingPowerOn = false
             }
             if standingConnectAwaitingCentralPowerOn {
                 // The deferred era ends here: the precheck above has already

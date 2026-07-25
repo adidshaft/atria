@@ -8651,13 +8651,13 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
     func testSilentStreamRepairArmsAtExpiryAndUsesStandingReconnect() throws {
         let source = try leaseManagerSource()
 
-        // Expiry is the last guaranteed execution moment: both lease begin
-        // sites must run the synchronous live-epoch expiry handler, never an
-        // async hop that dies when the process suspends.
+        // Expiry is the last guaranteed execution moment: all three lease
+        // begin sites must run the synchronous live-epoch expiry handler,
+        // never an async hop that dies when the process suspends.
         XCTAssertEqual(
             source.components(separatedBy: "self?.handleReconnectLeaseExpiry()").count - 1,
-            2,
-            "both reconnect leases must share the synchronous expiry repair"
+            3,
+            "all reconnect leases must share the synchronous expiry repair"
         )
         let expiry = try XCTUnwrap(source.range(
             of: "private func handleReconnectLeaseExpiry() {"
@@ -8679,7 +8679,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             of: "case .reissueConnect:"
         ))
         let repairEnd = try XCTUnwrap(source.range(
-            of: "private func completePostReconnectStreamRecoveryIfNeeded()",
+            of: "private func rebuildCentralForWedgedSessionOnce(",
             range: repair.upperBound..<source.endIndex
         ))
         let repairBody = String(source[repair.lowerBound..<repairEnd.lowerBound])
@@ -8753,10 +8753,32 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             range: rebuild.upperBound..<source.endIndex
         ))
         let body = String(source[rebuild.lowerBound..<rebuildEnd.lowerBound])
+        let lease = try XCTUnwrap(body.range(
+            of: "rotateSilentStreamRecoveryExecutionLeaseIfNeeded(trigger: trigger)"
+        ))
+        let oldCentralFence = try XCTUnwrap(body.range(
+            of: "central.delegate = nil"
+        ))
+        let awaitPower = try XCTUnwrap(body.range(
+            of: "standingConnectAwaitingCentralPowerOn = true"
+        ))
+        let replacement = try XCTUnwrap(body.range(
+            of: "central = CBCentralManager(delegate: self"
+        ))
+        XCTAssertLessThan(lease.lowerBound, replacement.lowerBound,
+                          "the background execution assertion must exist before async central initialization")
+        XCTAssertLessThan(oldCentralFence.lowerBound, awaitPower.lowerBound,
+                          "the obsolete central must be fenced before replacement power-on markers are armed")
+        XCTAssertLessThan(awaitPower.lowerBound, replacement.lowerBound,
+                          "the powered-on callback must own the saved-strap standing connect")
         // Fresh XPC session with the SAME restore identifier so state
         // restoration and relaunch semantics are unchanged.
         XCTAssertTrue(body.contains("central = CBCentralManager(delegate: self"))
         XCTAssertTrue(body.contains("CBCentralManagerOptionRestoreIdentifierKey: centralRestoreIdentifier"))
+        XCTAssertTrue(body.contains("UIApplication.shared.beginBackgroundTask("))
+        XCTAssertTrue(body.contains("self?.handleReconnectLeaseExpiry()"))
+        XCTAssertTrue(body.contains("silent_stream_lease_rotated"))
+        XCTAssertFalse(body.contains("silent_stream_lease_reused"))
         // The old epoch must be fenced off and no scan started — the
         // poweredOn handler owns the saved-strap standing connect.
         XCTAssertTrue(body.contains("bleCallbackEpochFence.invalidate()"))
@@ -8789,6 +8811,59 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(body.contains("postReconnectSilentStreamRepairsSpent = 0"))
         XCTAssertTrue(body.contains("backgroundReconnectLeaseReissueUsed = false"))
         XCTAssertTrue(body.contains("endBackgroundReconnectLease(reason: \"fresh_accepted_hr\")"))
+    }
+
+    func testCentralRebuildPoweredOnInstallsStandingConnectBeforeMainActorHop() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "nonisolated func centralManagerDidUpdateState"
+        ))
+        let hop = try XCTUnwrap(source.range(
+            of: "Task { @MainActor in",
+            range: start.upperBound..<source.endIndex
+        ))
+        let synchronousPrefix = String(source[start.lowerBound..<hop.lowerBound])
+        XCTAssertTrue(synchronousPrefix.contains("central_rebuild_state_"))
+        XCTAssertTrue(synchronousPrefix.contains("central.connect(saved, options: nil)"))
+        XCTAssertTrue(synchronousPrefix.contains("central_rebuild_standing_connect_issued"))
+        XCTAssertTrue(synchronousPrefix.contains("silentStreamCentralRebuildAwaitingPowerOn = false"))
+    }
+
+    func testBackgroundSoftHRRepairOwnsBoundedEscalationLease() throws {
+        let source = try leaseManagerSource()
+        let watchdog = try XCTUnwrap(source.range(
+            of: "private func performHRContinuityWatchdogAction"
+        ))
+        let watchdogEnd = try XCTUnwrap(source.range(
+            of: "private func persistHRContinuityWatchdogResult",
+            range: watchdog.upperBound..<source.endIndex
+        ))
+        let watchdogBody = String(source[watchdog.lowerBound..<watchdogEnd.lowerBound])
+        XCTAssertTrue(watchdogBody.contains(
+            "case .readHeartRate, .enableHeartRateNotifications,\n                 .rediscoverHeartRateService:"
+        ))
+        XCTAssertTrue(watchdogBody.contains(
+            "armBackgroundSoftHRRepairEscalationIfNeeded("
+        ))
+
+        let escalation = try XCTUnwrap(source.range(
+            of: "private func armBackgroundSoftHRRepairEscalationIfNeeded("
+        ))
+        let escalationEnd = try XCTUnwrap(source.range(
+            of: "private func completePostReconnectStreamRecoveryIfNeeded()",
+            range: escalation.upperBound..<source.endIndex
+        ))
+        let escalationBody = String(source[escalation.lowerBound..<escalationEnd.lowerBound])
+        XCTAssertTrue(escalationBody.contains(
+            "rotateSilentStreamRecoveryExecutionLeaseIfNeeded(trigger: trigger)"
+        ))
+        XCTAssertTrue(escalationBody.contains("soft_hr_repair_escalated_immediately"))
+        XCTAssertTrue(escalationBody.contains("Task.sleep(for: .seconds(12))"))
+        XCTAssertTrue(escalationBody.contains("lastAcceptedHRAt"))
+        XCTAssertTrue(escalationBody.contains("$0 > repairStartedAt"))
+        XCTAssertTrue(escalationBody.contains("persistActiveSessionJournalIfNeeded("))
+        XCTAssertTrue(escalationBody.contains("immediateConnectedRebuild: true"))
+        XCTAssertTrue(escalationBody.contains("soft_hr_repair_escalated"))
     }
 
     func testHistoricalFramesRemainQueuedAcrossDurableBatchBoundary() throws {
