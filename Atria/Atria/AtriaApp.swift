@@ -454,6 +454,21 @@ struct AtriaApp: App {
             }
             // One snapshot after the exact archive-derived publication fence;
             // never write the pre-backfill morning state over its completed data.
+            //
+            // Wait for the deferred session load first, exactly as the launch
+            // path does. Without it a background wake can publish before any
+            // session is in memory, and day strain — which is derived purely
+            // from the cycle's HR samples — is then computed over nothing and
+            // published as 0 while `strainIsCredible` is still true, because
+            // that flag only checks for a resting HR and a usable max HR.
+            // Observed publishing strain 0 labelled "Current cycle" for a
+            // window that actually carried 25.2 TRIMP. Asserting zero load is
+            // a false statement about the day, not a missing feature.
+            await store.waitForDeferredSessionLoadIfNeeded(timeoutSeconds: 30)
+            guard !Task.isCancelled else {
+                completion.complete(task, success: false)
+                return
+            }
             WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: reason)
             completion.complete(task,
                                 success: backupSucceeded
