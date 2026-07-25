@@ -3632,6 +3632,150 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             ))
     }
 
+    func testPersistedDrainResumeIsPausedUnlessAttendedSelectorSweepIsArmed() {
+        // Paused by default: the oldest-first replay closes 0.036 days of lag
+        // per day while its cutovers destroy live coverage, so no autonomous
+        // lane may take the radio.
+        XCTAssertFalse(AtriaBLEManager.persistedDrainResumeAllowed(
+            integrationEnabled: false,
+            attendedSelectorSweepEnabled: false
+        ))
+        // An attended seek experiment still needs a real armed drain.
+        XCTAssertTrue(AtriaBLEManager.persistedDrainResumeAllowed(
+            integrationEnabled: false,
+            attendedSelectorSweepEnabled: true
+        ))
+        // Re-enabling the integration flag restores the autonomous lane.
+        XCTAssertTrue(AtriaBLEManager.persistedDrainResumeAllowed(
+            integrationEnabled: true,
+            attendedSelectorSweepEnabled: false
+        ))
+        XCTAssertFalse(
+            AtriaHistoricalFullDrainCoverageIntegration.persistedDrainResumeEnabled,
+            "The resume lane must ship paused until a seek is physically proven."
+        )
+    }
+
+    func testSilentStreamRepairBudgetRefillCannotBecomeACancelReconnectLoop() {
+        // The repair itself cancels the connection, so the epoch it creates
+        // arrives within seconds. If that epoch refilled the permit, the
+        // watchdog would repair again on its next tick forever (~14 s loop)
+        // and `rebuildCentralForWedgedSessionOnce`, reached only at a spent
+        // budget, would become unreachable.
+        let spentAt = Date(timeIntervalSince1970: 2_000_000_000)
+        let refill: TimeInterval = 5 * 60
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRestoreSilentStreamRepairBudget(
+                spent: 1,
+                lastSpendAt: spentAt,
+                now: spentAt.addingTimeInterval(2),
+                refillInterval: refill
+            ),
+            "A repair-induced reconnect must not refill the permit it just spent."
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRestoreSilentStreamRepairBudget(
+                spent: 2,
+                lastSpendAt: spentAt,
+                now: spentAt.addingTimeInterval(refill - 0.1),
+                refillInterval: refill
+            )
+        )
+        // A genuinely quiet interval still breaks the self-locking budget.
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRestoreSilentStreamRepairBudget(
+                spent: 2,
+                lastSpendAt: spentAt,
+                now: spentAt.addingTimeInterval(refill),
+                refillInterval: refill
+            )
+        )
+        // Nothing spent means nothing to restore.
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRestoreSilentStreamRepairBudget(
+                spent: 0,
+                lastSpendAt: nil,
+                now: spentAt,
+                refillInterval: refill
+            )
+        )
+    }
+
+    func testSilentStreamRepairPermitIsAvailableAgainOnANewConnectionEpoch() {
+        // A wedged discovery never yields fresh accepted HR, so a budget that
+        // only refills on that terminal locks the app out of repair forever.
+        // With the permit restored per epoch, a silent stream is repairable
+        // again; with it exhausted, the lease must run out rather than churn.
+        XCTAssertEqual(
+            AtriaBLEManager.postReconnectSilentStreamRepairDisposition(
+                callbackAccepted: true,
+                continuousCaptureWanted: true,
+                historyRecoveryActive: false,
+                diagnosticActive: false,
+                freshAcceptedHR: false,
+                repairPermitAvailable: true
+            ),
+            .reissueConnect
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.postReconnectSilentStreamRepairDisposition(
+                callbackAccepted: true,
+                continuousCaptureWanted: true,
+                historyRecoveryActive: false,
+                diagnosticActive: false,
+                freshAcceptedHR: false,
+                repairPermitAvailable: false
+            ),
+            .awaitLeaseExpiry
+        )
+        // A live stream still stands the repair down, and history recovery
+        // still owns the radio when it is active.
+        XCTAssertEqual(
+            AtriaBLEManager.postReconnectSilentStreamRepairDisposition(
+                callbackAccepted: true,
+                continuousCaptureWanted: true,
+                historyRecoveryActive: false,
+                diagnosticActive: false,
+                freshAcceptedHR: true,
+                repairPermitAvailable: true
+            ),
+            .standDown
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.postReconnectSilentStreamRepairDisposition(
+                callbackAccepted: true,
+                continuousCaptureWanted: true,
+                historyRecoveryActive: true,
+                diagnosticActive: false,
+                freshAcceptedHR: false,
+                repairPermitAvailable: true
+            ),
+            .standDown
+        )
+    }
+
+    func testPausedResumeLaneDoesNotClaimTheLiveConnectionForADrainThatCannotRun() {
+        // The live-connection claim (deferInterruptedFullDrainForCurrentLive
+        // Connection) gates the ordinary range-loss backfill lane. If it were
+        // latched while the resume lane is paused, nothing would ever consume
+        // it and every range-loss window would be starved indefinitely, which
+        // is strictly worse than the churn the pause was meant to stop.
+        XCTAssertFalse(
+            AtriaBLEManager.persistedDrainResumeAllowed(
+                integrationEnabled: false,
+                attendedSelectorSweepEnabled: false
+            ),
+            "Paused resume lane must not claim the live connection."
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.persistedDrainResumeAllowed(
+                integrationEnabled: false,
+                attendedSelectorSweepEnabled: true
+            ),
+            "An attended sweep still needs the claim so a drain can arm."
+        )
+    }
+
     func testInterruptedFullDrainReacquisitionIsStableWorkoutSafeAndCooldownBounded() {
         let now: TimeInterval = 2_000_000_000
         XCTAssertTrue(AtriaBLEManager.shouldReacquireInterruptedFullDrain(
