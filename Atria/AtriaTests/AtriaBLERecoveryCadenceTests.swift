@@ -3,6 +3,27 @@ import CoreBluetooth
 @testable import Atria
 
 final class AtriaBLERecoveryCadenceTests: XCTestCase {
+    func testHistoricalPageContinuationStartsPromptlyAndBacksOffOnReplay() {
+        XCTAssertEqual(
+            AtriaBLEManager.historicalPageContinuationDelays(
+                replayBackoffStep: 0
+            ),
+            [1, 3]
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.historicalPageContinuationDelays(
+                replayBackoffStep: 4
+            ),
+            [16, 48]
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.historicalPageContinuationDelays(
+                replayBackoffStep: 99
+            ),
+            [60, 60]
+        )
+    }
+
     func testStandardHeartRateParserPreservesOptionalRRAndContactFlags() throws {
         // RR present + sensor-contact supported/detected + uint8 HR.
         let contactAndRR = try XCTUnwrap(AtriaBLEManager.parseHeartRateMeasurement(
