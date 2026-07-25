@@ -8171,6 +8171,41 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testDensityProofQualifiesOnEvidenceRatherThanElapsedTime() {
+        // Measured 2026-07-25, band worn 30cm from the phone at -52 dBm: the
+        // link survives 15-18s, so a 90s elapsed-time precondition is
+        // unsatisfiable and the device reported
+        // `lease_released_before_density_proof` all session, stuck in
+        // pure_hr_v10 with protocol_imu_frames=1.
+        func decide(activationAge: TimeInterval, frames: Int, lastFrameAge: TimeInterval)
+            -> AtriaBLEManager.ProtectedR10RecoveryDecision {
+            AtriaBLEManager.protectedR10RecoveryDecision(
+                pending: true, connected: true, stream5Notifying: true,
+                activationSent: true, passiveObservationAge: activationAge + 1,
+                activationAge: activationAge, activationLeaseRemaining: 0,
+                stableHRDuration: activationAge, latestHRAge: 1,
+                batteryLevel: 54, isCharging: false,
+                frames: frames, lastFrameAge: lastFrameAge)
+        }
+
+        // The case that was unreachable: full evidence inside a 17s link.
+        XCTAssertEqual(decide(activationAge: 17, frames: 75, lastFrameAge: 1), .qualify,
+                       "75 fresh frames in 17s is denser evidence than 75 over 90s")
+
+        // The evidence bar itself is unchanged — not weakened.
+        XCTAssertEqual(decide(activationAge: 17, frames: 74, lastFrameAge: 1), .awaitDensityProof,
+                       "below the frame threshold must keep waiting, not qualify")
+        XCTAssertEqual(decide(activationAge: 17, frames: 75, lastFrameAge: 60), .awaitDensityProof,
+                       "stale frames must not qualify")
+
+        // Past the deadline without evidence still resuppresses, as before.
+        XCTAssertEqual(decide(activationAge: 95, frames: 10, lastFrameAge: 1), .resuppress)
+        XCTAssertEqual(decide(activationAge: 95, frames: 75, lastFrameAge: 60), .resuppress)
+
+        // And the long-window success path is preserved.
+        XCTAssertEqual(decide(activationAge: 95, frames: 75, lastFrameAge: 1), .qualify)
+    }
+
     func testStandingConnectDistinguishesNotReadyFromNoStrapAndRetries() throws {
         // 2026-07-25 21:41:10: `expiry_fired peripheral_state=-1
         // resolved_state=-1` ended the lease with nothing armed and the app sat
