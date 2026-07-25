@@ -2338,9 +2338,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             if frames == 0 {
                 return activationAge >= missingFrameTimeout ? .resuppress : .awaitDensityProof
             }
-            guard activationAge >= proofDuration else { return .awaitDensityProof }
+            // `proofDuration` is a DEADLINE, not a minimum. Requiring it to
+            // elapse before the evidence is even examined made qualification
+            // unreachable on this strap: measured 2026-07-25 with the band worn
+            // and 30 cm from the phone at −52 dBm, the link survives 15-18 s,
+            // so `activationAge` never approaches 90 s and the lease is always
+            // released first — the device reported
+            // `lease_released_before_density_proof` for the entire session and
+            // sat in `pure_hr_v10` fallback with `protocol_imu_frames=1`, which
+            // is why there were no steps, no IMU and no sleep staging.
+            //
+            // The evidence bar is deliberately unchanged: still 75 frames, still
+            // fresh. Reaching it sooner is stronger evidence, not weaker — the
+            // same count over a shorter window is a higher frame density.
             let frameIsFresh = lastFrameAge.map { $0 >= 0 && $0 <= proofFreshness } ?? false
-            return frames >= proofFrames && frameIsFresh ? .qualify : .resuppress
+            if frames >= proofFrames && frameIsFresh { return .qualify }
+            guard activationAge >= proofDuration else { return .awaitDensityProof }
+            return .resuppress
         }
 
         // CRC-valid passive frames own the existing passive qualification path;
