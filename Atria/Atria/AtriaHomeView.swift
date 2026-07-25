@@ -4213,7 +4213,10 @@ struct AtriaHomeView: View {
                 // space on the sides" — three inset layers stacked to
                 // 44-46pt/side; this is the shared knob).
                 .padding(.horizontal, 12)
-                .padding(.top, 12)
+                // The status card above already ends in its own inset, so a
+                // further 12pt here stacked into a visible void between the
+                // card and the greeting.
+                .padding(.top, 4)
                 .padding(.bottom, scrollBottomClearance)
                 .frame(maxWidth: .infinity)
             }
@@ -4472,6 +4475,10 @@ struct AtriaHomeView: View {
                         }
                     }
                     .padding(.horizontal, 12)
+                    // Pulls the greeting up under the card. Scoped here rather
+                    // than to the shared scroll gutter so a screen showing no
+                    // notice keeps its original spacing.
+                    .padding(.bottom, -12)
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(notices.count > 1
                                         ? "\(status.accessibilityLabel) Notice \(index + 1) of \(notices.count)."

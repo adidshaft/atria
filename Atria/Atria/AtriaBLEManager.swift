@@ -15731,27 +15731,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 // is the authoritative reference for the current epoch; only
                 // give up when it too is gone.
                 guard let livePeripheral = peripheral ?? self.peripheral else {
-                    // No peripheral at all: the epoch is stranded and NOTHING
-                    // else re-arms it, so simply returning leaves the app
-                    // reading `.connecting` forever with a saved strap in
-                    // range (observed 2026-07-25, stage sat at
-                    // `watchdog_exit_peripheral_released` for minutes while
-                    // the user was beside the phone). Re-arm the standing
-                    // connect, which is the same passive, loop-free primitive
-                    // the keepalive uses for its own missing-peripheral case.
+                    // Deliberately observe-only. Re-arming from here was tried
+                    // and reverted: `reconnectToSavedPeripheralIfPossible`
+                    // re-runs `discoverServices` on an already-connected
+                    // peripheral (and can begin a handshake cutover), so
+                    // calling it every watchdog cycle churned a live link —
+                    // the link went from 1.4 disconnects/hour to a
+                    // range-loss/recover cycle every ~30 s. The stranded epoch
+                    // this was meant to rescue is real but rarer than the
+                    // churn the rescue caused, so record it and let the
+                    // existing standing connect own recovery.
                     self.recordReconnectLeaseStage(
                         "watchdog_exit_peripheral_released",
-                        detail: "tick=\(tick) action=rearm_standing_connect"
-                    )
-                    if !self.reconnectToSavedPeripheralIfPossible(
-                        reason: "post_reconnect_watchdog_peripheral_released"
-                    ) {
-                        self.startScan(
-                            reason: "post_reconnect_watchdog_peripheral_released"
-                        )
-                    }
-                    self.recomputeConnectionStatus(
-                        reason: "watchdog_peripheral_released"
+                        detail: "tick=\(tick) no_repair_attempted"
                     )
                     return
                 }
