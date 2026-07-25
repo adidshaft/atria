@@ -5,6 +5,87 @@ import XCTest
 final class AtriaRecoveredDataMutationTransactionTests: XCTestCase {
     private typealias Ticket = AtriaRecoveredDataRecomputeCoordinator.Ticket
 
+    private func workout(_ id: String, startOffset: TimeInterval) -> UserConfirmedWorkout {
+        let start = Date(timeIntervalSince1970: 1_784_992_347 + startOffset)
+        return UserConfirmedWorkout(id: id,
+                                    createdAt: start,
+                                    start: start,
+                                    end: start.addingTimeInterval(360),
+                                    label: "Walking",
+                                    source: "live_workout_window",
+                                    confidence: "live_window_manual_confirmed",
+                                    sessions: 1,
+                                    samples: 367,
+                                    avgHR: 97,
+                                    peakHR: 110,
+                                    p95HR: 108,
+                                    p99HR: 109,
+                                    thresholdHR: 130,
+                                    streamCoveragePercent: 100,
+                                    observedDuration: 358.5,
+                                    reason: "duration_below_10m_and_hr_below_threshold",
+                                    activityType: "Walking",
+                                    zoneSeconds: [:])
+    }
+
+    private func mutatedLabelWorkout(_ id: String, startOffset: TimeInterval) -> UserConfirmedWorkout {
+        let base = workout(id, startOffset: startOffset)
+        return UserConfirmedWorkout(id: base.id,
+                                    createdAt: base.createdAt,
+                                    start: base.start,
+                                    end: base.end,
+                                    label: "MutatedByRecoveredRun",
+                                    source: base.source,
+                                    confidence: base.confidence,
+                                    sessions: base.sessions,
+                                    samples: base.samples,
+                                    avgHR: base.avgHR,
+                                    peakHR: base.peakHR,
+                                    p95HR: base.p95HR,
+                                    p99HR: base.p99HR,
+                                    thresholdHR: base.thresholdHR,
+                                    streamCoveragePercent: base.streamCoveragePercent,
+                                    observedDuration: base.observedDuration,
+                                    reason: base.reason,
+                                    activityType: base.activityType,
+                                    zoneSeconds: base.zoneSeconds)
+    }
+
+    func testRollbackKeepsWorkoutsConfirmedWhileTheRecoveredRunWasDeriving() {
+        // 2026-07-25: a manual 6-minute walk was confirmed and durably written
+        // (confirmed-workouts.json held 40 records), and a relaunch brought the
+        // file back to 39 with that id gone. Rollback must undo the recovered
+        // run, not discard what the live pipeline confirmed during it.
+        let preRun = [workout("old-a", startOffset: -8_000),
+                      workout("old-b", startOffset: -4_000)]
+        let liveAddition = workout("1784992347-1784992707-live_workout_window",
+                                   startOffset: 0)
+
+        let merged = SessionStore.mergeConfirmedWorkoutsPreservingLiveAdditions(
+            preRun: preRun,
+            current: preRun + [liveAddition]
+        )
+        XCTAssertEqual(merged.count, 3)
+        XCTAssertTrue(merged.contains { $0.id == liveAddition.id },
+                      "a user-confirmed workout added during the run must survive rollback")
+        // Newest first, matching the store's ordering.
+        XCTAssertEqual(merged.first?.id, liveAddition.id)
+    }
+
+    func testRollbackStillUndoesRecoveredRunMutationsToPreExistingWorkouts() {
+        // Pre-run records win on id, so a genuine recovered-run mutation is
+        // still undone — otherwise rollback would be a no-op.
+        let preRun = [workout("shared", startOffset: -4_000)]
+        let mutated = mutatedLabelWorkout("shared", startOffset: -4_000)
+
+        let merged = SessionStore.mergeConfirmedWorkoutsPreservingLiveAdditions(
+            preRun: preRun,
+            current: [mutated]
+        )
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(merged.first?.label, "Walking", "the pre-run image must win on id")
+    }
+
     func testInjectedFailureRollsEveryCompletedMutationBackInReverseOrder() {
         let transaction = AtriaRecoveredDataMutationTransaction()
         let ticket = Ticket(generation: 7, archiveRevision: 41, reason: "fault_after_sleep")
