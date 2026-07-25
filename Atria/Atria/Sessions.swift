@@ -7884,6 +7884,21 @@ final class SessionStore: ObservableObject {
         return registered
     }
 
+    /// Rollback restores the pre-run image, but anything the live pipeline
+    /// confirmed *during* the recovered run was never owned by that run and
+    /// must survive it. Pre-run records win on id so a genuine recovered-run
+    /// mutation is still undone; ids absent from the pre-run image are live
+    /// additions and are kept.
+    nonisolated static func mergeConfirmedWorkoutsPreservingLiveAdditions(
+        preRun: [UserConfirmedWorkout],
+        current: [UserConfirmedWorkout]
+    ) -> [UserConfirmedWorkout] {
+        let preRunIDs = Set(preRun.map(\.id))
+        let liveAdditions = current.filter { !preRunIDs.contains($0.id) }
+        guard !liveAdditions.isEmpty else { return preRun }
+        return (preRun + liveAdditions).sorted { $0.start > $1.start }
+    }
+
     private func restoreRecoveredDataMutationSnapshot(
         _ snapshot: RecoveredDataMutationSnapshot
     ) {
@@ -7919,7 +7934,19 @@ final class SessionStore: ObservableObject {
         canonicalSessionsRevision &+= 1
         biologicalAgeSourceSessionsRevision &+= 1
         refreshLatestHRVSourcesFromCanonicalSessions()
-        cachedConfirmedWorkouts = snapshot.confirmedWorkouts
+        // Same hazard as the canonical sessions merged just above, and it cost
+        // a real workout on 2026-07-25: a manual 6-minute walk was confirmed
+        // and durably written (confirmed-workouts.json held 40 records,
+        // `createdAt` 0.14s after `end`), and a relaunch brought the file back
+        // to 39 with that id gone. A rollback must undo the recovered run, not
+        // discard what the live pipeline confirmed while it was deriving —
+        // especially a user-confirmed record, which no re-derivation will
+        // reproduce when it fails automatic detection thresholds (this one
+        // carried `duration_below_10m_and_hr_below_threshold`).
+        cachedConfirmedWorkouts = Self.mergeConfirmedWorkoutsPreservingLiveAdditions(
+            preRun: snapshot.confirmedWorkouts,
+            current: cachedConfirmedWorkouts
+        )
         confirmedWorkoutsRevision &+= 1
         cachedConfirmedSleeps = snapshot.confirmedSleeps
         confirmedSleepsRevision &+= 1
