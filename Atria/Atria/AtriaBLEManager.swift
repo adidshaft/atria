@@ -1159,6 +1159,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var historySelectorSweepSent = false
     private var historySelectorMode = "current-unix-bare"
     private var historySelectorRangeIndex: Int?
+    /// Set when a standing connect was wanted but the central had not reached
+    /// `.poweredOn`, so `retrievePeripherals` came back empty. Consumed by
+    /// `centralManagerDidUpdateState`; it exists so that window ends in a retry
+    /// rather than dormancy.
+    /// `nonisolated(unsafe)` to match `standardHROnlyMode`: it is read and
+    /// cleared inside `centralManagerDidUpdateState`, which CoreBluetooth
+    /// delivers off the main actor.
+    private nonisolated(unsafe) var standingConnectAwaitingCentralPowerOn = false
     private var historyOnlyProbeEnabled = false
     private var historyOnlyProbeArmed = false
     private var historyOnlyProbeTask: Task<Void, Never>?
@@ -15787,19 +15795,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     // `.disconnected`, and records a breadcrumb for the other
                     // three states. No `discoverServices`, no scan, and at most
                     // one radio action because this exits the loop.
-                    let resolved = Self.leaseExpiryShouldResolveSavedPeripheral(
+                    let resolution = Self.leaseExpiryShouldResolveSavedPeripheral(
                         hasLivePeripheral: false,
                         hasSavedStrap: self.hasSavedStrap,
                         continuousCaptureWanted: self.heartRateCaptureIntent.snapshot(),
                         historyRecoveryActive: self.historyOnlyProbeMode
                             || self.historyTransportPhaseFence.snapshot().isActive
                             || self.offlineHistoricalSyncInProgress
-                    ) ? self.savedPeripheralForStandingConnect() : nil
+                    ) ? self.resolveSavedPeripheralForStandingConnect() : nil
                     self.recordReconnectLeaseStage(
                         "watchdog_exit_peripheral_released",
-                        detail: "tick=\(tick) resolved_state=\(resolved?.state.rawValue ?? -1)"
+                        detail: "tick=\(tick) resolved=\(resolution?.breadcrumb ?? "not_wanted")"
                     )
-                    if let resolved {
+                    // Same not-ready case the expiry handler defers on: a fresh
+                    // central has no retrievable peripherals yet, and treating
+                    // that as "no strap" is what ends an era in dormancy.
+                    if case .centralNotReady = resolution {
+                        self.standingConnectAwaitingCentralPowerOn = true
+                    }
+                    if let resolved = resolution?.peripheral {
                         self.ensureStandingConnectAtLeaseExpiryIfNeeded(
                             peripheral: resolved
                         )
@@ -15855,11 +15869,58 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// is a pure lookup against the central's cache: it starts no scan, issues
     /// no connect, and does not touch a live link, so resolving here cannot
     /// repeat the churn reverted in ee035304.
-    private func savedPeripheralForStandingConnect() -> CBPeripheral? {
+    /// Why a standing-connect resolution failed. `retrievePeripherals` returns
+    /// an empty array whenever the central has not reached `.poweredOn`, so a
+    /// bare optional conflates "there is no strap to reconnect to" with "ask
+    /// again in a moment" — and only the first of those justifies standing
+    /// down. Observed 2026-07-25T21:41:10+05:30: `expiry_fired
+    /// peripheral_state=-1 resolved_state=-1` ended the lease with nothing
+    /// armed and the app sat dormant for 76 minutes, losing every heart-rate
+    /// sample of a 33-minute strength block and a 19-minute walk.
+    enum StandingConnectResolution {
+        case resolved(CBPeripheral)
+        case noSavedStrap
+        /// The central is not ready. Retry when it powers on; never stand down.
+        case centralNotReady
+        /// Powered on, saved identifier present, and iOS still returned
+        /// nothing — unpaired, or genuinely unknown to this central.
+        case retrieveEmpty
+
+        var peripheral: CBPeripheral? {
+            if case .resolved(let peripheral) = self { return peripheral }
+            return nil
+        }
+
+        /// Terse breadcrumb token; the trail is the only forensics on a locked
+        /// phone, and `-1` for all three causes is what made the gym failure
+        /// take a full session to attribute.
+        var breadcrumb: String {
+            switch self {
+            case .resolved(let peripheral): return "state_\(peripheral.state.rawValue)"
+            case .noSavedStrap: return "no_saved_strap"
+            case .centralNotReady: return "central_not_ready"
+            case .retrieveEmpty: return "retrieve_empty"
+            }
+        }
+    }
+
+    private func resolveSavedPeripheralForStandingConnect() -> StandingConnectResolution {
         guard let uuidString = UserDefaults.standard
                 .string(forKey: LinkDefaults.savedPeripheralUUID),
-              let uuid = UUID(uuidString: uuidString) else { return nil }
-        return central.retrievePeripherals(withIdentifiers: [uuid]).first
+              let uuid = UUID(uuidString: uuidString) else { return .noSavedStrap }
+        // A fresh central starts `.unknown` and reaches `.poweredOn`
+        // asynchronously. The workout cutover deliberately builds one
+        // (`single_disconnect_then_fresh_v9_central`), so this window is
+        // reachable in normal use, not just at launch.
+        guard central.state == .poweredOn else { return .centralNotReady }
+        guard let saved = central.retrievePeripherals(withIdentifiers: [uuid]).first else {
+            return .retrieveEmpty
+        }
+        return .resolved(saved)
+    }
+
+    private func savedPeripheralForStandingConnect() -> CBPeripheral? {
+        resolveSavedPeripheralForStandingConnect().peripheral
     }
 
     private func handleReconnectLeaseExpiry() {
@@ -15872,19 +15933,34 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // gaps of 2-4 minutes each. Resolve the saved strap so the standing
         // connect still gets armed; it is gated on `.disconnected`, so no
         // `discoverServices` runs against a live link.
-        let resolved = peripheral ?? (Self.leaseExpiryShouldResolveSavedPeripheral(
-            hasLivePeripheral: false,
+        let wantsStandingConnect = Self.leaseExpiryShouldResolveSavedPeripheral(
+            hasLivePeripheral: peripheral != nil,
             hasSavedStrap: hasSavedStrap,
             continuousCaptureWanted: heartRateCaptureIntent.snapshot(),
             historyRecoveryActive: historyOnlyProbeMode
                 || historyTransportPhaseFence.snapshot().isActive
                 || offlineHistoricalSyncInProgress
-        ) ? savedPeripheralForStandingConnect() : nil)
+        )
+        let resolution: StandingConnectResolution? = wantsStandingConnect
+            ? resolveSavedPeripheralForStandingConnect()
+            : nil
+        let resolved = peripheral ?? resolution?.peripheral
         recordReconnectLeaseStage(
             "expiry_fired",
             detail: "peripheral_state=\(peripheral?.state.rawValue ?? -1)"
-                + " resolved_state=\(resolved?.state.rawValue ?? -1)"
+                + " resolved=\(resolution?.breadcrumb ?? "live_peripheral")"
         )
+        // `.centralNotReady` is the case that cost a whole gym session: a fresh
+        // central (the workout cutover builds one) has not powered on yet, so
+        // `retrievePeripherals` is empty through no fault of the strap. Standing
+        // down there is what produced 76 minutes of dormancy. Re-arm instead —
+        // `centralManagerDidUpdateState` already retrieves the saved identifier
+        // and connects the moment it reaches `.poweredOn`, so the only thing
+        // needed is to not end this era believing there is nothing to wait for.
+        if case .centralNotReady = resolution {
+            standingConnectAwaitingCentralPowerOn = true
+            AtriaDebugLog("ATRIADBG ble_link status=standing_connect_deferred reason=central_not_ready action=await_powered_on")
+        }
         if let resolved {
             // Only the epoch we still own may be repaired; a resolved-only
             // strap has no accepted callback epoch to repair against, and
@@ -27820,9 +27896,27 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     }
                 } else {
                     AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=powered_on_precheck action=retrieve_empty saved_uuid=1")
+                    // ATRIADBG is unreachable on a locked phone, so a strap
+                    // that iOS can no longer retrieve left no durable trace —
+                    // which is why the 2026-07-25 gym dormancy took a whole
+                    // session to attribute. The trail is the only forensics
+                    // that survives; this is a breadcrumb write, no behaviour.
+                    recordReconnectLeaseStage("powered_on_retrieve_empty",
+                                              detail: "saved_uuid=1")
                 }
             } else {
                 AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=powered_on_precheck action=no_saved_uuid saved_uuid=0")
+            }
+            if standingConnectAwaitingCentralPowerOn {
+                // The deferred era ends here: the precheck above has already
+                // retrieved and connected the saved strap if iOS knows it, so
+                // the flag's job is done either way. Record which, so a repeat
+                // is diagnosable rather than silent.
+                standingConnectAwaitingCentralPowerOn = false
+                recordReconnectLeaseStage(
+                    "standing_connect_resumed_on_power_on",
+                    detail: earlyPendingConnect == nil ? "no_pending_connect" : "pending_connect"
+                )
             }
         }
         Task { @MainActor in

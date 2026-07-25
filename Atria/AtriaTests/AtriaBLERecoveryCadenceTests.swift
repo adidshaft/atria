@@ -8171,6 +8171,41 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testStandingConnectDistinguishesNotReadyFromNoStrapAndRetries() throws {
+        // 2026-07-25 21:41:10: `expiry_fired peripheral_state=-1
+        // resolved_state=-1` ended the lease with nothing armed and the app sat
+        // dormant 76 minutes, losing every HR sample of a 33-minute strength
+        // block and a 19-minute walk. `retrievePeripherals` returns empty until
+        // the central reaches `.poweredOn`, and the workout cutover builds a
+        // fresh one, so a bare optional conflated "no strap" with "ask again".
+        let source = try leaseManagerSource()
+
+        // The three causes must be distinguishable in the breadcrumb.
+        XCTAssertTrue(source.contains("case centralNotReady"))
+        XCTAssertTrue(source.contains("case retrieveEmpty"))
+        XCTAssertTrue(source.contains("case noSavedStrap"))
+        XCTAssertTrue(source.contains("return \"central_not_ready\""))
+        XCTAssertFalse(source.contains("resolved_state=\\(resolved?.state.rawValue ?? -1)"),
+                       "-1 for all three causes is what made this take a session to attribute")
+
+        // Resolution must gate on the central actually being powered on.
+        let start = try XCTUnwrap(source.range(
+            of: "private func resolveSavedPeripheralForStandingConnect()"))
+        let end = try XCTUnwrap(source.range(
+            of: "private func savedPeripheralForStandingConnect()",
+            range: start.upperBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("central.state == .poweredOn"))
+        XCTAssertTrue(body.contains("return .centralNotReady"))
+
+        // Not-ready must end in a retry, never dormancy.
+        XCTAssertTrue(source.contains("standingConnectAwaitingCentralPowerOn = true"))
+        XCTAssertTrue(source.contains("standingConnectAwaitingCentralPowerOn = false"))
+        XCTAssertTrue(source.contains("standing_connect_resumed_on_power_on"))
+        // And a strap iOS cannot retrieve must leave a durable trace.
+        XCTAssertTrue(source.contains("powered_on_retrieve_empty"))
+    }
+
     func testWorkoutCutoverEscapesFallbackWithoutRequiringStandardHROnlyMode() throws {
         // 2026-07-25, counted 660-step walk: every may-start condition held and
         // `radio.standardHROnly=false` alone blocked the escape, so the R10
@@ -8268,10 +8303,11 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
 
         // It must re-arm, through the audited state-gated insurance...
         XCTAssertTrue(branch.contains("ensureStandingConnectAtLeaseExpiryIfNeeded("))
-        XCTAssertTrue(branch.contains("savedPeripheralForStandingConnect()"))
+        XCTAssertTrue(branch.contains("resolveSavedPeripheralForStandingConnect()"))
         // ...and must record the resolved state so a future stranding is
         // diagnosable rather than silent.
-        XCTAssertTrue(branch.contains("resolved_state="))
+        XCTAssertTrue(branch.contains("resolved=\\(resolution?.breadcrumb"),
+                      "the three nil causes must stay distinguishable in the trail")
         // The reverted churn must never return here: this path re-ran
         // discoverServices on an already-connected peripheral every cycle.
         XCTAssertFalse(branch.contains("reconnectToSavedPeripheralIfPossible"),
@@ -8294,7 +8330,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let expiry = String(source[start.lowerBound..<end.lowerBound])
 
         // The resolved strap must reach the standing connect...
-        XCTAssertTrue(expiry.contains("savedPeripheralForStandingConnect()"))
+        XCTAssertTrue(expiry.contains("resolveSavedPeripheralForStandingConnect()"))
         XCTAssertTrue(expiry.contains("ensureStandingConnectAtLeaseExpiryIfNeeded(peripheral: resolved)"))
         // ...and the nil-reference case must pass the identity guard.
         XCTAssertTrue(expiry.contains("self.peripheral == nil"))
