@@ -15605,6 +15605,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// Pure gate for holding the post-`didConnect` stream lease: only a saved
     /// strap with continuous capture wanted, outside history recovery and
     /// diagnostics, on the currently accepted connection epoch.
+    /// The strap drops an idle link about fourteen seconds after CENTRAL ->
+    /// strap traffic stops. Measured three ways on 2026-07-25: background live
+    /// capture gave a median of 14 s over 36 intervals (34 of them in 10-20 s);
+    /// a history-only probe that deliberately skips realtime START died in
+    /// 11.3 s with the app in the FOREGROUND; and foreground capture with the
+    /// realtime stream running held for 25 minutes with zero disconnects.
+    /// Notifications are strap -> central only, so a stream that looks healthy
+    /// from this side is silence from the strap's, which is why a link can drop
+    /// while HR is still arriving. Eight seconds leaves margin under the
+    /// shortest observed drop.
+    nonisolated static let idleLinkKeepaliveInterval: TimeInterval = 8
+
+    nonisolated static func shouldIssueIdleLinkKeepalive(
+        lastCentralTrafficAt: Date?,
+        now: Date
+    ) -> Bool {
+        guard let lastCentralTrafficAt else { return true }
+        return now.timeIntervalSince(lastCentralTrafficAt) >= idleLinkKeepaliveInterval
+    }
+
     nonisolated static func shouldHoldPostReconnectStreamLease(
         hasSavedStrap: Bool,
         continuousCaptureWanted: Bool,
@@ -17248,6 +17268,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func recordHeartRateMeasurement(_ measurement: ParsedHeartRatePacket?, rawData data: Data) {
         let frameTime = measurement?.frameTime ?? Date()
+        // Refresh the strap's idle timer from inside the notification callback:
+        // that is the one execution slice a suspended process reliably gets, so
+        // it is the only place a backgrounded app can generate central -> strap
+        // traffic at all. The read is the same primitive the foreground
+        // keepalive already uses for battery freshness, and it stamps
+        // `lastBatteryReadRequestedAt`, so a busy link never issues extra ATT
+        // work — one request per interval at most, shared with that path.
+        if Self.shouldIssueIdleLinkKeepalive(
+            lastCentralTrafficAt: lastBatteryReadRequestedAt,
+            now: frameTime
+        ) {
+            requestStrapStatusRead(reason: "idle_link_keepalive")
+        }
         let payloadLogBudget = standardHRPayloadLogBudget(now: frameTime)
         guard let measurement else {
             if let suppressed = payloadLogBudget {
