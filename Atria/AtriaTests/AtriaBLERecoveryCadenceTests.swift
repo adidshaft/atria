@@ -8130,6 +8130,110 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                        "the callback must arm after the synchronous standing connect is installed")
     }
 
+    func testLeaseExpiryResolvesSavedStrapWhenManagerReferenceIsGone() {
+        // Observed 2026-07-25T15:52:42+05:30: `expiry_fired
+        // peripheral_state=-1` skipped the terminal insurance entirely and the
+        // process went dormant with no live stream and no pending connect. A
+        // missing manager reference is not evidence the strap is gone.
+        XCTAssertTrue(AtriaBLEManager.leaseExpiryShouldResolveSavedPeripheral(
+            hasLivePeripheral: false,
+            hasSavedStrap: true,
+            continuousCaptureWanted: true,
+            historyRecoveryActive: false
+        ))
+        // A live reference already drives the existing path; resolving again
+        // would be redundant work on a link we still own.
+        XCTAssertFalse(AtriaBLEManager.leaseExpiryShouldResolveSavedPeripheral(
+            hasLivePeripheral: true,
+            hasSavedStrap: true,
+            continuousCaptureWanted: true,
+            historyRecoveryActive: false
+        ))
+        // No saved strap, capture not wanted, or history owning the transport
+        // each mean there is nothing this insurance may arm.
+        XCTAssertFalse(AtriaBLEManager.leaseExpiryShouldResolveSavedPeripheral(
+            hasLivePeripheral: false,
+            hasSavedStrap: false,
+            continuousCaptureWanted: true,
+            historyRecoveryActive: false
+        ))
+        XCTAssertFalse(AtriaBLEManager.leaseExpiryShouldResolveSavedPeripheral(
+            hasLivePeripheral: false,
+            hasSavedStrap: true,
+            continuousCaptureWanted: false,
+            historyRecoveryActive: false
+        ))
+        XCTAssertFalse(AtriaBLEManager.leaseExpiryShouldResolveSavedPeripheral(
+            hasLivePeripheral: false,
+            hasSavedStrap: true,
+            continuousCaptureWanted: true,
+            historyRecoveryActive: true
+        ))
+    }
+
+    func testWatchdogPeripheralReleasedRearmsPassivelyWithoutTheRevertedChurn() throws {
+        // The foreground has no other escape: UIKit fires lease-expiry handlers
+        // only for a backgrounded app, so the released-peripheral `return` was
+        // a terminal stranding (2026-07-25 16:31:13 and 16:34:15 — accepted
+        // samples frozen at 864839 across two pulls, raw age 221.7s -> 278.3s).
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "guard let livePeripheral = peripheral ?? self.peripheral else {"
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "if peripheral == nil {",
+            range: start.upperBound..<source.endIndex
+        ))
+        // Strip comment lines: this branch documents the reverted repair by
+        // name, and prose must not satisfy — or trip — a structural assertion.
+        let branch = String(source[start.lowerBound..<end.lowerBound])
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+
+        // It must re-arm, through the audited state-gated insurance...
+        XCTAssertTrue(branch.contains("ensureStandingConnectAtLeaseExpiryIfNeeded("))
+        XCTAssertTrue(branch.contains("savedPeripheralForStandingConnect()"))
+        // ...and must record the resolved state so a future stranding is
+        // diagnosable rather than silent.
+        XCTAssertTrue(branch.contains("resolved_state="))
+        // The reverted churn must never return here: this path re-ran
+        // discoverServices on an already-connected peripheral every cycle.
+        XCTAssertFalse(branch.contains("reconnectToSavedPeripheralIfPossible"),
+                       "re-running discoverServices on a live link is the reverted regression")
+        XCTAssertFalse(branch.contains("startScan("),
+                       "re-arming here is a passive standing connect, never a scan")
+        // One radio action at most: the branch still exits the watchdog loop.
+        XCTAssertTrue(branch.contains("return"))
+    }
+
+    func testLeaseExpiryStandingConnectStaysDisconnectedOnlyAndAcceptsNilReference() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func handleReconnectLeaseExpiry()"
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "    private func runPostReconnectSilentStreamRepairIfNeeded(",
+            range: start.upperBound..<source.endIndex
+        ))
+        let expiry = String(source[start.lowerBound..<end.lowerBound])
+
+        // The resolved strap must reach the standing connect...
+        XCTAssertTrue(expiry.contains("savedPeripheralForStandingConnect()"))
+        XCTAssertTrue(expiry.contains("ensureStandingConnectAtLeaseExpiryIfNeeded(peripheral: resolved)"))
+        // ...and the nil-reference case must pass the identity guard.
+        XCTAssertTrue(expiry.contains("self.peripheral == nil"))
+        // Only `.disconnected` may arm a connect, so no `discoverServices`
+        // ever runs against a live link — the churn reverted in ee035304.
+        XCTAssertTrue(expiry.contains("case .disconnected:"))
+        XCTAssertFalse(expiry.contains("reconnectToSavedPeripheralIfPossible"),
+                       "that path calls discoverServices on an already-connected peripheral")
+        XCTAssertFalse(expiry.contains("startScan("),
+                       "expiry insurance is a passive standing connect, never a scan")
+        // A repair may only run against an epoch we still own.
+        XCTAssertTrue(expiry.contains("if peripheral != nil {"))
+    }
+
     func testPostReconnectStreamLeaseGateRequiresLiveCaptureEpoch() {
         XCTAssertTrue(AtriaBLEManager.shouldHoldPostReconnectStreamLease(
             hasSavedStrap: true,
@@ -8345,7 +8449,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             range: expiry.upperBound..<source.endIndex
         ))
         let expiryBody = String(source[expiry.lowerBound..<insurance.lowerBound])
-        XCTAssertTrue(expiryBody.contains("ensureStandingConnectAtLeaseExpiryIfNeeded(peripheral: peripheral)"),
+        // `resolved` is the live reference when the manager still holds one
+        // and the saved strap otherwise; a nil reference used to skip this
+        // call entirely and go dormant (2026-07-25T15:52:42+05:30).
+        XCTAssertTrue(expiryBody.contains("ensureStandingConnectAtLeaseExpiryIfNeeded(peripheral: resolved)"),
                       "expiry must arm terminal insurance before the process goes dormant")
 
         let insuranceEnd = try XCTUnwrap(source.range(

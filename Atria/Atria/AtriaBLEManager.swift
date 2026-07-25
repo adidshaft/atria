@@ -15731,20 +15731,45 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 // is the authoritative reference for the current epoch; only
                 // give up when it too is gone.
                 guard let livePeripheral = peripheral ?? self.peripheral else {
-                    // Deliberately observe-only. Re-arming from here was tried
-                    // and reverted: `reconnectToSavedPeripheralIfPossible`
-                    // re-runs `discoverServices` on an already-connected
-                    // peripheral (and can begin a handshake cutover), so
-                    // calling it every watchdog cycle churned a live link —
-                    // the link went from 1.4 disconnects/hour to a
-                    // range-loss/recover cycle every ~30 s. The stranded epoch
-                    // this was meant to rescue is real but rarer than the
-                    // churn the rescue caused, so record it and let the
-                    // existing standing connect own recovery.
+                    // Observing only was tried and is wrong. `lease_ended` from
+                    // the expiry handler is the standing connect's owner of
+                    // last resort, but UIKit only fires expiration handlers for
+                    // a BACKGROUNDED app — observed 2026-07-25: every
+                    // `expiry_fired` in the trail sits in a background era,
+                    // while the foreground strandings at 16:31:13 and 16:34:15
+                    // produced no expiry at all and the app sat connected and
+                    // silent (accepted samples frozen at 864839 across two
+                    // pulls 57 s apart, raw age 221.7 s -> 278.3 s). In the
+                    // foreground this `return` is the only exit, so nothing
+                    // whatsoever re-arms the epoch.
+                    //
+                    // What must NOT come back is the reverted repair:
+                    // `reconnectToSavedPeripheralIfPossible` re-runs
+                    // `discoverServices` on an already-connected peripheral,
+                    // and calling it every cycle churned a live link. So route
+                    // the resolved strap through the audited terminal
+                    // insurance instead — it is gated per peripheral state,
+                    // only ever issues a passive `central.connect` on
+                    // `.disconnected`, and records a breadcrumb for the other
+                    // three states. No `discoverServices`, no scan, and at most
+                    // one radio action because this exits the loop.
+                    let resolved = Self.leaseExpiryShouldResolveSavedPeripheral(
+                        hasLivePeripheral: false,
+                        hasSavedStrap: self.hasSavedStrap,
+                        continuousCaptureWanted: self.heartRateCaptureIntent.snapshot(),
+                        historyRecoveryActive: self.historyOnlyProbeMode
+                            || self.historyTransportPhaseFence.snapshot().isActive
+                            || self.offlineHistoricalSyncInProgress
+                    ) ? self.savedPeripheralForStandingConnect() : nil
                     self.recordReconnectLeaseStage(
                         "watchdog_exit_peripheral_released",
-                        detail: "tick=\(tick) no_repair_attempted"
+                        detail: "tick=\(tick) resolved_state=\(resolved?.state.rawValue ?? -1)"
                     )
+                    if let resolved {
+                        self.ensureStandingConnectAtLeaseExpiryIfNeeded(
+                            peripheral: resolved
+                        )
+                    }
                     return
                 }
                 if peripheral == nil {
@@ -15776,18 +15801,68 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// UIKit calls expiration handlers on the main thread, so the bounded
     /// repair runs synchronously against the LIVE epoch — captured epochs can
     /// be stale when the assertion outlives the connection that armed it.
+    /// Whether expiry must fall back to the saved strap because the manager's
+    /// own `peripheral` reference is gone. A missing reference is not evidence
+    /// that the strap is gone — ARC releases it while the strap is still
+    /// reachable — so standing down on it produces exactly the dormancy the
+    /// terminal insurance exists to prevent. Pure so the observed stranding is
+    /// covered without a live central.
+    nonisolated static func leaseExpiryShouldResolveSavedPeripheral(
+        hasLivePeripheral: Bool,
+        hasSavedStrap: Bool,
+        continuousCaptureWanted: Bool,
+        historyRecoveryActive: Bool
+    ) -> Bool {
+        guard !hasLivePeripheral else { return false }
+        return hasSavedStrap && continuousCaptureWanted && !historyRecoveryActive
+    }
+
+    /// The saved strap as Core Bluetooth still knows it. `retrievePeripherals`
+    /// is a pure lookup against the central's cache: it starts no scan, issues
+    /// no connect, and does not touch a live link, so resolving here cannot
+    /// repeat the churn reverted in ee035304.
+    private func savedPeripheralForStandingConnect() -> CBPeripheral? {
+        guard let uuidString = UserDefaults.standard
+                .string(forKey: LinkDefaults.savedPeripheralUUID),
+              let uuid = UUID(uuidString: uuidString) else { return nil }
+        return central.retrievePeripherals(withIdentifiers: [uuid]).first
+    }
+
     private func handleReconnectLeaseExpiry() {
+        // `peripheral` is nil far more often than the terminal insurance below
+        // assumed. Observed 2026-07-25T15:52:42+05:30: `expiry_fired
+        // peripheral_state=-1` skipped this whole block, the lease ended, and
+        // the process sat with no live stream AND no pending connect — the
+        // exact state this handler exists to prevent. The same hour produced
+        // four `watchdog_exit_peripheral_released` strandings and raw sample
+        // gaps of 2-4 minutes each. Resolve the saved strap so the standing
+        // connect still gets armed; it is gated on `.disconnected`, so no
+        // `discoverServices` runs against a live link.
+        let resolved = peripheral ?? (Self.leaseExpiryShouldResolveSavedPeripheral(
+            hasLivePeripheral: false,
+            hasSavedStrap: hasSavedStrap,
+            continuousCaptureWanted: heartRateCaptureIntent.snapshot(),
+            historyRecoveryActive: historyOnlyProbeMode
+                || historyTransportPhaseFence.snapshot().isActive
+                || offlineHistoricalSyncInProgress
+        ) ? savedPeripheralForStandingConnect() : nil)
         recordReconnectLeaseStage(
             "expiry_fired",
             detail: "peripheral_state=\(peripheral?.state.rawValue ?? -1)"
+                + " resolved_state=\(resolved?.state.rawValue ?? -1)"
         )
-        if let peripheral {
-            runPostReconnectSilentStreamRepairIfNeeded(
-                peripheral: peripheral,
-                callbackEpoch: bleCallbackEpochFence.epoch,
-                trigger: "lease_expiry"
-            )
-            ensureStandingConnectAtLeaseExpiryIfNeeded(peripheral: peripheral)
+        if let resolved {
+            // Only the epoch we still own may be repaired; a resolved-only
+            // strap has no accepted callback epoch to repair against, and
+            // `ensureStandingConnect…` is the whole point of resolving it.
+            if peripheral != nil {
+                runPostReconnectSilentStreamRepairIfNeeded(
+                    peripheral: resolved,
+                    callbackEpoch: bleCallbackEpochFence.epoch,
+                    trigger: "lease_expiry"
+                )
+            }
+            ensureStandingConnectAtLeaseExpiryIfNeeded(peripheral: resolved)
         }
         endBackgroundReconnectLease(reason: "expired")
     }
@@ -15807,7 +15882,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               !historyTransportPhaseFence.snapshot().isActive,
               !offlineHistoricalSyncInProgress,
               motionHandshakeDiagnostic == nil,
-              self.peripheral?.identifier == peripheral.identifier,
+              // A nil reference is the resolved-saved-strap case, which is
+              // precisely what this insurance now exists to cover; requiring
+              // identity equality against nil is what let the process go
+              // dormant on 2026-07-25.
+              self.peripheral == nil
+                  || self.peripheral?.identifier == peripheral.identifier,
               !Self.acceptedHRIsFreshForConnectionEpoch(
                   lastAcceptedHRAt: lastAcceptedHRAt,
                   connectedAt: connectedAt
