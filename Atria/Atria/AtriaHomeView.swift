@@ -4222,9 +4222,11 @@ struct AtriaHomeView: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
                     topChrome
-                    AtriaHomeRecoveryStatusHost(coreLiveStore: model.coreLiveStore)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 6)
+                    AtriaHomeRecoveryStatusHost(
+                        coreLiveStore: model.coreLiveStore,
+                        maturityText: { store.baseline.restingBaselineMaturityQualifierText() }
+                    )
+                    .padding(.bottom, 6)
                     if showConnectivityPill {
                         connectivityPill
                             .padding(.horizontal, 16)
@@ -4404,26 +4406,99 @@ struct AtriaHomeView: View {
     /// a pending gap cannot launch another competing recovery attempt.
     private struct AtriaHomeRecoveryStatusHost: View {
         @ObservedObject var coreLiveStore: AtriaHomeModel.CoreLiveStore
+        /// Read inside the timeline tick rather than captured as a value, so a
+        /// maturing baseline reaches the banner without depending on a
+        /// publisher hop from the session store.
+        var maturityText: () -> String? = { nil }
+
+        @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+        /// One notice per tick. Long enough to finish reading a line, short
+        /// enough that a second notice is not effectively hidden.
+        private static let rotationInterval: TimeInterval = 12
 
         var body: some View {
-            TimelineView(.periodic(from: .now, by: 12)) { context in
-                if let status = status(now: context.date) {
-                    GlassEffectContainer(spacing: 0) {
+            TimelineView(.periodic(from: .now, by: Self.rotationInterval)) { context in
+                let notices = notices(now: context.date)
+                if !notices.isEmpty {
+                    let index = Self.rotationIndex(now: context.date, count: notices.count)
+                    let status = notices[min(index, notices.count - 1)]
+                    HStack(spacing: 8) {
                         Label(status.title, systemImage: status.symbol)
                             .font(.caption.weight(.semibold))
                             .lineLimit(1)
                             .minimumScaleFactor(0.82)
-                            .foregroundStyle(status.tint)
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 7)
-                            .glassEffect(.regular.tint(status.tint.opacity(0.16)), in: .capsule)
-                            .accessibilityLabel(status.accessibilityLabel)
+                            .foregroundStyle(.primary)
+                            .id(status.title)
+                            .transition(.opacity)
+
+                        Spacer(minLength: 0)
+
+                        if notices.count > 1 {
+                            // Without this a rotating banner reads as a glitch:
+                            // the dots say "there is more than one thing here".
+                            HStack(spacing: 3) {
+                                ForEach(0..<notices.count, id: \.self) { dot in
+                                    Circle()
+                                        .fill(Color.primary.opacity(dot == index ? 0.55 : 0.18))
+                                        .frame(width: 4, height: 4)
+                                }
+                            }
+                            .accessibilityHidden(true)
+                        }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+                    .background {
+                        // Glass earns its keep here specifically because this
+                        // banner sits above the scrolling deck and refracts it;
+                        // Atria's flat near-black/near-white content backdrops
+                        // are why glass stays subtle elsewhere in the app.
+                        if reduceTransparency {
+                            Rectangle().fill(.background)
+                        } else {
+                            Rectangle()
+                                .fill(Color.clear)
+                                .glassEffect(.regular, in: Rectangle())
+                        }
+                    }
+                    .overlay(alignment: .bottom) {
+                        Divider()
+                            .opacity(0.35)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(notices.count > 1
+                                        ? "\(status.accessibilityLabel) Notice \(index + 1) of \(notices.count)."
+                                        : status.accessibilityLabel)
+                    .animation(.snappy(duration: 0.2), value: status.title)
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
             .animation(.snappy(duration: 0.2), value: coreLiveStore.state.historicalRecoveryPresentation)
+        }
+
+        /// Advances on a wall-clock boundary so every rotating banner in the
+        /// app lands on the same phase, instead of drifting per view lifetime.
+        static func rotationIndex(now: Date, count: Int) -> Int {
+            guard count > 1 else { return 0 }
+            let step = Int((now.timeIntervalSinceReferenceDate / rotationInterval).rounded(.down))
+            return ((step % count) + count) % count
+        }
+
+        /// Every notice that is true right now, most actionable first. Returning
+        /// the full set (rather than the single highest-priority one) is what
+        /// lets a slow-maturing status stay visible alongside a live one.
+        private func notices(now: Date) -> [Status] {
+            var result: [Status] = []
+            if let status = status(now: now) {
+                result.append(status)
+            }
+            if let maturity = maturityText() {
+                result.append(Status(title: maturity,
+                                     symbol: "chart.line.uptrend.xyaxis",
+                                     accessibilityLabel: "\(maturity). Estimates improve as the baseline fills in."))
+            }
+            return result
         }
 
         private func status(now: Date) -> Status? {
@@ -4433,20 +4508,17 @@ struct AtriaHomeView: View {
                 let suffix = savedRecords > 0 ? " · \(savedRecords) saved" : ""
                 return Status(title: "Syncing strap history\(suffix)",
                               symbol: "arrow.triangle.2.circlepath",
-                              tint: .cyan,
                               accessibilityLabel: savedRecords > 0
                                 ? "History sync in progress. \(savedRecords) records durably saved; missing data is not yet verified."
                                 : "History sync in progress. Missing data is not yet verified.")
             case .verified:
                 return Status(title: "Recovery verified",
                               symbol: "checkmark.seal.fill",
-                              tint: .green,
                               accessibilityLabel: "Historical recovery verified for the pending data gap.")
             case .partial(let savedRecords):
                 let suffix = savedRecords > 0 ? " · \(savedRecords) saved" : ""
                 return Status(title: "Recovery partial\(suffix)",
                               symbol: "exclamationmark.triangle.fill",
-                              tint: .yellow,
                               accessibilityLabel: "History sync saved \(savedRecords) records, but recovery of the missing interval is not verified.")
             case .needsAttention:
                 guard live.rangeLossBackfillPending else {
@@ -4454,13 +4526,11 @@ struct AtriaHomeView: View {
                 }
                 return Status(title: "Missed data needs review",
                               symbol: "exclamationmark.triangle.fill",
-                              tint: .orange,
                               accessibilityLabel: "Missed strap data needs review. It has not been verified as recovered.")
             case .idle:
                 if live.rangeLossBackfillPending {
                     return Status(title: "Missed data needs review",
                                   symbol: "exclamationmark.triangle.fill",
-                                  tint: .orange,
                                   accessibilityLabel: "Missed strap data needs review. It has not been verified as recovered.")
                 }
                 return liveProtectedStatus(live, now: now)
@@ -4476,14 +4546,12 @@ struct AtriaHomeView: View {
             }
             return Status(title: "Live capture protected",
                           symbol: "checkmark.shield.fill",
-                          tint: .green,
                           accessibilityLabel: "Live heart-rate capture is protected.")
         }
 
         private struct Status {
             let title: String
             let symbol: String
-            let tint: Color
             let accessibilityLabel: String
         }
     }
