@@ -3218,6 +3218,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private static let silentStreamRepairBudgetRefillInterval: TimeInterval = 5 * 60
     private var lastSilentStreamRepairSpentAt: Date?
 
+    /// The paused verdict is evaluated from the accepted-HR path, i.e. about
+    /// once a second while the strap streams. Logging every evaluation buries
+    /// the surrounding trace and costs a synchronous write per sample during
+    /// capture runs, so repeat the same verdict at most once a minute.
+    private var lastPersistedDrainPausedLog: (reason: String, at: Date)?
+
+    private func logPersistedDrainResumePaused(reason: String, action: String) {
+        if let last = lastPersistedDrainPausedLog,
+           last.reason == reason,
+           Date().timeIntervalSince(last.at) < 60 {
+            return
+        }
+        lastPersistedDrainPausedLog = (reason, Date())
+        AtriaDebugLog("ATRIADBG offline_sync status=persisted_drain_resume_paused reason=%@ action=%@",
+                      reason, action)
+    }
+
     nonisolated static func shouldRestoreSilentStreamRepairBudget(
         spent: Int,
         lastSpendAt: Date?,
@@ -6265,8 +6282,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reason: String
     ) {
         guard persistedDrainResumeAllowed else {
-            AtriaDebugLog("ATRIADBG offline_sync status=persisted_drain_resume_paused reason=%@ action=preserve_live_no_cutover",
-                          reason)
+            logPersistedDrainResumePaused(reason: reason,
+                                          action: "preserve_live_no_cutover")
             return
         }
         // Every one of these refusals used to be silent, which made a
@@ -6470,8 +6487,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // `scheduleRangeLossBackfillIfNeeded` and
         // `attemptQualifiedRangeLossBackfillAfterAcceptedHRIfNeeded`.
         guard persistedDrainResumeAllowed else {
-            AtriaDebugLog("ATRIADBG offline_sync status=persisted_drain_resume_paused reason=%@ action=no_live_connection_claim_range_loss_lane_free",
-                          reason)
+            logPersistedDrainResumePaused(
+                reason: reason,
+                action: "no_live_connection_claim_range_loss_lane_free"
+            )
             return
         }
         deferInterruptedFullDrainForCurrentLiveConnection = true
@@ -6518,8 +6537,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
         interruptedFullDrainReacquisitionPendingAfterTransportLoss = false
         guard persistedDrainResumeAllowed else {
-            AtriaDebugLog("ATRIADBG offline_sync status=persisted_drain_resume_paused reason=%@ action=no_live_connection_claim_range_loss_lane_free",
-                          reason)
+            logPersistedDrainResumePaused(
+                reason: reason,
+                action: "no_live_connection_claim_range_loss_lane_free"
+            )
             return
         }
         deferInterruptedFullDrainForCurrentLiveConnection = true
@@ -6542,7 +6563,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults: UserDefaults
     ) {
         guard persistedDrainResumeAllowed else {
-            AtriaDebugLog("ATRIADBG offline_sync status=persisted_drain_resume_paused reason=interrupted_full_drain_relaunch action=preserve_live_no_cutover")
+            logPersistedDrainResumePaused(reason: "interrupted_full_drain_relaunch",
+                                          action: "preserve_live_no_cutover")
             return
         }
         let authority = try? historicalFullDrainCoverageStore.load()
