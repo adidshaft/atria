@@ -183,6 +183,23 @@ extension AtriaBLEManager {
         state == .lowBatteryShutoff
     }
 
+    /// Proprietary R10 notifications keep granting the app background
+    /// execution even when the standard 2A37 stream has silently stopped.
+    /// Use those real callbacks as the watchdog clock: ordinary `Task.sleep`
+    /// timers can remain suspended indefinitely while the phone is locked.
+    nonisolated static func shouldRunCallbackDrivenHeartRateAudit(
+        rawHeartRateGap: TimeInterval,
+        timeout: TimeInterval,
+        lastAuditAt: Date?,
+        now: Date,
+        minimumInterval: TimeInterval = stalledStreamRepairCooldown
+    ) -> Bool {
+        guard rawHeartRateGap >= max(0, timeout) else { return false }
+        guard let lastAuditAt else { return true }
+        let age = now.timeIntervalSince(lastAuditAt)
+        return age >= max(1, minimumInterval)
+    }
+
     /// History owns the vendor transport while a durable drain is in flight.
     /// A live-stream repair must wait for that owner to finish rather than
     /// rediscovering services halfway through a page. The next supervisor tick
@@ -266,14 +283,29 @@ extension AtriaBLEManager {
         guard rawHeartRateGap >= timeout
                 || (denseStreamFresh && acceptedHeartRateIsStale) else { return .observe }
 
-        // A prolonged HR-specific outage is itself sufficient evidence after
-        // the soft read/rediscovery window. Low-battery and deliberate sparse
-        // modes are suppressed by the callers before this policy is applied.
-        if rawHeartRateGap >= 180 {
+        // Escalate the HR-specific outage in bounded stages even while motion
+        // or battery traffic proves the GATT link itself is alive:
+        //
+        //   1x timeout: one non-destructive read/enable;
+        //   2x timeout: rediscover the standard HR service;
+        //   3x timeout: rebuild the connection.
+        //
+        // Without these bounds a readable-but-dead 2A37 characteristic was
+        // read forever and fresh R10 traffic vetoed reconnection until 180 s.
+        // The physical 2026-07-26 run then retained a healthy BLE link while
+        // accepted HR stopped for minutes.
+        let rediscoveryThreshold = max(60, timeout * 2)
+        let rebuildThreshold = max(90, timeout * 3)
+        if rawHeartRateGap >= rebuildThreshold {
             return .rebuildConnection
         }
-        // Recover sooner when the entire GATT connection is silent.
-        if rawHeartRateGap >= 120, usefulGattGap >= 120 {
+        if rawHeartRateGap >= rediscoveryThreshold,
+           hasHeartRateCharacteristic {
+            return .rediscoverHeartRateService
+        }
+        // Recover the entire silent link sooner than the HR-specific staged
+        // rebuild when no other GATT evidence exists.
+        if rawHeartRateGap >= 60, usefulGattGap >= 60 {
             return .rebuildConnection
         }
         guard hasHeartRateCharacteristic else {

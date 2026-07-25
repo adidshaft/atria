@@ -3339,6 +3339,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var pendingRecoveryReconnectReason: String?
     private var pendingRecoveryIntent: AutomaticRecoveryIntent = .repairPipeline
     private var lastStalledStreamRepairAt: Date?
+    /// Timers do not reliably run while the phone is locked. Dense R10
+    /// callbacks are therefore also a low-cost clock for repairing a silent
+    /// standard heart-rate subscription.
+    private var lastCallbackDrivenHeartRateAuditAt: Date?
     private var heartRateNotificationEnableGate = HeartRateNotificationEnableGate()
     private nonisolated let heartRateCaptureIntent = HeartRateCaptureIntent()
     private nonisolated let backgroundReconnectFence = BackgroundReconnectFence()
@@ -21643,10 +21647,51 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                   forKey: RadioDefaults.passiveR10LastValidAt)
         assignIfChanged(\.liveStrapMotionCapturedAt, receivedAt)
         recordWorkoutMotionFrameIfNeeded(receivedAt: receivedAt)
+        auditHeartRateFromR10CallbackIfNeeded(now: receivedAt)
         promoteReconnectBatteryBaselineIfSafe(
             now: receivedAt,
             validatedR10ReceivedAt: receivedAt,
             reason: "validated_r10_current_connection"
+        )
+    }
+
+    /// A locked/background app may receive thousands of R10 callbacks while
+    /// its scheduled keepalive tasks never execute. Repair 2A37 from that
+    /// callback-granted execution slice, paced by the same pure policy as the
+    /// foreground watchdog. The final stage uses the existing immediate
+    /// background rebuild path, which journals the gap before cancelling and
+    /// lets `didDisconnectPeripheral` reinstall the standing connection.
+    private func auditHeartRateFromR10CallbackIfNeeded(now: Date) {
+        guard longWearModeEnabled,
+              status == .connected,
+              let peripheral,
+              peripheral.state == .connected,
+              dutyCycleState != .sparseSentinel,
+              !offlineHistoricalSyncInProgress,
+              !historyOnlyProbeMode,
+              !Self.shouldSuppressWatchdogForStrapStreamState(strapStreamState),
+              let rawReference = lastRawHRNotificationAt ?? connectedAt,
+              let acceptedReference = lastAcceptedHRAt ?? connectedAt else {
+            return
+        }
+        let timeout = Self.hrContinuityWatchdogTimeout(acceptedHRTimeout: 45)
+        let rawGap = max(0, now.timeIntervalSince(rawReference))
+        guard Self.shouldRunCallbackDrivenHeartRateAudit(
+            rawHeartRateGap: rawGap,
+            timeout: timeout,
+            lastAuditAt: lastCallbackDrivenHeartRateAuditAt,
+            now: now
+        ) else {
+            return
+        }
+        lastCallbackDrivenHeartRateAuditAt = now
+        performHRContinuityWatchdogAction(
+            status: "r10_callback_stale",
+            rawGap: rawGap,
+            acceptedGap: max(0, now.timeIntervalSince(acceptedReference)),
+            timeout: timeout,
+            label: captureLabel.isEmpty ? "All-day wear" : captureLabel,
+            immediateConnectedRebuild: true
         )
     }
 
