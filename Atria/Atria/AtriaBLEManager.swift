@@ -6435,7 +6435,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private var persistedDrainResumeAllowed: Bool {
-        Self.persistedDrainResumeAllowed(
+        if gate2FullDrainProofEnabled,
+           gate2FullDrainRequestedGapID != nil {
+            return true
+        }
+        return Self.persistedDrainResumeAllowed(
             integrationEnabled: AtriaHistoricalFullDrainCoverageIntegration
                 .persistedDrainResumeEnabled,
             attendedSelectorSweepEnabled: historySelectorSweepEnabled
