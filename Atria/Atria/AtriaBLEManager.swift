@@ -1566,6 +1566,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// already-confirmed ACK may arm this bounded 0x16 continuation. Any next
     /// row or history marker cancels it, so an in-flight page is never prodded.
     private var historicalPageContinuationTask: Task<Void, Never>?
+    /// Learns the minimum safe 0x16 continuation settle for the current
+    /// generation. A duplicate HISTORY_END proves the last kick was early;
+    /// exact re-ACK is already durability-gated, so the next kick backs off.
+    private var historicalPageContinuationReplayBackoffStep = 0
     /// A HISTORY_START without even one stream-5 frame is a distinct failed
     /// serve state. It must not inherit the 30-minute whole-drain idle budget:
     /// no bytes have begun moving, so retaining the command owner that long
@@ -9311,6 +9315,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historyACKGate.reset()
         historicalPageContinuationTask?.cancel()
         historicalPageContinuationTask = nil
+        historicalPageContinuationReplayBackoffStep = 0
         historyFirstFrameWatchdogTask?.cancel()
         historyFirstFrameWatchdogTask = nil
         historyFirstFrameReceivedGeneration = nil
@@ -10056,6 +10061,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historyACKGate.reset()
         historicalPageContinuationTask?.cancel()
         historicalPageContinuationTask = nil
+        historicalPageContinuationReplayBackoffStep = 0
         historyFirstFrameWatchdogTask?.cancel()
         historyFirstFrameWatchdogTask = nil
         historyFirstFrameReceivedGeneration = nil
@@ -25666,6 +25672,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             ? "await_cursor_settle_then_continue"
                             : "retain_gap_await_repeated_history_end")
             if result == .confirmed {
+                self.historicalPageContinuationReplayBackoffStep = min(
+                    6,
+                    self.historicalPageContinuationReplayBackoffStep + 1
+                )
                 self.armHistoricalPageContinuationAfterACK(
                     generation: generation,
                     boundaryID: boundaryID
@@ -25687,9 +25697,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historicalPageContinuationTask?.cancel()
         historicalPageContinuationTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            // The current physical strap replayed the same page when kicked at
-            // 15 seconds. Give its cursor a full minute to settle first.
-            let delays: [TimeInterval] = [60, 90]
+            // Start promptly instead of imposing a fixed one-minute stall on
+            // every page. If the strap replays this already-durable boundary,
+            // reackDurableHistoricalReplay backs the next attempt off
+            // exponentially; no row is skipped and no un-fsynced page is ACKed.
+            let delays = Self.historicalPageContinuationDelays(
+                replayBackoffStep:
+                    self.historicalPageContinuationReplayBackoffStep
+            )
             for (index, delay) in delays.enumerated() {
                 try? await Task.sleep(for: .seconds(delay))
                 guard !Task.isCancelled,
@@ -25731,6 +25746,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             }
             self.historicalPageContinuationTask = nil
         }
+    }
+
+    nonisolated static func historicalPageContinuationDelays(
+        replayBackoffStep: Int
+    ) -> [TimeInterval] {
+        let boundedStep = min(6, max(0, replayBackoffStep))
+        let multiplier = 1 << boundedStep
+        return [
+            TimeInterval(min(60, multiplier)),
+            TimeInterval(min(60, 3 * multiplier)),
+        ]
     }
 
     private nonisolated static func joinInts(_ values: [Int]) -> String {
