@@ -2287,7 +2287,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         proofDuration: TimeInterval,
         lastFrameAge: TimeInterval,
         userRequestedDisconnect: Bool,
-        atriaOwnedOfflineSyncDisconnect: Bool
+        atriaOwnedOfflineSyncDisconnect: Bool,
+        ambientDisconnectInterval: TimeInterval? = nil
     ) -> ProtectedR10ProofDisconnectDecision {
         guard proofWasActive,
               cleanOwner == .protectedV9,
@@ -2299,6 +2300,27 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               lastFrameAge <= protectedR10MissingFrameTimeout,
               !userRequestedDisconnect,
               !atriaOwnedOfflineSyncDisconnect else { return .none }
+        // An early disconnect only incriminates this owner if the link was
+        // otherwise stable. Observed 2026-07-26: the link drops roughly every
+        // 17 s while sitting in `pure_hr_v10` with no protected profile active
+        // at all (2.5 disconnects/min measured with the band worn 30 cm from
+        // the phone at -52 dBm). Every qualification attempt was therefore
+        // killed by ambient churn and the churn then read as evidence against
+        // the owner, pinning the device in fallback permanently — which is why
+        // a counted 129-step walk recorded 0, sleep is `imu_missing`, and
+        // auto-detection has no candidates.
+        //
+        // Note what the conditions above already established: frames were
+        // arriving, and fresh. The proof was working at the moment it was
+        // being blamed. So require the owner to be demonstrably worse than the
+        // baseline the link already shows without it. Absent a usable ambient
+        // measurement this falls through to the original behaviour, so the
+        // disconnect-storm protection this exists for is unchanged.
+        if let ambientDisconnectInterval,
+           ambientDisconnectInterval > 0,
+           proofDuration >= ambientDisconnectInterval {
+            return .none
+        }
         return .fallbackToPureHR
     }
 
@@ -28634,6 +28656,14 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             } else {
                 disconnectCause = "remote_link_loss_no_error"
             }
+            // Read before overwriting: the gap since the previous disconnect is
+            // the only ambient-stability signal available here, and the proof
+            // decision below needs it to tell "this owner caused a drop" apart
+            // from "this link was already dropping at that cadence".
+            let previousDisconnectAt = defaults.double(forKey: LinkDefaults.lastDisconnectAt)
+            let ambientDisconnectInterval: TimeInterval? = previousDisconnectAt > 0
+                ? disconnectNow.timeIntervalSince1970 - previousDisconnectAt
+                : nil
             defaults.set(disconnectCause, forKey: LinkDefaults.lastDisconnectCause)
             defaults.set(disconnectNow.timeIntervalSince1970, forKey: LinkDefaults.lastDisconnectAt)
             defaults.set(max(0, disconnects - linkDisconnectCountAtLaunch),
@@ -28657,7 +28687,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     disconnectNow.timeIntervalSince($0)
                 } ?? -1,
                 userRequestedDisconnect: wasUserRequestedDisconnect,
-                atriaOwnedOfflineSyncDisconnect: atriaOwnedOfflineSyncDisconnect
+                atriaOwnedOfflineSyncDisconnect: atriaOwnedOfflineSyncDisconnect,
+                ambientDisconnectInterval: ambientDisconnectInterval
             )
             if cleanOwnerProofWasActive || pureHRV10CutoverWasPending {
                 if proofDisconnectDecision == .fallbackToPureHR {
