@@ -30,6 +30,29 @@ final class AtriaR10TransportPolicyTests: XCTestCase {
         ), "an explicit diagnostic full-protocol selection remains available")
     }
 
+    func testSuppressedR10FuseOverridesStaleFullProtocolPreference() {
+        XCTAssertTrue(
+            AtriaBLEManager.shouldForceStableTransportForSuppressedR10(
+                streamSuppressed: true,
+                explicitFullProtocolDiagnostic: false
+            ),
+            "a production launch must not rediscover proprietary services after the disconnect-storm fuse isolated them"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldForceStableTransportForSuppressedR10(
+                streamSuppressed: false,
+                explicitFullProtocolDiagnostic: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldForceStableTransportForSuppressedR10(
+                streamSuppressed: true,
+                explicitFullProtocolDiagnostic: true
+            ),
+            "the command-line transport diagnostic remains an explicit opt-in"
+        )
+    }
+
     func testStableR10MigrationNeverOverridesExplicitRadioChoice() {
         XCTAssertTrue(AtriaBLEManager.shouldMigrateAutomaticModeToProtectedR10(
             migrationWasRecorded: false,

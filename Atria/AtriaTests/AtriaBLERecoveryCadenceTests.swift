@@ -2446,6 +2446,11 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             userSelectedBatterySaver: true,
             persistedStandardHROnly: true
         ), "An explicit battery-saver choice remains authoritative")
+        XCTAssertTrue(AtriaBLEManager.shouldUseStandardHROnlyInProtectedBackground(
+            userSelectedBatterySaver: true,
+            persistedStandardHROnly: false,
+            streamSuppressed: true
+        ), "the disconnect-storm fuse must override a stale full-protocol preference")
     }
 
     func testLongWearSupervisorRunsInFullProtocolAndBatterySaverModes() {
@@ -8646,6 +8651,33 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         // a connect/stall cycle could loop repairs forever.
         XCTAssertFalse(didConnect.contains("backgroundReconnectLeaseReissueUsed = false"))
         XCTAssertFalse(didConnect.contains("postReconnectSilentStreamRepairsSpent = 0"))
+    }
+
+    func testDidConnectRetainsFreshCentralPeripheralBeforeLifecycleRecovery() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {"
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "nonisolated func centralManager(_ central: CBCentralManager,\n                        didDisconnectPeripheral",
+            range: start.upperBound..<source.endIndex
+        ))
+        let didConnect = String(source[start.lowerBound..<end.lowerBound])
+        let acceptedGuard = try XCTUnwrap(didConnect.range(
+            of: "guard self.acceptsBLECallback("
+        ))
+        let retain = try XCTUnwrap(didConnect.range(
+            of: "self.connectedPeripheralRetainer.retain(peripheral)"
+        ))
+        let assign = try XCTUnwrap(didConnect.range(
+            of: "self.peripheral = peripheral"
+        ))
+        let recordConnected = try XCTUnwrap(didConnect.range(
+            of: "recordLinkConnected(peripheral: peripheral)"
+        ))
+        XCTAssertLessThan(acceptedGuard.lowerBound, retain.lowerBound)
+        XCTAssertLessThan(retain.lowerBound, assign.lowerBound)
+        XCTAssertLessThan(assign.lowerBound, recordConnected.lowerBound)
     }
 
     func testSilentStreamRepairArmsAtExpiryAndUsesStandingReconnect() throws {
