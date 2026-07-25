@@ -2083,6 +2083,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     )
     private nonisolated let historicalArchiveWarmGroup = DispatchGroup()
     private var peripheral: CBPeripheral?
+    /// `peripheral` is not the only object CoreBluetooth can be holding a live
+    /// link for: the reconnect fast lane connects the callback's peripheral
+    /// directly, and MainActor paths may reassign `peripheral` underneath it.
+    /// Whatever we asked CoreBluetooth to connect stays retained here until it
+    /// is genuinely disconnected, so the framework can never deallocate a
+    /// connected peripheral and force the link down. See
+    /// `AtriaBLEConnectedPeripheralRetainer`.
+    private nonisolated let connectedPeripheralRetainer = AtriaBLEConnectedPeripheralRetainer()
     private let maxFrames = 200
     struct MotionHandshakeDiagnosticConfiguration: Equatable {
         static let enableArgument = "--atria-motion-handshake-diagnostic"
@@ -11983,6 +11991,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         recordLinkAttempt(reason: reason, peripheral: target)
         markPendingKnownReconnect(reason: reason)
         recomputeConnectionStatus(reason: "event")
+        connectedPeripheralRetainer.retain(target)
         central.connect(target, options: nil)
         startReconnectWatchdog(reason: reason, peripheral: target)
         AtriaDebugLog("ATRIADBG ble_link status=reconnect_immediate reason=%@ action=connect_known_peripheral",
@@ -12048,6 +12057,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 self.peripheral = target
                 self.recordLinkAttempt(reason: "\(scheduledReason)_known_peripheral", peripheral: target)
                 self.recomputeConnectionStatus(reason: "event")
+                self.connectedPeripheralRetainer.retain(target)
                 self.central.connect(target, options: nil)
                 self.startReconnectWatchdog(reason: "\(scheduledReason)_known_peripheral", peripheral: target)
                 AtriaDebugLog("ATRIADBG ble_link status=reconnect_backoff reason=%@ attempt=%d action=connect_known_peripheral",
@@ -15013,6 +15023,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         recomputeConnectionStatus(reason: "attach")
         p.delegate = self
         recordLinkAttempt(reason: "fresh_scan_attach", peripheral: p)
+        connectedPeripheralRetainer.retain(p)
         central.connect(p, options: nil)
         startReconnectWatchdog(reason: "fresh_scan_attach", peripheral: p)
     }
@@ -15105,6 +15116,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             peripheral.delegate = nil
             central.cancelPeripheralConnection(peripheral)
         }
+        connectedPeripheralRetainer.releaseEverything()
         central.delegate = nil
         AtriaDebugLog("ATRIADBG ble_manager status=suspended reason=restore_marker_retained")
     }
@@ -15236,6 +15248,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             markPendingKnownReconnect(reason: reason)
             // Standing pending connect — never times out; iOS fulfils it whenever
             // the strap becomes reachable. No scanning, no give-up.
+            connectedPeripheralRetainer.retain(saved)
             central.connect(saved, options: nil)
             AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=%@ action=pending_connect", reason)
         }
@@ -16172,6 +16185,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         bleCallbackEpochFence.invalidate()
         peripheral?.delegate = nil
         peripheral = nil
+        // The central being discarded owns these peripherals; they cannot be
+        // reconnected through its replacement, so holding them would only keep
+        // dead objects alive.
+        connectedPeripheralRetainer.releaseEverything()
         heartRateCharacteristic = nil
         txCharacteristic = nil
         dbgTxReady = false
@@ -27924,6 +27941,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                let uuid = UUID(uuidString: uuidString) {
                 if let saved = central.retrievePeripherals(withIdentifiers: [uuid]).first {
                     if saved.state != .connected {
+                        connectedPeripheralRetainer.retain(saved)
                         central.connect(saved, options: nil)
                         earlyPendingConnect = saved
                         AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=powered_on_precheck action=pending_connect_early")
@@ -28186,6 +28204,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 self.recomputeConnectionStatus(reason: "event")
                 self.recordLinkAttempt(reason: "state_restore", peripheral: restoredPeripheral)
                 self.markPendingKnownReconnect(reason: "state_restore")
+                connectedPeripheralRetainer.retain(restoredPeripheral)
                 central.connect(restoredPeripheral, options: nil)
                 self.startReconnectWatchdog(reason: "state_restore", peripheral: restoredPeripheral)
                 AtriaDebugLog("ATRIADBG ble_restore status=reconnect name=%@", self.deviceName)
@@ -28506,6 +28525,12 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                         didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         proprietaryFrameReassembler.reset()
         bleCallbackEpochFence.invalidate(ifMatching: peripheral.identifier)
+        // The link is already down, so releasing here cannot tear one down.
+        // The fast lane below re-retains whatever it re-issues a connect on,
+        // and every other connect path retains at its own call site. Ordering
+        // matters: release first, so a suppressed reconnect does not leave a
+        // dead peripheral held for the life of the process.
+        connectedPeripheralRetainer.releaseDisconnected(peripheralID: peripheral.identifier)
         let fastLaneDisposition = backgroundReconnectFence.consumeDisposition(
             peripheralID: peripheral.identifier,
             continuousCaptureWanted: heartRateCaptureIntent.snapshot(),
@@ -28519,6 +28544,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             // MainActor. This callback can be the locked app's final execution
             // slice; without a pending connect, range return cannot wake Atria.
             peripheral.delegate = self
+            connectedPeripheralRetainer.retain(peripheral)
             central.connect(peripheral, options: nil)
             AtriaDebugLog("ATRIADBG ble_link status=reconnect_requested_sync reason=did_disconnect_background_safe peripheral=%@",
                           peripheral.identifier.uuidString)
@@ -28869,6 +28895,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                             )
                         } else if peripheral.state == .disconnected {
                             peripheral.delegate = self
+                            connectedPeripheralRetainer.retain(peripheral)
                             central.connect(peripheral, options: nil)
                         }
                         AtriaDebugLog("ATRIADBG offline_sync status=fresh_owner_generation_preserved generation=%llu action=claim_next_connection_once",
@@ -28903,6 +28930,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                         reason: "motion_handshake_fresh_connection",
                         peripheral: peripheral
                     )
+                    connectedPeripheralRetainer.retain(peripheral)
                     central.connect(peripheral, options: nil)
                     self.recomputeConnectionStatus(reason: "event")
                 } else {
@@ -28991,6 +29019,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             recordLinkAttempt(reason: "did_disconnect_reconnect", peripheral: peripheral)
             markPendingKnownReconnect(reason: "did_disconnect_reconnect")
             if peripheral.state == .disconnected {
+                connectedPeripheralRetainer.retain(peripheral)
                 central.connect(peripheral, options: nil)
             } else {
                 AtriaDebugLog("ATRIADBG ble_link status=reconnect_preserved reason=did_disconnect_background_safe peripheral_state=%d action=keep_existing_standing_request",
@@ -29005,6 +29034,9 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                         didFailToConnect peripheral: CBPeripheral,
                         error: Error?) {
         proprietaryFrameReassembler.reset()
+        // The connect request is over, so nothing is left to protect from
+        // CoreBluetooth's unused-peripheral teardown.
+        connectedPeripheralRetainer.releaseAll(peripheralID: peripheral.identifier)
         Task { @MainActor in
             guard self.peripheral?.identifier == peripheral.identifier else {
                 AtriaDebugLog("ATRIADBG ble_epoch status=stale_connect_failure_ignored peripheral=%@",
