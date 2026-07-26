@@ -910,50 +910,47 @@ final class AtriaHistoricalArchiveDurableStore {
 
         func string() -> String? {
             let start = cursor
-            while cursor < bytes.count {
-                let byte = bytes[cursor]
-                if byte == 0x22 {
-                    let value = String(
-                        decoding: UnsafeBufferPointer(
-                            start: base.advanced(by: start),
-                            count: cursor - start
-                        ),
-                        as: UTF8.self
-                    )
-                    cursor += 1
-                    return value
-                }
-                // Canonical production paths and hexadecimal keys require no
-                // JSON escaping. Rejecting escapes is safe: it only disables
-                // the accelerator for an unexpected future path.
-                guard byte >= 0x20, byte <= 0x7e,
-                      byte != 0x5c else { return nil }
-                cursor += 1
-            }
-            return nil
+            guard let quotePointer = memchr(
+                base.advanced(by: start),
+                Int32(0x22),
+                bytes.count - start
+            ) else { return nil }
+            let end = base.distance(
+                to: quotePointer.assumingMemoryBound(to: UInt8.self)
+            )
+            // The encoder never escapes production paths or hexadecimal keys.
+            // A backslash therefore means this is not the canonical wire form.
+            guard memchr(base.advanced(by: start), Int32(0x5c), end - start) == nil,
+                  let value = String(
+                    bytes: UnsafeBufferPointer(
+                        start: base.advanced(by: start),
+                        count: end - start
+                    ),
+                    encoding: .utf8
+                  ) else { return nil }
+            cursor = end + 1
+            return value
         }
 
         func number(until delimiter: UInt8) -> String? {
             let start = cursor
-            while cursor < bytes.count, bytes[cursor] != delimiter {
-                let byte = bytes[cursor]
-                guard (byte >= 0x30 && byte <= 0x39)
-                        || byte == 0x2d || byte == 0x2b || byte == 0x2e
-                        || byte == 0x65 || byte == 0x45 else {
-                    return nil
-                }
-                cursor += 1
-            }
-            guard cursor > start,
-                  cursor < bytes.count,
+            guard let delimiterPointer = memchr(
+                base.advanced(by: start),
+                Int32(delimiter),
+                bytes.count - start
+            ) else { return nil }
+            let end = base.distance(
+                to: delimiterPointer.assumingMemoryBound(to: UInt8.self)
+            )
+            guard end > start,
                   let value = String(
                     bytes: UnsafeBufferPointer(
                         start: base.advanced(by: start),
-                        count: cursor - start
+                        count: end - start
                     ),
                     encoding: .utf8
                   ) else { return nil }
-            cursor += 1
+            cursor = end + 1
             return value
         }
 
