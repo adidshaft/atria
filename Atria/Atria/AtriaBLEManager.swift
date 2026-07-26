@@ -25703,10 +25703,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // and rows from the same stream5 notification burst. Release them only
         // after the reducer has consumed the accepted ACK transition.
         scheduleHistoricalTransportEventDrain()
-        armHistoricalPageContinuationAfterACK(
-            generation: ackIdentity.generation,
-            boundaryID: ackIdentity.boundaryID
-        )
     }
 
     /// The strap can replay the just-ACKed page if 0x16 reaches it before its
@@ -25756,18 +25752,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           generation,
                           boundaryID,
                           result == .confirmed
-                            ? "await_cursor_settle_then_continue"
+                            ? "await_strap_owned_next_page"
                             : "retain_gap_await_repeated_history_end")
-            if result == .confirmed {
-                self.historicalPageContinuationReplayBackoffStep = min(
-                    6,
-                    self.historicalPageContinuationReplayBackoffStep + 1
-                )
-                self.armHistoricalPageContinuationAfterACK(
-                    generation: generation,
-                    boundaryID: boundaryID
-                )
-            }
         }
     }
 
