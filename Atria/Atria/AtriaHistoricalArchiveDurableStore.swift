@@ -261,6 +261,11 @@ final class AtriaHistoricalArchiveDurableStore {
         var entry: IndexEntry
         var indexed: Bool
         var durable: Bool
+        /// Snapshot-loaded entries are verified against their exact raw row
+        /// only if the strap actually replays that identity. This keeps launch
+        /// from issuing hundreds of thousands of tiny random reads while still
+        /// making a corrupt/mismatched row ineligible to reject real data.
+        var rawVerified: Bool
     }
 
     private let lock = NSLock()
@@ -288,7 +293,8 @@ final class AtriaHistoricalArchiveDurableStore {
          now: @escaping () -> Date = Date.init,
          fileSynchronizer: ((URL) throws -> Void)? = nil,
          receiptFileSynchronizer: ((URL) throws -> Void)? = nil,
-         maximumReceiptBatchIdentities: Int = AtriaHistoricalArchiveDurableStore.productionMaximumReceiptBatchIdentities) throws {
+         maximumReceiptBatchIdentities: Int = AtriaHistoricalArchiveDurableStore.productionMaximumReceiptBatchIdentities,
+         onStartupRawArchiveRebuild: (() -> Void)? = nil) throws {
         precondition(maximumReceiptBatchIdentities > 0)
         self.indexURL = indexURL.standardizedFileURL
         self.indexSnapshotURL = indexURL.deletingPathExtension()
@@ -316,13 +322,16 @@ final class AtriaHistoricalArchiveDurableStore {
 
         let cutoff = now().timeIntervalSince1970 - max(0, identityRetention)
         let discovered: [String: IndexEntry]
+        let discoveredFromSnapshot: Bool
         if let cached = try loadValidatedDerivedIndex(archiveURLs: canonicalArchiveURLs,
                                                       cutoff: cutoff) {
             discovered = cached
+            discoveredFromSnapshot = true
             AtriaDebugLog("ATRIADBG historical_identity_index status=reused entries=%d archives=%d",
                           discovered.count,
                           canonicalArchiveURLs.count)
         } else {
+            onStartupRawArchiveRebuild?()
             var rebuilt: [String: IndexEntry] = [:]
             for archiveURL in canonicalArchiveURLs {
                 guard fileManager.fileExists(atPath: archiveURL.path) else { continue }
@@ -336,6 +345,7 @@ final class AtriaHistoricalArchiveDurableStore {
                 }
             }
             discovered = rebuilt.filter { $0.value.observedAtUnix >= cutoff }
+            discoveredFromSnapshot = false
             try rebuildDerivedIndex(with: Array(discovered.values))
             persistDerivedIndexSnapshotBestEffort()
             AtriaDebugLog("ATRIADBG historical_identity_index status=rebuilt entries=%d archives=%d",
@@ -349,7 +359,14 @@ final class AtriaHistoricalArchiveDurableStore {
         // durability-unknown. If the strap replays it, that drain batch must
         // synchronize both the archive and index before it can report a durable
         // duplicate eligible for ACK.
-        statesByKey = discovered.mapValues { KeyState(entry: $0, indexed: true, durable: false) }
+        statesByKey = discovered.mapValues {
+            KeyState(
+                entry: $0,
+                indexed: true,
+                durable: false,
+                rawVerified: !discoveredFromSnapshot
+            )
+        }
         try loadAndVerifyReceiptState()
     }
 
@@ -374,7 +391,9 @@ final class AtriaHistoricalArchiveDurableStore {
         guard batch.keys.contains(key) || batch.keys.count < maximumReceiptBatchIdentities else {
             throw StoreError.receiptBatchCapacityExceeded(maximum: maximumReceiptBatchIdentities)
         }
-        guard var state = statesByKey[key] else { throw StoreError.missingExistingIdentity }
+        guard var state = rawVerifiedState(forKey: key) else {
+            throw StoreError.missingExistingIdentity
+        }
         batch.keys.insert(key)
         if !state.indexed {
             try appendIndex(state.entry)
@@ -403,7 +422,7 @@ final class AtriaHistoricalArchiveDurableStore {
         let archiveURL = archiveURL.standardizedFileURL
         try registerArchiveIfNeeded(archiveURL)
 
-        if var existing = statesByKey[key] {
+        if var existing = rawVerifiedState(forKey: key) {
             batch.keys.insert(key)
             if !existing.durable {
                 batch.dirtyURLs.insert(URL(fileURLWithPath: existing.entry.archivePath).standardizedFileURL)
@@ -446,7 +465,12 @@ final class AtriaHistoricalArchiveDurableStore {
                                lineOffset: offset,
                                lineLength: line.count,
                                lineCRC32: Self.checksum(line))
-        statesByKey[key] = KeyState(entry: entry, indexed: false, durable: false)
+        statesByKey[key] = KeyState(
+            entry: entry,
+            indexed: false,
+            durable: false,
+            rawVerified: true
+        )
         batch.keys.insert(key)
         batch.dirtyURLs.insert(archiveURL)
 
@@ -610,7 +634,7 @@ final class AtriaHistoricalArchiveDurableStore {
     func contains(_ identity: FrameIdentity) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return statesByKey[identity.stableKey] != nil
+        return rawVerifiedState(forKey: identity.stableKey) != nil
     }
 
     /// Drops only durable exact identities outside the repair horizon. Pending
@@ -691,16 +715,24 @@ final class AtriaHistoricalArchiveDurableStore {
             // The row is complete, but this late-discovered rotated file was
             // not part of the startup index rebuild. Require one durability
             // boundary that adds its identity to the index before ACK.
-            statesByKey[entry.key] = KeyState(entry: entry, indexed: false, durable: false)
+            statesByKey[entry.key] = KeyState(
+                entry: entry,
+                indexed: false,
+                durable: false,
+                rawVerified: true
+            )
         }
     }
 
     /// Returns a restart-safe index only after proving three independent facts:
-    /// (1) the registered archive set did not change, (2) the index file is
-    /// exactly the snapshot that was written after a successful flush, and
-    /// (3) every index offset still points at its CRC-checked decorated raw
-    /// row.  Any failed proof returns `nil`, intentionally taking the existing
-    /// raw-archive rebuild path rather than risking a false replay duplicate.
+    /// (1) every snapshotted archive is the same inode and only grew by append,
+    /// (2) the exact snapshotted index prefix remains cryptographically intact,
+    /// and (3) every decoded index entry stays within a registered raw file.
+    ///
+    /// Exact raw-row CRC/payload verification is deliberately lazy: it occurs
+    /// before an identity can reject a strap replay. A failed verification
+    /// removes that cached state and accepts the replay as new, preserving the
+    /// no-data-loss invariant without an O(entry-count) random-read launch.
     private func loadValidatedDerivedIndex(archiveURLs: [URL],
                                            cutoff: TimeInterval) throws -> [String: IndexEntry]? {
         let currentArchives = try archiveURLs.map { try archiveFingerprint($0) }
@@ -711,28 +743,41 @@ final class AtriaHistoricalArchiveDurableStore {
                                                        from: Data(contentsOf: indexSnapshotURL)),
               snapshot.version == 1,
               snapshot.indexSHA256.count == 64,
-              snapshot.archives == currentArchives
+              Self.archivesAreAppendOnlyCompatible(
+                  snapshot: snapshot.archives,
+                  current: currentArchives
+              )
         else {
             return nil
         }
 
-        let decoded = try decodedIndexEntriesAndDigest()
-        guard decoded.byteCount == snapshot.indexByteCount,
-              decoded.sha256 == snapshot.indexSHA256 else {
+        let decoded = try decodedIndexEntriesAndDigest(
+            prefixByteCount: snapshot.indexByteCount
+        )
+        guard decoded.byteCount >= snapshot.indexByteCount,
+              decoded.prefixSHA256 == snapshot.indexSHA256 else {
             return nil
         }
 
+        let archiveSizes = Dictionary(
+            uniqueKeysWithValues: currentArchives.map { ($0.path, $0.size) }
+        )
         var entries: [String: IndexEntry] = [:]
         for entry in decoded.entries {
-            // The index is derived, so duplicates, out-of-horizon entries and
-            // paths outside the registered raw set all invalidate the shortcut.
-            // They are rebuilt from raw rather than silently selecting a row.
+            let lineEnd = entry.lineOffset.addingReportingOverflow(
+                UInt64(max(0, entry.lineLength))
+            )
+            // Duplicate/out-of-horizon entries, unregistered paths and
+            // impossible offsets all invalidate the shortcut. Raw CRC and
+            // payload equality are checked lazily before replay rejection.
             guard entry.version == 2,
                   entry.observedAtUnix.isFinite,
                   entry.observedAtUnix >= cutoff,
                   registeredArchivePaths.contains(entry.archivePath),
                   entries[entry.key] == nil,
-                  try indexEntryMatchesRawArchive(entry) else {
+                  entry.lineLength > 0,
+                  !lineEnd.overflow,
+                  lineEnd.partialValue <= (archiveSizes[entry.archivePath] ?? 0) else {
                 return nil
             }
             entries[entry.key] = entry
@@ -740,11 +785,20 @@ final class AtriaHistoricalArchiveDurableStore {
         return entries
     }
 
-    private func decodedIndexEntriesAndDigest() throws -> (entries: [IndexEntry], byteCount: UInt64, sha256: String) {
+    private func decodedIndexEntriesAndDigest(
+        prefixByteCount: UInt64? = nil
+    ) throws -> (
+        entries: [IndexEntry],
+        byteCount: UInt64,
+        sha256: String,
+        prefixSHA256: String?
+    ) {
         let handle = try FileHandle(forReadingFrom: indexURL)
         defer { try? handle.close() }
         let decoder = JSONDecoder()
         var hasher = SHA256()
+        var prefixHasher = SHA256()
+        var prefixBytesRemaining = prefixByteCount
         var entries: [IndexEntry] = []
         var buffer = Data()
         var unreadStart = 0
@@ -753,6 +807,11 @@ final class AtriaHistoricalArchiveDurableStore {
 
         while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
             hasher.update(data: chunk)
+            if let remaining = prefixBytesRemaining, remaining > 0 {
+                let accepted = min(UInt64(chunk.count), remaining)
+                prefixHasher.update(data: chunk.prefix(Int(accepted)))
+                prefixBytesRemaining = remaining - accepted
+            }
             byteCount &+= UInt64(chunk.count)
             buffer.append(chunk)
             while unreadStart < buffer.count {
@@ -760,7 +819,7 @@ final class AtriaHistoricalArchiveDurableStore {
                 guard let newline = buffer[lineStart...].firstIndex(of: 0x0a) else { break }
                 let line = Data(buffer[lineStart...newline])
                 guard let entry = try? decoder.decode(IndexEntry.self, from: line) else {
-                    return ([], 0, "")
+                    return ([], 0, "", nil)
                 }
                 entries.append(entry)
                 unreadStart += line.count
@@ -771,8 +830,60 @@ final class AtriaHistoricalArchiveDurableStore {
             }
         }
         // A JSONL index without a terminating newline is never a valid cache.
-        guard unreadStart == buffer.count else { return ([], 0, "") }
-        return (entries, byteCount, Self.hex(hasher.finalize()))
+        guard unreadStart == buffer.count,
+              prefixBytesRemaining == nil || prefixBytesRemaining == 0 else {
+            return ([], 0, "", nil)
+        }
+        return (
+            entries,
+            byteCount,
+            Self.hex(hasher.finalize()),
+            prefixByteCount == nil ? nil : Self.hex(prefixHasher.finalize())
+        )
+    }
+
+    private static func archivesAreAppendOnlyCompatible(
+        snapshot: [ArchiveFingerprint],
+        current: [ArchiveFingerprint]
+    ) -> Bool {
+        guard snapshot.count == current.count else { return false }
+        for (prior, latest) in zip(snapshot, current) {
+            guard prior.path == latest.path,
+                  prior.exists == latest.exists else {
+                return false
+            }
+            if !prior.exists { continue }
+            guard prior.volume == latest.volume,
+                  prior.inode == latest.inode,
+                  latest.size >= prior.size else {
+                return false
+            }
+            if latest.size == prior.size {
+                guard latest.modificationMilliseconds == prior.modificationMilliseconds else {
+                    return false
+                }
+            } else {
+                guard latest.modificationMilliseconds >= prior.modificationMilliseconds else {
+                    return false
+                }
+            }
+        }
+        return true
+    }
+
+    /// Returns only a state whose exact decorated raw row still matches the
+    /// cached full-payload identity. Invalid cache entries are removed so the
+    /// caller appends a real replay instead of falsely rejecting it.
+    private func rawVerifiedState(forKey key: String) -> KeyState? {
+        guard var state = statesByKey[key] else { return nil }
+        if state.rawVerified { return state }
+        guard (try? indexEntryMatchesRawArchive(state.entry)) == true else {
+            statesByKey.removeValue(forKey: key)
+            return nil
+        }
+        state.rawVerified = true
+        statesByKey[key] = state
+        return state
     }
 
     private func indexEntryMatchesRawArchive(_ entry: IndexEntry) throws -> Bool {

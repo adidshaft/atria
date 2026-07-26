@@ -6110,6 +6110,11 @@ final class SessionStore: ObservableObject {
     /// scanned off-main and this bounded snapshot is reconciled with canonical
     /// SavedSession coverage when day strain is requested.
     private var cachedHistoricalTodayHeartRatePoints: [HistoricalArchive.HeartRatePoint] = []
+    /// Complete metric-validated HR image from the latest successful recovered
+    /// archive scan. Cycle/day consumers filter this in memory; they must not
+    /// launch a second 96 MiB JSONL tail read after recovery already streamed
+    /// and verified the same source.
+    private var cachedRecoveredArchiveHeartRatePoints: [HistoricalArchive.HeartRatePoint] = []
     private var cachedHistoricalCycleStart: Date?
     private var historicalTodayHeartRateRevision = 0
     private var historicalArchiveStatusRevision = 0
@@ -6239,6 +6244,7 @@ final class SessionStore: ObservableObject {
         let todayZones: TodayHRZoneMinutes
         let archiveStatus: HistoricalArchiveStatus
         let historicalTodayHeartRatePoints: [HistoricalArchive.HeartRatePoint]
+        let recoveredArchiveHeartRatePoints: [HistoricalArchive.HeartRatePoint]
         let historicalCycleStart: Date?
         let behaviorInsights: [AtriaInsight]
         let behaviorCorrelations: [BehaviorCorrelationSummary]
@@ -7420,9 +7426,9 @@ final class SessionStore: ObservableObject {
                                                                confirmedSleeps: cachedConfirmedSleeps,
                                                                calendar: calendar)
         let cycleStart = cacheInterval.start
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let points = HistoricalArchive.metricHeartRatePoints(since: cycleStart, limit: 100_000)
-                .filter { $0.t >= cycleStart && $0.t < now }
+        let source = cachedRecoveredArchiveHeartRatePoints
+        DispatchQueue.global(qos: .utility).async { [weak self, source] in
+            let points = source.filter { $0.t >= cycleStart && $0.t < now }
             DispatchQueue.main.async {
                 guard let self, revision == self.historicalTodayHeartRateRevision else {
                     completion?(false)
@@ -7639,7 +7645,7 @@ final class SessionStore: ObservableObject {
                 recoveredSessions[index].strapStepResearchCount = fields.strapStepResearchCount
             }
 
-            DispatchQueue.main.async { [weak self, recoveredSessions, projection, rrProjection, ticket] in
+            DispatchQueue.main.async { [weak self, archivePoints, recoveredSessions, projection, rrProjection, ticket] in
                 guard let self,
                       case let .projecting(active) = self.recoveredDataRecompute.phase,
                       active == ticket else { return }
@@ -7664,6 +7670,16 @@ final class SessionStore: ObservableObject {
 
                 let previous = self.cachedRecoveredHeartRateSessions
                 self.cachedRecoveredHeartRateSessions = recoveredSessions
+                self.cachedRecoveredArchiveHeartRatePoints = archivePoints
+                let cacheInterval = Self.historicalStrainCacheInterval(
+                    now: Date(),
+                    confirmedSleeps: self.cachedConfirmedSleeps,
+                    calendar: .current
+                )
+                self.cachedHistoricalTodayHeartRatePoints = archivePoints.filter {
+                    $0.t >= cacheInterval.start && $0.t < cacheInterval.end
+                }
+                self.cachedHistoricalCycleStart = cacheInterval.start
                 self.invalidateDailyDerivedDays(for: previous + recoveredSessions)
                 self.setCachedCanonicalSessions(Self.makeCanonicalSessions(
                     from: self.sessions + recoveredSessions
@@ -7848,6 +7864,7 @@ final class SessionStore: ObservableObject {
             todayZones: todayHRZoneMinutesSnapshot,
             archiveStatus: historicalArchiveStatus,
             historicalTodayHeartRatePoints: cachedHistoricalTodayHeartRatePoints,
+            recoveredArchiveHeartRatePoints: cachedRecoveredArchiveHeartRatePoints,
             historicalCycleStart: cachedHistoricalCycleStart,
             behaviorInsights: behaviorInsights,
             behaviorCorrelations: behaviorCorrelationSummariesCache,
@@ -7966,6 +7983,7 @@ final class SessionStore: ObservableObject {
         todayHRZoneMinutesSnapshot = snapshot.todayZones
         historicalArchiveStatus = snapshot.archiveStatus
         cachedHistoricalTodayHeartRatePoints = snapshot.historicalTodayHeartRatePoints
+        cachedRecoveredArchiveHeartRatePoints = snapshot.recoveredArchiveHeartRatePoints
         cachedHistoricalCycleStart = snapshot.historicalCycleStart
         behaviorInsights = snapshot.behaviorInsights
         behaviorCorrelationSummariesCache = snapshot.behaviorCorrelations
