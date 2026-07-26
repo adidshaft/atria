@@ -6808,6 +6808,65 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         warmState != .ready && !syncInProgress
     }
 
+    /// A crash can leave a `.draining` authority after its exact gap row was
+    /// resolved or compacted. That authority no longer owns recoverable work
+    /// and must not block the next real exact-gap request. Terminal authorities
+    /// remain immutable; a still-pending matching fingerprint is never cleared.
+    @discardableResult
+    private func reconcileStaleDrainingFullDrainAuthority(
+        _ authority: AtriaHistoricalFullDrainCoverageStore.Authority,
+        reason: String
+    ) -> Bool {
+        guard authority.status == .draining,
+              let gapID = UUID(uuidString: authority.gap.gapIdentifier),
+              AtriaHistoricalGapLedger.recoveryCandidate(
+                  id: gapID,
+                  startUnix: authority.gap.startUnix,
+                  endUnix: authority.gap.endUnix,
+                  reason: authority.gap.reason
+              ) == nil else {
+            return false
+        }
+        let windows = AtriaHistoricalGapLedger.windows()
+        do {
+            let cleared: Bool
+            if let changed = windows.first(where: { $0.id == gapID }),
+               let changedEnd = changed.end {
+                cleared = try historicalFullDrainCoverageStore
+                    .abandonDrainingAuthorityIfGapFingerprintChanged(
+                        gapIdentifier: authority.gap.gapIdentifier,
+                        observedStartUnix: changed.start.timeIntervalSince1970,
+                        observedEndUnix: changedEnd.timeIntervalSince1970,
+                        observedReason: changed.reason
+                    )
+            } else if !windows.contains(where: { $0.id == gapID }) {
+                try historicalFullDrainCoverageStore
+                    .clearUnresolvedAuthorityIfGapNoLongerPending(
+                        gapIdentifier: authority.gap.gapIdentifier
+                    )
+                cleared = try historicalFullDrainCoverageStore.load() == nil
+            } else {
+                cleared = false
+            }
+            if cleared {
+                AtriaDebugLog(
+                    "ATRIADBG historical_full_drain_authority status=stale_draining_cleared reason=%@ gap=%@ action=allow_next_exact_gap_no_transport_claim",
+                    reason,
+                    authority.gap.gapIdentifier
+                )
+            }
+            return cleared
+        } catch {
+            AtriaDebugLog(
+                "ATRIADBG historical_full_drain_authority status=stale_draining_clear_failed reason=%@ gap=%@ error=%@ action=retain_fail_closed",
+                reason,
+                authority.gap.gapIdentifier,
+                String(describing: error)
+            )
+            return false
+        }
+    }
+
     @discardableResult
     func requestOfflineHistoricalSyncIfNeeded(
         reason: String,
@@ -6841,6 +6900,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     gate2FullDrainRequestedGapID?.uuidString ?? "none"
                 )
                 return false
+            }
+            if let authority = try? historicalFullDrainCoverageStore.load(),
+               authority.status == .draining,
+               authority.gap.gapIdentifier.caseInsensitiveCompare(
+                   requestedGapID.uuidString
+               ) != .orderedSame {
+                _ = reconcileStaleDrainingFullDrainAuthority(
+                    authority,
+                    reason: "gate2_requested_exact_gap"
+                )
             }
             if let authority = try? historicalFullDrainCoverageStore.load(),
                authority.status == .draining,
@@ -9267,24 +9336,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 reason: persisted.gap.reason
             )
             if selectedFullDrainGap == nil {
-                let windows = AtriaHistoricalGapLedger.windows()
-                var oldAuthorityCleared = false
-                if let changed = windows.first(where: { $0.id == gapID }),
-                   let changedEnd = changed.end {
-                    oldAuthorityCleared = (try? historicalFullDrainCoverageStore
-                        .abandonDrainingAuthorityIfGapFingerprintChanged(
-                            gapIdentifier: persisted.gap.gapIdentifier,
-                            observedStartUnix: changed.start.timeIntervalSince1970,
-                            observedEndUnix: changedEnd.timeIntervalSince1970,
-                            observedReason: changed.reason
-                        )) ?? false
-                } else if !windows.contains(where: { $0.id == gapID }) {
-                    try? historicalFullDrainCoverageStore
-                        .clearUnresolvedAuthorityIfGapNoLongerPending(
-                            gapIdentifier: persisted.gap.gapIdentifier
-                        )
-                    oldAuthorityCleared = true
-                }
+                let oldAuthorityCleared =
+                    reconcileStaleDrainingFullDrainAuthority(
+                        persisted,
+                        reason: "offline_sync_preflight"
+                    )
                 if oldAuthorityCleared {
                     selectedFullDrainGap = AtriaHistoricalGapLedger
                         .newestClosedRecoveryCandidate()
