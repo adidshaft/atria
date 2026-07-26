@@ -3916,6 +3916,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         } else {
             defaults.removeObject(forKey: HRVCadenceDefaults.readySnapshot)
         }
+        // Gate-2 launch authority must be known before interrupted-drain
+        // restoration decides whether the persisted exact-gap transaction is
+        // allowed to resume. Parsing this later made a clean attended relaunch
+        // pause the authority and rely on an unrelated retained request.
+        applyEarlyHistoricalLaunchConfiguration(arguments: arguments)
 #if DEBUG
         if debugForceUnknownStrapGeneration {
             strapModel = .unknown
@@ -4101,7 +4106,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           diagnostic.useResponseEventDataProfile ? 1 : 0,
                           diagnostic.sendR10IMUSequence ? 1 : 0)
         }
-        applyEarlyHistoricalLaunchConfiguration(arguments: arguments)
         reconcileOrphanedBackgroundHistoryLeaseAtLaunch()
         if motionHandshakeDiagnostic == nil {
             scheduleStaleArmedRangeLossBackfillReconciliation(reason: "ble_manager_init")

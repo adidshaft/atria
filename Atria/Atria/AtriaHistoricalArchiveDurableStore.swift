@@ -743,7 +743,7 @@ final class AtriaHistoricalArchiveDurableStore {
                                                        from: Data(contentsOf: indexSnapshotURL)),
               snapshot.version == 1,
               snapshot.indexSHA256.count == 64,
-              Self.archivesAreAppendOnlyCompatible(
+              let addedArchives = Self.appendOnlyArchiveDelta(
                   snapshot: snapshot.archives,
                   current: currentArchives
               )
@@ -764,16 +764,22 @@ final class AtriaHistoricalArchiveDurableStore {
         )
         var entries: [String: IndexEntry] = [:]
         for entry in decoded.entries {
+            guard entry.version == 2,
+                  entry.observedAtUnix.isFinite else {
+                return nil
+            }
+            // Retention expiry is not cache corruption. Omitting an expired
+            // replay identity is fail-safe (a later replay is accepted and
+            // durably appended); rebuilding hundreds of megabytes at each
+            // moving cutoff is not.
+            guard entry.observedAtUnix >= cutoff else { continue }
             let lineEnd = entry.lineOffset.addingReportingOverflow(
                 UInt64(max(0, entry.lineLength))
             )
             // Duplicate/out-of-horizon entries, unregistered paths and
             // impossible offsets all invalidate the shortcut. Raw CRC and
             // payload equality are checked lazily before replay rejection.
-            guard entry.version == 2,
-                  entry.observedAtUnix.isFinite,
-                  entry.observedAtUnix >= cutoff,
-                  registeredArchivePaths.contains(entry.archivePath),
+            guard registeredArchivePaths.contains(entry.archivePath),
                   entries[entry.key] == nil,
                   entry.lineLength > 0,
                   !lineEnd.overflow,
@@ -781,6 +787,27 @@ final class AtriaHistoricalArchiveDurableStore {
                 return nil
             }
             entries[entry.key] = entry
+        }
+        var recoveredRawBeforeIndex = false
+        for fingerprint in addedArchives where fingerprint.exists {
+            let archiveURL = URL(fileURLWithPath: fingerprint.path).standardizedFileURL
+            _ = try Self.repairTornJSONLTail(at: archiveURL)
+            for entry in try Self.scanArchive(at: archiveURL)
+                where entry.observedAtUnix >= cutoff && entries[entry.key] == nil {
+                // A rotation can become visible after its raw append but
+                // before its index append. Recover only that new file; older
+                // snapshotted archives remain covered by the attested prefix.
+                entries[entry.key] = entry
+                recoveredRawBeforeIndex = true
+            }
+        }
+        if recoveredRawBeforeIndex {
+            try rebuildDerivedIndex(with: Array(entries.values))
+        }
+        if !addedArchives.isEmpty || recoveredRawBeforeIndex {
+            // Adopt the new path set once so subsequent launches do not repeat
+            // even the bounded delta scan.
+            persistDerivedIndexSnapshotBestEffort()
         }
         return entries
     }
@@ -842,33 +869,47 @@ final class AtriaHistoricalArchiveDurableStore {
         )
     }
 
-    private static func archivesAreAppendOnlyCompatible(
+    private static func appendOnlyArchiveDelta(
         snapshot: [ArchiveFingerprint],
         current: [ArchiveFingerprint]
-    ) -> Bool {
-        guard snapshot.count == current.count else { return false }
-        for (prior, latest) in zip(snapshot, current) {
-            guard prior.path == latest.path,
-                  prior.exists == latest.exists else {
-                return false
+    ) -> [ArchiveFingerprint]? {
+        let currentByPath = Dictionary(
+            uniqueKeysWithValues: current.map { ($0.path, $0) }
+        )
+        let snapshotPaths = Set(snapshot.map(\.path))
+        var added = current.filter {
+            !snapshotPaths.contains($0.path) && $0.exists
+        }
+        // Archive rotation can add a new raw file between derived-snapshot
+        // refreshes. That does not invalidate the cryptographically attested
+        // index prefix or require rescanning every older archive. Every path
+        // named by the snapshot must still be the same append-only inode;
+        // additional current paths are bounded by the decoded-index offset
+        // checks below and their exact rows are still verified before replay
+        // can be rejected.
+        for prior in snapshot {
+            guard let latest = currentByPath[prior.path] else { return nil }
+            if !prior.exists {
+                if latest.exists { added.append(latest) }
+                continue
             }
-            if !prior.exists { continue }
+            guard latest.exists else { return nil }
             guard prior.volume == latest.volume,
                   prior.inode == latest.inode,
                   latest.size >= prior.size else {
-                return false
+                return nil
             }
             if latest.size == prior.size {
                 guard latest.modificationMilliseconds == prior.modificationMilliseconds else {
-                    return false
+                    return nil
                 }
             } else {
                 guard latest.modificationMilliseconds >= prior.modificationMilliseconds else {
-                    return false
+                    return nil
                 }
             }
         }
-        return true
+        return added.sorted { $0.path < $1.path }
     }
 
     /// Returns only a state whose exact decorated raw row still matches the

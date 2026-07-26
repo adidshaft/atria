@@ -276,6 +276,73 @@ final class AtriaHistoricalArchiveDurableStoreTests: XCTestCase {
         XCTAssertEqual(try lineCount(at: archive), 2)
     }
 
+    func testNewRotatedArchiveReusesSnapshotWithoutRescanningOlderRawFiles() throws {
+        let directory = try temporaryDirectory()
+        let firstArchive = directory.appendingPathComponent("historical.jsonl")
+        let rotatedArchive = directory.appendingPathComponent("raw-rotated.jsonl")
+        let index = directory.appendingPathComponent("historical.index.jsonl")
+        let firstIdentity = frameIdentity(counter: 31, payload: Data([0x31]))
+        let rotatedIdentity = frameIdentity(counter: 32, payload: Data([0x32]))
+
+        var store = try AtriaHistoricalArchiveDurableStore(
+            indexURL: index,
+            existingArchiveURLs: [firstArchive]
+        )
+        let first = store.beginDrainBatch()
+        _ = try store.append(
+            identity: firstIdentity,
+            encodedJSONObject: record(sequence: 31),
+            to: firstArchive,
+            batch: first
+        )
+        _ = try store.flush(first)
+
+        // Rotation registers a new path and appends its exact identity after
+        // the existing snapshot's attested index prefix.
+        let rotated = store.beginDrainBatch()
+        _ = try store.append(
+            identity: rotatedIdentity,
+            encodedJSONObject: record(sequence: 32),
+            to: rotatedArchive,
+            batch: rotated
+        )
+        _ = try store.flush(rotated)
+
+        var rebuiltRawArchive = false
+        store = try AtriaHistoricalArchiveDurableStore(
+            indexURL: index,
+            existingArchiveURLs: [firstArchive, rotatedArchive],
+            onStartupRawArchiveRebuild: { rebuiltRawArchive = true }
+        )
+        XCTAssertFalse(
+            rebuiltRawArchive,
+            "a newly rotated append-only archive must not rescan every older raw file"
+        )
+
+        let firstReplay = store.beginDrainBatch()
+        XCTAssertEqual(
+            try store.append(
+                identity: firstIdentity,
+                encodedJSONObject: record(sequence: 31),
+                to: firstArchive,
+                batch: firstReplay
+            ),
+            .duplicate(durable: false)
+        )
+        let rotatedReplay = store.beginDrainBatch()
+        XCTAssertEqual(
+            try store.append(
+                identity: rotatedIdentity,
+                encodedJSONObject: record(sequence: 32),
+                to: rotatedArchive,
+                batch: rotatedReplay
+            ),
+            .duplicate(durable: false)
+        )
+        XCTAssertEqual(try lineCount(at: firstArchive), 1)
+        XCTAssertEqual(try lineCount(at: rotatedArchive), 1)
+    }
+
     func testSnapshotLoadedIdentityVerifiesRawRowBeforeRejectingReplay() throws {
         let directory = try temporaryDirectory()
         let archive = directory.appendingPathComponent("historical.jsonl")
