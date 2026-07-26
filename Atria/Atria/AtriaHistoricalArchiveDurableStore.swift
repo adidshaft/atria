@@ -257,6 +257,14 @@ final class AtriaHistoricalArchiveDurableStore {
         let lineCRC32: UInt32
     }
 
+    private static let indexArchivePathPrefix = Array("{\"archivePath\":\"".utf8)
+    private static let indexKeyPrefix = Array(",\"key\":\"".utf8)
+    private static let indexCRC32Prefix = Array(",\"lineCRC32\":".utf8)
+    private static let indexLengthPrefix = Array("\"lineLength\":".utf8)
+    private static let indexOffsetPrefix = Array("\"lineOffset\":".utf8)
+    private static let indexObservedPrefix = Array("\"observedAtUnix\":".utf8)
+    private static let indexVersionPrefix = Array("\"version\":".utf8)
+
     private struct KeyState {
         var entry: IndexEntry
         var indexed: Bool
@@ -822,51 +830,57 @@ final class AtriaHistoricalArchiveDurableStore {
         prefixSHA256: String?,
         valid: Bool
     ) {
-        let handle = try FileHandle(forReadingFrom: indexURL)
-        defer { try? handle.close() }
-        var hasher = SHA256()
-        var prefixHasher = SHA256()
-        var prefixBytesRemaining = prefixByteCount
-        var buffer = Data()
-        var unreadStart = 0
-        var byteCount: UInt64 = 0
-        let compactionThreshold = 64 * 1024
-
-        while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
-            hasher.update(data: chunk)
-            if let remaining = prefixBytesRemaining, remaining > 0 {
-                let accepted = min(UInt64(chunk.count), remaining)
-                prefixHasher.update(data: chunk.prefix(Int(accepted)))
-                prefixBytesRemaining = remaining - accepted
-            }
-            byteCount &+= UInt64(chunk.count)
-            buffer.append(chunk)
-            while unreadStart < buffer.count {
-                let lineStart = buffer.index(buffer.startIndex, offsetBy: unreadStart)
-                guard let newline = buffer[lineStart...].firstIndex(of: 0x0a) else { break }
-                let line = Data(buffer[lineStart...newline])
-                if let entryHandler {
-                    guard let entry = Self.decodeCanonicalIndexEntry(line),
-                          entryHandler(entry) else {
-                        return (0, "", nil, false)
-                    }
-                }
-                unreadStart += line.count
-            }
-            if unreadStart >= compactionThreshold {
-                buffer.removeFirst(unreadStart)
-                unreadStart = 0
-            }
-        }
-        // A JSONL index without a terminating newline is never a valid cache.
-        guard unreadStart == buffer.count,
-              prefixBytesRemaining == nil || prefixBytesRemaining == 0 else {
+        // Memory mapping avoids hundreds of thousands of FileHandle/Data
+        // growth and line-copy operations. The map is read-only and remains a
+        // derived accelerator; any malformed byte still rejects the shortcut.
+        let data = try Data(contentsOf: indexURL, options: .mappedIfSafe)
+        let byteCount = UInt64(data.count)
+        guard data.isEmpty || data.last == 0x0a,
+              prefixByteCount == nil || prefixByteCount! <= byteCount else {
             return (0, "", nil, false)
         }
+        let fullSHA256 = prefixByteCount == nil
+            ? Self.hex(SHA256.hash(data: data))
+            : ""
+        let prefixSHA256 = prefixByteCount.map {
+            Self.hex(SHA256.hash(data: data.prefix(Int($0))))
+        }
+
+        if let entryHandler {
+            let valid = data.withUnsafeBytes { rawBytes -> Bool in
+                let bytes = rawBytes.bindMemory(to: UInt8.self)
+                guard let base = bytes.baseAddress else { return data.isEmpty }
+                var lineStart = 0
+                while lineStart < bytes.count {
+                    guard let newlinePointer = memchr(
+                        base.advanced(by: lineStart),
+                        Int32(0x0a),
+                        bytes.count - lineStart
+                    ) else {
+                        return false
+                    }
+                    let newline = base.distance(
+                        to: newlinePointer.assumingMemoryBound(to: UInt8.self)
+                    )
+                    let line = UnsafeBufferPointer(
+                        start: base.advanced(by: lineStart),
+                        count: newline - lineStart + 1
+                    )
+                    guard let entry = Self.decodeCanonicalIndexEntry(line),
+                          entryHandler(entry) else {
+                        return false
+                    }
+                    lineStart = newline + 1
+                }
+                return lineStart == bytes.count
+            }
+            guard valid else { return (0, "", nil, false) }
+        }
+
         return (
             byteCount,
-            Self.hex(hasher.finalize()),
-            prefixByteCount == nil ? nil : Self.hex(prefixHasher.finalize()),
+            fullSHA256,
+            prefixSHA256,
             true
         )
     }
@@ -876,16 +890,20 @@ final class AtriaHistoricalArchiveDurableStore {
     /// `JSONDecoder` object graphs at every launch while remaining fail-closed:
     /// any escape, reordered field, malformed number, or trailing byte rejects
     /// the cache and falls back to authoritative raw recovery.
-    private static func decodeCanonicalIndexEntry(_ line: Data) -> IndexEntry? {
-        let bytes = [UInt8](line)
+    private static func decodeCanonicalIndexEntry(
+        _ bytes: UnsafeBufferPointer<UInt8>
+    ) -> IndexEntry? {
+        guard let base = bytes.baseAddress else { return nil }
         var cursor = 0
 
-        func consume(_ literal: String) -> Bool {
-            let expected = Array(literal.utf8)
-            guard cursor + expected.count <= bytes.count,
-                  bytes[cursor..<(cursor + expected.count)].elementsEqual(expected) else {
+        func consume(_ expected: [UInt8]) -> Bool {
+            guard cursor + expected.count <= bytes.count else {
                 return false
             }
+            let equal = expected.withUnsafeBytes {
+                memcmp(base.advanced(by: cursor), $0.baseAddress, expected.count) == 0
+            }
+            guard equal else { return false }
             cursor += expected.count
             return true
         }
@@ -895,17 +913,21 @@ final class AtriaHistoricalArchiveDurableStore {
             while cursor < bytes.count {
                 let byte = bytes[cursor]
                 if byte == 0x22 {
-                    guard let value = String(
-                        bytes: bytes[start..<cursor],
-                        encoding: .utf8
-                    ) else { return nil }
+                    let value = String(
+                        decoding: UnsafeBufferPointer(
+                            start: base.advanced(by: start),
+                            count: cursor - start
+                        ),
+                        as: UTF8.self
+                    )
                     cursor += 1
                     return value
                 }
                 // Canonical production paths and hexadecimal keys require no
                 // JSON escaping. Rejecting escapes is safe: it only disables
                 // the accelerator for an unexpected future path.
-                guard byte >= 0x20, byte != 0x5c else { return nil }
+                guard byte >= 0x20, byte <= 0x7e,
+                      byte != 0x5c else { return nil }
                 cursor += 1
             }
             return nil
@@ -924,34 +946,42 @@ final class AtriaHistoricalArchiveDurableStore {
             }
             guard cursor > start,
                   cursor < bytes.count,
-                  let value = String(bytes: bytes[start..<cursor],
-                                     encoding: .utf8) else {
-                return nil
-            }
+                  let value = String(
+                    bytes: UnsafeBufferPointer(
+                        start: base.advanced(by: start),
+                        count: cursor - start
+                    ),
+                    encoding: .utf8
+                  ) else { return nil }
             cursor += 1
             return value
         }
 
-        guard consume("{\"archivePath\":\""),
+        guard consume(indexArchivePathPrefix),
               let archivePath = string(),
-              consume(",\"key\":\""),
+              consume(indexKeyPrefix),
               let key = string(),
-              consume(",\"lineCRC32\":"),
+              consume(indexCRC32Prefix),
               let crcText = number(until: 0x2c),
               let lineCRC32 = UInt32(crcText),
-              consume("\"lineLength\":"),
+              consume(indexLengthPrefix),
               let lengthText = number(until: 0x2c),
               let lineLength = Int(lengthText),
-              consume("\"lineOffset\":"),
+              consume(indexOffsetPrefix),
               let offsetText = number(until: 0x2c),
               let lineOffset = UInt64(offsetText),
-              consume("\"observedAtUnix\":"),
+              consume(indexObservedPrefix),
               let observedText = number(until: 0x2c),
               let observedAtUnix = TimeInterval(observedText),
-              consume("\"version\":"),
+              consume(indexVersionPrefix),
               let versionText = number(until: 0x7d),
               let version = Int(versionText),
-              consume("\n"),
+              cursor < bytes.count,
+              bytes[cursor] == 0x0a else {
+            return nil
+        }
+        cursor += 1
+        guard
               cursor == bytes.count else {
             return nil
         }
