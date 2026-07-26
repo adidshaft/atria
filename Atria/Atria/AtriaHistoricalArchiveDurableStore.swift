@@ -329,14 +329,12 @@ final class AtriaHistoricalArchiveDurableStore {
         }
 
         let cutoff = now().timeIntervalSince1970 - max(0, identityRetention)
-        let discovered: [String: IndexEntry]
         let discoveredFromSnapshot: Bool
-        if let cached = try loadValidatedDerivedIndex(archiveURLs: canonicalArchiveURLs,
-                                                      cutoff: cutoff) {
-            discovered = cached
+        if try loadValidatedDerivedIndex(archiveURLs: canonicalArchiveURLs,
+                                         cutoff: cutoff) {
             discoveredFromSnapshot = true
             AtriaDebugLog("ATRIADBG historical_identity_index status=reused entries=%d archives=%d",
-                          discovered.count,
+                          statesByKey.count,
                           canonicalArchiveURLs.count)
         } else {
             onStartupRawArchiveRebuild?()
@@ -352,13 +350,21 @@ final class AtriaHistoricalArchiveDurableStore {
                     rebuilt[entry.key] = entry
                 }
             }
-            discovered = rebuilt.filter { $0.value.observedAtUnix >= cutoff }
+            let discovered = rebuilt.filter { $0.value.observedAtUnix >= cutoff }
             discoveredFromSnapshot = false
             try rebuildDerivedIndex(with: Array(discovered.values))
             persistDerivedIndexSnapshotBestEffort()
             AtriaDebugLog("ATRIADBG historical_identity_index status=rebuilt entries=%d archives=%d",
                           discovered.count,
                           canonicalArchiveURLs.count)
+            statesByKey = discovered.mapValues {
+                KeyState(
+                    entry: $0,
+                    indexed: true,
+                    durable: false,
+                    rawVerified: true
+                )
+            }
         }
 
         // A complete line proves replay identity, not that its archive inode was
@@ -367,14 +373,7 @@ final class AtriaHistoricalArchiveDurableStore {
         // durability-unknown. If the strap replays it, that drain batch must
         // synchronize both the archive and index before it can report a durable
         // duplicate eligible for ACK.
-        statesByKey = discovered.mapValues {
-            KeyState(
-                entry: $0,
-                indexed: true,
-                durable: false,
-                rawVerified: !discoveredFromSnapshot
-            )
-        }
+        assert(discoveredFromSnapshot || statesByKey.values.allSatisfy(\.rawVerified))
         try loadAndVerifyReceiptState()
     }
 
@@ -742,7 +741,7 @@ final class AtriaHistoricalArchiveDurableStore {
     /// removes that cached state and accepts the replay as new, preserving the
     /// no-data-loss invariant without an O(entry-count) random-read launch.
     private func loadValidatedDerivedIndex(archiveURLs: [URL],
-                                           cutoff: TimeInterval) throws -> [String: IndexEntry]? {
+                                           cutoff: TimeInterval) throws -> Bool {
         let currentArchives = try archiveURLs.map { try archiveFingerprint($0) }
             .sorted { $0.path < $1.path }
         guard fileManager.fileExists(atPath: indexURL.path),
@@ -756,13 +755,13 @@ final class AtriaHistoricalArchiveDurableStore {
                   current: currentArchives
               )
         else {
-            return nil
+            return false
         }
 
         let archiveSizes = Dictionary(
             uniqueKeysWithValues: currentArchives.map { ($0.path, $0.size) }
         )
-        var entries: [String: IndexEntry] = [:]
+        statesByKey.removeAll(keepingCapacity: false)
         let decoded = try decodedIndexEntriesAndDigest(
             prefixByteCount: snapshot.indexByteCount
         ) { entry in
@@ -782,19 +781,25 @@ final class AtriaHistoricalArchiveDurableStore {
             // impossible offsets all invalidate the shortcut. Raw CRC and
             // payload equality are checked lazily before replay rejection.
             guard self.registeredArchivePaths.contains(entry.archivePath),
-                  entries[entry.key] == nil,
+                  self.statesByKey[entry.key] == nil,
                   entry.lineLength > 0,
                   !lineEnd.overflow,
                   lineEnd.partialValue <= (archiveSizes[entry.archivePath] ?? 0) else {
                 return false
             }
-            entries[entry.key] = entry
+            self.statesByKey[entry.key] = KeyState(
+                entry: entry,
+                indexed: true,
+                durable: false,
+                rawVerified: false
+            )
             return true
         }
         guard decoded.byteCount >= snapshot.indexByteCount,
               decoded.prefixSHA256 == snapshot.indexSHA256,
               decoded.valid else {
-            return nil
+            statesByKey.removeAll(keepingCapacity: false)
+            return false
         }
 
         var recoveredRawBeforeIndex = false
@@ -802,23 +807,28 @@ final class AtriaHistoricalArchiveDurableStore {
             let archiveURL = URL(fileURLWithPath: fingerprint.path).standardizedFileURL
             _ = try Self.repairTornJSONLTail(at: archiveURL)
             for entry in try Self.scanArchive(at: archiveURL)
-                where entry.observedAtUnix >= cutoff && entries[entry.key] == nil {
+                where entry.observedAtUnix >= cutoff && statesByKey[entry.key] == nil {
                 // A rotation can become visible after its raw append but
                 // before its index append. Recover only that new file; older
                 // snapshotted archives remain covered by the attested prefix.
-                entries[entry.key] = entry
+                statesByKey[entry.key] = KeyState(
+                    entry: entry,
+                    indexed: false,
+                    durable: false,
+                    rawVerified: true
+                )
                 recoveredRawBeforeIndex = true
             }
         }
         if recoveredRawBeforeIndex {
-            try rebuildDerivedIndex(with: Array(entries.values))
+            try rebuildDerivedIndex(with: statesByKey.values.map(\.entry))
         }
         if !addedArchives.isEmpty || recoveredRawBeforeIndex {
             // Adopt the new path set once so subsequent launches do not repeat
             // even the bounded delta scan.
             persistDerivedIndexSnapshotBestEffort()
         }
-        return entries
+        return true
     }
 
     private func decodedIndexEntriesAndDigest(
@@ -847,6 +857,10 @@ final class AtriaHistoricalArchiveDurableStore {
         }
 
         if let entryHandler {
+            let registeredPaths = Dictionary(
+                grouping: registeredArchivePaths.sorted().map { (Array($0.utf8), $0) },
+                by: { $0.0.count }
+            )
             let valid = data.withUnsafeBytes { rawBytes -> Bool in
                 let bytes = rawBytes.bindMemory(to: UInt8.self)
                 guard let base = bytes.baseAddress else { return data.isEmpty }
@@ -866,7 +880,22 @@ final class AtriaHistoricalArchiveDurableStore {
                         start: base.advanced(by: lineStart),
                         count: newline - lineStart + 1
                     )
-                    guard let entry = Self.decodeCanonicalIndexEntry(line),
+                    guard let entry = Self.decodeCanonicalIndexEntry(
+                        line,
+                        archivePathResolver: { pathBytes in
+                            guard let candidates = registeredPaths[pathBytes.count],
+                                  let pathBase = pathBytes.baseAddress else {
+                                return nil
+                            }
+                            for (candidateBytes, candidatePath) in candidates {
+                                let matches = candidateBytes.withUnsafeBytes {
+                                    memcmp(pathBase, $0.baseAddress, pathBytes.count) == 0
+                                }
+                                if matches { return candidatePath }
+                            }
+                            return nil
+                        }
+                    ),
                           entryHandler(entry) else {
                         return false
                     }
@@ -891,7 +920,8 @@ final class AtriaHistoricalArchiveDurableStore {
     /// any escape, reordered field, malformed number, or trailing byte rejects
     /// the cache and falls back to authoritative raw recovery.
     private static func decodeCanonicalIndexEntry(
-        _ bytes: UnsafeBufferPointer<UInt8>
+        _ bytes: UnsafeBufferPointer<UInt8>,
+        archivePathResolver: ((UnsafeBufferPointer<UInt8>) -> String?)? = nil
     ) -> IndexEntry? {
         guard let base = bytes.baseAddress else { return nil }
         var cursor = 0
@@ -908,7 +938,7 @@ final class AtriaHistoricalArchiveDurableStore {
             return true
         }
 
-        func string() -> String? {
+        func stringBytes() -> UnsafeBufferPointer<UInt8>? {
             let start = cursor
             guard let quotePointer = memchr(
                 base.advanced(by: start),
@@ -920,19 +950,17 @@ final class AtriaHistoricalArchiveDurableStore {
             )
             // The encoder never escapes production paths or hexadecimal keys.
             // A backslash therefore means this is not the canonical wire form.
-            guard memchr(base.advanced(by: start), Int32(0x5c), end - start) == nil,
-                  let value = String(
-                    bytes: UnsafeBufferPointer(
-                        start: base.advanced(by: start),
-                        count: end - start
-                    ),
-                    encoding: .utf8
-                  ) else { return nil }
+            guard memchr(base.advanced(by: start), Int32(0x5c), end - start) == nil else {
+                return nil
+            }
             cursor = end + 1
-            return value
+            return UnsafeBufferPointer(
+                start: base.advanced(by: start),
+                count: end - start
+            )
         }
 
-        func number(until delimiter: UInt8) -> String? {
+        func unsignedInteger(until delimiter: UInt8) -> UInt64? {
             let start = cursor
             guard let delimiterPointer = memchr(
                 base.advanced(by: start),
@@ -942,37 +970,70 @@ final class AtriaHistoricalArchiveDurableStore {
             let end = base.distance(
                 to: delimiterPointer.assumingMemoryBound(to: UInt8.self)
             )
-            guard end > start,
-                  let value = String(
-                    bytes: UnsafeBufferPointer(
-                        start: base.advanced(by: start),
-                        count: end - start
-                    ),
-                    encoding: .utf8
-                  ) else { return nil }
+            guard end > start else { return nil }
+            var value: UInt64 = 0
+            for index in start..<end {
+                let byte = bytes[index]
+                guard byte >= 0x30, byte <= 0x39 else { return nil }
+                let (multiplied, multiplyOverflow) = value.multipliedReportingOverflow(by: 10)
+                let (added, addOverflow) = multiplied.addingReportingOverflow(
+                    UInt64(byte - 0x30)
+                )
+                guard !multiplyOverflow, !addOverflow else { return nil }
+                value = added
+            }
             cursor = end + 1
             return value
         }
 
+        func numberBytes(until delimiter: UInt8) -> UnsafeBufferPointer<UInt8>? {
+            let start = cursor
+            guard let delimiterPointer = memchr(
+                base.advanced(by: start),
+                Int32(delimiter),
+                bytes.count - start
+            ) else { return nil }
+            let end = base.distance(
+                to: delimiterPointer.assumingMemoryBound(to: UInt8.self)
+            )
+            guard end > start else { return nil }
+            for index in start..<end {
+                let byte = bytes[index]
+                guard (byte >= 0x30 && byte <= 0x39)
+                        || byte == 0x2d || byte == 0x2b || byte == 0x2e
+                        || byte == 0x65 || byte == 0x45 else {
+                    return nil
+                }
+            }
+            cursor = end + 1
+            return UnsafeBufferPointer(
+                start: base.advanced(by: start),
+                count: end - start
+            )
+        }
+
         guard consume(indexArchivePathPrefix),
-              let archivePath = string(),
+              let archivePathBytes = stringBytes(),
+              let archivePath = archivePathResolver?(archivePathBytes)
+                ?? String(bytes: archivePathBytes, encoding: .utf8),
               consume(indexKeyPrefix),
-              let key = string(),
+              let keyBytes = stringBytes(),
+              let key = String(bytes: keyBytes, encoding: .utf8),
               consume(indexCRC32Prefix),
-              let crcText = number(until: 0x2c),
-              let lineCRC32 = UInt32(crcText),
+              let crcValue = unsignedInteger(until: 0x2c),
+              let lineCRC32 = UInt32(exactly: crcValue),
               consume(indexLengthPrefix),
-              let lengthText = number(until: 0x2c),
-              let lineLength = Int(lengthText),
+              let lengthValue = unsignedInteger(until: 0x2c),
+              let lineLength = Int(exactly: lengthValue),
               consume(indexOffsetPrefix),
-              let offsetText = number(until: 0x2c),
-              let lineOffset = UInt64(offsetText),
+              let lineOffset = unsignedInteger(until: 0x2c),
               consume(indexObservedPrefix),
-              let observedText = number(until: 0x2c),
+              let observedBytes = numberBytes(until: 0x2c),
+              let observedText = String(bytes: observedBytes, encoding: .utf8),
               let observedAtUnix = TimeInterval(observedText),
               consume(indexVersionPrefix),
-              let versionText = number(until: 0x7d),
-              let version = Int(versionText),
+              let versionValue = unsignedInteger(until: 0x7d),
+              let version = Int(exactly: versionValue),
               cursor < bytes.count,
               bytes[cursor] == 0x0a else {
             return nil
