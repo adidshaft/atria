@@ -220,6 +220,121 @@ final class AtriaHistoricalArchiveDurableStoreTests: XCTestCase {
         XCTAssertEqual(try lineCount(at: archive), 2)
     }
 
+    func testAppendOnlyGrowthReusesSnapshotPrefixWithoutStartupRawRebuild() throws {
+        let directory = try temporaryDirectory()
+        let archive = directory.appendingPathComponent("historical.jsonl")
+        let index = directory.appendingPathComponent("historical.index.jsonl")
+        let firstIdentity = frameIdentity(counter: 11, payload: Data([0x41, 0x42]))
+        let secondIdentity = frameIdentity(counter: 12, payload: Data([0x43, 0x44]))
+
+        var store = try AtriaHistoricalArchiveDurableStore(
+            indexURL: index,
+            existingArchiveURLs: [archive]
+        )
+        let first = store.beginDrainBatch()
+        _ = try store.append(
+            identity: firstIdentity,
+            encodedJSONObject: record(sequence: 11),
+            to: archive,
+            batch: first
+        )
+        _ = try store.flush(first)
+
+        // The first restart establishes a snapshot over the now-existing raw
+        // file. A later page grows both raw and index beyond that snapshot.
+        store = try AtriaHistoricalArchiveDurableStore(
+            indexURL: index,
+            existingArchiveURLs: [archive]
+        )
+        let second = store.beginDrainBatch()
+        _ = try store.append(
+            identity: secondIdentity,
+            encodedJSONObject: record(sequence: 12),
+            to: archive,
+            batch: second
+        )
+        _ = try store.flush(second)
+
+        var rebuiltRawArchive = false
+        store = try AtriaHistoricalArchiveDurableStore(
+            indexURL: index,
+            existingArchiveURLs: [archive],
+            onStartupRawArchiveRebuild: { rebuiltRawArchive = true }
+        )
+        XCTAssertFalse(rebuiltRawArchive)
+
+        let replay = store.beginDrainBatch()
+        XCTAssertEqual(
+            try store.append(
+                identity: secondIdentity,
+                encodedJSONObject: record(sequence: 12),
+                to: archive,
+                batch: replay
+            ),
+            .duplicate(durable: false)
+        )
+        XCTAssertEqual(try lineCount(at: archive), 2)
+    }
+
+    func testSnapshotLoadedIdentityVerifiesRawRowBeforeRejectingReplay() throws {
+        let directory = try temporaryDirectory()
+        let archive = directory.appendingPathComponent("historical.jsonl")
+        let index = directory.appendingPathComponent("historical.index.jsonl")
+        let identity = frameIdentity(counter: 21, payload: Data([0xaa, 0xbb, 0xcc]))
+
+        var store = try AtriaHistoricalArchiveDurableStore(
+            indexURL: index,
+            existingArchiveURLs: [archive]
+        )
+        let original = store.beginDrainBatch()
+        _ = try store.append(
+            identity: identity,
+            encodedJSONObject: record(sequence: 21),
+            to: archive,
+            batch: original
+        )
+        _ = try store.flush(original)
+
+        // Establish a current snapshot, then mutate one suffix byte while
+        // preserving the snapshotted inode, byte count and modification time.
+        store = try AtriaHistoricalArchiveDurableStore(
+            indexURL: index,
+            existingArchiveURLs: [archive]
+        )
+        let attributes = try FileManager.default.attributesOfItem(atPath: archive.path)
+        let modificationDate = try XCTUnwrap(attributes[.modificationDate] as? Date)
+        var bytes = try Data(contentsOf: archive)
+        let newline = try XCTUnwrap(bytes.lastIndex(of: 0x0a))
+        let mutationIndex = bytes.index(before: newline)
+        bytes[mutationIndex] = bytes[mutationIndex] == 0x7d ? 0x20 : 0x7d
+        try bytes.write(to: archive, options: [])
+        try FileManager.default.setAttributes(
+            [.modificationDate: modificationDate],
+            ofItemAtPath: archive.path
+        )
+
+        var rebuiltRawArchive = false
+        store = try AtriaHistoricalArchiveDurableStore(
+            indexURL: index,
+            existingArchiveURLs: [archive],
+            onStartupRawArchiveRebuild: { rebuiltRawArchive = true }
+        )
+        XCTAssertFalse(rebuiltRawArchive)
+
+        let repair = store.beginDrainBatch()
+        XCTAssertEqual(
+            try store.append(
+                identity: identity,
+                encodedJSONObject: record(sequence: 21),
+                to: archive,
+                batch: repair
+            ),
+            .inserted,
+            "a cached identity may not reject replay after its exact raw row fails CRC"
+        )
+        XCTAssertEqual(try lineCount(at: archive), 2)
+    }
+
     func testOneBatchFlushSynchronizesEveryRotatedFileAndTheIndex() throws {
         let directory = try temporaryDirectory()
         let firstArchive = directory.appendingPathComponent("base.jsonl")
