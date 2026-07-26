@@ -5,6 +5,11 @@ import Foundation
 /// does not live inside `ActiveSessionJournal`: valid R10 motion can continue
 /// while HR is zero, rejected, or temporarily absent.
 enum AtriaStrapStepLedger {
+    struct RecoveredCheckpoint: Equatable, Sendable {
+        let record: Record
+        let quarantinedMalformedURL: URL
+    }
+
     struct Record: Codable, Equatable, Sendable {
         let schema: Int
         let segmentID: UUID
@@ -171,6 +176,56 @@ enum AtriaStrapStepLedger {
         }
         try writeLocked(record, to: target)
         return record
+    }
+
+    /// Preserves a structurally unreadable ledger byte-for-byte, then seeds a
+    /// fresh atomic checkpoint from the caller's current in-memory segment.
+    /// This is deliberately separate from `checkpoint`: valid ledgers still
+    /// fail closed on segment, count, and watermark conflicts.
+    @discardableResult
+    static func recoverMalformedFileAndCheckpoint(
+        segmentID: UUID,
+        segmentStartedAt: Date,
+        segmentSteps: Int,
+        segmentRawSteps: Int,
+        deviceTimestamp: UInt32?,
+        state: String?,
+        gyroCadenceResearchSteps: Int? = nil,
+        now: Date = Date(),
+        at target: URL? = url,
+        quarantineID: UUID = UUID()
+    ) throws -> RecoveredCheckpoint {
+        ioLock.lock()
+        defer { ioLock.unlock() }
+        guard let target else { throw SaveError.unavailableStorage }
+        guard FileManager.default.fileExists(atPath: target.path),
+              loadLocked(now: now,
+                         from: target,
+                         enforcesFreshness: false) == nil else {
+            throw SaveError.malformed
+        }
+
+        let quarantineURL = target.deletingPathExtension()
+            .appendingPathExtension("corrupt-\(quarantineID.uuidString).json")
+        try FileManager.default.moveItem(at: target, to: quarantineURL)
+        try synchronizeDirectoryLocked(target.deletingLastPathComponent())
+
+        let record = try reconciledCheckpoint(
+            existing: nil,
+            segmentID: segmentID,
+            segmentStartedAt: segmentStartedAt,
+            segmentSteps: segmentSteps,
+            segmentRawSteps: segmentRawSteps,
+            deviceTimestamp: deviceTimestamp,
+            state: state,
+            gyroCadenceResearchSteps: gyroCadenceResearchSteps,
+            now: now
+        )
+        try writeLocked(record, to: target)
+        return RecoveredCheckpoint(
+            record: record,
+            quarantinedMalformedURL: quarantineURL
+        )
     }
 
     /// Moves to a new detector-accounting segment only after the caller has
@@ -470,6 +525,10 @@ enum AtriaStrapStepLedger {
         let handle = try FileHandle(forWritingTo: target)
         defer { try? handle.close() }
         try handle.synchronize()
+        try synchronizeDirectoryLocked(directory)
+    }
+
+    private static func synchronizeDirectoryLocked(_ directory: URL) throws {
         let descriptor = open(directory.path, O_RDONLY | O_DIRECTORY)
         guard descriptor >= 0 else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)

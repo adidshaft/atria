@@ -393,6 +393,36 @@ final class AtriaStrapStepLedgerTests: XCTestCase {
                      "an expired strap clock must not reject a genuine later clock reset")
     }
 
+    func testMalformedLedgerIsQuarantinedBeforeFreshCheckpoint() throws {
+        let malformedBytes = Data("not-json-step-ledger".utf8)
+        try malformedBytes.write(to: target)
+        let segment = UUID()
+        let quarantineID = UUID()
+
+        let recovered = try AtriaStrapStepLedger
+            .recoverMalformedFileAndCheckpoint(
+                segmentID: segment,
+                segmentStartedAt: now.addingTimeInterval(-30),
+                segmentSteps: 16,
+                segmentRawSteps: 16,
+                deviceTimestamp: 5_016,
+                state: "r10_live_preliminary",
+                gyroCadenceResearchSteps: 16,
+                now: now,
+                at: target,
+                quarantineID: quarantineID
+            )
+
+        XCTAssertEqual(try Data(contentsOf: recovered.quarantinedMalformedURL),
+                       malformedBytes)
+        XCTAssertEqual(recovered.record.segmentID, segment)
+        XCTAssertEqual(recovered.record.segmentRawSteps, 16)
+        XCTAssertEqual(
+            AtriaStrapStepLedger.load(now: now, from: target),
+            recovered.record
+        )
+    }
+
     func testConcurrentOutOfOrderWritersLeaveNewestCheckpoint() throws {
         let segment = UUID()
         let group = DispatchGroup()

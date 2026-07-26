@@ -1432,11 +1432,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var historyDrain = AtriaWhoop4HistoryDrainState()
     private var historicalDrainTelemetry = HistoricalDrainTelemetry()
     private var historicalDrainTelemetryTask: Task<Void, Never>?
-    /// Productivity-bounded in-session 1600 continue chain (see
-    /// reissueHistoryDrainContinueIfBurstSettled). Reset per drain generation.
-    private var historyDrainContinueRowsAtLastReissue = 0
-    private var historyDrainContinueReissues = 0
-    private var historyDrainContinueDryLogged = false
     private let historySequenceContinuityStore = AtriaWhoop4HistorySequenceContinuityStore()
     private var historySequenceContinuityStrapIdentifier: String?
     private var pendingHistoryEndACK: (key: String, payload: [UInt8])?
@@ -6417,11 +6412,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         activeExplicitWorkout: Bool,
         historySyncInProgress: Bool,
         consumerMaterializationInFlight: Bool,
+        freshOwnerBoundaryFailureLatched: Bool,
         gapFingerprint: String
     ) -> Bool {
         !activeExplicitWorkout
             && !historySyncInProgress
             && !consumerMaterializationInFlight
+            && !freshOwnerBoundaryFailureLatched
             && !gapFingerprint.isEmpty
     }
 
@@ -6486,6 +6483,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let scheduleAuthority = try? historicalFullDrainCoverageStore.load()
         let scheduleBlocker: String? = {
             if interruptedFullDrainReacquisitionTask != nil { return "task_already_scheduled" }
+            if freshHistoryOwnerBoundaryFailureLatched { return "fresh_owner_boundary_failure_latched" }
             if !deferInterruptedFullDrainForCurrentLiveConnection { return "no_deferred_drain_for_this_connection" }
             if offlineHistoricalSyncInProgress { return "history_sync_in_progress" }
             if AtriaPendingWorkoutIntent.isActiveForBLEContinuity() { return "explicit_workout_active" }
@@ -6513,6 +6511,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             activeExplicitWorkout: false,
             historySyncInProgress: false,
             consumerMaterializationInFlight: false,
+            freshOwnerBoundaryFailureLatched:
+                freshHistoryOwnerBoundaryFailureLatched,
             gapFingerprint: fingerprint
         ) else {
             AtriaDebugLog("ATRIADBG offline_sync status=reacquisition_not_scheduled reason=%@ blocker=policy_declined fingerprint=%@",
@@ -6534,6 +6534,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             let firedAuthority = try? self.historicalFullDrainCoverageStore.load()
             let fireBlocker: String? = {
                 if Task.isCancelled { return "task_cancelled" }
+                if self.freshHistoryOwnerBoundaryFailureLatched {
+                    return "fresh_owner_boundary_failure_latched"
+                }
                 if !self.deferInterruptedFullDrainForCurrentLiveConnection { return "defer_cleared_by_disconnect" }
                 if self.offlineHistoricalSyncInProgress { return "history_sync_in_progress" }
                 if AtriaPendingWorkoutIntent.isActiveForBLEContinuity() { return "explicit_workout_active" }
@@ -6642,6 +6645,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               !workoutActive,
               !offlineHistoricalSyncInProgress,
               !historicalConsumerMaterializationInFlight,
+              !freshHistoryOwnerBoundaryFailureLatched,
               let connectedAt,
               let authority else { return }
 
@@ -9978,9 +9982,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func startHistoricalDrainTelemetry(generation: UInt64) {
         historicalDrainTelemetryTask?.cancel()
         historicalDrainTelemetry.reset(generation: generation)
-        historyDrainContinueRowsAtLastReissue = 0
-        historyDrainContinueReissues = 0
-        historyDrainContinueDryLogged = false
         historicalDrainTelemetryTask = Task { @MainActor [weak self] in
             var tick = 0
             while !Task.isCancelled {
@@ -10003,118 +10004,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     self.emitHistoricalDrainTelemetry(generation: generation,
                                                       trigger: "periodic")
                 }
-                self.reissueHistoryDrainContinueIfBurstSettled(
-                    generation: generation
-                )
             }
         }
-    }
-
-    /// The strap serves one bounded burst (~80-130 rows) per 1600 START and
-    /// then idles; ~10s of idle kills the link with a supervision timeout
-    /// (2026-07-24 19:29:02 "connection timed out unexpectedly",
-    /// stream5_rx=83 phase=listening ack_ok=3). Each session restart costs
-    /// the 60s stable window plus the 5-minute cooldown, capping recovery at
-    /// ~0.4x realtime — a 14-day flash ring can never drain. Re-issuing the
-    /// SAME verified 1600 continue inside the session keeps the burst chain
-    /// alive. Productivity-bounded, not count-bounded: every re-issue must
-    /// have yielded new rows since the previous one, so a dry cursor stops
-    /// the chain after exactly one unproductive re-issue and can never loop.
-    private func reissueHistoryDrainContinueIfBurstSettled(generation: UInt64) {
-        guard offlineHistoricalSyncInProgress,
-              offlineHistoricalSyncGeneration == generation,
-              peripheral?.state == .connected,
-              historicalDrainTelemetry.generation == generation,
-              historicalDrainTelemetry.stream5Received > 0,
-              historicalDrainTelemetry.ackErrors == 0,
-              historicalDrainTelemetry.ackSent == historicalDrainTelemetry.ackSucceeded,
-              Date().timeIntervalSince(historicalDrainTelemetry.lastProgressAt) >= 0.7
-        else { return }
-        guard Self.shouldSendHistoryDrainBurstContinue(
-            pendingHistoryEndACK: pendingHistoryEndACK != nil,
-            ackCallbackDeferred: historyACKGate.requiresHistoryCallbackDeferral,
-            durableFlushInFlight: historyDurableFlushInFlight,
-            admissionBatchInFlight: historicalAdmissionBatchInFlight,
-            pendingTransportEvents: hasPendingHistoricalTransportEvents,
-            pendingPersistenceCount: historyDrain.pendingPersistenceCount,
-            writeInFlight: !writeCompletionLedger.pending.isEmpty,
-            pageContinuationArmed: historicalPageContinuationTask != nil,
-            replayACKArmed: historicalReplayACKTask != nil
-        ) else { return }
-        guard historicalDrainTelemetry.stream5Received
-                > historyDrainContinueRowsAtLastReissue else {
-            if !historyDrainContinueDryLogged {
-                historyDrainContinueDryLogged = true
-                AtriaDebugLog("ATRIADBG historyDrain status=continue_dry generation=%llu stream5_rx=%d reissues=%d action=let_session_settle_terminal",
-                              generation,
-                              historicalDrainTelemetry.stream5Received,
-                              historyDrainContinueReissues)
-            }
-            return
-        }
-        Task { @MainActor [weak self] in
-            guard let self,
-                  self.offlineHistoricalSyncInProgress,
-                  self.offlineHistoricalSyncGeneration == generation,
-                  Self.shouldSendHistoryDrainBurstContinue(
-                    pendingHistoryEndACK: self.pendingHistoryEndACK != nil,
-                    ackCallbackDeferred:
-                        self.historyACKGate.requiresHistoryCallbackDeferral,
-                    durableFlushInFlight: self.historyDurableFlushInFlight,
-                    admissionBatchInFlight:
-                        self.historicalAdmissionBatchInFlight,
-                    pendingTransportEvents:
-                        self.hasPendingHistoricalTransportEvents,
-                    pendingPersistenceCount:
-                        self.historyDrain.pendingPersistenceCount,
-                    writeInFlight:
-                        !self.writeCompletionLedger.pending.isEmpty,
-                    pageContinuationArmed:
-                        self.historicalPageContinuationTask != nil,
-                    replayACKArmed: self.historicalReplayACKTask != nil
-                  ),
-                  self.historicalDrainTelemetry.stream5Received
-                    > self.historyDrainContinueRowsAtLastReissue else { return }
-            self.historyDrainContinueRowsAtLastReissue =
-                self.historicalDrainTelemetry.stream5Received
-            self.historyDrainContinueReissues += 1
-            let reissue = self.historyDrainContinueReissues
-            AtriaDebugLog("ATRIADBG historyDrain status=continue_reissue generation=%llu reissue=%d stream5_rx=%d action=resend_verified_1600_same_session",
-                          generation,
-                          reissue,
-                          self.historicalDrainTelemetry.stream5Received)
-            let result = await self.sendHistoryCommandAwaitingWriteConfirmation(
-                command: Cmd.sendHistoricalData,
-                payload: [0x00],
-                generation: generation
-            )
-            AtriaDebugLog("ATRIADBG historyDrain status=continue_reissue_result generation=%llu reissue=%d result=%@",
-                          generation,
-                          reissue,
-                          String(describing: result))
-        }
-    }
-
-    nonisolated static func shouldSendHistoryDrainBurstContinue(
-        pendingHistoryEndACK: Bool,
-        ackCallbackDeferred: Bool,
-        durableFlushInFlight: Bool,
-        admissionBatchInFlight: Bool,
-        pendingTransportEvents: Bool,
-        pendingPersistenceCount: Int,
-        writeInFlight: Bool,
-        pageContinuationArmed: Bool,
-        replayACKArmed: Bool
-    ) -> Bool {
-        !pendingHistoryEndACK
-            && !ackCallbackDeferred
-            && !durableFlushInFlight
-            && !admissionBatchInFlight
-            && !pendingTransportEvents
-            && pendingPersistenceCount == 0
-            && !writeInFlight
-            && !pageContinuationArmed
-            && !replayACKArmed
     }
 
     private func emitHistoricalDrainTelemetry(
@@ -27849,18 +27740,39 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let unhandedRebindingSourceSegmentID = strapStepLedgerUnhandedRestoreRebindSourceSegmentID
         let savedAt = Date()
         Task.detached(priority: .utility) { [weak self] in
-            let result = Result {
-                try AtriaStrapStepLedger.checkpoint(
-                    segmentID: segmentID,
-                    segmentStartedAt: segmentStartedAt,
-                    segmentSteps: segmentSteps,
-                    segmentRawSteps: segmentRawSteps,
-                    deviceTimestamp: deviceTimestamp,
-                    state: state,
-                    gyroCadenceResearchSteps: gyroCadenceResearchSteps,
-                    now: savedAt,
-                    unhandedRebindingSourceSegmentID: unhandedRebindingSourceSegmentID
-                )
+            let result: Result<(AtriaStrapStepLedger.Record, URL?), Error> = Result {
+                do {
+                    let record = try AtriaStrapStepLedger.checkpoint(
+                        segmentID: segmentID,
+                        segmentStartedAt: segmentStartedAt,
+                        segmentSteps: segmentSteps,
+                        segmentRawSteps: segmentRawSteps,
+                        deviceTimestamp: deviceTimestamp,
+                        state: state,
+                        gyroCadenceResearchSteps: gyroCadenceResearchSteps,
+                        now: savedAt,
+                        unhandedRebindingSourceSegmentID:
+                            unhandedRebindingSourceSegmentID
+                    )
+                    return (record, nil)
+                } catch AtriaStrapStepLedger.SaveError.malformed {
+                    let recovered = try AtriaStrapStepLedger
+                        .recoverMalformedFileAndCheckpoint(
+                            segmentID: segmentID,
+                            segmentStartedAt: segmentStartedAt,
+                            segmentSteps: segmentSteps,
+                            segmentRawSteps: segmentRawSteps,
+                            deviceTimestamp: deviceTimestamp,
+                            state: state,
+                            gyroCadenceResearchSteps:
+                                gyroCadenceResearchSteps,
+                            now: savedAt
+                        )
+                    return (
+                        recovered.record,
+                        recovered.quarantinedMalformedURL
+                    )
+                }
             }
             await self?.finishStrapStepLedgerSave(result,
                                                   segmentID: segmentID,
@@ -27869,14 +27781,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func finishStrapStepLedgerSave(
-        _ result: Result<AtriaStrapStepLedger.Record, Error>,
+        _ result: Result<(AtriaStrapStepLedger.Record, URL?), Error>,
         segmentID: UUID,
         reason: String
     ) {
         strapStepLedgerSaveInFlight = false
         var failureRetryDelay: TimeInterval?
         switch result {
-        case let .success(record):
+        case let .success((record, quarantinedMalformedURL)):
             strapStepLedgerConsecutiveSaveFailures = 0
             strapStepLedgerLastFailureDescription = nil
             if liveSessionID == segmentID {
@@ -27896,9 +27808,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 )
                 lastStrapStepLedgerSaveAt = record.updatedAt
             }
-            AtriaDebugLog("ATRIADBG strap_step_ledger status=saved reason=%@ raw_steps=%d",
-                          reason,
-                          record.segmentRawSteps)
+            if let quarantinedMalformedURL {
+                AtriaDebugLog("ATRIADBG strap_step_ledger status=recovered_malformed reason=%@ raw_steps=%d quarantine=%@ durability=atomic_fsync",
+                              reason,
+                              record.segmentRawSteps,
+                              quarantinedMalformedURL.lastPathComponent)
+            } else {
+                AtriaDebugLog("ATRIADBG strap_step_ledger status=saved reason=%@ raw_steps=%d",
+                              reason,
+                              record.segmentRawSteps)
+            }
         case let .failure(error):
             strapStepLedgerConsecutiveSaveFailures = min(
                 strapStepLedgerConsecutiveSaveFailures + 1,
