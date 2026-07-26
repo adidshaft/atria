@@ -751,43 +751,44 @@ final class AtriaHistoricalArchiveDurableStore {
             return nil
         }
 
-        let decoded = try decodedIndexEntriesAndDigest(
-            prefixByteCount: snapshot.indexByteCount
-        )
-        guard decoded.byteCount >= snapshot.indexByteCount,
-              decoded.prefixSHA256 == snapshot.indexSHA256 else {
-            return nil
-        }
-
         let archiveSizes = Dictionary(
             uniqueKeysWithValues: currentArchives.map { ($0.path, $0.size) }
         )
         var entries: [String: IndexEntry] = [:]
-        for entry in decoded.entries {
+        let decoded = try decodedIndexEntriesAndDigest(
+            prefixByteCount: snapshot.indexByteCount
+        ) { entry in
             guard entry.version == 2,
                   entry.observedAtUnix.isFinite else {
-                return nil
+                return false
             }
             // Retention expiry is not cache corruption. Omitting an expired
             // replay identity is fail-safe (a later replay is accepted and
             // durably appended); rebuilding hundreds of megabytes at each
             // moving cutoff is not.
-            guard entry.observedAtUnix >= cutoff else { continue }
+            guard entry.observedAtUnix >= cutoff else { return true }
             let lineEnd = entry.lineOffset.addingReportingOverflow(
                 UInt64(max(0, entry.lineLength))
             )
             // Duplicate/out-of-horizon entries, unregistered paths and
             // impossible offsets all invalidate the shortcut. Raw CRC and
             // payload equality are checked lazily before replay rejection.
-            guard registeredArchivePaths.contains(entry.archivePath),
+            guard self.registeredArchivePaths.contains(entry.archivePath),
                   entries[entry.key] == nil,
                   entry.lineLength > 0,
                   !lineEnd.overflow,
                   lineEnd.partialValue <= (archiveSizes[entry.archivePath] ?? 0) else {
-                return nil
+                return false
             }
             entries[entry.key] = entry
+            return true
         }
+        guard decoded.byteCount >= snapshot.indexByteCount,
+              decoded.prefixSHA256 == snapshot.indexSHA256,
+              decoded.valid else {
+            return nil
+        }
+
         var recoveredRawBeforeIndex = false
         for fingerprint in addedArchives where fingerprint.exists {
             let archiveURL = URL(fileURLWithPath: fingerprint.path).standardizedFileURL
@@ -813,20 +814,19 @@ final class AtriaHistoricalArchiveDurableStore {
     }
 
     private func decodedIndexEntriesAndDigest(
-        prefixByteCount: UInt64? = nil
+        prefixByteCount: UInt64? = nil,
+        entryHandler: ((IndexEntry) -> Bool)? = nil
     ) throws -> (
-        entries: [IndexEntry],
         byteCount: UInt64,
         sha256: String,
-        prefixSHA256: String?
+        prefixSHA256: String?,
+        valid: Bool
     ) {
         let handle = try FileHandle(forReadingFrom: indexURL)
         defer { try? handle.close() }
-        let decoder = JSONDecoder()
         var hasher = SHA256()
         var prefixHasher = SHA256()
         var prefixBytesRemaining = prefixByteCount
-        var entries: [IndexEntry] = []
         var buffer = Data()
         var unreadStart = 0
         var byteCount: UInt64 = 0
@@ -845,10 +845,12 @@ final class AtriaHistoricalArchiveDurableStore {
                 let lineStart = buffer.index(buffer.startIndex, offsetBy: unreadStart)
                 guard let newline = buffer[lineStart...].firstIndex(of: 0x0a) else { break }
                 let line = Data(buffer[lineStart...newline])
-                guard let entry = try? decoder.decode(IndexEntry.self, from: line) else {
-                    return ([], 0, "", nil)
+                if let entryHandler {
+                    guard let entry = Self.decodeCanonicalIndexEntry(line),
+                          entryHandler(entry) else {
+                        return (0, "", nil, false)
+                    }
                 }
-                entries.append(entry)
                 unreadStart += line.count
             }
             if unreadStart >= compactionThreshold {
@@ -859,14 +861,107 @@ final class AtriaHistoricalArchiveDurableStore {
         // A JSONL index without a terminating newline is never a valid cache.
         guard unreadStart == buffer.count,
               prefixBytesRemaining == nil || prefixBytesRemaining == 0 else {
-            return ([], 0, "", nil)
+            return (0, "", nil, false)
         }
         return (
-            entries,
             byteCount,
             Self.hex(hasher.finalize()),
-            prefixByteCount == nil ? nil : Self.hex(prefixHasher.finalize())
+            prefixByteCount == nil ? nil : Self.hex(prefixHasher.finalize()),
+            true
         )
+    }
+
+    /// The identity index is emitted by `JSONEncoder` with sorted keys, so its
+    /// wire form is fixed. Parsing that form directly avoids 175,000
+    /// `JSONDecoder` object graphs at every launch while remaining fail-closed:
+    /// any escape, reordered field, malformed number, or trailing byte rejects
+    /// the cache and falls back to authoritative raw recovery.
+    private static func decodeCanonicalIndexEntry(_ line: Data) -> IndexEntry? {
+        let bytes = [UInt8](line)
+        var cursor = 0
+
+        func consume(_ literal: String) -> Bool {
+            let expected = Array(literal.utf8)
+            guard cursor + expected.count <= bytes.count,
+                  bytes[cursor..<(cursor + expected.count)].elementsEqual(expected) else {
+                return false
+            }
+            cursor += expected.count
+            return true
+        }
+
+        func string() -> String? {
+            let start = cursor
+            while cursor < bytes.count {
+                let byte = bytes[cursor]
+                if byte == 0x22 {
+                    guard let value = String(
+                        bytes: bytes[start..<cursor],
+                        encoding: .utf8
+                    ) else { return nil }
+                    cursor += 1
+                    return value
+                }
+                // Canonical production paths and hexadecimal keys require no
+                // JSON escaping. Rejecting escapes is safe: it only disables
+                // the accelerator for an unexpected future path.
+                guard byte >= 0x20, byte != 0x5c else { return nil }
+                cursor += 1
+            }
+            return nil
+        }
+
+        func number(until delimiter: UInt8) -> String? {
+            let start = cursor
+            while cursor < bytes.count, bytes[cursor] != delimiter {
+                let byte = bytes[cursor]
+                guard (byte >= 0x30 && byte <= 0x39)
+                        || byte == 0x2d || byte == 0x2b || byte == 0x2e
+                        || byte == 0x65 || byte == 0x45 else {
+                    return nil
+                }
+                cursor += 1
+            }
+            guard cursor > start,
+                  cursor < bytes.count,
+                  let value = String(bytes: bytes[start..<cursor],
+                                     encoding: .utf8) else {
+                return nil
+            }
+            cursor += 1
+            return value
+        }
+
+        guard consume("{\"archivePath\":\""),
+              let archivePath = string(),
+              consume(",\"key\":\""),
+              let key = string(),
+              consume(",\"lineCRC32\":"),
+              let crcText = number(until: 0x2c),
+              let lineCRC32 = UInt32(crcText),
+              consume("\"lineLength\":"),
+              let lengthText = number(until: 0x2c),
+              let lineLength = Int(lengthText),
+              consume("\"lineOffset\":"),
+              let offsetText = number(until: 0x2c),
+              let lineOffset = UInt64(offsetText),
+              consume("\"observedAtUnix\":"),
+              let observedText = number(until: 0x2c),
+              let observedAtUnix = TimeInterval(observedText),
+              consume("\"version\":"),
+              let versionText = number(until: 0x7d),
+              let version = Int(versionText),
+              consume("\n"),
+              cursor == bytes.count else {
+            return nil
+        }
+        return IndexEntry(version: version,
+                          key: key,
+                          observedAtUnix: observedAtUnix,
+                          archivePath: archivePath,
+                          lineOffset: lineOffset,
+                          lineLength: lineLength,
+                          lineCRC32: lineCRC32)
     }
 
     private static func appendOnlyArchiveDelta(
@@ -972,7 +1067,10 @@ final class AtriaHistoricalArchiveDurableStore {
         do {
             let archiveURLs = registeredArchivePaths.map { URL(fileURLWithPath: $0) }
                 .sorted { $0.path < $1.path }
-            let index = try decodedIndexEntriesAndDigest()
+            // Snapshot publication needs the exact byte digest, not a second
+            // full materialization of every entry already held by the store.
+            let index = try decodedIndexEntriesAndDigest(entryHandler: nil)
+            guard index.valid else { return }
             guard index.byteCount > 0 || statesByKey.isEmpty else { return }
             let snapshot = DerivedIndexSnapshot(
                 version: 1,
