@@ -157,6 +157,45 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         ), "successful coverage must release only the matching timeout circuit")
     }
 
+    func testGate2ExactRequestReconcilesOnlyStaleDrainingAuthorityBeforeConflictGate() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
+        let manager = try String(
+            contentsOf: appDirectory.appendingPathComponent("AtriaBLEManager.swift"),
+            encoding: .utf8
+        )
+
+        let helperStart = try XCTUnwrap(manager.range(
+            of: "private func reconcileStaleDrainingFullDrainAuthority("
+        )?.lowerBound)
+        let requestStart = try XCTUnwrap(manager.range(
+            of: "func requestOfflineHistoricalSyncIfNeeded("
+        )?.lowerBound)
+        let helper = String(manager[helperStart..<requestStart])
+        XCTAssertTrue(helper.contains("authority.status == .draining"))
+        XCTAssertTrue(helper.contains("recoveryCandidate("))
+        XCTAssertTrue(helper.contains("== nil"))
+        XCTAssertTrue(helper.contains("clearUnresolvedAuthorityIfGapNoLongerPending("))
+        XCTAssertTrue(helper.contains("abandonDrainingAuthorityIfGapFingerprintChanged("))
+
+        let requestEnd = try XCTUnwrap(manager.range(
+            of: "private func armHistoryCapabilityQualification(",
+            range: requestStart..<manager.endIndex
+        )?.lowerBound)
+        let request = String(manager[requestStart..<requestEnd])
+        let reconcile = try XCTUnwrap(request.range(
+            of: "reconcileStaleDrainingFullDrainAuthority("
+        )?.lowerBound)
+        let conflict = try XCTUnwrap(request.range(
+            of: "reason=other_drain_authority"
+        )?.lowerBound)
+        XCTAssertLessThan(
+            reconcile,
+            conflict,
+            "a retired exact authority must be cleared before it can reject the new gap"
+        )
+    }
+
     func testHistoryArmCannotCancelOrMutateBeforeRealtimeReconnectFence() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")

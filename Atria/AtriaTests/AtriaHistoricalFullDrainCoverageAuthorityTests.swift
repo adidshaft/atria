@@ -304,6 +304,19 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
         XCTAssertNil(try store.load())
     }
 
+    func testNoLongerPendingDrainingAuthorityClearsOnlyForExactIdentifier() throws {
+        let store = try armedStore()
+        try store.clearUnresolvedAuthorityIfGapNoLongerPending(
+            gapIdentifier: "another-gap"
+        )
+        XCTAssertNotNil(try store.load())
+
+        try store.clearUnresolvedAuthorityIfGapNoLongerPending(
+            gapIdentifier: "gap-a"
+        )
+        XCTAssertNil(try store.load())
+    }
+
     func testACKBeforeBothStoreFsyncsFailsClosed() throws {
         let store = try armedStore()
         XCTAssertThrowsError(try store.recordHistoryEndFsynced(
