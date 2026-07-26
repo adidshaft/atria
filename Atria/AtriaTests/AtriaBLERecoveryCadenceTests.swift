@@ -64,55 +64,6 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
     }
 
-    func testHistoryBurstContinueNeverCompetesWithTerminalDurabilityOrWrites() {
-        let clear = AtriaBLEManager.shouldSendHistoryDrainBurstContinue(
-            pendingHistoryEndACK: false,
-            ackCallbackDeferred: false,
-            durableFlushInFlight: false,
-            admissionBatchInFlight: false,
-            pendingTransportEvents: false,
-            pendingPersistenceCount: 0,
-            writeInFlight: false,
-            pageContinuationArmed: false,
-            replayACKArmed: false
-        )
-        XCTAssertTrue(clear)
-
-        func decision(
-            pendingHistoryEndACK: Bool = false,
-            ackCallbackDeferred: Bool = false,
-            durableFlushInFlight: Bool = false,
-            admissionBatchInFlight: Bool = false,
-            pendingTransportEvents: Bool = false,
-            pendingPersistenceCount: Int = 0,
-            writeInFlight: Bool = false,
-            pageContinuationArmed: Bool = false,
-            replayACKArmed: Bool = false
-        ) -> Bool {
-            AtriaBLEManager.shouldSendHistoryDrainBurstContinue(
-                pendingHistoryEndACK: pendingHistoryEndACK,
-                ackCallbackDeferred: ackCallbackDeferred,
-                durableFlushInFlight: durableFlushInFlight,
-                admissionBatchInFlight: admissionBatchInFlight,
-                pendingTransportEvents: pendingTransportEvents,
-                pendingPersistenceCount: pendingPersistenceCount,
-                writeInFlight: writeInFlight,
-                pageContinuationArmed: pageContinuationArmed,
-                replayACKArmed: replayACKArmed
-            )
-        }
-
-        XCTAssertFalse(decision(pendingHistoryEndACK: true))
-        XCTAssertFalse(decision(ackCallbackDeferred: true))
-        XCTAssertFalse(decision(durableFlushInFlight: true))
-        XCTAssertFalse(decision(admissionBatchInFlight: true))
-        XCTAssertFalse(decision(pendingTransportEvents: true))
-        XCTAssertFalse(decision(pendingPersistenceCount: 1))
-        XCTAssertFalse(decision(writeInFlight: true))
-        XCTAssertFalse(decision(pageContinuationArmed: true))
-        XCTAssertFalse(decision(replayACKArmed: true))
-    }
-
     func testPageContinuationWaitsForReplayACKSingleFlightPipe() {
         XCTAssertTrue(
             AtriaBLEManager.shouldSendHistoricalPageContinuation(
@@ -4120,20 +4071,30 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             activeExplicitWorkout: false,
             historySyncInProgress: false,
             consumerMaterializationInFlight: false,
+            freshOwnerBoundaryFailureLatched: false,
             gapFingerprint: "gap-a"
         ))
         XCTAssertFalse(AtriaBLEManager.shouldScheduleInterruptedFullDrainReacquisition(
             activeExplicitWorkout: true,
             historySyncInProgress: false,
             consumerMaterializationInFlight: false,
+            freshOwnerBoundaryFailureLatched: false,
             gapFingerprint: "gap-a"
         ))
         XCTAssertFalse(AtriaBLEManager.shouldScheduleInterruptedFullDrainReacquisition(
             activeExplicitWorkout: false,
             historySyncInProgress: false,
             consumerMaterializationInFlight: false,
+            freshOwnerBoundaryFailureLatched: false,
             gapFingerprint: ""
         ))
+        XCTAssertFalse(AtriaBLEManager.shouldScheduleInterruptedFullDrainReacquisition(
+            activeExplicitWorkout: false,
+            historySyncInProgress: false,
+            consumerMaterializationInFlight: false,
+            freshOwnerBoundaryFailureLatched: true,
+            gapFingerprint: "gap-a"
+        ), "a failed durable boundary must not restart from accepted-HR callbacks")
     }
 
     func testPersistedInterruptedDrainUsesDurableAuthorityAndFreshHRPath() throws {
@@ -8247,32 +8208,21 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
-    func testDrainContinueChainIsProductivityBoundedAndSameSession() throws {
+    func testTelemetryNeverInjectsHistoryContinueIntoAnOpenPage() throws {
         let source = try leaseManagerSource()
         let start = try XCTUnwrap(source.range(
-            of: "private func reissueHistoryDrainContinueIfBurstSettled(generation: UInt64) {"
+            of: "private func startHistoricalDrainTelemetry(generation: UInt64) {"
         ))
         let end = try XCTUnwrap(source.range(
             of: "private func emitHistoricalDrainTelemetry(",
             range: start.upperBound..<source.endIndex
         ))
         let body = String(source[start.lowerBound..<end.lowerBound])
-        // Every re-issue must have yielded new rows since the previous one —
-        // a dry cursor stops the chain after one unproductive re-issue, so
-        // the continue can never loop against an empty or wedged strap.
-        XCTAssertTrue(body.contains("> historyDrainContinueRowsAtLastReissue"))
-        XCTAssertTrue(body.contains("status=continue_dry"))
-        // Only the already-verified 1600 continue is ever re-sent; the chain
-        // must not touch 0x22 range requests, CCCDs, or the link itself.
-        XCTAssertTrue(body.contains("command: Cmd.sendHistoricalData"))
-        XCTAssertTrue(body.contains("payload: [0x00]"))
-        XCTAssertFalse(body.contains("getDataRange"))
-        XCTAssertFalse(body.contains("setNotifyValue"))
-        XCTAssertFalse(body.contains("cancelPeripheralConnection"))
-        // ACK health gates the chain: an unsettled or failing ACK stream must
-        // never be papered over by more START commands.
-        XCTAssertTrue(body.contains("ackErrors == 0"))
-        XCTAssertTrue(body.contains("ackSent == historicalDrainTelemetry.ackSucceeded"))
+        XCTAssertFalse(body.contains("Cmd.sendHistoricalData"))
+        XCTAssertFalse(body.contains("reissueHistoryDrainContinue"))
+        XCTAssertFalse(source.contains(
+            "private func reissueHistoryDrainContinueIfBurstSettled"
+        ))
     }
 
     func testPersistedDrainRearmArmsBoundedReacquisitionInsteadOfFreezing() throws {
