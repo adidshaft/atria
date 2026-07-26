@@ -233,14 +233,40 @@ final class AtriaWhoop4HistoryACKGateTests: XCTestCase {
         ))
         XCTAssertTrue(manager.contains("scheduleHistoricalTransportEventDrain()"))
         XCTAssertTrue(manager.contains(
-            "armHistoricalPageContinuationAfterACK("
-        ))
-        XCTAssertTrue(manager.contains(
             "self.pendingHistoryEndACK == nil"
         ))
         XCTAssertTrue(manager.contains(
             "!self.historyACKGate.requiresHistoryCallbackDeferral"
         ))
+    }
+
+    func testAcceptedHistoryACKDoesNotResendSendHistoricalMidStream() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let managerURL = testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let manager = try String(contentsOf: managerURL, encoding: .utf8)
+
+        let acceptanceStart = try XCTUnwrap(manager.range(
+            of: "private func completeHistoricalACKAcceptance("
+        ))
+        let acceptanceTail = manager[acceptanceStart.lowerBound...]
+        let replayStart = try XCTUnwrap(acceptanceTail.range(
+            of: "private func reackDurableHistoricalReplay("
+        ))
+        let acceptanceBody = acceptanceTail[..<replayStart.lowerBound]
+        XCTAssertFalse(acceptanceBody.contains(
+            "armHistoricalPageContinuationAfterACK("
+        ))
+
+        let replayTail = acceptanceTail[replayStart.lowerBound...]
+        let continuationDefinition = try XCTUnwrap(replayTail.range(
+            of: "private func armHistoricalPageContinuationAfterACK("
+        ))
+        let replayBody = replayTail[..<continuationDefinition.lowerBound]
+        XCTAssertFalse(replayBody.contains(
+            "armHistoricalPageContinuationAfterACK("
+        ))
+        XCTAssertTrue(replayBody.contains("await_strap_owned_next_page"))
     }
 
     func testForegroundLifecycleCannotPreemptAnInFlightHistoryPage() throws {
