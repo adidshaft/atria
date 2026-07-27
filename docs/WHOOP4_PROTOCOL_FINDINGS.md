@@ -1815,6 +1815,34 @@ POSITIVE STILL REQUIRED**
   `/tmp/atria-gate2-probe.uvvtZa/`, and
   `/tmp/atria-gate2-invariant-derived/Logs/Test/Test-AtriaTests-2026.07.28_01-44-24-+0530.xcresult`.
 
+#### 2026-07-28 — correction: confirmed-workout recovery reread the archive per workout
+
+- **PHYSICAL observation:** with ordinary dashboard work excluded, the required
+  recovered-data pipeline advanced through archive/status projection and then
+  timed out its `confirmedWorkouts` component after the full 150-second lease.
+  The transaction rolled back and the exact authority correctly remained
+  `coverageProven`.
+- **PHYSICAL diagnostics:** the recovered projection parsed 304,605,735 bytes,
+  83,778 archive rows and emitted 81,107 verified HR points. LLDB then showed
+  `scheduleConfirmedWorkoutArchiveRehydration` scanning the archive again for
+  one workout window. The persisted store has 100 confirmed workouts, many
+  intentionally eligible for incomplete-coverage repair.
+- **CODE diagnosis:** the component performed one complete immutable-archive
+  scan per eligible workout, an O(workouts × archive) path. Increasing the
+  lease would only hide the multiplicative work.
+- **CODE correction (not yet physical acceptance):** recovery now performs one
+  bounded, fail-closed scan over the union of eligible workout windows, then
+  slices that verified point set by each exact workout interval. A global
+  1,500,000-point ceiling withholds all HR replacements on overflow; it never
+  publishes a partial prefix.
+- **TEST evidence:** authority and workout durability suites pass 97/97 with
+  zero failures or skips, including union-window ordering and empty-input
+  behavior.
+- **Physical settlement remains required:** install the optimized candidate
+  and rerun the same existing authority to terminal settlement.
+- **Evidence:**
+  `/tmp/atria-gate2-invariant-derived/Logs/Test/Test-AtriaTests-2026.07.28_01-59-57-+0530.xcresult`.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.
