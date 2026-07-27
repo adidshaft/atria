@@ -2018,6 +2018,36 @@ POSITIVE STILL REQUIRED**
   `evidence/2026-07-28-all-day-step-checkpoint/04-07/`, and
   `evidence/2026-07-28-all-day-step-checkpoint/04-09/`.
 
+#### 2026-07-28 — background lease expiration could strand history ownership
+
+- **PHYSICAL observation:** after the corrected all-day bank closed at
+  04:21:00 IST, the exact durable offload ticket was created, real history rows
+  reached the canonical archive, and the next bank re-armed. The phone then
+  remained locked. From 04:23:17 onward the generation stayed frozen at
+  `history_first_frame_received`; its background lease remained persisted as
+  `active`, live-state freshness stopped advancing, and the durable step
+  receipt remained byte-identical.
+- **CODE diagnosis:** the UIKit background-task expiration closure returned
+  immediately after enqueueing a new `Task { @MainActor ... }`. iOS is allowed
+  to suspend the process as soon as the expiration handler returns, so the
+  queued cleanup could never execute. The stranded generation consequently
+  retained the proprietary history transport without reaching a terminal or
+  restoring live HR.
+- **CODE correction:** expiration now crosses to the MainActor synchronously
+  before returning. It ends the finite UIKit lease, retains every durable row
+  and offload ticket, and resets only the connected history transport without
+  ACK, abort, cursor advancement, or gap clearance. Normal disconnect handling
+  remains the sole generation finalizer and standing reconnect restores live
+  collection.
+- **TEST evidence:** 424/424 BLE recovery, historical policy, drain reducer,
+  motion-bank ledger, and durable step-receipt tests pass in
+  `Test-AtriaTests-2026.07.28_04-30-56-+0530.xcresult`.
+- **Acceptance status:** code regression is covered; physical durable-receipt
+  advancement remains required before this checkpoint passes.
+- **Evidence:**
+  `evidence/2026-07-28-all-day-step-checkpoint/fixed-install-baseline/` through
+  `evidence/2026-07-28-all-day-step-checkpoint/continuation-current/`.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.

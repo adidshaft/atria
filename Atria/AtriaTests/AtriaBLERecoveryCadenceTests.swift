@@ -8270,6 +8270,47 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                           "The BG window must audit the link before spending its budget on flushes")
     }
 
+    func testHistoryBackgroundExpirationTerminatesSynchronouslyBeforeSuspension() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func beginOfflineHistoricalSyncBackgroundLease"
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "private func endOfflineHistoricalSyncBackgroundLease",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("MainActor.assumeIsolated"))
+        XCTAssertTrue(body.contains(
+            "handleOfflineHistoricalSyncBackgroundLeaseExpiration"
+        ))
+        XCTAssertFalse(body.contains("Task { @MainActor"),
+                       "returning from the expiration handler must not race iOS suspension")
+
+        let handlerStart = try XCTUnwrap(source.range(
+            of: "private func handleOfflineHistoricalSyncBackgroundLeaseExpiration"
+        ))
+        let handlerEnd = try XCTUnwrap(source.range(
+            of: "private func endOfflineHistoricalSyncBackgroundLease",
+            range: handlerStart.upperBound..<source.endIndex
+        ))
+        let handler = String(
+            source[handlerStart.lowerBound..<handlerEnd.lowerBound]
+        )
+        XCTAssertTrue(handler.contains(
+            "expired_transport_reset_pending"
+        ))
+        XCTAssertTrue(handler.contains(
+            "history_background_lease_expired_transport_reset"
+        ))
+        XCTAssertTrue(handler.contains("cancelPeripheralConnection("))
+        XCTAssertTrue(handler.contains(
+            "interruptOfflineHistoricalSyncForTransportLoss("
+        ))
+        XCTAssertFalse(handler.contains("ACK"))
+        XCTAssertFalse(handler.contains("abortHistorical"))
+    }
+
     func testBackgroundProcessingUsesTheSameAuditedConnectedHandoffGate() throws {
         let manager = try leaseManagerSource()
         let awaitStart = try XCTUnwrap(manager.range(
