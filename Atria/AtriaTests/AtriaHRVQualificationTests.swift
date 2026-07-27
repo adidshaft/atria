@@ -176,6 +176,76 @@ final class AtriaHRVQualificationTests: XCTestCase {
         XCTAssertNotNil(updated.hrv)
     }
 
+    func testConfirmedSleepAggregatesQualifiedWindowsAcrossReconnectSessions() throws {
+        let first = session(dayOffset: 0,
+                            source: .standardHeartRateMeasurement2A37)
+        let sleepStart = first.start
+        let sessions = (0..<3).map { index -> SavedSession in
+            let start = sleepStart.addingTimeInterval(Double(index) * 6 * 60)
+            let rrPoints = stride(from: 1.0, through: 6 * 60.0, by: 1.0).map { offset in
+                SavedSession.RRPoint(
+                    t: offset,
+                    ms: Int(offset).isMultiple(of: 2) ? 980 : 1_020,
+                    source: .standardHeartRateMeasurement2A37
+                )
+            }
+            return SavedSession(
+                id: UUID(),
+                start: start,
+                end: start.addingTimeInterval(6 * 60),
+                label: "Reconnect-bounded overnight HRV fixture",
+                points: [SavedSession.Point(t: 0, bpm: 52)],
+                rrPoints: rrPoints
+            )
+        }
+        let sleepEnd = sleepStart.addingTimeInterval(6 * 60 * 60)
+
+        XCTAssertTrue(sessions.allSatisfy {
+            $0.localRMSSD(in: sleepStart, end: sleepEnd) == nil
+        }, "no individual reconnect chunk should meet the three-window publication gate")
+
+        let metrics = SessionStore.confirmedSleepWindowMetrics(
+            from: sessions,
+            start: sleepStart,
+            end: sleepEnd,
+            rest: 52
+        )
+
+        XCTAssertEqual(metrics.hrvWindowCount, 3)
+        XCTAssertEqual(metrics.hrv, 40)
+
+        let persisted = confirmedMainSleep(
+            for: sessions[0],
+            start: sleepStart,
+            end: sleepEnd,
+            id: "split-session-confirmed-sleep"
+        )
+        let requalified = try XCTUnwrap(
+            SessionStore.requalifiedConfirmedSleepHRVRecords(
+                [persisted],
+                sessions: sessions
+            ).first
+        )
+        XCTAssertEqual(requalified.hrvWindowCount, 3)
+        XCTAssertEqual(requalified.hrv, 40)
+    }
+
+    func testConfirmedSleepDoesNotPromoteAmbiguousReconnectWindows() {
+        let qualified = session(dayOffset: 0,
+                                source: .standardHeartRateMeasurement2A37)
+        let ambiguous = session(dayOffset: 0, source: nil)
+        let metrics = SessionStore.confirmedSleepWindowMetrics(
+            from: [qualified, ambiguous],
+            start: qualified.start,
+            end: qualified.end,
+            rest: 52
+        )
+
+        XCTAssertEqual(metrics.hrvWindowCount, qualified.localHRVWindowCount)
+        XCTAssertEqual(metrics.hrv,
+                       qualified.localRMSSD(in: qualified.start, end: qualified.end))
+    }
+
     func testRecoveredHistoricalRRFeedsLocalButNotReferenceValidatedHRVSource() throws {
         let recovered = session(dayOffset: 0,
                                 source: .verifiedWhoop4HistoricalV24)

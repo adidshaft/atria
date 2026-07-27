@@ -1961,6 +1961,31 @@ POSITIVE STILL REQUIRED**
   the combined `Test-AtriaTests-2026.07.28_03-21-00-+0530.xcresult`.
 - **Evidence:** `evidence/2026-07-28-metric-truth-fix/`.
 
+#### 2026-07-28 — confirmed-sleep HRV must span reconnect-bounded sessions
+
+- **CODE finding:** the exact confirmed-sleep calculation summed qualified
+  five-minute HRV window counts across all overlapping sessions, but derived
+  RMSSD only from sessions that individually contained at least three
+  windows. A sleep split into reconnect-bounded chunks could therefore report
+  three or more qualified windows while publishing no HRV.
+- **CODE correction:** every five-minute window still qualifies independently
+  inside one session with the existing RR provenance, beat-density,
+  continuity, and artifact gates. Only those already-qualified ln(RMSSD)
+  scalars are combined across sessions; raw RR intervals are never joined
+  across a reconnect boundary. Three or more qualified windows in the exact
+  confirmed-sleep interval now publish `exp(median(lnRMSSD))`.
+- **Fail-closed behavior:** legacy or source-ambiguous RR remains excluded.
+  Reference validation is not required for local HRV, but still controls the
+  higher-confidence tier.
+- **Physical-data clarification:** the latest July 26 confirmed sleep had
+  already been requalified to HRV 50 from eight windows, and its saved
+  recovery uses HRV. The current July 28 `HRV unavailable` state has no
+  current-cycle confirmed sleep and is therefore correct; stale sleep HRV is
+  not carried forward.
+- **TEST evidence:** the split-session publication regression and ambiguous-RR
+  rejection pass in
+  `Test-AtriaTests-2026.07.28_03-37-47-+0530.xcresult`.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.
