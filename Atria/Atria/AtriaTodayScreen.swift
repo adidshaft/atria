@@ -789,6 +789,14 @@ struct AtriaTodayScreen: View {
         // keeps title + detail only (dedup audit 2026-07-07).
         if slotMatchesRingCenter(slot) {
             metric.suppressesValue = true
+            // ...and when the center's caption is word-for-word this chip's
+            // detail, drop that too. Exact-match only, so this fires on the
+            // real duplicate (learning recovery: "Save sleep to score" in the
+            // hero and again in the chip beneath it) and never hides a detail
+            // the center is not already showing.
+            if metric.detail == centerState {
+                metric.suppressesDetail = true
+            }
         }
         return metric
     }
