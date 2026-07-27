@@ -34,6 +34,42 @@ final class AtriaUIDensityCompletionTests: XCTestCase {
                        "Numeric fields must be allowed to adapt rather than preserve a narrow fixed width")
     }
 
+    func testOptionalProfileNumberPreservesPastedDecimalsAndGrouping() {
+        XCTAssertEqual(AtriaOptionalProfileNumber.parse("72.5"), 72.5, accuracy: 0.000_001)
+        XCTAssertEqual(AtriaOptionalProfileNumber.parse("72,5"), 72.5, accuracy: 0.000_001)
+        XCTAssertEqual(AtriaOptionalProfileNumber.parse("1,805.5 cm"), 1_805.5, accuracy: 0.000_001)
+        XCTAssertEqual(AtriaOptionalProfileNumber.parse("1.805,5 cm"), 1_805.5, accuracy: 0.000_001)
+        XCTAssertEqual(AtriaOptionalProfileNumber.parse("180"), 180, accuracy: 0.000_001)
+        XCTAssertEqual(AtriaOptionalProfileNumber.parse("Optional"), 0, accuracy: 0.000_001)
+        XCTAssertEqual(AtriaOptionalProfileNumber.displayText(for: 72.5), "72.5")
+        XCTAssertEqual(AtriaOptionalProfileNumber.displayText(for: 180), "180")
+        XCTAssertEqual(AtriaOptionalProfileNumber.displayText(for: 0), "")
+    }
+
+    func testWorkoutLoadTilesReturnOnlyWhenSensorLoadBecomesReadable() throws {
+        XCTAssertFalse(AtriaLiveWorkoutLoadVisibility.isReadable(
+            hasSensorEvidence: false,
+            loadIsComplete: false
+        ))
+        XCTAssertFalse(AtriaLiveWorkoutLoadVisibility.isReadable(
+            hasSensorEvidence: true,
+            loadIsComplete: false
+        ))
+        XCTAssertFalse(AtriaLiveWorkoutLoadVisibility.isReadable(
+            hasSensorEvidence: false,
+            loadIsComplete: true
+        ))
+        XCTAssertTrue(AtriaLiveWorkoutLoadVisibility.isReadable(
+            hasSensorEvidence: true,
+            loadIsComplete: true
+        ))
+
+        let source = try source("AtriaLiveWorkoutView.swift")
+        XCTAssertTrue(source.contains("if loadIsReadable {"))
+        XCTAssertTrue(source.contains("compactMetric(title: metricProjection.strainHUDTitle"))
+        XCTAssertTrue(source.contains("compactMetric(title: metricProjection.activeCaloriesHUDTitle"))
+    }
+
     func testAlertSettingsGridStacksOnlyAtAccessibilitySizes() {
         XCTAssertEqual(AtriaAlertSettingsGrid.columnCount(for: .large), 2)
         XCTAssertEqual(AtriaAlertSettingsGrid.columnCount(for: .xxxLarge), 2)

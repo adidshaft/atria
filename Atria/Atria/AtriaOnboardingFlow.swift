@@ -2,6 +2,47 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+enum AtriaOptionalProfileNumber {
+    static func parse(_ entry: String) -> Double {
+        let numeric = entry.filter { $0.isNumber || $0 == "." || $0 == "," }
+        guard numeric.contains(where: \.isNumber) else { return 0 }
+
+        let separatorOffsets = numeric.indices.filter {
+            numeric[$0] == "." || numeric[$0] == ","
+        }
+        guard let lastSeparator = separatorOffsets.last else {
+            return max(0, Double(numeric) ?? 0)
+        }
+
+        let trailingDigits = numeric[numeric.index(after: lastSeparator)...].filter(\.isNumber).count
+        let lastSeparatorIsDecimal = (1...2).contains(trailingDigits)
+        var normalized = ""
+        for index in numeric.indices {
+            let character = numeric[index]
+            if character.isNumber {
+                normalized.append(character)
+            } else if lastSeparatorIsDecimal && index == lastSeparator {
+                normalized.append(".")
+            }
+        }
+        return max(0, Double(normalized) ?? 0)
+    }
+
+    static func displayText(for value: Double) -> String {
+        guard value.isFinite, value > 0 else { return "" }
+        if value.rounded() == value {
+            return String(Int(value))
+        }
+        return String(
+            format: "%.2f",
+            locale: Locale(identifier: "en_US_POSIX"),
+            value
+        )
+        .replacingOccurrences(of: #"0+$"#, with: "", options: .regularExpression)
+        .replacingOccurrences(of: #"\.$"#, with: "", options: .regularExpression)
+    }
+}
+
 struct AtriaOnboardingFlow: View {
     @State private var draft: AthleteProfile
     let ble: AtriaBLEManager
@@ -710,11 +751,8 @@ struct AtriaOnboardingFlow: View {
                                              value: Binding<Double>,
                                              suffix: String) -> some View {
         let text = Binding<String>(
-            get: { value.wrappedValue > 0 ? String(Int(value.wrappedValue.rounded())) : "" },
-            set: { entry in
-                let digits = entry.filter(\.isNumber)
-                value.wrappedValue = Double(Int(digits) ?? 0)
-            }
+            get: { AtriaOptionalProfileNumber.displayText(for: value.wrappedValue) },
+            set: { value.wrappedValue = AtriaOptionalProfileNumber.parse($0) }
         )
         return profileFieldLayout(title: title, suffix: suffix) {
             TextField(title, text: text, prompt: Text("Optional"))
