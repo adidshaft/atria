@@ -4898,9 +4898,10 @@ struct AtriaWeeklyReportSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Weekly report")
-                            .font(.headline.weight(.bold))
-                            .foregroundStyle(.secondary)
+                        // The sheet's navigation title already says "Weekly
+                        // report", inline, about 40pt above this. Printing it
+                        // again as an eyebrow told the reader nothing they had
+                        // not just read.
                         Text(heroText)
                             .font(.system(size: 26, weight: .bold, design: .rounded))
                             .lineLimit(3)
@@ -5038,12 +5039,21 @@ struct AtriaWeeklyReportSheet: View {
     /// Human date range ("Jun 29 – Jul 5") from the report's rollup days;
     /// falls back to the ISO week label for reports saved before these
     /// fields existed (2026-07-07 design handoff).
+    ///
+    /// The range used to carry "· Week N" appended to it, which stitched two
+    /// independently stored fields — weekStart/weekEnd and isoWeek — into one
+    /// sentence with nothing keeping them in agreement. They can disagree, and
+    /// when they do the line contradicts itself in front of the reader
+    /// ("Jan 9 – Jan 15 · Week 31"; week 31 is late July). Rather than pick a
+    /// winner between two engine-owned fields, the dates speak alone: they are
+    /// the more useful half, and a range cannot contradict itself. The ISO
+    /// label still stands in when no dates were stored.
     private var weekRangeText: String {
         guard let start = report.weekStart, let end = report.weekEnd else {
             return "Week \(report.isoWeek), \(report.isoYear)"
         }
         let formatter = Self.rangeDayFormatter
-        return "\(formatter.string(from: start)) – \(formatter.string(from: end)) · Week \(report.isoWeek)"
+        return "\(formatter.string(from: start)) – \(formatter.string(from: end))"
     }
 
     private static let rangeDayFormatter: DateFormatter = {
