@@ -699,8 +699,12 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(source.contains(
             "snapshot.recoveryDetail.localizedCaseInsensitiveContains(\"HRV unavailable\")"
         ))
+        // 2026-07-27: the disclaimer keeps its SPECIFIC half only. Paired with
+        // the score, "Recovery 46% · Limited confidence · HRV unavailable" ran
+        // past the medium widget's secondary line and rendered as "Recovery
+        // 46% · Limited…", dropping the very evidence this assertion protects.
         XCTAssertTrue(source.contains(
-            "return \"Limited confidence · HRV unavailable\""
+            "return \"HRV unavailable\""
         ))
         XCTAssertTrue(source.contains(
             "return \"Recovery \\(recovery)% · \\(recoveryEvidenceText(snapshot))\""
