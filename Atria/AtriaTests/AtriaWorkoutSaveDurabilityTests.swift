@@ -1370,6 +1370,23 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertTrue(SessionStore.confirmedWorkoutNeedsArchiveRehydration(missingMetrics))
     }
 
+    func testHistoricalRehydrationDoesNotWaitForWalkingStepEvidence() {
+        var completeWalking = sparseConfirmedWorkout(
+            start: Date(timeIntervalSince1970: 1_785_000_000),
+            end: Date(timeIntervalSince1970: 1_785_000_900),
+            samples: 900,
+            coverage: 100
+        )
+        completeWalking.activityType = AtriaWorkoutActivityType.walking.rawValue
+        completeWalking.workoutSteps = nil
+        completeWalking.workoutStepsAreEstimated = nil
+
+        XCTAssertFalse(
+            SessionStore.confirmedWorkoutNeedsArchiveRehydration(completeWalking),
+            "Gate 2 HR publication must not wait for the independent Gate 4 motion lane"
+        )
+    }
+
     func testArchiveRehydrationUsesOneUnionWindowForEligibleWorkouts() throws {
         let firstStart = Date(timeIntervalSince1970: 1_783_767_620)
         let first = sparseConfirmedWorkout(

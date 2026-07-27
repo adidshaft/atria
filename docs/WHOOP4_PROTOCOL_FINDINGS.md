@@ -1843,6 +1843,32 @@ POSITIVE STILL REQUIRED**
 - **Evidence:**
   `/tmp/atria-gate2-invariant-derived/Logs/Test/Test-AtriaTests-2026.07.28_01-59-57-+0530.xcresult`.
 
+#### 2026-07-28 — correction: walking-step scans blocked exact HR publication
+
+- **PHYSICAL observation:** the one-pass HR candidate applied the exact
+  generation-2 projection, but `confirmedWorkouts` still exhausted its
+  150-second lease and rolled the recovered-data transaction back.
+- **PHYSICAL diagnostics:** after the single HR scan, the same component read
+  56,339,685 bytes of motion history repeatedly for incomplete walking rows.
+  It decoded some step windows, but this independent Gate 4 enrichment kept
+  Gate 2 from publishing already-proven exact HR recovery.
+- **CODE diagnosis:** the broad confirmed-workout rehydration path mixed two
+  authorities: recovered HR/load and strap-motion steps. A separate bounded
+  step publisher already exists, so the duplicate motion work was both
+  unnecessary and capable of starving exact-gap settlement.
+- **CODE correction (not yet physical acceptance):** the recovered-data
+  workout fence now repairs only HR/load evidence. Walking steps remain on the
+  independent one-workout-at-a-time WHOOP/R10 motion lane and cannot extend or
+  fail Gate 2.
+- **TEST evidence:** the workout durability and recovered-data coordinator
+  suites pass, including a regression proving a complete-HR walking workout
+  with pending step evidence is not admitted to the Gate 2 rehydration lane.
+- **Physical settlement remains required:** install in place and rerun the
+  same durable generation-2 authority to a terminal consumer publication.
+- **Evidence:**
+  `evidence/2026-07-28-gate2-generation-fix/union-scan-physical-console.log`
+  and `/tmp/atria-gate2-lane-tests.log`.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.
