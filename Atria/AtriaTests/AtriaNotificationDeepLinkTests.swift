@@ -131,6 +131,29 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
         XCTAssertTrue(scope.includeWorkoutReviewDecisions)
     }
 
+    func testWorkoutReviewDeliveryReservationIsExactlyOncePerCandidate() {
+        XCTAssertTrue(LocalNotificationScheduler.workoutReviewDeliveryCanReserve(
+            candidateID: "effort-1",
+            lastNotifiedCandidateID: nil,
+            inFlightCandidateIDs: []
+        ))
+        XCTAssertFalse(LocalNotificationScheduler.workoutReviewDeliveryCanReserve(
+            candidateID: "effort-1",
+            lastNotifiedCandidateID: "effort-1",
+            inFlightCandidateIDs: []
+        ))
+        XCTAssertFalse(LocalNotificationScheduler.workoutReviewDeliveryCanReserve(
+            candidateID: "effort-1",
+            lastNotifiedCandidateID: nil,
+            inFlightCandidateIDs: ["effort-1"]
+        ))
+        XCTAssertTrue(LocalNotificationScheduler.workoutReviewDeliveryCanReserve(
+            candidateID: "effort-2",
+            lastNotifiedCandidateID: "effort-1",
+            inFlightCandidateIDs: ["effort-1"]
+        ))
+    }
+
     func testOrdinaryAppLifecycleReachesProductionNotificationMaintenance() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
@@ -140,6 +163,35 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
         XCTAssertTrue(source.contains("scheduleProductionNotificationMaintenance(reason: \"scene_active\")"))
         XCTAssertTrue(source.contains("await store.waitForDeferredSessionLoadIfNeeded()"))
         XCTAssertTrue(source.contains("LocalNotificationScheduler.scheduleFromLaunchIfRequested(store: store,"))
+    }
+
+    func testWorkoutReviewCachePublicationRetriesNotificationWithoutClearingPendingRequests() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let home = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        let scheduler = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/LocalNotificationScheduler.swift"), encoding: .utf8)
+
+        let dashboardStart = try XCTUnwrap(home.range(
+            of: ".onReceive(store.$dashboardRevision.throttle"
+        ))
+        let dashboardHandler = String(home[dashboardStart.lowerBound...].prefix(900))
+        XCTAssertTrue(dashboardHandler.contains(
+            "refreshSavedWorkoutReviewCandidate(reason: \"dashboard_revision\")"
+        ))
+        XCTAssertTrue(dashboardHandler.contains(
+            "scheduleWorkoutReviewAfterCachePublicationIfNeeded"
+        ), "the async review-cache publication must receive one delivery retry")
+
+        let retryStart = try XCTUnwrap(scheduler.range(
+            of: "static func scheduleWorkoutReviewAfterCachePublicationIfNeeded"
+        ))
+        let retryBody = String(scheduler[retryStart.lowerBound...].prefix(3_600))
+        XCTAssertFalse(retryBody.contains("removePendingNotificationRequests"),
+                       "a cache retry must not clear sleep, battery, or other pending notifications")
+        XCTAssertTrue(retryBody.contains("candidate.id != defaults.string(forKey: workoutReviewLastCandidateIDKey)"))
+        XCTAssertTrue(scheduler.contains("workoutReviewCandidateIDsInFlight.insert(workoutCandidateID).inserted"),
+                      "launch maintenance and cache retry must share one in-flight reservation")
     }
 
     func testNotificationResponseDoesNotWaitForMainActorBeforeReturning() throws {

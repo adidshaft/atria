@@ -73,6 +73,16 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
                                               historicalMotionPolicy: .boundedRecent)
     }
 
+    private var july26ReportedSleepSessionsURL: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent(
+                "evidence/2026-07-27-all-day-motion-default/settled/sessions.json"
+            )
+    }
+
     private func confirmedSleep(source: String,
                                 start: Date,
                                 end: Date,
@@ -283,6 +293,95 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         ), "a sub-five-hour HR-only window must remain review-only even with a trusted baseline")
     }
 
+    func testReportedJuly26SleepIsNotHiddenByShortPreludeAcrossLongAwakeGap() throws {
+        // Physical report: the wearer woke from a 3–4 hour sleep. The durable
+        // strap stream contains a dense low-HR/RR block from 07:22–11:32, but
+        // the old two-hour cluster allowance attached an isolated 41-minute
+        // low-HR fragment ending at 05:25. That 1h56 awake gap made the whole
+        // aggregate too sparse and incorrectly removed the review card.
+        let allSessions = try JSONDecoder().decode(
+            [SavedSession].self,
+            from: Data(contentsOf: july26ReportedSleepSessionsURL)
+        )
+        var ist = Calendar(identifier: .gregorian)
+        ist.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Kolkata"))
+        let july26 = allSessions.filter {
+            ist.component(.year, from: $0.start) == 2026
+                && ist.component(.month, from: $0.start) == 7
+                && ist.component(.day, from: $0.start) == 26
+        }
+
+        let detected = candidates(july26, rest: 59)
+        let candidate = try XCTUnwrap(detected.first {
+            ist.component(.hour, from: $0.start) == 7
+                && ist.component(.minute, from: $0.start) == 22
+        })
+
+        XCTAssertEqual(candidate.sessions, 4)
+        XCTAssertEqual(candidate.duration, 4 * 60 * 60 + 10 * 60, accuracy: 90)
+        XCTAssertTrue(candidate.denseMorningHROnlyReviewQualified)
+        XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(candidate))
+        XCTAssertFalse(SessionStore.isAutoConfirmableMainSleepCandidate(
+            candidate,
+            baselineRestingIsTrusted: true
+        ), "recovered HR-only sleep must require wearer confirmation")
+    }
+
+    func testSubstantialBiphasicSleepStillCombinesAcrossLongWake() throws {
+        // A meaningful first sleep must still combine with resumed sleep. This
+        // preserves the user's requested WHOOP-style biphasic-night behavior;
+        // only a short isolated prelude may be separated.
+        var first = denseHRRRSession(
+            start: date(2032, 7, 9, 0, 5),
+            end: date(2032, 7, 9, 2, 5),
+            bpm: 60
+        )
+        var resumed = denseHRRRSession(
+            start: date(2032, 7, 9, 3, 50),
+            end: date(2032, 7, 9, 7, 20),
+            bpm: 60
+        )
+        first.motionEvidenceValidated = true
+        first.motionEvidenceSource = "validated_strap_stillness"
+        resumed.motionEvidenceValidated = true
+        resumed.motionEvidenceSource = "validated_strap_stillness"
+
+        let detected = candidates([first, resumed], rest: 59)
+        let candidate = try XCTUnwrap(detected.first)
+        XCTAssertEqual(detected.count, 1)
+        XCTAssertEqual(candidate.sessions, 2)
+        XCTAssertEqual(candidate.start, first.start)
+        XCTAssertEqual(candidate.end, resumed.end)
+    }
+
+    func testDenseMorningReviewRejectsGapBeyondSleepCredit() {
+        let first = denseHRRRSession(
+            start: date(2032, 7, 10, 7, 0),
+            end: date(2032, 7, 10, 8, 30),
+            bpm: 60
+        )
+        let resumed = denseHRRRSession(
+            start: date(2032, 7, 10, 8, 51),
+            end: date(2032, 7, 10, 10, 30),
+            bpm: 60
+        )
+
+        XCTAssertTrue(candidates([first, resumed], rest: 59).isEmpty,
+                      "a gap beyond the 20-minute sleep credit must remain missing evidence")
+    }
+
+    func testDenseMorningReviewRejectsAcceptedHRGapBeyondNinetySeconds() {
+        var morningSleep = denseHRRRSession(
+            start: date(2032, 7, 10, 6, 0),
+            end: date(2032, 7, 10, 10, 0),
+            bpm: 60
+        )
+        morningSleep.hrMaxAcceptedGap = 91
+
+        XCTAssertTrue(candidates([morningSleep], rest: 59).isEmpty,
+                      "a material accepted-HR outage must not be hidden by aggregate density")
+    }
+
     func testDenseShiftedSleepWithVerifiedReconnectSeamSurfacesForReviewOnly() throws {
         // Physical 2026-07-23 shape: 10:05am–2:19pm sleep arrived in two
         // dense HR/RR journal sessions separated by a 4m21s reconnect seam,
@@ -446,7 +545,7 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
             encoding: .utf8
         )
         let liveStart = try XCTUnwrap(sessionsSource.range(of: "func dailyRollups("))
-        let liveEnd = try XCTUnwrap(sessionsSource.range(of: "private nonisolated static func preferredSleepCandidatesByDay",
+        let liveEnd = try XCTUnwrap(sessionsSource.range(of: "func aggregateWorkoutCandidates(",
                                                           range: liveStart.upperBound..<sessionsSource.endIndex))
         let liveRollups = String(sessionsSource[liveStart.lowerBound..<liveEnd.lowerBound])
         XCTAssertTrue(liveRollups.contains(".filter(Self.isReviewWorthySleepCandidate)"),

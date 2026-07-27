@@ -54,6 +54,39 @@ final class AtriaHistoricalGapLedgerTests: XCTestCase {
         }
     }
 
+    func testVerifiedHistoryResetRetiresOnlyPreResetRecoveryWindows() throws {
+        try withDefaults { defaults in
+            let reset = Date(timeIntervalSince1970: 2_000)
+            XCTAssertTrue(AtriaHistoricalGapLedger.recordObservedGap(
+                start: reset.addingTimeInterval(-120),
+                end: reset.addingTimeInterval(-60),
+                reason: "before_reset",
+                defaults: defaults
+            ))
+            XCTAssertTrue(AtriaHistoricalGapLedger.recordObservedGap(
+                start: reset.addingTimeInterval(30),
+                end: reset.addingTimeInterval(90),
+                reason: "after_reset",
+                defaults: defaults
+            ))
+
+            let retirement = try XCTUnwrap(
+                AtriaHistoricalGapLedger
+                    .retireWindowsBeforeVerifiedStrapHistoryReset(
+                        completedAt: reset,
+                        defaults: defaults
+                    )
+            )
+            XCTAssertEqual(retirement.retiredWindows, 1)
+            XCTAssertEqual(retirement.remainingWindows, 1)
+            let remaining = try XCTUnwrap(
+                AtriaHistoricalGapLedger.windows(defaults: defaults).first
+            )
+            XCTAssertEqual(remaining.reason, "after_reset")
+            XCTAssertGreaterThanOrEqual(remaining.start, reset)
+        }
+    }
+
     func testSparseBucketOccupancyCannotResolveWindowButDenseOneHertzCan() {
         withDefaults { defaults in
             let start = Date(timeIntervalSince1970: 2_000)
@@ -618,6 +651,65 @@ final class AtriaHistoricalGapLedgerTests: XCTestCase {
             let gap = try XCTUnwrap(AtriaHistoricalGapLedger.windows(defaults: defaults).first)
             XCTAssertEqual(gap.start, durablePulse)
             XCTAssertEqual(gap.end, durablePulse.addingTimeInterval(25))
+        }
+    }
+
+    func testCoreBluetoothRestoreOpensAtDurableAnchorBeforeReturningPulse() throws {
+        try withDefaults { defaults in
+            let durablePulse = Date(timeIntervalSince1970: 27_000)
+            XCTAssertTrue(AtriaHistoricalGapLedger.advanceLiveContinuityAnchor(
+                to: durablePulse,
+                defaults: defaults
+            ))
+
+            XCTAssertTrue(
+                AtriaHistoricalGapLedger.beginRestorationGapFromDurableAnchorIfNeeded(
+                    restorationAt: durablePulse.addingTimeInterval(48),
+                    reason: "long_wear_process_restore_gap",
+                    defaults: defaults
+                )
+            )
+            var gap = try XCTUnwrap(
+                AtriaHistoricalGapLedger.windows(defaults: defaults).first
+            )
+            XCTAssertEqual(gap.start, durablePulse)
+            XCTAssertNil(gap.end)
+            XCTAssertNil(gap.coveredSecondBits)
+
+            XCTAssertTrue(AtriaHistoricalGapLedger.closeOpenGap(
+                at: durablePulse.addingTimeInterval(95),
+                defaults: defaults
+            ))
+            gap = try XCTUnwrap(
+                AtriaHistoricalGapLedger.windows(defaults: defaults).first
+            )
+            XCTAssertEqual(gap.start, durablePulse)
+            XCTAssertEqual(gap.end, durablePulse.addingTimeInterval(95))
+            XCTAssertEqual(AtriaHistoricalGapLedger.coveragePercent(for: gap), 0)
+        }
+    }
+
+    func testCoreBluetoothRestoreOpenGapDropsShortContinuousRelaunch() {
+        withDefaults { defaults in
+            let durablePulse = Date(timeIntervalSince1970: 28_000)
+            XCTAssertTrue(AtriaHistoricalGapLedger.advanceLiveContinuityAnchor(
+                to: durablePulse,
+                defaults: defaults
+            ))
+            XCTAssertTrue(
+                AtriaHistoricalGapLedger.beginRestorationGapFromDurableAnchorIfNeeded(
+                    restorationAt: durablePulse.addingTimeInterval(3),
+                    reason: "long_wear_process_restore_gap",
+                    defaults: defaults
+                )
+            )
+            XCTAssertFalse(AtriaHistoricalGapLedger.closeOpenGap(
+                at: durablePulse.addingTimeInterval(8),
+                defaults: defaults
+            ))
+            XCTAssertFalse(
+                AtriaHistoricalGapLedger.hasPendingWindows(defaults: defaults)
+            )
         }
     }
 

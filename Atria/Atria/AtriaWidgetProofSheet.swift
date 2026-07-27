@@ -14,10 +14,10 @@ struct AtriaWidgetProofSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     proofHeader
-                    widgetPreview(title: "Medium widget", compact: true)
-                        .frame(height: 250)
-                    widgetPreview(title: "Large widget", compact: false)
-                        .frame(height: 300)
+                    widgetPreview(title: "Home Screen · medium", compact: true)
+                        .frame(height: 236)
+                    familyProofRow
+                    lockScreenProof
                     snapshotFacts
                 }
                 .padding(18)
@@ -42,7 +42,9 @@ struct AtriaWidgetProofSheet: View {
                   systemImage: snapshot == nil ? "exclamationmark.triangle.fill" : "checkmark.seal.fill")
                 .font(.headline.weight(.semibold))
                 .foregroundStyle(snapshot == nil ? .orange : .green)
-            Text("Uses the same `atria.widgetSnapshot.v1` payload and saved Customize metric order that WidgetKit reads.")
+            Text(snapshot == nil
+                 ? "Open Atria once to publish a local snapshot. Widgets will not invent a reading until one exists."
+                 : "Uses the same `atria.widgetSnapshot.v1` payload and saved Customize metric order that WidgetKit reads.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
@@ -99,6 +101,123 @@ struct AtriaWidgetProofSheet: View {
         }
     }
 
+    private var familyProofRow: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Other families")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 10) {
+                smallWidgetProof
+                largeWidgetProof
+            }
+        }
+    }
+
+    private var smallWidgetProof: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("Small")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                recoveryGauge(size: 54)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(widgetMetrics.first?.value(snapshot) ?? "--")
+                        .font(.title3.monospacedDigit().weight(.bold))
+                    Text(widgetMetrics.first?.title ?? "Strain")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Text(snapshot == nil ? "Snapshot missing" : freshnessText)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(snapshot == nil ? .orange : .secondary)
+                .lineLimit(1)
+        }
+        .padding(13)
+        .frame(maxWidth: .infinity, minHeight: 126, alignment: .leading)
+        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        }
+    }
+
+    private var largeWidgetProof: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Large")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("Controls")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.green)
+            }
+            Text(recoveryLine)
+                .font(.subheadline.weight(.bold))
+                .lineLimit(1)
+            HStack(spacing: 6) {
+                proofControl("Start", symbol: "record.circle", tint: .green)
+                proofControl("Stop", symbol: "stop.circle", tint: .red)
+            }
+            Text("Start and Stop use the same App Intents exposed to Control Center and Lock Screen.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        }
+        .padding(13)
+        .frame(maxWidth: .infinity, minHeight: 126, alignment: .leading)
+        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        }
+    }
+
+    private func proofControl(_ title: String, symbol: String, tint: Color) -> some View {
+        Label(title, systemImage: symbol)
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(tint)
+            .frame(maxWidth: .infinity, minHeight: 30)
+            .background(tint.opacity(0.12), in: Capsule())
+    }
+
+    private var lockScreenProof: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("Lock Screen accessories", systemImage: "lock.fill")
+                    .font(.subheadline.weight(.bold))
+                Spacer()
+                Text("Circular · Rectangular · Inline")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 12) {
+                recoveryGauge(size: 56)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Rec \(snapshot?.recoveryPercent.map { "\($0)%" } ?? "--")")
+                        .font(.caption.monospacedDigit().weight(.bold))
+                    Text("Strain \(AtriaWidgetProofMetric.strain.value(snapshot))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text("HR \(AtriaWidgetProofMetric.bpm.value(snapshot)) bpm")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Text(inlineLockScreenText)
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.trailing)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
     private func metricGrid(columns: Int) -> some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: columns), spacing: 8) {
             ForEach(widgetMetrics) { metric in
@@ -149,7 +268,11 @@ struct AtriaWidgetProofSheet: View {
 
     private var snapshotFacts: some View {
         VStack(alignment: .leading, spacing: 10) {
+            factRow("Updated", freshnessText)
             factRow("Storage", snapshot?.storage ?? "missing")
+            factRow("App Group", snapshot?.appGroupEnabled == true ? "enabled" : "unavailable")
+            factRow("Widget target", snapshot?.widgetTargetPresent == true ? "installed" : "unavailable")
+            factRow("Lock Screen", snapshot?.complicationTargetPresent == true ? "supported" : "unavailable")
             factRow("Schema", snapshot.map { "\($0.schema)" } ?? "--")
             factRow("Layout order", widgetMetrics.map(\.title).joined(separator: " / "))
             factRow("Ring center", snapshot?.layoutRingCenterMetric ?? validatedLayout.ringCenterMetric.rawValue)
@@ -203,6 +326,19 @@ struct AtriaWidgetProofSheet: View {
 
     private var batteryLine: String {
         snapshot?.batteryChargeText ?? snapshot?.batteryLevel.map { "Battery \($0)%" } ?? "Battery unknown"
+    }
+
+    private var freshnessText: String {
+        guard let snapshot else { return "not published" }
+        let seconds = max(0, Int(Date().timeIntervalSince(snapshot.createdAt)))
+        if seconds < 60 { return "just now" }
+        if seconds < 3_600 { return "\(seconds / 60)m ago" }
+        return "\(seconds / 3_600)h ago"
+    }
+
+    private var inlineLockScreenText: String {
+        guard let snapshot else { return "Atria · open app" }
+        return "Rec \(snapshot.recoveryPercent.map { "\($0)%" } ?? "--") · \(AtriaWidgetProofMetric.strain.value(snapshot)) strain"
     }
 
     private var batterySymbol: String {

@@ -6,13 +6,16 @@ Two explicitly distinguished transports are accepted:
 * the legacy exact-selector trace, whose request binding contains the requested
   Unix bounds; and
 * the production full-drain trace, whose matched 22/00 cursor response provides
-  clock authority and whose durable gap UUID is carried through coverage CAS
-  and all five consumer receipts.
+  clock authority and whose durable gap UUID is carried through the fsynced
+  coverage proof and exact gap-resolution CAS. Five typed consumer receipts
+  may follow later when their honest future lookahead is available.
 
 The production path deliberately does *not* claim that 22/00 selects a range.
 It proves that a full-flash drain resolved one exact durable gap. Returned rows
 alone are never authority. Both paths require generation-correlated terminal,
-fsync-before-ACK evidence, ACK acceptance, and committed consumer projections.
+fsync-before-ACK evidence, and ACK acceptance. The production path accepts
+`gapResolvedConsumersPending` only after exact ≥90% coverage is persisted;
+pending typed projections are not part of missing-HR recovery acceptance.
 This is an offline evidence tool: it never launches, terminates, installs, or
 talks to the phone.
 """
@@ -451,6 +454,17 @@ def verify(
             events(transaction_text, "ATRIADBG historical_consumers"), status="committed"
         )
     else:
+        persisted_coverage = latest_matching(
+            [
+                event for event in events(
+                    transaction_text, "ATRIADBG historical_full_drain_coverage"
+                )
+                if event.position > transaction_evidence_floor
+            ],
+            gap=gap_identifier or "",
+            generation=str(transport_generation),
+            status="persisted",
+        )
         reconcile = latest_matching(
             [
                 event for event in events(
@@ -462,14 +476,15 @@ def verify(
             generation=str(transport_generation),
             status="resolved",
         )
-        if reconcile is None:
+        coverage = persisted_coverage or reconcile
+        if coverage is None:
             blockers.append("missing_exact_gap_coverage_resolution")
         else:
-            if terminal is not None and reconcile.position <= terminal.position:
+            if terminal is not None and coverage.position <= terminal.position:
                 blockers.append("gap_coverage_resolved_before_history_terminal")
-            density = integer(reconcile, "density")
-            maximum_gap = integer(reconcile, "maximum_gap")
-            p95_gap = integer(reconcile, "p95_gap")
+            density = integer(coverage, "density")
+            maximum_gap = integer(coverage, "maximum_gap")
+            p95_gap = integer(coverage, "p95_gap")
             if density is None or density < 90:
                 blockers.append("resolved_gap_density_below_90_percent")
             if maximum_gap is None or maximum_gap > 3:
@@ -496,10 +511,24 @@ def verify(
             gap=gap_identifier or "",
             receipts="5",
         )
-        if consumers is not None and reconcile is not None and consumers.position <= reconcile.position:
+        pending_consumers = latest_matching(
+            publish_events,
+            status="gap_resolved_consumers_pending",
+            generation=str(transport_generation),
+            gap=gap_identifier or "",
+            receipts="0",
+        )
+        if consumers is None and pending_consumers is None:
+            blockers.append("missing_exact_gap_resolution_commit")
+            blockers.append("missing_committed_verified_consumers")
+        if (
+            consumers is not None
+            and coverage is not None
+            and consumers.position <= coverage.position
+        ):
             blockers.append("consumers_committed_before_gap_coverage_resolution")
 
-    if consumers is None:
+    if consumers is None and transaction_mode == "legacy_exact_selector":
         blockers.append("missing_committed_verified_consumers")
     elif transaction_mode == "legacy_exact_selector":
         if integer(consumers, "authority_generation") != authority_generation:
@@ -514,7 +543,7 @@ def verify(
             blockers.append("consumers_committed_before_history_terminal")
         if ack_confirmed and consumers.position <= max(event.position for event in ack_confirmed):
             blockers.append("consumers_committed_before_final_ack_confirmation")
-    else:
+    elif consumers is not None:
         if ack_confirmed and consumers.position <= max(event.position for event in ack_confirmed):
             blockers.append("consumers_committed_before_final_ack_confirmation")
         if (

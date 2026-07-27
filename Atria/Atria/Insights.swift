@@ -345,7 +345,11 @@ struct AthleteProfile: Codable, Equatable {
 
     static var defaultAge: Int { 30 }
     static var defaultMeasuredMaxHR: Int {
-        UserDefaults.standard.object(forKey: "maxHR") as? Int ?? 190
+        defaultMeasuredMaxHR(userDefaults: .standard)
+    }
+
+    static func defaultMeasuredMaxHR(userDefaults: UserDefaults) -> Int {
+        userDefaults.object(forKey: "maxHR") as? Int ?? 190
     }
 
     init(age: Int, measuredMaxHR: Int, maxHRSource: HRMaxSource,
@@ -367,7 +371,11 @@ struct AthleteProfile: Codable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         age = try c.decodeIfPresent(Int.self, forKey: .age) ?? Self.defaultAge
         measuredMaxHR = try c.decodeIfPresent(Int.self, forKey: .measuredMaxHR) ?? Self.defaultMeasuredMaxHR
-        maxHRSource = try c.decodeIfPresent(HRMaxSource.self, forKey: .maxHRSource) ?? .measured
+        // A legacy scalar is not evidence that the value was measured. Older
+        // payloads commonly persisted the 190 placeholder without provenance;
+        // treating that as measured silently upgrades strain confidence and can
+        // unlock VO2max. Only an explicitly encoded source may claim measured.
+        maxHRSource = try c.decodeIfPresent(HRMaxSource.self, forKey: .maxHRSource) ?? .ageEstimate
         biologicalSex = try c.decodeIfPresent(BiologicalSex.self, forKey: .biologicalSex) ?? .unspecified
         weightKg = try c.decodeIfPresent(Double.self, forKey: .weightKg) ?? 0
         heightCm = try c.decodeIfPresent(Double.self, forKey: .heightCm) ?? 0
@@ -397,14 +405,14 @@ struct AthleteProfile: Codable, Equatable {
         biologicalSex != .unspecified && weightKg > 0
     }
 
-    static func load() -> AthleteProfile {
-        let completedFlag = UserDefaults.standard.bool(forKey: onboardingCompletionKey)
-        guard let data = UserDefaults.standard.data(forKey: persistenceKey),
+    static func load(userDefaults: UserDefaults = .standard) -> AthleteProfile {
+        let completedFlag = userDefaults.bool(forKey: onboardingCompletionKey)
+        guard let data = userDefaults.data(forKey: persistenceKey),
               let p = try? JSONDecoder().decode(AthleteProfile.self, from: data)
         else {
             return AthleteProfile(age: defaultAge,
-                                  measuredMaxHR: defaultMeasuredMaxHR,
-                                  maxHRSource: .measured,
+                                  measuredMaxHR: defaultMeasuredMaxHR(userDefaults: userDefaults),
+                                  maxHRSource: .ageEstimate,
                                   biologicalSex: .unspecified,
                                   weightKg: 0,
                                   heightCm: 0,

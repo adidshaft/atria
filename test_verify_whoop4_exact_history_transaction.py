@@ -121,6 +121,28 @@ class ExactHistoryTransactionVerifierTests(unittest.TestCase):
         self.assertIn("consumer_receipts=5", result.stdout)
         self.assertIn("blockers=none", result.stdout)
 
+    def test_accepts_exact_coverage_when_typed_consumers_need_future_context(self):
+        gap = "7f8f3af8-b06a-4f58-a80e-dd211db8470a"
+        trace = self.valid_production_trace().replace(
+            "ATRIADBG historical_full_drain_reconcile "
+            f"gap={gap} generation=9 status=resolved density=90 maximum_gap=3 p95_gap=1",
+            "ATRIADBG historical_full_drain_coverage status=persisted "
+            f"gap={gap} generation=9 observed=90 expected=90 "
+            "density=100 maximum_gap=1 p95_gap=1",
+        ).replace(
+            "ATRIADBG historical_full_drain_publish status=resolved generation=9 "
+            f"gap={gap} receipts=5",
+            "ATRIADBG historical_full_drain_publish "
+            "status=gap_resolved_consumers_pending generation=9 "
+            f"gap={gap} required_end=1800003600 receipts=0 raw_retained=1",
+        )
+        self.log.write_text(trace, encoding="utf-8")
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("exact_history_transaction_status=pass", result.stdout)
+        self.assertIn("consumer_receipts=0", result.stdout)
+        self.assertIn("blockers=none", result.stdout)
+
     def test_production_accepts_known_twelve_second_clock_correction(self):
         self.log.write_text(
             self.valid_production_trace().replace("drift_s=1", "drift_s=12"),

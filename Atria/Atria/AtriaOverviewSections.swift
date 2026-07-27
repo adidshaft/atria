@@ -3392,8 +3392,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                      value: hero.strainValue,
                                      detail: strainEvidenceDetailText,
                                      systemImage: AtriaTodayMetric.strain.systemImage,
-                                     tint: strainZone?.tint ?? Metrics.electricStrain,
-                                     progress: hero.guidance.target.map { min(max(hero.strain / max($0, 0.1), 0), 1) }),
+                                     tint: qualifiedStrainZone?.tint ?? Metrics.electricStrain,
+                                     progress: strainIsPartial
+                                        ? nil
+                                        : hero.guidance.target.map { min(max(hero.strain / max($0, 0.1), 0), 1) }),
             AtriaDailyFocusRail.Item(title: sleepGlanceTitleText,
                                      value: sleepGlanceValueText,
                                      detail: sleepGlanceDetailText,
@@ -3437,8 +3439,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private var triRingStrainMetric: AtriaTriRingMetric {
         let pending = metricIsPending(hero.strainValue)
+        let unqualified = pending || strainIsPartial
         let fill = AtriaRingMetricProjection.strainFill(strain: hero.strain,
-                                                        isPending: pending)
+                                                        isPending: unqualified)
         let targetProgress = AtriaRingMetricProjection.strainTargetProgress(
             strain: hero.strain,
             target: hero.guidance.target
@@ -3448,12 +3451,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   detail: strainEvidenceDetailText,
                                   systemImage: AtriaTodayMetric.strain.systemImage,
                                   tint: AtriaRingMetricProjection.strainTint(
-                                    targetProgress: pending ? nil : targetProgress,
+                                    targetProgress: unqualified ? nil : targetProgress,
                                     actualFill: fill
                                   ),
                                   fill: fill,
-                                  stateTint: pending ? nil : strainZone?.tint,
-                                  targetFraction: pending ? nil : AtriaRingMetricProjection.strainTargetFraction(hero.guidance.target))
+                                  stateTint: unqualified ? nil : qualifiedStrainZone?.tint,
+                                  targetFraction: unqualified ? nil : AtriaRingMetricProjection.strainTargetFraction(hero.guidance.target))
     }
 
     private var triRingCenterValue: String {
@@ -3472,6 +3475,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private var recoveryTriRingDetailText: String {
         guard hero.recoveryEstimate.percent != nil else {
             return recoveryUnavailableDetail
+        }
+        if hero.recoveryIsFromPreviousSleep {
+            return hero.recoveryDetail
         }
         return AtriaRecoveryRingPresentation.detail(
             zone: triRingCenterState,
@@ -3831,10 +3837,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                       value: metricDisplayValue(hero.strainValue),
                                       detail: strainEvidenceDetailText,
                                       systemImage: metric.systemImage,
-                                      tint: strainZone?.tint ?? Metrics.electricStrain,
-                                      ringFraction: metricIsPending(hero.strainValue) ? nil : min(max(hero.strain / 21, 0), 1),
+                                      tint: qualifiedStrainZone?.tint ?? Metrics.electricStrain,
+                                      ringFraction: metricIsPending(hero.strainValue) || strainIsPartial
+                                        ? nil
+                                        : min(max(hero.strain / 21, 0), 1),
                                       sparklineValues: dailyMetricSparklines.strain,
-                                      zone: strainZone)
+                                      zone: qualifiedStrainZone)
             }
         case .load:
             AtriaGlanceMetricCard(title: "Training load",
@@ -3923,12 +3931,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   calibratingDay: sleepEfficiencyCalibratingDay)
         case .sleepPerformance:
             detailButton(.sleepPerformance) {
-                // `dailyRollupHistory` is already day-descending (store invariant),
-                // so no `.sorted` here -- a render-path sort would recompute
-                // session metrics on every body eval (2026-07-05 perf hygiene).
                 AtriaGlanceMetricCard(title: "Sleep perf",
-                                      value: dailyRollupHistory.first?.sleepPerformance.map { "\($0)%" } ?? "Learning",
-                                      detail: "of need",
+                                      value: currentSleepPerformancePercent.map { "\($0)%" } ?? "Learning",
+                                      detail: currentSleepPerformancePercent == nil
+                                        ? "Save sleep to score"
+                                        : "of need",
                                       systemImage: metric.systemImage,
                                       tint: Metrics.electricSleep,
                                       accessibilityDetail: "Sleep performance, percent of nightly need.")
@@ -3948,13 +3955,14 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             }
         case .respiratoryRate:
             AtriaGlanceMetricCard(title: "Resp rate",
-                                  value: currentMainSleep?.respiratoryRateText ?? "--",
-                                  detail: currentMainSleep?.respiratoryRate == nil ? "Sleep signal" : "Early",
+                                  value: currentMainSleep?.respiratoryRateText ?? "Learning",
+                                  detail: currentMainSleep?.respiratoryRate == nil
+                                    ? "Needs qualified sleep" : "Early",
                                   systemImage: metric.systemImage,
                                   tint: respiratoryRateZone?.tint ?? (currentMainSleep?.respiratoryRate == nil ? .orange : Metrics.electricRespiratory),
                                   zone: respiratoryRateZone,
                                   accessibilityDetail: currentMainSleep?.respiratoryRate == nil
-                                    ? "Respiratory rate is building from sleep-only evidence."
+                                    ? "Respiratory rate needs qualified sleep evidence."
                                     : "Respiratory rate early sleep-only signal \(currentMainSleep?.respiratoryRateText ?? "--") breaths per minute.")
         case .steps:
             Button { showStrapStepsDetail = true } label: {
@@ -4185,7 +4193,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private var strainEvidenceDetailText: String {
         if metricIsPending(hero.strainValue) { return "Learning" }
-        if hero.strainConfidence.localizedCaseInsensitiveContains("partial") {
+        if strainIsPartial {
             return "Partial · limited wear"
         }
         return targetValueText
@@ -4207,6 +4215,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private var recoveryDetailText: String {
         if hero.recoveryEstimate.percent == nil {
             return recoveryUnavailableDetail
+        }
+        if hero.recoveryIsFromPreviousSleep {
+            return hero.recoveryDetail
         }
         if hero.recoveryEstimate.confidence == .unverified,
            hero.recoveryEstimate.detail.localizedCaseInsensitiveContains("HRV unavailable") {
@@ -4300,6 +4311,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                            target: hero.guidance.target,
                            greenBand: strainGreenBand,
                            yellowBand: strainYellowBand)
+    }
+
+    private var strainIsPartial: Bool {
+        hero.strainConfidence.localizedCaseInsensitiveContains("partial")
+            || hero.strainValue.hasPrefix("≥")
+    }
+
+    private var qualifiedStrainZone: AtriaMetricZone? {
+        strainIsPartial ? nil : strainZone
     }
 
     private var loadReadinessTint: Color {
@@ -4431,7 +4451,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var stepsZone: AtriaMetricZone? {
-        guard let count = live.dailyStepPresentation.count, count > 0 else { return nil }
+        let presentation = live.dailyStepPresentation
+        guard presentation.completeness != .partial
+                || presentation.source == .live,
+              let count = presentation.count,
+              count > 0 else { return nil }
         let zone = Metrics.stepsZone(count, goal: stepsGoal)
         return zone.map {
             AtriaMetricZone(level: $0.level,
@@ -5446,6 +5470,7 @@ private struct AtriaGlanceWidgetManagerSheet: View {
     // Same key the Today screen reads; AtriaDefault syncs both instances via the
     // UserDefaults change notification, so toggling here updates the rail live.
     @AtriaDefault("atria.overview.showDailyFocusRail") private var showDailyFocusRail: Bool = false
+    @State private var showWidgetProof = false
 
     private var hiddenMoreMetrics: [AtriaTodayMetric] {
         hiddenMetrics.filter { AtriaTodayMetric.moreMetrics.contains($0) }
@@ -5519,6 +5544,38 @@ private struct AtriaGlanceWidgetManagerSheet: View {
                         }
                     }
 
+                    managerSection(title: "Home & Lock Screen widgets",
+                                   subtitle: "Check exactly what the widget extension can read before adding it to the Home or Lock Screen.") {
+                        Button {
+                            showWidgetProof = true
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "checkmark.seal")
+                                    .font(.headline.weight(.bold))
+                                    .foregroundStyle(.cyan)
+                                    .frame(width: 34, height: 34)
+                                    .background(.cyan.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Widget proof")
+                                        .font(.subheadline.weight(.bold))
+                                    Text("Preview the shared snapshot, Home Screen families, and Lock Screen accessories.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                Spacer(minLength: 4)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                        }
+                        .buttonStyle(.plain)
+                        .atriaInsetCard(tint: .cyan)
+                        .accessibilityHint("Shows the local snapshot and every supported widget family.")
+                    }
+
                     Button {
                         onEditWidgets()
                         dismiss()
@@ -5541,6 +5598,10 @@ private struct AtriaGlanceWidgetManagerSheet: View {
                     }
                 }
             }
+        }
+        .sheet(isPresented: $showWidgetProof) {
+            AtriaWidgetProofSheet(snapshot: AtriaIntentSnapshotStore.loadLatestSnapshot(),
+                                  layoutConfig: .default)
         }
     }
 
@@ -5752,7 +5813,9 @@ private struct AtriaStrapStepsDetailSheet: View {
                                   systemImage: presentation.completeness == .complete
                                     ? "checkmark.seal.fill" : "waveform.path.ecg")
                         statusRow(title: "Saved today",
-                                  value: presentation.count.map { "\($0) steps" } ?? "Unavailable",
+                                  value: presentation.count.map { _ in
+                                    "\(presentation.valueText) steps"
+                                  } ?? "Unavailable",
                                   systemImage: "clock.arrow.circlepath")
                     }
 
@@ -8225,7 +8288,9 @@ struct AtriaMetricDetailSheet: View {
     let vo2MaxEstimate: VO2MaxEstimateSummary?
     let skinTemperatureDeviation: IMUAuditSummary.SkinTemperatureDeviationSummary?
     @State private var preparation = AtriaStaleWhileRefreshState<AtriaMetricDetailPreparationInput, AtriaPreparedMetricHistory>()
-    @State private var range: AtriaTrendRange = .month
+    // Detail sheets open on today rather than a month aggregate. The range
+    // picker still provides week/month context without hiding the current day.
+    @State private var range: AtriaTrendRange = .day
     @State private var showingMeaningSheet = false
     private let initialScrubbedDay: Date?
 
@@ -8279,7 +8344,7 @@ struct AtriaMetricDetailSheet: View {
          maxHeartRate: Int? = nil,
          vo2MaxEstimate: VO2MaxEstimateSummary? = nil,
          skinTemperatureDeviation: IMUAuditSummary.SkinTemperatureDeviationSummary? = nil,
-         initialRange: AtriaTrendRange = .month,
+         initialRange: AtriaTrendRange = .day,
          initialScrubbedDay: Date? = nil,
          initialBucketOverride: AtriaChartBucketOverride = .auto,
          initialShowMinMaxBand: Bool = true) {
@@ -8911,11 +8976,20 @@ struct AtriaMetricDetailSheet: View {
         // Canonical not-ready word is "Learning" (never "Building") — must match
         // the recovery ring center + legend chip for the same Day-1 state.
         guard let percent = recoveryHeroRawPercent.map({ Int($0.rounded()) }) else { return "Learning" }
+        if recoveryHeroUsesPreviousSavedDay {
+            return "Previous sleep"
+        }
         switch percent {
         case 67...: return "Good"
         case 34..<67: return "Typical"
         default: return "Low"
         }
+    }
+
+    private var recoveryHeroUsesPreviousSavedDay: Bool {
+        range == .day
+            && preparedHistory.recoverySummary[.day]?.latestRaw == nil
+            && preparedHistory.recoveryRaw[.all]?.last?.value != nil
     }
 
     private var recoveryBaselineComparisonText: String? {

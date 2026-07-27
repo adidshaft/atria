@@ -19,6 +19,16 @@ enum LocalNotificationScheduler {
                                    includeWorkoutReviewDecisions: productionCadence || debugMetricRequest)
     }
 
+    nonisolated static func workoutReviewDeliveryCanReserve(
+        candidateID: String,
+        lastNotifiedCandidateID: String?,
+        inFlightCandidateIDs: Set<String>
+    ) -> Bool {
+        !candidateID.isEmpty
+            && candidateID != lastNotifiedCandidateID
+            && !inFlightCandidateIDs.contains(candidateID)
+    }
+
     private nonisolated static let actionableBatteryThreshold = 25
     private static let actionableDiagnosisCooldown: TimeInterval = 6 * 60 * 60
     private static let actionableDiagnosisLastScheduledPrefix = "atria.notification.actionableDiagnosis.lastScheduled."
@@ -33,6 +43,11 @@ enum LocalNotificationScheduler {
     private static let sleepReviewDismissedIDKey = "atria.sleepReview.dismissedID"
     private static let workoutReviewLastCandidateIDKey = "atria.notification.workoutReview.lastCandidateID"
     private static let workoutReviewDismissedIDKey = "atria.workoutReview.dismissedID"
+    /// One process-wide reservation covers both launch maintenance and the
+    /// review-cache publication retry. Without it, two authorization tasks can
+    /// spend the attention budget for the same candidate before either write
+    /// records `workoutReviewLastCandidateIDKey`.
+    private static var workoutReviewCandidateIDsInFlight = Set<String>()
     private static let healthDeviationLastScheduledKey = "atria.notification.healthDeviation.lastScheduledAt"
     private static let healthDeviationCooldown: TimeInterval = 48 * 60 * 60
     private static let strapChargeReminderLastScheduledKey = "atria.notification.strapCharge.lastScheduled"
@@ -697,6 +712,64 @@ enum LocalNotificationScheduler {
             } catch {
                 AtriaDebugLog("ATRIADBG notification_error kind=sleep_logged error=%@",
                               String(describing: error))
+            }
+        }
+    }
+
+    /// The first launch/foreground workout-review lookup intentionally returns
+    /// nil while SessionStore builds its review cache off-main. Dashboard
+    /// publication is the completion signal for that build; retry this one
+    /// notification only after Home has read the now-cached candidate.
+    ///
+    /// This path never clears unrelated pending requests. Candidate identity is
+    /// reserved again inside `add`, shared with ordinary launch maintenance, so
+    /// repeated dashboard publications cannot schedule or charge attention for
+    /// the same physical effort twice.
+    static func scheduleWorkoutReviewAfterCachePublicationIfNeeded(
+        _ candidate: WorkoutReviewCandidate,
+        ble: AtriaBLEManager
+    ) {
+        guard !reviewNotificationsProtectedByLiveCapture(ble: ble),
+              candidate.isReviewPromptWorthy else { return }
+        let defaults = UserDefaults.standard
+        guard candidate.id != defaults.string(forKey: workoutReviewDismissedIDKey),
+              candidate.id != defaults.string(forKey: workoutReviewLastCandidateIDKey),
+              AtriaNotificationSettings.load().allows(kind: "workout_review") else {
+            return
+        }
+
+        configureDeliveryLogger()
+        let decision = NotificationDecision(
+            kind: "workout_review",
+            identifier: Identifier.workoutReview,
+            title: workoutReviewNotificationTitle(for: candidate),
+            body: workoutReviewNotificationBody(for: candidate),
+            reason: "candidate_\(candidate.id)",
+            shouldSchedule: true,
+            delay: 6,
+            userInfo: ["deepLink": "atria://overview"]
+        )
+        Task {
+            let center = UNUserNotificationCenter.current()
+            _ = await requestProvisionalAuthorization(center: center)
+            let settings = await notificationSettings(center: center)
+            let status = statusName(settings.authorizationStatus)
+            guard settings.authorizationStatus == .authorized ||
+                    settings.authorizationStatus == .provisional ||
+                    settings.authorizationStatus == .ephemeral else {
+                AtriaDebugLog(
+                    "ATRIADBG notification_schedule status=blocked reason=authorization_%@ kind=workout_review source=cache_publication",
+                    status
+                )
+                return
+            }
+            do {
+                try await add(decision: decision, center: center)
+            } catch {
+                AtriaDebugLog(
+                    "ATRIADBG notification_error kind=workout_review source=cache_publication error=%@",
+                    String(describing: error)
+                )
             }
         }
     }
@@ -1672,6 +1745,30 @@ enum LocalNotificationScheduler {
 
     private static func add(decision: NotificationDecision,
                             center: UNUserNotificationCenter) async throws {
+        let workoutCandidateID = decision.kind == "workout_review"
+            ? decision.reason.split(separator: "_", maxSplits: 1).dropFirst().first.map(String.init)
+            : nil
+        if let workoutCandidateID {
+            guard workoutReviewDeliveryCanReserve(
+                candidateID: workoutCandidateID,
+                lastNotifiedCandidateID: UserDefaults.standard.string(
+                    forKey: workoutReviewLastCandidateIDKey
+                ),
+                inFlightCandidateIDs: workoutReviewCandidateIDsInFlight
+            ),
+                  workoutReviewCandidateIDsInFlight.insert(workoutCandidateID).inserted else {
+                AtriaDebugLog(
+                    "ATRIADBG notification_skip kind=workout_review reason=candidate_already_scheduled_or_inflight candidate=%@",
+                    workoutCandidateID
+                )
+                return
+            }
+        }
+        defer {
+            if let workoutCandidateID {
+                workoutReviewCandidateIDsInFlight.remove(workoutCandidateID)
+            }
+        }
         if decision.kind == "fit_check", !fitCheckAllowed() { return }
         guard consumeAttentionBudget(kind: decision.kind) else { return }
         var decision = decision

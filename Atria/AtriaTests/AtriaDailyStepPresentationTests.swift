@@ -182,6 +182,40 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.completeness, .unavailable)
     }
 
+    func testPhysiologicalMotionTickSubtotalOutranksFreshPreliminaryR10() {
+        let wake = day.addingTimeInterval(7 * 3_600)
+        let now = wake.addingTimeInterval(5 * 3_600)
+        let motionTicks = AtriaHistoricalDailyConsumerProjection.StepDay(
+            localDay: "2033-07-02",
+            dayStart: wake,
+            dayEnd: now,
+            state: .missing,
+            stepCount: nil,
+            knownStepDeltaSum: 1_234,
+            knownEpochCount: 1,
+            rejectedOrUnknownEpochCount: 0,
+            knownCoverageSeconds: 17_000,
+            missingCoverageSeconds: 1_000
+        )
+
+        let value = AtriaDailyStepPresentation.resolve(
+            day: now,
+            now: now,
+            liveCount: 9_999,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: now,
+            canonicalDays: [motionTicks],
+            physiologicalDayStart: wake,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.count, 1_234)
+        XCTAssertTrue(value.isValidated)
+        XCTAssertEqual(value.source, .verifiedCanonical)
+        XCTAssertEqual(value.completeness, .partial)
+        XCTAssertEqual(value.valueText, "≥1234")
+    }
+
     private var utcCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!

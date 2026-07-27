@@ -77,6 +77,27 @@ enum AtriaWhoop4HistoricalRecordDecoder {
         }
 
         let rawHeartRate = Int(bytes[layout.heartRateOffset])
+        // Physical WHOOP 4 v24 rows expose a little-endian cumulative motion
+        // counter at bytes 88...89. It remains constant at rest and advances
+        // while walking, but physical counted walks prove that one tick is not
+        // always one step. Keep it raw; publication requires a strap-only,
+        // independently validated tick-to-step model.
+        let motionTickCounter = layout == .v24 && bytes.count >= 90
+            ? u16LE(bytes, at: 88)
+            : nil
+        // Empirical motion scalar immediately preceding the v24 gravity
+        // vector. Its physical meaning is not yet protocol-confirmed, so keep
+        // the name and range deliberately neutral. It is useful only as one
+        // input to a separately held-out gait/non-gait gate.
+        let unknownMotionScalar32: Double? = {
+            guard layout == .v24,
+                  let value = f32LE(bytes, at: 32),
+                  value.isFinite,
+                  (0...8).contains(value) else {
+                return nil
+            }
+            return value
+        }()
         let physiology = AtriaWhoop4HistoricalPhysiology(
             decodedHeartRateBPM: rawHeartRate,
             decodedRRIntervalsMilliseconds: rawRR,
@@ -91,6 +112,8 @@ enum AtriaWhoop4HistoricalRecordDecoder {
             subsecond: subsecond,
             counter: counter,
             gravity: gravity,
+            unknownMotionScalar32: unknownMotionScalar32,
+            motionTickCounter: motionTickCounter,
             physiology: physiology,
             provenance: provenance
         )
@@ -132,6 +155,8 @@ enum AtriaWhoop4HistoricalRecordDecoder {
                              subsecond: nil,
                              counter: counter,
                              gravity: gravity,
+                             unknownMotionScalar32: nil,
+                             motionTickCounter: nil,
                              physiology: nil,
                              provenance: provenance))
     }
@@ -209,6 +234,11 @@ struct AtriaWhoop4HistoricalRecord: Equatable, Sendable {
     let subsecond: UInt16?
     let counter: UInt32
     let gravity: AtriaWhoop4HistoricalGravity
+    /// Unconfirmed finite v24 f32 at bytes 32...35. Never publish directly.
+    let unknownMotionScalar32: Double?
+    /// Raw firmware-owned cumulative motion counter from v24 bytes 88...89.
+    /// Physical walks prove that this is not a 1:1 step counter.
+    let motionTickCounter: UInt16?
     /// Nil for v25 by design: that layout has no safely decoded HR/RR fields.
     let physiology: AtriaWhoop4HistoricalPhysiology?
     let provenance: AtriaWhoop4HistoricalProvenance

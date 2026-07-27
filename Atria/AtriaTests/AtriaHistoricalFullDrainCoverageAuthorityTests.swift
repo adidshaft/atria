@@ -304,6 +304,59 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
         XCTAssertNil(try store.load())
     }
 
+    func testDisabledResumeReleasesOnlyExactDrainingTransportAuthority() throws {
+        let store = try armedStore()
+        let authority = try XCTUnwrap(store.load())
+
+        XCTAssertFalse(
+            try store.releaseInterruptedDrainingAuthorityWhenResumeDisabled(
+                authorityIdentifier: "stale-authority"
+            )
+        )
+        XCTAssertEqual(try store.load(), authority)
+        XCTAssertTrue(
+            try store.releaseInterruptedDrainingAuthorityWhenResumeDisabled(
+                authorityIdentifier: authority.authorityIdentifier
+            )
+        )
+        XCTAssertNil(try store.load())
+    }
+
+    func testDisabledResumeCannotReleaseTerminalAuthority() throws {
+        let store = try armedStore()
+        let initial = try XCTUnwrap(store.load())
+        let stores = durableStores(sequence: 1, fsyncedAt: start + 104)
+        let permit = try store.recordHistoryEndFsynced(
+            identity: identity(),
+            boundaryIdentifier: "end-terminal",
+            historyEndPayload: Data([0x31]),
+            expectedACKPayload: Data([0x01]),
+            stores: stores,
+            fsyncedAt: date(104)
+        )
+        _ = try store.recordMatchingACK(
+            identity: identity(),
+            permit: permit,
+            actualACKPayload: Data([0x01]),
+            ackAttempt: 1,
+            completedAt: date(105)
+        )
+        _ = try store.recordHistoryComplete(
+            identity: identity(),
+            completionIdentifier: "complete-terminal",
+            notificationPayload: Data([0x30]),
+            stores: stores,
+            receivedAt: date(106)
+        )
+
+        XCTAssertFalse(
+            try store.releaseInterruptedDrainingAuthorityWhenResumeDisabled(
+                authorityIdentifier: initial.authorityIdentifier
+            )
+        )
+        XCTAssertEqual(try XCTUnwrap(store.load()).status, .historyComplete)
+    }
+
     func testNoLongerPendingDrainingAuthorityClearsOnlyForExactIdentifier() throws {
         let store = try armedStore()
         try store.clearUnresolvedAuthorityIfGapNoLongerPending(
@@ -315,6 +368,36 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
             gapIdentifier: "gap-a"
         )
         XCTAssertNil(try store.load())
+    }
+
+    func testVerifiedLaterStrapHistoryResetAbandonsOlderDrainingAuthority() throws {
+        let tooEarly = try armedStore()
+        XCTAssertFalse(
+            try tooEarly.abandonDrainingAuthorityAfterVerifiedStrapHistoryReset(
+                completedAtUnix: start + 101
+            )
+        )
+        XCTAssertNotNil(try tooEarly.load())
+
+        let later = try armedStore()
+        XCTAssertTrue(
+            try later.abandonDrainingAuthorityAfterVerifiedStrapHistoryReset(
+                completedAtUnix: start + 200
+            )
+        )
+        XCTAssertNil(try later.load())
+    }
+
+    func testInvalidStrapHistoryResetTimeFailsClosed() throws {
+        let store = try armedStore()
+        XCTAssertThrowsError(
+            try store.abandonDrainingAuthorityAfterVerifiedStrapHistoryReset(
+                completedAtUnix: .nan
+            )
+        ) {
+            XCTAssertEqual($0 as? Store.StoreError, .invalidEventTime)
+        }
+        XCTAssertNotNil(try store.load())
     }
 
     func testACKBeforeBothStoreFsyncsFailsClosed() throws {
@@ -929,8 +1012,8 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
         }
     }
 
-    func testProductionAutomaticIntegrationIsDisabledUntilGapRecoveryIsProven() {
-        XCTAssertFalse(AtriaHistoricalFullDrainCoverageIntegration
+    func testProductionAutomaticIntegrationUsesDurableFullDrainCoverage() {
+        XCTAssertTrue(AtriaHistoricalFullDrainCoverageIntegration
             .automaticFullDrainRecoveryEnabled)
         XCTAssertFalse(AtriaHistoricalFullDrainCoverageIntegration
             .exactRangeTransportAuthorityAvailable)

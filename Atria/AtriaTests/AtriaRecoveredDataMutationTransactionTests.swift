@@ -86,6 +86,36 @@ final class AtriaRecoveredDataMutationTransactionTests: XCTestCase {
         XCTAssertEqual(merged.first?.label, "Walking", "the pre-run image must win on id")
     }
 
+    func testRollbackPersistsTheMergedWorkoutImageInsteadOfTheStaleSnapshot() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
+        let sessions = try String(
+            contentsOf: appDirectory.appendingPathComponent("Sessions.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(sessions.range(
+            of: "private func restoreRecoveredDataMutationSnapshot("
+        )?.lowerBound)
+        let end = try XCTUnwrap(sessions.range(
+            of: "private func restoreRecoveredDefaultsData(",
+            range: start..<sessions.endIndex
+        )?.lowerBound)
+        let rollback = String(sessions[start..<end])
+
+        XCTAssertTrue(rollback.contains(
+            "let restoredConfirmedWorkouts = Self.mergeConfirmedWorkoutsPreservingLiveAdditions("
+        ))
+        XCTAssertTrue(rollback.contains(
+            "let restoredConfirmedWorkoutData = try? JSONEncoder().encode(restoredConfirmedWorkouts)"
+        ))
+        XCTAssertTrue(rollback.contains(
+            "restoreRecoveredFileData(restoredConfirmedWorkoutData,"
+        ))
+        XCTAssertFalse(rollback.contains(
+            "restoreRecoveredFileData(snapshot.confirmedWorkoutFileData,"
+        ), "the pre-run file bytes must not overwrite workouts saved during derivation")
+    }
+
     func testInjectedFailureRollsEveryCompletedMutationBackInReverseOrder() {
         let transaction = AtriaRecoveredDataMutationTransaction()
         let ticket = Ticket(generation: 7, archiveRevision: 41, reason: "fault_after_sleep")

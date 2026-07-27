@@ -71,6 +71,7 @@ struct AtriaInspectableGraph {
         let tint: Color
 
         var midpoint: Date { start.addingTimeInterval(end.timeIntervalSince(start) / 2) }
+        var duration: TimeInterval { end.timeIntervalSince(start) }
     }
 
     struct Reading: Identifiable {
@@ -82,6 +83,9 @@ struct AtriaInspectableGraph {
     let title: String
     let subtitle: String?
     let content: Content
+    /// Optional initial zoom for a time-interval graph. The full domain stays
+    /// intact and scrollable; this only chooses the first readable viewport.
+    var preferredVisibleDuration: TimeInterval? = nil
 
     static func segmentedPoints(_ values: [(date: Date, value: Double)],
                                 gapThreshold: TimeInterval) -> [Point] {
@@ -103,6 +107,18 @@ struct AtriaInspectableGraph {
             guard let point = Self.nearestPoint(in: item.points, to: date) else { return nil }
             return Reading(series: item, point: point)
         }
+    }
+
+    /// Interval charts need a real selection result, not a guessed nearest
+    /// sample. Multiple activities can share a selected moment on different
+    /// lanes, so preserve every matching saved interval.
+    func intervals(containing date: Date) -> [Interval] {
+        guard case let .intervals(intervals, _) = content else { return [] }
+        return intervals.filter { $0.start <= date && date <= $0.end }
+            .sorted {
+                if $0.start != $1.start { return $0.start < $1.start }
+                return $0.id < $1.id
+            }
     }
 
     private static func nearestPoint(in points: [Point], to date: Date) -> Point? {
@@ -172,6 +188,7 @@ private struct AtriaGraphInspectorView: View {
 
     @State private var selectedDate: Date?
     @State private var visibleDuration: TimeInterval?
+    @State private var magnificationBaseDuration: TimeInterval?
 
     var body: some View {
         GeometryReader { proxy in
@@ -223,7 +240,7 @@ private struct AtriaGraphInspectorView: View {
                     Image(systemName: "minus.magnifyingglass")
                         .frame(width: 44, height: 44)
                 }
-                .disabled((visibleDuration ?? fullDuration) >= fullDuration)
+                .disabled(currentVisibleDuration >= fullDuration)
                 .accessibilityLabel("Show a wider time range")
 
                 Button {
@@ -232,7 +249,7 @@ private struct AtriaGraphInspectorView: View {
                     Image(systemName: "plus.magnifyingglass")
                         .frame(width: 44, height: 44)
                 }
-                .disabled((visibleDuration ?? fullDuration) <= minimumVisibleDuration)
+                .disabled(currentVisibleDuration <= minimumVisibleDuration)
                 .accessibilityLabel("Show a narrower time range")
             }
             Button(action: onDismiss) {
@@ -303,17 +320,23 @@ private struct AtriaGraphInspectorView: View {
                     y: .value("Lane", interval.lane))
                 .foregroundStyle(interval.tint)
                 .cornerRadius(5)
+                // Labels inside brief intervals collide faster than a user can
+                // read them. Their colored bars remain visible, and selecting
+                // the moment below reveals the exact title and time instead.
                 .annotation(position: .overlay) {
-                    Text(interval.label)
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
+                    if interval.duration >= 30 * 60 {
+                        Text(interval.label)
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                    }
                 }
         }
         .chartXScale(domain: domain)
         .chartScrollableAxes(.horizontal)
-        .chartXVisibleDomain(length: visibleDuration ?? domain.upperBound.timeIntervalSince(domain.lowerBound))
+        .chartXVisibleDomain(length: visibleDuration ?? defaultIntervalVisibleDuration(domain: domain))
         .chartXSelection(value: $selectedDate)
+        .simultaneousGesture(intervalMagnification(domain: domain))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -339,8 +362,28 @@ private struct AtriaGraphInspectorView: View {
             Text("\(bars.count) recorded categories · values are not interpolated")
                 .font(.caption).foregroundStyle(.secondary)
         case let .intervals(intervals, _):
-            Text("\(intervals.count) recorded intervals · bar width is actual duration")
-                .font(.caption).foregroundStyle(.secondary)
+            if let selectedDate {
+                let matches = graph.intervals(containing: selectedDate)
+                if matches.isEmpty {
+                    Text("No recorded activity at \(selectedDate.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(selectedDate.formatted(date: .omitted, time: .shortened))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        ForEach(matches.prefix(3)) { interval in
+                            Text("\(interval.label) · \(Self.timeRangeText(start: interval.start, end: interval.end))")
+                                .font(.caption.weight(.semibold).monospacedDigit())
+                                .foregroundStyle(interval.tint)
+                        }
+                    }
+                }
+            } else {
+                Text("\(intervals.count) recorded intervals · swipe to move · pinch to zoom · tap a bar for details")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -369,9 +412,44 @@ private struct AtriaGraphInspectorView: View {
         }
     }
 
+    private var currentVisibleDuration: TimeInterval {
+        switch graph.content {
+        case let .timeSeries(series):
+            return visibleDuration ?? defaultVisibleDuration(series)
+        case let .intervals(_, domain):
+            return visibleDuration ?? defaultIntervalVisibleDuration(domain: domain)
+        case .histogram:
+            return 0
+        }
+    }
+
+    private func defaultIntervalVisibleDuration(domain: ClosedRange<Date>) -> TimeInterval {
+        let total = max(60, domain.upperBound.timeIntervalSince(domain.lowerBound))
+        let preferred = graph.preferredVisibleDuration ?? total
+        return min(total, max(minimumVisibleDuration, preferred))
+    }
+
+    private func intervalMagnification(domain: ClosedRange<Date>) -> some Gesture {
+        MagnificationGesture()
+            .onChanged { scale in
+                let base = magnificationBaseDuration
+                    ?? visibleDuration
+                    ?? defaultIntervalVisibleDuration(domain: domain)
+                if magnificationBaseDuration == nil {
+                    magnificationBaseDuration = base
+                }
+                let total = max(60, domain.upperBound.timeIntervalSince(domain.lowerBound))
+                visibleDuration = min(total,
+                                      max(minimumVisibleDuration, base / Double(scale)))
+            }
+            .onEnded { _ in
+                magnificationBaseDuration = nil
+            }
+    }
+
     private func adjustVisibleDuration(by multiplier: Double) {
         guard let fullDuration = inspectableDuration else { return }
-        let current = visibleDuration ?? fullDuration
+        let current = currentVisibleDuration
         visibleDuration = min(fullDuration,
                               max(minimumVisibleDuration, current * multiplier))
     }
@@ -379,6 +457,12 @@ private struct AtriaGraphInspectorView: View {
     private static func valueText(_ value: Double, unit: String) -> String {
         let number = value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value)
         return number + unit
+    }
+
+    private static func timeRangeText(start: Date, end: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "h:mm a"
+        return "\(formatter.string(from: start))–\(formatter.string(from: end))"
     }
 
     private func requestOrientation(_ mask: UIInterfaceOrientationMask) {

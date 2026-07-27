@@ -147,7 +147,7 @@ enum AtriaWhoop4HistoryArchivePipeline {
             payloadHex
         )
 
-        let record = HistoricalArchive.Record(
+        var record = HistoricalArchive.Record(
             schema: HistoricalArchive.schema,
             capturedAt: now,
             source: "0x2f",
@@ -165,6 +165,7 @@ enum AtriaWhoop4HistoryArchivePipeline {
             gravityX36: gravity.x,
             gravityY40: gravity.y,
             gravityZ44: gravity.z,
+            unknownMotionScalar32: decodedRecord.unknownMotionScalar32,
             gravityMagnitude: gravity.magnitude,
             gravityValidated: gravityValidated,
             candidateRR: [],
@@ -178,6 +179,8 @@ enum AtriaWhoop4HistoryArchivePipeline {
             metricUsable: metricUsable,
             usabilityReason: usabilityReason
         )
+        record.motionTickCounter88 =
+            decodedRecord.motionTickCounter.map(Int.init)
         return Computation(logMessage: logMessage,
                            rawPayload: payload,
                            payload: .record(record))
@@ -190,7 +193,8 @@ enum AtriaWhoop4HistoryArchivePipeline {
     ) -> PersistenceResult {
         do {
             switch computation.payload {
-            case .record(let record):
+            case .record(var record):
+                record.strapIdentifier = strapIdentifier
                 let identity = AtriaHistoricalArchiveDurableStore.FrameIdentity.whoop4(
                     strapIdentifier: strapIdentifier,
                     payload: Data(computation.rawPayload)

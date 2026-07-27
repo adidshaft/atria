@@ -59,6 +59,7 @@ final class AtriaStrainDetailPresentationTests: XCTestCase {
             .appendingPathComponent("Atria/AtriaTodayScreen.swift")
         let today = try String(contentsOf: todayURL, encoding: .utf8)
         XCTAssertTrue(today.contains("!displayHero.strainValue.hasPrefix(\"≥\")"))
+        XCTAssertTrue(today.contains("displayHero.strainConfidence.localizedCaseInsensitiveContains(\"partial\")"))
         XCTAssertTrue(today.contains("incomplete ? \"Partial · sparse HR\""))
         XCTAssertTrue(today.contains("? \"≥ \\(displayHero.strainValue)\""))
     }

@@ -456,6 +456,9 @@ copy_from_container "Library/Application Support/Atria/pending-workout-route-tra
 copy_from_container "Library/Application Support/atria-strap-step-ledger.json" \
   "$runtime_state_dir/atria-strap-step-ledger.json" \
   "strap_step_ledger" || true
+copy_from_container "Library/Application Support/Atria/verified-step-evidence-v1/whoop4-motion-tick-days-v1.json" \
+  "$runtime_state_dir/whoop4-motion-tick-days-v1.json" \
+  "whoop4_motion_tick_days" || true
 copy_from_container "Documents/atria-workout-routes" \
   "$runtime_state_dir/atria-workout-routes" \
   "workout_routes" || true

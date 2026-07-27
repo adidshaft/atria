@@ -60,7 +60,7 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         XCTAssertFalse(map.contains("MapPolyline(coordinates: routeCoordinates)"))
     }
 
-    func testRouteWorkoutIsMapFirstWithPinnedGlanceableMetricsAndActions() throws {
+    func testRouteWorkoutAvoidsColdMapKitAndKeepsPinnedMetricsAndActions() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
             .appendingPathComponent("Atria/AtriaLiveWorkoutView.swift"), encoding: .utf8)
@@ -81,6 +81,10 @@ final class AtriaWorkoutRouteTests: XCTestCase {
 
         XCTAssertTrue(main.contains("if activityType.supportsRouteRecording"))
         XCTAssertTrue(route.contains("AtriaLiveWorkoutRouteCard(routeRecorder: routeRecorder)"))
+        XCTAssertFalse(main.contains("routeMapIsReady"))
+        XCTAssertFalse(main.contains("Task.sleep(for: .milliseconds(350))"))
+        XCTAssertFalse(source.contains("private struct AtriaLiveWorkoutRouteMap"))
+        XCTAssertFalse(source.contains("Map(position: $cameraPosition)"))
         XCTAssertTrue(route.contains("AtriaLiveWorkoutRouteMetricsHost(metricStore: metricStore,"))
         XCTAssertTrue(route.contains("routeWorkoutActions"))
         XCTAssertTrue(route.contains("Spacer(minLength: 24)"),
@@ -252,7 +256,7 @@ final class AtriaWorkoutRouteTests: XCTestCase {
                                                        range: lockStart.upperBound..<widgetSource.endIndex))
         let lock = String(widgetSource[lockStart.lowerBound..<lockEnd.lowerBound])
         XCTAssertTrue(lock.contains(".minimumScaleFactor(0.58)"))
-        XCTAssertTrue(lock.contains(".layoutPriority(3)"))
+        XCTAssertTrue(lock.contains(".layoutPriority(emphasis ? 3 : 0)"))
         XCTAssertTrue(lock.contains(".accessibilityElement(children: .ignore)"))
     }
 
@@ -399,7 +403,7 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         XCTAssertEqual(preview[1].last?.latitude, 159)
     }
 
-    func testLiveRouteMapConsumesPrecomputedBoundedCoordinates() throws {
+    func testLiveRouteStatusAvoidsMapWhileRecorderKeepsBoundedCoordinates() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
         let liveSource = try String(contentsOf: sourceDirectory.appendingPathComponent("AtriaLiveWorkoutView.swift"),
@@ -407,17 +411,15 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         let routeSource = try String(contentsOf: sourceDirectory.appendingPathComponent("AtriaWorkoutRoute.swift"),
                                      encoding: .utf8)
 
-        let mapStart = try XCTUnwrap(liveSource.range(of: "private struct AtriaLiveWorkoutRouteMap"))
-        let cardStart = try XCTUnwrap(liveSource.range(of: "private struct AtriaLiveWorkoutRouteCard",
-                                                      range: mapStart.upperBound..<liveSource.endIndex))
-        let mapSource = String(liveSource[mapStart.lowerBound..<cardStart.lowerBound])
-        XCTAssertTrue(mapSource.contains("MapPolyline(coordinates: coordinates)"))
-        XCTAssertTrue(mapSource.contains("Map(position: $cameraPosition)"))
-        XCTAssertTrue(mapSource.contains("UserAnnotation()"))
-        XCTAssertTrue(mapSource.contains(".userLocation("))
-        XCTAssertFalse(mapSource.contains("points.map"))
+        let cardStart = try XCTUnwrap(liveSource.range(of: "private struct AtriaLiveWorkoutRouteCard"))
+        let mainStart = try XCTUnwrap(liveSource.range(of: "struct AtriaLiveWorkoutView: View",
+                                                      range: cardStart.upperBound..<liveSource.endIndex))
+        let cardSource = String(liveSource[cardStart.lowerBound..<mainStart.lowerBound])
+        XCTAssertFalse(cardSource.contains("Map("))
+        XCTAssertFalse(cardSource.contains("MapPolyline"))
+        XCTAssertTrue(cardSource.contains("routeRecorder.snapshot"))
+        XCTAssertTrue(cardSource.contains("routeStatus(route)"))
         XCTAssertTrue(routeSource.contains("maximumLivePreviewPointCount = 512"))
-        XCTAssertTrue(mapSource.contains("ForEach(Array(segments.enumerated())"))
         XCTAssertTrue(routeSource.contains("snapshot.previewSegments = previewSegments"))
         XCTAssertFalse(routeSource.contains("snapshot.points = points"))
     }

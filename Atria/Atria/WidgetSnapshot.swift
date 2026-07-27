@@ -40,6 +40,14 @@ struct WidgetSnapshot: Codable {
     /// `steps`. Independent from `createdAt`, which can advance for battery,
     /// recovery, or layout changes without making the step stream fresh.
     let stepsCapturedAt: Date?
+    /// Additive provenance fields keep schema-4 payloads backward decodable
+    /// while letting widgets distinguish a live packet from durable canonical
+    /// archive evidence.
+    var stepsSource: String? = nil
+    var stepsCompleteness: String? = nil
+    var stepsCoverageFraction: Double? = nil
+    var stepsCycleStart: Date? = nil
+    var stepsCycleExpiresAt: Date? = nil
     /// Optional so schema-4 snapshots written before goals were added still
     /// decode. This is the user's all-day strap-step goal, never a workout
     /// session delta.
@@ -116,6 +124,9 @@ enum WidgetSnapshotPublisher {
                                          steps: Int?,
                                          stepsAreEstimated: Bool,
                                          stepsCapturedAt: Date?,
+                                         stepsSource: String? = nil,
+                                         stepsCompleteness: String? = nil,
+                                         stepsCoverageFraction: Double? = nil,
                                          strain: Double,
                                          strainCapturedAt: Date? = nil,
                                          batteryLevel: Int?,
@@ -151,6 +162,9 @@ enum WidgetSnapshotPublisher {
                 steps: steps,
                 stepsAreEstimated: stepsAreEstimated,
                 stepsCapturedAt: stepsCapturedAt,
+                stepsSource: stepsSource,
+                stepsCompleteness: stepsCompleteness,
+                stepsCoverageFraction: stepsCoverageFraction,
                 strain: strain,
                 strainCapturedAt: strainCapturedAt,
                 batteryLevel: batteryLevel,
@@ -185,6 +199,9 @@ enum WidgetSnapshotPublisher {
         steps: Int?,
         stepsAreEstimated: Bool,
         stepsCapturedAt: Date?,
+        stepsSource: String? = nil,
+        stepsCompleteness: String? = nil,
+        stepsCoverageFraction: Double? = nil,
         strain: Double,
         strainCapturedAt: Date? = nil,
         batteryLevel: Int?,
@@ -224,6 +241,11 @@ enum WidgetSnapshotPublisher {
             steps: steps,
             stepsAreEstimated: steps == nil ? nil : stepsAreEstimated,
             stepsCapturedAt: steps == nil ? nil : stepsCapturedAt,
+            stepsSource: steps == nil ? nil : stepsSource,
+            stepsCompleteness: steps == nil ? nil : stepsCompleteness,
+            stepsCoverageFraction: steps == nil ? nil : stepsCoverageFraction,
+            stepsCycleStart: steps == nil ? nil : current.stepsCycleStart,
+            stepsCycleExpiresAt: steps == nil ? nil : current.stepsCycleExpiresAt,
             dailyStepGoal: current.dailyStepGoal,
             heartRate: heartRate,
             heartRateCapturedAt: heartRate == nil ? nil : heartRateCapturedAt,
@@ -294,6 +316,11 @@ enum WidgetSnapshotPublisher {
                                        steps: snapshot.steps,
                                        stepsAreEstimated: snapshot.stepsAreEstimated,
                                        stepsCapturedAt: snapshot.stepsCapturedAt,
+                                       stepsSource: snapshot.stepsSource,
+                                       stepsCompleteness: snapshot.stepsCompleteness,
+                                       stepsCoverageFraction: snapshot.stepsCoverageFraction,
+                                       stepsCycleStart: snapshot.stepsCycleStart,
+                                       stepsCycleExpiresAt: snapshot.stepsCycleExpiresAt,
                                        dailyStepGoal: snapshot.dailyStepGoal,
                                        heartRate: snapshot.heartRate,
                                        heartRateCapturedAt: snapshot.heartRateCapturedAt,
@@ -368,6 +395,10 @@ enum WidgetSnapshotPublisher {
         // is only the last resort before the session_load republish.
         let rest = store.baseline.restingInt ?? store.sessions.first?.restingStable ?? ble.restingHR
         let now = Date()
+        let presentationRestingHeartRate = store.currentCycleRestingHeartRateForPresentation(
+            on: now,
+            liveRestingHeartRate: ble.restingHR
+        )
         let validatedHRV = store.latestReferenceValidatedRecoveryHRV(on: now)
         let fallbackHRV = validatedHRV ?? store.latestLocalRecoveryHRV(on: now)
         let latestSleep = store.sleepHistorySnapshot.latestMainSleep
@@ -431,6 +462,7 @@ enum WidgetSnapshotPublisher {
             liveCount: strapStepsToday,
             liveValidationState: ble.liveStrapStepResearchState,
             liveCapturedAt: ble.liveStrapStepCountCapturedAt,
+            canonicalDays: store.historySnapshot.verifiedHistoricalStepEvidenceDays,
             physiologicalDayStart: savedAggregate.day,
             calendar: calendar
         )
@@ -518,7 +550,7 @@ enum WidgetSnapshotPublisher {
                                       strainCapturedAt: strainIsCredible ? now : nil,
                                       strainCycleStart: strainIsCredible ? physiologicalCycle.start : nil,
                                       strainCycleExpiresAt: strainIsCredible ? strainCycleExpiresAt : nil,
-                                      restingHR: rest,
+                                      restingHR: presentationRestingHeartRate,
                                       hrvRMSSD: hrvRMSSD,
                                       hrvState: hrvState,
                                       maxHR: store.profile.maxHR,
@@ -527,8 +559,21 @@ enum WidgetSnapshotPublisher {
                                         $0.confirmed ? "Confirmed sleep" : ($0.isNapEvidence ? "Review nap" : "Review sleep")
                                       },
                                       steps: publishedSteps,
-                                      stepsAreEstimated: publishedSteps == nil ? nil : !stepsAreValidated,
+                                      // Old widget processes do not understand
+                                      // the additive lower-bound qualifier.
+                                      // Mark a canonical partial as estimated
+                                      // there so it cannot appear exact; current
+                                      // widgets render the stronger `≥` label.
+                                      stepsAreEstimated: publishedSteps == nil ? nil
+                                        : (!stepsAreValidated
+                                            || (dailySteps.source == .verifiedCanonical
+                                                && dailySteps.completeness == .partial)),
                                       stepsCapturedAt: stepsCapturedAt,
+                                      stepsSource: stepSourceIdentifier(dailySteps.source),
+                                      stepsCompleteness: stepCompletenessIdentifier(dailySteps.completeness),
+                                      stepsCoverageFraction: dailySteps.coverageFraction,
+                                      stepsCycleStart: publishedSteps == nil ? nil : physiologicalCycle.start,
+                                      stepsCycleExpiresAt: publishedSteps == nil ? nil : strainCycleExpiresAt,
                                       dailyStepGoal: dailyStepGoal,
                                       heartRate: liveHeartRate > 0 ? liveHeartRate : nil,
                                       heartRateCapturedAt: liveHeartRateCapturedAt,
@@ -555,9 +600,17 @@ enum WidgetSnapshotPublisher {
         // are ready; the verified settlement callback republishes immediately.
         if !shouldPersistSnapshot(
             hasLoadedSavedSessions: store.hasLoadedSavedSessions,
+            hasLoadedRecoveryHistory: store.hasLoadedRecoveryHistory,
             deferredLaunchCardSettlementPending: store.deferredLaunchCardSettlementPending
         ) {
-            let awaiting = store.hasLoadedSavedSessions ? "card_settlement" : "session_load"
+            let awaiting: String
+            if !store.hasLoadedSavedSessions {
+                awaiting = "session_load"
+            } else if !store.hasLoadedRecoveryHistory {
+                awaiting = "recovery_history"
+            } else {
+                awaiting = "card_settlement"
+            }
             AtriaDebugLog("ATRIADBG widget_snapshot status=deferred reason=%@ awaiting=%@", reason, awaiting)
             return snapshot
         }
@@ -603,9 +656,12 @@ enum WidgetSnapshotPublisher {
 
     nonisolated static func shouldPersistSnapshot(
         hasLoadedSavedSessions: Bool,
+        hasLoadedRecoveryHistory: Bool,
         deferredLaunchCardSettlementPending: Bool
     ) -> Bool {
-        hasLoadedSavedSessions && !deferredLaunchCardSettlementPending
+        hasLoadedSavedSessions
+            && hasLoadedRecoveryHistory
+            && !deferredLaunchCardSettlementPending
     }
 
     nonisolated static func strapStepsAreValidated(state: String) -> Bool {
@@ -620,6 +676,7 @@ enum WidgetSnapshotPublisher {
         liveCount: Int,
         liveValidationState: String,
         liveCapturedAt: Date?,
+        canonicalDays: [AtriaHistoricalDailyConsumerProjection.StepDay] = [],
         physiologicalDayStart: Date? = nil,
         calendar: Calendar = .current
     ) -> AtriaDailyStepPresentation {
@@ -629,10 +686,30 @@ enum WidgetSnapshotPublisher {
             liveCount: liveCount,
             liveValidationState: liveValidationState,
             liveCapturedAt: liveCapturedAt,
-            canonicalDays: [],
+            canonicalDays: canonicalDays,
             physiologicalDayStart: physiologicalDayStart,
             calendar: calendar
         )
+    }
+
+    nonisolated static func stepSourceIdentifier(
+        _ source: AtriaDailyStepPresentation.Source
+    ) -> String? {
+        switch source {
+        case .live: return "live"
+        case .verifiedCanonical: return "verifiedCanonical"
+        case .none: return nil
+        }
+    }
+
+    nonisolated static func stepCompletenessIdentifier(
+        _ completeness: AtriaDailyStepPresentation.Completeness
+    ) -> String? {
+        switch completeness {
+        case .complete: return "complete"
+        case .partial: return "partial"
+        case .unavailable: return nil
+        }
     }
 
     nonisolated static func strapStepsArePublishable(state: String) -> Bool {
@@ -664,6 +741,7 @@ enum WidgetSnapshotPublisher {
 
         let sensorProjectionChanged = previous.steps != snapshot.steps
             || previous.stepsCapturedAt != snapshot.stepsCapturedAt
+            || previous.stepsCoverageFraction != snapshot.stepsCoverageFraction
             || previous.heartRate != snapshot.heartRate
             || previous.heartRateCapturedAt != snapshot.heartRateCapturedAt
             || previous.batteryCapturedAt != snapshot.batteryCapturedAt
@@ -696,8 +774,13 @@ enum WidgetSnapshotPublisher {
         parts.append(snapshot.steps == nil ? "steps_absent" : "steps_present")
         parts.append(snapshot.stepsCapturedAt == nil ? "motion_clock_absent" : "motion_clock_present")
         parts.append(snapshot.stepsAreEstimated == false ? "validated" : "estimated")
+        parts.append(snapshot.stepsSource ?? "legacy_source")
+        parts.append(snapshot.stepsCompleteness ?? "legacy_completeness")
+        parts.append(snapshot.stepsCycleStart.map { String($0.timeIntervalSince1970) } ?? "steps_cycle_absent")
+        parts.append(snapshot.stepsCycleExpiresAt.map { String($0.timeIntervalSince1970) } ?? "steps_expiry_absent")
         parts.append(snapshot.dailyStepGoal.map(String.init) ?? "-")
         let exactDailyStepGoalReached = snapshot.stepsAreEstimated == false
+            && snapshot.stepsCompleteness != "partial"
             && snapshot.dailyStepGoal.map { goal in
                 goal > 0 && (snapshot.steps ?? 0) >= goal
             } == true

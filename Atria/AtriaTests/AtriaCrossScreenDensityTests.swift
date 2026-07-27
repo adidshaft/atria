@@ -267,7 +267,8 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertFalse(section.contains("ForEach(Array(selectedMetrics.enumerated())"),
                        "Metric identity must not depend on mutable array offsets")
         XCTAssertTrue(todaySource.contains("private var glanceKicker"))
-        XCTAssertTrue(todaySource.contains("accessibilityLabel(\"Reorder At a glance\")"),
+        XCTAssertTrue(todaySource.contains("accessibilityLabel(isEditingGlance ? \"Finish editing At a glance\" : \"Edit At a glance\")"))
+        XCTAssertTrue(todaySource.contains("accessibilityHint(\"Lets you drag cards to reorder and remove cards.\")"),
                       "The live grid needs a visible compact path into drag-and-drop ordering")
     }
 
@@ -414,7 +415,9 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
 
         let overview = try source("AtriaOverviewSections.swift")
         XCTAssertTrue(overview.contains("switch recoveryZone?.level"))
-        XCTAssertTrue(overview.contains("stateTint: pending ? nil : strainZone?.tint"))
+        XCTAssertTrue(overview.contains("let unqualified = pending || strainIsPartial"))
+        XCTAssertTrue(overview.contains("stateTint: unqualified ? nil : qualifiedStrainZone?.tint"),
+                      "pending or partial strain must not receive a confident target-zone tint")
         XCTAssertFalse(overview.contains("hero.guidance.target ?? 21"))
 
         let home = try source("AtriaHomeView.swift")
@@ -481,7 +484,7 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertTrue(share.contains("route-present"))
     }
 
-    func testSyncNoticeIsFullBleedNeutralChromeRatherThanAnInsetCard() throws {
+    func testSyncNoticeUsesNativeGlassPagingWithCompactHeight() throws {
         let home = try source("AtriaHomeView.swift")
         let start = try XCTUnwrap(home.range(
             of: "private struct AtriaHomeRecoveryStatusHost: View {"
@@ -491,18 +494,13 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         ))
         let host = String(home[start.lowerBound..<end.lowerBound])
 
-        // Full width: an unclipped rectangle spanning the frame, with no outer
-        // horizontal inset. The 16pt inset is the label's own, so it stays.
-        XCTAssertTrue(host.contains("Rectangle().fill(.bar)"))
-        XCTAssertTrue(host.contains(".frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)"))
-        XCTAssertFalse(host.contains(".padding(.horizontal, 12)"),
-                       "an outer gutter would float the notice off the screen edges")
-
-        // Not a card: no corner radius, and no tinted glass surface.
-        XCTAssertFalse(host.contains("RoundedRectangle"))
-        XCTAssertFalse(host.contains("glassEffect"))
-        // Neutral: the label carries meaning, the surface is not tinted by state.
-        XCTAssertFalse(host.contains("status.tint"))
+        // Native Liquid Glass surface with a horizontally paged card for each
+        // currently relevant notice.
+        XCTAssertTrue(host.contains("GlassEffectContainer(spacing: 10)"))
+        XCTAssertTrue(host.contains("ScrollView(.horizontal, showsIndicators: false)"))
+        XCTAssertTrue(host.contains(".scrollTargetBehavior(.paging)"))
+        XCTAssertTrue(host.contains(".glassEffect(.regular, in: .rect(cornerRadius: 18))"))
+        XCTAssertTrue(host.contains(".frame(height: 40)"))
         XCTAssertTrue(host.contains(".foregroundStyle(.primary)"))
 
         // The negative bottom padding existed only to close the void the

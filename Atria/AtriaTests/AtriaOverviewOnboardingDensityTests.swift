@@ -24,6 +24,7 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
 
     func testConnectActionCannotAdvanceBeforeDurableHistoryBootstrap() throws {
         let source = try source("AtriaOnboardingFlow.swift")
+        let bootstrap = try self.source("AtriaOnboardingHistoryBootstrap.swift")
         let actionStart = try XCTUnwrap(source.range(of: "PrimaryActionButton(ble: ble,"))
         let actionEnd = try XCTUnwrap(source.range(of: ".padding(.horizontal, 20)",
                                                   range: actionStart.upperBound..<source.endIndex))
@@ -38,11 +39,17 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
 
         XCTAssertTrue(source.contains("historyBootstrap.isCompleteForCurrentStrap"),
                       "Live HR alone must not bypass durable import and publication")
-        XCTAssertTrue(source.contains("imports all history stored on the strap"))
-        XCTAssertTrue(source.contains("Each exact batch is cleared from the strap only after its records are safely stored on this iPhone"))
-        XCTAssertTrue(source.contains("Setup waits for History Complete"))
-        XCTAssertTrue(source.contains("verifies live collection has resumed"))
-        XCTAssertTrue(source.contains("unseen data is never erased"))
+        XCTAssertTrue(source.contains("AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.summary"))
+        XCTAssertTrue(source.contains("AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.disclosure"))
+        XCTAssertTrue(source.contains("AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.interruptionDisclosure"))
+        XCTAssertTrue(bootstrap.contains("durableTransportAuthorityAndLiveRestored"))
+        XCTAssertTrue(bootstrap.contains("recoveredDataPublished"))
+        XCTAssertTrue(bootstrap.contains("currentPeripheralIdentifier == requestedPeripheralIdentifier"),
+                      "completion must be bound to the exact strap that was imported")
+        XCTAssertTrue(bootstrap.contains("saved on this iPhone before their verified replay pages are acknowledged"))
+        XCTAssertTrue(bootstrap.contains("It never discards unseen strap data to force a fresh start."))
+        XCTAssertTrue(bootstrap.contains("Atria does not send a physical-erase command"),
+                      "onboarding must not promise an unverified destructive erase")
     }
 
     func testCompactOnboardingHeadersKeepAccessibleCombinedTitles() throws {

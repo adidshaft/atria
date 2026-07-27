@@ -29,6 +29,16 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         XCTAssertFalse(source.contains("AtriaLiveStatusTabAccessory"))
     }
 
+    func testNativeGlassTabBarHasNoOpaqueOrEmptyBottomShelf() throws {
+        let source = try String(contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaHomeView.swift"),
+                                encoding: .utf8)
+
+        XCTAssertTrue(source.contains(".toolbarBackground(.hidden, for: .tabBar)"))
+        XCTAssertFalse(source.contains("scrollBottomSafeAreaInset"))
+        XCTAssertFalse(source.contains(".safeAreaInset(edge: .bottom, spacing: 0)"),
+                       "the native tab bar already owns its safe area; an extra clear inset becomes a black shelf")
+    }
+
     func testHomeChromeDefersWorkoutStatusToActivityKitAndStacksForLargeType() {
         XCTAssertTrue(AtriaHomeChromeLayout.showsHomeStatusChip(workoutIsActive: false))
         XCTAssertFalse(AtriaHomeChromeLayout.showsHomeStatusChip(workoutIsActive: true))
@@ -393,7 +403,7 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         XCTAssertTrue(feedback.contains("Refreshing strap…"))
     }
 
-    func testAtAGlanceBatteryCardKeepsPoweredValueCompactAndAccessible() throws {
+    func testAtAGlanceStatusDefersBatteryToTheHeader() throws {
         let source = try String(contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaTodayScreen.swift"),
                                 encoding: .utf8)
         let start = try XCTUnwrap(source.range(of: "private struct AtriaTodayLiveStatusStrip"))
@@ -401,15 +411,11 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                              range: start.upperBound..<source.endIndex))
         let strip = String(source[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(strip.contains("systemImage: live.batterySymbol"))
-        XCTAssertTrue(strip.contains("if live.batteryShowsPowered || live.batteryChargeStatus == .full"))
-        XCTAssertTrue(strip.contains("return live.batteryText"))
-        XCTAssertFalse(strip.contains("· Charging"))
-        XCTAssertTrue(strip.contains("live.batteryAccessibilityText"),
-                      "VoiceOver must retain the detailed charging state")
+        XCTAssertFalse(strip.contains("Battery"),
+                       "The top-left connection pill is the single battery source on Today.")
 
         let home = try String(contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaHomeView.swift"),
-                              encoding: .utf8)
+                                encoding: .utf8)
         XCTAssertTrue(home.contains("if batteryShowsPowered || batteryChargeStatus == .full"))
         XCTAssertTrue(home.contains("return \"battery.100percent.bolt\""))
     }

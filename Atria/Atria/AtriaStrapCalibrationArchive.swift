@@ -7,6 +7,9 @@ final class AtriaStrapCalibrationArchive: @unchecked Sendable {
     static let enableArgument = "--atria-enable-step-calibration"
     static let disableArgument = "--atria-disable-step-calibration"
     static let captureUntilDefaultsKey = "atria.strapStepCalibration.captureUntil"
+    /// A calibration is an attended controlled walk, not a week-long radio
+    /// mode. Raw evidence remains retained for seven days.
+    static let defaultArmDuration: TimeInterval = 30 * 60
     static let defaultCaptureDuration: TimeInterval = 7 * 24 * 60 * 60
 
     private struct PendingRow {
@@ -98,7 +101,7 @@ final class AtriaStrapCalibrationArchive: @unchecked Sendable {
     static func configuredCaptureUntil(arguments: [String],
                                        defaults: UserDefaults = .standard,
                                        now: Date = Date(),
-                                       duration: TimeInterval = defaultCaptureDuration) -> Date? {
+                                       duration: TimeInterval = defaultArmDuration) -> Date? {
         if arguments.contains(disableArgument) {
             defaults.removeObject(forKey: captureUntilDefaultsKey)
             return nil
@@ -110,6 +113,14 @@ final class AtriaStrapCalibrationArchive: @unchecked Sendable {
         }
         let stored = defaults.double(forKey: captureUntilDefaultsKey)
         guard stored > now.timeIntervalSince1970 else {
+            defaults.removeObject(forKey: captureUntilDefaultsKey)
+            return nil
+        }
+        // Builds before the attended-calibration gate persisted a seven-day
+        // radio lease. Never inherit that legacy authority into a new launch:
+        // raw evidence may remain for seven days, but motion capture itself is
+        // intentionally bounded to one attended calibration window.
+        guard stored - now.timeIntervalSince1970 <= max(60, duration) else {
             defaults.removeObject(forKey: captureUntilDefaultsKey)
             return nil
         }

@@ -83,6 +83,23 @@ final class AtriaAnalyticsTests: XCTestCase {
         }
     }
 
+    func testCurrentPhysicalBaselineVO2RemainsLearningUntilTrusted() {
+        let summary = AtriaAnalytics.VO2Max.summary(
+            rest: 59,
+            maxHR: 190,
+            restingSamples: 2,
+            maxHRMeasured: true,
+            restingTrend: [57, 58, 68, 70, 60, 62, 57]
+        )
+
+        XCTAssertNil(summary.value)
+        XCTAssertEqual(summary.valueText, "Learning")
+        XCTAssertEqual(summary.confidence, "learning")
+        XCTAssertEqual(summary.detail, "2/14 RHR")
+        XCTAssertEqual(summary.trendDetail, "2/14 RHR days.")
+        XCTAssertTrue(summary.narrative.localizedCaseInsensitiveContains("trusted resting baseline"))
+    }
+
     func testMeasuredSustainedStrengthLoadUsesModerateStrainRange() {
         // Regression point from a real 64-minute strength window: 3,820 seconds
         // of observed strap HR, mean 131 bpm, peak 170 bpm, rest 68, max 190.
@@ -2325,7 +2342,7 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertNil(AtriaAnalytics.RespRateRsa.estimate(samples: samples, now: now, lookback: 600))
     }
 
-    func testSleepRespiratoryRateFallsBackForOvernightHROnlyEvidence() {
+    func testSleepRespiratoryRateRejectsClockTimeAloneAsSleepEvidence() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         let start = DateComponents(calendar: calendar,
@@ -2356,8 +2373,148 @@ final class AtriaAnalyticsTests: XCTestCase {
 
         let rate = session.sleepRespiratoryRate(rest: 58, maxHR: 185, calendar: calendar)
 
-        XCTAssertNotNil(rate)
-        XCTAssertEqual(rate ?? 0, 15.0, accuracy: 1.0)
+        XCTAssertNil(rate)
+    }
+
+    func testDailyRollupRejectsRespiratoryFallbackWithoutQualifiedSleep() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let day = DateComponents(calendar: calendar,
+                                 timeZone: calendar.timeZone,
+                                 year: 2026,
+                                 month: 7,
+                                 day: 27).date!
+        let metric = SavedDailyMetric(day: day,
+                                      recoveryPercent: 46,
+                                      recoveryConfidence: "unverified",
+                                      hrv: nil,
+                                      restingHR: 73,
+                                      respiratoryRate: nil,
+                                      sleepDuration: nil,
+                                      sleepSpan: nil,
+                                      sleepStart: nil,
+                                      sleepEnd: nil,
+                                      sleepSource: nil,
+                                      sleepStageSegments: [],
+                                      sleepConsistencyPercent: nil,
+                                      strain: 11.4)
+
+        let rollup = try XCTUnwrap(SessionStore.makeDailyRollupStoreEntries(
+            metrics: [metric],
+            respiratoryRateByMorningDay: [day: 12.425],
+            calendar: calendar
+        ).first)
+
+        XCTAssertNil(rollup.respiratoryRate)
+        XCTAssertNil(rollup.vitals?.resp)
+    }
+
+    func testDailyRollupPreservesRespiratoryFallbackForQualifiedSleep() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let day = DateComponents(calendar: calendar,
+                                 timeZone: calendar.timeZone,
+                                 year: 2026,
+                                 month: 7,
+                                 day: 27).date!
+        let sleepEnd = day.addingTimeInterval(8 * 3_600)
+        let sleepStart = sleepEnd.addingTimeInterval(-7 * 3_600)
+        let metric = SavedDailyMetric(day: day,
+                                      recoveryPercent: 72,
+                                      recoveryConfidence: "confirmed",
+                                      hrv: 48,
+                                      restingHR: 58,
+                                      respiratoryRate: nil,
+                                      sleepDuration: 7 * 3_600,
+                                      sleepSpan: 7 * 3_600,
+                                      sleepStart: sleepStart,
+                                      sleepEnd: sleepEnd,
+                                      sleepSource: "manual_sleep",
+                                      sleepStageSegments: [],
+                                      sleepConsistencyPercent: 82,
+                                      strain: 4.2)
+
+        let rollup = try XCTUnwrap(SessionStore.makeDailyRollupStoreEntries(
+            metrics: [metric],
+            respiratoryRateByMorningDay: [day: 13.8],
+            calendar: calendar
+        ).first)
+
+        XCTAssertEqual(rollup.respiratoryRate ?? 0, 13.8, accuracy: 0.001)
+        XCTAssertNil(rollup.vitals?.resp,
+                     "a single qualified night is not yet a respiratory baseline")
+    }
+
+    func testHealthMetricEvidenceLabelsMatchNoSleepFallbackAuthority() {
+        let day = Date(timeIntervalSinceReferenceDate: 900_000)
+        let summary = FrozenRecoverySummary(
+            score: 46,
+            confidence: Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
+            source: FrozenRecoverySummary.recoveryV2Source,
+            model: "recovery_v2",
+            scoredDay: day,
+            usesHRV: false,
+            detail: "sleep and HRV unavailable",
+            contributors: []
+        )
+        let rollup = DailyRollupStoreEntry(day: day,
+                                          recoverySummary: summary,
+                                          lnRMSSD: nil,
+                                          rhr: 73,
+                                          sleepSeconds: nil)
+
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.recoveryDetail(
+            rollup: rollup,
+            liveRecoveryAvailable: true
+        ), "limited estimate")
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.restingHeartRateDetail(
+            rollup: rollup,
+            liveValueAvailable: true
+        ), "wear estimate")
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.hrvDetail(
+            rollup: rollup,
+            liveValueAvailable: false
+        ), "needs qualified sleep")
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.respiratoryDetail(
+            valueAvailable: false
+        ), "needs qualified sleep")
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.settledRestingHeartRateDetail(
+            rollup: rollup,
+            isToday: true
+        ), "wear estimate")
+    }
+
+    func testHealthMetricEvidenceLabelsPreserveQualifiedSleepClaims() {
+        let rollup = DailyRollupStoreEntry(day: Date(timeIntervalSinceReferenceDate: 900_000),
+                                          recovery: 72,
+                                          lnRMSSD: log(48),
+                                          rhr: 58,
+                                          sleepSeconds: 7 * 3_600,
+                                          respiratoryRate: 13.8)
+
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.recoveryDetail(
+            rollup: rollup,
+            liveRecoveryAvailable: true
+        ), "saved")
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.restingHeartRateDetail(
+            rollup: rollup,
+            liveValueAvailable: true
+        ), "sleep-derived")
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.hrvDetail(
+            rollup: rollup,
+            liveValueAvailable: true
+        ), "sleep signal")
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.respiratoryDetail(
+            valueAvailable: true
+        ), "sleep average")
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.settledRestingHeartRateDetail(
+            rollup: rollup,
+            isToday: true
+        ), "this morning")
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.settledHRVDetail(
+            rollup: rollup,
+            isToday: false
+        ), "yesterday")
     }
 
     func testSleepRespiratoryRateUsesEarlierRRWindowsWhenTailIsSparse() {
@@ -5070,14 +5227,10 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                                maxHR: 190,
                                                                calendar: calendar,
                                                                historicalMotionPolicy: .boundedRecent)
-        XCTAssertEqual(candidates.count, 1)
-        guard let candidate = candidates.first else { return }
-
-        XCTAssertEqual(candidate.kind, "nap_candidate")
-        XCTAssertFalse(SessionStore.isUnambiguousHROnlyMainSleepCandidate(candidate))
-        XCTAssertFalse(SessionStore.isDegradedHROnlyOvernightSleepCandidate(candidate),
-                       "the degraded tier is main-sleep-only and must reject nap-shaped candidates outright")
-        XCTAssertFalse(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
+        XCTAssertTrue(
+            candidates.isEmpty,
+            "a short daytime HR-only window must not surface as a nap review or enter the degraded overnight tier"
+        )
     }
 
     /// Motion validation stays strictly preferred: a fragmented night with real

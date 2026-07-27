@@ -116,6 +116,31 @@ enum HistoricalArchive {
         let lowMotionReady: Bool
     }
 
+    /// Exact strap-owned v24 counter endpoints for a workout window. The
+    /// counter is decoded again from the retained payload; JSON metadata alone
+    /// is never publication authority.
+    struct MotionTickWindow: Equatable, Sendable {
+        let startTick: Int
+        let endTick: Int
+        let delta: Int
+        let steps: Int
+        let startCapturedAt: Date
+        let endCapturedAt: Date
+        let coverageFraction: Double
+        let decodedRows: Int
+    }
+
+    struct MotionTickDayEvidence: Equatable, Sendable {
+        let windowStart: Date
+        let windowEnd: Date
+        let motionTicks: Int
+        let steps: Int
+        let knownCoverageSeconds: Int
+        let missingCoverageSeconds: Int
+        let decodedRows: Int
+        let capturedThrough: Date
+    }
+
     struct MotionArchiveSnapshot {
         fileprivate let samples: [GravitySample]
         /// Motion is independently fail-closed. A complete physiology scan may
@@ -370,6 +395,7 @@ enum HistoricalArchive {
     struct Record: Codable {
         let schema: Int
         let capturedAt: Date
+        var strapIdentifier: String? = nil
         let source: String
         let layoutVersion: String
         let sequence: Int
@@ -385,8 +411,10 @@ enum HistoricalArchive {
         let gravityX36: Double?
         let gravityY40: Double?
         let gravityZ44: Double?
+        var unknownMotionScalar32: Double? = nil
         let gravityMagnitude: Double?
         let gravityValidated: Bool
+        var motionTickCounter88: Int? = nil
         let candidateRR: [String]
         let rawPayloadHex: String
         let clockDeviceRef: UInt32?
@@ -1881,6 +1909,641 @@ enum HistoricalArchive {
         return makeMotionArchiveSnapshot().diagnostics(start: start, end: end)
     }
 
+    struct MotionTickPayloadClockProvenance: Equatable {
+        let observedAtUnix: TimeInterval
+        let endpointTimestamp: TimeInterval
+        let clockDeviceRef: UInt32
+        let clockWallRef: UInt32
+        let clockOffsetSeconds: Int
+    }
+
+    enum MotionTickPayloadClockResolution: Equatable {
+        case accepted(MotionTickPayloadClockProvenance)
+        case conflicted(earliestObservedAtUnix: TimeInterval)
+    }
+
+    /// Selects clock provenance for one physical payload independently of
+    /// archive scan order. Replays observed later cannot rewrite the original
+    /// endpoint or drift. Two different clock tuples claiming the same earliest
+    /// observation are ambiguous, so that payload contributes no endpoint.
+    nonisolated static func resolveMotionTickPayloadClockProvenance(
+        existing: MotionTickPayloadClockResolution?,
+        candidate: MotionTickPayloadClockProvenance
+    ) -> MotionTickPayloadClockResolution {
+        guard let existing else { return .accepted(candidate) }
+        let existingObservedAt: TimeInterval
+        switch existing {
+        case .accepted(let accepted):
+            existingObservedAt = accepted.observedAtUnix
+        case .conflicted(let earliestObservedAtUnix):
+            existingObservedAt = earliestObservedAtUnix
+        }
+        if candidate.observedAtUnix < existingObservedAt {
+            return .accepted(candidate)
+        }
+        if candidate.observedAtUnix > existingObservedAt {
+            return existing
+        }
+        switch existing {
+        case .accepted(let accepted):
+            if accepted.endpointTimestamp == candidate.endpointTimestamp,
+               accepted.clockDeviceRef == candidate.clockDeviceRef,
+               accepted.clockWallRef == candidate.clockWallRef,
+               accepted.clockOffsetSeconds == candidate.clockOffsetSeconds {
+                return existing
+            }
+            return .conflicted(earliestObservedAtUnix: existingObservedAt)
+        case .conflicted:
+            return existing
+        }
+    }
+
+    /// Reads a bounded WHOOP 4 v24 counter window off-main.
+    ///
+    /// History pages can be drained under different GET_DATA_RANGE clock
+    /// references. Applying each page's correction independently can make one
+    /// physical sequence jump backwards in wall time. Instead, this evaluates
+    /// only the finite offsets actually observed in the retained rows (plus
+    /// zero for an already-synchronised strap), applies one offset to the whole
+    /// workout, and chooses it only from clock-reference provenance. Motion is
+    /// never inspected to select the time alignment.
+    static func motionTickWindow(
+        start: Date,
+        end: Date,
+        strapIdentifier: String
+    ) -> MotionTickWindow? {
+        precondition(!Thread.isMainThread,
+                     "Historical motion-tick decoding must run off the main thread")
+        guard end > start, !strapIdentifier.isEmpty else { return nil }
+        let boundaryTolerance: TimeInterval = 3
+        let maximumClockOffset =
+            AtriaWhoop4ProductionHistoryBootstrapPolicy.maximumClockDrift
+        let scanStart = start.addingTimeInterval(
+            -(boundaryTolerance + maximumClockOffset)
+        )
+        let scanEnd = end.addingTimeInterval(
+            boundaryTolerance + maximumClockOffset
+        )
+        let descriptors = AtriaHistoricalJSONLRecentScanner.descriptors(
+            for: motionWindowReadableFileURLs(
+                start: start,
+                end: end
+            )
+        )
+        typealias CadencePoint = AtriaWhoop4GravityCadenceStepModel.Point
+        var endpoints: [String: CadencePoint] = [:]
+        var clockOffsetByPayload: [String: Int] = [:]
+        var clockResolutionByPayload:
+            [String: MotionTickPayloadClockResolution] = [:]
+        let scan = AtriaHistoricalJSONLRecentScanner.scan(
+            sources: descriptors.map { .init(descriptor: $0, startOffset: 0) },
+            cutoff: scanStart.timeIntervalSince1970
+        ) { line in
+            guard let object = try? JSONSerialization.jsonObject(with: line)
+                    as? [String: Any],
+                  (object["sequence"] as? NSNumber)?.intValue
+                    == Int(AtriaWhoop4HistoricalLayout.v24.rawValue),
+                  historicalStrapIdentifier(object: object) == strapIdentifier,
+                  object["clockCorrectionStatus"] as? String == "clock_ref_present",
+                  let clockDeviceRef =
+                    (object["clockDeviceRef"] as? NSNumber)?.uint32Value,
+                  let clockWallRef =
+                    (object["clockWallRef"] as? NSNumber)?.uint32Value,
+                  let drift =
+                    (object["clockDriftSeconds"] as? NSNumber)?.intValue,
+                  abs(TimeInterval(drift)) <= maximumClockOffset,
+                  let deviceUnix = (object["unix7"] as? NSNumber)?.doubleValue,
+                  let subsecond = (object["subsec11"] as? NSNumber)?.doubleValue,
+                  subsecond >= 0,
+                  subsecond < 32_768,
+                  deviceUnix >= scanStart.timeIntervalSince1970,
+                  deviceUnix <= scanEnd.timeIntervalSince1970,
+                  let payloadHex = object["rawPayloadHex"] as? String,
+                  let payload = bytes(fromHex: payloadHex),
+                  case .record(let decoded) =
+                    AtriaWhoop4HistoricalRecordDecoder.decode(payload),
+                  decoded.layout == .v24,
+                  let decodedTick = decoded.motionTickCounter.map(Int.init),
+                  let observedAtUnix = (object[
+                    AtriaHistoricalArchiveDurableStore.identityObservedAtProperty
+                  ] as? NSNumber)?.doubleValue,
+                  observedAtUnix.isFinite else {
+                return
+            }
+            let storedTick = ((object["nativeStepCounter88"] as? NSNumber)
+                ?? (object["motionTickCounter88"] as? NSNumber))?.intValue
+            guard storedTick == nil || storedTick == decodedTick else { return }
+            let endpointTimestamp = deviceUnix + subsecond / 32_768
+            let resolution = resolveMotionTickPayloadClockProvenance(
+                existing: clockResolutionByPayload[payloadHex],
+                candidate: .init(
+                    observedAtUnix: observedAtUnix,
+                    endpointTimestamp: endpointTimestamp,
+                    clockDeviceRef: clockDeviceRef,
+                    clockWallRef: clockWallRef,
+                    clockOffsetSeconds: drift
+                )
+            )
+            clockResolutionByPayload[payloadHex] = resolution
+            guard case .accepted(let accepted) = resolution else {
+                endpoints.removeValue(forKey: payloadHex)
+                clockOffsetByPayload.removeValue(forKey: payloadHex)
+                return
+            }
+            endpoints[payloadHex] = CadencePoint(
+                timestamp: accepted.endpointTimestamp,
+                flash: decoded.counter,
+                tick: decodedTick,
+                gravityX: decoded.gravity.x,
+                gravityY: decoded.gravity.y,
+                gravityZ: decoded.gravity.z,
+                unknownMotionScalar32: decoded.unknownMotionScalar32,
+                identity: payloadHex
+            )
+            clockOffsetByPayload[payloadHex] = accepted.clockOffsetSeconds
+        }
+        // The active JSONL is append-only and can grow while this bounded read
+        // is in flight. A concurrently appended trailing row makes the generic
+        // scanner report an incomplete snapshot even though every complete row
+        // it returned is durable. Do not discard those rows: the alignment
+        // gate below still requires both workout boundaries and >=90% exact
+        // temporal coverage before any step result can be published.
+        _ = scan.complete
+        AtriaDebugLog(
+            "ATRIADBG motion_tick_window status=scanned sources=%d files=%d bytes=%d lines=%d candidates=%d complete=%d endpoints=%d",
+            descriptors.count,
+            scan.statistics.fileReadCount,
+            scan.statistics.byteCount,
+            scan.statistics.lineCount,
+            scan.statistics.candidateLineCount,
+            scan.complete ? 1 : 0,
+            endpoints.count
+        )
+        guard endpoints.count >= 2 else {
+            AtriaDebugLog("ATRIADBG motion_tick_window status=rejected reason=insufficient_endpoints")
+            return nil
+        }
+        let points = endpoints.values.sorted {
+            if $0.timestamp != $1.timestamp {
+                return $0.timestamp < $1.timestamp
+            }
+            return $0.identity < $1.identity
+        }
+        let modulus = 65_536
+        guard let selected =
+            AtriaWhoop4GravityCadenceStepModel.estimateAlignedWindow(
+                points: points,
+                requestedStart: start.timeIntervalSince1970,
+                requestedEnd: end.timeIntervalSince1970,
+                clockOffsetByIdentity: clockOffsetByPayload,
+                boundaryTolerance: boundaryTolerance
+            ) else {
+            AtriaDebugLog(
+                "ATRIADBG motion_tick_window status=rejected reason=alignment_or_gait points=%d offsets=%d",
+                points.count,
+                Set(clockOffsetByPayload.values).count
+            )
+            return nil
+        }
+        let delta = selected.last.tick >= selected.first.tick
+            ? selected.last.tick - selected.first.tick
+            : selected.last.tick + modulus - selected.first.tick
+        guard Double(delta) <= max(
+            12,
+            (selected.last.timestamp - selected.first.timestamp) * 12
+        ) else { return nil }
+        return .init(startTick: selected.first.tick,
+                     endTick: selected.last.tick,
+                     delta: delta,
+                     steps: selected.estimate.steps,
+                     startCapturedAt: Date(
+                        timeIntervalSince1970: selected.first.timestamp
+                            + Double(selected.clockOffsetSeconds)
+                     ),
+                     endCapturedAt: Date(
+                        timeIntervalSince1970: selected.last.timestamp
+                            + Double(selected.clockOffsetSeconds)
+                     ),
+                     coverageFraction: selected.coverageFraction,
+                     decodedRows: selected.decodedRows)
+    }
+
+    /// Produces a deduplicated, strap-only subtotal for the active
+    /// physiological day. Coverage authority comes from the durable 0x69 bank
+    /// ledger; counter authority is re-decoded from retained v24 payloads.
+    /// Missing bank time remains missing and the result is never promoted to a
+    /// complete day while the day is still open.
+    static func motionTickDayEvidence(
+        start: Date,
+        end: Date,
+        bankCoverage: [DateInterval],
+        strapIdentifier: String
+    ) -> MotionTickDayEvidence? {
+        precondition(!Thread.isMainThread,
+                     "Historical motion-tick daily decoding must run off the main thread")
+        guard end > start,
+              !bankCoverage.isEmpty,
+              !strapIdentifier.isEmpty else { return nil }
+        let dayWindow = DateInterval(start: start, end: end)
+        let intervals = mergedMotionCoverage(bankCoverage.compactMap {
+            let clippedStart = max($0.start, dayWindow.start)
+            let clippedEnd = min($0.end, dayWindow.end)
+            return clippedEnd > clippedStart
+                ? DateInterval(start: clippedStart, end: clippedEnd)
+                : nil
+        })
+        guard let scanStart = intervals.first?.start,
+              let scanEnd = intervals.last?.end else { return nil }
+        let tolerance: TimeInterval = 3
+        let maximumClockOffset =
+            AtriaWhoop4ProductionHistoryBootstrapPolicy.maximumClockDrift
+        let descriptors = AtriaHistoricalJSONLRecentScanner.descriptors(
+            for: recentRecoveredReadableFileURLs(
+                since: scanStart.addingTimeInterval(
+                    -(tolerance + maximumClockOffset)
+                )
+                    .timeIntervalSince1970
+            )
+        )
+        typealias Point = AtriaWhoop4MotionTickSequenceReducer.Point
+        typealias CadencePoint = AtriaWhoop4GravityCadenceStepModel.Point
+        var rows: [String: (
+            counter: Point,
+            cadence: CadencePoint
+        )] = [:]
+        var clockOffsetByPayload: [String: Int] = [:]
+        var clockResolutionByPayload:
+            [String: MotionTickPayloadClockResolution] = [:]
+        let scan = AtriaHistoricalJSONLRecentScanner.scan(
+            sources: descriptors.map { .init(descriptor: $0, startOffset: 0) },
+            cutoff: scanStart.addingTimeInterval(
+                -(tolerance + maximumClockOffset)
+            ).timeIntervalSince1970
+        ) { line in
+            guard let object = try? JSONSerialization.jsonObject(with: line)
+                    as? [String: Any],
+                  (object["sequence"] as? NSNumber)?.intValue
+                    == Int(AtriaWhoop4HistoricalLayout.v24.rawValue),
+                  historicalStrapIdentifier(object: object) == strapIdentifier,
+                  object["clockCorrectionStatus"] as? String == "clock_ref_present",
+                  let clockDeviceRef =
+                    (object["clockDeviceRef"] as? NSNumber)?.uint32Value,
+                  let clockWallRef =
+                    (object["clockWallRef"] as? NSNumber)?.uint32Value,
+                  let drift =
+                    (object["clockDriftSeconds"] as? NSNumber)?.intValue,
+                  abs(TimeInterval(drift)) <= maximumClockOffset,
+                  let deviceUnix = (object["unix7"] as? NSNumber)?.doubleValue,
+                  let subsecond = (object["subsec11"] as? NSNumber)?.doubleValue,
+                  subsecond >= 0,
+                  subsecond < 32_768,
+                  deviceUnix >= scanStart.addingTimeInterval(
+                    -(tolerance + maximumClockOffset)
+                  )
+                    .timeIntervalSince1970,
+                  deviceUnix <= scanEnd.addingTimeInterval(
+                    tolerance + maximumClockOffset
+                  )
+                    .timeIntervalSince1970,
+                  let payloadHex = object["rawPayloadHex"] as? String,
+                  let payload = bytes(fromHex: payloadHex),
+                  case .record(let decoded) =
+                    AtriaWhoop4HistoricalRecordDecoder.decode(payload),
+                  decoded.layout == .v24,
+                  let tick = decoded.motionTickCounter.map(Int.init),
+                  let observedAtUnix = (object[
+                    AtriaHistoricalArchiveDurableStore.identityObservedAtProperty
+                  ] as? NSNumber)?.doubleValue,
+                  observedAtUnix.isFinite else {
+                return
+            }
+            let stored = ((object["nativeStepCounter88"] as? NSNumber)
+                ?? (object["motionTickCounter88"] as? NSNumber))?.intValue
+            guard stored == nil || stored == tick else { return }
+            let rawTimestamp = deviceUnix + subsecond / 32_768
+            let resolution = resolveMotionTickPayloadClockProvenance(
+                existing: clockResolutionByPayload[payloadHex],
+                candidate: .init(
+                    observedAtUnix: observedAtUnix,
+                    endpointTimestamp: rawTimestamp,
+                    clockDeviceRef: clockDeviceRef,
+                    clockWallRef: clockWallRef,
+                    clockOffsetSeconds: drift
+                )
+            )
+            clockResolutionByPayload[payloadHex] = resolution
+            guard case .accepted(let accepted) = resolution else {
+                rows.removeValue(forKey: payloadHex)
+                clockOffsetByPayload.removeValue(forKey: payloadHex)
+                return
+            }
+            rows[payloadHex] = (
+                counter: .init(timestamp: accepted.endpointTimestamp,
+                               tick: tick,
+                               flash: decoded.counter,
+                               identity: payloadHex),
+                cadence: .init(
+                timestamp: accepted.endpointTimestamp,
+                flash: decoded.counter,
+                tick: tick,
+                gravityX: decoded.gravity.x,
+                gravityY: decoded.gravity.y,
+                gravityZ: decoded.gravity.z,
+                unknownMotionScalar32: decoded.unknownMotionScalar32,
+                identity: payloadHex
+                )
+            )
+            clockOffsetByPayload[payloadHex] = accepted.clockOffsetSeconds
+        }
+        guard scan.complete, rows.count >= 2 else { return nil }
+        var clockOffsetSupport: [Int: Int] = [:]
+        for payloadHex in rows.keys {
+            guard let offset = clockOffsetByPayload[payloadHex] else {
+                continue
+            }
+            clockOffsetSupport[offset, default: 0] += 1
+        }
+        var totalTicks = 0
+        var totalKnownDuration: TimeInterval = 0
+        var totalDecodedRows = 0
+        var totalSteps = 0
+        var totalUnresolvedMotion: TimeInterval = 0
+        var capturedThrough: Date?
+        for interval in intervals {
+            typealias IntervalAlignment = (
+                offset: Int,
+                members: [(counter: Point, cadence: CadencePoint)],
+                boundaryError: TimeInterval,
+                support: Int
+            )
+            var candidates: [IntervalAlignment] = []
+            for offset in clockOffsetSupport.keys.sorted() {
+                let rawStart = interval.start.timeIntervalSince1970
+                    - Double(offset)
+                let rawEnd = interval.end.timeIntervalSince1970
+                    - Double(offset)
+                let nearby = rows.values.filter {
+                    $0.counter.timestamp >= rawStart - tolerance
+                        && $0.counter.timestamp <= rawEnd + tolerance
+                }.sorted {
+                    if $0.counter.timestamp != $1.counter.timestamp {
+                        return $0.counter.timestamp < $1.counter.timestamp
+                    }
+                    return $0.counter.identity < $1.counter.identity
+                }
+                guard let first = nearby.min(by: {
+                    abs($0.counter.timestamp - rawStart)
+                        < abs($1.counter.timestamp - rawStart)
+                }),
+                let last = nearby.min(by: {
+                    abs($0.counter.timestamp - rawEnd)
+                        < abs($1.counter.timestamp - rawEnd)
+                }),
+                abs(first.counter.timestamp - rawStart) <= tolerance,
+                abs(last.counter.timestamp - rawEnd) <= tolerance,
+                last.counter.timestamp > first.counter.timestamp,
+                let firstIndex = nearby.firstIndex(where: {
+                    $0.counter.identity == first.counter.identity
+                }),
+                let lastIndex = nearby.firstIndex(where: {
+                    $0.counter.identity == last.counter.identity
+                }),
+                lastIndex > firstIndex else { continue }
+                let members = Array(nearby[firstIndex...lastIndex])
+                candidates.append((
+                    offset,
+                    members,
+                    abs(first.counter.timestamp - rawStart)
+                        + abs(last.counter.timestamp - rawEnd),
+                    members.reduce(into: 0) { count, member in
+                        if clockOffsetByPayload[member.counter.identity]
+                            == offset {
+                            count += 1
+                        }
+                    }
+                ))
+            }
+            guard let strongestSupport = candidates.map(\.support).max() else {
+                continue
+            }
+            let supported = candidates.filter {
+                $0.support == strongestSupport
+            }
+            guard let bestBoundaryError = supported.map(\.boundaryError).min()
+            else { continue }
+            let boundaryMatched = supported.filter {
+                abs($0.boundaryError - bestBoundaryError) < 0.001
+            }
+            guard boundaryMatched.count == 1,
+                  let selected = boundaryMatched.first,
+                  let first = selected.members.first,
+                  let last = selected.members.last else { continue }
+            let rawInterval = DateInterval(
+                start: Date(timeIntervalSince1970: first.counter.timestamp),
+                end: Date(timeIntervalSince1970: last.counter.timestamp)
+            )
+            guard let reduced = AtriaWhoop4MotionTickSequenceReducer.reduce(
+                points: selected.members.map(\.counter),
+                intervals: [rawInterval],
+                boundaryTolerance: 0.001
+            ) else { continue }
+            let cadence = AtriaWhoop4GravityCadenceStepModel
+                .estimateCoveredActivity(
+                    points: selected.members.map(\.cadence)
+                )
+            totalTicks += reduced.ticks
+            totalKnownDuration += reduced.knownDuration
+            totalDecodedRows += reduced.admittedRows
+            let wallCaptured = Date(
+                timeIntervalSince1970: last.counter.timestamp
+                    + Double(selected.offset)
+            )
+            capturedThrough = max(capturedThrough ?? wallCaptured, wallCaptured)
+            if let cadence {
+                totalSteps += cadence.steps
+                totalUnresolvedMotion += cadence.unresolvedMotionSeconds
+            } else {
+                totalUnresolvedMotion += reduced.knownDuration
+            }
+        }
+        let knownSeconds = max(0, Int(totalKnownDuration.rounded()))
+        guard knownSeconds > 0, totalDecodedRows >= 2,
+              let capturedThrough else {
+            return nil
+        }
+        let totalSeconds = max(0, Int(end.timeIntervalSince(start).rounded()))
+        let unresolvedMotionSeconds = max(
+            0,
+            Int(totalUnresolvedMotion.rounded(.up))
+        )
+        let qualifiedStepSeconds = max(
+            0,
+            min(totalSeconds, knownSeconds) - unresolvedMotionSeconds
+        )
+        return .init(
+            windowStart: start,
+            windowEnd: end,
+            motionTicks: totalTicks,
+            steps: totalSteps,
+            knownCoverageSeconds: qualifiedStepSeconds,
+            missingCoverageSeconds: max(0, totalSeconds - qualifiedStepSeconds),
+            decodedRows: totalDecodedRows,
+            capturedThrough: min(capturedThrough, end)
+        )
+    }
+
+    struct MotionBankTransportCoverage: Equatable, Sendable {
+        let observedSeconds: Int
+        let expectedSeconds: Int
+        let densityPercent: Int
+        let maximumMissingRunSeconds: Int
+        let firstCapturedAt: Date?
+        let capturedThrough: Date?
+
+        var satisfiesNinetyPercentExactWindow: Bool {
+            guard expectedSeconds > 0,
+                  densityPercent >= 90,
+                  let firstCapturedAt,
+                  let capturedThrough else { return false }
+            return maximumMissingRunSeconds <= max(3, expectedSeconds / 10)
+                && capturedThrough >= firstCapturedAt
+        }
+    }
+
+    /// Transport-only proof for a closed 0x69 bank interval. This deliberately
+    /// does not classify gait or estimate steps: an arm-only control must still
+    /// be considered durably offloaded even though the step model rejects it.
+    static func motionBankTransportCoverage(
+        start: Date,
+        end: Date,
+        strapIdentifier: String
+    ) -> MotionBankTransportCoverage {
+        precondition(!Thread.isMainThread,
+                     "Historical motion-bank coverage must run off the main thread")
+        guard end > start, !strapIdentifier.isEmpty else {
+            return .init(observedSeconds: 0,
+                         expectedSeconds: 0,
+                         densityPercent: 0,
+                         maximumMissingRunSeconds: 0,
+                         firstCapturedAt: nil,
+                         capturedThrough: nil)
+        }
+        let firstBucket = Int(floor(start.timeIntervalSince1970))
+        let lastBucket = Int(floor(end.timeIntervalSince1970))
+        let expected = max(1, lastBucket - firstBucket + 1)
+        let tolerance: TimeInterval = 120
+        let descriptors = AtriaHistoricalJSONLRecentScanner.descriptors(
+            for: recentRecoveredReadableFileURLs(
+                since: start.addingTimeInterval(-tolerance)
+                    .timeIntervalSince1970
+            )
+        )
+        var earliestByPayload: [String: (observed: Double, wall: Double)] = [:]
+        _ = AtriaHistoricalJSONLRecentScanner.scan(
+            sources: descriptors.map { .init(descriptor: $0, startOffset: 0) },
+            cutoff: start.addingTimeInterval(-tolerance)
+                .timeIntervalSince1970
+        ) { line in
+            guard let object = try? JSONSerialization.jsonObject(with: line)
+                    as? [String: Any],
+                  (object["sequence"] as? NSNumber)?.intValue
+                    == Int(AtriaWhoop4HistoricalLayout.v24.rawValue),
+                  historicalStrapIdentifier(object: object) == strapIdentifier,
+                  object["clockCorrectionStatus"] as? String
+                    == "clock_ref_present",
+                  (object["gravityValidated"] as? Bool) == true,
+                  let rawUnix = (object["unix7"] as? NSNumber)?.doubleValue,
+                  let subsecond = (object["subsec11"] as? NSNumber)?.doubleValue,
+                  let drift = (object["clockDriftSeconds"] as? NSNumber)?.doubleValue,
+                  let payload = object["rawPayloadHex"] as? String,
+                  let observed = (object[
+                    AtriaHistoricalArchiveDurableStore.identityObservedAtProperty
+                  ] as? NSNumber)?.doubleValue else { return }
+            let wall = rawUnix + subsecond / 32_768 + drift
+            guard wall >= start.timeIntervalSince1970 - 1,
+                  wall <= end.timeIntervalSince1970 + 1 else { return }
+            if let existing = earliestByPayload[payload],
+               existing.observed <= observed {
+                return
+            }
+            earliestByPayload[payload] = (observed, wall)
+        }
+        let seconds = Set(earliestByPayload.values.compactMap { value -> Int? in
+            let bucket = Int(floor(value.wall))
+            return (firstBucket...lastBucket).contains(bucket) ? bucket : nil
+        })
+        var maximumMissingRun = 0
+        var currentMissingRun = 0
+        for bucket in firstBucket...lastBucket {
+            if seconds.contains(bucket) {
+                currentMissingRun = 0
+            } else {
+                currentMissingRun += 1
+                maximumMissingRun = max(maximumMissingRun, currentMissingRun)
+            }
+        }
+        let orderedWall = earliestByPayload.values.map(\.wall).sorted()
+        return .init(
+            observedSeconds: seconds.count,
+            expectedSeconds: expected,
+            densityPercent: min(
+                100,
+                Int((Double(seconds.count) / Double(expected) * 100).rounded())
+            ),
+            maximumMissingRunSeconds: maximumMissingRun,
+            firstCapturedAt: orderedWall.first.map(Date.init(timeIntervalSince1970:)),
+            capturedThrough: orderedWall.last.map(Date.init(timeIntervalSince1970:))
+        )
+    }
+
+    private static func mergedMotionCoverage(
+        _ intervals: [DateInterval]
+    ) -> [DateInterval] {
+        let sorted = intervals.sorted {
+            if $0.start != $1.start { return $0.start < $1.start }
+            return $0.end < $1.end
+        }
+        var result: [DateInterval] = []
+        for interval in sorted where interval.end > interval.start {
+            guard let last = result.last else {
+                result.append(interval)
+                continue
+            }
+            if interval.start <= last.end {
+                result[result.count - 1] = .init(
+                    start: last.start,
+                    end: max(last.end, interval.end)
+                )
+            } else {
+                result.append(interval)
+            }
+        }
+        return result
+    }
+
+    private static func historicalStrapIdentifier(
+        object: [String: Any]
+    ) -> String? {
+        if let explicit = object["strapIdentifier"] as? String,
+           !explicit.isEmpty {
+            return explicit
+        }
+        guard let key = object[
+            AtriaHistoricalArchiveDurableStore.identityProperty
+        ] as? String,
+        let bytes = bytes(fromHex: key),
+        bytes.count >= 5,
+        bytes[0] == 2 else {
+            return nil
+        }
+        let length = Int(bytes[1])
+            | (Int(bytes[2]) << 8)
+            | (Int(bytes[3]) << 16)
+            | (Int(bytes[4]) << 24)
+        guard length > 0, bytes.count >= 5 + length else { return nil }
+        return String(bytes: bytes[5..<(5 + length)], encoding: .utf8)
+    }
+
     static func makeMotionArchiveSnapshot() -> MotionArchiveSnapshot {
         precondition(!Thread.isMainThread, "Full historical motion decoding must run off the main thread")
         return MotionArchiveSnapshot(samples: loadGravitySamples(), completeness: .complete)
@@ -2955,6 +3618,57 @@ enum HistoricalArchive {
             archiveRoot: archiveDirectory,
             since: cutoff
         )
+    }
+
+    /// A raw chunk that was durably sealed before a later workout scan window
+    /// cannot contain rows ingested by that workout. This independent
+    /// filesystem/catalog bound keeps exact motion replay from rereading
+    /// lifetime archives whose older catalog rows predate timestamp indexing.
+    /// Unknown, active, changed, or incompletely sealed chunks remain included.
+    private static func motionWindowReadableFileURLs(
+        start: Date,
+        end: Date,
+        fileManager: FileManager = .default
+    ) -> [URL] {
+        let candidates = recentReadableFileURLs()
+        guard end > start,
+              let store = try? catalogStoreLocked(),
+              let catalog = try? store.snapshot(),
+              (try? catalog.validate()) != nil else {
+            return candidates
+        }
+        let canonicalRoot = archiveDirectory.standardizedFileURL
+        let chunksByCanonicalPath = Dictionary(grouping: catalog.chunks) { chunk in
+            canonicalRoot.appendingPathComponent(chunk.relativePath)
+                .standardizedFileURL.path
+        }
+        return candidates.filter { candidate in
+            let canonicalCandidate = candidate.standardizedFileURL
+            let matching = chunksByCanonicalPath[canonicalCandidate.path] ?? []
+            guard matching.count == 1,
+                  let chunk = matching.first,
+                  chunk.state == .sealed,
+                  let sealedAt = chunk.sealedAt,
+                  sealedAt < start,
+                  chunk.byteCount > 0,
+                  let digest = chunk.contentSHA256,
+                  digest.count == 64,
+                  digest.unicodeScalars.allSatisfy(
+                    CharacterSet(charactersIn: "0123456789abcdef").contains
+                  ),
+                  let attributes = try? fileManager.attributesOfItem(
+                    atPath: canonicalCandidate.path
+                  ),
+                  (attributes[.type] as? FileAttributeType) == .typeRegular,
+                  (attributes[.size] as? NSNumber)?.uint64Value
+                    == chunk.byteCount,
+                  let modificationDate =
+                    attributes[.modificationDate] as? Date,
+                  modificationDate.timeIntervalSince(sealedAt) <= 1 else {
+                return true
+            }
+            return false
+        }
     }
 
     /// Internal seam shared by production selection and focused retention

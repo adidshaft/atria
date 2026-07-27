@@ -11,8 +11,10 @@ import Combine
 struct AtriaHealthMonitorLiveProjection: Equatable {
     let connectionStatus: AtriaBLEManager.Status
     let recoveryPercent: Int?
+    let recoveryDetail: String
     let restingHeartRateText: String
     let hrvValue: String
+    let hrvDetail: String
     let vo2MaxEstimate: VO2MaxEstimateSummary
     let maxHeartRate: Int
 }
@@ -70,8 +72,10 @@ final class AtriaHealthMonitorLiveProjectionStore: ObservableObject {
         AtriaHealthMonitorLiveProjection(
             connectionStatus: liveStore.state.status,
             recoveryPercent: heroStore.state.recoveryEstimate.percent,
+            recoveryDetail: heroStore.state.recoveryDetail,
             restingHeartRateText: heroStore.state.restingHeartRateText,
             hrvValue: heroStore.state.hrvValue,
+            hrvDetail: heroStore.state.hrvDetail,
             vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
             maxHeartRate: profileStore.profile.maxHR
         )
@@ -176,6 +180,156 @@ enum AtriaHealthMonitorGrid {
     }
 }
 
+/// Vitals must use the same wake-to-wake sleep authority as Today. The sleep
+/// history snapshot intentionally retains an older confirmed night for charts,
+/// so reading `latestMainSleep` directly can make Vitals show stale duration,
+/// stages, performance, or respiration after Today has correctly rolled over
+/// to Learning.
+enum AtriaHealthCurrentSleepEvidence {
+    static func resolve(from snapshot: SleepHistorySnapshot,
+                        now: Date = Date(),
+                        calendar: Calendar = .current) -> SleepHistorySnapshot.Night? {
+        AtriaOverviewCurrentSleep.resolve(from: snapshot,
+                                          now: now,
+                                          calendar: calendar)
+    }
+}
+
+/// Current Vitals values are wake-to-wake Hero projections. A civil rollup is
+/// valid only when the UI is explicitly rendering that dated historical row.
+/// Keeping the choice in one pure resolver prevents midnight from silently
+/// replacing the active physiological cycle with a newly-created civil day.
+enum AtriaHealthMetricAuthority {
+    struct CurrentCycle: Equatable {
+        let recoveryPercent: Int?
+        let recoveryDetail: String
+        let restingHeartRateText: String
+        let hrvValue: String
+        let hrvDetail: String
+    }
+
+    struct Projection: Equatable {
+        let recoveryPercent: Int?
+        let recoveryValue: String
+        let recoveryDetail: String
+        let restingHeartRate: Int?
+        let restingHeartRateValue: String
+        let restingHeartRateDetail: String
+        let hrvMS: Int?
+        let hrvValue: String
+        let hrvDetail: String
+
+        var hasEvidence: Bool {
+            recoveryPercent != nil || restingHeartRate != nil || hrvMS != nil
+        }
+    }
+
+    enum Scope {
+        case currentCycle(CurrentCycle)
+        case datedHistory(DailyRollupStoreEntry)
+    }
+
+    static func resolve(_ scope: Scope) -> Projection {
+        switch scope {
+        case .currentCycle(let current):
+            let restingHeartRate = Int(current.restingHeartRateText)
+            let normalizedHRV = normalizedMetricText(current.hrvValue)
+            return Projection(
+                recoveryPercent: current.recoveryPercent,
+                recoveryValue: current.recoveryPercent.map { "\($0)%" } ?? "Learning",
+                recoveryDetail: current.recoveryPercent == nil
+                    ? "needs a few nights" : current.recoveryDetail,
+                restingHeartRate: restingHeartRate,
+                restingHeartRateValue: restingHeartRate.map {
+                    AtriaMetricFormat.restingHeartRate(Double($0))
+                } ?? "Learning",
+                restingHeartRateDetail: restingHeartRate == nil
+                    ? "needs enough wear" : "current cycle",
+                hrvMS: Int(normalizedHRV),
+                hrvValue: normalizedHRV,
+                hrvDetail: normalizedHRV == "Learning"
+                    ? "needs qualified sleep" : current.hrvDetail
+            )
+        case .datedHistory(let rollup):
+            let hrvMS = rollup.lnRMSSD.map { Int(exp($0).rounded()) }
+            return Projection(
+                recoveryPercent: rollup.recovery,
+                recoveryValue: rollup.recovery.map { "\($0)%" } ?? "Learning",
+                recoveryDetail: AtriaHealthMetricEvidencePresentation.recoveryDetail(
+                    rollup: rollup,
+                    liveRecoveryAvailable: false
+                ),
+                restingHeartRate: rollup.rhr,
+                restingHeartRateValue: rollup.rhr.map {
+                    AtriaMetricFormat.restingHeartRate(Double($0))
+                } ?? "Learning",
+                restingHeartRateDetail:
+                    AtriaHealthMetricEvidencePresentation.restingHeartRateDetail(
+                        rollup: rollup,
+                        liveValueAvailable: false
+                    ),
+                hrvMS: hrvMS,
+                hrvValue: hrvMS.map(String.init) ?? "Learning",
+                hrvDetail: AtriaHealthMetricEvidencePresentation.hrvDetail(
+                    rollup: rollup,
+                    liveValueAvailable: false
+                )
+            )
+        }
+    }
+
+    private static func normalizedMetricText(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed == "--" ? "Learning" : trimmed
+    }
+}
+
+enum AtriaHealthMetricEvidencePresentation {
+    static func recoveryDetail(rollup: DailyRollupStoreEntry?,
+                               liveRecoveryAvailable: Bool) -> String {
+        if let rollup, rollup.recovery != nil {
+            if rollup.recoverySummary?.confidence
+                == Metrics.RecoveryEstimate.Confidence.unverified.rawValue {
+                return "limited estimate"
+            }
+            return rollup.recoverySummary == nil ? "saved" : "saved morning"
+        }
+        return liveRecoveryAvailable ? "today · estimate" : "needs a few nights"
+    }
+
+    static func restingHeartRateDetail(rollup: DailyRollupStoreEntry?,
+                                       liveValueAvailable: Bool) -> String {
+        if let rollup, rollup.rhr != nil {
+            return (rollup.sleepSeconds ?? 0) > 0 ? "sleep-derived" : "wear estimate"
+        }
+        return liveValueAvailable ? "live estimate" : "needs enough wear"
+    }
+
+    static func hrvDetail(rollup: DailyRollupStoreEntry?,
+                          liveValueAvailable: Bool) -> String {
+        if let rollup, rollup.lnRMSSD != nil {
+            return (rollup.sleepSeconds ?? 0) > 0 ? "sleep signal" : "limited signal"
+        }
+        return liveValueAvailable ? "live estimate" : "needs qualified sleep"
+    }
+
+    static func respiratoryDetail(valueAvailable: Bool) -> String {
+        valueAvailable ? "sleep average" : "needs qualified sleep"
+    }
+
+    static func settledRestingHeartRateDetail(rollup: DailyRollupStoreEntry,
+                                              isToday: Bool) -> String {
+        guard (rollup.sleepSeconds ?? 0) > 0 else { return "wear estimate" }
+        return isToday ? "this morning" : "yesterday"
+    }
+
+    static func settledHRVDetail(rollup: DailyRollupStoreEntry,
+                                 isToday: Bool) -> String {
+        guard (rollup.sleepSeconds ?? 0) > 0 else { return "limited signal" }
+        return isToday ? "this morning" : "yesterday"
+    }
+}
+
 struct AtriaHealthScreen: View {
     private enum Scope: String, CaseIterable, Identifiable {
         case live = "Live"
@@ -219,14 +373,6 @@ struct AtriaHealthScreen: View {
     @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AtriaDefault("atria.sleep.baseNeedHours") private var sleepBaseNeedHours: Double = 8.0
     @AtriaDefault(DetectionEventLog.revisionKey) private var detectionsRevision: Int = 0
-    // Perf (handoff #3): `latestRollup` is read ~13x per Health Monitor render and
-    // was an O(n) `.max(by:)` each time. Memoize it against the store's rollup
-    // revision so the scan runs once per rollup change instead of once per read AND
-    // once per unrelated re-render (the 5s stress tick / live-pulse publishes that
-    // drive this surface). Reference-type cache in @State so the instance persists
-    // across body evals; mutating it during body is a pure memo (no @Published /
-    // @State value changes -> no view invalidation).
-    @State private var latestRollupCache = LatestRollupCache()
     @StateObject private var historyProjectionStore = AtriaVitalsHistoryProjectionStore()
     /// Immutable, slow-moving review-queue projection supplied by the narrow
     /// detected-activities host. History never observes SessionStore directly.
@@ -423,28 +569,29 @@ struct AtriaHealthScreen: View {
     /// pair -- both computed the same honest way the Today ring and its
     /// caption are (visibilitySpec §2, 2026-07-05).
     private var sleepDetailCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let currentSleep = currentMainSleep
+        return VStack(alignment: .leading, spacing: 12) {
             Text("Sleep detail")
                 .font(.title2.weight(.bold))
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                 AtriaMetricTile(label: "Performance",
                                 value: sleepPerformanceValue,
-                                state: vitalsStore.state.sleepHistorySnapshot.latestMainSleep == nil ? .learning : .local,
+                                state: currentSleep == nil ? .learning : .local,
                                 tint: Metrics.electricSleep,
                                 footnote: "of nightly need")
                 AtriaMetricTile(label: "Efficiency",
-                                value: vitalsStore.state.sleepHistorySnapshot.latestMainSleep?.sleepEfficiencyText ?? "--",
-                                state: vitalsStore.state.sleepHistorySnapshot.latestMainSleep?.sleepEfficiency == nil ? .learning : .research,
+                                value: currentSleep?.sleepEfficiencyText ?? "--",
+                                state: currentSleep?.sleepEfficiency == nil ? .learning : .research,
                                 tint: .cyan,
                                 footnote: "Duration-based estimate")
             }
 
-            if let latestNight = vitalsStore.state.sleepHistorySnapshot.latestMainSleep {
-                if latestNight.displayStageSegments.isEmpty {
-                    AtriaSleepStageBuildingSummary(night: latestNight)
+            if let currentSleep {
+                if currentSleep.displayStageSegments.isEmpty {
+                    AtriaSleepStageBuildingSummary(night: currentSleep)
                 } else {
-                    AtriaSleepStageSummary(night: latestNight)
+                    AtriaSleepStageSummary(night: currentSleep)
                 }
             }
         }
@@ -459,14 +606,14 @@ struct AtriaHealthScreen: View {
     /// tile both read this.
     private var sleepPerformancePercentUnified: Int? {
         let sleepHistory = vitalsStore.state.sleepHistorySnapshot
-        guard let latest = sleepHistory.latestMainSleep else { return nil }
-        return sleepHistory.sleepPerformancePercent(for: latest,
+        guard let currentMainSleep else { return nil }
+        return sleepHistory.sleepPerformancePercent(for: currentMainSleep,
                                                      baseNeedHours: sleepBaseNeedHours,
                                                      yesterdayStrain: yesterdayStrainForLatestNight)
     }
 
     private var yesterdayStrainForLatestNight: Double? {
-        guard let latest = vitalsStore.state.sleepHistorySnapshot.latestMainSleep else { return nil }
+        guard let latest = currentMainSleep else { return nil }
         let calendar = Calendar.current
         guard let priorDay = calendar.date(byAdding: .day,
                                            value: -1,
@@ -562,26 +709,21 @@ struct AtriaHealthScreen: View {
     }
 
     private func healthMonitorCard(live: AtriaHealthMonitorLiveProjection) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let currentMetrics = currentMetricProjection(live: live)
+        return VStack(alignment: .leading, spacing: 14) {
             header(live: live)
 
-            // Disconnected honesty (2026-07-07 design handoff): saved rollup
-            // values are clearly labeled last-known, dimmed, and offered an
-            // inline reconnect instead of sitting under a green "Updated".
-            if isDisconnected(live: live), latestRollup != nil {
+            // Disconnected honesty: Hero remains the active-cycle authority,
+            // but its last projection is clearly labelled instead of borrowing
+            // a civil-day rollup.
+            if isDisconnected(live: live), currentMetrics.hasEvidence {
                 HStack(spacing: 10) {
                     Image(systemName: "clock.arrow.circlepath")
                         .font(.caption.weight(.bold))
                         .foregroundStyle(.secondary)
-                    if let day = latestRollup?.day {
-                        Text("Last known \u{00b7} \(day, format: .relative(presentation: .named))")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("Last known")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
+                    Text("Last known \u{00b7} current cycle")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
                     Spacer(minLength: 8)
                     Button("Reconnect") {
                         ble.startScan(reason: "health_monitor_reconnect")
@@ -611,7 +753,7 @@ struct AtriaHealthScreen: View {
                                      onTap: { educationTopic = .recovery })
                 AtriaHealthMetricRow(title: "Resting HR",
                                      value: restingHeartRateValue(live: live),
-                                     detail: "overnight low",
+                                     detail: restingHeartRateDetail(live: live),
                                      systemImage: "heart.text.square.fill",
                                      tint: Metrics.electricRHR,
                                      rangeText: restingHeartRateRangeText,
@@ -620,7 +762,7 @@ struct AtriaHealthScreen: View {
                                      onTap: { educationTopic = .restingHeartRate })
                 AtriaHealthMetricRow(title: "HRV",
                                      value: hrvValue(live: live),
-                                     detail: "night signal",
+                                     detail: hrvDetail(live: live),
                                      systemImage: "waveform.path.ecg",
                                      tint: Metrics.electricHRV,
                                      rangeText: hrvRangeText,
@@ -628,7 +770,7 @@ struct AtriaHealthScreen: View {
                                      layout: .compactTile,
                                      onTap: { educationTopic = .hrv })
             }
-            .opacity(isDisconnected(live: live) && latestRollup != nil ? 0.65 : 1)
+            .opacity(isDisconnected(live: live) && currentMetrics.hasEvidence ? 0.65 : 1)
 
             // Stress owns a timeline and action, so it remains full width while
             // the glanceable readiness metrics use a compact adaptive grid.
@@ -643,14 +785,14 @@ struct AtriaHealthScreen: View {
                                          showBreathworkSession = true
                                      },
                                      onOpenEducation: { educationTopic = .stress })
-                .opacity(isDisconnected(live: live) && latestRollup != nil ? 0.65 : 1)
+                .opacity(isDisconnected(live: live) && currentMetrics.hasEvidence ? 0.65 : 1)
 
             monitorGroupKicker("Sleep & body")
 
             LazyVGrid(columns: monitorGridColumns, alignment: .leading, spacing: 8) {
                 AtriaHealthMetricRow(title: "Respiration",
                                      value: respiratoryValue,
-                                     detail: "sleep average",
+                                     detail: respiratoryDetail,
                                      systemImage: "lungs.fill",
                                      tint: Metrics.electricRespiratory,
                                      rangeText: respiratoryRangeText,
@@ -699,7 +841,7 @@ struct AtriaHealthScreen: View {
             }
             // Dimmed while disconnected: these are saved values, not a live
             // read (paired with the last-known row above).
-            .opacity(isDisconnected(live: live) && latestRollup != nil ? 0.65 : 1)
+            .opacity(isDisconnected(live: live) && currentMetrics.hasEvidence ? 0.65 : 1)
         }
         .padding(16)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
@@ -800,27 +942,8 @@ struct AtriaHealthScreen: View {
         }
     }
 
-    private var latestRollup: DailyRollupStoreEntry? {
-        // Perf (handoff #3): read ~13x per Health Monitor render. Memoize the O(n)
-        // single pass against the store's rollup revision (bumped on every
-        // `dailyRollupHistory` reassignment) so it runs once per rollup change, not
-        // once per read or per unrelated re-render. Only today's saved rollup is
-        // eligible; yesterday must never override the live fallbacks below. The
-        // local day is part of the key so midnight invalidates without a store write.
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
-        let vitals = vitalsStore.state
-        return latestRollupCache.latest(revision: vitals.dailyRollupHistoryRevision,
-                                        day: today) {
-            vitals.dailyRollupHistory.first { calendar.isDate($0.day, inSameDayAs: today) }
-        }
-    }
-
-    /// Per-view memo for `latestRollup` (handoff #3): recomputes only when the
-    /// store's rollup revision changes. Reference type so one instance survives
-    /// body re-evals via @State; the mutation is a pure cache, never observed.
-    // `internal` (not private) so AtriaPerfFixesTests can assert the memo computes
-    // once per revision. Still nested + only constructed by this view.
+    /// Retained for explicitly dated historical projections and its focused
+    /// performance contract. It is intentionally not used by current Vitals.
     final class LatestRollupCache {
         private var revision: Int?
         private var day: Date?
@@ -838,70 +961,55 @@ struct AtriaHealthScreen: View {
         }
     }
 
-    // Today↔Vitals unification (2026-07-06): the Health Monitor rows read ONLY
-    // the persisted daily-rollup store, but today's rollup row is intentionally
-    // not persisted until a settled morning reading exists (frozen-chart
-    // invariant, Sessions.swift). The Today screen meanwhile renders the LIVE
-    // hero estimate. That split is exactly the reported bug -- Today shows 72%
-    // / 8h while Vitals shows Building / --. Fix: when there is no persisted
-    // rollup for today, fall back READ-ONLY to the same live hero snapshot the
-    // Today screen already shows, honestly labeled "today · estimate" so the
-    // two tabs never disagree. Nothing is persisted here, so the frozen-chart
-    // invariant is untouched -- these are live readiness rows, not trend data.
+    private func currentMetricProjection(
+        live: AtriaHealthMonitorLiveProjection
+    ) -> AtriaHealthMetricAuthority.Projection {
+        AtriaHealthMetricAuthority.resolve(.currentCycle(.init(
+            recoveryPercent: live.recoveryPercent,
+            recoveryDetail: live.recoveryDetail,
+            restingHeartRateText: live.restingHeartRateText,
+            hrvValue: live.hrvValue,
+            hrvDetail: live.hrvDetail
+        )))
+    }
+
     private func recoveryValue(live: AtriaHealthMonitorLiveProjection) -> String {
-        if let value = latestRollup?.recovery {
-            return "\(value)%"
-        }
-        if let recoveryPercent = live.recoveryPercent {
-            return "\(recoveryPercent)%"
-        }
-        // "Learning" (not "Building") to match this card's own header pill and the
-        // Today recovery legend for the identical no-recovery-yet state.
-        return "Learning"
+        currentMetricProjection(live: live).recoveryValue
     }
 
     private func recoveryDetail(live: AtriaHealthMonitorLiveProjection) -> String {
-        if latestRollup?.recovery != nil { return "saved" }
-        // Honesty/consistency: never the banned "building" word here — it
-        // contradicts the row's own "Learning" value (see recoveryValue) and the
-        // Today/Overview "Day X of 4" calibration language for this same state.
-        return live.recoveryPercent != nil ? "today · estimate" : "needs a few nights"
+        currentMetricProjection(live: live).recoveryDetail
     }
 
     private func recoveryTint(live: AtriaHealthMonitorLiveProjection) -> Color {
-        if let value = latestRollup?.recovery ?? live.recoveryPercent {
+        if let value = currentMetricProjection(live: live).recoveryPercent {
             return Metrics.recoveryColor(value)
         }
         return .secondary
     }
 
     private func restingHeartRateValue(live: AtriaHealthMonitorLiveProjection) -> String {
-        // Honesty (2026-07-05): prefer a real saved rollup RHR. Otherwise only show
-        // the live hero value when it's a genuine reading -- its text is "Learning"
-        // when it's the 60 math-fallback (no baseline / live / session), and that
-        // must never be presented as a real "overnight low".
-        if let rollupRHR = latestRollup?.rhr {
-            return AtriaMetricFormat.restingHeartRate(Double(rollupRHR))
-        }
-        guard let liveRHR = Int(live.restingHeartRateText) else { return "Learning" }
-        return AtriaMetricFormat.restingHeartRate(Double(liveRHR))
+        currentMetricProjection(live: live).restingHeartRateValue
+    }
+
+    private func restingHeartRateDetail(live: AtriaHealthMonitorLiveProjection) -> String {
+        currentMetricProjection(live: live).restingHeartRateDetail
     }
 
     private func hrvValue(live: AtriaHealthMonitorLiveProjection) -> String {
-        if let lnRMSSD = latestRollup?.lnRMSSD {
-            return AtriaMetricFormat.hrv(exp(lnRMSSD))
-        }
-        // Fall back to the live hero HRV (already an honest formatted string --
-        // a real value or "Learning") so Vitals matches Today rather than "--".
-        let liveValue = live.hrvValue.trimmingCharacters(in: .whitespaces)
-        return liveValue.isEmpty || liveValue == "--" ? "--" : liveValue
+        currentMetricProjection(live: live).hrvValue
+    }
+
+    private func hrvDetail(live: AtriaHealthMonitorLiveProjection) -> String {
+        currentMetricProjection(live: live).hrvDetail
     }
 
     private var respiratoryValue: String {
-        // Use the same source the hint uses (rollup, then latest recorded night) so
-        // the row can't show "--" while the hint reports an elevated reading -- and
-        // so Vitals shows the real value instead of "--" when only a night exists.
-        guard let value = latestRollup?.respiratoryRate ?? vitalsStore.state.sleepHistorySnapshot.latestMainSleep?.respiratoryRate else {
+        // Respiration is an overnight metric. An older retained history night
+        // must not leak into the current wake-to-wake card after a no-sleep
+        // rollover; the sleep snapshot already merges any matching rollup
+        // respiratory evidence into the current night.
+        guard let value = currentMainSleep?.respiratoryRate else {
             // Canonical not-ready word, matching every sibling Health Monitor row
             // (Recovery/RHR/HRV/Sleep) instead of the banned "--". Respiration is
             // sleep-derived, so it genuinely learns after a night — not "unavailable".
@@ -910,11 +1018,14 @@ struct AtriaHealthScreen: View {
         return String(format: "%.1f rpm", value)
     }
 
+    private var respiratoryDetail: String {
+        AtriaHealthMetricEvidencePresentation.respiratoryDetail(
+            valueAvailable: respiratoryValue != "Learning"
+        )
+    }
+
     private var sleepValue: String {
-        // Fall back to the latest recorded night (same source the Today ring
-        // uses) when today's rollup hasn't persisted yet, so Vitals shows the
-        // real "8h 12m" instead of "--".
-        guard let seconds = latestRollup?.sleepSeconds ?? vitalsStore.state.sleepHistorySnapshot.latestMainSleep?.duration else {
+        guard let seconds = currentMainSleep?.duration else {
             return "Learning"   // canonical not-ready word, consistent with Today/Overview
         }
         return AtriaMetricFormat.sleepDuration(seconds: seconds)
@@ -926,10 +1037,7 @@ struct AtriaHealthScreen: View {
         if let performance = sleepPerformancePercentUnified {
             return "\(performance)% need"
         }
-        if let performance = latestRollup?.sleepPerformance {
-            return "\(performance)% need"
-        }
-        return "last night"
+        return "No sleep this cycle"
     }
 
     // MARK: Stress (AtriaStressMonitor)
@@ -1062,15 +1170,17 @@ struct AtriaHealthScreen: View {
     // MARK: Suboptimal-zone hint chips (only when a trusted comparison exists)
 
     private var recoveryHint: String? {
-        guard let value = latestRollup?.recovery, value < 34 else { return nil }
+        guard let value = heroStore.state.recoveryEstimate.percent,
+              value < 34 else { return nil }
         return "Low \u{2014} prioritize rest today"
     }
 
     private var restingHeartRateHint: String? {
         let baseline = vitalsStore.state.baseline
+        let today = Int(heroStore.state.restingHeartRateText)
         guard baseline.hasTrustedRestingBaseline(),
               let stats = baseline.restingStats, stats.count > 1, stats.sd > 0,
-              let today = latestRollup?.rhr else { return nil }
+              let today else { return nil }
         let z = (Double(today) - stats.mean) / stats.sd
         guard z > 1.5 else { return nil }
         return "\u{2191} elevated \u{2014} try earlier bedtime"
@@ -1078,9 +1188,11 @@ struct AtriaHealthScreen: View {
 
     private var hrvHint: String? {
         let baseline = vitalsStore.state.baseline
+        let hrvMS = Int(heroStore.state.hrvValue)
         guard baseline.hasTrustedHRVBaseline(),
               let stats = baseline.lnRMSSDStats, stats.count > 1, stats.sd > 0,
-              let lnRMSSD = latestRollup?.lnRMSSD else { return nil }
+              let hrvMS, hrvMS > 0 else { return nil }
+        let lnRMSSD = log(Double(hrvMS))
         let z = (lnRMSSD - stats.mean) / stats.sd
         guard z < -1.5 else { return nil }
         return "\u{2193} below typical \u{2014} ease today's training"
@@ -1089,10 +1201,16 @@ struct AtriaHealthScreen: View {
     private var respiratoryHint: String? {
         let sleepHistory = vitalsStore.state.sleepHistorySnapshot
         guard let stats = sleepHistory.respiratoryBaselineStats, stats.count > 1, stats.sd > 0,
-              let value = latestRollup?.respiratoryRate ?? sleepHistory.latestMainSleep?.respiratoryRate else { return nil }
+              let value = currentMainSleep?.respiratoryRate else { return nil }
         let z = (value - stats.mean) / stats.sd
         guard z > 1.5 else { return nil }
         return "\u{2191} elevated \u{2014} track how you feel"
+    }
+
+    private var currentMainSleep: SleepHistorySnapshot.Night? {
+        AtriaHealthCurrentSleepEvidence.resolve(
+            from: vitalsStore.state.sleepHistorySnapshot
+        )
     }
 
     private var sleepHint: String? {
@@ -1102,7 +1220,7 @@ struct AtriaHealthScreen: View {
     }
 
     private func statusValue(live: AtriaHealthMonitorLiveProjection) -> String {
-        guard latestRollup != nil else { return "Learning" }
+        guard currentMetricProjection(live: live).hasEvidence else { return "Learning" }
         // Never a green "Updated" over stale data while disconnected
         // (2026-07-07 design handoff honesty fix).
         return isDisconnected(live: live) ? "Last known" : "Updated"

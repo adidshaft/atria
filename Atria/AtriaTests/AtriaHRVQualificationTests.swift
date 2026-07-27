@@ -208,6 +208,70 @@ final class AtriaHRVQualificationTests: XCTestCase {
         XCTAssertEqual(baseline.freshHRVSampleCount(now: overnight.end), 0)
     }
 
+    func testConfirmedMainSleepSeedsRestingBaselineAfterRawSessionRetirement() {
+        let retired = session(dayOffset: 0,
+                              source: .standardHeartRateMeasurement2A37)
+        let sleep = confirmedMainSleep(for: retired,
+                                       id: "retained-confirmed-main-sleep")
+        let unrelatedSurvivingSession = session(dayOffset: 1,
+                                                source: .standardHeartRateMeasurement2A37,
+                                                hour: 13)
+
+        let baseline = SessionStore.rebuildBaseline(
+            from: [unrelatedSurvivingSession],
+            previousBaseline: PersonalBaseline(),
+            profile: AthleteProfile(age: 30,
+                                    measuredMaxHR: 190,
+                                    maxHRSource: .measured,
+                                    updated: nil,
+                                    hasCompletedOnboarding: true),
+            confirmedSleeps: [sleep]
+        )
+
+        XCTAssertEqual(baseline.restingInt, sleep.restingHR)
+        XCTAssertEqual(baseline.restingSampleCount, 1)
+        XCTAssertEqual(baseline.sessions, 1)
+        XCTAssertNil(baseline.hrvInt,
+                     "a retained sleep RHR must not promote an unqualified HRV scalar")
+    }
+
+    func testConfirmedNapCannotSeedRestingBaselineAfterRawSessionRetirement() {
+        let retired = session(dayOffset: 0,
+                              source: .standardHeartRateMeasurement2A37)
+        let nap = UserConfirmedSleep(
+            id: "retained-confirmed-nap",
+            createdAt: retired.end,
+            start: retired.start,
+            end: retired.start.addingTimeInterval(45 * 60),
+            source: "nap_candidate",
+            confidence: "user_confirmed_hr_only",
+            sessions: 1,
+            samples: retired.points.count,
+            avgHR: retired.avg,
+            peakHR: retired.peak,
+            restingHR: retired.restingStable,
+            hrv: nil,
+            hrvWindowCount: 0,
+            duration: 45 * 60,
+            span: 45 * 60,
+            reason: "test",
+            motionSource: "user_review",
+            motionValidated: false,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: "UTC"
+        )
+        var baseline = PersonalBaseline()
+
+        let seeded = SessionStore.seedRestingBaselineFromConfirmedSleepsIfNeeded(
+            &baseline,
+            confirmedSleeps: [nap]
+        )
+
+        XCTAssertEqual(seeded, 0)
+        XCTAssertNil(baseline.restingInt)
+        XCTAssertEqual(baseline.restingSampleCount, 0)
+    }
+
     func testQualifiedRRMustFallInsideConfirmedMainSleepWindow() {
         let overnight = session(dayOffset: 0,
                                 source: .standardHeartRateMeasurement2A37)

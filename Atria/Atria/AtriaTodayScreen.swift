@@ -582,10 +582,7 @@ struct AtriaTodayScreen: View {
                 }
             }
         case .shortcuts:
-            AtriaTodayShortcutStrip(journalValue: journalValue,
-                                    onOpenJournal: onOpenJournal,
-                                    onOpenShare: onOpenShare,
-                                    onStartWorkout: onStartWorkout)
+            AtriaTodayShortcutStrip(onStartWorkout: onStartWorkout)
         case .weeklyPlan:
             if layoutConfig.showPlan {
                 AtriaTodayWeeklyPlanCard(plan: weeklyPlan) {
@@ -1405,7 +1402,10 @@ struct AtriaTodayScreen: View {
         if let entry = dayDescendingRollups.first(where: { $0.lnRMSSD != nil }),
            let lnRMSSD = entry.lnRMSSD {
             let ms = Int(exp(lnRMSSD).rounded())
-            let label = Calendar.current.isDateInToday(entry.day) ? "this morning" : "yesterday"
+            let label = AtriaHealthMetricEvidencePresentation.settledHRVDetail(
+                rollup: entry,
+                isToday: Calendar.current.isDateInToday(entry.day)
+            )
             return ("\(ms)", label)
         }
         let live = displayHero.hrvValue
@@ -1422,7 +1422,10 @@ struct AtriaTodayScreen: View {
     private var displaySettledRHR: (value: String, detail: String) {
         if let entry = dayDescendingRollups.first(where: { $0.rhr != nil }),
            let rhr = entry.rhr {
-            let label = Calendar.current.isDateInToday(entry.day) ? "this morning" : "yesterday"
+            let label = AtriaHealthMetricEvidencePresentation.settledRestingHeartRateDetail(
+                rollup: entry,
+                isToday: Calendar.current.isDateInToday(entry.day)
+            )
             return ("\(rhr)", label)
         }
         let live = displayHero.restingHeartRateText
@@ -1512,6 +1515,10 @@ struct AtriaTodayScreen: View {
     /// Below 1.0 strain the result depends only on the workout revision and local
     /// day and its confirmed-workout revision.
     private var dayStrainIsIncomplete: Bool {
+        if displayHero.strainConfidence.localizedCaseInsensitiveContains("partial")
+            || displayHero.strainValue.hasPrefix("≥") {
+            return true
+        }
         let calendar = Calendar.current
         let day = calendar.startOfDay(for: Date())
         let key = AtriaTodayDayStrainIncompleteKey(
@@ -3049,36 +3056,28 @@ private struct AtriaTodayInfoRow: View, Equatable {
 }
 
 private struct AtriaTodayShortcutStrip: View, Equatable {
-    let journalValue: String
-    let onOpenJournal: () -> Void
-    let onOpenShare: () -> Void
     let onStartWorkout: () -> Void
 
     static func == (lhs: AtriaTodayShortcutStrip, rhs: AtriaTodayShortcutStrip) -> Bool {
-        lhs.journalValue == rhs.journalValue
+        true
     }
 
     var body: some View {
-        HStack(spacing: 8) {
-            AtriaTodayActionRow(title: "Journal",
-                                value: journalValue,
-                                systemImage: "square.and.pencil",
-                                tint: .teal,
-                                compact: true,
-                                action: onOpenJournal)
-            AtriaTodayActionRow(title: "Start",
-                                value: "Activity",
-                                systemImage: "plus",
-                                tint: .blue,
-                                compact: true,
-                                action: onStartWorkout)
-            AtriaTodayActionRow(title: "Share",
-                                value: "Story",
-                                systemImage: "square.and.arrow.up",
-                                tint: .purple,
-                                compact: true,
-                                action: onOpenShare)
+        Button(action: onStartWorkout) {
+            HStack(spacing: 8) {
+                Image(systemName: "plus")
+                    .foregroundStyle(.blue)
+                Text("Start activity")
+                    .foregroundStyle(.primary)
+            }
+            .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: 54)
+                .background(Color(uiColor: .tertiarySystemGroupedBackground),
+                            in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip,
+                                                style: .continuous))
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Start activity")
     }
 }
 

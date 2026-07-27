@@ -88,19 +88,22 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         let activeWindowStart = physiologicalDayStart ?? dayStart
         let usesPhysiologicalOpenWindow = physiologicalDayStart != nil
             && activeWindowStart <= now
-        let crossesCivilMidnight = usesPhysiologicalOpenWindow
-            && !calendar.isDate(activeWindowStart, inSameDayAs: now)
         let isOpenDay = isToday || usesPhysiologicalOpenWindow
         let liveBelongsToDay = liveCapturedAt.map {
             $0 >= activeWindowStart
                 && $0 <= now.addingTimeInterval(5)
                 && now.timeIntervalSince($0) <= liveEvidenceMaximumAge
         } ?? false
+        let physiologicalMatching = usesPhysiologicalOpenWindow
+            ? canonicalDays.filter {
+                abs($0.dayStart.timeIntervalSince(activeWindowStart)) < 1
+            }
+            : []
         // A live strap subtotal is only an open-day source while its
         // detector-applied coordinate is fresh. A restored prefix is retained
         // in the strap detail view as "Not live", but it cannot silently
         // masquerade as today's current count.
-        if isOpenDay, liveBelongsToDay {
+        if isOpenDay, liveBelongsToDay, physiologicalMatching.isEmpty {
             return .init(day: dayStart,
                          count: max(0, liveCount),
                          completeness: .partial,
@@ -112,9 +115,15 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                          coverageFraction: nil)
         }
 
-        let matching = canonicalDays.filter {
+        let civilMatching = canonicalDays.filter {
             calendar.isDate($0.dayStart, inSameDayAs: dayStart)
         }
+        // A current wake-to-wake v24 projection is more specific than a civil
+        // archive day. Prefer its exact boundary instead of mixing two
+        // differently bounded subtotals and selecting whichever is larger.
+        let matching = physiologicalMatching.isEmpty
+            ? civilMatching
+            : physiologicalMatching
         let completeCounts = Set(matching.compactMap { candidate -> Int? in
             guard candidate.state == .available || candidate.state == .knownEmpty else {
                 return nil

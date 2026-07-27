@@ -276,6 +276,203 @@ final class AtriaHistoricalArchiveDurableStoreTests: XCTestCase {
         XCTAssertEqual(try lineCount(at: archive), 2)
     }
 
+    func testPreservedDataContainerRelocationReusesSnapshotWithoutRawRebuild() throws {
+        let directory = try temporaryDirectory()
+        let oldContainer = directory.appendingPathComponent(
+            "Containers/Data/Application/OLD-CONTAINER",
+            isDirectory: true
+        )
+        let oldArchiveRoot = oldContainer.appendingPathComponent(
+            "Documents/atria-historical",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: oldArchiveRoot,
+            withIntermediateDirectories: true
+        )
+        let oldArchive = oldArchiveRoot.appendingPathComponent(
+            "segments/raw-v2/raw-active.jsonl"
+        )
+        let oldIndex = oldArchiveRoot.appendingPathComponent(
+            "historical-archive.identity.jsonl"
+        )
+        let identity = frameIdentity(
+            counter: 71,
+            payload: Data([0x2f, 0x71, 0x72])
+        )
+
+        var store = try AtriaHistoricalArchiveDurableStore(
+            indexURL: oldIndex,
+            existingArchiveURLs: [oldArchive]
+        )
+        let original = store.beginDrainBatch()
+        _ = try store.append(
+            identity: identity,
+            encodedJSONObject: record(sequence: 71),
+            to: oldArchive,
+            batch: original
+        )
+        _ = try store.flush(original)
+
+        // Establish a snapshot that contains the old absolute data-container
+        // UUID, matching a preserve-data reinstall/restore.
+        store = try AtriaHistoricalArchiveDurableStore(
+            indexURL: oldIndex,
+            existingArchiveURLs: [oldArchive]
+        )
+
+        let newContainer = directory.appendingPathComponent(
+            "Containers/Data/Application/NEW-CONTAINER",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: newContainer,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.copyItem(
+            at: oldContainer.appendingPathComponent("Documents"),
+            to: newContainer.appendingPathComponent("Documents")
+        )
+        let newArchiveRoot = newContainer.appendingPathComponent(
+            "Documents/atria-historical",
+            isDirectory: true
+        )
+        let newArchive = newArchiveRoot.appendingPathComponent(
+            "segments/raw-v2/raw-active.jsonl"
+        )
+        let newIndex = newArchiveRoot.appendingPathComponent(
+            "historical-archive.identity.jsonl"
+        )
+
+        var rebuiltRawArchive = false
+        store = try AtriaHistoricalArchiveDurableStore(
+            indexURL: newIndex,
+            existingArchiveURLs: [newArchive],
+            onStartupRawArchiveRebuild: { rebuiltRawArchive = true }
+        )
+        XCTAssertFalse(
+            rebuiltRawArchive,
+            "a preserved Documents tree must not rescan all raw history solely because its container UUID changed"
+        )
+
+        let replay = store.beginDrainBatch()
+        XCTAssertEqual(
+            try store.append(
+                identity: identity,
+                encodedJSONObject: record(sequence: 71),
+                to: newArchive,
+                batch: replay
+            ),
+            .duplicate(durable: false),
+            "the rebased cache may reject only after verifying the exact row in the new container"
+        )
+        XCTAssertEqual(try lineCount(at: newArchive), 1)
+    }
+
+    func testBoundedColdLookupAvoidsCanonicalIndexMaterializationAndStillVerifiesRaw() throws {
+        let directory = try temporaryDirectory()
+        let archive = directory.appendingPathComponent("historical.jsonl")
+        let index = directory.appendingPathComponent("historical.index.jsonl")
+        let identity = frameIdentity(
+            counter: 81,
+            payload: Data([0x2f, 0x81, 0x82])
+        )
+
+        var store = try AtriaHistoricalArchiveDurableStore(
+            indexURL: index,
+            existingArchiveURLs: [archive]
+        )
+        let original = store.beginDrainBatch()
+        _ = try store.append(
+            identity: identity,
+            encodedJSONObject: record(sequence: 81),
+            to: archive,
+            batch: original
+        )
+        _ = try store.flush(original)
+
+        var rebuiltRawArchive = false
+        store = try AtriaHistoricalArchiveDurableStore(
+            indexURL: index,
+            existingArchiveURLs: [archive],
+            maximumEagerIdentityIndexBytes: 0,
+            onStartupRawArchiveRebuild: { rebuiltRawArchive = true }
+        )
+        XCTAssertFalse(rebuiltRawArchive)
+
+        let replay = store.beginDrainBatch()
+        XCTAssertEqual(
+            try store.append(
+                identity: identity,
+                encodedJSONObject: record(sequence: 81),
+                to: archive,
+                batch: replay
+            ),
+            .duplicate(durable: false)
+        )
+        XCTAssertEqual(
+            Set(try store.flush(replay).synchronizedFiles),
+            Set([archive, index]),
+            "a restart lookup hit still re-fsyncs canonical raw and identity files before ACK"
+        )
+        XCTAssertEqual(try lineCount(at: archive), 1)
+    }
+
+    func testMissingColdLookupIsSafeMissAndNeverRejectsRealReplay() throws {
+        let directory = try temporaryDirectory()
+        let archive = directory.appendingPathComponent("historical.jsonl")
+        let index = directory.appendingPathComponent("historical.index.jsonl")
+        let identity = frameIdentity(
+            counter: 82,
+            payload: Data([0x2f, 0x82, 0x83])
+        )
+
+        var store: AtriaHistoricalArchiveDurableStore? =
+            try AtriaHistoricalArchiveDurableStore(
+                indexURL: index,
+                existingArchiveURLs: [archive]
+            )
+        let original = try XCTUnwrap(store).beginDrainBatch()
+        _ = try XCTUnwrap(store).append(
+            identity: identity,
+            encodedJSONObject: record(sequence: 82),
+            to: archive,
+            batch: original
+        )
+        _ = try XCTUnwrap(store).flush(original)
+        store = nil
+
+        let lookupURL = index.deletingPathExtension()
+            .appendingPathExtension("lookup-v1.sqlite")
+        for suffix in ["", "-wal", "-shm"] {
+            try? FileManager.default.removeItem(
+                atPath: lookupURL.path + suffix
+            )
+        }
+
+        var rebuiltRawArchive = false
+        store = try AtriaHistoricalArchiveDurableStore(
+            indexURL: index,
+            existingArchiveURLs: [archive],
+            maximumEagerIdentityIndexBytes: 0,
+            onStartupRawArchiveRebuild: { rebuiltRawArchive = true }
+        )
+        XCTAssertFalse(rebuiltRawArchive)
+        let replay = try XCTUnwrap(store).beginDrainBatch()
+        XCTAssertEqual(
+            try XCTUnwrap(store).append(
+                identity: identity,
+                encodedJSONObject: record(sequence: 82),
+                to: archive,
+                batch: replay
+            ),
+            .inserted,
+            "an absent derived lookup must accept and persist the real frame instead of risking data loss"
+        )
+        _ = try XCTUnwrap(store).flush(replay)
+        XCTAssertEqual(try lineCount(at: archive), 2)
+    }
+
     func testNewRotatedArchiveReusesSnapshotWithoutRescanningOlderRawFiles() throws {
         let directory = try temporaryDirectory()
         let firstArchive = directory.appendingPathComponent("historical.jsonl")

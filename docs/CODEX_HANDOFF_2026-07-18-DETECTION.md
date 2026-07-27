@@ -1,5 +1,10 @@
 # CODEX HANDOFF — 2026-07-18 · DETECTION & TRUTH phase
 
+> **HISTORICAL / SUPERSEDED.** Device, branch, build, and pending-test state
+> below are retained as a record of that session, not as current instructions.
+> Current authority is `docs/WHOOP4_PROTOCOL_FINDINGS.md` plus the dated
+> physical acceptance files under `evidence/`.
+
 Current continuation handoff for Atria. The superseded transport/HR-reliability
 handoff is preserved in Git history; that phase is complete and verified. This
 document opens the next phase: restore automatic detection so every number shown is real
