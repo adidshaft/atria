@@ -137,6 +137,8 @@ final class AtriaHistoricalRetentionTransactionTests: XCTestCase {
         }
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.source.path))
         XCTAssertEqual(try directoryFiles(fixture.manifests, prefix: "manifest-"), 0)
+        XCTAssertEqual(try temporaryFileCount(fixture.aggregates), 0)
+        XCTAssertEqual(try temporaryFileCount(fixture.manifests), 0)
     }
 
     func testSourceMutationAfterAggregateConstructionFailsClosed() throws {
@@ -338,5 +340,16 @@ final class AtriaHistoricalRetentionTransactionTests: XCTestCase {
                                                            includingPropertiesForKeys: nil)
             .filter { $0.lastPathComponent.hasPrefix(prefix) && !$0.lastPathComponent.hasSuffix(".tmp") }
             .count
+    }
+
+    private func temporaryFileCount(_ url: URL) throws -> Int {
+        guard FileManager.default.fileExists(atPath: url.path) else { return 0 }
+        return try FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: nil
+        ).filter {
+            $0.lastPathComponent.hasPrefix(".")
+                && $0.lastPathComponent.hasSuffix(".tmp")
+        }.count
     }
 }

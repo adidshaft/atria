@@ -1749,6 +1749,43 @@ POSITIVE STILL REQUIRED**
   and
   `/tmp/atria-gate2-invariant-derived/Logs/Test/Test-AtriaTests-2026.07.28_01-11-03-+0530.xcresult`.
 
+#### 2026-07-28 — correction: archive compaction can starve exact-gap publication
+
+- **PHYSICAL acceptance:** the catalog-enrichment correction published
+  terminal completion generation 2 and full-scan completion generation 2
+  without another strap drain. Exact coverage remains 129/129 seconds (100%),
+  with a one-second maximum and p95 gap.
+- **PHYSICAL follow-up failure:** the exact authority remained
+  `coverageProven`; no consumer receipt crossed the recovered-data publication
+  fence. This is not a Gate 2 pass even though raw coverage and both terminal
+  completion records are durable.
+- **PHYSICAL storage observation:** the device contained 579 abandoned
+  aggregate transaction temporary files totalling 891,648,514 bytes. Repeated
+  files were complete shadow copies derived from the same 134 MB legacy raw
+  source.
+- **CODE diagnosis:** deferred session loading could enqueue archive compaction
+  on the same serial projection queue before BLE resumed exact-gap
+  publication. The large shadow build then held that lane beyond the finite
+  recovered-data lease, leaving the authority parked at `coverageProven`.
+  Ordinary semantic or verification errors also left their complete temporary
+  aggregate behind.
+- **CODE correction (not yet physical acceptance):** an unresolved exact
+  authority now owns the shared projection lane through consumer settlement,
+  so compaction defers instead of racing it. Retention transactions remove
+  their own temporary files on ordinary thrown errors, and generated-artifact
+  GC removes only recognized aggregate/manifest temporaries older than one
+  hour. Committed and unknown files remain untouched.
+- **TEST evidence:** the wider completion, projection, retention, verified
+  reader, transaction and generated-artifact matrix passes 149/149 with zero
+  failures or skips.
+- **Physical settlement remains required:** install in place, resume the
+  already-proven authority, and verify it advances to
+  `gapResolvedConsumersPending` or `resolved` while preserving generation 2
+  and the 129/129 coverage proof.
+- **Evidence:**
+  `evidence/2026-07-28-gate2-generation-fix/` and
+  `/tmp/atria-gate2-invariant-derived/Logs/Test/Test-AtriaTests-2026.07.28_01-29-40-+0530.xcresult`.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.

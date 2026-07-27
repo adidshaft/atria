@@ -12210,6 +12210,13 @@ final class SessionStore: ObservableObject {
                                           now: Date = Date(),
                                           bypassDailyLease: Bool = false) {
         guard !Self.archiveCompactionInFlight else { return }
+        guard !HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority() else {
+            AtriaDebugLog(
+                "ATRIADBG archive_compaction_driver status=deferred_exact_recovery_projection reason=%@ action=preserve_shared_projection_lane",
+                reason
+            )
+            return
+        }
         let forced = ProcessInfo.processInfo.arguments.contains("--atria-compact-archive")
         let defaults = UserDefaults.standard
         if !forced, !bypassDailyLease {

@@ -12,6 +12,10 @@ struct AtriaHistoricalGeneratedArtifactGC {
     /// Quarantining it for a day makes collection safe across processes too,
     /// not just across the locks in this process.
     static let unreachableGenerationQuarantine: TimeInterval = 24 * 60 * 60
+    /// Transaction temporaries are never restart inputs. One hour is far
+    /// beyond a normal fsync/verify/publish transaction while still reclaiming
+    /// crash-left aggregate copies before they grow into gigabytes.
+    static let abandonedTemporaryQuarantine: TimeInterval = 60 * 60
 
     struct Result: Equatable, Sendable {
         let removedFiles: Int
@@ -61,7 +65,21 @@ struct AtriaHistoricalGeneratedArtifactGC {
             targetField: "setFilename",
             targetPattern: #"^canonical-consumer-set-[0-9a-f]{64}-[0-9a-f]{64}\.json$"#
         )
-        let plans = [receiptPlan, destinationPlan, proofPlan]
+        let aggregateTemporaryPlan = try planTemporaryDirectory(
+            root.appendingPathComponent("aggregates-v2", isDirectory: true),
+            recognizedBasePattern: #"^aggregate-[A-Za-z0-9._-]+\.json$"#
+        )
+        let manifestTemporaryPlan = try planTemporaryDirectory(
+            root.appendingPathComponent("retention-manifests-v2", isDirectory: true),
+            recognizedBasePattern: #"^manifest-[A-Za-z0-9._-]+\.json$"#
+        )
+        let plans = [
+            aggregateTemporaryPlan,
+            manifestTemporaryPlan,
+            receiptPlan,
+            destinationPlan,
+            proofPlan,
+        ]
         var before: UInt64 = 0
         for plan in plans {
             for candidate in plan.candidates {
@@ -210,6 +228,25 @@ struct AtriaHistoricalGeneratedArtifactGC {
         return .init(directory: directory, candidates: candidates)
     }
 
+    private func planTemporaryDirectory(
+        _ directory: URL,
+        recognizedBasePattern: String
+    ) throws -> Plan {
+        guard fileManager.fileExists(atPath: directory.path) else {
+            return .init(directory: directory, candidates: [])
+        }
+        let candidates = try regularFiles(in: directory).filter { url in
+            abandonedTemporary(
+                url.lastPathComponent,
+                modifiedAt: modificationDate(url),
+                quarantine: Self.abandonedTemporaryQuarantine
+            ) {
+                matches($0, recognizedBasePattern)
+            }
+        }
+        return .init(directory: directory, candidates: candidates)
+    }
+
     private func regularFiles(in directory: URL) throws -> [URL] {
         try fileManager.contentsOfDirectory(
             at: directory,
@@ -250,9 +287,10 @@ struct AtriaHistoricalGeneratedArtifactGC {
     private func abandonedTemporary(
         _ filename: String,
         modifiedAt: Date?,
+        quarantine: TimeInterval = unreachableGenerationQuarantine,
         recognizedBase: (String) -> Bool
     ) -> Bool {
-        guard let modifiedAt, now.timeIntervalSince(modifiedAt) >= 24 * 60 * 60,
+        guard let modifiedAt, now.timeIntervalSince(modifiedAt) >= quarantine,
               filename.hasPrefix("."), filename.hasSuffix(".tmp") else { return false }
         let body = String(filename.dropFirst().dropLast(4))
         guard let separator = body.lastIndex(of: "."),

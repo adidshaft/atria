@@ -14,6 +14,26 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
         roots.removeAll()
     }
 
+    func testExactRecoveryAuthorityOwnsProjectionPriorityUntilGapResolution() throws {
+        let archiveRoot = try temporaryRoot()
+        let store = Store(
+            directoryURL: archiveRoot.appendingPathComponent(
+                "full-drain-authority-v1",
+                isDirectory: true
+            ),
+            makeIdentifier: { "authority-a" }
+        )
+        XCTAssertFalse(HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority(
+            archiveRoot: archiveRoot
+        ))
+
+        _ = try store.arm(gap: gap(), attempt: attempt(), now: date(102))
+
+        XCTAssertTrue(HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority(
+            archiveRoot: archiveRoot
+        ))
+    }
+
     func testDenseDecodedTimestampsProduceRevalidatablePerCadenceProof() throws {
         let stores = durableStores(sequence: 10, fsyncedAt: start + 110)
         let proof = try Policy.evaluate(
