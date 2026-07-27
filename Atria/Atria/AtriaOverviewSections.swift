@@ -10166,17 +10166,25 @@ private struct AtriaRecoveryScoreHero: View {
     @State private var ringRevealed = false
     @State private var haloExpanded = false
 
+    /// The same honesty guard the standard hero documents, which this ring
+    /// branch never applied. Recovery's hue IS its grade (red / yellow /
+    /// green over 0-100), so painting the halo, track, glow and card wash
+    /// green around a "--" asserted a passing score the app has not earned.
+    /// With no score there is nothing to grade, so the whole disc goes
+    /// neutral until there is.
+    private var heroTint: Color { score == nil ? Color.secondary : tint }
+
     var body: some View {
         VStack(spacing: 12) {
             ZStack {
                 Circle()
-                    .fill(tint.opacity(haloExpanded ? 0.12 : 0.05))
+                    .fill(heroTint.opacity(haloExpanded ? 0.12 : 0.05))
                     .frame(width: 178, height: 178)
                     .scaleEffect(reduceMotion ? 1 : (haloExpanded ? 1.06 : 0.94))
-                    .shadow(color: tint.opacity(haloExpanded ? 0.28 : 0.12), radius: 18)
+                    .shadow(color: heroTint.opacity(haloExpanded ? 0.28 : 0.12), radius: 18)
                     .animation(motionEnabled ? .easeInOut(duration: 2.8).repeatForever(autoreverses: true) : nil,
                                value: haloExpanded)
-                Circle().stroke(tint.opacity(0.14), lineWidth: 14)
+                Circle().stroke(heroTint.opacity(0.14), lineWidth: 14)
                 if let score {
                     Circle()
                         .trim(from: 0,
@@ -10212,7 +10220,7 @@ private struct AtriaRecoveryScoreHero: View {
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             }
         }
-        .frame(maxWidth: .infinity).padding(16).atriaInsetCard(tint: tint)
+        .frame(maxWidth: .infinity).padding(16).atriaInsetCard(tint: heroTint)
         .accessibilityElement(children: .combine)
         .onAppear(perform: startMotion)
         .onChange(of: score) { _, _ in startMotion() }
