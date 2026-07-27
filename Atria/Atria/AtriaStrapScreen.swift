@@ -45,7 +45,7 @@ struct AtriaStrapScreen: View {
                                     value: coreLiveStore.state.batteryLevel >= 0
                                         ? coreLiveStore.state.batteryText : "—",
                                     detail: coreLiveStore.state.batteryLevel >= 0
-                                        ? coreLiveStore.state.batteryChargeCompactText : "Unavailable",
+                                        ? coreLiveStore.state.batteryChargeCompactText : "Connect to read",
                                     systemImage: coreLiveStore.state.batterySymbol,
                                     tint: coreLiveStore.state.batteryShowsPowered ? .green : .cyan)
                 AtriaStrapStatusRow(title: "Mode",
@@ -55,7 +55,7 @@ struct AtriaStrapScreen: View {
                                     tint: Metrics.electricSleep)
                 AtriaStrapStatusRow(title: "Session",
                                     value: collectionLiveStore.state.recordingState,
-                                    detail: "\(collectionLiveStore.state.capturedRows) rows",
+                                    detail: capturedSamplesText,
                                     systemImage: collectionLiveStore.state.isRecording ? "record.circle.fill" : "tray.and.arrow.down.fill",
                                     tint: collectionLiveStore.state.isRecording ? .red : Metrics.electricGreen)
                 AtriaStrapStatusRow(title: "Ownership",
@@ -69,10 +69,20 @@ struct AtriaStrapScreen: View {
         }
         .padding(16)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .task {
             await prepareRawExportFixtureIfNeeded()
         }
+    }
+
+    /// "0 rows" was storage language on an end-user screen — rows of what?
+    /// `capturedRows` counts captured heart-rate samples, so it says samples,
+    /// and says the zero case in words rather than as a bare count, which is
+    /// how every other empty state on this screen reads.
+    private var capturedSamplesText: String {
+        let captured = collectionLiveStore.state.capturedRows
+        guard captured > 0 else { return "No samples yet" }
+        return captured == 1 ? "1 sample" : "\(captured) samples"
     }
 
     private var statusColumns: [GridItem] {
@@ -267,7 +277,7 @@ private struct AtriaStrapConnectionHero: View {
                     .font(.title2.weight(.bold))
                     .foregroundStyle(.secondary)
                     .frame(width: 48, height: 48)
-                    .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
                 Text("Not connected")
                     .font(.headline.weight(.bold))
                 Text(displayStatus == .poweredOff
@@ -305,7 +315,7 @@ private struct AtriaStrapConnectionHero: View {
             .font(.title3.weight(.bold))
             .foregroundStyle(tint)
             .frame(width: 44, height: 44)
-            .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 
     private var primaryState: String {
