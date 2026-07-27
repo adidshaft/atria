@@ -144,7 +144,7 @@ struct AtriaSettingsView: View {
 
         var accessibilityHint: String {
             switch self {
-            case .personal: "Profile, appearance, Today layout, and goals"
+            case .personal: "Daily goals, profile, appearance, and Today layout"
             case .strap: "Device, radio mode, broadcast, and sensor support"
             case .alerts: "Haptic and notification preferences"
             case .data: "Backup, Apple Health, strap sync, and storage"
@@ -389,6 +389,13 @@ struct AtriaSettingsView: View {
     // a native grouped Form, so opening Strap or Data no longer expands several
     // nested sections into one long, spatially unstable settings wall.
 
+    /// The hub used to be five bare titles stacked in the top third of a full
+    /// sheet, leaving most of the screen blank and giving no clue what any row
+    /// held. The plain-language summary that already existed as a VoiceOver
+    /// hint is now visible text, so the row earns its height and the screen
+    /// carries information instead of whitespace. Sighted and VoiceOver users
+    /// read the same sentence — `.combine` merges title + summary into one
+    /// element, which is why the separate hint modifier is gone.
     private func settingsGroupLabel(_ destination: Destination) -> some View {
         HStack(spacing: 10) {
             Image(systemName: destination.systemImage)
@@ -396,10 +403,20 @@ struct AtriaSettingsView: View {
                 .foregroundStyle(destination.tint)
                 .frame(width: 26, height: 26)
                 .background(AtriaIconTileBackground(cornerRadius: 8, tint: destination.tint))
-            Text(destination.title)
-                .font(.subheadline.weight(.semibold))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(destination.title)
+                    .font(.subheadline.weight(.semibold))
+                Text(destination.accessibilityHint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.85)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(minHeight: 44)
+        .accessibilityElement(children: .combine)
     }
 
     /// A single concrete row type is deliberate here. Six independently
@@ -413,7 +430,6 @@ struct AtriaSettingsView: View {
                 NavigationLink(value: destination) {
                     settingsGroupLabel(destination)
                 }
-                .accessibilityHint(destination.accessibilityHint)
             }
         }
     }
@@ -452,6 +468,7 @@ struct AtriaSettingsView: View {
                                              todayOrderCSV,
                                              todaySizeCSV in
             compactSettingsForm(title: "Personal") {
+                AtriaDailyGoalsSection()
                 todayLayoutSection(todayHiddenCSV: todayHiddenCSV,
                                    todayOrderCSV: todayOrderCSV,
                                    todaySizeCSV: todaySizeCSV)
@@ -1544,6 +1561,67 @@ private struct AtriaStrapMotionDefaultsScope<Content: View>: View {
 
     var body: some View {
         content($allDayMotionEnabled)
+    }
+}
+
+/// The three goals a user actually changes — nightly sleep, daily steps, daily
+/// active calories — surfaced one tap into Personal instead of four taps deep
+/// inside Advanced targets, where they sat between ACWR watch bands and HRV
+/// ratio thresholds. Same `atria.target.*` keys, so the advanced editor and
+/// this section stay in lockstep (`AtriaDefault` boxes observe the shared
+/// change center). The defaults boxes live on this struct rather than on
+/// `AtriaSettingsView` so they register when Personal appears, never on the
+/// Settings hub presentation frame.
+private struct AtriaDailyGoalsSection: View {
+    @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
+    @AtriaDefault("atria.target.steps.goal") private var stepsGoal: Int = 8_000
+    @AtriaDefault("atria.target.calories.goal") private var caloriesGoal: Int = 500
+
+    var body: some View {
+        Section {
+            Stepper(value: $sleepGoalHours, in: 4.0...12.0, step: 0.25) {
+                LabeledContent {
+                    Text(AtriaMetricFormat.sleepHours(sleepGoalHours))
+                        .monospacedDigit()
+                } label: {
+                    Label("Sleep each night", systemImage: "bed.double.fill")
+                }
+            }
+            .accessibilityHint("Sets the sleep goal used by the Today ring and sleep cards")
+
+            Stepper(value: $stepsGoal, in: 1_000...30_000, step: 500) {
+                LabeledContent {
+                    Text("\(stepsGoal)")
+                        .monospacedDigit()
+                } label: {
+                    Label("Steps each day", systemImage: "figure.walk.motion")
+                }
+            }
+            .accessibilityHint("Sets the daily step goal used by the Today step card and widget")
+
+            Stepper(value: $caloriesGoal, in: 100...3_000, step: 50) {
+                LabeledContent {
+                    Text("\(caloriesGoal) kcal")
+                        .monospacedDigit()
+                } label: {
+                    Label("Active calories", systemImage: "flame.fill")
+                }
+            }
+            .accessibilityHint("Sets the daily active-calorie goal used by the Today calorie card")
+        } header: {
+            Text("Daily goals")
+        } footer: {
+            Text("These set the goals Today measures you against. Zone thresholds for recovery, strain, and training load live in Advanced targets.")
+        }
+        .onChange(of: sleepGoalHours) { _, _ in
+            sleepGoalHours = min(max(sleepGoalHours, 4.0), 12.0)
+        }
+        .onChange(of: stepsGoal) { _, _ in
+            stepsGoal = min(max(stepsGoal, 1_000), 30_000)
+        }
+        .onChange(of: caloriesGoal) { _, _ in
+            caloriesGoal = min(max(caloriesGoal, 100), 3_000)
+        }
     }
 }
 
