@@ -8694,43 +8694,6 @@ final class SessionStore: ObservableObject {
                    ) {
                     replacement = rehydrated
                 }
-                if (old.workoutSteps == nil
-                        || old.workoutStepsAreEstimated == true),
-                   AtriaWorkoutActivityType.resolved(
-                       activityType: old.activityType,
-                       subtype: old.activitySubtype,
-                       label: old.label
-                   ) == .walking,
-                   let motionStrapIdentifier = UserDefaults.standard.string(
-                       forKey: AtriaBLEManager.OfflineSyncDefaults
-                           .verifiedHistoryPeripheralID
-                   ),
-                   let tickWindow = HistoricalArchive.motionTickWindow(
-                       start: old.start,
-                       end: old.end,
-                       strapIdentifier: motionStrapIdentifier
-                   ) {
-                    replacement = SessionStore.workoutByMergingUserEditsAndStepEvidence(
-                        replacement,
-                        activityLabel: nil,
-                        activityType: nil,
-                        activitySubtype: nil,
-                        reviewSource: nil,
-                        reviewCandidateID: nil,
-                        activityCalibrationEvidence: nil,
-                        workoutSteps: tickWindow.steps,
-                        workoutStepsAreEstimated: true,
-                        workoutStepsCapturedAt: tickWindow.endCapturedAt
-                    )
-                    AtriaDebugLog("ATRIADBG confirmed_workout_steps status=decoded id=%@ ticks=%d steps=%d coverage=%.3f rows=%d source=whoop4_v24 algorithm=%@",
-                                  old.id,
-                                  tickWindow.delta,
-                                  tickWindow.steps,
-                                  tickWindow.coverageFraction,
-                                  tickWindow.decodedRows,
-                                  AtriaWhoop4GravityCadenceStepModel
-                                    .algorithmVersion)
-                }
                 return replacement == old ? nil : (old, replacement)
             }
 
@@ -18163,19 +18126,14 @@ final class SessionStore: ObservableObject {
             : nil
     }
 
-    /// Archive replay is useful until the saved workout has complete HR
-    /// evidence. Legacy rows that claim complete coverage but are missing the
-    /// basic HR/load projection are also eligible for one honest repair.
+    /// The recovered-data fence repairs only HR/load evidence. WHOOP/R10
+    /// motion decoding has its own bounded publication lane; keeping it out of
+    /// this predicate prevents repeated whole-archive motion scans from
+    /// blocking exact historical-gap publication.
     nonisolated static func confirmedWorkoutNeedsArchiveRehydration(
         _ workout: UserConfirmedWorkout
     ) -> Bool {
         confirmedWorkoutNeedsHeartRateArchiveRehydration(workout)
-            || (workout.workoutSteps == nil
-                && AtriaWorkoutActivityType.resolved(
-                    activityType: workout.activityType,
-                    subtype: workout.activitySubtype,
-                    label: workout.label
-                ) == .walking)
     }
 
     nonisolated static func confirmedWorkoutArchiveUnionWindow(
