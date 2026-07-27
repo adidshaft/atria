@@ -2858,6 +2858,10 @@ private struct AtriaLiveWorkoutRouteMetricsHUD: View {
                         .lineLimit(1)
                         .fixedSize()
                 }
+                // Same correction as the full heart block: the priority has to
+                // be on the group to count against the zone stack and the
+                // target button in this outer row.
+                .layoutPriority(3)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Heart rate \(heartRate) beats per minute")
 
@@ -2868,7 +2872,8 @@ private struct AtriaLiveWorkoutRouteMetricsHUD: View {
                         .font(.caption.weight(.black))
                         .foregroundStyle(zone.color)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.74)
+                        .minimumScaleFactor(0.64)
+                        .allowsTightening(true)
                     if let targetRangeText {
                         Text(targetRangeText)
                             .font(.caption2.weight(.bold).monospacedDigit())
@@ -2977,6 +2982,16 @@ private struct AtriaLiveWorkoutHeartBlock: View {
                         .lineLimit(1)
                         .fixedSize()
                 }
+                // The priority has to live HERE, on the group, not on the
+                // number inside it. layoutPriority(3) on the Text only ranked
+                // it against "BPM" within this inner HStack; against the zone
+                // capsule in the OUTER row it counted for nothing. So a long
+                // zone name ("Z2 · Fat burn") starved the heart rate, and 62pt
+                // type with minimumScaleFactor(0.52) shrank and then truncated
+                // -- a live workout rendering "1..." where the wearer's pulse
+                // should be. It is the one number on this screen that must
+                // never yield.
+                .layoutPriority(3)
 
                 Spacer(minLength: 6)
 
@@ -2984,7 +2999,11 @@ private struct AtriaLiveWorkoutHeartBlock: View {
                     .font(.caption.weight(.black))
                     .foregroundStyle(zone.color)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+                    .minimumScaleFactor(0.62)
+                    .allowsTightening(true)
+                    // Yields before the pulse does: the zone name can compress
+                    // or abbreviate, a heart rate cannot.
+                    .layoutPriority(0)
                     .padding(.horizontal, 10)
                     .frame(minHeight: 36)
                     .background(zone.color.opacity(0.16), in: Capsule())
