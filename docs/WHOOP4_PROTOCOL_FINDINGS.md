@@ -1664,9 +1664,15 @@ POSITIVE STILL REQUIRED**
   pre-serialization subsecond object. Canonical verification now compares the
   complete persisted representation while retaining exact digest/byte/row
   checks. The subsecond regression and related projection suites pass.
+- **CODE hardening:** the same persistence boundary is now enforced for the
+  terminal completion record, aggregate snapshot reread, idempotent restart,
+  and requested-range containment. A subsecond completion-store-to-inspection
+  proof test passes, preventing another restart-only failure after aggregate
+  publication.
 - Final consumer-store settlement remains pending an unlocked launch; iOS
-  rejected the relaunch while the phone was locked. Coverage proof is already
-  durable and will not be repeated or downgraded.
+  rejected the hardened Release relaunch while the phone was locked. The
+  hardened binary is installed; coverage proof is already durable and will not
+  be repeated or downgraded.
 - **Evidence:**
   `evidence/2026-07-27-post-gym-final-candidate/terminal-retention-repair.md`.
 

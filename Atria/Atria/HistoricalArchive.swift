@@ -863,6 +863,23 @@ enum HistoricalArchive {
             == floor(catalog.timeIntervalSince1970)
     }
 
+    static func persistedISO8601Value<T: Codable>(_ value: T) throws -> T {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(T.self, from: encoder.encode(value))
+    }
+
+    static func persistedTimestamp(_ persisted: Date, coversStart raw: Date) -> Bool {
+        persisted <= raw || catalogTimestampMatches(raw: raw, catalog: persisted)
+    }
+
+    static func persistedTimestamp(_ persisted: Date, coversEnd raw: Date) -> Bool {
+        persisted >= raw || catalogTimestampMatches(raw: raw, catalog: persisted)
+    }
+
     static func verifiedMetricTimestamps(
         in seal: TerminalCatalogSealResult,
         start: Date,
@@ -1033,10 +1050,13 @@ enum HistoricalArchive {
             aggregateDirectoryURL: aggregates,
             manifestDirectoryURL: manifests
         ).load()
+        let persistedAggregate = try persistedISO8601Value(
+            seal.aggregateBuild.aggregate
+        )
         guard aggregateSnapshot.diagnostics.rejectedManifests == 0,
               aggregateSnapshot.aggregates.contains(where: {
                   $0.source.chunkID == seal.chunkID
-                      && $0 == seal.aggregateBuild.aggregate
+                      && $0 == persistedAggregate
               }) else {
             throw TerminalConsumerProjectionError.committedAggregateUnavailable
         }
@@ -1052,9 +1072,9 @@ enum HistoricalArchive {
         if let prior,
            prior.terminalBatchNumber == terminalBatchNumber,
            prior.durableSequence == durableSequence,
-           prior.requestedStart == requestedStart,
-           prior.requestedEnd == requestedEnd,
-           prior.completedAt == completedAt {
+           catalogTimestampMatches(raw: requestedStart, catalog: prior.requestedStart),
+           catalogTimestampMatches(raw: requestedEnd, catalog: prior.requestedEnd),
+           catalogTimestampMatches(raw: completedAt, catalog: prior.completedAt) {
             generation = prior.generation
         } else {
             let priorGeneration = prior?.generation ?? 0
@@ -1377,9 +1397,18 @@ enum HistoricalArchive {
             .canonicalAggregateSnapshotData(aggregateSnapshot)
         guard completion.terminalBatchNumber == checkpoint.terminalBatchNumber,
               completion.durableSequence == checkpoint.durableSequence,
-              completion.requestedStart == requestedStart,
-              completion.requestedEnd == requestedEnd,
-              completion.completedAt == Date(timeIntervalSince1970: checkpoint.completedAtUnix),
+              catalogTimestampMatches(
+                raw: requestedStart,
+                catalog: completion.requestedStart
+              ),
+              catalogTimestampMatches(
+                raw: requestedEnd,
+                catalog: completion.requestedEnd
+              ),
+              catalogTimestampMatches(
+                raw: Date(timeIntervalSince1970: checkpoint.completedAtUnix),
+                catalog: completion.completedAt
+              ),
               completion.catalogGeneration == catalog.generation,
               completion.catalogSnapshotSHA256
                 == AtriaHistoricalDrainCompletionGenerationStore.sha256(catalogData),
