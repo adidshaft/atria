@@ -924,6 +924,15 @@ struct AtriaSettingsView: View {
             storageFootprintRow
         } header: {
             Text("Your data")
+        } footer: {
+            // Two facts about this section were written only into VoiceOver
+            // hints. One is a reassurance that decides whether anyone enables
+            // nutrition at all; the other is a CONSEQUENCE of tapping Sync,
+            // which a wearer needs before the tap rather than after it. A
+            // Section footer is where a Form states this — putting the text
+            // inside the rows themselves broke the native icon column on the
+            // toggle and inherited the button's tint on the sync row.
+            Text("Nutrition is read-only — Atria never asks you to log meals. Syncing missed data pulls what the strap stored while disconnected, and briefly pauses live tracking.")
         }
     }
 
