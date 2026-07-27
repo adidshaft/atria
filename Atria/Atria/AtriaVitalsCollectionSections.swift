@@ -3986,6 +3986,7 @@ private struct AtriaPulseStatRail: View {
     let peak: String
     let resting: String
     let restingTint: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 0) {
@@ -4017,6 +4018,14 @@ private struct AtriaPulseStatRail: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.55)
                 .allowsTightening(true)
+                // "Now" is the live heart rate — the same value that rolls
+                // smoothly in the tri-ring centre, on Today's live pill and in
+                // the workout hero. Here it hard-cut on every beat, because
+                // this whole file had zero numericText transitions while those
+                // three surfaces have nine between them. One number, animated
+                // in three places and snapping in the fourth.
+                .contentTransition(reduceMotion ? .identity : .numericText())
+                .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: value)
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 2)
