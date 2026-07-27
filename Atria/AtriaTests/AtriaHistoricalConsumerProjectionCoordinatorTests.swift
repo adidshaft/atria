@@ -150,6 +150,9 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
         XCTAssertEqual(Set(report.published.map(\.receipt.kind)), [
             .activity, .dailyMetrics, .steps, .sleep, .workout,
         ])
+        XCTAssertTrue(report.published.allSatisfy {
+            $0.receipt.completionWatermark == settlement.requiredEnd
+        })
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: settlement.fixture.rawURL.path
         ))
@@ -389,9 +392,13 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
 
         let active = try fixture.catalogStore.activeChunkDescriptor()
         let scanStart = requiredStart.addingTimeInterval(-60)
-        let scanEnd = coversRequiredEnd
+        let cursorWatermark = coversRequiredEnd
             ? requiredEnd
             : requiredEnd.addingTimeInterval(-60)
+        // The sealed source can contain concurrent live rows beyond both the
+        // requested dependency and the proven historical cursor. Those rows
+        // authenticate the source but must never widen cursor authority.
+        let scanEnd = requiredEnd.addingTimeInterval(120)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let records = [historicalRecord(at: scanStart), historicalRecord(at: scanEnd)]
@@ -445,8 +452,8 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
             transportNonce: "scan-nonce-2",
             peripheralIdentifier: "peripheral-a",
             strapIdentity: "whoop-4",
-            cursorWatermark: scanEnd,
-            terminalAt: scanEnd.addingTimeInterval(60),
+            cursorWatermark: cursorWatermark,
+            terminalAt: cursorWatermark.addingTimeInterval(30),
             sourceChunkID: scanAggregate.source.chunkID,
             sourceRawSHA256: scanAggregate.source.rawSHA256,
             sourceFirstTimestamp: scanAggregate.source.firstTimestamp,
