@@ -444,11 +444,11 @@ enum WidgetSnapshotPublisher {
         // only credible with real resting-HR evidence and a usable max HR.
         let strainIsCredible = rest != nil && store.profile.maxHR > (rest ?? 60)
         let strainIsPartial = strainIsCredible
-            && AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(
-                day: now,
+            && AtriaWorkoutMetricPresentation.cycleStrainIsIncomplete(
+                start: physiologicalCycle.start,
+                end: now,
                 strain: strain,
-                workouts: store.confirmedWorkouts,
-                calendar: calendar
+                workouts: store.confirmedWorkouts
             )
         let strapStepsToday = AtriaHomeModel.mergedStrapStepResearchCount(
             savedToday: savedAggregate.savedTodayStrapSteps,
@@ -456,13 +456,32 @@ enum WidgetSnapshotPublisher {
             savedActiveSessionTotal: savedAggregate.savedActiveSessionTotalStrapSteps,
             liveActiveSession: ble.liveStrapStepResearchCount
         )
+        let projectedStepDays: [
+            AtriaHistoricalDailyConsumerProjection.StepDay
+        ]
+        if let strapIdentifier = UserDefaults.standard.string(
+            forKey: AtriaBLEManager.OfflineSyncDefaults
+                .verifiedHistoryPeripheralID
+        ) {
+            projectedStepDays = AtriaWhoop4MotionTickDailyStore.shared
+                .mergingCurrentCycleReceipt(
+                    into: store.historySnapshot
+                        .verifiedHistoricalStepEvidenceDays,
+                    strapIdentifier: strapIdentifier,
+                    windowStart: savedAggregate.day,
+                    calendar: calendar
+                )
+        } else {
+            projectedStepDays = store.historySnapshot
+                .verifiedHistoricalStepEvidenceDays
+        }
         let dailySteps = resolvedDailySteps(
             day: now,
             now: now,
             liveCount: strapStepsToday,
             liveValidationState: ble.liveStrapStepResearchState,
             liveCapturedAt: ble.liveStrapStepCountCapturedAt,
-            canonicalDays: store.historySnapshot.verifiedHistoricalStepEvidenceDays,
+            canonicalDays: projectedStepDays,
             physiologicalDayStart: savedAggregate.day,
             calendar: calendar
         )

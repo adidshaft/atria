@@ -1520,17 +1520,22 @@ struct AtriaTodayScreen: View {
             return true
         }
         let calendar = Calendar.current
-        let day = calendar.startOfDay(for: Date())
+        let now = Date()
+        let cycle = AtriaPhysiologicalDay.current(
+            now: now,
+            sleepHistory: sessionProjectionStore.state.sleepHistorySnapshot,
+            calendar: calendar
+        )
         let key = AtriaTodayDayStrainIncompleteKey(
             confirmedWorkoutsRevision: sessionProjectionStore.state.confirmedWorkoutsRevision,
-            day: day
+            day: cycle.start
         )
         return glanceMemo.dayStrainIncompleteCache.resolve(key: key) {
-            AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(
-                day: day,
+            AtriaWorkoutMetricPresentation.cycleStrainIsIncomplete(
+                start: cycle.start,
+                end: now,
                 strain: displayHero.strain,
-                workouts: sessionProjectionStore.state.confirmedWorkouts,
-                calendar: calendar
+                workouts: sessionProjectionStore.state.confirmedWorkouts
             )
         }
     }

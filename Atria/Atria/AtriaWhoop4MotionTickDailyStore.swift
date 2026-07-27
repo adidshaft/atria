@@ -7,6 +7,13 @@ import Foundation
 /// so archive retention or an unrelated projection rebuild cannot make a
 /// previously published strap-owned count disappear.
 final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
+    /// App-wide receipt authority. Home and widgets use this cached instance so
+    /// frequent live publications do not repeatedly touch the filesystem.
+    static let shared = AtriaWhoop4MotionTickDailyStore()
+    static let didSaveNotification = Notification.Name(
+        "AtriaWhoop4MotionTickDailyStore.didSave"
+    )
+
     private struct Record: Codable, Equatable {
         let schema: Int
         let algorithmVersion: String
@@ -29,6 +36,7 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
     private let stateURL: URL
     private let fileManager: FileManager
     private let lock = NSLock()
+    private var cachedRecords: [Record]?
 
     init(directoryURL: URL, fileManager: FileManager = .default) {
         self.directoryURL = directoryURL.standardizedFileURL
@@ -133,11 +141,22 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
             records.removeLast(records.count - Self.maximumRecords)
         }
         try persistLocked(records)
+        cachedRecords = records
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: Self.didSaveNotification,
+                                            object: nil)
+        }
         return true
     }
 
     private func loadRecordsLocked() -> [Record] {
-        guard fileManager.fileExists(atPath: stateURL.path) else { return [] }
+        if let cachedRecords {
+            return cachedRecords
+        }
+        guard fileManager.fileExists(atPath: stateURL.path) else {
+            cachedRecords = []
+            return []
+        }
         do {
             let data = try Data(contentsOf: stateURL, options: .mappedIfSafe)
             guard data.count <= Self.maximumBytes else {
@@ -148,11 +167,51 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
                   try Self.encode(decoded) == data else {
                 throw CocoaError(.fileReadCorruptFile)
             }
+            cachedRecords = decoded
             return decoded
         } catch {
             try? fileManager.removeItem(at: stateURL)
+            cachedRecords = []
             return []
         }
+    }
+
+    /// Merges the exact current physiological-cycle receipt into an async
+    /// history projection. Only the matching wake boundary is considered and
+    /// the strongest partial coverage wins. Exact canonical totals remain
+    /// authoritative (including conflicting totals, which presentation code
+    /// deliberately withholds rather than guessing).
+    func mergingCurrentCycleReceipt(
+        into projectedDays: [AtriaHistoricalDailyConsumerProjection.StepDay],
+        strapIdentifier: String,
+        windowStart: Date,
+        calendar: Calendar = .current
+    ) -> [AtriaHistoricalDailyConsumerProjection.StepDay] {
+        guard let evidence = load(strapIdentifier: strapIdentifier,
+                                  windowStart: windowStart) else {
+            return projectedDays
+        }
+        let receipt = Self.stepDay(evidence: evidence, calendar: calendar)
+        let matching = projectedDays.filter {
+            abs($0.dayStart.timeIntervalSince(windowStart)) < 1
+        }
+        if matching.contains(where: {
+            ($0.state == .available || $0.state == .knownEmpty)
+                && $0.stepCount != nil
+        }) {
+            return projectedDays
+        }
+        let strongestProjected = matching
+            .filter { $0.state == .missing && $0.knownCoverageSeconds > 0 }
+            .max(by: Self.isWeaker)
+        let strongest = strongestProjected.map {
+            Self.isWeaker($0, receipt) ? receipt : $0
+        } ?? receipt
+        var merged = projectedDays.filter {
+            abs($0.dayStart.timeIntervalSince(windowStart)) >= 1
+        }
+        merged.append(strongest)
+        return merged.sorted { $0.dayStart > $1.dayStart }
     }
 
     private func persistLocked(_ records: [Record]) throws {
@@ -242,6 +301,46 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
             missingCoverageSeconds: record.missingCoverageSeconds,
             decodedRows: record.decodedRows,
             capturedThrough: record.capturedThrough
+        )
+    }
+
+    private static func isWeaker(
+        _ lhs: AtriaHistoricalDailyConsumerProjection.StepDay,
+        _ rhs: AtriaHistoricalDailyConsumerProjection.StepDay
+    ) -> Bool {
+        if lhs.knownCoverageSeconds != rhs.knownCoverageSeconds {
+            return lhs.knownCoverageSeconds < rhs.knownCoverageSeconds
+        }
+        if lhs.dayEnd != rhs.dayEnd {
+            return lhs.dayEnd < rhs.dayEnd
+        }
+        return lhs.knownEpochCount < rhs.knownEpochCount
+    }
+
+    private static func stepDay(
+        evidence: HistoricalArchive.MotionTickDayEvidence,
+        calendar: Calendar
+    ) -> AtriaHistoricalDailyConsumerProjection.StepDay {
+        let components = calendar.dateComponents(
+            [.year, .month, .day],
+            from: evidence.windowStart
+        )
+        return .init(
+            localDay: String(
+                format: "%04d-%02d-%02d",
+                components.year ?? 0,
+                components.month ?? 0,
+                components.day ?? 0
+            ),
+            dayStart: evidence.windowStart,
+            dayEnd: evidence.capturedThrough,
+            state: .missing,
+            stepCount: nil,
+            knownStepDeltaSum: evidence.steps,
+            knownEpochCount: evidence.decodedRows > 0 ? 1 : 0,
+            rejectedOrUnknownEpochCount: 0,
+            knownCoverageSeconds: evidence.knownCoverageSeconds,
+            missingCoverageSeconds: evidence.missingCoverageSeconds
         )
     }
 }

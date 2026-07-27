@@ -42,12 +42,13 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                          peakHR: Int = 100,
                          strain: Double? = 0.051,
                          coverage: Int = 100,
-                         reason: String = "test") -> UserConfirmedWorkout {
-        let start = Date(timeIntervalSince1970: 1_800_000_000)
+                         reason: String = "test",
+                         start: Date = Date(timeIntervalSince1970: 1_800_000_000),
+                         duration: TimeInterval = 173) -> UserConfirmedWorkout {
         return UserConfirmedWorkout(id: "workout",
                                     createdAt: start,
                                     start: start,
-                                    end: start.addingTimeInterval(173),
+                                    end: start.addingTimeInterval(duration),
                                     label: "Workout",
                                     source: "test",
                                     confidence: "high",
@@ -59,7 +60,7 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                                     p99HR: 99,
                                     thresholdHR: 124,
                                     streamCoveragePercent: coverage,
-                                    observedDuration: 173,
+                                    observedDuration: duration,
                                     reason: reason,
                                     strain: strain,
                                     zoneSeconds: [:])
@@ -187,6 +188,35 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertFalse(AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(day: complete.start,
                                                                             strain: 5.4,
                                                                             workouts: [complete]))
+    }
+
+    func testCurrentCycleStrainKeepsPriorCivilDaySparseQualifierAfterMidnight() {
+        let cycleStart = Date(timeIntervalSince1970: 1_800_000_000)
+        let midnight = cycleStart.addingTimeInterval(12 * 60 * 60)
+        let now = midnight.addingTimeInterval(60 * 60)
+        let sparseBeforeMidnight = workout(
+            samples: 2_563,
+            avgHR: 120,
+            peakHR: 158,
+            strain: 4.246,
+            coverage: 78,
+            reason: "stream_gaps",
+            start: midnight.addingTimeInterval(-45 * 60),
+            duration: 35 * 60
+        )
+
+        XCTAssertTrue(AtriaWorkoutMetricPresentation.cycleStrainIsIncomplete(
+            start: cycleStart,
+            end: now,
+            strain: 14.0,
+            workouts: [sparseBeforeMidnight]
+        ))
+        XCTAssertFalse(AtriaWorkoutMetricPresentation.cycleStrainIsIncomplete(
+            start: midnight,
+            end: now,
+            strain: 1.0,
+            workouts: [sparseBeforeMidnight]
+        ))
     }
 
     func testActivityReviewProjectionShowsUnsavedDetectorWindow() {
