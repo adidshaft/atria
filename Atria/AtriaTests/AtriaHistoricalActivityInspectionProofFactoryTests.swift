@@ -86,6 +86,51 @@ final class AtriaHistoricalActivityInspectionProofFactoryTests: XCTestCase {
         XCTAssertEqual(prepared.completionGeneration, 8)
     }
 
+    func testTerminalRetryAdvancesGenerationWhenCatalogSnapshotWasEnriched() throws {
+        let requestedStart = start.addingTimeInterval(-1_800.75)
+        let requestedEnd = start.addingTimeInterval(5_400.75)
+        let completedAt = requestedEnd.addingTimeInterval(0.1)
+        let prior = AtriaHistoricalDrainCompletionGenerationStore.Record(
+            version: 1,
+            generation: 1,
+            terminalBatchNumber: 34,
+            durableSequence: 19_295,
+            requestedStart: requestedStart,
+            requestedEnd: requestedEnd,
+            completedAt: completedAt,
+            catalogGeneration: 249,
+            catalogSnapshotSHA256: String(repeating: "a", count: 64),
+            aggregateSnapshotSHA256: String(repeating: "b", count: 64),
+            disposition: .terminal
+        )
+
+        let reused = try HistoricalArchive.terminalCompletionGeneration(
+            prior: prior,
+            terminalBatchNumber: 34,
+            durableSequence: 19_295,
+            requestedStart: requestedStart,
+            requestedEnd: requestedEnd,
+            completedAt: completedAt,
+            catalogGeneration: 249,
+            catalogSnapshotSHA256: String(repeating: "a", count: 64),
+            aggregateSnapshotSHA256: String(repeating: "b", count: 64)
+        )
+        let advanced = try HistoricalArchive.terminalCompletionGeneration(
+            prior: prior,
+            terminalBatchNumber: 34,
+            durableSequence: 19_295,
+            requestedStart: requestedStart,
+            requestedEnd: requestedEnd,
+            completedAt: completedAt,
+            catalogGeneration: 251,
+            catalogSnapshotSHA256: String(repeating: "c", count: 64),
+            aggregateSnapshotSHA256: String(repeating: "b", count: 64)
+        )
+
+        XCTAssertEqual(reused, 1)
+        XCTAssertEqual(advanced, 2)
+    }
+
     func testOrphanRecordAfterCrashIsNotTerminalEvidence() throws {
         enum Injected: Error { case crash }
         let fixture = try makeCommittedFixture()
