@@ -512,6 +512,10 @@ private struct AtriaJournalCheckInDeck: View {
     private var scaleQuestions: [AtriaJournalTypedQuestion] { [.moodScale, .stressScale, .energyScale, .focusScale, .windDownScale] }
     private var cardCount: Int { tags.count + scaleQuestions.count }
     private var answeredCount: Int { answeredTagCount + answeredScaleCount }
+    private var deckProgressFraction: Double {
+        guard cardCount > 0 else { return 0 }
+        return min(max(Double(answeredCount) / Double(cardCount), 0), 1)
+    }
     private var todayAnswersByQuestion: [String: AtriaJournalAnswer] {
         answerMemo.answers(revision: projection.journalAnswersRevision,
                            store: store.journalAnswers)
@@ -548,20 +552,19 @@ private struct AtriaJournalCheckInDeck: View {
             } else {
                 swipeDeck
 
-                HStack(spacing: 6) {
-                    ForEach(Array(tags.enumerated()), id: \.element.id) { index, tag in
-                        Circle()
-                            .fill(dotColor(index: index, tag: tag))
-                            .frame(width: 7, height: 7)
-                    }
-                    ForEach(Array(scaleQuestions.enumerated()), id: \.element.id) { index, question in
-                        Circle()
-                            .fill(scaleDotColor(index: tags.count + index, question: question))
-                            .frame(width: 7, height: 7)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .accessibilityHidden(true)
+                // One rail instead of one dot per card. The dot row did not
+                // scale: at the 15 cards shown by default it was already a
+                // ~190pt run of 7pt circles that reads as texture rather than
+                // progress, and the tracked-behavior list can be expanded to
+                // 39, which overflows the row outright. A rail states the same
+                // thing at any deck size and matches the exact "N of M logged"
+                // count in the header directly above it.
+                ProgressView(value: deckProgressFraction)
+                    .progressViewStyle(.linear)
+                    .tint(.cyan)
+                    .animation(reduceMotion ? nil : .snappy(duration: 0.25),
+                               value: deckProgressFraction)
+                    .accessibilityHidden(true)
             }
         }
         .padding(16)
@@ -597,12 +600,6 @@ private struct AtriaJournalCheckInDeck: View {
 
     private var answeredTagCount: Int {
         tags.filter { tagAnswered($0) }.count
-    }
-
-    private func dotColor(index: Int, tag: BehaviorJournalEntry.Tag) -> Color {
-        if tagAnswered(tag) { return .cyan }
-        if index == deckIndex { return .primary.opacity(0.65) }
-        return .primary.opacity(0.18)
     }
 
     // MARK: - Swipe deck
@@ -964,12 +961,6 @@ private struct AtriaJournalCheckInDeck: View {
         }
         .padding(.horizontal, 18)
         .frame(maxWidth: .infinity)
-    }
-
-    private func scaleDotColor(index: Int, question: AtriaJournalTypedQuestion) -> Color {
-        if todayAnswersByQuestion[question.rawValue] != nil { return .cyan }
-        if index == deckIndex { return .primary.opacity(0.65) }
-        return .primary.opacity(0.18)
     }
 
     private var completedCard: some View {
