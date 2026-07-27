@@ -5066,7 +5066,14 @@ private extension View {
         self
         .chartOverlay { proxy in
             if pointsAreEmpty {
-                Text("Waiting for live heart-rate samples")
+                // Describes the CHART's state, not the sensor's. The old
+                // "Waiting for live heart-rate samples" sat directly under a
+                // header reading "Now 142 · Average 128 · Peak 151", so the
+                // card denied having heart-rate data three lines after
+                // reporting it. It was also wrong on the two archive/history
+                // call sites, which are not about live samples at all. An
+                // empty plot is empty whether or not a live reading exists.
+                Text("No heart-rate points to plot yet")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
