@@ -816,13 +816,25 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
         now: Date = Date(),
         identityRetention: TimeInterval = AtriaWhoop4HistoryAdmissionLedger.productionIdentityRetention,
         maximumRows: Int = AtriaWhoop4HistoryAdmissionLedger.productionMaximumIdentityRows,
-        maximumDeletesPerPass: Int = AtriaWhoop4HistoryAdmissionLedger.productionMaximumPruneDeletesPerPass
+        maximumDeletesPerPass: Int = AtriaWhoop4HistoryAdmissionLedger.productionMaximumPruneDeletesPerPass,
+        protectedAttemptIdentifiers: Set<String> = []
     ) throws -> PruneResult {
         lock.lock()
         defer { lock.unlock() }
         let result = try transaction { () -> PruneResult in
             let cutoff = now.timeIntervalSince1970 - max(0, identityRetention)
             let deletionBudget = max(0, maximumDeletesPerPass)
+            let protectedAttempts = protectedAttemptIdentifiers
+                .filter { !$0.isEmpty }
+                .sorted()
+            let protectedPlaceholders = Array(
+                repeating: "?",
+                count: protectedAttempts.count
+            ).joined(separator: ",")
+            let protectedClause = protectedAttempts.isEmpty
+                ? ""
+                : " AND last_attempt_id NOT IN (\(protectedPlaceholders))"
+            let protectedBindings = protectedAttempts.map(Binding.text)
             var remainingDeletionBudget = deletionBudget
             var removedForAge = 0
             if remainingDeletionBudget > 0 {
@@ -838,11 +850,14 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
                           AND last_seen_unix < ?
                           AND last_attempt_id NOT IN
                               (SELECT id FROM history_attempt WHERE state = 0)
+                          \(protectedClause)
                         ORDER BY last_seen_unix ASC, strap_id ASC, frame ASC
                         LIMIT ?
                     )
                     """,
-                    bindings: [.double(cutoff), .int64(Int64(remainingDeletionBudget))]
+                    bindings: [.double(cutoff)]
+                        + protectedBindings
+                        + [.int64(Int64(remainingDeletionBudget))]
                 )
                 removedForAge = Int(sqlite3_changes(database))
                 remainingDeletionBudget -= removedForAge
@@ -860,11 +875,13 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
                         WHERE archive_durable = 1
                           AND last_attempt_id NOT IN
                               (SELECT id FROM history_attempt WHERE state = 0)
+                          \(protectedClause)
                         ORDER BY last_seen_unix ASC, strap_id ASC, frame ASC
                         LIMIT ?
                     )
                     """,
-                    bindings: [.int64(Int64(min(excess, remainingDeletionBudget)))]
+                    bindings: protectedBindings
+                        + [.int64(Int64(min(excess, remainingDeletionBudget)))]
                 )
                 removedForCount = Int(sqlite3_changes(database))
             }
@@ -876,7 +893,10 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
                 WHERE archive_durable = 1
                   AND last_attempt_id NOT IN
                       (SELECT id FROM history_attempt WHERE state = 0)
+                  \(protectedClause)
                 """
+                ,
+                bindings: protectedBindings
             )
             return PruneResult(
                 removedForAge: removedForAge,

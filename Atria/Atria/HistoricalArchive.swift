@@ -792,8 +792,14 @@ enum HistoricalArchive {
         guard build.aggregate.source.rawSHA256 == chunk.contentSHA256,
               build.aggregate.source.rawByteCount == chunk.byteCount,
               build.aggregate.source.rawRowCount == chunk.rowCount,
-              build.aggregate.source.firstTimestamp == chunk.firstTimestamp,
-              build.aggregate.source.lastTimestamp == chunk.lastTimestamp else {
+              catalogTimestampMatches(
+                raw: build.aggregate.source.firstTimestamp,
+                catalog: chunk.firstTimestamp
+              ),
+              catalogTimestampMatches(
+                raw: build.aggregate.source.lastTimestamp,
+                catalog: chunk.lastTimestamp
+              ) else {
             throw TerminalConsumerProjectionError.resumeChunkUnavailable
         }
         return .init(chunkID: job.chunkID,
@@ -831,8 +837,14 @@ enum HistoricalArchive {
         guard build.aggregate.source.rawSHA256 == sealed.contentSHA256,
               build.aggregate.source.rawByteCount == sealed.byteCount,
               build.aggregate.source.rawRowCount == sealed.rowCount,
-              build.aggregate.source.firstTimestamp == sealed.firstTimestamp,
-              build.aggregate.source.lastTimestamp == sealed.lastTimestamp else {
+              catalogTimestampMatches(
+                raw: build.aggregate.source.firstTimestamp,
+                catalog: sealed.firstTimestamp
+              ),
+              catalogTimestampMatches(
+                raw: build.aggregate.source.lastTimestamp,
+                catalog: sealed.lastTimestamp
+              ) else {
             throw TerminalConsumerProjectionError.resumeChunkUnavailable
         }
         return .init(chunkID: checkpoint.chunkID,
@@ -840,13 +852,34 @@ enum HistoricalArchive {
                      aggregateBuild: build)
     }
 
+    /// Catalog dates are persisted with Foundation's `.iso8601` strategy,
+    /// which serializes whole seconds. Raw WHOOP rows retain 1/32,768-second
+    /// precision. Digest, byte and row identities remain exact; timestamp
+    /// comparison at this persistence boundary must use the catalog's actual
+    /// representational precision.
+    static func catalogTimestampMatches(raw: Date, catalog: Date?) -> Bool {
+        guard let catalog else { return false }
+        return floor(raw.timeIntervalSince1970)
+            == floor(catalog.timeIntervalSince1970)
+    }
+
     static func verifiedMetricTimestamps(
         in seal: TerminalCatalogSealResult,
         start: Date,
-        end: Date
+        end: Date,
+        observedAfter: Date? = nil,
+        observedBefore: Date? = nil
     ) throws -> [TimeInterval] {
         guard end > start,
-              try AtriaHistoricalJSONLInput.identity(at: seal.sourceURL).sha256
+              (observedAfter == nil) == (observedBefore == nil) else {
+            throw TerminalConsumerProjectionError.resumeChunkUnavailable
+        }
+        if let observedAfter,
+           let observedBefore,
+           observedBefore < observedAfter {
+            throw TerminalConsumerProjectionError.resumeChunkUnavailable
+        }
+        guard try AtriaHistoricalJSONLInput.identity(at: seal.sourceURL).sha256
                 == seal.aggregateBuild.aggregate.source.rawSHA256,
               let descriptor = AtriaHistoricalJSONLRecentScanner
                 .descriptors(for: [seal.sourceURL]).first else {
@@ -858,6 +891,7 @@ enum HistoricalArchive {
             1_500_000
         ))
         let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
         let result = AtriaHistoricalJSONLRecentScanner.scan(
             sources: [.init(descriptor: descriptor, startOffset: 0)],
             cutoff: start.timeIntervalSince1970
@@ -868,12 +902,35 @@ enum HistoricalArchive {
                   let timestamp = AtriaHistoricalJSONLRecentScanner.timestamp(in: line),
                   timestamp >= start.timeIntervalSince1970,
                   timestamp < end.timeIntervalSince1970 else { return }
+            if let observedAfter, let observedBefore {
+                guard let envelope = try? decoder.decode(
+                    HistoricalObservationEnvelope.self,
+                    from: line
+                ),
+                      let observedAtUnix = envelope.observedAtUnix,
+                      observedAtUnix >= observedAfter.timeIntervalSince1970,
+                      observedAtUnix <= observedBefore.timeIntervalSince1970 else {
+                    return
+                }
+            }
             timestamps.append(timestamp)
         }
         guard result.complete else {
             throw TerminalConsumerProjectionError.resumeChunkUnavailable
         }
         return timestamps
+    }
+
+    /// The raw archive injects this exact observation timestamp alongside the
+    /// decoded record. It is deliberately separate from `capturedAt`: a frame
+    /// replayed from strap flash may retain its original capture timestamp but
+    /// must prove that this terminal attempt actually observed it.
+    private struct HistoricalObservationEnvelope: Decodable {
+        let observedAtUnix: TimeInterval?
+
+        enum CodingKeys: String, CodingKey {
+            case observedAtUnix = "_atriaHistoryObservedAtUnix"
+        }
     }
 
     /// Commits the already-sealed terminal aggregate, records a durable exact
@@ -1192,8 +1249,14 @@ enum HistoricalArchive {
               aggregate.source.rawSHA256 == chunk.contentSHA256,
               aggregate.source.rawByteCount == chunk.byteCount,
               aggregate.source.rawRowCount == chunk.rowCount,
-              aggregate.source.firstTimestamp == chunk.firstTimestamp,
-              aggregate.source.lastTimestamp == chunk.lastTimestamp,
+              catalogTimestampMatches(
+                raw: aggregate.source.firstTimestamp,
+                catalog: chunk.firstTimestamp
+              ),
+              catalogTimestampMatches(
+                raw: aggregate.source.lastTimestamp,
+                catalog: chunk.lastTimestamp
+              ),
               try AtriaHistoricalAggregateBuilder.verify(
                   sourceURL: sourceURL,
                   aggregate: aggregate,
@@ -1288,8 +1351,14 @@ enum HistoricalArchive {
               aggregate.source.rawSHA256 == chunk.contentSHA256,
               aggregate.source.rawByteCount == chunk.byteCount,
               aggregate.source.rawRowCount == chunk.rowCount,
-              aggregate.source.firstTimestamp == chunk.firstTimestamp,
-              aggregate.source.lastTimestamp == chunk.lastTimestamp,
+              catalogTimestampMatches(
+                raw: aggregate.source.firstTimestamp,
+                catalog: chunk.firstTimestamp
+              ),
+              catalogTimestampMatches(
+                raw: aggregate.source.lastTimestamp,
+                catalog: chunk.lastTimestamp
+              ),
               try AtriaHistoricalAggregateBuilder.verify(
                   sourceURL: sourceURL,
                   aggregate: aggregate,
@@ -1421,8 +1490,14 @@ enum HistoricalArchive {
               rawChunk.contentSHA256 == aggregate.source.rawSHA256,
               rawChunk.byteCount == aggregate.source.rawByteCount,
               rawChunk.rowCount == aggregate.source.rawRowCount,
-              rawChunk.firstTimestamp == aggregate.source.firstTimestamp,
-              rawChunk.lastTimestamp == aggregate.source.lastTimestamp else {
+              catalogTimestampMatches(
+                raw: aggregate.source.firstTimestamp,
+                catalog: rawChunk.firstTimestamp
+              ),
+              catalogTimestampMatches(
+                raw: aggregate.source.lastTimestamp,
+                catalog: rawChunk.lastTimestamp
+              ) else {
             throw HistoricalConsumerCutoverError.rawSourceUnavailable
         }
         let rawURL = archiveRoot.appendingPathComponent(rawChunk.relativePath)

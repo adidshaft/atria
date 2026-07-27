@@ -162,9 +162,7 @@ struct AtriaHistoricalRetentionTransaction {
             .appendingPathComponent(".\(aggregateFilename).\(nonce).tmp")
         let manifestTemporaryURL = request.manifestDirectoryURL
             .appendingPathComponent(".\(manifestFilename).\(nonce).tmp")
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let encoder = Self.canonicalEncoder()
         let aggregateData = try encoder.encode(request.aggregate)
         let aggregateDigest = Self.sha256(of: aggregateData)
 
@@ -339,24 +337,46 @@ struct AtriaHistoricalRetentionTransaction {
                                  expected: AtriaHistoricalAggregateChunk) throws -> Bool {
         guard try Self.sha256(of: url) == expectedDigest else { return false }
         let data = try Data(contentsOf: url)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        let decoder = Self.canonicalDecoder()
         let decoded = try decoder.decode(AtriaHistoricalAggregateChunk.self, from: data)
+        let persistedExpected = try decoder.decode(
+            AtriaHistoricalAggregateChunk.self,
+            from: Self.canonicalEncoder().encode(expected)
+        )
         try decoded.validateForCommit()
-        return decoded == expected
+        return decoded == persistedExpected
     }
 
     private func verifyManifest(at url: URL,
                                 expectedDigest: String?,
                                 expected: Manifest) throws -> Bool {
         if let expectedDigest, try Self.sha256(of: url) != expectedDigest { return false }
-        return try decodeManifest(at: url) == expected
+        let decoder = Self.canonicalDecoder()
+        let persistedExpected = try decoder.decode(
+            Manifest.self,
+            from: Self.canonicalEncoder().encode(expected)
+        )
+        return try decodeManifest(at: url) == persistedExpected
     }
 
     private func decodeManifest(at url: URL) throws -> Manifest {
+        try Self.canonicalDecoder().decode(
+            Manifest.self,
+            from: Data(contentsOf: url)
+        )
+    }
+
+    private static func canonicalEncoder() -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return encoder
+    }
+
+    private static func canonicalDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode(Manifest.self, from: Data(contentsOf: url))
+        return decoder
     }
 
     private func writeAndSynchronize(_ data: Data, to url: URL) throws {

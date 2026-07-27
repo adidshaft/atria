@@ -1636,6 +1636,40 @@ POSITIVE STILL REQUIRED**
   `evidence/2026-07-27-post-gym-final-candidate/postinstall-soak-runtime/`,
   and `/tmp/atria-postgym-focused-v2.xcresult`.
 
+#### 2026-07-27 — completed admission retention can deadlock terminal publication
+
+- **PHYSICAL evidence diagnosis:** full-drain attempt
+  `7a90876a-8ab8-4d9a-9e9e-374a2dc48d8e` durably receipted 18,805 frames
+  and reached `HISTORY_COMPLETE`, but its later admission database retained
+  only 18,615 attempt-owned frames. Exact receipt enumeration therefore
+  correctly failed closed and left publication at `rawSealed`.
+- **PHYSICAL archive observation:** immutable raw chunk
+  `faddb341-44bd-4950-b7bb-9c1fe108d042` still has an exact matching
+  generation/hash/size/row seal. Its target interval contains 134 usable rows,
+  covers 129/129 seconds, and every row proves an observation timestamp inside
+  that exact command-to-`HISTORY_COMPLETE` window.
+- **CODE correction (not yet physical acceptance):** retention now protects
+  any completed attempt owned by an unresolved terminal authority. Existing
+  affected installs may use the matching immutable seal as a recovery
+  authority only with exact seal identity and exact-attempt observation
+  bounds. Missing or ambiguous observation evidence remains rejected.
+- **CODE correction:** WHOOP `subsec11` coverage timestamps consistently use
+  the protocol's 32,768 Hz tick base, not milliseconds.
+- **PHYSICAL acceptance:** the corrected installed Release used the immutable
+  exact-attempt fallback, admitted 919 metric rows, and advanced the target gap
+  to `coverageProven`: 129/129 buckets, 100% density, 1-second maximum gap and
+  1-second p95 gap. This physically clears the Gate 2 exact-coverage threshold.
+- **PHYSICAL follow-up failure:** consumer publication then failed because the
+  retention transaction compared its ISO-8601 whole-second decode to the
+  pre-serialization subsecond object. Canonical verification now compares the
+  complete persisted representation while retaining exact digest/byte/row
+  checks. The subsecond regression and related projection suites pass.
+- Final consumer-store settlement remains pending an unlocked launch; iOS
+  rejected the relaunch while the phone was locked. Coverage proof is already
+  durable and will not be repeated or downgraded.
+- **Evidence:**
+  `evidence/2026-07-27-post-gym-final-candidate/terminal-retention-repair.md`.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.
