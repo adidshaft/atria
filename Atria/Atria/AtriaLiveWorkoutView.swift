@@ -3129,6 +3129,13 @@ private struct AtriaLiveWorkoutStrainGuidance: View {
         }
     }
 
+    /// The single condition under which strain and active calories can carry a
+    /// real number — the same one `strainHUDText`/`activeCaloriesHUDText` use
+    /// to fall back to "--", and the same one that gated the progress fill.
+    private var loadIsReadable: Bool {
+        metricProjection.hasSensorEvidence && metricProjection.loadIsComplete
+    }
+
     private var caloriesText: String {
         guard metricProjection.hasSensorEvidence else { return "--" }
         return metricProjection.activeCalories.map { "\(Int($0.rounded()))" } ?? "--"
@@ -3170,15 +3177,25 @@ private struct AtriaLiveWorkoutStrainGuidance: View {
                 .accessibilityLabel("Set workout target. Currently \(sourceText).")
             }
 
+            // Strain and calories are structurally incapable of a value until
+            // load is readable — strainHUDText and activeCaloriesHUDText both
+            // hard-return "--" on exactly this condition. Rendering them anyway
+            // restated "no data yet" twice more directly beneath a headline
+            // that already says it ("Waiting for strap · Strain and calories
+            // begin with continuous heart rate"). Steps keeps its own tile
+            // throughout: its availability is independent of heart rate, so
+            // "syncing" there is a real state, not a placeholder.
             HStack(spacing: 8) {
-                compactMetric(title: metricProjection.strainHUDTitle,
-                              value: metricProjection.strainHUDText,
-                              systemImage: "bolt.heart.fill",
-                              tint: metricProjection.coachingIsLive ? Metrics.electricStrain : .orange)
-                compactMetric(title: metricProjection.activeCaloriesHUDTitle,
-                              value: metricProjection.activeCaloriesHUDText,
-                              systemImage: "flame.fill",
-                              tint: metricProjection.coachingIsLive ? .pink : .orange)
+                if loadIsReadable {
+                    compactMetric(title: metricProjection.strainHUDTitle,
+                                  value: metricProjection.strainHUDText,
+                                  systemImage: "bolt.heart.fill",
+                                  tint: metricProjection.coachingIsLive ? Metrics.electricStrain : .orange)
+                    compactMetric(title: metricProjection.activeCaloriesHUDTitle,
+                                  value: metricProjection.activeCaloriesHUDText,
+                                  systemImage: "flame.fill",
+                                  tint: metricProjection.coachingIsLive ? .pink : .orange)
+                }
                 compactMetric(title: "Steps",
                               value: metricProjection.steps.hudText,
                               systemImage: "figure.walk",
@@ -3186,18 +3203,21 @@ private struct AtriaLiveWorkoutStrainGuidance: View {
                               accessibilityText: metricProjection.steps.accessibilityText)
             }
 
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.10))
-                    if metricProjection.hasSensorEvidence && metricProjection.loadIsComplete {
+            // The fill was already gated on this; the track was not, so an
+            // empty capsule sat there as a seventh way of saying the same
+            // thing. A progress bar with no progress is not information.
+            if loadIsReadable {
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(.white.opacity(0.10))
                         Capsule()
                             .fill((metricProjection.coachingIsLive ? Metrics.electricStrain : Color.orange).opacity(0.78))
                             .frame(width: max(10, max(proxy.size.width, 1) * progress))
                     }
                 }
+                .frame(height: 12)
+                .accessibilityHidden(true)
             }
-            .frame(height: 12)
-            .accessibilityHidden(true)
         }
         .padding(12)
         .atriaWorkoutContentSurface(cornerRadius: 20, tint: cueTint)
