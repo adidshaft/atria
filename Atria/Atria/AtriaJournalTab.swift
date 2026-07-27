@@ -417,27 +417,36 @@ private struct AtriaJournalTypedInsightsSection: View {
                                     subtitle: "From your typed answers")
 
             if insights.isEmpty {
-                // Locked treatment (2026-07-07 design handoff): dashed card,
-                // lock tile, explicit title -- same honest copy as before.
+                // Was a padlock captioned "Patterns are locked". Nothing is
+                // locked: there is no gate and nobody holds a key, the app
+                // simply has too few check-ins to claim a pattern. A padlock
+                // is the universal mark of pay-to-unlock, which is the one
+                // inference this app can least afford — its whole pitch is
+                // WHOOP insights without the subscription. It also broke the
+                // standing decision that "Learning" is the canonical
+                // not-ready word, used for exactly this state on Today, on
+                // Vitals and in the detail sheets. The dashed card stays; it
+                // reads as "not yet" without implying a paywall.
                 HStack(spacing: 10) {
-                    Image(systemName: "lock.fill")
+                    Image(systemName: "chart.line.uptrend.xyaxis")
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(.secondary)
                         .frame(width: 34, height: 34)
                         .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Patterns are locked")
+                        Text("Patterns are learning")
                             .font(.subheadline.weight(.bold))
-                        Text("About 2–3 weeks of answers")
+                        Text("Keep checking in — patterns need about 2–3 weeks of answers before they mean anything.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 0)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(12)
                 .overlay {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
                         .stroke(.quaternary, style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
                 }
             } else {
