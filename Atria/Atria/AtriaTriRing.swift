@@ -30,6 +30,13 @@ struct AtriaTriRingMetric: Equatable {
     /// chip then renders title + detail only (dedup audit 2026-07-07: the
     /// big center numeral repeated verbatim in its own legend chip).
     var suppressesValue: Bool = false
+    /// True when the ring center's caption already says exactly what this
+    /// chip's detail would say. `suppressesValue` deduped the numeral but not
+    /// the line under it, so a learning hero rendered "Learning / Save sleep
+    /// to score" in 44pt type with "Recovery / Save sleep to score" repeating
+    /// it 40pt below (dedup audit 2026-07-27). The chip keeps its title,
+    /// which is what makes it a usable ring selector.
+    var suppressesDetail: Bool = false
 }
 
 /// Pure ring math shared by Today and Overview. Actual strain owns the arc;
@@ -590,7 +597,9 @@ struct AtriaTriRing: View, Equatable {
                     // word ("Strain / Learning / Learning"), which read as a
                     // rendering fault rather than a state. One statement of a
                     // state is the whole design-handoff rule.
-                    if metric.detail != metric.title, metric.detail != metric.value {
+                    if metric.detail != metric.title,
+                       metric.detail != metric.value,
+                       !metric.suppressesDetail {
                         Text(metric.detail)
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
@@ -614,7 +623,9 @@ struct AtriaTriRing: View, Equatable {
         .buttonStyle(.plain)
         // Mirror the visual de-duplication above so VoiceOver does not read
         // "Strain Learning, Learning" either.
-        .accessibilityLabel(metric.detail == metric.title || metric.detail == metric.value
+        .accessibilityLabel(metric.detail == metric.title
+                            || metric.detail == metric.value
+                            || metric.suppressesDetail
                             ? "\(metric.title) \(metric.value)"
                             : "\(metric.title) \(metric.value), \(metric.detail)")
     }
