@@ -1062,6 +1062,12 @@ struct AtriaActivityMonitorTab: View {
                         }
                 }
                 .chartXScale(domain: dayStart...dayEnd)
+                // Four hours makes adjacent activities readable instead of
+                // compressing a whole physiological day into one tiny strip.
+                // The remaining day stays available via native horizontal
+                // scrolling; full-screen inspection also supports pinch zoom.
+                .chartScrollableAxes(.horizontal)
+                .chartXVisibleDomain(length: 4 * 60 * 60)
                 .chartYAxis(.hidden)
                 .chartXAxis {
                     AxisMarks(values: axisTicks.map(\.date)) { value in
@@ -1100,7 +1106,8 @@ struct AtriaActivityMonitorTab: View {
                       start: span.start,
                       end: span.end,
                       tint: span.tint)
-            }, domain: dayStart...dayEnd)
+            }, domain: dayStart...dayEnd),
+            preferredVisibleDuration: 4 * 60 * 60
         ))
     }
 
@@ -1260,16 +1267,14 @@ struct AtriaActivityMonitorTab: View {
     /// Strain magnitude is not a proxy for whether HR exists. A short or gentle
     /// workout can legitimately have strain below 0.1 while still containing
     /// hundreds of samples. Only the recorded sample metadata may declare the
-    /// signal absent; sparse windows keep their explicit partial-HR qualifier.
+    /// signal absent; sparse windows keep their explicit incomplete qualifier.
     static func strainBadge(for workout: UserConfirmedWorkout) -> String {
         guard workout.samples > 0, workout.avgHR > 0 else { return "No HR data" }
         if AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout) {
             return AtriaWorkoutMetricPresentation.compactStatus(workout)
         }
         guard let strain = workout.strain else { return "\(workout.avgHR) bpm avg" }
-        return workout.streamCoveragePercent < 75
-            ? "Strain \(String(format: "%.1f", strain)) \u{00b7} partial HR"
-            : "Strain \(String(format: "%.1f", strain))"
+        return "Strain \(String(format: "%.1f", strain))"
     }
 
     private func activityRow(icon: String,
@@ -1826,10 +1831,9 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                     }
 
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                        if let strain = workout.strain {
+                        if workout.strain != nil {
                             statTile("Strain",
-                                     AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout)
-                                         ? "Incomplete" : String(format: "%.1f", strain),
+                                     AtriaWorkoutMetricPresentation.strainText(workout),
                                      tint: Metrics.electricStrain)
                         }
                         statTile("Duration", durationText(workout.duration), tint: Metrics.electricStrain)
@@ -1844,10 +1848,9 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                                      AtriaWorkoutMetricPresentation.peakHeartRateText(workout),
                                      tint: .red)
                         }
-                        if let calories = workout.activeEnergyKilocalories {
+                        if workout.activeEnergyKilocalories != nil {
                             statTile("Calories",
-                                     AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout)
-                                         ? "Incomplete" : "\(Int(calories.rounded()))",
+                                     AtriaWorkoutMetricPresentation.energyText(workout),
                                      tint: .orange)
                         }
                     }

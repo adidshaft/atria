@@ -181,6 +181,7 @@ struct AtriaPanelSectionHeader: View, Equatable {
                 Text(subtitle)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

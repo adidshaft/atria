@@ -1466,7 +1466,7 @@ enum AtriaAnalytics {
             guard restingSamples >= PersonalBaseline.trustedMinimumSamples else {
                 return learning(detail: "\(restingSamples)/\(PersonalBaseline.trustedMinimumSamples) RHR",
                                 narrative: "Atria needs a trusted resting baseline before estimating VO2max.",
-                                trendDetail: "\(restingSamples)/\(PersonalBaseline.trustedMinimumSamples) RHR nights.")
+                                trendDetail: "\(restingSamples)/\(PersonalBaseline.trustedMinimumSamples) RHR days.")
             }
             guard maxHRMeasured else {
                 return learning(detail: "Need HRmax",

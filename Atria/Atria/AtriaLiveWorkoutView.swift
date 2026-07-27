@@ -1920,64 +1920,168 @@ enum AtriaWorkoutTargetMath {
     }
 }
 
-/// Route geometry changes at most once per location publication, while the
-/// parent workout HUD refreshes for heart rate and timers. This Equatable leaf
-/// prevents rebuilding and remapping the entire polyline on every pulse tick.
-private struct AtriaLiveWorkoutRouteMap: View, Equatable {
-    let segments: [[CLLocationCoordinate2D]]
-    @State private var cameraPosition: MapCameraPosition = .userLocation(
-        followsHeading: false,
-        fallback: .automatic
-    )
+/// Builds a non-interactive map image asynchronously. A cold SwiftUI `Map`
+/// physically blocked the Start path, while `MKMapSnapshotter` keeps map work
+/// outside the latency-sensitive presentation transaction.
+@MainActor
+private final class AtriaLiveWorkoutMapSnapshotStore: ObservableObject {
+    @Published private(set) var image: UIImage?
 
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        guard lhs.segments.count == rhs.segments.count,
-              lhs.segments.reduce(0, { $0 + $1.count })
-                == rhs.segments.reduce(0, { $0 + $1.count }) else { return false }
-        guard let lhsLast = lhs.segments.last?.last,
-              let rhsLast = rhs.segments.last?.last else {
-            return lhs.segments.isEmpty && rhs.segments.isEmpty
+    func refresh(segments: [[CLLocationCoordinate2D]],
+                 size: CGSize = CGSize(width: 780, height: 1_120)) async {
+        let coordinates = segments.flatMap { $0 }
+        let options = MKMapSnapshotter.Options()
+        // A route fix can legitimately take tens of seconds indoors. Render a
+        // real neutral world map immediately instead of leaving a black
+        // placeholder that looks broken, then recenter when coordinates land.
+        options.region = Self.region(for: coordinates) ?? Self.locatingRegion
+        options.size = size
+        options.scale = 3
+        options.mapType = .mutedStandard
+        options.traitCollection = UITraitCollection(userInterfaceStyle: .dark)
+        do {
+            let snapshot = try await MKMapSnapshotter(options: options).start()
+            guard !Task.isCancelled else { return }
+            image = Self.render(snapshot: snapshot, segments: segments)
+        } catch {
+            guard !Task.isCancelled else { return }
+            image = nil
         }
-        return lhsLast.latitude == rhsLast.latitude && lhsLast.longitude == rhsLast.longitude
     }
 
-    var body: some View {
-        Map(position: $cameraPosition) {
-            ForEach(Array(segments.enumerated()), id: \.offset) { _, coordinates in
-                MapPolyline(coordinates: coordinates)
-                    .stroke(.cyan,
-                            style: StrokeStyle(lineWidth: 5,
-                                               lineCap: .round,
-                                               lineJoin: .round))
-            }
-            UserAnnotation()
+    nonisolated static func region(
+        for coordinates: [CLLocationCoordinate2D]
+    ) -> MKCoordinateRegion? {
+        guard let first = coordinates.first,
+              CLLocationCoordinate2DIsValid(first) else { return nil }
+        var minimumLatitude = first.latitude
+        var maximumLatitude = first.latitude
+        var minimumLongitude = first.longitude
+        var maximumLongitude = first.longitude
+        for coordinate in coordinates.dropFirst()
+            where CLLocationCoordinate2DIsValid(coordinate) {
+            minimumLatitude = min(minimumLatitude, coordinate.latitude)
+            maximumLatitude = max(maximumLatitude, coordinate.latitude)
+            minimumLongitude = min(minimumLongitude, coordinate.longitude)
+            maximumLongitude = max(maximumLongitude, coordinate.longitude)
         }
-        .mapStyle(.standard(pointsOfInterest: .excludingAll))
-        .allowsHitTesting(false)
+        let latitudeDelta = max(0.003,
+                                (maximumLatitude - minimumLatitude) * 1.65)
+        let longitudeDelta = max(0.003,
+                                 (maximumLongitude - minimumLongitude) * 1.65)
+        return MKCoordinateRegion(
+            center: .init(
+                latitude: (minimumLatitude + maximumLatitude) / 2,
+                longitude: (minimumLongitude + maximumLongitude) / 2
+            ),
+            span: .init(latitudeDelta: min(latitudeDelta, 120),
+                        longitudeDelta: min(longitudeDelta, 120))
+        )
+    }
+
+    nonisolated private static let locatingRegion = MKCoordinateRegion(
+        center: CLLocationCoordinate2D(latitude: 20, longitude: 10),
+        span: MKCoordinateSpan(latitudeDelta: 115, longitudeDelta: 155)
+    )
+
+    private static func render(
+        snapshot: MKMapSnapshotter.Snapshot,
+        segments: [[CLLocationCoordinate2D]]
+    ) -> UIImage {
+        let renderer = UIGraphicsImageRenderer(size: snapshot.image.size)
+        return renderer.image { context in
+            snapshot.image.draw(at: .zero)
+            let graphics = context.cgContext
+            graphics.setLineCap(.round)
+            graphics.setLineJoin(.round)
+            graphics.setStrokeColor(UIColor.systemCyan.cgColor)
+            graphics.setLineWidth(7)
+            graphics.setShadow(offset: .zero,
+                               blur: 5,
+                               color: UIColor.black.withAlphaComponent(0.6).cgColor)
+            for segment in segments where segment.count >= 2 {
+                let path = UIBezierPath()
+                path.move(to: snapshot.point(for: segment[0]))
+                for coordinate in segment.dropFirst() {
+                    path.addLine(to: snapshot.point(for: coordinate))
+                }
+                path.stroke()
+            }
+            graphics.setShadow(offset: .zero, blur: 0)
+            if let start = segments.first?.first {
+                marker(at: snapshot.point(for: start),
+                       color: .systemGreen,
+                       in: graphics)
+            }
+            if let end = segments.last?.last {
+                marker(at: snapshot.point(for: end),
+                       color: .systemCyan,
+                       in: graphics)
+            }
+        }
+    }
+
+    private static func marker(
+        at point: CGPoint,
+        color: UIColor,
+        in context: CGContext
+    ) {
+        let rect = CGRect(x: point.x - 8, y: point.y - 8,
+                          width: 16, height: 16)
+        context.setFillColor(color.cgColor)
+        context.setStrokeColor(UIColor.white.cgColor)
+        context.setLineWidth(3)
+        context.fillEllipse(in: rect)
+        context.strokeEllipse(in: rect)
     }
 }
 
-/// The sole observer of route snapshots. GPS updates redraw this map-first
-/// leaf without re-evaluating the full live-workout hierarchy.
+/// The sole observer of route snapshots. It renders a throttled asynchronous
+/// snapshot rather than constructing a live SwiftUI Map during Start.
 private struct AtriaLiveWorkoutRouteCard: View {
     @ObservedObject var routeRecorder: AtriaWorkoutRouteRecorder
+    @StateObject private var mapSnapshotStore =
+        AtriaLiveWorkoutMapSnapshotStore()
 
     var body: some View {
         let route = routeRecorder.snapshot
-        ZStack(alignment: .topLeading) {
-            AtriaLiveWorkoutRouteMap(segments: route.previewSegments)
-                .equatable()
-
+        ZStack {
+            Color.black
+                .overlay {
+                    if let image = mapSnapshotStore.image {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .transition(.opacity)
+                    } else {
+                        LinearGradient(colors: [.black, Color.cyan.opacity(0.12), .black],
+                                       startPoint: .topLeading,
+                                       endPoint: .bottomTrailing)
+                    }
+                }
+                .clipped()
             routeStatus(route)
                 .padding(.horizontal, 16)
                 .padding(.top, 70)
                 .safeAreaPadding(.top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+        .allowsHitTesting(false)
+        .task(id: mapSnapshotRevision(route)) {
+            await mapSnapshotStore.refresh(segments: route.previewSegments)
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(route.pointCount >= 2
                             ? "Workout route, \(distanceText(route.distanceMeters)), pace \(paceText(distance: route.distanceMeters, movingDuration: routeRecorder.movingDuration()))."
                             : (route.lastError ?? "Finding your current route"))
+    }
+
+    private func mapSnapshotRevision(
+        _ route: AtriaWorkoutRouteRecorder.Snapshot
+    ) -> Int {
+        guard route.pointCount > 0 else { return 0 }
+        return 1 + route.pointCount / 5
     }
 
     @ViewBuilder
@@ -2037,6 +2141,8 @@ private struct AtriaLiveWorkoutRouteCard: View {
 /// existing live stores (no new pipeline); the strap is already recording.
 struct AtriaLiveWorkoutView: View {
     let pulseStore: AtriaHomeModel.PulseLiveStore
+    let statusStore: AtriaHomeModel.StatusStore
+    let coreLiveStore: AtriaHomeModel.CoreLiveStore
     /// Rapid metric publications are observed only by the two small metric
     /// hosts below. Keeping this reference plain prevents strain, calorie and
     /// step changes from invalidating workout controls, sheets and set logging.
@@ -2120,6 +2226,7 @@ struct AtriaLiveWorkoutView: View {
     /// the two safety-critical controls remain pinned above the bottom inset.
     private var routeWorkoutContent: some View {
         ZStack {
+            Color.black.ignoresSafeArea()
             AtriaLiveWorkoutRouteCard(routeRecorder: routeRecorder)
                 .ignoresSafeArea()
 
@@ -2135,6 +2242,7 @@ struct AtriaLiveWorkoutView: View {
                 Spacer(minLength: 24)
                 AtriaLiveWorkoutRouteMetricsHost(metricStore: metricStore,
                                                  pulseStore: pulseStore,
+                                                 coreLiveStore: coreLiveStore,
                                                  maxHR: maxHR,
                                                  lowerTargetZone: lowerTargetZone,
                                                  upperTargetZone: upperTargetZone,
@@ -2160,6 +2268,7 @@ struct AtriaLiveWorkoutView: View {
                         header
                         AtriaLiveWorkoutMotionStatusHost(metricStore: metricStore)
                         AtriaLiveWorkoutHeartBlock(pulseStore: pulseStore,
+                                                   coreLiveStore: coreLiveStore,
                                                    maxHR: maxHR,
                                                    lowerTargetZone: lowerTargetZone,
                                                    upperTargetZone: upperTargetZone)
@@ -2798,6 +2907,7 @@ private struct AtriaLiveWorkoutMotionStatus: View {
 private struct AtriaLiveWorkoutRouteMetricsHost: View {
     @ObservedObject var metricStore: AtriaLiveWorkoutMetricStore
     let pulseStore: AtriaHomeModel.PulseLiveStore
+    let coreLiveStore: AtriaHomeModel.CoreLiveStore
     let maxHR: Int
     let lowerTargetZone: Int?
     let upperTargetZone: Int?
@@ -2805,6 +2915,7 @@ private struct AtriaLiveWorkoutRouteMetricsHost: View {
 
     var body: some View {
         AtriaLiveWorkoutRouteMetricsHUD(pulseStore: pulseStore,
+                                        coreLiveStore: coreLiveStore,
                                         metricProjection: metricStore.state,
                                         maxHR: maxHR,
                                         lowerTargetZone: lowerTargetZone,
@@ -2815,6 +2926,7 @@ private struct AtriaLiveWorkoutRouteMetricsHost: View {
 
 private struct AtriaLiveWorkoutRouteMetricsHUD: View {
     @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
+    @ObservedObject var coreLiveStore: AtriaHomeModel.CoreLiveStore
     let metricProjection: AtriaLiveWorkoutMetricProjection
     let maxHR: Int
     let lowerTargetZone: Int?
@@ -2885,6 +2997,8 @@ private struct AtriaLiveWorkoutRouteMetricsHUD: View {
                 .accessibilityLabel(targetRangeText.map { "Heart rate zone \(zone.rawValue), target \($0)" }
                                     ?? "Heart rate zone \(zone.rawValue)")
 
+                AtriaLiveWorkoutBatteryBadge(coreLiveStore: coreLiveStore)
+
                 Button(action: onEditTarget) {
                     Image(systemName: "scope")
                         .font(.subheadline.weight(.black))
@@ -2954,6 +3068,7 @@ private struct AtriaLiveWorkoutRouteMetricsHUD: View {
 
 private struct AtriaLiveWorkoutHeartBlock: View {
     @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
+    @ObservedObject var coreLiveStore: AtriaHomeModel.CoreLiveStore
     let maxHR: Int
     let lowerTargetZone: Int?
     let upperTargetZone: Int?
@@ -2994,6 +3109,8 @@ private struct AtriaLiveWorkoutHeartBlock: View {
                 .layoutPriority(3)
 
                 Spacer(minLength: 6)
+
+                AtriaLiveWorkoutBatteryBadge(coreLiveStore: coreLiveStore)
 
                 Text(zone.rawValue == 0 ? "Below Z1" : "Z\(zone.rawValue) · \(zone.name)")
                     .font(.caption.weight(.black))
@@ -3055,6 +3172,37 @@ private struct AtriaLiveWorkoutHeartBlock: View {
         return "\(lower)-\(upper)"
     }
 
+}
+
+/// Workout chrome keeps battery state available without repeating the large
+/// dashboard status pill. Motion freshness immediately above the metrics is the
+/// authoritative recording indicator; this badge is intentionally battery-only.
+private struct AtriaLiveWorkoutBatteryBadge: View {
+    @ObservedObject var coreLiveStore: AtriaHomeModel.CoreLiveStore
+
+    var body: some View {
+        let state = coreLiveStore.state
+        HStack(spacing: 4) {
+            Image(systemName: "battery.100percent")
+            if state.batteryShowsPowered {
+                Image(systemName: "bolt.fill")
+                    .foregroundStyle(.yellow)
+            }
+            Text(state.batteryLevel >= 0 ? "\(state.batteryLevel)%" : "--")
+                .monospacedDigit()
+        }
+        .font(.caption2.weight(.black))
+        .foregroundStyle(.white.opacity(0.82))
+        .padding(.horizontal, 8)
+        .frame(minHeight: 28)
+        .background(.black.opacity(0.32), in: Capsule())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            state.batteryLevel >= 0
+                ? "Strap battery \(state.batteryLevel) percent\(state.batteryShowsPowered ? ", charging" : "")"
+                : "Strap battery unavailable"
+        )
+    }
 }
 
 private struct AtriaLiveWorkoutStrainGuidanceHost: View {

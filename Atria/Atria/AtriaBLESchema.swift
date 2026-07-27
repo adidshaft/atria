@@ -118,20 +118,11 @@ extension AtriaBLEManager {
         static let accessibilityLabel = "atria.strapStream.accessibilityLabel"
     }
 
-    /// Callback-stage breadcrumbs for locked reconnect forensics. These are
-    /// deliberately tiny scalars so recording the final CoreBluetooth callback
-    /// execution slice never depends on the MainActor or app log collection.
-    /// Locked-reconnect lease forensics. State-restoration relaunches carry
-    /// no debug launch arguments, so these tiny scalars are the only record
-    /// of which lease stage actually executed before suspension.
+    /// Callback-stage breadcrumbs for locked reconnect forensics.
+    /// State-restoration relaunches carry no debug launch arguments, so the
+    /// rolling trail records every lease stage executed before suspension.
     enum ReconnectLeaseDefaults {
-        static let stage = "atria.reconnectLease.stage"
-        static let at = "atria.reconnectLease.at"
-        static let detail = "atria.reconnectLease.detail"
-        /// Rolling newline-separated `unix|stage|detail` tail. A single
-        /// latest-stage key proved insufficient: one locked recovery writes
-        /// several stages in one runtime slice and the last overwrite hid
-        /// which repair disposition actually executed.
+        /// Rolling newline-separated `unix|stage|detail` tail.
         static let trail = "atria.reconnectLease.trail"
     }
 
@@ -371,10 +362,6 @@ extension AtriaBLEManager {
         static let lastSilence = "atria.keepalive.lastSilence"
         static let tickStartedAt = "atria.keepalive.tickStartedAt"
         static let lastTickAt = "atria.keepalive.lastTickAt"
-        static let timerStartedAt = "atria.keepalive.timerStartedAt"
-        static let timerFiredAt = "atria.keepalive.timerFiredAt"
-        static let dispatchTimerStartedAt = "atria.keepalive.dispatchTimerStartedAt"
-        static let dispatchTimerFiredAt = "atria.keepalive.dispatchTimerFiredAt"
         static let lastPeripheralState = "atria.keepalive.lastPeripheralState"
         static let lastRawNotifications = "atria.keepalive.lastRawNotifications"
         static let lastRawNotificationDelta = "atria.keepalive.lastRawNotificationDelta"
@@ -433,7 +420,33 @@ extension AtriaBLEManager {
         static let getDataRange: UInt8 = 0x22
         static let sendR10R11Realtime: UInt8 = 0x3F
         static let runHapticsPattern: UInt8 = 0x4F
+        static let startRawData: UInt8 = 0x51
+        static let stopRawData: UInt8 = 0x52
+        static let toggleIMUModeHistorical: UInt8 = 0x69
         static let toggleIMUMode: UInt8 = 0x6A
+        /// Observed normal GEN4 compact-HR/IMU sequence. This intentionally
+        /// excludes the Labs raw-capture command (0x51) and the separate raw
+        /// flood switch (0x3F).
+        static let officialGen4CompactMotionBodies: [[UInt8]] = [
+            [toggleRealtimeHR, 0x01],
+            [toggleIMUMode, 0x01],
+            [abortHistoricalTransmits, 0x00],
+        ]
+        /// START_RAW_DATA takes a u32 little-endian duration in milliseconds,
+        /// not a boolean. Six hours bounds long workouts; STOP_RAW_DATA still
+        /// closes the stream on ordinary workout release.
+        static let workoutRawCaptureDurationMilliseconds: UInt32 = 6 * 60 * 60 * 1_000
+
+        static func rawCaptureDurationPayload(
+            milliseconds: UInt32 = workoutRawCaptureDurationMilliseconds
+        ) -> [UInt8] {
+            [
+                UInt8(milliseconds & 0xFF),
+                UInt8((milliseconds >> 8) & 0xFF),
+                UInt8((milliseconds >> 16) & 0xFF),
+                UInt8((milliseconds >> 24) & 0xFF),
+            ]
+        }
         static let stopHaptics: UInt8 = 0x7A
         static let enterHighFreqSync: UInt8 = 0x60
         static let exitHighFreqSync: UInt8 = 0x61

@@ -153,6 +153,11 @@ enum AtriaHistoricalGapLedger {
         let remainingWindows: Int
     }
 
+    struct VerifiedHistoryResetRetirement: Equatable {
+        let retiredWindows: Int
+        let remainingWindows: Int
+    }
+
     /// Immutable selection evidence used to bind one closed local gap to one
     /// full-flash transport attempt. The digest describes the exact ledger
     /// snapshot from which the gap was selected; it is not strap range proof.
@@ -301,6 +306,32 @@ enum AtriaHistoricalGapLedger {
         }
         current.append(Window(start: start, reason: reason))
         return persist(current, defaults: defaults)
+    }
+
+    /// A physically verified strap-history reset makes every gap that began
+    /// before that reset permanently unavailable from this strap. Retire only
+    /// those recovery candidates; metric archives, sessions, workouts, pairing,
+    /// and gaps beginning after the reset are untouched. A corrupt ledger or a
+    /// failed fsync returns nil and preserves the prior state.
+    @discardableResult
+    static func retireWindowsBeforeVerifiedStrapHistoryReset(
+        completedAt: Date,
+        defaults: UserDefaults = .standard
+    ) -> VerifiedHistoryResetRetirement? {
+        guard completedAt.timeIntervalSince1970.isFinite else { return nil }
+        storeLock.lock(); defer { storeLock.unlock() }
+        guard let current = validWindowsForMutation(defaults: defaults) else {
+            return nil
+        }
+        let retained = current.filter { $0.start >= completedAt }
+        let retired = current.count - retained.count
+        if retired > 0, !persist(retained, defaults: defaults) {
+            return nil
+        }
+        return VerifiedHistoryResetRetirement(
+            retiredWindows: retired,
+            remainingWindows: retained.count
+        )
     }
 
     /// Closes the newest open interval on the first accepted post-reconnect HR.
@@ -975,6 +1006,30 @@ enum AtriaHistoricalGapLedger {
                                  reason: reason,
                                  minimumDuration: minimumDuration,
                                  defaults: defaults)
+    }
+
+    /// Opens the process-restoration interval synchronously from the last
+    /// independently-fsynced accepted pulse. CoreBluetooth may relaunch a
+    /// locked app while the strap is still out of range, then deliver the
+    /// returning pulse only after asynchronous session restoration has filled
+    /// `lastAcceptedHRAt`. Opening here prevents that in-memory restore race
+    /// from erasing the actual radio outage. The first accepted pulse closes
+    /// the interval through the ordinary gap path; short relaunches are
+    /// discarded there and no coverage is invented here.
+    @discardableResult
+    static func beginRestorationGapFromDurableAnchorIfNeeded(
+        restorationAt timestamp: Date,
+        reason: String,
+        maximumAnchorAge: TimeInterval = maximumRecoverableAnchorAge,
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        storeLock.lock(); defer { storeLock.unlock() }
+        guard let anchor = liveContinuityAnchor(defaults: defaults, now: timestamp) else {
+            return false
+        }
+        let age = timestamp.timeIntervalSince(anchor)
+        guard age >= 0, age <= maximumAnchorAge else { return false }
+        return beginGap(at: anchor, reason: reason, defaults: defaults)
     }
 
     static func clearLiveContinuityAnchor(defaults: UserDefaults = .standard) {

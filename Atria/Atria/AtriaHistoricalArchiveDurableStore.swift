@@ -22,6 +22,11 @@ final class AtriaHistoricalArchiveDurableStore {
     /// fsyncs remain unchanged; a missing/stale snapshot simply rebuilds at
     /// next launch.
     static let productionDerivedSnapshotFlushInterval: UInt64 = 512
+    /// A canonical index above this size is never materialized on the
+    /// CoreBluetooth cold-wake path. Its exact rows remain authoritative on
+    /// disk while the SQLite accelerator answers bounded lookups. A missing
+    /// accelerator entry is deliberately accepted as a new canonical row.
+    static let productionMaximumEagerIdentityIndexBytes: UInt64 = 8 * 1024 * 1024
 
     struct FrameIdentity: Hashable, Sendable {
         let strapIdentifier: String
@@ -287,6 +292,8 @@ final class AtriaHistoricalArchiveDurableStore {
     private let identityRetention: TimeInterval
     private let maximumReceiptBatchIdentities: Int
     private let now: () -> Date
+    private let liveIdentityLookup: AtriaHistoricalLiveIdentityLookup?
+    private var fullyMaterializedIdentityIndex = false
     private var statesByKey: [String: KeyState] = [:]
     private var registeredArchivePaths = Set<String>()
     private var openBatches: [UUID: DrainBatch] = [:]
@@ -302,6 +309,8 @@ final class AtriaHistoricalArchiveDurableStore {
          fileSynchronizer: ((URL) throws -> Void)? = nil,
          receiptFileSynchronizer: ((URL) throws -> Void)? = nil,
          maximumReceiptBatchIdentities: Int = AtriaHistoricalArchiveDurableStore.productionMaximumReceiptBatchIdentities,
+         maximumEagerIdentityIndexBytes: UInt64 =
+            AtriaHistoricalArchiveDurableStore.productionMaximumEagerIdentityIndexBytes,
          onStartupRawArchiveRebuild: (() -> Void)? = nil) throws {
         precondition(maximumReceiptBatchIdentities > 0)
         self.indexURL = indexURL.standardizedFileURL
@@ -320,19 +329,48 @@ final class AtriaHistoricalArchiveDurableStore {
         self.lastPruneAtUnix = now().timeIntervalSince1970
         self.encoder = JSONEncoder()
         self.encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        self.liveIdentityLookup = Self.openLiveIdentityLookup(
+            beside: self.indexURL,
+            fileManager: fileManager
+        )
 
         let canonicalArchiveURLs = Array(Set(existingArchiveURLs.map(\.standardizedFileURL)))
             .sorted { $0.path < $1.path }
         for archiveURL in canonicalArchiveURLs {
             let canonical = archiveURL.standardizedFileURL
             registeredArchivePaths.insert(canonical.path)
+            if fileManager.fileExists(atPath: canonical.path) {
+                // This is a bounded tail read (at most 64 KiB chunks), not an
+                // archive scan. It must precede every accelerator path so a
+                // power-loss fragment cannot survive startup and poison the
+                // next append.
+                _ = try Self.repairTornJSONLTail(at: canonical)
+            }
         }
 
         let cutoff = now().timeIntervalSince1970 - max(0, identityRetention)
+        let existingIndexBytes = ((try? fileManager.attributesOfItem(
+            atPath: self.indexURL.path
+        )[.size]) as? NSNumber)?.uint64Value ?? 0
+        let lookupCount = (try? liveIdentityLookup?.count()) ?? 0
+        let shouldUseBoundedColdLookup =
+            liveIdentityLookup != nil
+            && existingIndexBytes > maximumEagerIdentityIndexBytes
         let discoveredFromSnapshot: Bool
-        if try loadValidatedDerivedIndex(archiveURLs: canonicalArchiveURLs,
-                                         cutoff: cutoff) {
+        if shouldUseBoundedColdLookup {
             discoveredFromSnapshot = true
+            fullyMaterializedIdentityIndex = false
+            AtriaDebugLog(
+                "ATRIADBG historical_identity_index status=bounded_lookup_ready canonical_bytes=%llu lookup_entries=%d action=no_eager_jsonl_materialization",
+                existingIndexBytes,
+                lookupCount
+            )
+        } else if try loadValidatedDerivedIndex(
+            archiveURLs: canonicalArchiveURLs,
+            cutoff: cutoff
+        ) {
+            discoveredFromSnapshot = true
+            fullyMaterializedIdentityIndex = true
             AtriaDebugLog("ATRIADBG historical_identity_index status=reused entries=%d archives=%d",
                           statesByKey.count,
                           canonicalArchiveURLs.count)
@@ -352,6 +390,7 @@ final class AtriaHistoricalArchiveDurableStore {
             }
             let discovered = rebuilt.filter { $0.value.observedAtUnix >= cutoff }
             discoveredFromSnapshot = false
+            fullyMaterializedIdentityIndex = true
             try rebuildDerivedIndex(with: Array(discovered.values))
             persistDerivedIndexSnapshotBestEffort()
             AtriaDebugLog("ATRIADBG historical_identity_index status=rebuilt entries=%d archives=%d",
@@ -373,7 +412,15 @@ final class AtriaHistoricalArchiveDurableStore {
         // durability-unknown. If the strap replays it, that drain batch must
         // synchronize both the archive and index before it can report a durable
         // duplicate eligible for ACK.
-        assert(discoveredFromSnapshot || statesByKey.values.allSatisfy(\.rawVerified))
+        assert(
+            discoveredFromSnapshot
+                || statesByKey.values.allSatisfy(\.rawVerified)
+        )
+        if fullyMaterializedIdentityIndex {
+            populateLiveIdentityLookupBestEffort(
+                entries: statesByKey.values.map(\.entry)
+            )
+        }
         try loadAndVerifyReceiptState()
     }
 
@@ -406,6 +453,7 @@ final class AtriaHistoricalArchiveDurableStore {
             try appendIndex(state.entry)
             state.indexed = true
             statesByKey[key] = state
+            upsertLiveIdentityLookupBestEffort(state.entry)
         }
         if !state.durable {
             batch.dirtyURLs.insert(URL(fileURLWithPath: state.entry.archivePath).standardizedFileURL)
@@ -437,6 +485,7 @@ final class AtriaHistoricalArchiveDurableStore {
                     try appendIndex(existing.entry)
                     existing.indexed = true
                     statesByKey[key] = existing
+                    upsertLiveIdentityLookupBestEffort(existing.entry)
                 }
                 batch.dirtyURLs.insert(indexURL)
             }
@@ -485,6 +534,7 @@ final class AtriaHistoricalArchiveDurableStore {
             try appendIndex(entry)
             statesByKey[key]?.indexed = true
             batch.dirtyURLs.insert(indexURL)
+            upsertLiveIdentityLookupBestEffort(entry)
         } catch {
             // The archive line is already complete and discoverable. Preserve
             // its pending state so a retry can rebuild and flush the index.
@@ -515,6 +565,7 @@ final class AtriaHistoricalArchiveDurableStore {
             state.indexed = true
             statesByKey[key] = state
             batch.dirtyURLs.insert(indexURL)
+            upsertLiveIdentityLookupBestEffort(state.entry)
         }
 
         let dirtyArchiveURLs = batch.dirtyURLs
@@ -611,7 +662,8 @@ final class AtriaHistoricalArchiveDurableStore {
         // This snapshot is strictly an acceleration cache. Keep its O(total
         // index size) rebuild out of almost every page ACK; the receipt above
         // is already the restart-safe durability authority.
-        if Self.shouldRefreshDerivedSnapshot(
+        if fullyMaterializedIdentityIndex,
+           Self.shouldRefreshDerivedSnapshot(
             durableSequence: nextSequence,
             interval: Self.productionDerivedSnapshotFlushInterval
         ) {
@@ -658,6 +710,9 @@ final class AtriaHistoricalArchiveDurableStore {
 
     private func pruneExpiredIdentitiesLocked(now pruningDate: Date) throws -> Int {
         let cutoff = pruningDate.timeIntervalSince1970 - max(0, identityRetention)
+        let lookupRemoved = (try? liveIdentityLookup?.prune(
+            observedBefore: Date(timeIntervalSince1970: cutoff)
+        )) ?? 0
         let protectedKeys = openBatches.values.reduce(into: Set<String>()) {
             $0.formUnion($1.keys)
         }
@@ -668,6 +723,12 @@ final class AtriaHistoricalArchiveDurableStore {
             return key
         }
         lastPruneAtUnix = pruningDate.timeIntervalSince1970
+        guard fullyMaterializedIdentityIndex else {
+            for key in expired {
+                statesByKey.removeValue(forKey: key)
+            }
+            return max(lookupRemoved, expired.count)
+        }
         guard !expired.isEmpty else { return 0 }
         var retained = statesByKey
         for key in expired { retained.removeValue(forKey: key) }
@@ -750,8 +811,12 @@ final class AtriaHistoricalArchiveDurableStore {
                                                        from: Data(contentsOf: indexSnapshotURL)),
               snapshot.version == 1,
               snapshot.indexSHA256.count == 64,
+              let portableSnapshot = Self.portableSnapshot(
+                  snapshot,
+                  currentArchives: currentArchives
+              ),
               let addedArchives = Self.appendOnlyArchiveDelta(
-                  snapshot: snapshot.archives,
+                  snapshot: portableSnapshot.snapshot.archives,
                   current: currentArchives
               )
         else {
@@ -765,30 +830,42 @@ final class AtriaHistoricalArchiveDurableStore {
         let decoded = try decodedIndexEntriesAndDigest(
             prefixByteCount: snapshot.indexByteCount
         ) { entry in
-            guard entry.version == 2,
-                  entry.observedAtUnix.isFinite else {
+            let currentArchivePath = portableSnapshot.pathMap[entry.archivePath]
+                ?? entry.archivePath
+            let currentEntry = IndexEntry(
+                version: entry.version,
+                key: entry.key,
+                observedAtUnix: entry.observedAtUnix,
+                archivePath: currentArchivePath,
+                lineOffset: entry.lineOffset,
+                lineLength: entry.lineLength,
+                lineCRC32: entry.lineCRC32
+            )
+            guard currentEntry.version == 2,
+                  currentEntry.observedAtUnix.isFinite else {
                 return false
             }
             // Retention expiry is not cache corruption. Omitting an expired
             // replay identity is fail-safe (a later replay is accepted and
             // durably appended); rebuilding hundreds of megabytes at each
             // moving cutoff is not.
-            guard entry.observedAtUnix >= cutoff else { return true }
-            let lineEnd = entry.lineOffset.addingReportingOverflow(
-                UInt64(max(0, entry.lineLength))
+            guard currentEntry.observedAtUnix >= cutoff else { return true }
+            let lineEnd = currentEntry.lineOffset.addingReportingOverflow(
+                UInt64(max(0, currentEntry.lineLength))
             )
             // Duplicate/out-of-horizon entries, unregistered paths and
             // impossible offsets all invalidate the shortcut. Raw CRC and
             // payload equality are checked lazily before replay rejection.
-            guard self.registeredArchivePaths.contains(entry.archivePath),
-                  self.statesByKey[entry.key] == nil,
-                  entry.lineLength > 0,
+            guard self.registeredArchivePaths.contains(currentEntry.archivePath),
+                  self.statesByKey[currentEntry.key] == nil,
+                  currentEntry.lineLength > 0,
                   !lineEnd.overflow,
-                  lineEnd.partialValue <= (archiveSizes[entry.archivePath] ?? 0) else {
+                  lineEnd.partialValue
+                    <= (archiveSizes[currentEntry.archivePath] ?? 0) else {
                 return false
             }
-            self.statesByKey[entry.key] = KeyState(
-                entry: entry,
+            self.statesByKey[currentEntry.key] = KeyState(
+                entry: currentEntry,
                 indexed: true,
                 durable: false,
                 rawVerified: false
@@ -823,12 +900,113 @@ final class AtriaHistoricalArchiveDurableStore {
         if recoveredRawBeforeIndex {
             try rebuildDerivedIndex(with: statesByKey.values.map(\.entry))
         }
-        if !addedArchives.isEmpty || recoveredRawBeforeIndex {
+        if portableSnapshot.wasRelocated
+            || !addedArchives.isEmpty
+            || recoveredRawBeforeIndex {
             // Adopt the new path set once so subsequent launches do not repeat
-            // even the bounded delta scan.
+            // even the bounded delta scan. A relocated app data container is
+            // also adopted here so its old absolute UUID never forces a later
+            // full raw-archive rebuild.
             persistDerivedIndexSnapshotBestEffort()
         }
         return true
+    }
+
+    private struct PortableSnapshot {
+        let snapshot: DerivedIndexSnapshot
+        let pathMap: [String: String]
+        let wasRelocated: Bool
+    }
+
+    /// App upgrades normally retain the data-container UUID, but an iOS
+    /// restore or a preserve-data reinstall may assign a new absolute
+    /// `/Containers/Data/Application/<UUID>` prefix while keeping every
+    /// Documents-relative archive byte intact. Absolute paths in the derived
+    /// snapshot must not turn that harmless relocation into a several-hundred
+    /// megabyte cold rebuild that iOS suspends as soon as the phone locks.
+    ///
+    /// This remains fail-closed for replay rejection:
+    /// - every prior path must map uniquely by its Documents-relative suffix;
+    /// - the current raw file must contain at least the snapshotted byte range;
+    /// - the index prefix still has to match its SHA-256 exactly; and
+    /// - a cached identity is lazily checked against the rebased raw row's
+    ///   length, CRC and full exact key before it can reject a strap replay.
+    ///
+    /// If any fact is ambiguous, return nil and retain the existing raw rebuild
+    /// fallback.
+    private static func portableSnapshot(
+        _ snapshot: DerivedIndexSnapshot,
+        currentArchives: [ArchiveFingerprint]
+    ) -> PortableSnapshot? {
+        let currentByPath = Dictionary(
+            uniqueKeysWithValues: currentArchives.map { ($0.path, $0) }
+        )
+        if snapshot.archives.allSatisfy({ currentByPath[$0.path] != nil }) {
+            return PortableSnapshot(
+                snapshot: snapshot,
+                pathMap: Dictionary(
+                    uniqueKeysWithValues: snapshot.archives.map {
+                        ($0.path, $0.path)
+                    }
+                ),
+                wasRelocated: false
+            )
+        }
+
+        let groupedCurrent = Dictionary(grouping: currentArchives) {
+            portableArchiveSuffix(path: $0.path)
+        }
+        var rebased: [ArchiveFingerprint] = []
+        var pathMap: [String: String] = [:]
+        rebased.reserveCapacity(snapshot.archives.count)
+        pathMap.reserveCapacity(snapshot.archives.count)
+
+        for prior in snapshot.archives {
+            guard let suffix = portableArchiveSuffix(path: prior.path),
+                  let matches = groupedCurrent[suffix],
+                  matches.count == 1,
+                  let latest = matches.first,
+                  latest.exists == prior.exists,
+                  (!prior.exists || latest.size >= prior.size) else {
+                return nil
+            }
+            pathMap[prior.path] = latest.path
+            // The old inode cannot survive a copied container. Adopt the
+            // current file identity while retaining the old byte boundary.
+            // Exact raw-row verification below is what authorizes dedupe.
+            rebased.append(
+                ArchiveFingerprint(
+                    path: latest.path,
+                    exists: prior.exists,
+                    volume: latest.volume,
+                    inode: latest.inode,
+                    size: prior.size,
+                    modificationMilliseconds: min(
+                        prior.modificationMilliseconds,
+                        latest.modificationMilliseconds
+                    )
+                )
+            )
+        }
+
+        return PortableSnapshot(
+            snapshot: DerivedIndexSnapshot(
+                version: snapshot.version,
+                archives: rebased.sorted { $0.path < $1.path },
+                indexByteCount: snapshot.indexByteCount,
+                indexSHA256: snapshot.indexSHA256
+            ),
+            pathMap: pathMap,
+            wasRelocated: pathMap.contains { $0.key != $0.value }
+        )
+    }
+
+    private static func portableArchiveSuffix(path: String) -> String? {
+        let marker = "/Documents/"
+        guard let range = path.range(of: marker, options: .backwards) else {
+            return nil
+        }
+        return "Documents/" + path[range.upperBound...]
     }
 
     private func decodedIndexEntriesAndDigest(
@@ -1095,14 +1273,144 @@ final class AtriaHistoricalArchiveDurableStore {
         return added.sorted { $0.path < $1.path }
     }
 
+    private static func openLiveIdentityLookup(
+        beside indexURL: URL,
+        fileManager: FileManager
+    ) -> AtriaHistoricalLiveIdentityLookup? {
+        let databaseURL = indexURL.deletingPathExtension()
+            .appendingPathExtension("lookup-v1.sqlite")
+        do {
+            return try AtriaHistoricalLiveIdentityLookup(databaseURL: databaseURL)
+        } catch {
+            // This database is explicitly a rebuildable accelerator. A corrupt
+            // SQLite/WAL trio must not force a 100+ MB canonical JSONL scan
+            // during a locked CoreBluetooth wake. Raw archive rows, the exact
+            // JSONL index and durability receipts remain untouched.
+            for suffix in ["", "-wal", "-shm"] {
+                try? fileManager.removeItem(
+                    atPath: databaseURL.path + suffix
+                )
+            }
+            do {
+                let lookup = try AtriaHistoricalLiveIdentityLookup(
+                    databaseURL: databaseURL
+                )
+                AtriaDebugLog(
+                    "ATRIADBG historical_identity_lookup status=recreated_after_derived_corruption action=canonical_rows_untouched"
+                )
+                return lookup
+            } catch {
+                AtriaDebugLog(
+                    "ATRIADBG historical_identity_lookup status=unavailable error=%@ action=fall_back_fail_closed",
+                    String(describing: error)
+                )
+                return nil
+            }
+        }
+    }
+
+    private func upsertLiveIdentityLookupBestEffort(_ entry: IndexEntry) {
+        guard let liveIdentityLookup else { return }
+        do {
+            try liveIdentityLookup.upsert(
+                AtriaHistoricalLiveIdentityLookup.Entry(
+                    stableKey: entry.key,
+                    observedAtUnix: entry.observedAtUnix,
+                    archivePath: entry.archivePath,
+                    lineOffset: entry.lineOffset,
+                    lineLength: entry.lineLength,
+                    lineCRC32: entry.lineCRC32
+                )
+            )
+        } catch {
+            // The canonical row and identity JSONL retain sole durability
+            // authority. A failed accelerator hint is always a safe miss.
+            AtriaDebugLog(
+                "ATRIADBG historical_identity_lookup status=upsert_deferred error=%@ action=canonical_receipt_unchanged",
+                String(describing: error)
+            )
+        }
+    }
+
+    private func populateLiveIdentityLookupBestEffort(entries: [IndexEntry]) {
+        guard let liveIdentityLookup, !entries.isEmpty else { return }
+        let maximum = AtriaHistoricalLiveIdentityLookup
+            .productionMaximumBatchEntries
+        var start = 0
+        while start < entries.count {
+            let end = min(entries.count, start + maximum)
+            let batch = entries[start..<end].map {
+                AtriaHistoricalLiveIdentityLookup.Entry(
+                    stableKey: $0.key,
+                    observedAtUnix: $0.observedAtUnix,
+                    archivePath: $0.archivePath,
+                    lineOffset: $0.lineOffset,
+                    lineLength: $0.lineLength,
+                    lineCRC32: $0.lineCRC32
+                )
+            }
+            do {
+                try liveIdentityLookup.upsert(Array(batch))
+            } catch {
+                AtriaDebugLog(
+                    "ATRIADBG historical_identity_lookup status=bootstrap_deferred imported=%d total=%d error=%@ action=canonical_rows_untouched",
+                    start,
+                    entries.count,
+                    String(describing: error)
+                )
+                return
+            }
+            start = end
+        }
+    }
+
+    private func currentArchivePath(for candidatePath: String) -> String? {
+        let canonical = URL(fileURLWithPath: candidatePath)
+            .standardizedFileURL.path
+        if registeredArchivePaths.contains(canonical) { return canonical }
+        guard let suffix = Self.portableArchiveSuffix(path: canonical) else {
+            return nil
+        }
+        let matches = registeredArchivePaths.filter {
+            Self.portableArchiveSuffix(path: $0) == suffix
+        }
+        guard matches.count == 1 else { return nil }
+        return matches.first
+    }
+
     /// Returns only a state whose exact decorated raw row still matches the
     /// cached full-payload identity. Invalid cache entries are removed so the
     /// caller appends a real replay instead of falsely rejecting it.
     private func rawVerifiedState(forKey key: String) -> KeyState? {
-        guard var state = statesByKey[key] else { return nil }
+        var state = statesByKey[key]
+        if state == nil,
+           let liveIdentityLookup,
+           let candidate = try? liveIdentityLookup.lookup(stableKey: key),
+           candidate.observedAtUnix
+                >= now().timeIntervalSince1970 - max(0, identityRetention),
+           let archivePath = currentArchivePath(
+                for: candidate.archivePath
+           ) {
+            state = KeyState(
+                entry: IndexEntry(
+                    version: 2,
+                    key: candidate.stableKey,
+                    observedAtUnix: candidate.observedAtUnix,
+                    archivePath: archivePath,
+                    lineOffset: candidate.lineOffset,
+                    lineLength: candidate.lineLength,
+                    lineCRC32: candidate.lineCRC32
+                ),
+                indexed: true,
+                durable: false,
+                rawVerified: false
+            )
+        }
+        guard var state else { return nil }
         if state.rawVerified { return state }
         guard (try? indexEntryMatchesRawArchive(state.entry)) == true else {
             statesByKey.removeValue(forKey: key)
+            _ = try? liveIdentityLookup?.delete(stableKey: key)
             return nil
         }
         state.rawVerified = true

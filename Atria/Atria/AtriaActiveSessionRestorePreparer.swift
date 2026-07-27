@@ -19,6 +19,10 @@ enum AtriaActiveSessionRestorePreparer {
         /// RESEARCH-ONLY gyro-cadence shadow steps for the live session.
         /// Validation evidence only — never feeds a user-facing count.
         let gyroCadenceResearchSteps: Int
+        /// Distinguishes a legacy journal with no gyro field from a validated
+        /// zero-step gyro observation. Collapsing both to integer zero caused
+        /// restored sessions to falsely publish `r10_live_validated`.
+        let hasGyroCadenceResearchEvidence: Bool
 
         init(sensorProbeFrames: Int,
              spo2CandidateFrames: Int,
@@ -29,7 +33,8 @@ enum AtriaActiveSessionRestorePreparer {
              strapRawSteps: Int = 0,
              strapDeviceTimestamp: UInt32? = nil,
              strapStepState: String? = nil,
-             gyroCadenceResearchSteps: Int = 0) {
+             gyroCadenceResearchSteps: Int = 0,
+             hasGyroCadenceResearchEvidence: Bool = false) {
             self.sensorProbeFrames = sensorProbeFrames
             self.spo2CandidateFrames = spo2CandidateFrames
             self.skinTempCandidateFrames = skinTempCandidateFrames
@@ -40,6 +45,7 @@ enum AtriaActiveSessionRestorePreparer {
             self.strapDeviceTimestamp = strapDeviceTimestamp
             self.strapStepState = strapStepState
             self.gyroCadenceResearchSteps = gyroCadenceResearchSteps
+            self.hasGyroCadenceResearchEvidence = hasGyroCadenceResearchEvidence
         }
 
         static let zero = ResearchAggregates(sensorProbeFrames: 0,
@@ -155,7 +161,9 @@ enum AtriaActiveSessionRestorePreparer {
                                   strapDeviceTimestamp: record.strapStepResearchDeviceTimestamp
                                       .flatMap { $0 > 0 ? $0 : nil },
                                   strapStepState: strap.state,
-                                  gyroCadenceResearchSteps: gyroCadenceResearchSteps)
+                                  gyroCadenceResearchSteps: gyroCadenceResearchSteps,
+                                  hasGyroCadenceResearchEvidence:
+                                      record.gyroCadenceResearchSteps != nil)
     }
 
     static func prepare(

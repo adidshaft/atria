@@ -280,6 +280,29 @@ enum DailyRecoveryResolver {
                         physiologicalCycle: AtriaPhysiologicalCycle,
                         anchorSleep: SleepHistorySnapshot.Night? = nil,
                         calendar: Calendar = .current) -> FrozenRecoverySummary? {
+        if physiologicalCycle.boundaryKind == .initialFallback
+            || physiologicalCycle.boundaryKind == .noSleepFallback {
+            guard anchorSleep == nil,
+                  let rollup = rollups.first(where: {
+                      calendar.isDate($0.day, inSameDayAs: physiologicalCycle.start)
+                          && $0.recovery != nil
+                  }),
+                  let metric = metrics.first(where: {
+                      calendar.isDate($0.day, inSameDayAs: physiologicalCycle.start)
+                          && $0.recoveryPercent == rollup.recovery
+                  }),
+                  let summary = rollup.resolvedRecoverySummary(matching: metric,
+                                                               calendar: calendar),
+                  limitedFallbackSummaryIsAuthoritative(
+                      summary,
+                      metric: metric,
+                      physiologicalCycle: physiologicalCycle,
+                      calendar: calendar
+                  ) else {
+                return nil
+            }
+            return summary
+        }
         guard physiologicalCycle.boundaryKind == .mainSleep else { return nil }
         guard let rollup = rollups.first(where: {
             calendar.isDate($0.day, inSameDayAs: physiologicalCycle.start)
@@ -305,6 +328,76 @@ enum DailyRecoveryResolver {
             }
         }
         return rollup.resolvedRecoverySummary(matching: metric, calendar: calendar)
+    }
+
+    /// Initial wear and a later no-sleep rollover have no current confirmed wake
+    /// boundary, but production still mints one explicitly limited RHR-only
+    /// score for the fallback day. Once persisted, that score must be the
+    /// authority everywhere; recomputing from a later live RHR otherwise lets
+    /// Home/widget disagree with history.
+    ///
+    /// This deliberately admits only the exact recovery-v2 no-sleep/no-HRV
+    /// structure. Historical scores, sleep-bearing rows, HRV-bearing rows,
+    /// stronger confidence tiers, and a different fallback day all fail closed.
+    private static func limitedFallbackSummaryIsAuthoritative(
+        _ summary: FrozenRecoverySummary,
+        metric: SavedDailyMetric,
+        physiologicalCycle: AtriaPhysiologicalCycle,
+        calendar: Calendar
+    ) -> Bool {
+        guard physiologicalCycle.boundaryKind == .initialFallback
+                || physiologicalCycle.boundaryKind == .noSleepFallback,
+              calendar.isDate(metric.day, inSameDayAs: physiologicalCycle.start),
+              summary.scoredDay.map({
+                  calendar.isDate($0, inSameDayAs: physiologicalCycle.start)
+              }) == true else {
+            return false
+        }
+        return limitedFallbackMetricIsStructurallyAuthoritative(
+            metric,
+            summary: summary,
+            day: physiologicalCycle.start,
+            calendar: calendar
+        )
+    }
+
+    /// A persisted day-one/no-sleep score must not be reminted from a later
+    /// live RHR during an ordinary history refresh. This structural check is
+    /// shared with the merge path so the durable authority cannot briefly win
+    /// at launch and then drift after the next asynchronous rollup rebuild.
+    static func limitedFallbackMetricIsStructurallyAuthoritative(
+        _ metric: SavedDailyMetric,
+        summary: FrozenRecoverySummary? = nil,
+        day: Date,
+        calendar: Calendar = .current
+    ) -> Bool {
+        guard calendar.isDate(metric.day, inSameDayAs: day),
+              let summary = summary ?? metric.recoverySummary,
+              summary.scoredDay.map({
+                  calendar.isDate($0, inSameDayAs: day)
+              }) == true,
+              summary.source == FrozenRecoverySummary.recoveryV2Source,
+              summary.model == "recovery_v2",
+              summary.confidence == Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
+              !summary.usesHRV,
+              metric.recoveryPercent == summary.score,
+              metric.recoveryConfidence == Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
+              metric.hrv == nil,
+              metric.sleepDuration == nil,
+              metric.sleepSpan == nil,
+              metric.sleepStart == nil,
+              metric.sleepEnd == nil,
+              metric.sleepSource == nil,
+              metric.restingHR.map({ $0 > 0 }) == true else {
+            return false
+        }
+
+        let sleep = summary.contributors.first { $0.kind == "sleep" }
+        let hrv = summary.contributors.first { $0.kind == "hrv" }
+        let resting = summary.contributors.first { $0.kind == "restingHeartRate" }
+        return sleep?.weight == 0
+            && hrv?.weight == 0
+            && resting.map { ($0.weight ?? 0) > 0 } == true
     }
 
     /// One source of truth for non-interactive consumers such as widgets and

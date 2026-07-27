@@ -109,4 +109,103 @@ final class AtriaWorkoutReviewCacheTests: XCTestCase {
         XCTAssertEqual(SessionStore.freshWorkoutReviewCandidate(boundary, now: now), boundary)
         XCTAssertNil(SessionStore.freshWorkoutReviewCandidate(stale, now: now))
     }
+
+    func testUnsettledStrongestCandidateCannotHideOlderSettledEffort() {
+        let unsettled = candidate(endingAt: now.addingTimeInterval(-2 * 60))
+        let settled = WorkoutReviewCandidate(
+            id: "older-settled",
+            start: now.addingTimeInterval(-35 * 60),
+            end: now.addingTimeInterval(-15 * 60),
+            kind: .activityCandidate,
+            confidence: .medium,
+            duration: 20 * 60,
+            avgHR: 126,
+            peakHR: 145,
+            streamCoveragePercent: 98,
+            observedDuration: 19 * 60,
+            droppedGapSeconds: 0,
+            maxSampleGap: 1,
+            gapCount: 0,
+            reason: "ready"
+        )
+
+        XCTAssertEqual(
+            SessionStore.preferredFreshWorkoutReviewCandidate(
+                primary: unsettled,
+                candidates: [unsettled, settled],
+                now: now
+            ),
+            settled
+        )
+    }
+
+    func testFreshActiveJournalReplacesOlderCanonicalCheckpointForWorkoutReview() {
+        let id = UUID()
+        let start = now.addingTimeInterval(-20 * 60)
+        let canonical = SavedSession(
+            id: id,
+            start: start,
+            end: start.addingTimeInterval(10 * 60),
+            label: "Canonical checkpoint",
+            points: [
+                SavedSession.Point(t: 0, bpm: 120),
+                SavedSession.Point(t: 10 * 60, bpm: 130)
+            ]
+        )
+        let journal = SavedSession(
+            id: id,
+            start: start,
+            end: now,
+            label: "Active journal",
+            points: [
+                SavedSession.Point(t: 0, bpm: 120),
+                SavedSession.Point(t: 10 * 60, bpm: 130),
+                SavedSession.Point(t: 20 * 60, bpm: 135)
+            ]
+        )
+
+        let source = SessionStore.workoutReviewSourceSessions(
+            canonicalSessions: [canonical],
+            activeJournalSession: journal
+        )
+
+        XCTAssertEqual(source.count, 1)
+        XCTAssertEqual(source.first?.id, id)
+        XCTAssertEqual(source.first?.points.count, 3)
+        XCTAssertEqual(source.first?.end, now)
+    }
+
+    func testWorkoutReviewCacheIsWiredToPersistedJournalAndLiveRevision() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(
+            contentsOf: testsDirectory.deletingLastPathComponent()
+                .appendingPathComponent("Atria/Sessions.swift"),
+            encoding: .utf8
+        )
+        let keyStart = try XCTUnwrap(source.range(of: "private func workoutReviewKey("))
+        let keyBody = String(source[keyStart.lowerBound...].prefix(900))
+        XCTAssertTrue(keyBody.contains(
+            "canonicalSessionsRevision: canonicalSessionsRevision"
+        ))
+        XCTAssertFalse(keyBody.contains(
+            "canonicalSessionsRevision: reviewEvidenceRevision"
+        ))
+
+        let refreshStart = try XCTUnwrap(source.range(
+            of: "private func scheduleWorkoutReviewCacheRefresh("
+        ))
+        let refreshBody = String(source[refreshStart.lowerBound...].prefix(6_500))
+        XCTAssertTrue(refreshBody.contains(
+            "Self.loadActiveJournalSessionIfFresh(now: now)"
+        ))
+        XCTAssertTrue(refreshBody.contains("Self.workoutReviewSourceSessions("))
+        XCTAssertTrue(refreshBody.contains("source: \"stale_\\(source)\""))
+
+        let journalStart = try XCTUnwrap(source.range(
+            of: "private func handleActiveJournalSleepReviewIdentity("
+        ))
+        let journalBody = String(source[journalStart.lowerBound...].prefix(1_400))
+        XCTAssertTrue(journalBody.contains("invalidateWorkoutReviewCache()"))
+        XCTAssertTrue(journalBody.contains("dashboardRevision &+= 1"))
+    }
 }

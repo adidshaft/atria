@@ -507,11 +507,11 @@ extension AtriaBLEManager {
             || (linkConnected && !explicitUserRequest && !verifiedAutomaticHandoff)
     }
 
-    /// Admits one journal-checkpointed fresh-owner handoff only after the live
-    /// connection, exact gap request, metric decoder and cooldown are all
-    /// independently proven. The caller must use the same disconnect/reconnect
-    /// transaction as an explicit sync; this never writes history on the live
-    /// realtime owner.
+    /// Admits one journal-checkpointed owner handoff only after the connected
+    /// realtime stream has already gone stale. Fresh accepted HR is evidence
+    /// that the live owner is healthy, not permission to preempt it. The exact
+    /// gap remains durable while live capture continues and may be serviced by
+    /// this path only after the stream stalls, or by an explicit user request.
     nonisolated static func shouldAttemptAutomaticConnectedHistoricalHandoff(
         linkConnected: Bool,
         exactGapPending: Bool,
@@ -545,14 +545,28 @@ extension AtriaBLEManager {
         let acceptedAge = now.timeIntervalSince(lastAcceptedHRAt)
         let requestAge = now.timeIntervalSince(requestedAt)
         guard connectionAge >= stableConnectionInterval,
-              acceptedAge >= 0,
-              acceptedAge <= acceptedFreshnessWindow,
+              acceptedAge > acceptedFreshnessWindow,
               requestAge >= minimumGapAge else { return false }
         if let lastAttemptAt {
             let attemptAge = now.timeIntervalSince(lastAttemptAt)
             guard attemptAge >= attemptCooldown else { return false }
         }
         return true
+    }
+
+    /// The connected-handoff admission above already enforces its own retry
+    /// cooldown. Reapplying the ordinary range-loss retry interval in the
+    /// transport request creates a contradictory second gate (observed as a
+    /// five-minute eligible handoff immediately rejected by a ten-minute
+    /// throttle). Both checks must use the same interval.
+    nonisolated static func historicalAttemptMinimumInterval(
+        automaticConnectedHandoff: Bool,
+        ordinaryInterval: TimeInterval,
+        connectedHandoffInterval: TimeInterval
+    ) -> TimeInterval {
+        automaticConnectedHandoff
+            ? connectedHandoffInterval
+            : ordinaryInterval
     }
 
     /// The production bootstrap must stay byte-for-byte aligned with the only

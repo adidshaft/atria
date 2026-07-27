@@ -17,7 +17,10 @@ struct AtriaTrendChartCard: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var metric: AtriaTrendMetric = .restingHR
-    @State private var range: AtriaTrendRange = .month
+    // The first value people need after opening a metric is today’s measured
+    // context. Week/month remain one tap away; starting on a month average
+    // obscures an important daily change.
+    @State private var range: AtriaTrendRange = .day
     @State private var prepared = AtriaTrendPreparedSeries.empty
     // Tap-to-expand + drag-to-scrub (docs/24 §14 UI direction): the compact
     // card opens a large inspection sheet; both share native chartXSelection.

@@ -190,17 +190,61 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
         XCTAssertTrue(app.contains("delay: .zero"))
     }
 
+    func testNoSleepFallbackReleasesWidgetFenceFromCurrentRecoveryAuthority() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
+        let sessions = try String(
+            contentsOf: appDirectory.appendingPathComponent("Sessions.swift"),
+            encoding: .utf8
+        )
+        let requestStart = try XCTUnwrap(
+            sessions.range(of: "private func requestDeferredLaunchCardSettlement(")
+        )
+        let requestBody = String(sessions[requestStart.lowerBound...].prefix(10_000))
+        let requiredRefresh = try XCTUnwrap(
+            requestBody.range(of: "requestRequiredHistorySnapshotRefresh(")
+        )
+        let fallback = try XCTUnwrap(
+            requestBody.range(of: "physiologicalCycle.boundaryKind != .mainSleep")
+        )
+        let resolver = try XCTUnwrap(
+            requestBody.range(
+                of: "DailyRecoveryResolver.summary(",
+                range: fallback.upperBound..<requestBody.endIndex
+            )
+        )
+        let release = try XCTUnwrap(
+            requestBody.range(
+                of: "deferredLaunchCardSettlementPending = false",
+                range: resolver.upperBound..<requestBody.endIndex
+            )
+        )
+        XCTAssertTrue(fallback.lowerBound < resolver.lowerBound)
+        XCTAssertTrue(resolver.lowerBound < release.lowerBound)
+        XCTAssertTrue(release.lowerBound < requiredRefresh.lowerBound,
+                      "a current strict fallback must not wait behind the history worker")
+        XCTAssertTrue(requestBody.contains("_fallback_recovery"))
+    }
+
     func testWidgetPersistenceWaitsForBothSessionLoadAndCardSettlement() {
         XCTAssertFalse(WidgetSnapshotPublisher.shouldPersistSnapshot(
             hasLoadedSavedSessions: false,
+            hasLoadedRecoveryHistory: true,
             deferredLaunchCardSettlementPending: false
         ))
         XCTAssertFalse(WidgetSnapshotPublisher.shouldPersistSnapshot(
             hasLoadedSavedSessions: true,
+            hasLoadedRecoveryHistory: false,
+            deferredLaunchCardSettlementPending: false
+        ), "a provisional live Recovery must not replace persisted authority")
+        XCTAssertFalse(WidgetSnapshotPublisher.shouldPersistSnapshot(
+            hasLoadedSavedSessions: true,
+            hasLoadedRecoveryHistory: true,
             deferredLaunchCardSettlementPending: true
         ), "the sessions-landed UI revision must not persist stale grey cards")
         XCTAssertTrue(WidgetSnapshotPublisher.shouldPersistSnapshot(
             hasLoadedSavedSessions: true,
+            hasLoadedRecoveryHistory: true,
             deferredLaunchCardSettlementPending: false
         ))
     }

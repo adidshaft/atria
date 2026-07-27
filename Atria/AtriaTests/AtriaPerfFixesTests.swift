@@ -733,6 +733,51 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertFalse(learning.hasEvidence)
     }
 
+    func testPresentationRestingHeartRateUsesCurrentCycleAuthority() {
+        XCTAssertEqual(SessionStore.presentationRestingHeartRate(
+            sleepRestingHeartRate: 52,
+            metricRestingHeartRate: 73,
+            rollupRestingHeartRate: 72,
+            liveRestingHeartRate: 71,
+            savedWearRestingHeartRate: 70
+        ), 52)
+        XCTAssertEqual(SessionStore.presentationRestingHeartRate(
+            sleepRestingHeartRate: nil,
+            metricRestingHeartRate: 73,
+            rollupRestingHeartRate: 72,
+            liveRestingHeartRate: 71,
+            savedWearRestingHeartRate: 70
+        ), 73)
+        XCTAssertEqual(SessionStore.presentationRestingHeartRate(
+            sleepRestingHeartRate: nil,
+            metricRestingHeartRate: nil,
+            rollupRestingHeartRate: 72,
+            liveRestingHeartRate: 71,
+            savedWearRestingHeartRate: 70
+        ), 72)
+        XCTAssertEqual(SessionStore.presentationRestingHeartRate(
+            sleepRestingHeartRate: nil,
+            metricRestingHeartRate: nil,
+            rollupRestingHeartRate: nil,
+            liveRestingHeartRate: 71,
+            savedWearRestingHeartRate: 70
+        ), 71)
+        XCTAssertEqual(SessionStore.presentationRestingHeartRate(
+            sleepRestingHeartRate: 0,
+            metricRestingHeartRate: nil,
+            rollupRestingHeartRate: nil,
+            liveRestingHeartRate: nil,
+            savedWearRestingHeartRate: 70
+        ), 70)
+        XCTAssertNil(SessionStore.presentationRestingHeartRate(
+            sleepRestingHeartRate: nil,
+            metricRestingHeartRate: 0,
+            rollupRestingHeartRate: nil,
+            liveRestingHeartRate: nil,
+            savedWearRestingHeartRate: nil
+        ))
+    }
+
     func testHealthMonitorUsesTheCurrentPhysiologicalCycleRecoveryEstimate() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceURL = testsDirectory

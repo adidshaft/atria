@@ -89,6 +89,11 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
                                      sleepDetail: "Review sleep",
                                      steps: 1_000,
                                      stepsCapturedAt: Date(timeIntervalSince1970: 990),
+                                     stepsSource: "verifiedCanonical",
+                                     stepsCompleteness: "partial",
+                                     stepsCoverageFraction: 0.75,
+                                     stepsCycleStart: Date(timeIntervalSince1970: 500),
+                                     stepsCycleExpiresAt: Date(timeIntervalSince1970: 86_900),
                                      dailyStepGoal: 8_000,
                                      heartRate: 72,
                                      heartRateCapturedAt: Date(timeIntervalSince1970: 995),
@@ -114,6 +119,9 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             steps: 1_120,
             stepsAreEstimated: true,
             stepsCapturedAt: Date(timeIntervalSince1970: 1_998),
+            stepsSource: "verifiedCanonical",
+            stepsCompleteness: "partial",
+            stepsCoverageFraction: 0.8,
             strain: 6.8,
             batteryLevel: 43,
             batteryCapturedAt: Date(timeIntervalSince1970: 1_900),
@@ -131,6 +139,11 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertEqual(patched.steps, 1_120)
         XCTAssertEqual(patched.stepsAreEstimated, true)
         XCTAssertEqual(patched.stepsCapturedAt, Date(timeIntervalSince1970: 1_998))
+        XCTAssertEqual(patched.stepsSource, "verifiedCanonical")
+        XCTAssertEqual(patched.stepsCompleteness, "partial")
+        XCTAssertEqual(patched.stepsCoverageFraction, 0.8)
+        XCTAssertEqual(patched.stepsCycleStart, current.stepsCycleStart)
+        XCTAssertEqual(patched.stepsCycleExpiresAt, current.stepsCycleExpiresAt)
         XCTAssertEqual(patched.dailyStepGoal, 8_000)
         XCTAssertEqual(patched.strain, 6.8)
         XCTAssertNil(patched.strainCapturedAt,
@@ -180,6 +193,11 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertEqual(decoded.heartRate, 72)
         XCTAssertNil(decoded.stepsCapturedAt)
         XCTAssertNil(decoded.stepsAreEstimated)
+        XCTAssertNil(decoded.stepsSource)
+        XCTAssertNil(decoded.stepsCompleteness)
+        XCTAssertNil(decoded.stepsCoverageFraction)
+        XCTAssertNil(decoded.stepsCycleStart)
+        XCTAssertNil(decoded.stepsCycleExpiresAt)
         XCTAssertNil(decoded.heartRateCapturedAt)
         XCTAssertNil(decoded.dailyStepGoal)
         XCTAssertNil(decoded.heartRateZoneIndex)
@@ -291,12 +309,15 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(widgetSource.contains("private let atriaStaticStepFreshness: TimeInterval = 90"))
         XCTAssertTrue(widgetSource.contains("private let atriaLiveActivityStepFreshness: TimeInterval = 15"))
         XCTAssertTrue(widgetSource.contains("age <= freshness"))
-        XCTAssertTrue(widgetSource.contains("capturedAt: s.stepsCapturedAt"))
+        XCTAssertTrue(widgetSource.contains("atriaCurrentStepValue(s, now: now)"))
+        XCTAssertTrue(widgetSource.contains("snapshot.stepsSource == \"verifiedCanonical\""))
         XCTAssertTrue(widgetSource.contains("freshness: atriaStaticStepFreshness"))
         XCTAssertTrue(widgetSource.contains("capturedAt: s.heartRateCapturedAt"))
         XCTAssertTrue(widgetSource.contains("freshness: atriaHeartRateFreshness"))
         XCTAssertTrue(widgetSource.contains("(snapshot?.heartRateCapturedAt, atriaHeartRateFreshness)"))
-        XCTAssertTrue(widgetSource.contains("(snapshot?.stepsCapturedAt, atriaStaticStepFreshness)"))
+        XCTAssertTrue(widgetSource.contains(
+            "expirySources.append((snapshot?.stepsCapturedAt, atriaStaticStepFreshness))"
+        ))
         XCTAssertTrue(widgetSource.contains("(snapshot?.batteryChargeCapturedAt, atriaBatteryChargeFreshness)"))
         XCTAssertTrue(widgetSource.contains("capturedAt.addingTimeInterval(freshness + 0.001)"),
                       "The timeline must clear each sensor at its exact expiry boundary")
@@ -419,14 +440,85 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertFalse(strapWins.isValidated)
     }
 
+    func testWidgetResolverUsesPartialCanonicalWhenLiveEvidenceIsStale() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let day = Date(timeIntervalSince1970: 2_000_000_000)
+        let now = day.addingTimeInterval(3_600)
+        let canonical = AtriaHistoricalDailyConsumerProjection.StepDay(
+            localDay: "2033-05-18",
+            dayStart: calendar.startOfDay(for: day),
+            dayEnd: now,
+            state: .missing,
+            stepCount: nil,
+            knownStepDeltaSum: 2_345,
+            knownEpochCount: 1,
+            rejectedOrUnknownEpochCount: 0,
+            knownCoverageSeconds: 2_700,
+            missingCoverageSeconds: 900
+        )
+
+        let value = WidgetSnapshotPublisher.resolvedDailySteps(
+            day: day,
+            now: now,
+            liveCount: 9_999,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: now.addingTimeInterval(
+                -AtriaDailyStepPresentation.liveEvidenceMaximumAge - 1
+            ),
+            canonicalDays: [canonical],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(value.source, .verifiedCanonical)
+        XCTAssertEqual(value.completeness, .partial)
+        XCTAssertEqual(value.valueText, "≥2345")
+        XCTAssertEqual(value.coverageFraction ?? -1, 0.75, accuracy: 0.001)
+    }
+
+    func testWidgetResolverPublishesCompleteCanonicalExactly() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let day = Date(timeIntervalSince1970: 2_000_000_000)
+        let dayStart = calendar.startOfDay(for: day)
+        let canonical = AtriaHistoricalDailyConsumerProjection.StepDay(
+            localDay: "2033-05-18",
+            dayStart: dayStart,
+            dayEnd: dayStart.addingTimeInterval(86_400),
+            state: .available,
+            stepCount: 8_412,
+            knownStepDeltaSum: 8_412,
+            knownEpochCount: 1,
+            rejectedOrUnknownEpochCount: 0,
+            knownCoverageSeconds: 86_400,
+            missingCoverageSeconds: 0
+        )
+
+        let value = WidgetSnapshotPublisher.resolvedDailySteps(
+            day: dayStart,
+            now: dayStart.addingTimeInterval(2 * 86_400),
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [canonical],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(value.source, .verifiedCanonical)
+        XCTAssertEqual(value.completeness, .complete)
+        XCTAssertEqual(value.valueText, "8412")
+    }
+
     func testStaticStepsWidgetMarksPreliminaryCountsAsEstimated() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let widgetSource = try String(contentsOf: testsDirectory
             .deletingLastPathComponent()
             .appendingPathComponent("AtriaWidget/AtriaWidget.swift"), encoding: .utf8)
 
-        XCTAssertTrue(widgetSource.contains("return s.stepsAreEstimated == false ? value : \"~\\(value)\""))
-        XCTAssertTrue(widgetSource.contains("let accuracy = snapshot.stepsAreEstimated == false ? \"Confirmed\" : \"Estimated\""))
+        XCTAssertTrue(widgetSource.contains("snapshot.stepsSource == \"verifiedCanonical\""))
+        XCTAssertTrue(widgetSource.contains("return \"≥\\(value)\""))
+        XCTAssertTrue(widgetSource.contains("return \"Verified complete day\""))
+        XCTAssertTrue(widgetSource.contains("\"Partial archive\""))
         XCTAssertTrue(widgetSource.contains("snapshot.stepsAreEstimated == false"),
                       "only explicit validated provenance may claim exact steps or goal completion")
         XCTAssertTrue(widgetSource.contains("return \"Goal ✓ · confirmed · \\(captured)\""))

@@ -240,7 +240,7 @@ final class AtriaWhoop4HistoryACKGateTests: XCTestCase {
         ))
     }
 
-    func testAcceptedHistoryACKDoesNotResendSendHistoricalMidStream() throws {
+    func testAcceptedHistoryACKArmsOnlyBoundedStrapOwnedContinuation() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let managerURL = testsDirectory.deletingLastPathComponent()
             .appendingPathComponent("Atria/AtriaBLEManager.swift")
@@ -254,7 +254,7 @@ final class AtriaWhoop4HistoryACKGateTests: XCTestCase {
             of: "private func reackDurableHistoricalReplay("
         ))
         let acceptanceBody = acceptanceTail[..<replayStart.lowerBound]
-        XCTAssertFalse(acceptanceBody.contains(
+        XCTAssertTrue(acceptanceBody.contains(
             "armHistoricalPageContinuationAfterACK("
         ))
 
@@ -263,10 +263,28 @@ final class AtriaWhoop4HistoryACKGateTests: XCTestCase {
             of: "private func armHistoricalPageContinuationAfterACK("
         ))
         let replayBody = replayTail[..<continuationDefinition.lowerBound]
-        XCTAssertFalse(replayBody.contains(
+        XCTAssertTrue(replayBody.contains(
             "armHistoricalPageContinuationAfterACK("
         ))
         XCTAssertTrue(replayBody.contains("await_strap_owned_next_page"))
+
+        let continuationTail = replayTail[continuationDefinition.lowerBound...]
+        let continuationEnd = try XCTUnwrap(continuationTail.range(
+            of: "nonisolated static func shouldRetainHistoricalPageContinuation("
+        ))
+        let continuationBody = continuationTail[..<continuationEnd.lowerBound]
+        XCTAssertTrue(continuationBody.contains(
+            "historicalPageContinuationDelays("
+        ))
+        XCTAssertTrue(continuationBody.contains(
+            "self.pendingHistoryEndACK == nil"
+        ))
+        XCTAssertTrue(continuationBody.contains(
+            "!self.historyACKGate.requiresHistoryCallbackDeferral"
+        ))
+        XCTAssertTrue(continuationBody.contains(
+            "command: Cmd.sendHistoricalData"
+        ))
     }
 
     func testForegroundLifecycleCannotPreemptAnInFlightHistoryPage() throws {

@@ -80,6 +80,128 @@ final class AtriaOverviewCurrentSleepTests: XCTestCase {
         XCTAssertFalse(source.contains("let latest = sleepHistory.latestMainSleep"))
     }
 
+    func testTodayShareCannotExportRetainedPriorNightAfterRollover() throws {
+        let staleWake = date(2026, 7, 17, 8, 0)
+        let afterRollover = date(2026, 7, 18, 8, 1)
+        XCTAssertNil(AtriaOverviewCurrentSleep.resolveDisplayEvidence(
+            from: snapshot(wake: staleWake),
+            now: afterRollover,
+            calendar: calendar
+        ), "the sleep authority shared by Today/Home must reject the retained prior night")
+
+        let testsURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let homeURL = testsURL.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift")
+        let source = try String(contentsOf: homeURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private func makeTodayShareSnapshot()"))
+        let end = try XCTUnwrap(source.range(of: "private func pendingShareValue",
+                                             range: start.upperBound..<source.endIndex))
+        let shareBuilder = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(shareBuilder.contains("AtriaOverviewCurrentSleep.resolveDisplayEvidence("))
+        XCTAssertTrue(shareBuilder.contains("pendingReview: store.pendingSleepReviewNightForUI"))
+        XCTAssertTrue(shareBuilder.contains("let sleepValue = sleep?.durationText ?? \"\""))
+        XCTAssertTrue(shareBuilder.contains("let sleepDetail = sleep?.confirmationText ?? \"No sleep this cycle\""))
+        XCTAssertFalse(shareBuilder.contains("sleepHistorySnapshot.latestMainSleep"))
+        XCTAssertFalse(shareBuilder.contains("model.snapshotStore.state.sleepValue"))
+        XCTAssertFalse(shareBuilder.contains("model.snapshotStore.state.sleepDetail"))
+    }
+
+    func testHealthCurrentSleepEvidenceSharesTodayRolloverAuthority() {
+        let wake = date(2026, 7, 18, 8, 0)
+        let staleNow = date(2026, 7, 19, 8, 1)
+        let currentNow = date(2026, 7, 18, 18, 0)
+        let history = snapshot(wake: wake)
+
+        XCTAssertNotNil(AtriaHealthCurrentSleepEvidence.resolve(from: history,
+                                                                now: currentNow,
+                                                                calendar: calendar))
+        XCTAssertNil(AtriaHealthCurrentSleepEvidence.resolve(from: history,
+                                                             now: staleNow,
+                                                             calendar: calendar),
+                     "Vitals must not reuse an old confirmed night after Today rolls over")
+    }
+
+    func testHealthScreenCannotReadUnfilteredLatestMainSleep() throws {
+        let testsURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let healthURL = testsURL.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHealthScreen.swift")
+        let source = try String(contentsOf: healthURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("AtriaHealthCurrentSleepEvidence.resolve("))
+        XCTAssertTrue(source.contains("No sleep this cycle"))
+        XCTAssertFalse(source.contains(".latestMainSleep"),
+                       "current Vitals duration, stages, performance, and respiration must use the physiological resolver")
+    }
+
+    func testVitalsCurrentMetricsKeepHeroAuthorityAcrossCivilMidnight() {
+        let hero = AtriaHealthMetricAuthority.CurrentCycle(
+            recoveryPercent: 72,
+            recoveryDetail: "personal baseline",
+            restingHeartRateText: "54",
+            hrvValue: "47",
+            hrvDetail: "sleep signal"
+        )
+        let newCivilDay = DailyRollupStoreEntry(
+            day: date(2026, 7, 19, 0, 0),
+            recovery: 12,
+            lnRMSSD: log(99),
+            rhr: 88,
+            calendar: calendar
+        )
+
+        let current = AtriaHealthMetricAuthority.resolve(.currentCycle(hero))
+        let dated = AtriaHealthMetricAuthority.resolve(.datedHistory(newCivilDay))
+
+        XCTAssertEqual(current.recoveryPercent, 72)
+        XCTAssertEqual(current.restingHeartRate, 54)
+        XCTAssertEqual(current.hrvMS, 47)
+        XCTAssertEqual(dated.recoveryPercent, 12)
+        XCTAssertEqual(dated.restingHeartRate, 88)
+        XCTAssertEqual(dated.hrvMS, 99)
+    }
+
+    func testVitalsNoSleepRolloverKeepsHeroLimitedRecoveryInsteadOfCivilRow() {
+        let hero = AtriaHealthMetricAuthority.CurrentCycle(
+            recoveryPercent: 46,
+            recoveryDetail: "Previous sleep score · awaiting today’s sleep",
+            restingHeartRateText: "73",
+            hrvValue: "Learning",
+            hrvDetail: "needs qualified sleep"
+        )
+        let civilRow = DailyRollupStoreEntry(
+            day: date(2026, 7, 19, 0, 0),
+            recovery: 99,
+            lnRMSSD: log(91),
+            rhr: 42,
+            calendar: calendar
+        )
+
+        let current = AtriaHealthMetricAuthority.resolve(.currentCycle(hero))
+        _ = AtriaHealthMetricAuthority.resolve(.datedHistory(civilRow))
+
+        XCTAssertEqual(current.recoveryValue, "46%")
+        XCTAssertEqual(current.recoveryDetail,
+                       "Previous sleep score · awaiting today’s sleep")
+        XCTAssertEqual(current.restingHeartRate, 73)
+        XCTAssertEqual(current.hrvValue, "Learning")
+    }
+
+    func testVitalsLiveCardHasNoCivilLatestRollupAuthority() throws {
+        let testsURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let healthURL = testsURL.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHealthScreen.swift")
+        let source = try String(contentsOf: healthURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains(
+            "AtriaHealthMetricAuthority.resolve(.currentCycle("
+        ))
+        XCTAssertFalse(source.contains("private var latestRollup:"),
+                       "civil-day lookup must not drive current Recovery, RHR, or HRV")
+        XCTAssertTrue(source.contains("case datedHistory(DailyRollupStoreEntry)"),
+                      "civil rollups remain available only through explicitly dated context")
+    }
+
     func testFreshCandidateCanDisplayDurationWithoutBecomingCurrentMainSleep() {
         let now = date(2026, 7, 18, 9, 0)
         let start = date(2026, 7, 18, 2, 0)

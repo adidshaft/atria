@@ -2,6 +2,117 @@ import XCTest
 @testable import Atria
 
 final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
+    func testEveryConnectedHistoryExitRestoresFreshLiveData() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
+        let manager = try String(
+            contentsOf: appDirectory.appendingPathComponent("AtriaBLEManager.swift"),
+            encoding: .utf8
+        )
+
+        let finishStart = try XCTUnwrap(manager.range(
+            of: "private func finishOfflineHistoricalSync("
+        )?.lowerBound)
+        let finishEnd = try XCTUnwrap(manager.range(
+            of: "private func finalizeOfflineHistoricalSyncAfterLiveRestoration(",
+            range: finishStart..<manager.endIndex
+        )?.lowerBound)
+        let finish = String(manager[finishStart..<finishEnd])
+
+        XCTAssertFalse(
+            finish.contains("guard completedDrain,"),
+            "a timeout or empty post-workout offload must not bypass live restoration"
+        )
+        XCTAssertTrue(finish.contains("acceptedAt > restorationRequestedAt"))
+        XCTAssertTrue(finish.contains("offline_sync_live_restore_rebuild_"))
+        XCTAssertTrue(finish.contains("cancel_once_then_reconnect_known"))
+        XCTAssertTrue(
+            finish.contains("terminalAndLiveRestored: completedDrain && restored"),
+            "live restoration must not falsely promote an incomplete history drain"
+        )
+    }
+
+    func testDurableAdmissionLedgerIsPreparedBeforeHistoryOwnerCutover() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
+        let manager = try String(
+            contentsOf: appDirectory.appendingPathComponent("AtriaBLEManager.swift"),
+            encoding: .utf8
+        )
+
+        let preparationStart = try XCTUnwrap(manager.range(
+            of: "private func prepareHistoricalAdmissionLedgerIfNeeded("
+        )?.lowerBound)
+        let preparationEnd = try XCTUnwrap(manager.range(
+            of: "private func resumePendingForcedHistoricalSyncAfterLivePersistenceIfNeeded(",
+            range: preparationStart..<manager.endIndex
+        )?.lowerBound)
+        let preparation = String(manager[preparationStart..<preparationEnd])
+        XCTAssertTrue(preparation.contains("Task.detached("),
+                      "legacy SQLite open/migration must not block CoreBluetooth's main queue")
+        XCTAssertTrue(preparation.contains("keep_live_owner_open_sqlite_off_main"))
+        XCTAssertTrue(preparation.contains(
+            "resumePendingForcedHistoricalSyncAfterLivePersistenceIfNeeded("
+        ))
+        XCTAssertTrue(preparation.contains(
+            "resumePendingFullDrainPublicationIfNeeded("
+        ), "a restored terminal drain must resume after its admission ledger opens")
+        XCTAssertTrue(preparation.contains("scheduleRangeLossBackfillIfNeeded("))
+
+        let resumeStart = try XCTUnwrap(manager.range(
+            of: "func resumePendingFullDrainPublicationIfNeeded("
+        )?.lowerBound)
+        let resumeEnd = try XCTUnwrap(manager.range(
+            of: "private func scheduleTerminalConsumerMaterializationIfAuthorized(",
+            range: resumeStart..<manager.endIndex
+        )?.lowerBound)
+        let resume = String(manager[resumeStart..<resumeEnd])
+        XCTAssertTrue(resume.contains(
+            "prepareHistoricalAdmissionLedgerIfNeeded("
+        ), "terminal publication cannot start without durable admission identity")
+        XCTAssertTrue(resume.contains("preparing_terminal_admission_ledger"))
+        XCTAssertTrue(manager.contains(
+            "terminal_materialization_finished_\\(reason)"
+        ), "a request deferred by terminal publication must be re-armed on release")
+
+        let selectionStart = try XCTUnwrap(manager.range(
+            of: "let persistedFullDrainAuthority = try?"
+        )?.lowerBound)
+        let selectionEnd = try XCTUnwrap(manager.range(
+            of: "fullDrainTransportNonce =",
+            range: selectionStart..<manager.endIndex
+        )?.lowerBound)
+        let selection = String(manager[selectionStart..<selectionEnd])
+        XCTAssertFalse(selection.contains(
+            "explicitRequest\n                    ? AtriaHistoricalGapLedger.oldestClosedRecoveryCandidate"
+        ), "normal manual recovery must not ignore the newest user-visible gap")
+        XCTAssertTrue(selection.contains(
+            "selectedFullDrainGap = AtriaHistoricalGapLedger\n                    .newestClosedRecoveryCandidate()"
+        ))
+
+        let requestStart = try XCTUnwrap(manager.range(
+            of: "func requestOfflineHistoricalSyncIfNeeded("
+        )?.lowerBound)
+        let requestEnd = try XCTUnwrap(manager.range(
+            of: "private func armHistoryCapabilityQualification(",
+            range: requestStart..<manager.endIndex
+        )?.lowerBound)
+        let request = String(manager[requestStart..<requestEnd])
+        let readiness = try XCTUnwrap(request.range(
+            of: "prepareHistoricalAdmissionLedgerIfNeeded(reason: reason)"
+        ))
+        let cutover = try XCTUnwrap(request.range(
+            of: "beginFreshHistoryOwnerCutover(reason: reason)"
+        ))
+        XCTAssertLessThan(
+            readiness.lowerBound,
+            cutover.lowerBound,
+            "the live owner must remain intact until durable admission authority is ready"
+        )
+        XCTAssertTrue(request.contains("preparing_durable_history_ledger"))
+        XCTAssertTrue(request.contains("retainPendingOfflineHistoricalSyncRequest("))
+    }
+
     func testNoRowsFingerprintSuppressesOnlyAutomaticRetryForUnchangedGap() {
         let fingerprint = "gap-v1"
 
@@ -194,6 +305,97 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
             conflict,
             "a retired exact authority must be cleared before it can reject the new gap"
         )
+        let attendedRelease = try XCTUnwrap(request.range(
+            of: "status=previous_authority_released"
+        )?.lowerBound)
+        XCTAssertLessThan(
+            attendedRelease,
+            conflict,
+            "an attended exact-gap proof must release only an interrupted competing transport owner before rejecting the selected target"
+        )
+        XCTAssertTrue(request.contains(
+            "releaseInterruptedDrainingAuthorityWhenResumeDisabled("
+        ))
+        XCTAssertTrue(request.contains(
+            "action=preserve_previous_gap_and_rows_run_selected_exact_gap"
+        ))
+    }
+
+    func testDurableHistoryACKActuallyArmsBoundedPageContinuation() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
+        let manager = try String(
+            contentsOf: appDirectory.appendingPathComponent("AtriaBLEManager.swift"),
+            encoding: .utf8
+        )
+
+        let acceptedStart = try XCTUnwrap(manager.range(
+            of: "ATRIADBG historyAck status=accepted"
+        )?.lowerBound)
+        let acceptedEnd = try XCTUnwrap(manager.range(
+            of: "private func reackDurableHistoricalReplay(",
+            range: acceptedStart..<manager.endIndex
+        )?.lowerBound)
+        let accepted = String(manager[acceptedStart..<acceptedEnd])
+        XCTAssertTrue(accepted.contains(
+            "armHistoricalPageContinuationAfterACK("
+        ))
+        XCTAssertTrue(accepted.contains(
+            "generation: ackIdentity.generation"
+        ))
+        XCTAssertTrue(accepted.contains(
+            "boundaryID: ackIdentity.boundaryID"
+        ))
+
+        let replayStart = acceptedEnd
+        let replayEnd = try XCTUnwrap(manager.range(
+            of: "private func armHistoricalPageContinuationAfterACK(",
+            range: replayStart..<manager.endIndex
+        )?.lowerBound)
+        let replay = String(manager[replayStart..<replayEnd])
+        XCTAssertTrue(replay.contains("if result == .confirmed"))
+        XCTAssertTrue(replay.contains(
+            "historicalPageContinuationReplayBackoffStep + 1"
+        ))
+        XCTAssertTrue(replay.contains(
+            "armHistoricalPageContinuationAfterACK("
+        ))
+    }
+
+    func testInFlightOrphanReplayRetainsConsumedExactRequest() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
+        let manager = try String(
+            contentsOf: appDirectory.appendingPathComponent("AtriaBLEManager.swift"),
+            encoding: .utf8
+        )
+        let helperStart = try XCTUnwrap(manager.range(
+            of: "private func archiveOrphanHistoricalIngressIfNeeded("
+        )?.lowerBound)
+        let helperEnd = try XCTUnwrap(manager.range(
+            of: "private func noteOfflineHistoricalSyncProgress(",
+            range: helperStart..<manager.endIndex
+        )?.lowerBound)
+        let helper = String(manager[helperStart..<helperEnd])
+        let inFlight = try XCTUnwrap(helper.range(
+            of: "if orphanHistoricalIngressArchiveInFlight"
+        )?.lowerBound)
+        let retain = try XCTUnwrap(helper.range(
+            of: "retainPendingOfflineHistoricalSyncRequest(",
+            range: inFlight..<helper.endIndex
+        )?.lowerBound)
+        let returnTrue = try XCTUnwrap(helper.range(
+            of: "return true",
+            range: retain..<helper.endIndex
+        )?.lowerBound)
+        XCTAssertLessThan(inFlight, retain)
+        XCTAssertLessThan(retain, returnTrue)
+        XCTAssertTrue(helper.contains(
+            "status=replay_in_flight_request_retained"
+        ))
+        XCTAssertTrue(helper.contains(
+            "action=resume_after_orphan_retirement"
+        ))
     }
 
     func testHistoryArmCannotCancelOrMutateBeforeRealtimeReconnectFence() throws {
@@ -364,7 +566,9 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         let finalizer = String(manager[finalizerStart..<interruptStart])
 
         XCTAssertTrue(finish.contains("acceptedAt > restorationRequestedAt"))
-        XCTAssertTrue(finish.contains("sameEpoch"))
+        XCTAssertTrue(finish.contains(
+            "bleCallbackEpochFence.epoch == restorationEpoch"
+        ))
         XCTAssertTrue(finish.contains("samePeripheral"))
         XCTAssertFalse(finish.contains("reconcileRangeLossBackfillPendingWithArchive("))
         XCTAssertTrue(finalizer.contains("let rangeLossResolved = terminalAndLiveRestored\n            && reconcileRangeLossBackfillPendingWithArchive("))
@@ -425,7 +629,19 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         )
         let finalizer = String(manager[finishStart..<finishEnd])
 
-        XCTAssertTrue(start.contains("offlineHistoricalSyncInProgress = true\n        suspendWorkoutMotionLeaseForHistoricalSync()"))
+        let ownership = try XCTUnwrap(start.range(
+            of: "historyTransportPhaseFence.activate("
+        ))
+        let inProgress = try XCTUnwrap(start.range(
+            of: "offlineHistoricalSyncInProgress = true",
+            range: ownership.upperBound..<start.endIndex
+        ))
+        let suspension = try XCTUnwrap(start.range(
+            of: "suspendWorkoutMotionLeaseForHistoricalSync()",
+            range: inProgress.upperBound..<start.endIndex
+        ))
+        XCTAssertLessThan(ownership.lowerBound, inProgress.lowerBound)
+        XCTAssertLessThan(inProgress.lowerBound, suspension.lowerBound)
         for guardedBody in [schedule, evaluate, activation] {
             XCTAssertTrue(
                 guardedBody.contains("guard !historyOnlyProbeMode, !offlineHistoricalSyncInProgress else { return }"),
@@ -667,7 +883,11 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         )
         let resume = String(manager[resumeStart..<resumeEnd])
         XCTAssertTrue(resume.contains("offlineHistoricalSyncGeneration == generation"))
-        XCTAssertTrue(resume.contains("historyTransportPhaseFence.activate(generation: generation)"))
+        XCTAssertTrue(resume.contains("historyTransportPhaseFence.activate("))
+        XCTAssertTrue(resume.contains("generation: generation"))
+        XCTAssertTrue(resume.contains(
+            "usesExplicitHistoryProfile: usesExplicitHistoryProfile"
+        ))
         XCTAssertTrue(resume.contains("peripheral.discoverServices(Self.UUIDs.productionHistoryServices)"))
         XCTAssertTrue(resume.contains("commands=0"))
         XCTAssertFalse(resume.contains("sendCommand("))

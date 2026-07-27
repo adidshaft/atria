@@ -909,6 +909,61 @@ final class AtriaHistoricalFullDrainCoverageStore: @unchecked Sendable {
         return true
     }
 
+    /// Releases only the transport ownership record after a process
+    /// interruption when production has explicitly disabled resuming that
+    /// transport. The pending gap and every already-fsynced archive row remain
+    /// untouched, so ordinary selection may make a new bounded attempt instead
+    /// of being blocked forever by an authority that policy forbids resuming.
+    ///
+    /// The caller must provide the exact authority identity it just loaded.
+    /// Terminal authorities are immutable and a replaced/rearmed authority
+    /// cannot be cleared by a stale callback.
+    func releaseInterruptedDrainingAuthorityWhenResumeDisabled(
+        authorityIdentifier: String
+    ) throws -> Bool {
+        guard !authorityIdentifier.isEmpty else {
+            throw StoreError.invalidAttempt
+        }
+        lock.lock(); defer { lock.unlock() }
+        var envelope = try loadLocked()
+        guard let authority = envelope.authority,
+              authority.status == .draining,
+              authority.authorityIdentifier == authorityIdentifier else {
+            return false
+        }
+        envelope.authority = nil
+        try persistLocked(envelope)
+        return try loadLocked().authority == nil
+    }
+
+    /// A separately verified physical strap-history reset makes every older
+    /// in-flight drain impossible to resume: the cursor range it owned no
+    /// longer exists on the strap. This retires only a pre-reset `.draining`
+    /// transport authority. It never removes the gap itself, never accepts a
+    /// terminal authority, and never treats an equal/older timestamp as proof.
+    ///
+    /// The caller must first validate the reset's fail-closed receipt (exact
+    /// command payload, logical response, and postflight cursor collapse).
+    func abandonDrainingAuthorityAfterVerifiedStrapHistoryReset(
+        completedAtUnix: TimeInterval
+    ) throws -> Bool {
+        guard completedAtUnix.isFinite else {
+            throw StoreError.invalidEventTime
+        }
+        lock.lock(); defer { lock.unlock() }
+        var envelope = try loadLocked()
+        guard let authority = envelope.authority,
+              authority.status == .draining,
+              completedAtUnix > authority.createdAtUnix,
+              completedAtUnix
+                > authority.attempt.commandWriteCompletedAtUnix else {
+            return false
+        }
+        envelope.authority = nil
+        try persistLocked(envelope)
+        return true
+    }
+
     private func loadLocked() throws -> Envelope {
         guard fileManager.fileExists(atPath: stateURL.path) else {
             return Envelope(version: Envelope.currentVersion, authority: nil)

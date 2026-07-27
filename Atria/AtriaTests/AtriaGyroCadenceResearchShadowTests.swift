@@ -222,6 +222,10 @@ final class AtriaGyroCadenceResearchShadowTests: XCTestCase {
             AtriaBLEManager.validatedResearchAggregates(from: decoded)?.gyroCadenceResearchSteps,
             0
         )
+        XCTAssertFalse(
+            try XCTUnwrap(AtriaBLEManager.validatedResearchAggregates(from: decoded))
+                .hasGyroCadenceResearchEvidence
+        )
     }
 
     func testValidatedResearchAggregatesFailClosedForImplausibleGyroSteps() throws {
@@ -231,10 +235,9 @@ final class AtriaGyroCadenceResearchShadowTests: XCTestCase {
         malformed.gyroCadenceResearchSteps = -1
         XCTAssertNil(AtriaBLEManager.validatedResearchAggregates(from: malformed))
         malformed.gyroCadenceResearchSteps = 4_321
-        XCTAssertEqual(
-            AtriaBLEManager.validatedResearchAggregates(from: malformed)?.gyroCadenceResearchSteps,
-            4_321
-        )
+        let restored = try XCTUnwrap(AtriaBLEManager.validatedResearchAggregates(from: malformed))
+        XCTAssertEqual(restored.gyroCadenceResearchSteps, 4_321)
+        XCTAssertTrue(restored.hasGyroCadenceResearchEvidence)
     }
 
     // MARK: - Research isolation source scans

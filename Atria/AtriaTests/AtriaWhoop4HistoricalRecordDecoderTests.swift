@@ -35,6 +35,10 @@ final class AtriaWhoop4HistoricalRecordDecoderTests: XCTestCase {
         XCTAssertEqual(record.gravity.x, -0.09833496063947678, accuracy: 0.0000001)
         XCTAssertEqual(record.gravity.y, -0.09036865085363388, accuracy: 0.0000001)
         XCTAssertEqual(record.gravity.z, 1.0244629383087158, accuracy: 0.0000001)
+        XCTAssertEqual(try XCTUnwrap(record.unknownMotionScalar32),
+                       0.009100794792175293,
+                       accuracy: 0.0000001)
+        XCTAssertEqual(record.motionTickCounter, 27_184)
         XCTAssertEqual(record.provenance.origin, "atria-captured-historical-archive-2026-07")
         XCTAssertEqual(record.provenance.rawBytes, capturedV24)
         XCTAssertEqual(record.provenance.rawHex, capturedV24.hexString)
@@ -50,6 +54,8 @@ final class AtriaWhoop4HistoricalRecordDecoderTests: XCTestCase {
         XCTAssertEqual(record.timestampSeconds, 1_781_629_143)
         XCTAssertNil(record.subsecond)
         XCTAssertNil(record.physiology, "v25 must never manufacture HR or RR")
+        XCTAssertNil(record.unknownMotionScalar32)
+        XCTAssertNil(record.motionTickCounter)
         XCTAssertEqual(record.gravity.x, 15_631.0 / 16_384.0, accuracy: 0.0000001)
         XCTAssertEqual(record.gravity.y, 2_448.0 / 16_384.0, accuracy: 0.0000001)
         XCTAssertEqual(record.gravity.z, 1.0 / 16_384.0, accuracy: 0.0000001)

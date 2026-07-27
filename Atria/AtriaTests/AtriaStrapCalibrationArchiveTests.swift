@@ -40,7 +40,8 @@ final class AtriaStrapCalibrationArchiveTests: XCTestCase {
         XCTAssertEqual(AtriaStrapCalibrationArchive.configuredCaptureUntil(
             arguments: [],
             defaults: defaults,
-            now: now.addingTimeInterval(60)
+            now: now.addingTimeInterval(60),
+            duration: 3_600
         ), enabledUntil)
         XCTAssertNil(AtriaStrapCalibrationArchive.configuredCaptureUntil(
             arguments: [],
@@ -57,6 +58,28 @@ final class AtriaStrapCalibrationArchiveTests: XCTestCase {
             arguments: [AtriaStrapCalibrationArchive.disableArgument],
             defaults: defaults,
             now: now
+        ))
+    }
+
+    func testLegacyOversizedCalibrationWindowIsCleared() throws {
+        let suiteName = "AtriaStrapCalibrationArchiveTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let now = Date(timeIntervalSince1970: 1_750_000_000)
+
+        defaults.set(
+            now.addingTimeInterval(AtriaStrapCalibrationArchive.defaultCaptureDuration)
+                .timeIntervalSince1970,
+            forKey: AtriaStrapCalibrationArchive.captureUntilDefaultsKey
+        )
+
+        XCTAssertNil(AtriaStrapCalibrationArchive.configuredCaptureUntil(
+            arguments: [],
+            defaults: defaults,
+            now: now
+        ))
+        XCTAssertNil(defaults.object(
+            forKey: AtriaStrapCalibrationArchive.captureUntilDefaultsKey
         ))
     }
 

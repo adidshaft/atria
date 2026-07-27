@@ -1,10 +1,11 @@
 import Foundation
 
-/// Production capability is disabled until a physical acceptance proves that
-/// the strap serves the current missing interval. A full-flash replay that
-/// yields old rows is not gap recovery and must not own the live radio.
+/// WHOOP 4 recovery drains the strap's bounded flash and resolves only the
+/// already-known local interval whose decoded one-hertz coverage passes the
+/// durable ≥90% authority. Enabling admission does not claim success: every
+/// physical attempt still fails closed unless its own exact coverage proves it.
 enum AtriaHistoricalFullDrainCoverageIntegration {
-    static let automaticFullDrainRecoveryEnabled = false
+    static let automaticFullDrainRecoveryEnabled = true
     static let exactRangeTransportAuthorityAvailable = false
 
     /// The persisted-authority resume lane is paused because it is measurably

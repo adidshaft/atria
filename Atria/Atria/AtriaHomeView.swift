@@ -1074,6 +1074,12 @@ struct AtriaHomeView: View {
         }
         .onReceive(store.$dashboardRevision.throttle(for: .seconds(3), scheduler: RunLoop.main, latest: true)) { _ in
             refreshSavedWorkoutReviewCandidate(reason: "dashboard_revision")
+            if let candidate = savedWorkoutReviewCandidate {
+                LocalNotificationScheduler.scheduleWorkoutReviewAfterCachePublicationIfNeeded(
+                    candidate,
+                    ble: ble
+                )
+            }
             scheduleWidgetSnapshot(reason: "dashboard_revision")
         }
         .onReceive(NotificationCenter.default.publisher(for: SessionStore.historicalRecoveryNeededNotification)) { _ in
@@ -1236,6 +1242,12 @@ struct AtriaHomeView: View {
                 .tabItem { Label(HomeTab.plan.title, systemImage: HomeTab.plan.systemImage) }
                 .tag(HomeTab.plan)
             }
+            // iOS 26 already renders the interactive Liquid Glass capsule for
+            // the tab items. Keeping the legacy tab-bar material behind that
+            // capsule creates a second opaque black shelf across the safe area.
+            // Let the shared Atria backdrop/content continue beneath the native
+            // glass control instead.
+            .toolbarBackground(.hidden, for: .tabBar)
             .tabBarMinimizeBehavior(.onScrollDown)
             .tabViewBottomAccessory(isEnabled: shouldShowLiveAccessory) {
                 AtriaLiveTabAccessoryHost(pulseStore: model.pulseLiveStore,
@@ -1360,6 +1372,8 @@ struct AtriaHomeView: View {
         .fullScreenCover(isPresented: liveWorkoutPresentationBinding) {
             if let session = workoutSession {
                 AtriaLiveWorkoutView(pulseStore: model.pulseLiveStore,
+                                     statusStore: model.statusStore,
+                                     coreLiveStore: model.coreLiveStore,
                                      metricStore: liveWorkoutMetricStore,
                                      routeRecorder: workoutRouteRecorder,
                                      maxHR: store.profile.maxHR,
@@ -3241,20 +3255,23 @@ struct AtriaHomeView: View {
         let liveHeartRate = pulse.sensorHasContact && pulse.heartRate > 0
             ? pulse.heartRate
             : nil
-        let stepsAreValidated = WidgetSnapshotPublisher.strapStepsAreValidated(
-            state: core.strapStepResearchState
-        )
-        let steps = core.hasStrapStepResearch
-            && WidgetSnapshotPublisher.strapStepsArePublishable(
-                state: core.strapStepResearchState
-            ) ? max(0, core.strapStepResearchCount) : nil
+        let dailySteps = core.dailyStepPresentation
+        let steps = dailySteps.count
         let displayableBatteryLevel = ble.displayableBatteryLevel()
         WidgetSnapshotPublisher.scheduleLiveWorkoutPatch(
             heartRate: liveHeartRate,
             heartRateCapturedAt: liveHeartRate == nil ? nil : ble.lastAcceptedHeartRateAt,
             steps: steps,
-            stepsAreEstimated: steps != nil && !stepsAreValidated,
-            stepsCapturedAt: steps == nil ? nil : ble.liveStrapStepCountCapturedAt,
+            stepsAreEstimated: steps != nil
+                && (!dailySteps.isValidated
+                    || (dailySteps.source == .verifiedCanonical
+                        && dailySteps.completeness == .partial)),
+            stepsCapturedAt: steps == nil ? nil : dailySteps.capturedAt,
+            stepsSource: WidgetSnapshotPublisher.stepSourceIdentifier(dailySteps.source),
+            stepsCompleteness: WidgetSnapshotPublisher.stepCompletenessIdentifier(
+                dailySteps.completeness
+            ),
+            stepsCoverageFraction: dailySteps.coverageFraction,
             strain: model.heroStore.state.strain,
             strainCapturedAt: ble.lastAcceptedHeartRateAt,
             batteryLevel: displayableBatteryLevel,
@@ -4260,20 +4277,11 @@ struct AtriaHomeView: View {
                     .allowsHitTesting(false)
                 }
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                Color.clear
-                    .frame(height: scrollBottomSafeAreaInset)
-                    .allowsHitTesting(false)
-            }
         }
     }
 
     private var scrollBottomClearance: CGFloat {
         shouldShowLiveAccessory ? 260 : 188
-    }
-
-    private var scrollBottomSafeAreaInset: CGFloat {
-        shouldShowLiveAccessory ? 220 : 148
     }
 
     private static let debugDashboardScrollTopID = "atria-dashboard-scroll-top"
@@ -4416,64 +4424,57 @@ struct AtriaHomeView: View {
         /// publisher hop from the session store.
         var maturityText: () -> String? = { nil }
 
-        @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
-        /// One notice per tick. Long enough to finish reading a line, short
-        /// enough that a second notice is not effectively hidden.
-        private static let rotationInterval: TimeInterval = 12
+        /// Refresh the notice set periodically while keeping cards user-
+        /// controlled: multiple notices are paged horizontally instead of
+        /// silently rotating underneath the user's finger.
+        private static let refreshInterval: TimeInterval = 15
 
         var body: some View {
-            TimelineView(.periodic(from: .now, by: Self.rotationInterval)) { context in
+            TimelineView(.periodic(from: .now, by: Self.refreshInterval)) { context in
                 let notices = notices(now: context.date)
                 if !notices.isEmpty {
-                    let index = Self.rotationIndex(now: context.date, count: notices.count)
-                    let status = notices[min(index, notices.count - 1)]
-                    HStack(spacing: 8) {
-                        Label(status.title, systemImage: status.symbol)
-                            .font(.caption.weight(.semibold))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.82)
-                            .foregroundStyle(.primary)
-                            .id(status.title)
-                            .transition(.opacity)
+                    GlassEffectContainer(spacing: 10) {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            LazyHStack(spacing: 10) {
+                                ForEach(Array(notices.enumerated()), id: \.offset) { index, status in
+                                    HStack(spacing: 8) {
+                                        Label(status.title, systemImage: status.symbol)
+                                            .font(.caption.weight(.semibold))
+                                            .lineLimit(1)
+                                            .minimumScaleFactor(0.82)
+                                            .foregroundStyle(.primary)
 
-                        Spacer(minLength: 0)
+                                        Spacer(minLength: 0)
 
-                        if notices.count > 1 {
-                            // Without this a rotating banner reads as a glitch:
-                            // the dots say "there is more than one thing here".
-                            HStack(spacing: 3) {
-                                ForEach(0..<notices.count, id: \.self) { dot in
-                                    Circle()
-                                        .fill(Color.primary.opacity(dot == index ? 0.55 : 0.18))
-                                        .frame(width: 4, height: 4)
+                                        if notices.count > 1 {
+                                            HStack(spacing: 3) {
+                                                ForEach(0..<notices.count, id: \.self) { dot in
+                                                    Circle()
+                                                        .fill(Color.primary.opacity(dot == index ? 0.55 : 0.18))
+                                                        .frame(width: 4, height: 4)
+                                                }
+                                            }
+                                            .accessibilityHidden(true)
+                                        }
+                                    }
+                                    .padding(.horizontal, 14)
+                                    .frame(height: 40)
+                                    .containerRelativeFrame(.horizontal)
+                                    .glassEffect(.regular, in: .rect(cornerRadius: 18))
+                                    .accessibilityElement(children: .combine)
+                                    .accessibilityLabel(notices.count > 1
+                                                        ? "\(status.accessibilityLabel) Notice \(index + 1) of \(notices.count)."
+                                                        : status.accessibilityLabel)
+                                    .id(index)
                                 }
                             }
-                            .accessibilityHidden(true)
+                            .scrollTargetLayout()
                         }
+                        .scrollTargetBehavior(.paging)
+                        .contentMargins(.horizontal, 16, for: .scrollContent)
+                        .scrollIndicators(.hidden)
                     }
-                    .padding(.horizontal, 16)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .background {
-                        // Edge-to-edge chrome, not a floating inset card. A
-                        // sync notice is app status rather than content, and a
-                        // card floating over the scrolling deck read as a
-                        // dismissible object competing with the cards below it.
-                        // Full-bleed also removes the reason the surface was
-                        // tinted at all: spanning the width already separates
-                        // it from content, so it stays neutral and lets the
-                        // label carry the meaning.
-                        if reduceTransparency {
-                            Rectangle().fill(.background)
-                        } else {
-                            Rectangle().fill(.bar)
-                        }
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(notices.count > 1
-                                        ? "\(status.accessibilityLabel) Notice \(index + 1) of \(notices.count)."
-                                        : status.accessibilityLabel)
-                    .animation(.snappy(duration: 0.2), value: status.title)
+                    .frame(height: 40)
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
@@ -4484,7 +4485,7 @@ struct AtriaHomeView: View {
         /// app lands on the same phase, instead of drifting per view lifetime.
         static func rotationIndex(now: Date, count: Int) -> Int {
             guard count > 1 else { return 0 }
-            let step = Int((now.timeIntervalSinceReferenceDate / rotationInterval).rounded(.down))
+            let step = Int((now.timeIntervalSinceReferenceDate / refreshInterval).rounded(.down))
             return ((step % count) + count) % count
         }
 
@@ -4585,10 +4586,20 @@ struct AtriaHomeView: View {
     }
 
     private func makeTodayShareSnapshot() -> AtriaShareSnapshot {
+        let now = Date()
         let hero = model.heroStore.state
         let live = model.coreLiveStore.state
-        let sleep = store.sleepHistorySnapshot.latestMainSleep
-        let sleepValue = sleep?.durationText ?? model.snapshotStore.state.sleepValue
+        // Share the same wake-to-wake sleep evidence rendered by Today/Home.
+        // Sleep History deliberately retains older nights, so reading
+        // `latestMainSleep` (or the cached hero fallback) here can export the
+        // prior night after the no-sleep rollover boundary.
+        let sleep = AtriaOverviewCurrentSleep.resolveDisplayEvidence(
+            from: store.sleepHistorySnapshot,
+            pendingReview: store.pendingSleepReviewNightForUI,
+            now: now
+        )
+        let sleepValue = sleep?.durationText ?? ""
+        let sleepDetail = sleep?.confirmationText ?? "No sleep this cycle"
         // Fill against the user's own sleep goal, not a hardcoded 8h — same key
         // the Today sleep cards read (atria.target.sleep.goalHours).
         let sleepGoalHours = (UserDefaults.standard.object(forKey: "atria.target.sleep.goalHours") as? Double) ?? 8.0
@@ -4631,7 +4642,7 @@ struct AtriaHomeView: View {
             AtriaShareSnapshot.Stat(id: "sleep",
                                     title: "Sleep",
                                     value: pendingShareValue(sleepValue),
-                                    detail: sleep?.confirmationText ?? model.snapshotStore.state.sleepDetail),
+                                    detail: sleepDetail),
             AtriaShareSnapshot.Stat(id: "strain",
                                     title: "Day strain",
                                     value: pendingShareValue(hero.strainValue),
@@ -4653,7 +4664,7 @@ struct AtriaHomeView: View {
                                     value: live.liveActiveCalories.map { "\(Int($0.rounded()))" } ?? "",
                                     detail: "active estimate")
         ]
-        return AtriaShareSnapshot(date: Date(),
+        return AtriaShareSnapshot(date: now,
                                   recovery: AtriaShareSnapshot.Ring(title: "Recovery",
                                                                     value: recoveryValue,
                                                                     detail: hero.recoveryDetail,
@@ -4661,7 +4672,7 @@ struct AtriaHomeView: View {
                                                                     fill: recoveryPercent.map { Double($0) / 100.0 }),
                                   sleep: AtriaShareSnapshot.Ring(title: "Sleep",
                                                                  value: pendingShareValue(sleepValue),
-                                                                 detail: sleep?.confirmationText ?? "sleep",
+                                                                 detail: sleepDetail,
                                                                  tintHex: AtriaRingMetricProjection.achievementTintHex(fill: sleepFill),
                                                                  fill: sleepFill,
                                                                  stateTintHex: sleepZone.map { AtriaRingMetricProjection.zoneTintHex($0.level) },
@@ -9700,15 +9711,21 @@ final class AtriaHomeModel {
                                          deferredDetails: DeferredDetails?) -> HeroSnapshot {
         let restingContext = savedAggregate.restingContext
         let rest = restingContext.resolved
-        // Numeric `rest` (60 fallback) drives the math; `restText` is the honest
-        // DISPLAY ("Learning" when there is no real resting reading yet).
-        let restText = restingContext.displayText
+        let calendar = Calendar.current
+        let now = Date()
+        // `rest` remains the learned/stable math anchor for zones, TRIMP,
+        // strain and VO2. The number shown as RHR must instead be the current
+        // physiological-cycle measurement used by recovery and Vitals.
+        let presentationRestingHeartRate = store.currentCycleRestingHeartRateForPresentation(
+            on: now,
+            calendar: calendar,
+            liveRestingHeartRate: restingContext.currentForRecovery
+        )
+        let restText = presentationRestingHeartRate.map(String.init) ?? "Learning"
         let fallbackHrv = fallbackHeroHRVState(ble: ble, store: store)
         let headline = deferredDetails?.headline ?? defaultHeroHeadline(status: ble.status)
         let nextAction = deferredDetails?.nextAction ?? defaultHeroNextAction(status: ble.status)
 
-        let calendar = Calendar.current
-        let now = Date()
         let physiologicalCycle = AtriaPhysiologicalCycle.current(now: now,
                                                                  confirmedSleeps: store.confirmedSleeps,
                                                                  calendar: calendar)
@@ -9808,7 +9825,7 @@ final class AtriaHomeModel {
                             baselineSamples: savedAggregate.baselineSamples,
                             backupValue: deferredDetails?.backupValue ?? "Preparing",
                             backupDetail: deferredDetails?.backupDetail ?? "saved history",
-                            restingHeartRate: rest,
+                            restingHeartRate: presentationRestingHeartRate ?? rest,
                             restingHeartRateText: restText,
                             strainNarrative: String(format: "TRIMP %.1f after active-checkpoint reconciliation (saved %.1f, saved active %.1f, live %.1f)", totalTRIMP, savedAggregate.savedTodayTRIMP, savedAggregate.savedActiveSessionTRIMP, liveTRIMP),
                             loadRatioText: load.ratioText,
@@ -10545,6 +10562,13 @@ private struct AtriaHeaderActionButtonStyle: ButtonStyle {
 }
 
 enum AtriaHomeChromeLayout {
+    /// The dashboard is intentionally full-bleed. Its header therefore keeps a
+    /// small, explicit portrait lane clear of the Dynamic Island instead of
+    /// relying on a nested scroll-view's safe-area propagation.
+    static func topChromeClearance(verticalSizeClass: UserInterfaceSizeClass?) -> CGFloat {
+        verticalSizeClass == .regular ? 26 : 0
+    }
+
     static func showsHomeStatusChip(workoutIsActive: Bool) -> Bool {
         !workoutIsActive
     }
@@ -10565,6 +10589,7 @@ private struct AtriaHomeTopChrome: View {
     let onShowAssistant: () -> Void
     let onTapStatusWhenNotConnected: () -> Void
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     var body: some View {
         GlassEffectContainer(spacing: 10) {
@@ -10592,6 +10617,7 @@ private struct AtriaHomeTopChrome: View {
         .frame(maxWidth: .infinity,
                minHeight: AtriaHeaderControlMetrics.height,
                alignment: .center)
+        .padding(.top, AtriaHomeChromeLayout.topChromeClearance(verticalSizeClass: verticalSizeClass))
         // No .clipped() here: the status chip already draws its own bounded
         // capsule background, so nothing overflows that needs clipping — and
         // clipping this HStack at an exact 44pt height cropped the header
@@ -11164,7 +11190,7 @@ private struct AtriaTopStatusCoreTrigger: Equatable {
 
 /// The host observes one compact semantic projection. Raw RR arrays, calories,
 /// sample counts, and other live-store fields cannot invalidate this view.
-private struct AtriaTopStatusChipHost: View {
+struct AtriaTopStatusChipHost: View {
     @StateObject private var projectionStore: AtriaTopStatusProjectionStore
     let onTapWhenConnected: () -> Void
     let onTapWhenNotConnected: () -> Void

@@ -41,7 +41,8 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                          avgHR: Int = 86,
                          peakHR: Int = 100,
                          strain: Double? = 0.051,
-                         coverage: Int = 100) -> UserConfirmedWorkout {
+                         coverage: Int = 100,
+                         reason: String = "test") -> UserConfirmedWorkout {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         return UserConfirmedWorkout(id: "workout",
                                     createdAt: start,
@@ -59,7 +60,7 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                                     thresholdHR: 124,
                                     streamCoveragePercent: coverage,
                                     observedDuration: 173,
-                                    reason: "test",
+                                    reason: reason,
                                     strain: strain,
                                     zoneSeconds: [:])
     }
@@ -73,9 +74,9 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: workout(avgHR: 0)), "No HR data")
     }
 
-    func testSparseHeartRateIsQualifiedInsteadOfDiscarded() {
+    func testSparseHeartRateRemainsVisibleButCannotClaimPreciseStrain() {
         XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: workout(strain: 1.1, coverage: 40)),
-                       "Strain 1.1 · partial HR")
+                       "40% HR · Incomplete")
     }
 
     func testSeverelySparseWorkoutDoesNotShowPreciseDerivedMetrics() {
@@ -106,6 +107,52 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                              includesZoneMinutes: true))
     }
 
+    func testWorkoutNumericMetricsRequireSeventyFivePercentCoverage() {
+        for coverage in [24, 25, 40, 74] {
+            let partial = workout(samples: 1_200,
+                                  avgHR: 126,
+                                  peakHR: 154,
+                                  strain: 5.4,
+                                  coverage: coverage)
+            XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateState(partial), .incomplete)
+            XCTAssertTrue(AtriaWorkoutMetricPresentation.metricsAreIncomplete(partial))
+            XCTAssertEqual(AtriaWorkoutMetricPresentation.strainText(partial), "Incomplete")
+            XCTAssertFalse(AtriaWorkoutMetricPresentation.shareMetrics(partial).includesZoneMinutes)
+        }
+
+        let qualified = workout(samples: 1_200,
+                                avgHR: 126,
+                                peakHR: 154,
+                                strain: 5.4,
+                                coverage: 75)
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateState(qualified), .complete)
+        XCTAssertFalse(AtriaWorkoutMetricPresentation.metricsAreIncomplete(qualified))
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.strainText(qualified), "5.4")
+        XCTAssertTrue(AtriaWorkoutMetricPresentation.shareMetrics(qualified).includesZoneMinutes)
+    }
+
+    func testMaterialContinuousGapRemainsPartialAboveCoverageThreshold() {
+        let gymWorkout = workout(samples: 2_563,
+                                 avgHR: 120,
+                                 peakHR: 158,
+                                 strain: 4.246,
+                                 coverage: 78,
+                                 reason: "stream_gaps")
+
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateState(gymWorkout),
+                       .incomplete)
+        XCTAssertTrue(AtriaWorkoutMetricPresentation.metricsAreIncomplete(gymWorkout))
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.strainText(gymWorkout), "≥ 4.2")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.averageHeartRateText(gymWorkout),
+                       "120 observed")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.peakHeartRateText(gymWorkout),
+                       "158 observed")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.compactStatus(gymWorkout),
+                       "78% HR · Partial")
+        XCTAssertFalse(AtriaWorkoutMetricPresentation.shareMetrics(gymWorkout)
+            .includesZoneMinutes)
+    }
+
     func testUnavailableAndOneSampleHeartRateNeverExposeNumericPeak() {
         let unavailable = workout(samples: 0, avgHR: 0, peakHR: 0)
         XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateState(unavailable), .unavailable)
@@ -123,7 +170,7 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                        "92% HR · Incomplete")
     }
 
-    func testDayStrainIsIncompleteWhenAllSameDayWorkoutsAreSeverelySparse() {
+    func testDayStrainIsIncompleteWhenAnySameDayWorkoutIsSeverelySparse() {
         let sparse = workout(samples: 58, avgHR: 118, strain: 0.17, coverage: 3)
         let complete = workout(samples: 1_200, avgHR: 126, strain: 5.4, coverage: 92)
 
@@ -133,9 +180,13 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertTrue(AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(day: sparse.start,
                                                                            strain: 5.4,
                                                                            workouts: [sparse]))
-        XCTAssertFalse(AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(day: sparse.start,
-                                                                            strain: 0.17,
-                                                                            workouts: [sparse, complete]))
+        XCTAssertTrue(AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(day: sparse.start,
+                                                                           strain: 0.17,
+                                                                           workouts: [sparse, complete]),
+                      "a dense workout cannot prove the load missing from a sparse workout")
+        XCTAssertFalse(AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(day: complete.start,
+                                                                            strain: 5.4,
+                                                                            workouts: [complete]))
     }
 
     func testActivityReviewProjectionShowsUnsavedDetectorWindow() {

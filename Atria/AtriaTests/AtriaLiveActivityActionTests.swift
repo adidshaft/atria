@@ -51,12 +51,12 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(compactHeart.contains(".minimumScaleFactor(0.55)"))
         XCTAssertTrue(compactHeart.contains("Heart rate \\(heartRate) beats per minute"))
 
-        XCTAssertTrue(lockScreen.contains(".font(.system(size: 34, weight: .black, design: .rounded))"))
+        XCTAssertTrue(lockScreen.contains("? .system(size: 30, weight: .black, design: .rounded)"),
+                      "the reusable metric helper must fit a three-digit heart rate")
         XCTAssertTrue(lockScreen.contains(".minimumScaleFactor(0.58)"))
-        XCTAssertTrue(lockScreen.contains(".layoutPriority(3)"))
-        XCTAssertTrue(lockScreen.contains("Text(\"BPM\")"))
-        XCTAssertTrue(lockScreen.contains(".fixedSize()"),
-                      "the BPM suffix must stay separate so a three-digit reading cannot wrap it")
+        XCTAssertTrue(lockScreen.contains(".layoutPriority(emphasis ? 3 : 0)"))
+        XCTAssertTrue(lockScreen.contains("title: \"BPM\""),
+                      "the BPM suffix must remain a separate label in the reusable metric helper")
         XCTAssertTrue(lockScreen.contains(".lineLimit(1)"))
         XCTAssertTrue(lockScreen.contains(".minimumScaleFactor(0.68)"),
                       "the HR-zone, step, calorie, and strain row must shrink rather than wrap")

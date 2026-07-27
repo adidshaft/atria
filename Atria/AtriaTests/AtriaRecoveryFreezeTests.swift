@@ -9,6 +9,37 @@ import XCTest
 final class AtriaRecoveryFreezeTests: XCTestCase {
     private func at(_ h: Double) -> Date { Date(timeIntervalSince1970: 1_800_000_000 + h * 3600) }
 
+    func testHistoryAndSleepWaitForMatchingMetricRollupPublication() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/Sessions.swift"),
+            encoding: .utf8
+        )
+        let entry = try XCTUnwrap(source.range(
+            of: "private func publishFullHistorySnapshotIfCurrent"
+        ))
+        let prepared = try XCTUnwrap(source.range(
+            of: "private func publishPreparedDailyMetricsAndRollupsIfCurrent"
+        ))
+        let entryBody = source[entry.lowerBound..<prepared.lowerBound]
+        XCTAssertFalse(entryBody.contains("historySnapshot = history"))
+        XCTAssertFalse(entryBody.contains("sleepHistorySnapshot = sleep"))
+
+        let persistence = try XCTUnwrap(source.range(
+            of: "private func persistDailyRollups",
+            range: prepared.upperBound..<source.endIndex
+        ))
+        let preparedBody = source[prepared.lowerBound..<persistence.lowerBound]
+        XCTAssertTrue(preparedBody.contains("historySnapshot = history"))
+        XCTAssertTrue(preparedBody.contains("sleepHistorySnapshot = sleep"))
+        XCTAssertTrue(
+            preparedBody.range(of: "sleepHistorySnapshot = sleep")!.lowerBound
+                < preparedBody.range(of: "persistPreparedDailyRollups(preparation)")!.lowerBound
+        )
+    }
+
     private func metric(sleepEnd: Date? = nil,
                         sleepDuration: TimeInterval? = 7 * 3600,
                         sleepSpan: TimeInterval? = 7.5 * 3600,
@@ -632,6 +663,250 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
                                                               metrics: [],
                                                               physiologicalCycle: cycle),
                        live)
+    }
+
+    func testInitialWearFallbackUsesOnePersistedLimitedRecoveryAcrossSurfaces() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2032, month: 1, day: 2
+        )))
+        let cycle = AtriaPhysiologicalCycle(
+            start: day.addingTimeInterval(6 * 3_600),
+            boundaryKind: .initialFallback,
+            anchorSleepID: nil,
+            expectedInterval: 24 * 3_600
+        )
+        let persisted = Metrics.RecoveryEstimate(
+            percent: 46,
+            confidence: .unverified,
+            usesHRV: false,
+            detail: "Limited confidence · sleep and HRV unavailable · conservative RHR-only estimate",
+            contributors: [
+                .init(kind: .hrv,
+                      zScore: 0,
+                      weight: 0,
+                      detail: "HRV unavailable; excluded",
+                      displayValue: "HRV unavailable"),
+                .init(kind: .restingHeartRate,
+                      zScore: -1.45,
+                      weight: 0.2,
+                      detail: "RHR -1.5σ",
+                      displayValue: "Resting HR 73 bpm"),
+                .init(kind: .sleep,
+                      zScore: 0,
+                      weight: 0,
+                      detail: "Sleep unavailable; excluded",
+                      displayValue: "Sleep unavailable"),
+            ]
+        )
+        let frozen = try XCTUnwrap(FrozenRecoverySummary(estimate: persisted,
+                                                         scoredDay: day))
+        let rollup = DailyRollupStoreEntry(day: day,
+                                           recoverySummary: frozen,
+                                           calendar: calendar)
+        let metric = SavedDailyMetric(
+            day: day,
+            recoveryPercent: 46,
+            recoveryConfidence: Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
+            hrv: nil,
+            restingHR: 73,
+            respiratoryRate: nil,
+            sleepDuration: nil,
+            sleepSpan: nil,
+            sleepStart: nil,
+            sleepEnd: nil,
+            sleepSource: nil,
+            sleepStageSegments: [],
+            sleepConsistencyPercent: nil,
+            strain: 7.1,
+            recoverySummary: frozen
+        )
+        let liveRecompute = Metrics.RecoveryEstimate(
+            percent: 56,
+            confidence: .unverified,
+            usesHRV: false,
+            detail: "later live RHR recompute",
+            contributors: persisted.contributors
+        )
+
+        let summary = try XCTUnwrap(DailyRecoveryResolver.summary(
+            rollups: [rollup],
+            metrics: [metric],
+            physiologicalCycle: cycle,
+            calendar: calendar
+        ))
+        let canonical = DailyRecoveryResolver.currentEstimate(
+            liveEstimate: liveRecompute,
+            rollups: [rollup],
+            metrics: [metric],
+            physiologicalCycle: cycle,
+            calendar: calendar
+        )
+        let presented = SessionStore.presentationRecoveryEstimate(
+            authoritative: canonical,
+            hasConfirmedMainSleep: false,
+            hasFrozenRecovery: true,
+            pendingSleepReview: nil,
+            baseline: PersonalBaseline(),
+            respiratoryBaseline: nil,
+            now: cycle.start.addingTimeInterval(60),
+            physiologicalCycle: cycle,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(summary.score, 46)
+        XCTAssertEqual(canonical.percent, 46)
+        XCTAssertEqual(presented.percent, 46)
+        XCTAssertEqual(canonical.detail, persisted.detail)
+    }
+
+    func testInitialWearFallbackRejectsAnySleepOrHRVAuthority() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2032, month: 1, day: 2
+        )))
+        let cycle = AtriaPhysiologicalCycle(
+            start: day.addingTimeInterval(6 * 3_600),
+            boundaryKind: .initialFallback,
+            anchorSleepID: nil,
+            expectedInterval: 24 * 3_600
+        )
+        let sleepEstimate = recoveryEstimate(percent: 79)
+        let frozen = try XCTUnwrap(FrozenRecoverySummary(estimate: sleepEstimate,
+                                                         scoredDay: day))
+        let rollup = DailyRollupStoreEntry(day: day,
+                                           recoverySummary: frozen,
+                                           calendar: calendar)
+        let metric = SavedDailyMetric(
+            day: day,
+            recoveryPercent: 79,
+            recoveryConfidence: sleepEstimate.confidence.rawValue,
+            hrv: 62,
+            restingHR: 51,
+            respiratoryRate: 14.2,
+            sleepDuration: 7 * 3_600,
+            sleepSpan: 8 * 3_600,
+            sleepStart: day,
+            sleepEnd: day.addingTimeInterval(8 * 3_600),
+            sleepSource: "sleep_window",
+            sleepStageSegments: [],
+            sleepConsistencyPercent: nil,
+            strain: nil,
+            recoverySummary: frozen
+        )
+
+        XCTAssertNil(DailyRecoveryResolver.summary(
+            rollups: [rollup],
+            metrics: [metric],
+            physiologicalCycle: cycle,
+            calendar: calendar
+        ))
+    }
+
+    func testNoSleepRolloverUsesPersistedLimitedRecoveryInsteadOfLiveDrift() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2032, month: 1, day: 2
+        )))
+        let cycle = AtriaPhysiologicalCycle(
+            start: day.addingTimeInterval(15 * 3_600),
+            boundaryKind: .noSleepFallback,
+            anchorSleepID: "last-confirmed-main-sleep",
+            expectedInterval: 24 * 3_600
+        )
+        let persisted = Metrics.RecoveryEstimate(
+            percent: 46,
+            confidence: .unverified,
+            usesHRV: false,
+            detail: "Limited confidence · sleep and HRV unavailable · conservative RHR-only estimate",
+            contributors: [
+                .init(kind: .hrv,
+                      zScore: 0,
+                      weight: 0,
+                      detail: "HRV unavailable; excluded"),
+                .init(kind: .restingHeartRate,
+                      zScore: -1.45,
+                      weight: 0.2,
+                      detail: "RHR -1.5σ"),
+                .init(kind: .sleep,
+                      zScore: 0,
+                      weight: 0,
+                      detail: "Sleep unavailable; excluded"),
+            ]
+        )
+        let frozen = try XCTUnwrap(FrozenRecoverySummary(estimate: persisted,
+                                                         scoredDay: day))
+        let rollup = DailyRollupStoreEntry(day: day,
+                                           recoverySummary: frozen,
+                                           calendar: calendar)
+        let metric = SavedDailyMetric(
+            day: day,
+            recoveryPercent: 46,
+            recoveryConfidence: Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
+            hrv: nil,
+            restingHR: 73,
+            respiratoryRate: nil,
+            sleepDuration: nil,
+            sleepSpan: nil,
+            sleepStart: nil,
+            sleepEnd: nil,
+            sleepSource: nil,
+            sleepStageSegments: [],
+            sleepConsistencyPercent: nil,
+            strain: 7.4,
+            recoverySummary: frozen
+        )
+        let live = Metrics.RecoveryEstimate(
+            percent: 38,
+            confidence: .unverified,
+            usesHRV: false,
+            detail: "later live RHR recompute",
+            contributors: persisted.contributors
+        )
+
+        XCTAssertEqual(DailyRecoveryResolver.currentEstimate(
+            liveEstimate: live,
+            rollups: [rollup],
+            metrics: [metric],
+            physiologicalCycle: cycle,
+            calendar: calendar
+        ).percent, 46)
+
+        let drifted = SavedDailyMetric(
+            day: day,
+            recoveryPercent: 38,
+            recoveryConfidence: Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
+            hrv: nil,
+            restingHR: 82,
+            respiratoryRate: nil,
+            sleepDuration: nil,
+            sleepSpan: nil,
+            sleepStart: nil,
+            sleepEnd: nil,
+            sleepSource: nil,
+            sleepStageSegments: [],
+            sleepConsistencyPercent: nil,
+            strain: 8.2,
+            recoverySummary: FrozenRecoverySummary(estimate: live, scoredDay: day)
+        )
+        let merged = SessionStore.mergeDailyMetricHistory(
+            existing: [metric],
+            computed: [drifted],
+            sessions: [],
+            sleep: .empty,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: day.addingTimeInterval(19 * 3_600),
+            calendar: calendar
+        )
+        let preserved = try XCTUnwrap(merged.first)
+        XCTAssertEqual(preserved.recoveryPercent, 46)
+        XCTAssertEqual(preserved.restingHR, 73)
+        XCTAssertEqual(preserved.strain, 8.2,
+                       "only cumulative strain may advance during the same fallback day")
     }
 
     func testRecoveryProvenanceSurvivesMetricAndRollupJSONRoundTrip() throws {

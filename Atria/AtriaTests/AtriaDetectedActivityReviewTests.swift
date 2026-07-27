@@ -7,12 +7,81 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
     private let rest = 55
     private let maxHR = 190
 
+    private struct PreservedActiveJournal: Decodable {
+        struct Sample: Decodable {
+            let t: TimeInterval
+            let bpm: Int
+        }
+
+        let startedAt: TimeInterval
+        let updatedAt: TimeInterval
+        let label: String
+        let samples: [Sample]
+        let rawHRNotifications: Int
+        let acceptedHRSamples: Int
+        let zeroHRSamples: Int
+        let heldArtifacts: Int
+        let droppedArtifacts: Int
+        let rawHRGaps: Int
+        let acceptedHRGaps: Int
+        let maxRawHRGap: TimeInterval
+        let maxAcceptedHRGap: TimeInterval
+    }
+
     private var july18MorningEvidenceDirectory: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("logs/live-device/morning-verification-20260718T080323Z")
+    }
+
+    private var july27Gate5EvidenceURL: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent(
+                "evidence/2026-07-27-gate5-physical-positive/final-run/settled-plus-10m/active-journal-reconstructed.json"
+            )
+    }
+
+    private var july27Gate5SessionsURL: URL {
+        july27Gate5EvidenceURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("sessions.json")
+    }
+
+    private var july27Gate5ConfirmedWorkoutsURL: URL {
+        july27Gate5EvidenceURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("confirmed-workouts.json")
+    }
+
+    private func july27Gate5ActiveJournal() throws -> SavedSession {
+        let journal = try JSONDecoder().decode(
+            PreservedActiveJournal.self,
+            from: Data(contentsOf: july27Gate5EvidenceURL)
+        )
+        let start = Date(timeIntervalSinceReferenceDate: journal.startedAt)
+        return SavedSession(
+            id: UUID(),
+            start: start,
+            end: Date(timeIntervalSinceReferenceDate: journal.updatedAt),
+            label: journal.label,
+            points: journal.samples.map {
+                .init(t: $0.t - journal.startedAt, bpm: $0.bpm)
+            },
+            hrRaw2A37: journal.rawHRNotifications,
+            hrAccepted: journal.acceptedHRSamples,
+            hrZero: journal.zeroHRSamples,
+            hrArtifactHeld: journal.heldArtifacts,
+            hrArtifactDropped: journal.droppedArtifacts,
+            hrRawGaps: journal.rawHRGaps,
+            hrAcceptedGaps: journal.acceptedHRGaps,
+            hrMaxRawGap: journal.maxRawHRGap,
+            hrMaxAcceptedGap: journal.maxAcceptedHRGap
+        )
     }
 
     private func july18PulledConfirmedWorkouts() throws -> [UserConfirmedWorkout] {
@@ -95,6 +164,86 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
                             hrArtifactDropped: 0,
                             hrAcceptedGaps: 0,
                             hrMaxAcceptedGap: 2)
+    }
+
+    /// Models the July 27 physical acceptance run: a long, continuously
+    /// recorded low-HR journal contains one short intermittent walk effort.
+    /// The effort clears HRR50 for >5 minutes with a >3-minute continuous
+    /// bout, but begins between the legacy five-minute window anchors.
+    private func shortEffortInsideLongJournal(start: Date) -> SavedSession {
+        let duration: TimeInterval = 74 * 60
+        let effortStart: TimeInterval = 50 * 60 + 23
+        let effortEnd = effortStart + 12 * 60 + 25
+        var points: [SavedSession.Point] = []
+        var rrPoints: [SavedSession.RRPoint] = []
+        for t in stride(from: 0.0, through: duration, by: 1.0) {
+            let effortOffset = t - effortStart
+            let bpm: Int
+            switch effortOffset {
+            case 0..<60:
+                bpm = 112
+            case 60..<300:
+                bpm = 132
+            case 300..<360:
+                bpm = 116
+            case 360..<460:
+                bpm = 134
+            case 460..<(effortEnd - effortStart):
+                bpm = 118
+            default:
+                bpm = 88
+            }
+            points.append(.init(t: t, bpm: bpm))
+            if Int(t) % 24 == 0 {
+                rrPoints.append(.init(t: t,
+                                      ms: Int((60_000.0 / Double(bpm)).rounded()),
+                                      source: .standardHeartRateMeasurement2A37))
+            }
+        }
+        return SavedSession(id: UUID(),
+                            start: start,
+                            end: start.addingTimeInterval(duration),
+                            label: "Live journal",
+                            points: points,
+                            rrPoints: rrPoints,
+                            hrRaw2A37: points.count,
+                            hrAccepted: points.count,
+                            hrZero: 0,
+                            hrArtifactHeld: 0,
+                            hrArtifactDropped: 0,
+                            hrAcceptedGaps: 0,
+                            hrMaxAcceptedGap: 1)
+    }
+
+    private func allDayJournal(start: Date,
+                               duration: TimeInterval = 3 * 60 * 60,
+                               efforts: [(start: TimeInterval, duration: TimeInterval)] = [])
+        -> SavedSession {
+        var points: [SavedSession.Point] = []
+        var rrPoints: [SavedSession.RRPoint] = []
+        for t in stride(from: 0.0, through: duration, by: 1.0) {
+            let active = efforts.contains { t >= $0.start && t < $0.start + $0.duration }
+            let bpm = active ? 132 : 88
+            points.append(.init(t: t, bpm: bpm))
+            if Int(t) % 24 == 0 {
+                rrPoints.append(.init(t: t,
+                                      ms: Int((60_000.0 / Double(bpm)).rounded()),
+                                      source: .standardHeartRateMeasurement2A37))
+            }
+        }
+        return SavedSession(id: UUID(),
+                            start: start,
+                            end: start.addingTimeInterval(duration),
+                            label: "All-day live journal",
+                            points: points,
+                            rrPoints: rrPoints,
+                            hrRaw2A37: points.count,
+                            hrAccepted: points.count,
+                            hrZero: 0,
+                            hrArtifactHeld: 0,
+                            hrArtifactDropped: 0,
+                            hrAcceptedGaps: 0,
+                            hrMaxAcceptedGap: 1)
     }
 
     /// Mirrors the preserved July 21 gym capture: ~30.6 minutes wall time,
@@ -324,6 +473,193 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
         XCTAssertFalse(listed.isEmpty, "a review-worthy Strength-like effort must remain visible")
         XCTAssertTrue(listed.allSatisfy { $0.kind == .activityCandidate && $0.confidence == .low },
                       "every Health-history projection of the non-ready effort must keep low confidence")
+    }
+
+    func testShortQualifiedEffortInsideLongJournalUsesBoundedReviewWindow() throws {
+        let journalStart = Date(timeIntervalSince1970: 1_800_120_000)
+        let session = shortEffortInsideLongJournal(start: journalStart)
+        let candidate = try XCTUnwrap(SessionStore.makeWorkoutReviewCandidateForCache(
+            sessions: [session],
+            confirmedWorkouts: [],
+            rest: rest,
+            maxHR: maxHR
+        ))
+
+        let physicalEffortStart = journalStart.addingTimeInterval(50 * 60 + 23)
+        XCTAssertEqual(candidate.confidence, .medium,
+                       "a window that clears the production HRR50 gate is detector-ready")
+        XCTAssertGreaterThanOrEqual(candidate.start, physicalEffortStart)
+        XCTAssertLessThanOrEqual(candidate.start.timeIntervalSince(physicalEffortStart), 3 * 60)
+        XCTAssertLessThanOrEqual(candidate.duration, 20 * 60,
+                                 "the review must not expand one short effort to the full live journal")
+    }
+
+    func testHistoryUsesBoundedAuthorityForThreeHourJournalEvenWhenReviewCacheIsNil() throws {
+        let start = Date(timeIntervalSince1970: 1_800_180_000)
+        let effortStart: TimeInterval = 80 * 60 + 23
+        let session = allDayJournal(start: start,
+                                    efforts: [(effortStart, 12 * 60 + 25)])
+        let detections = SessionStore.makeHistoryDetections(
+            sessions: [session],
+            confirmedWorkouts: [],
+            rest: rest,
+            maxHR: maxHR,
+            calendar: .current
+        )
+        let activity = try XCTUnwrap(detections.first { $0.kind == .activityCandidate })
+
+        XCTAssertLessThanOrEqual(activity.duration, 30 * 60,
+                                 "the bounded replay may choose its 30-minute window, never the journal")
+        XCTAssertGreaterThanOrEqual(
+            activity.start,
+            start.addingTimeInterval(effortStart - 30),
+            "window anchoring may include only a few pre-effort seconds"
+        )
+        XCTAssertFalse(detections.contains {
+            ($0.kind == .activityCandidate || $0.kind == .workout)
+                && $0.duration >= 2.5 * 60 * 60
+        }, "History must never project the all-day live journal as one workout")
+
+        let visibleWithoutCache = AtriaActivityReviewProjection.visibleDetections(
+            detections,
+            workoutReview: nil,
+            confirmedWorkouts: [],
+            interval: DateInterval(start: start, end: session.end)
+        )
+        XCTAssertEqual(visibleWithoutCache.map(\.id), [activity.id],
+                       "a nil Home cache must still leave only the bounded History authority")
+        XCTAssertEqual(
+            SessionStore.makeHistoryDetections(sessions: [session],
+                                               confirmedWorkouts: [],
+                                               rest: rest,
+                                               maxHR: maxHR,
+                                               calendar: .current).first?.id,
+            activity.id,
+            "bounded History identity must be stable across rebuilds"
+        )
+    }
+
+    func testHistoryRoutesSeparatedEffortsAsSeparateBoundedReviews() {
+        let start = Date(timeIntervalSince1970: 1_800_200_000)
+        let first = cleanEffortSession(start: start, label: "Morning effort")
+        let second = cleanEffortSession(start: start.addingTimeInterval(2 * 60 * 60),
+                                        label: "Evening effort")
+        let detections = SessionStore.makeHistoryDetections(
+            sessions: [first, second],
+            confirmedWorkouts: [],
+            rest: rest,
+            maxHR: maxHR,
+            calendar: .current
+        ).filter { $0.kind == .activityCandidate || $0.kind == .workout }
+
+        XCTAssertEqual(detections.count, 2)
+        XCTAssertTrue(detections.allSatisfy { $0.duration <= first.duration })
+        XCTAssertTrue(detections.contains { $0.start >= second.start && $0.end <= second.end })
+        XCTAssertTrue(detections.contains { $0.start >= first.start && $0.end <= first.end })
+    }
+
+    func testQuietAllDayJournalDoesNotBecomeActivity() {
+        let start = Date(timeIntervalSince1970: 1_800_240_000)
+        let session = allDayJournal(start: start)
+        let detections = SessionStore.makeHistoryDetections(
+            sessions: [session],
+            confirmedWorkouts: [],
+            rest: rest,
+            maxHR: maxHR,
+            calendar: .current
+        )
+
+        XCTAssertFalse(detections.contains {
+            $0.kind == .activityCandidate || $0.kind == .workout
+        })
+    }
+
+    func testHistoryPreservesRawRestAndSleepDetections() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let daytimeStart = try XCTUnwrap(calendar.date(
+            from: DateComponents(year: 2027, month: 1, day: 18, hour: 12)
+        ))
+        let overnightStart = try XCTUnwrap(calendar.date(
+            from: DateComponents(year: 2027, month: 1, day: 18, hour: 22)
+        ))
+        let restSession = allDayJournal(start: daytimeStart, duration: 2 * 60 * 60)
+        let sleepSession = allDayJournal(start: overnightStart, duration: 4 * 60 * 60)
+
+        let detections = SessionStore.makeHistoryDetections(
+            sessions: [restSession, sleepSession],
+            confirmedWorkouts: [],
+            rest: 75,
+            maxHR: maxHR,
+            calendar: calendar
+        )
+
+        let restDetection = try XCTUnwrap(detections.first { $0.kind == .restCandidate })
+        let sleepDetection = try XCTUnwrap(detections.first { $0.kind == .sleepCandidate })
+        XCTAssertEqual(restDetection.id, restSession.id)
+        XCTAssertEqual(sleepDetection.id, sleepSession.id)
+        XCTAssertEqual(restDetection.start, restSession.start)
+        XCTAssertEqual(sleepDetection.end, sleepSession.end)
+    }
+
+    func testHistoryPreservesStandaloneAndConfirmedAndDismissedLifecycle() throws {
+        let start = Date(timeIntervalSince1970: 1_800_260_000)
+        let session = cleanEffortSession(start: start, label: "Standalone effort")
+        let standalone = try XCTUnwrap(SessionStore.makeHistoryDetections(
+            sessions: [session],
+            confirmedWorkouts: [],
+            rest: rest,
+            maxHR: maxHR,
+            calendar: .current
+        ).first { $0.kind == .activityCandidate })
+
+        XCTAssertTrue(SessionStore.makeHistoryDetections(
+            sessions: [session],
+            confirmedWorkouts: [confirmedWorkout(covering: session)],
+            rest: rest,
+            maxHR: maxHR,
+            calendar: .current
+        ).allSatisfy { $0.kind != .activityCandidate && $0.kind != .workout })
+
+        let dismissed = SessionStore.activityDetectionsForUI(
+            [standalone],
+            dismissedCandidates: [
+                AtriaDismissedWorkoutCandidate(start: standalone.start, end: standalone.end)
+            ]
+        )
+        XCTAssertTrue(dismissed.isEmpty,
+                      "dismissal remains a presentation lifecycle choice after central bounding")
+    }
+
+    func testPreservedJuly27PhysicalWalkProducesBoundedReadyReview() throws {
+        let session = try july27Gate5ActiveJournal()
+        var sessions = try JSONDecoder().decode(
+            [SavedSession].self,
+            from: Data(contentsOf: july27Gate5SessionsURL)
+        )
+        sessions.append(session)
+        let confirmed = try JSONDecoder().decode(
+            [UserConfirmedWorkout].self,
+            from: Data(contentsOf: july27Gate5ConfirmedWorkoutsURL)
+        )
+        let candidates = SessionStore.makeWorkoutReviewCandidatesForCache(
+            sessions: sessions,
+            confirmedWorkouts: confirmed,
+            rest: 59,
+            maxHR: 190
+        )
+        let actualStart = Date(timeIntervalSince1970: 1_785_149_903)
+        let actualEnd = actualStart.addingTimeInterval(12 * 60 + 25)
+        let candidate = try XCTUnwrap(candidates.first {
+            min($0.end, actualEnd).timeIntervalSince(max($0.start, actualStart)) > 0
+        })
+
+        XCTAssertEqual(candidate.confidence, .medium,
+                       "the preserved walk clears HRR50 in a bounded window")
+        XCTAssertGreaterThanOrEqual(candidate.start, actualStart)
+        XCTAssertLessThanOrEqual(candidate.start, actualEnd)
+        XCTAssertLessThanOrEqual(candidate.duration, 20 * 60,
+                                 "one physical walk must not become a 74-minute review")
     }
 
     func testPreservedJuly21GappedGymEffortSurfacesReviewOnly() throws {

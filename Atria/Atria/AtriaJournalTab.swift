@@ -483,6 +483,11 @@ private struct AtriaJournalCheckInDeck: View {
     // every wheel/stepper tick would fire a full insights recompute per tick.
     @State private var pendingCaffeineMinutes: Int = 15 * 60
     @State private var pendingDrinks: Int = 1
+    /// Detail questions deliberately live in a sheet rather than inside the
+    /// swipe card. A confirmed Yes should feel finished; collecting a time or
+    /// amount needs a calm, large-target interaction that cannot fight the
+    /// deck's drag gesture.
+    @State private var followUpQuestion: AtriaJournalTypedQuestion?
     // Tinder-style swipe deck: live drag offset for the top card, plus a
     // dedicated haptic tick that fires on every committed swipe (yes or no),
     // independent of the existing deckIndex-driven selection tick.
@@ -580,6 +585,23 @@ private struct AtriaJournalCheckInDeck: View {
         .atriaCard(emphasis: .soft)
         .sensoryFeedback(.selection, trigger: deckIndex)
         .sensoryFeedback(.impact(weight: .medium), trigger: swipeHapticTick)
+        .sheet(item: $followUpQuestion) { question in
+            AtriaJournalFollowUpSheet(
+                question: question,
+                caffeineMinutes: $pendingCaffeineMinutes,
+                drinks: $pendingDrinks,
+                existingAnswer: todayAnswersByQuestion[question.rawValue],
+                onSave: { value in
+                    store.recordJournalAnswer(questionID: question.rawValue, value: value)
+                    followUpQuestion = nil
+                    advance()
+                },
+                onSkip: {
+                    followUpQuestion = nil
+                    advance()
+                }
+            )
+        }
         .onAppear {
             // Completion is persisted state, not transient UI state: resume at
             // the first unanswered card (or the done card) after any view reset.
@@ -717,18 +739,37 @@ private struct AtriaJournalCheckInDeck: View {
     private var swipeGesture: some Gesture {
         DragGesture(minimumDistance: 15)
             .onChanged { value in
-                dragOffset = value.translation
+                // A question card also has buttons. Do not let the tiny
+                // vertical drift of a normal tap move the entire card; that
+                // was the source of the visible shake while answering.
+                let x = value.translation.width
+                let y = value.translation.height
+                guard abs(x) > max(12, abs(y) * 1.25) else { return }
+                dragOffset = CGSize(width: resistedSwipeDistance(x), height: 0)
             }
             .onEnded { value in
+                let x = value.predictedEndTranslation.width
+                let y = value.predictedEndTranslation.height
+                guard abs(x) > abs(y) * 1.25 else {
+                    snapBack()
+                    return
+                }
                 let threshold: CGFloat = 110
-                if value.translation.width > threshold {
+                if x > threshold {
                     commitSwipe(.yes)
-                } else if value.translation.width < -threshold {
+                } else if x < -threshold {
                     commitSwipe(.no)
                 } else {
                     snapBack()
                 }
             }
+    }
+
+    private func resistedSwipeDistance(_ translation: CGFloat) -> CGFloat {
+        let limit: CGFloat = 132
+        let magnitude = abs(translation)
+        let resisted = limit * (1 - exp(-magnitude / limit))
+        return translation < 0 ? -resisted : resisted
     }
 
     private func commitSwipe(_ direction: SwipeDirection) {
@@ -745,6 +786,7 @@ private struct AtriaJournalCheckInDeck: View {
                 flyOffAndAdvance(direction: .yes)
             } else {
                 snapBack()
+                presentFollowUp(followUp)
             }
         case .no:
             recordNo(tag: tag, followUp: followUp)
@@ -766,6 +808,21 @@ private struct AtriaJournalCheckInDeck: View {
             advance()
             dragOffset = .zero
         }
+    }
+
+    private func presentFollowUp(_ question: AtriaJournalTypedQuestion?) {
+        guard let question else { return }
+        if let existing = todayAnswersByQuestion[question.rawValue]?.value {
+            switch question {
+            case .caffeineLastTime:
+                pendingCaffeineMinutes = existing.timeOfDayMinutes ?? pendingCaffeineMinutes
+            case .alcoholDrinks:
+                pendingDrinks = existing.quantityValue ?? pendingDrinks
+            case .moodScale, .stressScale, .energyScale, .focusScale, .windDownScale:
+                break
+            }
+        }
+        followUpQuestion = question
     }
 
     private func snapBack() {
@@ -827,7 +884,11 @@ private struct AtriaJournalCheckInDeck: View {
             HStack(spacing: 12) {
                 Button {
                     recordYes(tag: tag)
-                    if followUp == nil { advance() }
+                    if followUp == nil {
+                        advance()
+                    } else {
+                        presentFollowUp(followUp)
+                    }
                 } label: {
                     Text("Yes")
                         .font(.body.weight(.semibold))
@@ -847,7 +908,14 @@ private struct AtriaJournalCheckInDeck: View {
             }
 
             if answeredYes, let followUp {
-                followUpControl(for: followUp)
+                Button {
+                    presentFollowUp(followUp)
+                } label: {
+                    Label("Add details", systemImage: followUp.symbolName)
+                        .font(.body.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 32)
+                }
+                .atriaCardAction(prominent: false, tint: .cyan)
             }
 
             Button("Skip") {
@@ -859,76 +927,6 @@ private struct AtriaJournalCheckInDeck: View {
         .padding(.horizontal, 22)
         .padding(.vertical, 26)
         .frame(maxWidth: .infinity)
-    }
-
-    /// Inline typed detail shown once the linked boolean is Yes: caffeine time
-    /// dial, alcohol drinks stepper. Setting the detail advances the deck.
-    @ViewBuilder
-    private func followUpControl(for question: AtriaJournalTypedQuestion) -> some View {
-        switch question {
-        case .caffeineLastTime:
-            HStack(spacing: 8) {
-                Label(question.title, systemImage: question.symbolName)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                DatePicker("",
-                           selection: Binding(
-                               get: {
-                                   Calendar.current.date(bySettingHour: pendingCaffeineMinutes / 60,
-                                                         minute: pendingCaffeineMinutes % 60,
-                                                         second: 0,
-                                                         of: Date()) ?? Date()
-                               },
-                               set: { picked in
-                                   let components = Calendar.current.dateComponents([.hour, .minute], from: picked)
-                                   pendingCaffeineMinutes = (components.hour ?? 0) * 60 + (components.minute ?? 0)
-                               }),
-                           displayedComponents: .hourAndMinute)
-                    .labelsHidden()
-                Button("Set") {
-                    // Commit the DISPLAYED value: tapping Set without touching the
-                    // dial must still record an answer.
-                    store.recordJournalAnswer(questionID: question.rawValue,
-                                              value: .timeOfDay(minutes: pendingCaffeineMinutes))
-                    advance()
-                }
-                .font(.caption.weight(.semibold))
-                .frame(minWidth: 44, minHeight: 44)
-                .atriaCardAction(prominent: false, tint: .cyan)
-            }
-            .onAppear {
-                if let existing = todayAnswersByQuestion[question.rawValue]?.value.timeOfDayMinutes {
-                    pendingCaffeineMinutes = existing
-                }
-            }
-        case .alcoholDrinks:
-            HStack(spacing: 8) {
-                Label(question.title, systemImage: question.symbolName)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                Stepper(value: $pendingDrinks, in: 1...20) {
-                    Text("\(pendingDrinks)")
-                        .font(.subheadline.weight(.semibold))
-                        .monospacedDigit()
-                }
-                .fixedSize()
-                Button("Set") {
-                    store.recordJournalAnswer(questionID: question.rawValue,
-                                              value: .quantity(pendingDrinks))
-                    advance()
-                }
-                .font(.caption.weight(.semibold))
-                .frame(minWidth: 44, minHeight: 44)
-                .atriaCardAction(prominent: false, tint: .cyan)
-            }
-            .onAppear {
-                if let existing = todayAnswersByQuestion[question.rawValue]?.value.quantityValue {
-                    pendingDrinks = existing
-                }
-            }
-        case .moodScale, .stressScale, .energyScale, .focusScale, .windDownScale:
-            EmptyView()
-        }
     }
 
     private static let scaleEmoji = ["😖", "😕", "😐", "🙂", "😄"]
@@ -1054,6 +1052,137 @@ private struct AtriaJournalCheckInDeck: View {
         // Jump to the scale cards — mood/stress are about TODAY and cannot be
         // copied from yesterday.
         withAnimation(reduceMotion ? nil : .snappy) { deckIndex = tags.count }
+    }
+}
+
+/// One focused follow-up at a time. This is intentionally kept out of the
+/// swipe card: wheel pickers and steppers need room, 52pt tap targets, and a
+/// stable scroll-free surface.
+private struct AtriaJournalFollowUpSheet: View {
+    let question: AtriaJournalTypedQuestion
+    @Binding var caffeineMinutes: Int
+    @Binding var drinks: Int
+    let existingAnswer: AtriaJournalAnswer?
+    let onSave: (AtriaJournalValue) -> Void
+    let onSkip: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    private var caffeineDate: Binding<Date> {
+        Binding(
+            get: {
+                Calendar.current.date(bySettingHour: caffeineMinutes / 60,
+                                              minute: caffeineMinutes % 60,
+                                              second: 0,
+                                              of: Date()) ?? Date()
+            },
+            set: { picked in
+                let components = Calendar.current.dateComponents([.hour, .minute], from: picked)
+                caffeineMinutes = (components.hour ?? 0) * 60 + (components.minute ?? 0)
+            }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: question.symbolName)
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(.cyan)
+                    .frame(width: 48, height: 48)
+                    .background(.cyan.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(question.title)
+                        .font(.title3.weight(.bold))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(question == .caffeineLastTime
+                         ? "This helps relate timing to tonight’s sleep."
+                         : "A quick count helps make the journal useful later.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            switch question {
+            case .caffeineLastTime:
+                DatePicker("Last caffeine", selection: caffeineDate, displayedComponents: .hourAndMinute)
+                    .datePickerStyle(.wheel)
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 150)
+                    .accessibilityLabel("Last caffeine time")
+            case .alcoholDrinks:
+                HStack(spacing: 18) {
+                    Button {
+                        drinks = max(1, drinks - 1)
+                    } label: {
+                        Image(systemName: "minus")
+                    }
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.circle)
+                    .frame(width: 56, height: 56)
+                    .accessibilityLabel("One fewer drink")
+
+                    Text("\(drinks)")
+                        .font(.system(size: 48, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .frame(maxWidth: .infinity)
+                        .accessibilityLabel("\(drinks) drinks")
+
+                    Button {
+                        drinks = min(20, drinks + 1)
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .buttonStyle(.glassProminent)
+                    .buttonBorderShape(.circle)
+                    .frame(width: 56, height: 56)
+                    .accessibilityLabel("One more drink")
+                }
+                .padding(.vertical, 16)
+                .frame(maxWidth: .infinity)
+                .background(.quaternary.opacity(0.34), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            case .moodScale, .stressScale, .energyScale, .focusScale, .windDownScale:
+                EmptyView()
+            }
+
+            Button {
+                switch question {
+                case .caffeineLastTime:
+                    onSave(.timeOfDay(minutes: caffeineMinutes))
+                case .alcoholDrinks:
+                    onSave(.quantity(drinks))
+                case .moodScale, .stressScale, .energyScale, .focusScale, .windDownScale:
+                    break
+                }
+            } label: {
+                Text("Save detail")
+                    .font(.body.weight(.bold))
+                    .frame(maxWidth: .infinity, minHeight: 52)
+            }
+            .buttonStyle(.glassProminent)
+            .buttonBorderShape(.capsule)
+
+            Button("Skip for now", action: onSkip)
+                .font(.body.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .foregroundStyle(.secondary)
+        }
+        .padding(24)
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(.thinMaterial)
+        .onAppear {
+            guard let value = existingAnswer?.value else { return }
+            switch question {
+            case .caffeineLastTime:
+                caffeineMinutes = value.timeOfDayMinutes ?? caffeineMinutes
+            case .alcoholDrinks:
+                drinks = value.quantityValue ?? drinks
+            case .moodScale, .stressScale, .energyScale, .focusScale, .windDownScale:
+                break
+            }
+        }
     }
 }
 
