@@ -3071,6 +3071,12 @@ private struct AtriaLiveWorkoutStrainGuidanceHost: View {
     }
 }
 
+enum AtriaLiveWorkoutLoadVisibility {
+    static func isReadable(hasSensorEvidence: Bool, loadIsComplete: Bool) -> Bool {
+        hasSensorEvidence && loadIsComplete
+    }
+}
+
 private struct AtriaLiveWorkoutStrainGuidance: View {
     let metricProjection: AtriaLiveWorkoutMetricProjection
     let guidanceTarget: Double?
@@ -3133,7 +3139,10 @@ private struct AtriaLiveWorkoutStrainGuidance: View {
     /// real number — the same one `strainHUDText`/`activeCaloriesHUDText` use
     /// to fall back to "--", and the same one that gated the progress fill.
     private var loadIsReadable: Bool {
-        metricProjection.hasSensorEvidence && metricProjection.loadIsComplete
+        AtriaLiveWorkoutLoadVisibility.isReadable(
+            hasSensorEvidence: metricProjection.hasSensorEvidence,
+            loadIsComplete: metricProjection.loadIsComplete
+        )
     }
 
     private var caloriesText: String {
