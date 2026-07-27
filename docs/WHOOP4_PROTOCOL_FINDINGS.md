@@ -1869,6 +1869,29 @@ POSITIVE STILL REQUIRED**
   `evidence/2026-07-28-gate2-generation-fix/union-scan-physical-console.log`
   and `/tmp/atria-gate2-lane-tests.log`.
 
+#### 2026-07-28 — Gate 2 physical acceptance: exact recovery published
+
+- **PHYSICAL pass:** after separating the motion lane, the existing exact
+  generation-2 recovery completed every recovered-data component and logged
+  `recovered_derived status=published`. The durable authority advanced from
+  `coverageProven` to `gapResolvedConsumersPending`; no new strap drain was
+  required.
+- **Exact interval proof:** gap
+  `37b98471-a122-48d7-8365-4403cd74bc8d` retained 129/129 observed one-second
+  buckets, 100% density, one-second maximum gap and one-second p95 gap.
+- **Durability/publication proof:** source chunk
+  `faddb341-44bd-4950-b7bb-9c1fe108d042` remains sealed at 1,829 rows and
+  2,395,673 bytes with SHA-256
+  `079c11611d1fe6f3d61239498a6a9eec482833ee453f0c316ab4a5e7d72bfc13`;
+  completion generation 2/catalog generation 253 remains published.
+- **Lane behavior:** confirmed-workout HR/load repaired 43 rows, then sleep,
+  history/daily rollups, HR zones, behavior insights and training load all
+  crossed the same transaction fence. Step enrichment remained independent
+  and did not extend the Gate 2 lease.
+- **Evidence:**
+  `evidence/2026-07-28-gate2-generation-fix/terminal-physical/` and
+  `evidence/2026-07-28-gate2-generation-fix/hr-motion-lane-physical-console.log`.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.
