@@ -828,22 +828,39 @@ struct AtriaActivityMonitorTab: View {
         .accessibilityElement(children: .combine)
     }
 
+    /// An empty day is the most common state on this tab, and it used to be a
+    /// thin pill reading "No saved or detected activity" above roughly a
+    /// thousand points of blank screen — a bare negative that never said what
+    /// the tab is for or what would eventually fill it. The one sentence that
+    /// did explain it was the VoiceOver hint, so sighted users were the ones
+    /// left without the explanation. Same statement of fact, now with the
+    /// answer to "then what goes here?" visible.
     private var activityEmptyState: some View {
-        HStack(spacing: 10) {
+        VStack(spacing: 10) {
             Image(systemName: "calendar.badge.plus")
-                .font(.callout.weight(.bold))
+                .font(.title.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 34, height: 34)
+                .frame(width: 56, height: 56)
                 .background(.secondary.opacity(0.10), in: Circle())
+                .padding(.bottom, 2)
+
             Text("No saved or detected activity")
-                .font(.subheadline.weight(.semibold))
+                .font(.headline)
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.center)
+
+            Text("Workouts and sleep land here on their own once they are detected or confirmed. Use Add to log something yourself.")
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
-            Spacer(minLength: 8)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 320)
         }
-        .padding(10)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 32)
+        .padding(.horizontal, 16)
         .atriaCard(emphasis: .soft)
         .accessibilityElement(children: .combine)
-        .accessibilityHint("Use Add in the day toolbar to log an activity.")
     }
 
     private func refreshDaySections(for key: AtriaActivitySectionsRequestKey,
