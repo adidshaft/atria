@@ -20617,6 +20617,41 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         ) < 0.001
     }
 
+    /// The persisted motion-owner lease is shared by manual workouts,
+    /// calibration, and ordinary all-day capture. Its mere presence therefore
+    /// cannot block the all-day bank checkpoint: the governor necessarily
+    /// holds that lease while the bank is accumulating. Only a higher-priority
+    /// owner or an unsafe transport/battery state may defer the close.
+    nonisolated static func historicalMotionBankDailyCheckpointEligible(
+        manualWorkoutActive: Bool,
+        calibrationHoldActive: Bool,
+        historyOwnerActive: Bool,
+        bankArmed: Bool,
+        batteryAllows: Bool
+    ) -> Bool {
+        !manualWorkoutActive
+            && !calibrationHoldActive
+            && !historyOwnerActive
+            && bankArmed
+            && batteryAllows
+    }
+
+    nonisolated static func historicalMotionBankOffloadEligible(
+        manualWorkoutActive: Bool,
+        calibrationHoldActive: Bool,
+        historyOwnerActive: Bool,
+        postHistoryRestorationActive: Bool,
+        connectedWithAcceptedHR: Bool,
+        hasPendingTicket: Bool
+    ) -> Bool {
+        !manualWorkoutActive
+            && !calibrationHoldActive
+            && !historyOwnerActive
+            && !postHistoryRestorationActive
+            && connectedWithAcceptedHR
+            && hasPendingTicket
+    }
+
     /// WHOOP 4's banked v24 motion counter is the physically accepted Gate-4
     /// source. It runs independently of the unstable realtime R10 flood and
     /// therefore never blocks Start/End or competes with standard 2A37 HR.
@@ -20702,12 +20737,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         at date: Date,
         reason: String
     ) {
-        guard workoutMotionOwnerStartedAt == nil,
-              !AtriaPendingWorkoutIntent.isActiveForBLEContinuity(),
-              !historyOnlyProbeMode,
-              !offlineHistoricalSyncInProgress,
-              workoutHistoricalMotionBankArmed,
-              batteryLevel < 0 || batteryLevel >= 10 || batteryIsCharging else {
+        let calibrationHoldActive =
+            workoutMotionCalibrationHoldUntil.map { date < $0 } == true
+        guard Self.historicalMotionBankDailyCheckpointEligible(
+            manualWorkoutActive:
+                AtriaPendingWorkoutIntent.isActiveForBLEContinuity(now: date),
+            calibrationHoldActive: calibrationHoldActive,
+            historyOwnerActive:
+                historyOnlyProbeMode || offlineHistoricalSyncInProgress,
+            bankArmed: workoutHistoricalMotionBankArmed,
+            batteryAllows:
+                batteryLevel < 0 || batteryLevel >= 10 || batteryIsCharging
+        ) else {
             return
         }
         let defaults = UserDefaults.standard
@@ -20904,20 +20945,34 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reason: String
     ) {
         repairTransportOnlyClearedWorkoutMotionTicketIfNeeded()
-        guard workoutMotionOwnerStartedAt == nil,
-              !AtriaPendingWorkoutIntent.isActiveForBLEContinuity(),
-              !offlineHistoricalSyncInProgress,
-              postHistoryLiveRestorationTask == nil,
-              !historyOnlyProbeMode,
-              let peripheral,
-              peripheral.state == .connected,
-              let connectedAt,
-              let lastAcceptedHRAt,
-              lastAcceptedHRAt >= connectedAt,
-              let ticket = AtriaWhoop4MotionBankCoverageLedger
-                .nextPendingOffload(
-                    strapIdentifier: peripheral.identifier.uuidString
-                ) else { return }
+        let manualWorkoutActive =
+            AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
+        let calibrationHoldActive =
+            workoutMotionCalibrationHoldUntil.map { Date() < $0 } == true
+        let historyOwnerActive =
+            offlineHistoricalSyncInProgress || historyOnlyProbeMode
+        let connectedPeripheral = peripheral.flatMap {
+            $0.state == .connected ? $0 : nil
+        }
+        let acceptedCurrentConnectionHR =
+            connectedAt.flatMap { connectionStart in
+                lastAcceptedHRAt.map { $0 >= connectionStart }
+            } == true
+        let ticket = connectedPeripheral.flatMap {
+            AtriaWhoop4MotionBankCoverageLedger.nextPendingOffload(
+                strapIdentifier: $0.identifier.uuidString
+            )
+        }
+        guard Self.historicalMotionBankOffloadEligible(
+            manualWorkoutActive: manualWorkoutActive,
+            calibrationHoldActive: calibrationHoldActive,
+            historyOwnerActive: historyOwnerActive,
+            postHistoryRestorationActive:
+                postHistoryLiveRestorationTask != nil,
+            connectedWithAcceptedHR:
+                connectedPeripheral != nil && acceptedCurrentConnectionHR,
+            hasPendingTicket: ticket != nil
+        ), let ticket else { return }
         let now = Date()
         if let lastAttemptAt = ticket.lastAttemptAt {
             let delay = Self.workoutHistoricalMotionBankOffloadRetryDelay(

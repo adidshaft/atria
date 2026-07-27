@@ -1986,6 +1986,38 @@ POSITIVE STILL REQUIRED**
   rejection pass in
   `Test-AtriaTests-2026.07.28_03-37-47-+0530.xcresult`.
 
+#### 2026-07-28 — all-day bank owner blocked its own hourly close
+
+- **PHYSICAL fail:** the production all-day `69/01` bank remained armed from
+  03:06:57 through 04:09 IST while accepted live HR continued. The scheduled
+  hourly checkpoint never updated `lastDailyCheckpointAt`, never re-armed, and
+  the durable v24 receipt remained byte-identical at 1,102 strap-only steps.
+- **Exact evidence:** `atria.workoutMotion.ownerStartedAt` was present from
+  03:06:52. This is expected: the all-day governor uses the shared motion lease
+  while its bank accumulates. There was no pending workout-intent file and no
+  manual workout in progress.
+- **CODE diagnosis:** `checkpointDailyHistoricalMotionBankIfNeeded` required
+  the shared owner lease to be absent. That condition cannot become true during
+  healthy all-day capture, so the intended one-hour close/offload could remain
+  blocked forever.
+- **CODE correction:** the shared owner stamp is no longer interpreted as a
+  manual-workout blocker. Eligibility now defers only for an active persisted
+  manual workout, a live calibration hold, a history transport owner, an
+  unarmed bank, or the existing battery safety condition. The same separation
+  applies to the subsequent async exact-window offload, which still requires a
+  current accepted-HR connection and a durable pending ticket. This does not
+  alter command bytes, history durability, or the accepted-HR path.
+- **TEST evidence:** 431/431 BLE, bank, motion projection, daily receipt,
+  strap-step ledger, and step-model tests pass in
+  `Test-AtriaTests-2026.07.28_04-16-50-+0530.xcresult`.
+- **Acceptance status:** code regression is covered; physical acceptance
+  remains pending until the same production one-hour arm → close → durable
+  receipt advancement test passes after installation.
+- **Evidence:**
+  `evidence/2026-07-28-all-day-step-checkpoint/03-35/`,
+  `evidence/2026-07-28-all-day-step-checkpoint/04-07/`, and
+  `evidence/2026-07-28-all-day-step-checkpoint/04-09/`.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.
