@@ -1370,6 +1370,31 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertTrue(SessionStore.confirmedWorkoutNeedsArchiveRehydration(missingMetrics))
     }
 
+    func testArchiveRehydrationUsesOneUnionWindowForEligibleWorkouts() throws {
+        let firstStart = Date(timeIntervalSince1970: 1_783_767_620)
+        let first = sparseConfirmedWorkout(
+            start: firstStart,
+            end: firstStart.addingTimeInterval(50 * 60),
+            samples: 100,
+            coverage: 50
+        )
+        let secondStart = firstStart.addingTimeInterval(24 * 60 * 60)
+        let second = sparseConfirmedWorkout(
+            start: secondStart,
+            end: secondStart.addingTimeInterval(75 * 60),
+            samples: 100,
+            coverage: 50
+        )
+
+        let union = try XCTUnwrap(
+            SessionStore.confirmedWorkoutArchiveUnionWindow([second, first])
+        )
+
+        XCTAssertEqual(union.start, first.start)
+        XCTAssertEqual(union.end, second.end)
+        XCTAssertNil(SessionStore.confirmedWorkoutArchiveUnionWindow([]))
+    }
+
     func testArchiveRehydrationNeverReplacesWithEqualOrLowerCoverage() {
         let start = Date(timeIntervalSince1970: 1_783_767_620)
         let old = sparseConfirmedWorkout(start: start,

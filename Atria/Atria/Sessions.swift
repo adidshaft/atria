@@ -8648,6 +8648,28 @@ final class SessionStore: ObservableObject {
         let workItem = DispatchWorkItem { [weak self, originals, sourceSessions,
                                            currentRest, currentMaxHR, currentProfile,
                                            reason] in
+            let heartRateOriginals = originals.filter(
+                Self.confirmedWorkoutNeedsHeartRateArchiveRehydration
+            )
+            let archiveHeartRateWindow: HistoricalArchive.HeartRateWindowRead?
+            if let union = Self.confirmedWorkoutArchiveUnionWindow(
+                heartRateOriginals
+            ) {
+                // Scan immutable history once for the complete set of eligible
+                // workouts. Reading the same 304 MB archive once per workout
+                // exceeded the recovered-data component lease on the physical
+                // device. The global ceiling remains fail-closed: overflow
+                // withholds every HR replacement instead of publishing a
+                // partial prefix.
+                archiveHeartRateWindow = HistoricalArchive
+                    .metricHeartRatePoints(
+                        start: union.start,
+                        end: union.end.addingTimeInterval(0.001),
+                        maximumPoints: 1_500_000
+                    )
+            } else {
+                archiveHeartRateWindow = nil
+            }
             let replacements = originals.compactMap { old -> (UserConfirmedWorkout, UserConfirmedWorkout)? in
                 var replacement = old
                 let existingPoints = sourceSessions.flatMap { session -> [HistoricalArchive.HeartRatePoint] in
@@ -8658,25 +8680,14 @@ final class SessionStore: ObservableObject {
                         return HistoricalArchive.HeartRatePoint(t: time, bpm: point.bpm)
                     }
                 }
-                // Four rows/second is a conservative WHOOP 4 ceiling for this
-                // bounded metric projection. Overflow fails closed inside the
-                // exact reader instead of publishing a partial workout.
-                let maximumPointBudget = 1_500_000
-                let boundedDuration = min(max(0, old.duration),
-                    Double((maximumPointBudget - 120) / 4))
-                let maximumArchivePoints = min(maximumPointBudget, max(6_000,
-                    Int(boundedDuration.rounded(.up)) * 4 + 120
-                ))
                 if Self.confirmedWorkoutNeedsHeartRateArchiveRehydration(old),
-                   let archiveWindow = HistoricalArchive.metricHeartRatePoints(
-                       start: old.start,
-                       end: old.end.addingTimeInterval(0.001),
-                       maximumPoints: maximumArchivePoints
-                   ),
+                   let archiveHeartRateWindow,
                    let rehydrated = SessionStore.rehydratedConfirmedWorkout(
                        old,
                        existingPoints: existingPoints,
-                       archivePoints: archiveWindow.points,
+                       archivePoints: archiveHeartRateWindow.points.filter {
+                           $0.t >= old.start && $0.t <= old.end
+                       },
                        rest: currentRest,
                        maxHR: currentMaxHR,
                        profile: currentProfile
@@ -18167,7 +18178,16 @@ final class SessionStore: ObservableObject {
                 ) == .walking)
     }
 
-    nonisolated private static func confirmedWorkoutNeedsHeartRateArchiveRehydration(
+    nonisolated static func confirmedWorkoutArchiveUnionWindow(
+        _ workouts: [UserConfirmedWorkout]
+    ) -> DateInterval? {
+        guard let start = workouts.map(\.start).min(),
+              let end = workouts.map(\.end).max(),
+              end > start else { return nil }
+        return DateInterval(start: start, end: end)
+    }
+
+    nonisolated static func confirmedWorkoutNeedsHeartRateArchiveRehydration(
         _ workout: UserConfirmedWorkout
     ) -> Bool {
         workout.streamCoveragePercent < 100
