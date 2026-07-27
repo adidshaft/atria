@@ -9885,14 +9885,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         offlineHistoricalSyncBackgroundTask = UIApplication.shared.beginBackgroundTask(
             withName: "Atria WHOOP history recovery"
         ) { [weak self] in
-            Task { @MainActor in
-                guard let self,
-                      self.offlineHistoricalSyncBackgroundTaskGeneration == generation else {
-                    return
+            // UIKit invokes expiration handlers on the main thread, but the
+            // closure is not imported as @MainActor. Do the terminal transport
+            // handoff before returning from the handler: enqueueing a Task here
+            // lets iOS suspend the process first, which physically left a
+            // history generation marked active after its first frame while the
+            // durable all-day step receipt never published.
+            guard Thread.isMainThread else {
+                DispatchQueue.main.sync {
+                    self?.handleOfflineHistoricalSyncBackgroundLeaseExpiration(
+                        generation: generation
+                    )
                 }
-                AtriaDebugLog("ATRIADBG offline_sync background_lease=expired generation=%llu action=retain_pending_and_allow_corebluetooth_resume",
-                              generation)
-                self.endOfflineHistoricalSyncBackgroundLease(status: "expired_pending")
+                return
+            }
+            MainActor.assumeIsolated {
+                self?.handleOfflineHistoricalSyncBackgroundLeaseExpiration(
+                    generation: generation
+                )
             }
         }
         if offlineHistoricalSyncBackgroundTask == .invalid {
@@ -9902,6 +9912,32 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         AtriaDebugLog("ATRIADBG offline_sync background_lease=active generation=%llu application_state=%ld",
                       generation,
                       UIApplication.shared.applicationState.rawValue)
+    }
+
+    private func handleOfflineHistoricalSyncBackgroundLeaseExpiration(
+        generation: UInt64
+    ) {
+        guard offlineHistoricalSyncBackgroundTaskGeneration == generation else {
+            return
+        }
+        AtriaDebugLog("ATRIADBG offline_sync background_lease=expired generation=%llu action=disconnect_history_transport_retain_durable_prefix_and_ticket",
+                      generation)
+        endOfflineHistoricalSyncBackgroundLease(
+            status: "expired_transport_reset_pending"
+        )
+        guard offlineHistoricalSyncInProgress,
+              offlineHistoricalSyncGeneration == generation else { return }
+        if let historyPeripheral = peripheral,
+           historyPeripheral.state == .connected {
+            cancelPeripheralConnection(
+                historyPeripheral,
+                reason: "history_background_lease_expired_transport_reset"
+            )
+        } else {
+            interruptOfflineHistoricalSyncForTransportLoss(
+                reason: "history_background_lease_expired"
+            )
+        }
     }
 
     private func endOfflineHistoricalSyncBackgroundLease(status: String) {
