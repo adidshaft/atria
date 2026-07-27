@@ -37,7 +37,11 @@ struct AtriaOnboardingFlow: View {
 
         var detail: String {
             switch self {
-            case .recovery: return "Morning readiness"
+            // Short enough to fit the three-across legend chip at the ring's
+            // 260pt width. "Morning readiness" rendered as "Morning re…" even
+            // at minimumScaleFactor(0.6) — a truncation on the very first
+            // screen a user sees.
+            case .recovery: return "Readiness"
             case .sleep: return "Night review"
             case .strain: return "Day load"
             }
@@ -265,6 +269,15 @@ struct AtriaOnboardingFlow: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityHint("WHOOP insights without the subscription.")
             onboardingRingCard
+            // The ring above is drawn from fixed sample numbers (64%, 7h 42m,
+            // 13.1). Nothing on screen said so, so a first-run user could read
+            // them as their own readings before ever wearing the strap —
+            // exactly the fabrication the honesty rule exists to prevent. The
+            // ring is a layout preview; label it as one.
+            Text("Sample numbers, so you can see the layout. Yours start after your first night.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Picker("Center metric", selection: $focusMetric) {
                 ForEach(OnboardingFocusMetric.allCases) { metric in
                     Text(metric.title).tag(metric)
@@ -273,26 +286,38 @@ struct AtriaOnboardingFlow: View {
             .pickerStyle(.segmented)
             .accessibilityHint("Selects the metric shown in the center of the ring")
             if onRestoreBackup != nil {
-                Button {
-                    backupImportPresented = true
-                } label: {
-                    HStack(spacing: 8) {
-                        if restoreInProgress {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                        Label(restoreInProgress ? "Restoring…" : "Restore backup from Files",
-                              systemImage: "tray.and.arrow.down")
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.glass)
-                .disabled(restoreInProgress)
-                if let restoreMessage {
-                    Text(restoreMessage)
+                // Restoring a backup is the rare path — a returning user, not
+                // a new one. It previously sat directly under the picker as a
+                // full-width glass button, reading as a co-equal first action.
+                // Pushed to the foot of the page behind a quiet lead-in so the
+                // common path (Get started) stays unambiguous.
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Coming back to Atria?")
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(.secondary)
+                    Button {
+                        backupImportPresented = true
+                    } label: {
+                        HStack(spacing: 8) {
+                            if restoreInProgress {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Label(restoreInProgress ? "Restoring…" : "Restore backup from Files",
+                                  systemImage: "tray.and.arrow.down")
+                                .font(.footnote.weight(.semibold))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                    .disabled(restoreInProgress)
+                    if let restoreMessage {
+                        Text(restoreMessage)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                .padding(.top, 8)
             }
         }
     }
