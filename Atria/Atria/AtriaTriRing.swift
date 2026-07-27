@@ -603,13 +603,23 @@ struct AtriaTriRing: View, Equatable {
                         Text(metric.detail)
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            // Two lines, because one truncated the answer away.
+                            // The engine's confidence captions are sentences,
+                            // not labels -- "Limited confidence · HRV
+                            // unavailable" rendered as "Limited confidence ·
+                            // H…" at a third of the screen width, clipping the
+                            // half that says what to do about it. The chip is
+                            // min-height, not fixed, so it grows by one caption
+                            // line and the row equalises.
+                            .lineLimit(2)
                             .minimumScaleFactor(0.6)
                             .allowsTightening(true)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .padding(.vertical, 4)
             .padding(.horizontal, 8)
             // Identity-forward chip, unified with the glance tiles and trend
             // summary pills (design-handoff "metric chip": hue wash + hue
