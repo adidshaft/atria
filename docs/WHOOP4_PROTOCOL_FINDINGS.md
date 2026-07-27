@@ -1923,20 +1923,24 @@ POSITIVE STILL REQUIRED**
   `AtriaWhoop4MotionTickDailyStore` was not a direct presentation authority, so
   an ordinary snapshot delay could temporarily turn verified evidence into
   “unavailable.”
-- **CODE correction (physical presentation verification pending):** the daily
+- **CODE correction:** the daily
   receipt store is now a shared cached authority. Home and widget merge the
   exact current wake-boundary receipt with the projected days, retain exact
   canonical conflicts fail-closed, and select only the strongest partial
   coverage. A partial subtotal remains a lower bound (`≥1,102 · Partial
   archive · 22% covered`); no phone-pedometer value or extrapolation is used.
   Saving a stronger receipt triggers both Home refresh and widget publication.
+- **PHYSICAL pass:** after the in-place Release installation, the app-group
+  payload published 1,102 steps from `verifiedCanonical`, completeness
+  `partial`, and coverage `0.2203918455`. The confirmed-workout and daily-metric
+  stores remained byte-identical, and live HR continued.
 - **TEST evidence:** durable-receipt merge, stronger-coverage ordering,
   exact-over-partial precedence, and lower-bound presentation all pass in
   `Test-AtriaTests-2026.07.28_03-21-00-+0530.xcresult`.
 - **Evidence:**
   `evidence/2026-07-28-terminal-retention-device/unlocked-final-state/`
   and
-  `evidence/2026-07-27-all-day-motion-default/settled/authoritative-runtime-state/whoop4-motion-tick-days-v1.json`.
+  `evidence/2026-07-28-metric-truth-fix/`.
 
 #### 2026-07-28 — current-cycle strain lost its partial qualifier after midnight
 
@@ -1944,13 +1948,18 @@ POSITIVE STILL REQUIRED**
   midnight, but tested incompleteness only against workouts whose start was on
   the new civil day. The contributing 78%-coverage gym Strength workout could
   therefore remain in the numeric strain while its `Partial` warning vanished.
-- **CODE correction (physical presentation verification pending):** current
+- **CODE correction:** current
   Home, Today and widget strain now qualify every workout overlapping the exact
   physiological cycle. Civil-day history continues to use the existing
   civil-day helper.
+- **PHYSICAL pass:** on the installed Release, Home displayed the current-cycle
+  score as `≥ 16.3` with `Partial · sparse HR` while live strap HR remained
+  present. The contributing pre-midnight 78%-coverage workout therefore cannot
+  lose its uncertainty disclosure after midnight.
 - **TEST evidence:** the prior-day sparse-workout/current-cycle regression and
   adjacent Today, widget, strain, and physiological-day suites pass, including
   the combined `Test-AtriaTests-2026.07.28_03-21-00-+0530.xcresult`.
+- **Evidence:** `evidence/2026-07-28-metric-truth-fix/`.
 
 ## Notebook maintenance rules
 
