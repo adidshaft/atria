@@ -450,7 +450,7 @@ struct AtriaHealthScreen: View {
         }
         .padding(16)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 
     /// One sleep-performance number for this whole screen (UX audit
@@ -524,7 +524,7 @@ struct AtriaHealthScreen: View {
         }
         .padding(16)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 
     /// First-class breathwork entry point (gap b, 2026-07-05): the pacer
@@ -539,7 +539,7 @@ struct AtriaHealthScreen: View {
                     .font(.headline.weight(.bold))
                     .foregroundStyle(Metrics.electricGreen)
                     .frame(width: 36, height: 36)
-                    .background(AtriaIconTileBackground(cornerRadius: 12, tint: Metrics.electricGreen))
+                    .background(AtriaIconTileBackground(cornerRadius: AtriaDesignTokens.Radius.chip, tint: Metrics.electricGreen))
 
                 Text("Breathwork")
                     .font(.headline.weight(.bold))
@@ -552,11 +552,11 @@ struct AtriaHealthScreen: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         }
         .buttonStyle(.plain)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .accessibilityLabel("Start breathwork")
         .accessibilityHint("Opens a guided paced-breathing session tracked from heart rate.")
     }
@@ -592,7 +592,7 @@ struct AtriaHealthScreen: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
-                .background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
             }
 
             // The design reference uses one Health Monitor surface rather than
@@ -703,7 +703,7 @@ struct AtriaHealthScreen: View {
         }
         .padding(16)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 
     /// Complete rows avoid the large half-empty grid rows visible on compact
@@ -1304,7 +1304,7 @@ private struct AtriaHealthStressSection: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
                 .background(Color(uiColor: .tertiarySystemGroupedBackground),
-                            in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("Stress history for this session, \(stressStripReduced.count) readings.")
             }
@@ -1411,7 +1411,7 @@ private struct AtriaHealthFitnessAgeCard: View, Equatable {
                     .font(.headline.weight(.bold))
                     .foregroundStyle(tint)
                     .frame(width: 36, height: 36)
-                    .background(AtriaIconTileBackground(cornerRadius: 12, tint: tint))
+                    .background(AtriaIconTileBackground(cornerRadius: AtriaDesignTokens.Radius.chip, tint: tint))
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Fitness age")
@@ -1479,7 +1479,7 @@ private struct AtriaHealthFitnessAgeCard: View, Equatable {
         }
         .padding(16)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Fitness age. \(summary.valueText). \(summary.isReady ? summary.detailText : summary.isRefreshing ? "Updating weekly estimate" : "Calibrating 28-day baseline").\(summary.earlyEstimateQualifierText.map { " \($0)." } ?? "") \(summary.footnote)")
         .onAppear { syncAnimatedDelta() }
@@ -1592,7 +1592,7 @@ private struct AtriaHealthTimelineProofCard: View, Equatable {
         }
         .padding(16)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Heart-rate timeline proof. \(countText). \(rangeText).")
     }
