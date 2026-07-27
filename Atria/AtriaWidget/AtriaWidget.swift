@@ -654,9 +654,16 @@ struct AtriaWidgetEntryView: View {
     /// score must not lose its evidence disclaimer merely because WidgetKit is
     /// rendering a compact surface; `unverified` alone does not tell the user
     /// that HRV was excluded rather than silently treated as neutral.
+    ///
+    /// The disclaimer is the SPECIFIC half. "Recovery 46% · Limited confidence
+    /// · HRV unavailable" is fifty characters on a medium widget's secondary
+    /// line, so it rendered as "Recovery 46% · Limited…" — which drops the
+    /// evidence this function exists to preserve and leaves a hedge with no
+    /// subject. "HRV unavailable" fits, and is the part that says what is
+    /// actually missing.
     private func recoveryEvidenceText(_ snapshot: AtriaWidgetSnapshot) -> String {
         if snapshot.recoveryDetail.localizedCaseInsensitiveContains("HRV unavailable") {
-            return "Limited confidence · HRV unavailable"
+            return "HRV unavailable"
         }
         return snapshot.recoveryConfidence
     }
@@ -1384,9 +1391,15 @@ private struct AtriaLiveActivityControls: View {
                 } else {
                     Label((state.isPaused ?? false) ? "Resume" : "Pause",
                           systemImage: (state.isPaused ?? false) ? "play.fill" : "pause.fill")
+                        // Never wrap. Without this the label broke mid-word and
+                        // the button rendered "Pau / se" over two lines.
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .allowsTightening(true)
                         .frame(maxWidth: .infinity)
                 }
             }
+            .frame(maxWidth: .infinity)
             .tint((state.isPaused ?? false) ? .green : .orange)
             .accessibilityLabel((state.isPaused ?? false) ? "Resume workout" : "Pause workout")
             .accessibilityHint((state.isPaused ?? false)
@@ -1400,9 +1413,13 @@ private struct AtriaLiveActivityControls: View {
                         .frame(maxWidth: .infinity)
                 } else {
                     Label("End", systemImage: "stop.fill")
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .allowsTightening(true)
                         .frame(maxWidth: .infinity)
                 }
             }
+            .frame(maxWidth: .infinity)
             .tint(.red)
             .accessibilityLabel("End workout")
             .accessibilityHint("Ends the active workout")
