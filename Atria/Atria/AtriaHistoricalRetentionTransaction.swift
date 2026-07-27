@@ -162,6 +162,14 @@ struct AtriaHistoricalRetentionTransaction {
             .appendingPathComponent(".\(aggregateFilename).\(nonce).tmp")
         let manifestTemporaryURL = request.manifestDirectoryURL
             .appendingPathComponent(".\(manifestFilename).\(nonce).tmp")
+        // A failed semantic verification or lifecycle cancellation must not
+        // strand a complete multi-megabyte temporary aggregate. Crash-left
+        // files are handled by generated-artifact GC; ordinary thrown errors
+        // are cleaned synchronously here.
+        defer {
+            try? fileManager.removeItem(at: aggregateTemporaryURL)
+            try? fileManager.removeItem(at: manifestTemporaryURL)
+        }
         let encoder = Self.canonicalEncoder()
         let aggregateData = try encoder.encode(request.aggregate)
         let aggregateDigest = Self.sha256(of: aggregateData)

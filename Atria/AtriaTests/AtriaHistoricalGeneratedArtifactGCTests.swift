@@ -134,6 +134,54 @@ final class AtriaHistoricalGeneratedArtifactGCTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: unpublished.path))
     }
 
+    func testPrunesCrashLeftAggregateTemporariesAfterOneHourOnly() throws {
+        let root = try makeRoot()
+        let aggregates = try directory(root, "aggregates-v2")
+        let manifests = try directory(root, "retention-manifests-v2")
+        let oldAggregate = aggregates.appendingPathComponent(
+            ".aggregate-legacy-source.json.\(UUID().uuidString).tmp"
+        )
+        let recentAggregate = aggregates.appendingPathComponent(
+            ".aggregate-current-source.json.\(UUID().uuidString).tmp"
+        )
+        let oldManifest = manifests.appendingPathComponent(
+            ".manifest-legacy-source.json.\(UUID().uuidString).tmp"
+        )
+        let committed = aggregates.appendingPathComponent("aggregate-legacy-source.json")
+        let unknown = aggregates.appendingPathComponent(
+            ".unrelated.json.\(UUID().uuidString).tmp"
+        )
+        for url in [oldAggregate, recentAggregate, oldManifest, committed, unknown] {
+            try Data(repeating: 0x41, count: 32).write(to: url)
+        }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let old = now.addingTimeInterval(
+            -AtriaHistoricalGeneratedArtifactGC.abandonedTemporaryQuarantine - 1
+        )
+        for url in [oldAggregate, oldManifest, committed, unknown] {
+            try FileManager.default.setAttributes([.modificationDate: old],
+                                                  ofItemAtPath: url.path)
+        }
+        try FileManager.default.setAttributes([
+            .modificationDate: now.addingTimeInterval(
+                -AtriaHistoricalGeneratedArtifactGC.abandonedTemporaryQuarantine + 1
+            ),
+        ], ofItemAtPath: recentAggregate.path)
+
+        let result = try AtriaHistoricalGeneratedArtifactGC(
+            archiveRoot: root,
+            now: now
+        ).prune()
+
+        XCTAssertEqual(result.removedFiles, 2)
+        XCTAssertEqual(result.removedBytes, 64)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldAggregate.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldManifest.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recentAggregate.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: committed.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unknown.path))
+    }
+
     func testSeparateAvoidableGenerationCeilingIsMeasuredAndReclaimed() throws {
         let root = try makeRoot()
         let receipts = try directory(root, "consumer-receipts-v1")

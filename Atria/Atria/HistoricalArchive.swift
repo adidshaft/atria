@@ -3615,6 +3615,36 @@ enum HistoricalArchive {
         documentsDirectory.appendingPathComponent("atria-historical", isDirectory: true)
     }
 
+    /// Exact recovery publication owns the archive projection lane until its
+    /// recovered rows have crossed SessionStore's durable publication fence.
+    /// Starting a multi-hundred-megabyte shadow build first can otherwise hold
+    /// the shared serial queue past the finite projection lease and leave a
+    /// physically proven gap permanently parked at `coverageProven`.
+    static func exactRecoveryProjectionOwnsArchivePriority(
+        archiveRoot: URL? = nil
+    ) -> Bool {
+        let root = archiveRoot ?? archiveDirectory
+        let store = AtriaHistoricalFullDrainCoverageStore(
+            directoryURL: root.appendingPathComponent(
+                "full-drain-authority-v1",
+                isDirectory: true
+            )
+        )
+        do {
+            guard let status = try store.load()?.status else { return false }
+            switch status {
+            case .draining, .historyComplete, .coverageProven, .consumersCommitted:
+                return true
+            case .gapResolvedConsumersPending, .resolved:
+                return false
+            }
+        } catch {
+            // Corrupt terminal authority is not permission to start a large
+            // competing mutation. Its recovery path remains fail-closed.
+            return true
+        }
+    }
+
     static var verifiedActivityConsumerShadowDirectory: URL {
         archiveDirectory.appendingPathComponent(
             "verified-consumer-application-v1/activity-shadow-v1",
