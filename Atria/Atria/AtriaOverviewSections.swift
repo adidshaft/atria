@@ -9325,7 +9325,7 @@ struct AtriaMetricDetailSheet: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
                     .padding(.horizontal, 12)
-                    .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
             } else {
                 ForEach(workouts.prefix(4), id: \.id) { workout in
                     AtriaStrainWorkoutRow(workout: workout)
@@ -9845,7 +9845,7 @@ private struct AtriaPreparedMetricChart: View {
                     }
                 }
                 .frame(maxWidth: .infinity, minHeight: 150)
-                .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
             } else {
                 chartContent
                 chartLegendAndCompanions
@@ -10036,7 +10036,7 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(Metrics.electricStrain)
                     .frame(width: 32, height: 32)
-                    .background(AtriaIconTileBackground(cornerRadius: 10, tint: Metrics.electricStrain))
+                    .background(AtriaIconTileBackground(cornerRadius: AtriaDesignTokens.Radius.chip, tint: Metrics.electricStrain))
 
                 VStack(alignment: .leading, spacing: 2) {
                     // HealthKit-style names ("High Intensity Interval
@@ -10102,7 +10102,7 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
             }
         }
         .padding(12)
-        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title), \(durationText), \(AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout) ? "workout metrics incomplete" : "strain \(strainText)"), heart rate \(heartRateText), \(zoneMinutesSummary).")
     }
@@ -10529,7 +10529,7 @@ private struct AtriaMetricContributorRows: View, Equatable {
                     }
                 }
                 .padding(12)
-                .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
             }
         }
         .padding(14)
@@ -10756,7 +10756,7 @@ private struct AtriaRecoveryContributorMap: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
-                    .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
             } else {
                 contributorBalanceStrip
 
@@ -10821,9 +10821,9 @@ private struct AtriaRecoveryContributorMap: View {
             .foregroundStyle(.secondary)
         }
         .padding(12)
-        .background(balanceTint.opacity(0.07), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(balanceTint.opacity(0.07), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
                 .stroke(balanceTint.opacity(0.12), lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
@@ -10889,7 +10889,7 @@ private struct AtriaRecoveryContributorMap: View {
             contributorRail(contributor)
         }
         .padding(12)
-        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 
     private func contributorRail(_ contributor: Metrics.RecoveryEstimate.Contributor) -> some View {
