@@ -51,6 +51,41 @@ final class AtriaHistoricalActivityInspectionProofFactoryTests: XCTestCase {
             .contains(where: { $0.recordCount == 0 }))
     }
 
+    func testCompletionStorePersistsAndCoversSubsecondTerminalBounds() throws {
+        let fixture = try makeCommittedFixture()
+        let completionStore = makeCompletionStore(root: fixture.root)
+        let requestedStart = start.addingTimeInterval(-1_800.75)
+        let requestedEnd = start.addingTimeInterval(5_400.75)
+        let published = try completionStore.recordTerminal(
+            generation: 8,
+            terminalBatchNumber: 4,
+            durableSequence: 12,
+            requestedStart: requestedStart,
+            requestedEnd: requestedEnd,
+            completedAt: requestedEnd.addingTimeInterval(0.1),
+            catalogStore: fixture.catalogStore,
+            aggregateSnapshot: fixture.snapshot
+        )
+
+        XCTAssertTrue(HistoricalArchive.catalogTimestampMatches(
+            raw: requestedStart,
+            catalog: published.record.requestedStart
+        ))
+        XCTAssertTrue(HistoricalArchive.catalogTimestampMatches(
+            raw: requestedEnd,
+            catalog: published.record.requestedEnd
+        ))
+        let prepared = try AtriaHistoricalActivityInspectionProofFactory(
+            completionStore: completionStore
+        ).prepare(
+            catalogStore: fixture.catalogStore,
+            aggregateSnapshot: fixture.snapshot,
+            requestedStart: requestedStart,
+            requestedEnd: requestedEnd
+        )
+        XCTAssertEqual(prepared.completionGeneration, 8)
+    }
+
     func testOrphanRecordAfterCrashIsNotTerminalEvidence() throws {
         enum Injected: Error { case crash }
         let fixture = try makeCommittedFixture()

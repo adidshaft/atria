@@ -109,18 +109,31 @@ final class AtriaHistoricalDrainCompletionGenerationStore {
     }
 
     private func publish(_ record: Record) throws -> Published {
-        try Self.validate(record)
+        let persistedRecord: Record
+        do {
+            persistedRecord = try JSONDecoder.iso8601.decode(
+                Record.self,
+                from: Self.canonicalData(record)
+            )
+        } catch {
+            throw StoreError.invalidRecord
+        }
+        try Self.validate(persistedRecord)
         lock.lock()
         defer { lock.unlock() }
         try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
 
         if fileManager.fileExists(atPath: pointerURL.path) {
             let existing = try loadLatestLocked()
-            guard record.generation >= existing.generation else { throw StoreError.staleGeneration }
-            if record.generation == existing.generation {
-                guard record == existing else { throw StoreError.generationConflict }
-                let data = try Self.canonicalData(record)
-                return .init(record: record,
+            guard persistedRecord.generation >= existing.generation else {
+                throw StoreError.staleGeneration
+            }
+            if persistedRecord.generation == existing.generation {
+                guard persistedRecord == existing else {
+                    throw StoreError.generationConflict
+                }
+                let data = try Self.canonicalData(persistedRecord)
+                return .init(record: persistedRecord,
                              recordURL: directoryURL.appendingPathComponent(
                                 "history-drain-completion-\(Self.sha256(data)).json"
                              ),
@@ -128,7 +141,7 @@ final class AtriaHistoricalDrainCompletionGenerationStore {
             }
         }
 
-        let data = try Self.canonicalData(record)
+        let data = try Self.canonicalData(persistedRecord)
         let digest = Self.sha256(data)
         let filename = "history-drain-completion-\(digest).json"
         let recordURL = directoryURL.appendingPathComponent(filename)
@@ -144,7 +157,7 @@ final class AtriaHistoricalDrainCompletionGenerationStore {
         try checkpoint(.recordPublished)
 
         let pointer = Pointer(version: Pointer.currentVersion,
-                              generation: record.generation,
+                              generation: persistedRecord.generation,
                               recordFilename: filename,
                               recordSHA256: digest)
         let pointerData = try Self.canonicalData(pointer)
@@ -159,8 +172,14 @@ final class AtriaHistoricalDrainCompletionGenerationStore {
             try fileManager.moveItem(at: temporary, to: pointerURL)
         }
         try Self.synchronizeDirectory(directoryURL)
-        guard try loadLatestLocked() == record else { throw StoreError.recordInvalid }
-        return .init(record: record, recordURL: recordURL, reusedExistingGeneration: false)
+        guard try loadLatestLocked() == persistedRecord else {
+            throw StoreError.recordInvalid
+        }
+        return .init(
+            record: persistedRecord,
+            recordURL: recordURL,
+            reusedExistingGeneration: false
+        )
     }
 
     private func loadLatestLocked() throws -> Record {
@@ -304,9 +323,18 @@ struct AtriaHistoricalActivityInspectionProofFactory {
         guard completion.catalogGeneration == catalog.generation else {
             throw FactoryError.staleCompletionGeneration
         }
-        guard completion.requestedStart <= requestedStart,
-              completion.requestedEnd >= requestedEnd,
-              completion.completedAt >= requestedEnd else {
+        guard HistoricalArchive.persistedTimestamp(
+                completion.requestedStart,
+                coversStart: requestedStart
+              ),
+              HistoricalArchive.persistedTimestamp(
+                completion.requestedEnd,
+                coversEnd: requestedEnd
+              ),
+              HistoricalArchive.persistedTimestamp(
+                completion.completedAt,
+                coversEnd: requestedEnd
+              ) else {
             throw FactoryError.completionCoverageMismatch
         }
         guard completion.catalogSnapshotSHA256
