@@ -423,8 +423,15 @@ struct AtriaOnboardingFlow: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                numericProfileField("Height", value: heightBinding, suffix: "cm")
-                numericProfileField("Weight", value: weightBinding, suffix: "kg")
+                optionalNumericProfileField("Height", value: heightBinding, suffix: "cm")
+                optionalNumericProfileField("Weight", value: weightBinding, suffix: "kg")
+
+                // Nothing said why any of this is asked, or that most of it can
+                // be skipped. Age and sex are the two that do real work here.
+                Text("Age and sex shape your heart-rate zones. Height and weight only sharpen calorie estimates — leave them blank if you would rather not.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(14)
             .atriaCard(emphasis: .soft)
@@ -683,6 +690,34 @@ struct AtriaOnboardingFlow: View {
     private func numericProfileField(_ title: String, value: Binding<Int>, suffix: String) -> some View {
         profileFieldLayout(title: title, suffix: suffix) {
             TextField(title, value: value, format: .number)
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.trailing)
+                .monospacedDigit()
+                .frame(minWidth: 88, idealWidth: 96, maxWidth: 132)
+                .frame(minHeight: 44)
+                .textFieldStyle(.roundedBorder)
+        }
+    }
+
+    /// Height and weight are optional, and the model already treats 0 as
+    /// "unset" (both bindings clamp to max(0, …)). Bound through
+    /// `TextField(_:value:format:)` that sentinel rendered as a reading —
+    /// "0 cm", "0 kg" — which is not a height and not a weight, and disagreed
+    /// with Settings, where unset profile fields already show as blank rather
+    /// than zero. The field is empty when unset, with the unit as its prompt,
+    /// so skipping it looks like skipping it.
+    private func optionalNumericProfileField(_ title: String,
+                                             value: Binding<Double>,
+                                             suffix: String) -> some View {
+        let text = Binding<String>(
+            get: { value.wrappedValue > 0 ? String(Int(value.wrappedValue.rounded())) : "" },
+            set: { entry in
+                let digits = entry.filter(\.isNumber)
+                value.wrappedValue = Double(Int(digits) ?? 0)
+            }
+        )
+        return profileFieldLayout(title: title, suffix: suffix) {
+            TextField(title, text: text, prompt: Text("Optional"))
                 .keyboardType(.numberPad)
                 .multilineTextAlignment(.trailing)
                 .monospacedDigit()
