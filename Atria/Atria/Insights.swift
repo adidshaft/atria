@@ -200,7 +200,15 @@ struct PersonalBaseline: Codable {
     }
 
     /// Display-ready maturity qualifier for the resting baseline, e.g.
-    /// "Learning · day 5 of 14". `nil` once the baseline is trusted.
+    /// "Learning · 5 of 14 nights". `nil` once the baseline is trusted.
+    ///
+    /// Phrasing matches `AtriaTodayScreen.baselineNightsProgress`, which
+    /// renders the same 14-night baseline as "N of 14 nights" on the tiles.
+    /// This read "Learning · day N of 14", so the banner and the tile
+    /// described one baseline two ways — and at the start it said "day 0 of
+    /// 14", which reads as a broken counter rather than a first night that
+    /// has not happened yet. Only the wording changed; the count and the
+    /// trusted threshold are untouched.
     ///
     /// Deliberately mirrors `AtriaFitnessAge`'s "Early estimate · day N of M":
     /// a value is shown from the first day and the qualifier discloses how far
@@ -214,7 +222,7 @@ struct PersonalBaseline: Codable {
     func restingBaselineMaturityQualifierText(now: Date = Date()) -> String? {
         guard !hasTrustedRestingBaseline(now: now) else { return nil }
         let days = min(freshRestingSampleCount(now: now), Self.trustedMinimumSamples)
-        return "Learning · day \(days) of \(Self.trustedMinimumSamples)"
+        return "Learning · \(days) of \(Self.trustedMinimumSamples) nights"
     }
 
     var restingStats: (mean: Double, sd: Double, count: Int)? {
