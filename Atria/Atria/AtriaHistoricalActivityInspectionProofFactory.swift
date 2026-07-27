@@ -450,8 +450,14 @@ struct AtriaHistoricalActivityInspectionProofFactory {
                   chunk.contentSHA256 == aggregate.source.rawSHA256,
                   chunk.byteCount == aggregate.source.rawByteCount,
                   chunk.rowCount == aggregate.source.rawRowCount,
-                  chunk.firstTimestamp == aggregate.source.firstTimestamp,
-                  chunk.lastTimestamp == aggregate.source.lastTimestamp else {
+                  HistoricalArchive.catalogTimestampMatches(
+                    raw: aggregate.source.firstTimestamp,
+                    catalog: chunk.firstTimestamp
+                  ),
+                  HistoricalArchive.catalogTimestampMatches(
+                    raw: aggregate.source.lastTimestamp,
+                    catalog: chunk.lastTimestamp
+                  ) else {
                 throw FactoryError.aggregateCatalogMismatch(aggregate.source.chunkID)
             }
         }

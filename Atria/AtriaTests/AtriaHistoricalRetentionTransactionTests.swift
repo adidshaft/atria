@@ -35,6 +35,21 @@ final class AtriaHistoricalRetentionTransactionTests: XCTestCase {
         XCTAssertEqual(checkpoints, AtriaHistoricalRetentionTransaction.Checkpoint.allCases)
     }
 
+    func testCommitVerifiesSubsecondSourceBoundsAtPersistedISO8601Precision() throws {
+        let fixture = try makeFixture(timestampOffset: 0.5)
+        let transaction = AtriaHistoricalRetentionTransaction(
+            now: { self.fixedNow.addingTimeInterval(0.5) },
+            semanticVerifier: { _, _, _ in true }
+        )
+
+        let result = try transaction.commit(fixture.request(deleteSource: false))
+
+        XCTAssertFalse(result.sourceDeleted)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.aggregateURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.manifestURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.source.path))
+    }
+
     func testEveryFaultBeforeDeletionLeavesRawAuthoritative() throws {
         let faultPoints = AtriaHistoricalRetentionTransaction.Checkpoint.allCases
             .filter { $0 != .sourceDeleted }
@@ -243,7 +258,7 @@ final class AtriaHistoricalRetentionTransactionTests: XCTestCase {
         }
     }
 
-    private func makeFixture() throws -> Fixture {
+    private func makeFixture(timestampOffset: TimeInterval = 0) throws -> Fixture {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("AtriaHistoricalRetentionTransactionTests")
             .appendingPathComponent(UUID().uuidString)
@@ -262,7 +277,8 @@ final class AtriaHistoricalRetentionTransactionTests: XCTestCase {
                                             digest: digest,
                                             bytes: UInt64(raw.count),
                                             decodedRows: 1,
-                                            unknownRows: 0))
+                                            unknownRows: 0,
+                                            timestampOffset: timestampOffset))
     }
 
     private func aggregate(source: URL,
@@ -270,8 +286,10 @@ final class AtriaHistoricalRetentionTransactionTests: XCTestCase {
                            bytes: UInt64,
                            decodedRows: Int,
                            unknownRows: Int,
-                           includeRetirementReceipts: Bool = true) -> AtriaHistoricalAggregateChunk {
-        let start = fixedNow.addingTimeInterval(-3_600)
+                           includeRetirementReceipts: Bool = true,
+                           timestampOffset: TimeInterval = 0) -> AtriaHistoricalAggregateChunk {
+        let end = fixedNow.addingTimeInterval(timestampOffset)
+        let start = end.addingTimeInterval(-3_600)
         let receipts: [AtriaHistoricalAggregateChunk.MaterializedProjection] =
             includeRetirementReceipts
             ? AtriaHistoricalAggregateChunk.rawRetirementRequiredProjectionKinds
@@ -280,21 +298,21 @@ final class AtriaHistoricalRetentionTransactionTests: XCTestCase {
                     .init(kind: kind,
                           identifier: "consumer-receipt-\(kind.rawValue)",
                           start: start,
-                          end: fixedNow,
+                          end: end,
                           schemaVersion: 1,
                           contentSHA256: String(repeating: "a", count: 64),
-                          settledAt: fixedNow)
+                          settledAt: end)
                 }
             : []
         return AtriaHistoricalAggregateChunk(
             schema: AtriaHistoricalAggregateChunk.currentSchema,
-            createdAt: fixedNow,
+            createdAt: end,
             source: .init(chunkID: "sealed-test",
                           rawSHA256: digest,
                           rawByteCount: bytes,
                           rawRowCount: 1,
                           firstTimestamp: start,
-                          lastTimestamp: fixedNow,
+                          lastTimestamp: end,
                           decoderSchema: HistoricalArchive.schema,
                           validatedLayouts: Array(HistoricalArchive.validatedMetricLayoutVersions).sorted()),
             heartRateMinutes: [],

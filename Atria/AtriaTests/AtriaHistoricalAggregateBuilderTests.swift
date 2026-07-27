@@ -91,6 +91,69 @@ final class AtriaHistoricalAggregateBuilderTests: XCTestCase {
         }
     }
 
+    func testTerminalMetricTimestampFallbackRequiresObservationInsideExactAttempt() throws {
+        let root = try temporaryDirectory()
+        let url = root.appendingPathComponent("sealed.jsonl")
+        let base: UInt32 = 1_800_000_000
+        let fixtures: [(HistoricalArchive.Record, TimeInterval)] = [
+            (record(unix: base, heartRate: 70), 200),
+            (record(unix: base + 1, heartRate: 71), 300),
+            (record(unix: base + 2, heartRate: 72), 400),
+        ]
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var file = Data()
+        for (record, observedAtUnix) in fixtures {
+            var row = try encoder.encode(record)
+            XCTAssertEqual(row.last, UInt8(ascii: "}"))
+            row.removeLast()
+            row.append(contentsOf: Data(
+                ",\"_atriaHistoryObservedAtUnix\":\(observedAtUnix)}".utf8
+            ))
+            file.append(row)
+            file.append(0x0a)
+        }
+        try file.write(to: url)
+        let build = try AtriaHistoricalAggregateBuilder.build(
+            sourceURL: url,
+            chunkID: "terminal-observation-filter",
+            createdAt: Date(timeIntervalSince1970: 500)
+        )
+        let seal = HistoricalArchive.TerminalCatalogSealResult(
+            chunkID: "terminal-observation-filter",
+            sourceURL: url,
+            aggregateBuild: build
+        )
+
+        let timestamps = try HistoricalArchive.verifiedMetricTimestamps(
+            in: seal,
+            start: Date(timeIntervalSince1970: TimeInterval(base)),
+            end: Date(timeIntervalSince1970: TimeInterval(base + 3)),
+            observedAfter: Date(timeIntervalSince1970: 250),
+            observedBefore: Date(timeIntervalSince1970: 350)
+        )
+
+        XCTAssertEqual(timestamps, [TimeInterval(base + 1)])
+    }
+
+    func testCatalogTimestampComparisonUsesPersistedWholeSecondPrecision() {
+        let raw = Date(timeIntervalSince1970: 1_800_000_000.5)
+        let persistedCatalog = Date(timeIntervalSince1970: 1_800_000_000)
+
+        XCTAssertTrue(HistoricalArchive.catalogTimestampMatches(
+            raw: raw,
+            catalog: persistedCatalog
+        ))
+        XCTAssertFalse(HistoricalArchive.catalogTimestampMatches(
+            raw: raw,
+            catalog: Date(timeIntervalSince1970: 1_800_000_001)
+        ))
+        XCTAssertFalse(HistoricalArchive.catalogTimestampMatches(
+            raw: raw,
+            catalog: nil
+        ))
+    }
+
     private func source(records: [HistoricalArchive.Record]) -> AtriaHistoricalAggregateChunk.Source {
         let timestamps = records.map {
             Date(timeIntervalSince1970: TimeInterval($0.clockCorrectedUnix7 ?? $0.unix7)

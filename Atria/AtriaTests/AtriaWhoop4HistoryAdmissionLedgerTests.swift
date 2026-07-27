@@ -823,6 +823,52 @@ final class AtriaWhoop4HistoryAdmissionLedgerTests: XCTestCase {
         XCTAssertEqual(result.protectedRowsAboveLimit, 0)
     }
 
+    func testRetentionPreservesCompletedAttemptOwnedByUnresolvedTerminalAuthority() throws {
+        let fixture = try Fixture()
+        let ledger = try fixture.ledger()
+        let old = Date(timeIntervalSince1970: 100)
+        let protected = try ledger.beginAttempt(
+            strapIdentifier: "strap-terminal",
+            now: old
+        )
+        for value in 0..<3 {
+            _ = try ledger.classify(
+                frame: Data([UInt8(value)]),
+                attempt: protected,
+                now: old
+            )
+        }
+        let durable = try ledger.markCurrentPrefixArchiveDurableWithReceipt(
+            attempt: protected,
+            through: 2,
+            archiveReceipt: fixture.archiveReceipt(recordCount: 3),
+            now: old
+        )
+        try ledger.finish(protected, succeeded: true, now: old)
+
+        let result = try ledger.prune(
+            now: Date(timeIntervalSince1970: 1_000),
+            identityRetention: 10,
+            maximumRows: 1,
+            protectedAttemptIdentifiers: [protected.identifier]
+        )
+
+        XCTAssertEqual(result.deletedRows, 0)
+        XCTAssertEqual(result.remainingRows, 3)
+        XCTAssertEqual(result.deferredEligibleRowsAboveLimit, 0)
+        XCTAssertEqual(result.protectedRowsAboveLimit, 2)
+        var enumerated: [Data] = []
+        let report = try ledger.enumerateDurableFrames(
+            attemptIdentifier: protected.identifier,
+            strapIdentifier: protected.strapIdentifier,
+            throughReceipt: durable.receipt
+        ) { _, frame in
+            enumerated.append(frame)
+        }
+        XCTAssertEqual(report.recordCount, 3)
+        XCTAssertEqual(enumerated, [Data([0]), Data([1]), Data([2])])
+    }
+
     func testRetentionDefersEligibleRowsAcrossBoundedMaintenancePasses() throws {
         let fixture = try Fixture()
         let ledger = try fixture.ledger()
@@ -883,6 +929,9 @@ final class AtriaWhoop4HistoryAdmissionLedgerTests: XCTestCase {
         XCTAssertTrue(method.contains("prune.deferredEligibleRowsAboveLimit > 0"))
         XCTAssertTrue(method.contains("reason: \"\\(reason)_continued\""),
                       "a bounded prune must schedule its next safe pass instead of waiting for lifecycle")
+        XCTAssertTrue(method.contains(
+            "protectedAttemptIdentifiers: protectedAttemptIdentifiers"
+        ), "maintenance must preserve a completed prefix while terminal publication owns it")
     }
 
     func testRetentionReportsProtectedPressureInsteadOfDeletingUnsafeRows() throws {

@@ -27094,11 +27094,34 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           reason)
             return
         }
+        let protectedAttemptIdentifiers: Set<String>
+        do {
+            if let authority = try historicalFullDrainCoverageStore.load(),
+               authority.status != .resolved {
+                protectedAttemptIdentifiers = [
+                    authority.attempt.attemptIdentifier
+                ]
+            } else {
+                protectedAttemptIdentifiers = []
+            }
+        } catch {
+            // An unreadable terminal journal can never grant deletion
+            // authority. Defer the whole pass until its ownership is known.
+            AtriaDebugLog(
+                "ATRIADBG historyAdmissionMaintenance status=deferred reason=%@ error=%@ action=retain_all_rows_unknown_terminal_owner",
+                reason,
+                String(describing: error)
+            )
+            return
+        }
         historicalAdmissionMaintenanceScheduled = true
-        historicalArchiveQueue.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self, ledger] in
+        historicalArchiveQueue.asyncAfter(deadline: .now() + .milliseconds(500)) {
+            [weak self, ledger, protectedAttemptIdentifiers] in
             let result: Result<AtriaWhoop4HistoryAdmissionLedger.PruneResult, Error>
             do {
-                result = .success(try ledger.prune())
+                result = .success(try ledger.prune(
+                    protectedAttemptIdentifiers: protectedAttemptIdentifiers
+                ))
             } catch {
                 result = .failure(error)
             }
@@ -27408,32 +27431,79 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     )
                     var timestamps: [TimeInterval] = []
                     let admissionReceipt = try terminalAdmissionReceipt(authority)
-                    let report = try admissionLedger.enumerateDurableFrames(
-                        attemptIdentifier: authority.attempt.attemptIdentifier,
-                        strapIdentifier: authority.attempt.peripheralIdentifier,
-                        throughReceipt: admissionReceipt,
-                        // 13 days at 1 Hz is 1,123,200 frames. Enumeration is
-                        // SQLite-streamed, so this bounds work without making
-                        // the production policy internally impossible.
-                        maximumFrames: 1_500_000
-                    ) { _, frame in
-                        let computation = AtriaWhoop4HistoryArchivePipeline.prepare(
-                            payload: Array(frame),
-                            clock: clock,
-                            historyClockSyncEnabled: true,
-                            now: Date(timeIntervalSince1970: publication.completedAtUnix)
+                    do {
+                        let report = try admissionLedger.enumerateDurableFrames(
+                            attemptIdentifier: authority.attempt.attemptIdentifier,
+                            strapIdentifier: authority.attempt.peripheralIdentifier,
+                            throughReceipt: admissionReceipt,
+                            // 13 days at 1 Hz is 1,123,200 frames. Enumeration is
+                            // SQLite-streamed, so this bounds work without making
+                            // the production policy internally impossible.
+                            maximumFrames: 1_500_000
+                        ) { _, frame in
+                            let computation = AtriaWhoop4HistoryArchivePipeline.prepare(
+                                payload: Array(frame),
+                                clock: clock,
+                                historyClockSyncEnabled: true,
+                                now: Date(timeIntervalSince1970:
+                                    publication.completedAtUnix)
+                            )
+                            guard case .record(let record) = computation.payload,
+                                  record.metricUsable else { return }
+                            let unix = record.clockCorrectedUnix7 ?? record.unix7
+                            let timestamp = TimeInterval(unix)
+                                + TimeInterval(record.subsec11) / 32_768
+                            timestamps.append(timestamp)
+                        }
+                        guard report.recordCount == admissionReceipt.recordCount,
+                              report.byteCount == admissionReceipt.byteCount else {
+                            throw AtriaWhoop4HistoryAdmissionLedger.LedgerError
+                                .durablePrefixReceiptMismatch
+                        }
+                    } catch AtriaWhoop4HistoryAdmissionLedger.LedgerError.durablePrefixReceiptMismatch {
+                        // Older builds allowed retention to prune a completed
+                        // admission prefix before its terminal publication
+                        // settled. The immutable raw seal is a second exact
+                        // authority only when every accepted row proves it was
+                        // observed inside this transport attempt—not merely
+                        // captured earlier and present in the same chunk.
+                        guard let terminal = authority.historyComplete,
+                              let rawSeal = publication.rawSeal else {
+                            throw AtriaBLEHistoryTerminalMaterializationError
+                                .admissionIdentityNotDurable
+                        }
+                        let source = seal.aggregateBuild.aggregate.source
+                        guard rawSeal.drainGeneration
+                                == authority.attempt.transportGeneration,
+                              rawSeal.contentSHA256 == source.rawSHA256,
+                              rawSeal.byteCount == source.rawByteCount,
+                              rawSeal.rowCount == source.rawRowCount,
+                              rawSeal.firstTimestampUnix
+                                == source.firstTimestamp.timeIntervalSince1970,
+                              rawSeal.lastTimestampUnix
+                                == source.lastTimestamp.timeIntervalSince1970 else {
+                            throw AtriaBLEHistoryTerminalMaterializationError
+                                .admissionIdentityNotDurable
+                        }
+                        timestamps = try HistoricalArchive.verifiedMetricTimestamps(
+                            in: seal,
+                            start: source.firstTimestamp,
+                            end: source.lastTimestamp.addingTimeInterval(1),
+                            observedAfter: Date(timeIntervalSince1970:
+                                authority.attempt.commandWriteCompletedAtUnix),
+                            observedBefore: Date(timeIntervalSince1970:
+                                terminal.receivedAtUnix)
                         )
-                        guard case .record(let record) = computation.payload,
-                              record.metricUsable else { return }
-                        let unix = record.clockCorrectedUnix7 ?? record.unix7
-                        let timestamp = TimeInterval(unix)
-                            + TimeInterval(record.subsec11) / 1_000
-                        timestamps.append(timestamp)
-                    }
-                    guard report.recordCount == admissionReceipt.recordCount,
-                          report.byteCount == admissionReceipt.byteCount else {
-                        throw AtriaBLEHistoryTerminalMaterializationError
-                            .admissionIdentityNotDurable
+                        guard !timestamps.isEmpty else {
+                            throw AtriaBLEHistoryTerminalMaterializationError
+                                .admissionIdentityNotDurable
+                        }
+                        AtriaDebugLog(
+                            "ATRIADBG historical_full_drain_coverage status=sealed_observation_fallback generation=%llu admission_expected=%llu verified_metric_rows=%d action=preserve_exact_attempt_after_admission_retention",
+                            authority.attempt.transportGeneration,
+                            admissionReceipt.recordCount,
+                            timestamps.count
+                        )
                     }
                     let terminalGapEntries = try
                         AtriaHistoricalTerminalGapReconciliationCoordinator.evaluate(
