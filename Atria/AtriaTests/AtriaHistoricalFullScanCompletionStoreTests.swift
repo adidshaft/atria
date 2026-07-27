@@ -124,6 +124,108 @@ final class AtriaHistoricalFullScanCompletionStoreTests: XCTestCase {
         }
     }
 
+    func testAcceptsClockCorrectedLiveTailBeyondHistoricalCursor() throws {
+        let root = try temporaryRoot()
+        let store = AtriaHistoricalFullScanCompletionStore(directoryURL: root)
+        let sourceFirst = Date(timeIntervalSince1970: 1_785_076_742)
+        let cursor = Date(timeIntervalSince1970: 1_785_089_991)
+        let terminal = Date(timeIntervalSince1970: 1_785_090_195.064_56)
+        let record = AtriaHistoricalFullScanCompletionStore.Record(
+            version: 1,
+            generation: 1,
+            transportGeneration: 1,
+            transportNonce: "physical-terminal-attempt",
+            peripheralIdentifier: "C125C62E-C432-53E7-BD19-9761251B2C3E",
+            strapIdentity: "strap4Class",
+            cursorWatermark: cursor,
+            terminalAt: terminal,
+            sourceChunkID: "faddb341-44bd-4950-b7bb-9c1fe108d042",
+            sourceRawSHA256: String(repeating: "a", count: 64),
+            sourceFirstTimestamp: sourceFirst,
+            // The physical aggregate contained a clock-corrected live tail
+            // eleven seconds beyond terminal receipt and 215 seconds beyond
+            // the history cursor. Those rows do not widen cursor authority.
+            sourceLastTimestamp: Date(timeIntervalSince1970: 1_785_090_206.322),
+            observedArchiveFirstTimestamp: sourceFirst,
+            catalogGeneration: 249,
+            catalogSnapshotSHA256: String(repeating: "b", count: 64),
+            aggregateSnapshotSHA256: String(repeating: "c", count: 64)
+        )
+
+        let published = try store.recordCompletion(record)
+
+        XCTAssertFalse(published.reusedExistingGeneration)
+        XCTAssertEqual(try store.loadLatest(), published.record)
+        XCTAssertEqual(published.record.terminalAt.timeIntervalSince1970,
+                       1_785_090_195)
+        XCTAssertEqual(published.record.sourceLastTimestamp.timeIntervalSince1970,
+                       1_785_090_206)
+        XCTAssertGreaterThan(record.sourceLastTimestamp, record.cursorWatermark)
+        XCTAssertGreaterThan(record.sourceLastTimestamp, record.terminalAt)
+
+        let retry = try store.recordCompletion(record)
+        XCTAssertTrue(retry.reusedExistingGeneration)
+        XCTAssertEqual(retry.record, published.record)
+    }
+
+    func testRejectsSubsecondTerminalBeforeCursorPriorToCanonicalization() throws {
+        let root = try temporaryRoot()
+        let store = AtriaHistoricalFullScanCompletionStore(directoryURL: root)
+        let valid = record(generation: 1)
+        let invalid = AtriaHistoricalFullScanCompletionStore.Record(
+            version: valid.version,
+            generation: valid.generation,
+            transportGeneration: valid.transportGeneration,
+            transportNonce: valid.transportNonce,
+            peripheralIdentifier: valid.peripheralIdentifier,
+            strapIdentity: valid.strapIdentity,
+            cursorWatermark: Date(timeIntervalSince1970: 2_002_003_000.9),
+            terminalAt: Date(timeIntervalSince1970: 2_002_003_000.1),
+            sourceChunkID: valid.sourceChunkID,
+            sourceRawSHA256: valid.sourceRawSHA256,
+            sourceFirstTimestamp: valid.sourceFirstTimestamp,
+            sourceLastTimestamp: valid.sourceLastTimestamp,
+            observedArchiveFirstTimestamp: valid.observedArchiveFirstTimestamp,
+            catalogGeneration: valid.catalogGeneration,
+            catalogSnapshotSHA256: valid.catalogSnapshotSHA256,
+            aggregateSnapshotSHA256: valid.aggregateSnapshotSHA256
+        )
+
+        XCTAssertThrowsError(try store.recordCompletion(invalid)) { error in
+            XCTAssertEqual(error as? AtriaHistoricalFullScanCompletionStore.StoreError,
+                           .invalidRecord)
+        }
+    }
+
+    func testRejectsReversedSourceBounds() throws {
+        let root = try temporaryRoot()
+        let store = AtriaHistoricalFullScanCompletionStore(directoryURL: root)
+        let valid = record(generation: 1)
+        let invalid = AtriaHistoricalFullScanCompletionStore.Record(
+            version: valid.version,
+            generation: valid.generation,
+            transportGeneration: valid.transportGeneration,
+            transportNonce: valid.transportNonce,
+            peripheralIdentifier: valid.peripheralIdentifier,
+            strapIdentity: valid.strapIdentity,
+            cursorWatermark: valid.cursorWatermark,
+            terminalAt: valid.terminalAt,
+            sourceChunkID: valid.sourceChunkID,
+            sourceRawSHA256: valid.sourceRawSHA256,
+            sourceFirstTimestamp: valid.sourceLastTimestamp,
+            sourceLastTimestamp: valid.sourceFirstTimestamp,
+            observedArchiveFirstTimestamp: valid.observedArchiveFirstTimestamp,
+            catalogGeneration: valid.catalogGeneration,
+            catalogSnapshotSHA256: valid.catalogSnapshotSHA256,
+            aggregateSnapshotSHA256: valid.aggregateSnapshotSHA256
+        )
+
+        XCTAssertThrowsError(try store.recordCompletion(invalid)) { error in
+            XCTAssertEqual(error as? AtriaHistoricalFullScanCompletionStore.StoreError,
+                           .invalidRecord)
+        }
+    }
+
     private func record(
         generation: UInt64,
         transportNonce: String = "nonce-a"

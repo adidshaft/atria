@@ -16,8 +16,12 @@ final class AtriaHistoricalFullScanCompletionStore {
         let transportNonce: String
         let peripheralIdentifier: String
         let strapIdentity: String
-        /// Upper cursor time proven by the matched strap range response that
-        /// preceded this scan. Local terminal time is audit chronology only.
+        /// Upper history time proven by the matched strap range response that
+        /// preceded this scan. This bounds historical consumer coverage, not
+        /// the aggregate's raw last timestamp: the sealed source can also
+        /// contain concurrently observed live rows (and a clock-corrected live
+        /// tail) after this cursor. Local terminal time is audit chronology
+        /// only.
         let cursorWatermark: Date
         let terminalAt: Date
         let sourceChunkID: String
@@ -83,28 +87,42 @@ final class AtriaHistoricalFullScanCompletionStore {
 
     @discardableResult
     func recordCompletion(_ record: Record) throws -> Published {
+        // Validate before whole-second ISO-8601 persistence so two invalid
+        // subsecond instants cannot collapse into an apparently valid tie.
         try Self.validate(record)
+        let persistedRecord: Record
+        do {
+            persistedRecord = try JSONDecoder.fullScanISO8601.decode(
+                Record.self,
+                from: Self.canonicalData(record)
+            )
+        } catch {
+            throw StoreError.invalidRecord
+        }
+        try Self.validate(persistedRecord)
         lock.lock()
         defer { lock.unlock() }
         try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
 
         if fileManager.fileExists(atPath: pointerURL.path) {
             let existing = try loadLatestLocked()
-            guard record.generation >= existing.generation else {
+            guard persistedRecord.generation >= existing.generation else {
                 throw StoreError.staleGeneration
             }
-            if record.generation == existing.generation {
-                guard record == existing else { throw StoreError.generationConflict }
-                let data = try Self.canonicalData(record)
+            if persistedRecord.generation == existing.generation {
+                guard persistedRecord == existing else {
+                    throw StoreError.generationConflict
+                }
+                let data = try Self.canonicalData(persistedRecord)
                 return Published(
-                    record: record,
+                    record: persistedRecord,
                     recordURL: recordURL(forDigest: Self.sha256(data)),
                     reusedExistingGeneration: true
                 )
             }
         }
 
-        let data = try Self.canonicalData(record)
+        let data = try Self.canonicalData(persistedRecord)
         let digest = Self.sha256(data)
         let recordURL = recordURL(forDigest: digest)
         if fileManager.fileExists(atPath: recordURL.path) {
@@ -120,7 +138,7 @@ final class AtriaHistoricalFullScanCompletionStore {
 
         let pointer = Pointer(
             version: Pointer.currentVersion,
-            generation: record.generation,
+            generation: persistedRecord.generation,
             recordFilename: recordURL.lastPathComponent,
             recordSHA256: digest
         )
@@ -136,8 +154,10 @@ final class AtriaHistoricalFullScanCompletionStore {
             try fileManager.moveItem(at: temporary, to: pointerURL)
         }
         try Self.synchronizeDirectory(directoryURL)
-        guard try loadLatestLocked() == record else { throw StoreError.recordInvalid }
-        return Published(record: record,
+        guard try loadLatestLocked() == persistedRecord else {
+            throw StoreError.recordInvalid
+        }
+        return Published(record: persistedRecord,
                          recordURL: recordURL,
                          reusedExistingGeneration: false)
     }
@@ -218,7 +238,6 @@ final class AtriaHistoricalFullScanCompletionStore {
               observedFirst.isFinite,
               last >= first,
               observedFirst <= first,
-              watermark >= last,
               terminal >= watermark,
               record.catalogGeneration > 0,
               isSHA256(record.sourceRawSHA256),

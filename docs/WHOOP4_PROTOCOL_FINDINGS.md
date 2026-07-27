@@ -1676,6 +1676,44 @@ POSITIVE STILL REQUIRED**
 - **Evidence:**
   `evidence/2026-07-27-post-gym-final-candidate/terminal-retention-repair.md`.
 
+#### 2026-07-28 — correction: a full-scan source can extend beyond its history cursor
+
+- **PHYSICAL observation:** after the unlocked relaunch, the exact authority
+  remained `coverageProven` at 129/129 buckets and terminal completion
+  publication successfully wrote generation 1. The next full-scan attestation
+  failed `invalidRecord`; no full-scan completion directory was created.
+- **PHYSICAL evidence:** the matched strap cursor watermark is
+  `1785089991`, terminal receipt is `1785090195.06456`, and the immutable
+  source ends at `1785090206.322`. The sealed source therefore contains a
+  short concurrently observed/clock-corrected live tail after both the
+  historical cursor and local terminal receipt. Its exact content hash,
+  catalog generation and aggregate snapshot remain valid.
+- **CODE diagnosis:** `AtriaHistoricalFullScanCompletionStore` incorrectly
+  required the historical cursor to be at or after the aggregate's final raw
+  timestamp. Those are separate evidence domains: the cursor bounds
+  historical no-more-data authority; source bounds authenticate the exact
+  hash-bound aggregate and may include live rows.
+- **CODE correction (not yet physical acceptance):** source ordering,
+  cursor/terminal ordering, hashes and snapshot identities remain fail-closed,
+  but a live tail no longer widens or invalidates historical cursor authority.
+  Fractional input is validated before whole-second ISO-8601 persistence and
+  then compared using its canonical persisted representation, preventing both
+  invalid same-second ties and restart-only reread failures.
+- **TEST evidence:** exact physical fractional timestamps now persist, reread
+  and retry idempotently. A live tail beyond the requested dependency still
+  publishes five consumers only when the cursor covers that dependency; the
+  same tail with a cursor 60 seconds short publishes none. Focused store and
+  consumer coordinator suites pass.
+- **Physical settlement remains required:** install the corrected build,
+  resume the existing generation without another strap drain, and prove the
+  authority advances through completion/projection/consumer commit to
+  resolved while preserving the 129/129 coverage proof.
+- **Evidence:**
+  `evidence/2026-07-28-terminal-retention-device/unlocked-final-state/`,
+  `evidence/2026-07-28-terminal-retention-device/unlocked-publication-artifacts/`,
+  and
+  `/tmp/atria-gate2-invariant-derived/Logs/Test/Test-AtriaTests-2026.07.28_00-59-35-+0530.xcresult`.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.
