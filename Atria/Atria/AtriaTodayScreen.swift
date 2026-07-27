@@ -2555,10 +2555,18 @@ private struct AtriaTodayLiveStatusStrip: View, Equatable {
                                value: liveStatusText,
                                systemImage: pulse.heartRate > 0 ? "heart.fill" : "dot.radiowaves.left.and.right",
                                tint: pulse.heartRate > 0 ? .green : .secondary)
-            AtriaTodayLivePill(title: "Zone",
-                               value: pulse.heartRateZone?.shortLabel ?? "Learning",
-                               systemImage: "waveform.path.ecg",
-                               tint: pulse.heartRateZone?.tint ?? .secondary)
+            // A zone needs a pulse, not calibration. Without a live heart rate
+            // this pill could only ever read "Learning" — repeating, less
+            // precisely and less actionably, what the Live pill beside it
+            // already says ("Bluetooth off", "Disconnected"), and implying a
+            // calibration that is not happening. It appears when there is a
+            // zone to show, the way the battery pill already behaves.
+            if let heartRateZone = pulse.heartRateZone {
+                AtriaTodayLivePill(title: "Zone",
+                                   value: heartRateZone.shortLabel,
+                                   systemImage: "waveform.path.ecg",
+                                   tint: heartRateZone.tint)
+            }
             if live.batteryLevel >= 0 {
                 AtriaTodayLivePill(title: "Battery",
                                    value: batteryPillText,
@@ -2568,7 +2576,7 @@ private struct AtriaTodayLiveStatusStrip: View, Equatable {
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Live status. \(pulse.heartRate > 0 ? "\(pulse.heartRate) beats per minute" : live.status.rawValue). Zone \(pulse.heartRateZone?.shortLabel ?? "building").\(batteryAccessibilitySuffix)")
+        .accessibilityLabel("Live status. \(pulse.heartRate > 0 ? "\(pulse.heartRate) beats per minute" : live.status.rawValue).\(pulse.heartRateZone.map { " Zone \($0.shortLabel)." } ?? "")\(batteryAccessibilitySuffix)")
     }
 
     /// Power state lives in the battery SF Symbol, keeping this compact value
