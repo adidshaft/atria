@@ -105,13 +105,15 @@ final class AtriaBaselineEvidenceTests: XCTestCase {
             }
             return value
         }
+        // 2026-07-27: wording aligned with the tiles' "N of 14 nights" so one
+        // baseline is described one way across the app. Counts unchanged.
         XCTAssertEqual(
             baseline(days: 1).restingBaselineMaturityQualifierText(now: now),
-            "Learning · day 1 of 14"
+            "Learning · 1 of 14 nights"
         )
         XCTAssertEqual(
             baseline(days: 5).restingBaselineMaturityQualifierText(now: now),
-            "Learning · day 5 of 14"
+            "Learning · 5 of 14 nights"
         )
         // Once trusted the qualifier disappears entirely — one caveat, and only
         // while it is true.
