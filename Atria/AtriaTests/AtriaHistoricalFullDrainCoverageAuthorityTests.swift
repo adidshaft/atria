@@ -34,6 +34,21 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
         ))
     }
 
+    func testOnlyRecoveredHistoryProjectionBypassesExactRecoveryPriority() {
+        XCTAssertTrue(SessionStore.historySnapshotProjectionShouldDefer(
+            exactRecoveryOwnsPriority: true,
+            isRecoveredPublication: false
+        ))
+        XCTAssertFalse(SessionStore.historySnapshotProjectionShouldDefer(
+            exactRecoveryOwnsPriority: true,
+            isRecoveredPublication: true
+        ))
+        XCTAssertFalse(SessionStore.historySnapshotProjectionShouldDefer(
+            exactRecoveryOwnsPriority: false,
+            isRecoveredPublication: false
+        ))
+    }
+
     func testDenseDecodedTimestampsProduceRevalidatablePerCadenceProof() throws {
         let stores = durableStores(sequence: 10, fsyncedAt: start + 110)
         let proof = try Policy.evaluate(

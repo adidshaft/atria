@@ -6507,10 +6507,28 @@ final class SessionStore: ObservableObject {
                                                              calendar: calendar)[day]
     }
 
+    nonisolated static func historySnapshotProjectionShouldDefer(
+        exactRecoveryOwnsPriority: Bool,
+        isRecoveredPublication: Bool
+    ) -> Bool {
+        exactRecoveryOwnsPriority && !isRecoveredPublication
+    }
+
     private func refreshHistorySnapshotCache(
         deferred: Bool = true,
+        isRecoveredPublication: Bool = false,
         completion: ((Bool) -> Void)? = nil
     ) {
+        guard !Self.historySnapshotProjectionShouldDefer(
+            exactRecoveryOwnsPriority:
+                HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority(),
+            isRecoveredPublication: isRecoveredPublication
+        ) else {
+            AtriaDebugLog(
+                "ATRIADBG history_snapshot status=deferred_exact_recovery_projection action=preserve_shared_projection_lane"
+            )
+            return
+        }
         historySnapshotRevision &+= 1
         let revision = historySnapshotRevision
         let sourceSessions = canonicalSessions(includeActiveJournal: true)
@@ -8510,7 +8528,10 @@ final class SessionStore: ObservableObject {
     private func runRecoveredHistoryStep(
         ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket
     ) {
-        refreshHistorySnapshotCache(deferred: true) { [weak self] succeeded in
+        refreshHistorySnapshotCache(
+            deferred: true,
+            isRecoveredPublication: true
+        ) { [weak self] succeeded in
             guard let self else { return }
             guard self.completeRecoveredDataComponent(
                 ticket: ticket,
