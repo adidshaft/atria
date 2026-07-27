@@ -8089,6 +8089,112 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
     }
 
+    func testAllDayMotionOwnerDoesNotBlockItsOwnHourlyCheckpoint() {
+        XCTAssertTrue(
+            AtriaBLEManager.historicalMotionBankDailyCheckpointEligible(
+                manualWorkoutActive: false,
+                calibrationHoldActive: false,
+                historyOwnerActive: false,
+                bankArmed: true,
+                batteryAllows: true
+            ),
+            "the all-day governor necessarily owns the shared motion lease while its bank accumulates"
+        )
+    }
+
+    func testHigherPriorityOwnersAndUnsafeStateBlockDailyCheckpoint() {
+        for blockers in [
+            (true, false, false, true, true),
+            (false, true, false, true, true),
+            (false, false, true, true, true),
+            (false, false, false, false, true),
+            (false, false, false, true, false),
+        ] {
+            XCTAssertFalse(
+                AtriaBLEManager.historicalMotionBankDailyCheckpointEligible(
+                    manualWorkoutActive: blockers.0,
+                    calibrationHoldActive: blockers.1,
+                    historyOwnerActive: blockers.2,
+                    bankArmed: blockers.3,
+                    batteryAllows: blockers.4
+                )
+            )
+        }
+    }
+
+    func testDailyCheckpointDoesNotTreatSharedOwnerLeaseAsManualWorkout() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func checkpointDailyHistoricalMotionBankIfNeeded"
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "private func scheduleGate4DailyBankRearmAfterHistoryStart",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains(
+            "historicalMotionBankDailyCheckpointEligible"
+        ))
+        XCTAssertFalse(body.contains("workoutMotionOwnerStartedAt == nil"))
+        XCTAssertTrue(body.contains("workoutMotionCalibrationHoldUntil"))
+        XCTAssertTrue(body.contains(
+            "AtriaPendingWorkoutIntent.isActiveForBLEContinuity(now: date)"
+        ))
+    }
+
+    func testAllDayMotionOwnerDoesNotBlockItsOwnAsyncOffload() {
+        XCTAssertTrue(
+            AtriaBLEManager.historicalMotionBankOffloadEligible(
+                manualWorkoutActive: false,
+                calibrationHoldActive: false,
+                historyOwnerActive: false,
+                postHistoryRestorationActive: false,
+                connectedWithAcceptedHR: true,
+                hasPendingTicket: true
+            )
+        )
+    }
+
+    func testAsyncOffloadStillYieldsToEveryRealBlocker() {
+        for blockers in [
+            (true, false, false, false, true, true),
+            (false, true, false, false, true, true),
+            (false, false, true, false, true, true),
+            (false, false, false, true, true, true),
+            (false, false, false, false, false, true),
+            (false, false, false, false, true, false),
+        ] {
+            XCTAssertFalse(
+                AtriaBLEManager.historicalMotionBankOffloadEligible(
+                    manualWorkoutActive: blockers.0,
+                    calibrationHoldActive: blockers.1,
+                    historyOwnerActive: blockers.2,
+                    postHistoryRestorationActive: blockers.3,
+                    connectedWithAcceptedHR: blockers.4,
+                    hasPendingTicket: blockers.5
+                )
+            )
+        }
+    }
+
+    func testAsyncOffloadDoesNotTreatSharedOwnerLeaseAsManualWorkout() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded"
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "private func repairTransportOnlyClearedWorkoutMotionTicketIfNeeded",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("historicalMotionBankOffloadEligible"))
+        XCTAssertFalse(body.contains("workoutMotionOwnerStartedAt == nil"))
+        XCTAssertTrue(body.contains("workoutMotionCalibrationHoldUntil"))
+        XCTAssertTrue(body.contains(
+            "AtriaPendingWorkoutIntent.isActiveForBLEContinuity()"
+        ))
+    }
+
     func testAllDayMotionWantsHoldUsesProvenBatteryPolicyWithResumeHysteresis() {
         // Same physically derived gate that protects HR continuity: a 13%
         // proof delivered frames but destabilized the link within seconds.
