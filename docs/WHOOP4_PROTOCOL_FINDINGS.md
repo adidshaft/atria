@@ -1714,6 +1714,41 @@ POSITIVE STILL REQUIRED**
   and
   `/tmp/atria-gate2-invariant-derived/Logs/Test/Test-AtriaTests-2026.07.28_00-59-35-+0530.xcresult`.
 
+#### 2026-07-28 — correction: verified catalog enrichment requires a later completion generation
+
+- **PHYSICAL observation:** after accepting the live-tail invariant, terminal
+  publication resumed but deferred with `generationConflict`. The durable
+  completion remained generation 1 and no full-scan completion or consumer
+  receipt was published. Exact gap coverage remained 129/129 and the raw seal
+  remained intact.
+- **PHYSICAL evidence:** the generation-1 completion attests catalog
+  generation 249. The current catalog is generation 251. Both catalogs contain
+  the same 21 immutable chunk identities; generation 251 only enriches two
+  older chunks with verified row count, first/last timestamp, size and SHA-256
+  metadata. Its canonical catalog hash therefore legitimately differs from
+  the already-durable generation-1 record.
+- **CODE diagnosis:** terminal retry selected generation 1 solely from the
+  transport identity (batch, durable sequence and requested/completed
+  timestamps). The completion store correctly rejected that generation when
+  presented with the later catalog and aggregate attestation.
+- **CODE correction (not yet physical acceptance):** a retry now reuses its
+  prior completion generation only when transport identity, catalog
+  generation, canonical catalog hash and canonical aggregate snapshot hash
+  all match. Verified metadata enrichment advances to the next generation;
+  exact retries remain idempotent and generation exhaustion remains
+  fail-closed.
+- **TEST evidence:** the focused publication/invariant suites pass 28/28. The
+  wider history archive, authority, completion, projection, retention and
+  verified-reader matrix passes 114/114 with zero failures or skips.
+- **Physical settlement remains required:** install in place, resume the same
+  durable attempt, and prove generation 2 advances the exact authority without
+  another strap drain or loss of the 129/129 coverage proof.
+- **Evidence:**
+  `evidence/2026-07-28-terminal-retention-device/post-live-tail-fix/`,
+  `/tmp/atria-gate2-invariant-derived/Logs/Test/Test-AtriaTests-2026.07.28_01-09-44-+0530.xcresult`,
+  and
+  `/tmp/atria-gate2-invariant-derived/Logs/Test/Test-AtriaTests-2026.07.28_01-11-03-+0530.xcresult`.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.

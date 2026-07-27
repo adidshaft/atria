@@ -1050,6 +1050,17 @@ enum HistoricalArchive {
             aggregateDirectoryURL: aggregates,
             manifestDirectoryURL: manifests
         ).load()
+        let catalogStore = try catalogStoreLocked()
+        let catalog = try catalogStore.snapshotVerifiedAgainstFiles()
+        try catalog.validate()
+        let catalogData = try AtriaHistoricalActivityInspectionProofFactory
+            .canonicalCatalogData(catalog)
+        let aggregateData = try AtriaHistoricalActivityInspectionProofFactory
+            .canonicalAggregateSnapshotData(aggregateSnapshot)
+        let catalogSnapshotSHA256 =
+            AtriaHistoricalDrainCompletionGenerationStore.sha256(catalogData)
+        let aggregateSnapshotSHA256 =
+            AtriaHistoricalDrainCompletionGenerationStore.sha256(aggregateData)
         let persistedAggregate = try persistedISO8601Value(
             seal.aggregateBuild.aggregate
         )
@@ -1068,24 +1079,17 @@ enum HistoricalArchive {
             )
         )
         let prior = try? completionStore.loadLatest()
-        let generation: UInt64
-        if let prior,
-           prior.terminalBatchNumber == terminalBatchNumber,
-           prior.durableSequence == durableSequence,
-           catalogTimestampMatches(raw: requestedStart, catalog: prior.requestedStart),
-           catalogTimestampMatches(raw: requestedEnd, catalog: prior.requestedEnd),
-           catalogTimestampMatches(raw: completedAt, catalog: prior.completedAt) {
-            generation = prior.generation
-        } else {
-            let priorGeneration = prior?.generation ?? 0
-            guard priorGeneration < UInt64.max else {
-                throw TerminalConsumerProjectionError.completionGenerationExhausted
-            }
-            generation = priorGeneration + 1
-        }
-        guard generation > 0 else {
-            throw TerminalConsumerProjectionError.completionGenerationExhausted
-        }
+        let generation = try terminalCompletionGeneration(
+            prior: prior,
+            terminalBatchNumber: terminalBatchNumber,
+            durableSequence: durableSequence,
+            requestedStart: requestedStart,
+            requestedEnd: requestedEnd,
+            completedAt: completedAt,
+            catalogGeneration: catalog.generation,
+            catalogSnapshotSHA256: catalogSnapshotSHA256,
+            aggregateSnapshotSHA256: aggregateSnapshotSHA256
+        )
         let completion = try completionStore.recordTerminal(
             generation: generation,
             terminalBatchNumber: terminalBatchNumber,
@@ -1093,11 +1097,49 @@ enum HistoricalArchive {
             requestedStart: requestedStart,
             requestedEnd: requestedEnd,
             completedAt: completedAt,
-            catalogStore: try catalogStoreLocked(),
+            catalogStore: catalogStore,
             aggregateSnapshot: aggregateSnapshot
         )
         return .init(aggregateCommit: aggregateCommit,
                      completion: completion)
+    }
+
+    /// A terminal transport can be retried after the catalog gains verified
+    /// metadata for older immutable chunks. Reuse its completion generation
+    /// only when the entire attested catalog+aggregate snapshot is unchanged;
+    /// otherwise publish a later generation instead of conflicting with the
+    /// already-durable content-addressed record.
+    static func terminalCompletionGeneration(
+        prior: AtriaHistoricalDrainCompletionGenerationStore.Record?,
+        terminalBatchNumber: UInt64,
+        durableSequence: UInt64,
+        requestedStart: Date,
+        requestedEnd: Date,
+        completedAt: Date,
+        catalogGeneration: UInt64,
+        catalogSnapshotSHA256: String,
+        aggregateSnapshotSHA256: String
+    ) throws -> UInt64 {
+        if let prior,
+           prior.terminalBatchNumber == terminalBatchNumber,
+           prior.durableSequence == durableSequence,
+           catalogTimestampMatches(raw: requestedStart, catalog: prior.requestedStart),
+           catalogTimestampMatches(raw: requestedEnd, catalog: prior.requestedEnd),
+           catalogTimestampMatches(raw: completedAt, catalog: prior.completedAt),
+           prior.catalogGeneration == catalogGeneration,
+           prior.catalogSnapshotSHA256 == catalogSnapshotSHA256,
+           prior.aggregateSnapshotSHA256 == aggregateSnapshotSHA256 {
+            return prior.generation
+        }
+        let priorGeneration = prior?.generation ?? 0
+        guard priorGeneration < UInt64.max else {
+            throw TerminalConsumerProjectionError.completionGenerationExhausted
+        }
+        let next = priorGeneration + 1
+        guard next > 0 else {
+            throw TerminalConsumerProjectionError.completionGenerationExhausted
+        }
+        return next
     }
 
     /// Commits a terminal full-scan aggregate without claiming that WHOOP
