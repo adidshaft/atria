@@ -66,8 +66,8 @@ remain in the append-only log below, but do not override a later physical pass.
 | Gate | Current result | Authoritative evidence |
 |---|---|---|
 | 1 — locked reconnect | **PASS — sealed** | `evidence/2026-07-26-gate-1-accepted.md` |
-| 2 — exact historical recovery | **PASS — sealed** | `evidence/2026-07-26-gate2-controlled-gap/orphan-resume-candidate/acceptance.md` |
-| 3 — manual workout reliability | **PASS — sealed** | `evidence/2026-07-26-gate3-manual-workout/full-walk-rerun/acceptance.md` |
+| 2 — exact historical recovery | **PASS — sealed** | `evidence/2026-07-28-gate2-generation-fix/terminal-physical/acceptance.md` |
+| 3 — manual workout reliability | **PASS — sealed** | `evidence/2026-07-28-gate3-manual-workout/acceptance.md` |
 | 4 — strap-only steps and motion | **PASS — sealed** | `evidence/2026-07-27-gate4-final-110-step/ACCEPTANCE.md` |
 | 5 — automatic detection and strain | **PASS — sealed** | `evidence/2026-07-27-gate5-physical-positive/acceptance.md` |
 
@@ -1891,6 +1891,26 @@ POSITIVE STILL REQUIRED**
 - **Evidence:**
   `evidence/2026-07-28-gate2-generation-fix/terminal-physical/` and
   `evidence/2026-07-28-gate2-generation-fix/hr-motion-lane-physical-console.log`.
+
+#### 2026-07-28 — Gate 3 physical acceptance: manual workout durability
+
+- **PHYSICAL pass:** a stationary-phone Strength workout acknowledged Start
+  in about one second, kept publishing live strap HR, acknowledged End in
+  0.60 seconds, produced its saved receipt, and dismissed Done in 0.61
+  seconds.
+- **Durable result:** canonical workout
+  `1785188099-1785188212-live_workout_window` contains 119 HR samples over
+  112.72 of 113.38 seconds (99% coverage), average 79 BPM and peak 85 BPM.
+  The pending workout intent was removed only after canonical persistence.
+- **Honest sparse presentation:** the prior gym Strength workout with 78% HR
+  coverage is visibly labelled `78% HR · Partial` in Activity history.
+- **Prior premature-end finding:** no automatic 55-minute workout timeout
+  exists in the installed lifecycle policy, and the fresh physical run did
+  not reproduce a phantom end. A future recurrence requires capture of the
+  originating in-app or Live Activity End command; it is not accepted as an
+  automatic lifecycle behavior.
+- **Evidence:**
+  `evidence/2026-07-28-gate3-manual-workout/`.
 
 ## Notebook maintenance rules
 
