@@ -371,24 +371,36 @@ private struct AtriaStrapStatusRow: View, Equatable {
             && lhs.systemImage == rhs.systemImage
     }
 
+    // Reads icon, then what this is, then what it says — the order every
+    // other status surface in the app uses (AtriaTodayLivePill puts the
+    // caption above the value, so do the glance tiles and the Vitals stat
+    // header). This tile had the value alone on the top row and the title
+    // beneath it, so you read "All-day wear" before learning it was the
+    // Mode, and "Idle" before learning it was the Session. The tile's own
+    // accessibilityLabel is already "title, value, detail": VoiceOver has
+    // been reading it title-first the whole time, and only the visual order
+    // disagreed.
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Image(systemName: systemImage)
                     .font(.caption.weight(.bold))
                     .foregroundStyle(tint)
                     .frame(width: 26, height: 26)
                     .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                Spacer(minLength: 4)
-                Text(value)
-                    .font(.subheadline.weight(.bold))
-                    .multilineTextAlignment(.trailing)
+                Text(title)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+                    .minimumScaleFactor(0.8)
+                Spacer(minLength: 4)
             }
 
-            Text(title)
-                .font(.caption.weight(.bold))
+            Text(value)
+                .font(.subheadline.weight(.bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .frame(maxWidth: .infinity, alignment: .leading)
             Text(detail)
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
