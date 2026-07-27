@@ -1786,6 +1786,35 @@ POSITIVE STILL REQUIRED**
   `evidence/2026-07-28-gate2-generation-fix/` and
   `/tmp/atria-gate2-invariant-derived/Logs/Test/Test-AtriaTests-2026.07.28_01-29-40-+0530.xcresult`.
 
+#### 2026-07-28 — correction: ordinary history cards can still take the recovery lane first
+
+- **PHYSICAL observation:** the compaction-priority build released
+  `historicalConsumerMaterializationInFlight` instead of remaining stuck, but
+  the authority still remained `coverageProven`. The physical candidate
+  therefore did not pass Gate 2.
+- **DEBUGGER evidence:** during the next exact-publication retry, the shared
+  `com.atria.history-snapshot-projection` queue was executing an ordinary
+  `refreshHistorySnapshotCache` with no completion requirement. Its stack was
+  decoding a canonical aggregate page for launch/dashboard history while the
+  required recovery publication waited behind it.
+- **CODE diagnosis:** deferring archive compaction removed one priority
+  inversion but did not stop ordinary history-card projection from entering
+  the same lane first.
+- **CODE correction (not yet physical acceptance):** every ordinary history
+  snapshot now defers while exact recovery owns priority. The recovered-data
+  publication step is explicitly identified and is the only history snapshot
+  allowed to bypass that gate.
+- **TEST evidence:** focused authority, retention transaction and generated
+  artifact suites pass 55/55 with zero failures or skips, including the
+  recovered-only bypass policy.
+- **Physical settlement remains required:** install the corrected build and
+  prove the existing authority advances from `coverageProven` without another
+  strap drain.
+- **Evidence:**
+  `evidence/2026-07-28-gate2-generation-fix/physical-lldb-priority-inversion.md`,
+  `/tmp/atria-gate2-probe.uvvtZa/`, and
+  `/tmp/atria-gate2-invariant-derived/Logs/Test/Test-AtriaTests-2026.07.28_01-44-24-+0530.xcresult`.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.
