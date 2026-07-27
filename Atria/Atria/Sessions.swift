@@ -591,8 +591,11 @@ struct SavedSession: Codable, Identifiable {
         return summary
     }
 
-    private func qualifiedLnRMSSDWindows(in absoluteStart: Date? = nil,
-                                         end absoluteEnd: Date? = nil) -> [Double] {
+    /// Independently qualified five-minute ln(RMSSD) windows. Callers may
+    /// aggregate these scalars across connection-bounded sessions, but must
+    /// never concatenate raw RR intervals across a reconnect boundary.
+    func qualifiedLnRMSSDWindows(in absoluteStart: Date? = nil,
+                                 end absoluteEnd: Date? = nil) -> [Double] {
         let minimumBeatCount = Self.minimumQualifiedRRBeatCount()
         guard hasQualifiedRRProvenance,
               let rrPoints, rrPoints.count >= minimumBeatCount else { return [] }
@@ -20882,19 +20885,25 @@ final class SessionStore: ObservableObject {
         let avg = values.isEmpty ? 0 : values.reduce(0, +) / values.count
         let peak = values.max() ?? 0
         let resting = values.isEmpty ? rest : Self.percentileHR(0.05, values: values)
-        let hrvValues = overlapping.compactMap { $0.localRMSSD(in: start, end: end) }.filter { $0 > 0 }
-        let hrvWindowCount = overlapping.reduce(0) { total, session in
-            total + session.localHRVWindowCount(in: start, end: end)
+        // A confirmed sleep commonly spans several connection-bounded
+        // sessions. Qualify every five-minute window inside its own session so
+        // no RR continuity is invented across reconnects, then combine the
+        // already-qualified window scalars for the exact sleep interval.
+        let qualifiedLnRMSSDWindows = overlapping.flatMap {
+            $0.qualifiedLnRMSSDWindows(in: start, end: end)
         }
+        let hrvWindowCount = qualifiedLnRMSSDWindows.count
         let hrv: Int?
-        if hrvValues.isEmpty {
+        if hrvWindowCount < 3 {
             hrv = nil
         } else {
-            let sortedHRV = hrvValues.sorted()
-            let middle = sortedHRV.count / 2
-            hrv = sortedHRV.count.isMultiple(of: 2)
-                ? Int((Double(sortedHRV[middle - 1] + sortedHRV[middle]) / 2.0).rounded())
-                : sortedHRV[middle]
+            let sorted = qualifiedLnRMSSDWindows.sorted()
+            let middle = sorted.count / 2
+            let median = sorted.count.isMultiple(of: 2)
+                ? (sorted[middle - 1] + sorted[middle]) / 2
+                : sorted[middle]
+            let value = Int(exp(median).rounded())
+            hrv = value > 0 ? value : nil
         }
         return (overlapping.count, values.count, avg, peak, resting, hrv, hrvWindowCount)
     }
