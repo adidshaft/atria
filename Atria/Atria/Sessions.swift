@@ -6585,7 +6585,7 @@ final class SessionStore: ObservableObject {
                 } ?? []
                 let motionTickDayEvidence =
                     motionStrapIdentifier.flatMap { strapIdentifier in
-                      let store = AtriaWhoop4MotionTickDailyStore()
+                      let store = AtriaWhoop4MotionTickDailyStore.shared
                       let persisted = store.load(
                         strapIdentifier: strapIdentifier,
                         windowStart: physiologicalDayStart

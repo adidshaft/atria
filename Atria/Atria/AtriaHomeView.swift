@@ -1072,6 +1072,15 @@ struct AtriaHomeView: View {
             // can publish independently of the foreground HR cadence.
             scheduleWidgetSnapshot(reason: "strap_battery_update")
         }
+        .onReceive(NotificationCenter.default.publisher(
+            for: AtriaWhoop4MotionTickDailyStore.didSaveNotification
+        )) { _ in
+            // The durable receipt can land before the async HistorySnapshot
+            // rebuild. Refresh both app and widget directly from that receipt
+            // so a verified strap subtotal never temporarily disappears.
+            model.refreshDurableStepReceipt()
+            scheduleWidgetSnapshot(reason: "durable_strap_steps")
+        }
         .onReceive(store.$dashboardRevision.throttle(for: .seconds(3), scheduler: RunLoop.main, latest: true)) { _ in
             refreshSavedWorkoutReviewCandidate(reason: "dashboard_revision")
             if let candidate = savedWorkoutReviewCandidate {
@@ -9048,6 +9057,10 @@ final class AtriaHomeModel {
         coreLiveStore.state = next
     }
 
+    func refreshDurableStepReceipt() {
+        publishCoreLive()
+    }
+
     private func publishHeroPulse() {
         // RR intervals arrive several times a second and the array is only read
         // by the breathwork pacer: refresh it at most 1 Hz, and decide that
@@ -9496,7 +9509,8 @@ final class AtriaHomeModel {
     private static func makeCoreLiveState(ble: AtriaBLEManager,
                                           liveSessionDerived: LiveSessionDerived,
                                           savedAggregate: SavedAggregate,
-                                          canonicalStepDays: [AtriaHistoricalDailyConsumerProjection.StepDay]) -> CoreLiveState {
+                                          canonicalStepDays: [AtriaHistoricalDailyConsumerProjection.StepDay],
+                                          motionTickDailyStore: AtriaWhoop4MotionTickDailyStore = .shared) -> CoreLiveState {
         let deviceName = ble.resolvedDeviceName
         let displayableBatteryLevel = ble.displayableBatteryLevel()
         let batteryRecentlyDropping = displayableBatteryLevel != nil && ble.batteryRecentlyDropping
@@ -9533,13 +9547,29 @@ final class AtriaHomeModel {
             savedActiveSessionTotal: savedAggregate.savedActiveSessionTotalStrapSteps,
             liveActiveSession: ble.liveStrapStepResearchCount
         )
+        let currentCycleStepDays: [
+            AtriaHistoricalDailyConsumerProjection.StepDay
+        ]
+        if let strapIdentifier = UserDefaults.standard.string(
+            forKey: AtriaBLEManager.OfflineSyncDefaults
+                .verifiedHistoryPeripheralID
+        ) {
+            currentCycleStepDays = motionTickDailyStore
+                .mergingCurrentCycleReceipt(
+                    into: canonicalStepDays,
+                    strapIdentifier: strapIdentifier,
+                    windowStart: savedAggregate.cycleStart
+                )
+        } else {
+            currentCycleStepDays = canonicalStepDays
+        }
         let dailyStepPresentation = AtriaDailyStepPresentation.resolve(
             day: Date(),
             now: Date(),
             liveCount: strapStepsToday,
             liveValidationState: ble.liveStrapStepResearchState,
             liveCapturedAt: ble.liveStrapStepCountCapturedAt,
-            canonicalDays: canonicalStepDays,
+            canonicalDays: currentCycleStepDays,
             physiologicalDayStart: savedAggregate.cycleStart
         )
         let activeCaloriesToday = SessionStore.mergedTodayActiveCalories(
@@ -9771,7 +9801,7 @@ final class AtriaHomeModel {
                 + Double(live.sessionSampleCount),
             dayElapsedSeconds: now.timeIntervalSince(savedAggregate.cycleStart)
         )
-        let strainConfidence = strainConfidence(
+        var strainConfidence = strainConfidence(
             hasRestingHeartRateEvidence: hasRestEvidence,
             maxHRSource: store.profile.maxHRSource,
             hasLoadEvidence: savedAggregate.hasSavedToday || live.sessionSampleCount >= 60,
@@ -9779,6 +9809,14 @@ final class AtriaHomeModel {
             maxHR: maxHR,
             wearCoverageFraction: wearCoverage
         )
+        if AtriaWorkoutMetricPresentation.cycleStrainIsIncomplete(
+            start: physiologicalCycle.start,
+            end: now,
+            strain: strain,
+            workouts: store.confirmedWorkouts
+        ), !strainConfidence.localizedCaseInsensitiveContains("partial") {
+            strainConfidence += " · partial sparse HR"
+        }
 
         let recoveryIsAttributedToCurrentDay = physiologicalCycle.boundaryKind == .noSleepFallback
             || storedRecovery != nil

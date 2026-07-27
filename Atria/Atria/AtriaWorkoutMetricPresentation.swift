@@ -81,6 +81,23 @@ enum AtriaWorkoutMetricPresentation {
         return sameDay.contains(where: metricsAreIncomplete)
     }
 
+    /// Current strain is accumulated over a physiological wake-to-wake window,
+    /// which can cross civil midnight. Qualify that value against every workout
+    /// that contributed time to the same window; the civil-day helper above
+    /// remains the authority for dated history.
+    static func cycleStrainIsIncomplete(start: Date,
+                                        end: Date,
+                                        strain: Double,
+                                        workouts: [UserConfirmedWorkout]) -> Bool {
+        guard end > start else { return false }
+        _ = strain
+        return workouts.contains { workout in
+            workout.end > start
+                && workout.start < end
+                && metricsAreIncomplete(workout)
+        }
+    }
+
     static func strainText(_ workout: UserConfirmedWorkout) -> String {
         if metricsAreIncomplete(workout) {
             guard mayShowObservedLowerBound(workout), let strain = workout.strain else {
