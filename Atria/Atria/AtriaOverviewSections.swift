@@ -1084,7 +1084,11 @@ private struct AtriaSleepReviewCard: View {
     @State private var sleepConfirmationFailed = false
 
     private var isNap: Bool { night.isNapEvidence }
+    private var isResumedSleep: Bool {
+        night.source == "resumed_sleep_candidate"
+    }
     private var title: String {
+        if isResumedSleep { return "Possible resumed sleep" }
         let validated = night.confidence.caseInsensitiveCompare("ready") == .orderedSame
         if validated { return isNap ? "Nap detected" : "Sleep detected" }
         return isNap ? "Possible nap" : "Possible sleep"
@@ -1101,7 +1105,10 @@ private struct AtriaSleepReviewCard: View {
     }
 
     private var subtitleText: String {
-        isNap
+        if isResumedSleep {
+            return "Confirm to link with your earlier sleep. Awake time stays excluded."
+        }
+        return isNap
             ? "Confirm to save this nap separately."
             : "Confirm to add to today's recovery."
     }

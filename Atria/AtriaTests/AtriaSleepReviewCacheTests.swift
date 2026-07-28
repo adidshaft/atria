@@ -709,6 +709,10 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
                       "A failed Today save must remain visible and retryable")
         XCTAssertTrue(card.contains(".onChange(of: night.id)"),
                       "Failure feedback must not leak onto the next candidate")
+        XCTAssertTrue(card.contains("night.source == \"resumed_sleep_candidate\""))
+        XCTAssertTrue(card.contains("Possible resumed sleep"))
+        XCTAssertTrue(card.contains("Confirm to link with your earlier sleep. Awake time stays excluded."),
+                      "a resumed block must explain that confirmation creates one episode without crediting awake time")
 
         let journalHostStart = try XCTUnwrap(source.range(of: "struct AtriaOverviewMorningJournalHost: View"))
         let journalCardEnd = try XCTUnwrap(source.range(of: "private struct AtriaJournalTodayTagStrip: View",

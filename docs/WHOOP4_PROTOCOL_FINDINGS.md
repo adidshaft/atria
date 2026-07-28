@@ -2227,6 +2227,36 @@ POSITIVE STILL REQUIRED**
   and
   `evidence/2026-07-28-thermal-admission-fix/low-power-locked-soak/`.
 
+#### 2026-07-28 — resumed sleep is one reviewed episode with zero-credit awake time
+
+- **PHYSICAL observation:** Atria surfaced the first qualified sleep from
+  00:45–04:23 and a later 08:33–10:42 block. The later block remained a
+  review candidate instead of silently classifying the intervening 4h10m as
+  sleep.
+- **PRODUCT rule:** a confirmed `resumed_sleep` record remains separately
+  durable for editing and provenance, while the canonical nightly projection
+  links it to the earlier main sleep. The projected outer interval runs from
+  the first onset to the final wake, but its credited duration is only the sum
+  of the observed sleep blocks. The intervening awake gap receives zero sleep
+  credit and therefore lowers interval efficiency.
+- **UI correction:** the review card now says `Possible resumed sleep` and
+  explicitly explains that confirmation links it to the earlier sleep while
+  excluding awake time.
+- **CODE correction:** exact-window respiration was already computed during
+  confirmed-sleep requalification, but a respiration-only migration was
+  discarded because persistence invalidation compared only HRV and HRV-window
+  count. Respiratory-rate changes now invalidate and save the affected wake
+  day as well.
+- **TEST evidence:** the combined
+  `AtriaSleepAuditRegressionTests` and `AtriaSleepReviewCacheTests` suite
+  passed, including substantial biphasic sleep, zero-credit awake-gap
+  projection, resumed-sleep copy, and respiration-only persistence:
+  `Test-AtriaTests-2026.07.28_12-53-47-+0530.xcresult`.
+- **Acceptance status:** projection semantics and persistence regression
+  **PASS in focused tests**. Physical confirmation of the later block remains
+  intentionally pending user adjudication; no automated test or agent should
+  confirm a detected sleep on the user's behalf.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.
