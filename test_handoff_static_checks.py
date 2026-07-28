@@ -7072,7 +7072,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "deltaChip(label: \"HRV\", delta: readout.hrv, tint: .cyan)",
             "deltaChip(label: \"Strain\", delta: readout.strain, tint: Metrics.electricStrain)",
             "summaryPill(label: \"Prior\", value: priorAverageText)",
-            "let cutoff = range.cutoffDate(now: input.referenceDate, calendar: calendar)",
+            "let visibleInterval = range.periodInterval(",
+            "let earlierInterval = range.periodInterval(",
             "let recoverySummary: [AtriaTrendRange: AtriaDetailPeriodSummary]",
             "let hrvSummary: [AtriaTrendRange: AtriaDetailPeriodSummary]",
             "let restingHeartRateSummary: [AtriaTrendRange: AtriaDetailPeriodSummary]",
@@ -12571,9 +12572,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "private var expandedChartEventsKey: Int",
             "if let confirmedWorkoutsRevision",
             "if let sleepHistoryRevision",
-            "private let preparationInput: AtriaMetricDetailPreparationInput",
+            "private let preparationBaseInput: AtriaMetricDetailPreparationInput",
+            "private var preparationInput: AtriaMetricDetailPreparationInput",
             "@State private var preparation = AtriaStaleWhileRefreshState<",
-            "AtriaMetricDetailPreparationInput(rollups: rollups,",
+            "self.preparationBaseInput = AtriaMetricDetailPreparationInput(",
             ".task(id: preparationInput)",
             "private actor AtriaMetricDetailPreparationCache",
             "let prepared = await Task.detached(priority: .userInitiated)",
@@ -12663,8 +12665,10 @@ class HandoffStaticChecks(unittest.TestCase):
         prepared_init_source = prepared_source[prepared_init_start:prepared_init_end]
         for needle in [
             "let chronologicalRollups = Array(rollups.reversed())",
-            "let filtered = chronologicalRollups.filter { $0.day >= cutoff }",
-            "let priorFiltered = chronologicalRollups.filter { $0.day >= previousCutoff && $0.day < cutoff }",
+            "let projection = AtriaMetricPeriodIndexProjection(",
+            "days: chronologicalRollups.map(\\.day)",
+            "let filtered = projection.currentIndices.map { chronologicalRollups[$0] }",
+            "let priorFiltered = projection.priorIndices.map { chronologicalRollups[$0] }",
         ]:
             assert_contains(self, prepared_init_source, needle)
         assert_not_contains(self, prepared_init_source, "rollups.sorted")

@@ -469,6 +469,21 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
             [.year, .month, .day],
             from: dayStart
         )
+        // A nonzero firmware counter with a zero gait subtotal means motion
+        // was observed but none of its bursts supported a qualified cadence
+        // estimate. It is not a verified zero-step lower bound. Preserve the
+        // receipt as unresolved evidence so it cannot suppress a later valid
+        // count or masquerade as stationary wear.
+        let unresolvedObservedMotion =
+            evidence.motionTicks > 0 && evidence.steps == 0
+        let publishedKnownCoverage = unresolvedObservedMotion
+            ? 0 : evidence.knownCoverageSeconds
+        let publishedMissingCoverage = unresolvedObservedMotion
+            ? max(
+                evidence.missingCoverageSeconds,
+                Int(evidence.capturedThrough.timeIntervalSince(dayStart).rounded(.up))
+            )
+            : evidence.missingCoverageSeconds + uncoveredPrefix
         return .init(
             localDay: String(
                 format: "%04d-%02d-%02d",
@@ -478,14 +493,13 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
             ),
             dayStart: dayStart,
             dayEnd: evidence.capturedThrough,
-            state: isComplete ? .available : .missing,
-            stepCount: isComplete ? evidence.steps : nil,
+            state: isComplete && !unresolvedObservedMotion ? .available : .missing,
+            stepCount: isComplete && !unresolvedObservedMotion ? evidence.steps : nil,
             knownStepDeltaSum: evidence.steps,
             knownEpochCount: evidence.decodedRows > 0 ? 1 : 0,
             rejectedOrUnknownEpochCount: 0,
-            knownCoverageSeconds: evidence.knownCoverageSeconds,
-            missingCoverageSeconds:
-                evidence.missingCoverageSeconds + uncoveredPrefix
+            knownCoverageSeconds: publishedKnownCoverage,
+            missingCoverageSeconds: publishedMissingCoverage
         )
     }
 }

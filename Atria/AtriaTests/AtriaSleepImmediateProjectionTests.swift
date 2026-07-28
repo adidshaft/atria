@@ -558,7 +558,11 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
                         "qualified sleep HRV + RHR + a learned baseline must produce an honest score")
         XCTAssertTrue(recovery.usesHRV)
 
-        let aggregate = store.homeSavedAggregate(rest: saved.restingHR,
+        // Home and the widget both use the learned resting baseline as the
+        // stable strain anchor; the corrected sleep's RHR is Recovery evidence,
+        // not a replacement strain baseline.
+        let strainRest = try XCTUnwrap(store.baseline.restingInt)
+        let aggregate = store.homeSavedAggregate(rest: strainRest,
                                                  maxHR: store.profile.maxHR,
                                                  now: now)
         let strain = Metrics.strain(fromTRIMP: aggregate.savedTodayTRIMP)

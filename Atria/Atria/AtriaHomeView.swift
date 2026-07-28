@@ -10632,10 +10632,12 @@ final class AtriaHomeModel {
                            rest: rest,
                            maxHR: maxHR,
                            biologicalSex: profile.biologicalSex,
-                           trimp: liveSessionTRIMP(cycleSamples,
-                                                   rest: rest,
-                                                   max: maxHR,
-                                                   sex: profile.biologicalSex),
+                           trimp: liveSessionDailyLoadTRIMP(
+                                cycleSamples,
+                                rest: rest,
+                                max: maxHR,
+                                sex: profile.biologicalSex
+                           ),
                            activeCalories: Metrics.dayCalories(cycleSamples.map {
                                Metrics.HeartRateEnergySample(t: $0.t, bpm: $0.bpm)
                            }, rest: rest, profile: profile))
@@ -10699,6 +10701,10 @@ final class AtriaHomeModel {
                   dtSeconds <= AtriaAnalytics.Strain.maximumLoadEvidenceGap else { continue }
             let dtMin = dtSeconds / 60.0
             let meanBPM = (Double(samples[index - 1].bpm) + Double(samples[index].bpm)) / 2
+            guard meanBPM >= Double(maxHR)
+                    * AtriaAnalytics.Strain.minimumDailyLoadFractionOfMaxHR else {
+                continue
+            }
             let hrr = Swift.min(Swift.max((meanBPM - Double(rest)) / span, 0), 1)
             let coefficient = AtriaAnalytics.Strain.banisterCoefficient(for: profile.biologicalSex)
             total += dtMin * hrr * 0.64 * exp(coefficient * hrr)
@@ -10719,16 +10725,20 @@ final class AtriaHomeModel {
                                   activeCalories: profile.hasEnergyProfile ? activeCalories : nil)
     }
 
-    private static func liveSessionTRIMP(_ samples: [HRSample],
-                                         rest: Int,
-                                         max: Int,
-                                         sex: AthleteProfile.BiologicalSex) -> Double {
+    private static func liveSessionDailyLoadTRIMP(
+        _ samples: [HRSample],
+        rest: Int,
+        max: Int,
+        sex: AthleteProfile.BiologicalSex
+    ) -> Double {
         guard samples.count > 1, max > rest else { return 0 }
         let origin = samples[0].t
-        return Metrics.trimp(samples.map { (t: $0.t.timeIntervalSince(origin), bpm: $0.bpm) },
-                             rest: rest,
-                             max: max,
-                             sex: sex)
+        return Metrics.dailyLoadTRIMP(
+            samples.map { (t: $0.t.timeIntervalSince(origin), bpm: $0.bpm) },
+            rest: rest,
+            max: max,
+            sex: sex
+        )
     }
 }
 

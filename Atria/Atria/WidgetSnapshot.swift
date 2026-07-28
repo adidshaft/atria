@@ -999,6 +999,11 @@ enum WidgetSnapshotPublisher {
                dtSeconds <= AtriaAnalytics.Strain.maximumLoadEvidenceGap {
                 let dtMin = dtSeconds / 60.0
                 let meanBPM = (Double(samples[index - 1].bpm) + Double(samples[index].bpm)) / 2
+                guard meanBPM >= Double(max)
+                        * AtriaAnalytics.Strain.minimumDailyLoadFractionOfMaxHR else {
+                    index += 1
+                    continue
+                }
                 let hrr = Swift.min(Swift.max((meanBPM - Double(rest)) / span, 0), 1)
                 let coefficient = AtriaAnalytics.Strain.banisterCoefficient(for: sex)
                 total += dtMin * hrr * 0.64 * exp(coefficient * hrr)

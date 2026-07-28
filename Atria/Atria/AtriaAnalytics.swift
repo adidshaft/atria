@@ -611,6 +611,13 @@ enum AtriaAnalytics {
         /// are integrated from their own timestamps, not held across a gap.
         static let maximumLoadEvidenceGap: TimeInterval = 15
 
+        /// Banister TRIMP was designed for exercise windows, not continuous
+        /// all-day wear. Treating every beat above resting HR as training load
+        /// lets ten quiet hours at 80–90 bpm overwhelm a real workout. Daily
+        /// strain therefore starts at the same 50%-of-max boundary used by the
+        /// product's standard Z0/rest band. Workout TRIMP remains unchanged.
+        static let minimumDailyLoadFractionOfMaxHR = 0.50
+
         struct MaxHeartRateZoneSeconds: Equatable {
             let rest: TimeInterval
             let warmup: TimeInterval
@@ -734,6 +741,35 @@ enum AtriaAnalytics {
                           rest: Int,
                           max: Int,
                           coefficient: Double) -> Double {
+            trimp(series,
+                  rest: rest,
+                  max: max,
+                  coefficient: coefficient,
+                  minimumMeanBPM: nil)
+        }
+
+        static func dailyTRIMP(
+            _ series: [(t: Double, bpm: Int)],
+            rest: Int,
+            max: Int,
+            sex: AthleteProfile.BiologicalSex
+        ) -> Double {
+            trimp(
+                series,
+                rest: rest,
+                max: max,
+                coefficient: banisterCoefficient(for: sex),
+                minimumMeanBPM: Double(max) * minimumDailyLoadFractionOfMaxHR
+            )
+        }
+
+        private static func trimp(
+            _ series: [(t: Double, bpm: Int)],
+            rest: Int,
+            max: Int,
+            coefficient: Double,
+            minimumMeanBPM: Double?
+        ) -> Double {
             guard series.count > 1, max > rest else { return 0 }
             let span = Double(max - rest)
             let safeCoefficient = Swift.min(Swift.max(coefficient, 1.0), 2.5)
@@ -747,6 +783,7 @@ enum AtriaAnalytics {
                 guard dtSeconds > 0, dtSeconds <= maximumLoadEvidenceGap else { continue }
                 let dtMin = dtSeconds / 60.0
                 let meanBPM = (Double(series[index - 1].bpm) + Double(series[index].bpm)) / 2
+                if let minimumMeanBPM, meanBPM < minimumMeanBPM { continue }
                 let hrr = Swift.min(Swift.max((meanBPM - Double(rest)) / span, 0), 1)
                 total += dtMin * hrr * 0.64 * exp(safeCoefficient * hrr)
             }
