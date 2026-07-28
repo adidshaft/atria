@@ -229,6 +229,7 @@ struct AtriaPhysiologicalDay: Equatable {
                                           restingHR: night.restingHR ?? 0,
                                           hrv: night.hrv,
                                           hrvWindowCount: night.hrvWindowCount,
+                                          respiratoryRate: night.respiratoryRate,
                                           duration: night.duration,
                                           span: end.timeIntervalSince(start),
                                           reason: "compact physiological-day boundary",
@@ -1790,6 +1791,10 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
     let restingHR: Int
     let hrv: Int?
     let hrvWindowCount: Int?
+    /// Median RSA-derived breaths/minute from continuous, qualified RR runs
+    /// wholly inside this confirmed sleep window. Optional for legacy records
+    /// and nights without enough continuous RR evidence.
+    let respiratoryRate: Double?
     let duration: TimeInterval
     let span: TimeInterval
     let reason: String
@@ -1797,6 +1802,110 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
     let motionValidated: Bool
     let stageSegments: [SleepStageSegment]?
     var eventTimeZoneIdentifier: String? = nil
+
+    init(id: String,
+         createdAt: Date,
+         start: Date,
+         end: Date,
+         source: String,
+         confidence: String,
+         sessions: Int,
+         samples: Int,
+         avgHR: Int,
+         peakHR: Int,
+         restingHR: Int,
+         hrv: Int?,
+         hrvWindowCount: Int?,
+         respiratoryRate: Double? = nil,
+         duration: TimeInterval,
+         span: TimeInterval,
+         reason: String,
+         motionSource: String,
+         motionValidated: Bool,
+         stageSegments: [SleepStageSegment]?,
+         eventTimeZoneIdentifier: String? = nil) {
+        self.id = id
+        self.createdAt = createdAt
+        self.start = start
+        self.end = end
+        self.source = source
+        self.confidence = confidence
+        self.sessions = sessions
+        self.samples = samples
+        self.avgHR = avgHR
+        self.peakHR = peakHR
+        self.restingHR = restingHR
+        self.hrv = hrv
+        self.hrvWindowCount = hrvWindowCount
+        self.respiratoryRate = respiratoryRate
+        self.duration = duration
+        self.span = span
+        self.reason = reason
+        self.motionSource = motionSource
+        self.motionValidated = motionValidated
+        self.stageSegments = stageSegments
+        self.eventTimeZoneIdentifier = eventTimeZoneIdentifier
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, createdAt, start, end, source, confidence, sessions, samples
+        case avgHR, peakHR, restingHR, hrv, hrvWindowCount, respiratoryRate
+        case duration, span, reason, motionSource, motionValidated, stageSegments
+        case eventTimeZoneIdentifier
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        start = try container.decode(Date.self, forKey: .start)
+        end = try container.decode(Date.self, forKey: .end)
+        source = try container.decode(String.self, forKey: .source)
+        confidence = try container.decode(String.self, forKey: .confidence)
+        sessions = try container.decode(Int.self, forKey: .sessions)
+        samples = try container.decode(Int.self, forKey: .samples)
+        avgHR = try container.decode(Int.self, forKey: .avgHR)
+        peakHR = try container.decode(Int.self, forKey: .peakHR)
+        restingHR = try container.decode(Int.self, forKey: .restingHR)
+        hrv = try container.decodeIfPresent(Int.self, forKey: .hrv)
+        hrvWindowCount = try container.decodeIfPresent(Int.self, forKey: .hrvWindowCount)
+        respiratoryRate = try container.decodeIfPresent(Double.self, forKey: .respiratoryRate)
+        duration = try container.decode(TimeInterval.self, forKey: .duration)
+        span = try container.decode(TimeInterval.self, forKey: .span)
+        reason = try container.decode(String.self, forKey: .reason)
+        motionSource = try container.decode(String.self, forKey: .motionSource)
+        motionValidated = try container.decode(Bool.self, forKey: .motionValidated)
+        stageSegments = try container.decodeIfPresent([SleepStageSegment].self, forKey: .stageSegments)
+        eventTimeZoneIdentifier = try container.decodeIfPresent(
+            String.self,
+            forKey: .eventTimeZoneIdentifier
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(start, forKey: .start)
+        try container.encode(end, forKey: .end)
+        try container.encode(source, forKey: .source)
+        try container.encode(confidence, forKey: .confidence)
+        try container.encode(sessions, forKey: .sessions)
+        try container.encode(samples, forKey: .samples)
+        try container.encode(avgHR, forKey: .avgHR)
+        try container.encode(peakHR, forKey: .peakHR)
+        try container.encode(restingHR, forKey: .restingHR)
+        try container.encodeIfPresent(hrv, forKey: .hrv)
+        try container.encodeIfPresent(hrvWindowCount, forKey: .hrvWindowCount)
+        try container.encodeIfPresent(respiratoryRate, forKey: .respiratoryRate)
+        try container.encode(duration, forKey: .duration)
+        try container.encode(span, forKey: .span)
+        try container.encode(reason, forKey: .reason)
+        try container.encode(motionSource, forKey: .motionSource)
+        try container.encode(motionValidated, forKey: .motionValidated)
+        try container.encodeIfPresent(stageSegments, forKey: .stageSegments)
+        try container.encodeIfPresent(eventTimeZoneIdentifier, forKey: .eventTimeZoneIdentifier)
+    }
 }
 
 /// A durable dismissal for a sensor-derived sleep/nap window. A single UI-only
@@ -18726,7 +18835,9 @@ final class SessionStore: ObservableObject {
                 restingHR: candidate.restingHR > 0 ? candidate.restingHR : nil,
                 hrv: metrics.hrv,
                 hrvWindowCount: metrics.hrvWindowCount,
-                respiratoryRate: nil,
+                respiratoryRate: confirmedSleepRespiratoryRate(from: canonicalSessions,
+                                                                start: candidate.start,
+                                                                end: candidate.end),
                 sleepEfficiency: sleepEfficiency,
                 confidence: candidate.motionEvidenceValidated ? candidate.confidence.rawValue : "review_needed",
                 source: source,
@@ -18942,7 +19053,9 @@ final class SessionStore: ObservableObject {
                 restingHR: weightedMedian,
                 hrv: metrics.hrv,
                 hrvWindowCount: metrics.hrvWindowCount,
-                respiratoryRate: nil,
+                respiratoryRate: confirmedSleepRespiratoryRate(from: sessions,
+                                                                start: start,
+                                                                end: end),
                 sleepEfficiency: span > 0 ? min(1, captured / span) : nil,
                 confidence: "review_needed",
                 source: source,
@@ -19058,6 +19171,9 @@ final class SessionStore: ObservableObject {
                                            hrv: night.hrv ?? metrics.hrv,
                                            hrvWindowCount: max(night.hrvWindowCount,
                                                                metrics.hrvWindowCount),
+                                           respiratoryRate: night.respiratoryRate
+                                            ?? confirmedSleepRespiratoryRate(start: confirmedStart,
+                                                                            end: end),
                                            duration: duration,
                                            span: confirmedSpan,
                                            reason: "\(source); \(night.confirmationText); \(night.confidenceText)",
@@ -19696,6 +19812,11 @@ final class SessionStore: ObservableObject {
                                        restingHR: candidate.restingHR,
                                        hrv: metrics.hrv,
                                        hrvWindowCount: metrics.hrvWindowCount,
+                                       respiratoryRate: Self.confirmedSleepRespiratoryRate(
+                                        from: constructionSessions,
+                                        start: candidate.start,
+                                        end: candidate.end
+                                       ),
                                        duration: candidate.duration,
                                        span: candidate.span,
                                        reason: "\(reason); \(candidate.reason)",
@@ -20477,6 +20598,8 @@ final class SessionStore: ObservableObject {
                                            restingHR: metrics.restingHR,
                                            hrv: metrics.hrv,
                                            hrvWindowCount: metrics.hrvWindowCount,
+                                           respiratoryRate: confirmedSleepRespiratoryRate(start: start,
+                                                                                           end: end),
                                            duration: duration,
                                            span: duration,
                                            reason: source,
@@ -20580,6 +20703,11 @@ final class SessionStore: ObservableObject {
                                         restingHR: metrics.restingHR,
                                         hrv: metrics.hrv,
                                         hrvWindowCount: metrics.hrvWindowCount,
+                                        respiratoryRate: Self.confirmedSleepRespiratoryRate(
+                                            from: sourceSessions,
+                                            start: start,
+                                            end: end
+                                        ),
                                         duration: duration,
                                         span: span,
                                         reason: "user_adjusted_window from \(fromSource)",
@@ -20805,6 +20933,8 @@ final class SessionStore: ObservableObject {
                                            restingHR: best.restingHR,
                                            hrv: metrics.hrv,
                                            hrvWindowCount: metrics.hrvWindowCount,
+                                           respiratoryRate: confirmedSleepRespiratoryRate(start: best.start,
+                                                                                           end: best.end),
                                            duration: best.duration,
                                            span: best.span,
                                            reason: best.reason,
@@ -20887,6 +21017,84 @@ final class SessionStore: ObservableObject {
             hrv = value > 0 ? value : nil
         }
         return (overlapping.count, values.count, avg, peak, resting, hrv, hrvWindowCount)
+    }
+
+    /// Derives one robust sleep-window respiratory scalar without ever joining
+    /// raw RR intervals across a reconnect or a greater-than-three-second hole.
+    /// Each independently continuous run yields bounded RSA estimates; their
+    /// median lets fragmented/overlapping saved sessions contribute without a
+    /// long or duplicated fragment dominating the result.
+    nonisolated static func confirmedSleepRespiratoryRate(
+        from sessions: [SavedSession],
+        start: Date,
+        end: Date,
+        maximumRRGap: TimeInterval = 3
+    ) -> Double? {
+        guard end > start, maximumRRGap > 0 else { return nil }
+        var estimates: [Double] = []
+
+        for session in sessions where session.end > start && session.start < end {
+            guard session.hasQualifiedRRProvenance,
+                  let rrPoints = session.rrPoints else { continue }
+            let samples = rrPoints.compactMap { point -> (t: Date, ms: Double)? in
+                let timestamp = session.start.addingTimeInterval(max(0, point.t))
+                guard timestamp >= start,
+                      timestamp <= end,
+                      (300...2_000).contains(point.ms) else { return nil }
+                return (timestamp, Double(point.ms))
+            }
+            .sorted { $0.t < $1.t }
+
+            var run: [(t: Date, ms: Double)] = []
+            func finishRun() {
+                guard run.count >= 20,
+                      let first = run.first?.t,
+                      let last = run.last?.t,
+                      last.timeIntervalSince(first) >= 45 else {
+                    run.removeAll(keepingCapacity: true)
+                    return
+                }
+                var evaluation = first.addingTimeInterval(60)
+                while evaluation <= last {
+                    if let rate = AtriaAnalytics.RespRateRsa.estimate(samples: run,
+                                                                     now: evaluation,
+                                                                     lookback: 90) {
+                        estimates.append(rate)
+                    }
+                    evaluation = evaluation.addingTimeInterval(30)
+                }
+                if let rate = AtriaAnalytics.RespRateRsa.estimate(samples: run,
+                                                                 now: last,
+                                                                 lookback: 90) {
+                    estimates.append(rate)
+                }
+                run.removeAll(keepingCapacity: true)
+            }
+
+            for sample in samples {
+                if let previous = run.last {
+                    let gap = sample.t.timeIntervalSince(previous.t)
+                    if gap <= 0 || gap > maximumRRGap {
+                        finishRun()
+                    }
+                }
+                run.append(sample)
+            }
+            finishRun()
+        }
+
+        guard !estimates.isEmpty else { return nil }
+        let ordered = estimates.sorted()
+        let middle = ordered.count / 2
+        return ordered.count.isMultiple(of: 2)
+            ? (ordered[middle - 1] + ordered[middle]) / 2
+            : ordered[middle]
+    }
+
+    private func confirmedSleepRespiratoryRate(start: Date, end: Date) -> Double? {
+        Self.confirmedSleepRespiratoryRate(from: canonicalSessions(),
+                                           start: start,
+                                           end: end)
     }
 
     nonisolated static func confirmedSleepSensorCoverage(from sessions: [SavedSession],
@@ -21029,6 +21237,7 @@ final class SessionStore: ObservableObject {
                                   restingHR: sleep.restingHR,
                                   hrv: sleep.hrv,
                                   hrvWindowCount: sleep.hrvWindowCount,
+                                  respiratoryRate: sleep.respiratoryRate,
                                   duration: sleep.duration,
                                   span: sleep.span,
                                   reason: sleep.reason,
@@ -21118,8 +21327,17 @@ final class SessionStore: ObservableObject {
                                                        end: sleep.end,
                                                        rest: sleep.restingHR)
             let qualifiedHRV = metrics.hrvWindowCount >= 3 ? metrics.hrv : nil
+            // HRV's historical migration intentionally clears scalar-only
+            // values that cannot be requalified. Respiration is already stored
+            // only after the stricter continuous-run gate above; session
+            // pruning must not erase that durable accepted result.
+            let respiratoryRate = confirmedSleepRespiratoryRate(from: sessions,
+                                                                start: sleep.start,
+                                                                end: sleep.end)
+                ?? sleep.respiratoryRate
             guard sleep.hrv != qualifiedHRV
-                    || sleep.hrvWindowCount != metrics.hrvWindowCount else {
+                    || sleep.hrvWindowCount != metrics.hrvWindowCount
+                    || sleep.respiratoryRate != respiratoryRate else {
                 return sleep
             }
             return UserConfirmedSleep(id: sleep.id,
@@ -21135,6 +21353,7 @@ final class SessionStore: ObservableObject {
                                       restingHR: sleep.restingHR,
                                       hrv: qualifiedHRV,
                                       hrvWindowCount: metrics.hrvWindowCount,
+                                      respiratoryRate: respiratoryRate,
                                       duration: sleep.duration,
                                       span: sleep.span,
                                       reason: sleep.reason,
@@ -21326,6 +21545,11 @@ final class SessionStore: ObservableObject {
                                            restingHR: metrics.restingHR,
                                            hrv: metrics.hrv,
                                            hrvWindowCount: metrics.hrvWindowCount,
+                                           respiratoryRate: Self.confirmedSleepRespiratoryRate(
+                                            from: sourceSessions,
+                                            start: sleep.start,
+                                            end: sleep.end
+                                           ),
                                            duration: duration,
                                            span: sleep.span,
                                            reason: sleep.reason,
@@ -21480,6 +21704,7 @@ final class SessionStore: ObservableObject {
                                       restingHR: sleep.restingHR,
                                       hrv: sleep.hrv,
                                       hrvWindowCount: sleep.hrvWindowCount,
+                                      respiratoryRate: sleep.respiratoryRate,
                                       duration: sleep.duration,
                                       span: sleep.span,
                                       reason: sleep.reason,
@@ -30606,7 +30831,7 @@ struct SleepHistorySnapshot: Equatable {
                               restingHR: sleep.restingHR > 0 ? sleep.restingHR : nil,
                               hrv: sleep.hrv,
                               hrvWindowCount: sleep.hrvWindowCount ?? 0,
-                              respiratoryRate: nil,
+                              respiratoryRate: sleep.respiratoryRate,
                               sleepEfficiency: Self.efficiency(duration: sleep.duration,
                                                                span: sleep.span,
                                                                source: sleep.source),

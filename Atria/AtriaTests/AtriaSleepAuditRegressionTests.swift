@@ -65,6 +65,37 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         return value
     }
 
+    private func respiratoryRRSession(start: Date,
+                                      end: Date,
+                                      rrOffsets: [TimeInterval],
+                                      breathsPerMinute: Double = 15,
+                                      bpm: Int = 60,
+                                      motionValidated: Bool = true) -> SavedSession {
+        let duration = end.timeIntervalSince(start)
+        let points = stride(from: 0.0, to: duration, by: 30.0).map {
+            SavedSession.Point(t: $0, bpm: bpm)
+        }
+        let rrPoints = rrOffsets.map { offset in
+            let modulation = 70 * sin(2 * Double.pi * (breathsPerMinute / 60) * offset)
+            return SavedSession.RRPoint(
+                t: offset,
+                ms: Int((900 + modulation).rounded()),
+                source: .standardHeartRateMeasurement2A37
+            )
+        }
+        var value = SavedSession(id: UUID(),
+                                 start: start,
+                                 end: end,
+                                 label: "Respiratory sleep fixture",
+                                 points: points,
+                                 rrPoints: rrPoints,
+                                 sleepWakeResearchState: "sleep_research",
+                                 eventTimeZoneIdentifier: "UTC")
+        value.motionEvidenceValidated = motionValidated
+        value.motionEvidenceSource = motionValidated ? "validated_strap_stillness" : nil
+        return value
+    }
+
     private func candidates(_ sessions: [SavedSession], rest: Int = 50) -> [AggregateSleepCandidate] {
         SessionStore.aggregateSleepCandidates(in: sessions,
                                               rest: rest,
@@ -108,6 +139,102 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertEqual(mainSleep.sessions, 2)
         XCTAssertEqual(mainSleep.duration, first.duration + second.duration + 1, accuracy: 1)
         XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(mainSleep))
+    }
+
+    func testSleepWindowRespirationAggregatesFragmentedOverlappingQualifiedRuns() throws {
+        let sleepStart = date(2032, 1, 2, 0, 0)
+        let sleepEnd = date(2032, 1, 2, 3, 30)
+        let firstOffsets = stride(from: 0.0, through: 85.0, by: 0.9).map { $0 }
+        let secondOffsets = stride(from: 0.0, through: 85.0, by: 0.9).map { $0 }
+        let first = respiratoryRRSession(start: sleepStart,
+                                         end: sleepEnd,
+                                         rrOffsets: firstOffsets)
+        let overlapping = respiratoryRRSession(
+            start: sleepStart.addingTimeInterval(70),
+            end: sleepEnd,
+            rrOffsets: secondOffsets
+        )
+
+        let rate = try XCTUnwrap(SessionStore.confirmedSleepRespiratoryRate(
+            from: [first, overlapping],
+            start: sleepStart,
+            end: sleepEnd
+        ))
+        XCTAssertEqual(rate, 15, accuracy: 1)
+
+        let review = try XCTUnwrap(SessionStore.makeSleepReviewNightForCache(
+            snapshot: .empty,
+            canonicalSessions: [first, overlapping],
+            confirmedSleeps: [],
+            rest: 60,
+            maxHR: 190,
+            calendar: Self.utcCalendar
+        ))
+        XCTAssertEqual(try XCTUnwrap(review.respiratoryRate), 15, accuracy: 1)
+    }
+
+    func testSleepWindowRespirationRejectsRunsSeparatedByMoreThanThreeSeconds() {
+        let start = date(2032, 1, 2, 0, 0)
+        let first = stride(from: 0.0, through: 38.0, by: 0.9).map { $0 }
+        let secondStart = (first.last ?? 0) + 4
+        let second = stride(from: secondStart, through: secondStart + 38, by: 0.9).map { $0 }
+        let session = respiratoryRRSession(
+            start: start,
+            end: start.addingTimeInterval(second.last ?? 80),
+            rrOffsets: first + second
+        )
+
+        XCTAssertNil(SessionStore.confirmedSleepRespiratoryRate(
+            from: [session],
+            start: start,
+            end: session.end
+        ), "two sub-45-second runs must not be bridged across a >3-second RR hole")
+    }
+
+    func testConfirmedSleepRespirationPersistsProjectsAndLegacyDecodeStaysNil() throws {
+        let start = date(2032, 1, 2, 0, 0)
+        let end = date(2032, 1, 2, 6, 0)
+        let sleep = UserConfirmedSleep(
+            id: "respiratory-persistence",
+            createdAt: end,
+            start: start,
+            end: end,
+            source: "sleep_window",
+            confidence: "user_confirmed_motion_validated",
+            sessions: 2,
+            samples: 1_000,
+            avgHR: 62,
+            peakHR: 74,
+            restingHR: 58,
+            hrv: 55,
+            hrvWindowCount: 3,
+            respiratoryRate: 14.5,
+            duration: end.timeIntervalSince(start),
+            span: end.timeIntervalSince(start),
+            reason: "test",
+            motionSource: "user_review_validated",
+            motionValidated: true,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: "UTC"
+        )
+
+        let encoded = try JSONEncoder().encode(sleep)
+        let decoded = try JSONDecoder().decode(UserConfirmedSleep.self, from: encoded)
+        XCTAssertEqual(decoded.respiratoryRate, 14.5)
+        let projected = SleepHistorySnapshot(
+            rollups: [],
+            confirmedSleeps: [decoded],
+            calendar: Self.utcCalendar
+        )
+        XCTAssertEqual(projected.latestMainSleep?.respiratoryRate, 14.5)
+
+        var legacyObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        legacyObject.removeValue(forKey: "respiratoryRate")
+        let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
+        let legacy = try JSONDecoder().decode(UserConfirmedSleep.self, from: legacyData)
+        XCTAssertNil(legacy.respiratoryRate)
     }
 
     private var july26ReportedSleepSessionsURL: URL {
