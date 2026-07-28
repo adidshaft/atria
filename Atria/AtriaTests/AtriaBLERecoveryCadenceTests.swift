@@ -8910,8 +8910,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(body.contains("return .centralNotReady"))
 
         // Not-ready must end in a retry, never dormancy.
-        XCTAssertTrue(source.contains("standingConnectAwaitingCentralPowerOn = true"))
-        XCTAssertTrue(source.contains("standingConnectAwaitingCentralPowerOn = false"))
+        XCTAssertTrue(source.contains("markAwaitingPowerOn(standingConnect: true)"))
+        XCTAssertTrue(source.contains("consumePowerOnMarkers()"))
         XCTAssertTrue(source.contains("standing_connect_resumed_on_power_on"))
         // And a strap iOS cannot retrieve must leave a durable trace.
         XCTAssertTrue(source.contains("powered_on_retrieve_empty"))
@@ -9473,7 +9473,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             of: "central.delegate = nil"
         ))
         let awaitPower = try XCTUnwrap(body.range(
-            of: "standingConnectAwaitingCentralPowerOn = true"
+            of: "bleCallbackEpochFence.markAwaitingPowerOn("
         ))
         let replacement = try XCTUnwrap(body.range(
             of: "central = CBCentralManager(delegate: self"
@@ -9539,7 +9539,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(synchronousPrefix.contains("central_rebuild_state_"))
         XCTAssertTrue(synchronousPrefix.contains("central.connect(saved, options: nil)"))
         XCTAssertTrue(synchronousPrefix.contains("central_rebuild_standing_connect_issued"))
-        XCTAssertTrue(synchronousPrefix.contains("silentStreamCentralRebuildAwaitingPowerOn = false"))
+        XCTAssertTrue(synchronousPrefix.contains("consumePowerOnMarkers()"))
     }
 
     func testBackgroundSoftHRRepairOwnsBoundedEscalationLease() throws {
