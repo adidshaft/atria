@@ -10577,7 +10577,7 @@ class HandoffStaticChecks(unittest.TestCase):
             (today, "private struct AtriaTodayHighlightsStrip: View, Equatable"),
             (today, "AtriaTodayLiveStatusStrip(live: liveStore.state,"),
             (today, "AtriaTodayPlanCard(title: planTitle,"),
-            (today, "LazyVGrid(columns: glanceColumns, spacing: 10)"),
+            (today, "LazyVGrid(columns: glanceColumns, spacing: AtriaDesignTokens.Spacing.md)"),
             (today, "private var glanceColumns: [GridItem]"),
             (today, "if horizontalSizeClass == .regular"),
             # TODO(unbuilt spec / superseded): "Health" and "Strap" Today glance cards
@@ -10991,7 +10991,7 @@ class HandoffStaticChecks(unittest.TestCase):
             # 2026-07-07: same onOpen-route migration as above.
             "AtriaTodayHighlightsStrip(highlights: highlights) { metric in",
             "AtriaTodayPlanCard(title: planTitle,",
-            "LazyVGrid(columns: glanceColumns, spacing: 10)",
+            "LazyVGrid(columns: glanceColumns, spacing: AtriaDesignTokens.Spacing.md)",
             "if layoutConfig.showAICoach && effectiveAICoachSettings.mode != .off",
             # 2026-07-07: Journal info row removed (duplicate of shortcut
             # strip value) — see UX-audit commit.
