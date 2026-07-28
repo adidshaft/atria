@@ -93,7 +93,13 @@ final class AtriaAnalyticsTests: XCTestCase {
         )
 
         XCTAssertNil(summary.value)
-        XCTAssertEqual(summary.valueText, "Learning")
+        // 2026-07-28 deterministic-presentation pass: valueText is a DISPLAY
+        // string and now uses the app-wide no-value token. The invariant this
+        // test is named for is untouched and still asserted either side of this
+        // line -- no value, and confidence still reads "learning". VO2 max was
+        // the last value line saying "Learning" while Recovery, Stress,
+        // Respiration and Sleep beside it said "--".
+        XCTAssertEqual(summary.valueText, AtriaCompactMetricPresentation.noValue)
         XCTAssertEqual(summary.confidence, "learning")
         XCTAssertEqual(summary.detail, "2/14 RHR")
         XCTAssertEqual(summary.trendDetail, "2/14 RHR days.")

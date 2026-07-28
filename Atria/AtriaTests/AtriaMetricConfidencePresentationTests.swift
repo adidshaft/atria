@@ -438,7 +438,12 @@ final class AtriaMetricConfidencePresentationTests: XCTestCase {
 
     func testBothProvenanceMetricsStillRenderTheCard() throws {
         let overview = try source("Atria/AtriaOverviewSections.swift")
-        let occurrences = overview.components(separatedBy: "provenanceCard(provenance)").count - 1
+        // Call form changed when the card was extracted from three private
+        // methods on the sheet into its own view. The pin caught that drift, as
+        // intended -- it just happened to be my own drift.
+        let occurrences = overview
+            .components(separatedBy: "AtriaMetricProvenanceCard(provenance: provenance)")
+            .count - 1
 
         XCTAssertEqual(occurrences, 2,
                        "recovery and strain must each still render the provenance card")
