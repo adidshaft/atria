@@ -990,7 +990,8 @@ final class DailyRollupStore {
         return calendar.dateComponents([.year, .month, .day], from: entry.day)
     }
 
-    private static func persist(_ rollups: [DailyRollupStoreEntry], to url: URL) {
+    @discardableResult
+    private static func persist(_ rollups: [DailyRollupStoreEntry], to url: URL) -> Bool {
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -1000,9 +1001,29 @@ final class DailyRollupStore {
                           rollups.count,
                           data.count,
                           url.lastPathComponent)
+            return true
         } catch {
             AtriaDebugLog("ATRIADBG daily_rollup_store_save status=failed error=%@",
                           error.localizedDescription)
+            return false
+        }
+    }
+
+    /// Flushes the newest in-memory authority after every previously queued
+    /// rollup image. Morning settlement uses this completion as its durability
+    /// fence before releasing Home/widget publication.
+    func persistCurrentSnapshot(completion: @escaping (Bool) -> Void) {
+        guard persistencePauseDepth == 0 else {
+            completion(false)
+            return
+        }
+        let snapshot = cache
+        let targetURL = url
+        queue.async {
+            let succeeded = Self.persist(snapshot, to: targetURL)
+            DispatchQueue.main.async {
+                completion(succeeded)
+            }
         }
     }
 

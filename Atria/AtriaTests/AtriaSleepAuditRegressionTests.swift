@@ -342,7 +342,10 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         func confirmed(id: String,
                        start: Date,
                        end: Date,
-                       source: String) -> UserConfirmedSleep {
+                       source: String,
+                       restingHR: Int,
+                       hrv: Int,
+                       respiratoryRate: Double) -> UserConfirmedSleep {
             UserConfirmedSleep(
                 id: id,
                 createdAt: end,
@@ -354,9 +357,10 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
                 samples: 1_000,
                 avgHR: 65,
                 peakHR: 83,
-                restingHR: 59,
-                hrv: 50,
+                restingHR: restingHR,
+                hrv: hrv,
                 hrvWindowCount: 3,
+                respiratoryRate: respiratoryRate,
                 duration: end.timeIntervalSince(start),
                 span: end.timeIntervalSince(start),
                 reason: "test",
@@ -366,12 +370,21 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
                 eventTimeZoneIdentifier: "Asia/Kolkata"
             )
         }
-        let main = confirmed(id: "main", start: mainStart, end: mainEnd, source: "sleep_window")
+        let main = confirmed(id: "main",
+                             start: mainStart,
+                             end: mainEnd,
+                             source: "sleep_window",
+                             restingHR: 63,
+                             hrv: 42,
+                             respiratoryRate: 15.8)
         let resumed = confirmed(
             id: "resumed",
             start: resumedStart,
             end: resumedEnd,
-            source: "resumed_sleep"
+            source: "resumed_sleep",
+            restingHR: 58,
+            hrv: 65,
+            respiratoryRate: 14.9
         )
         let snapshot = SleepHistorySnapshot(
             rollups: [],
@@ -394,6 +407,66 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
             accuracy: 0.001
         )
         XCTAssertEqual(snapshot.additionalMainNights.map(\.id), ["resumed"])
+        XCTAssertEqual(combined.hrvWindowCount, 6)
+        XCTAssertGreaterThan(try XCTUnwrap(combined.hrv), main.hrv ?? 0)
+        XCTAssertLessThan(try XCTUnwrap(combined.restingHR), main.restingHR)
+        XCTAssertLessThan(try XCTUnwrap(combined.respiratoryRate),
+                          main.respiratoryRate ?? .infinity)
+    }
+
+    func testResumedSleepLinksAcrossCivilMidnightByInterval() throws {
+        func confirmed(id: String,
+                       start: Date,
+                       end: Date,
+                       source: String) -> UserConfirmedSleep {
+            UserConfirmedSleep(
+                id: id,
+                createdAt: end,
+                start: start,
+                end: end,
+                source: source,
+                confidence: "user_confirmed_hr_only",
+                sessions: 1,
+                samples: 1_000,
+                avgHR: 60,
+                peakHR: 80,
+                restingHR: 55,
+                hrv: 50,
+                hrvWindowCount: 3,
+                respiratoryRate: 15,
+                duration: end.timeIntervalSince(start),
+                span: end.timeIntervalSince(start),
+                reason: "test",
+                motionSource: "user_review",
+                motionValidated: false,
+                stageSegments: nil,
+                eventTimeZoneIdentifier: "Asia/Kolkata"
+            )
+        }
+        let main = confirmed(
+            id: "main-cross-day",
+            start: date(2032, 1, 2, 19, 40, timeZoneIdentifier: "Asia/Kolkata"),
+            end: date(2032, 1, 2, 23, 40, timeZoneIdentifier: "Asia/Kolkata"),
+            source: "sleep_window"
+        )
+        let resumed = confirmed(
+            id: "resumed-cross-day",
+            start: date(2032, 1, 2, 23, 55, timeZoneIdentifier: "Asia/Kolkata"),
+            end: date(2032, 1, 3, 0, 35, timeZoneIdentifier: "Asia/Kolkata"),
+            source: "resumed_sleep"
+        )
+
+        let snapshot = SleepHistorySnapshot(
+            rollups: [],
+            confirmedSleeps: [main, resumed],
+            calendar: Self.indiaCalendar
+        )
+        let combined = try XCTUnwrap(snapshot.latestMainSleep)
+        XCTAssertEqual(combined.id, main.id)
+        XCTAssertEqual(combined.end, resumed.end)
+        XCTAssertEqual(combined.duration,
+                       main.duration + resumed.duration,
+                       accuracy: 1)
     }
 
     @MainActor

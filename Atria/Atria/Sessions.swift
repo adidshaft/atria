@@ -204,6 +204,43 @@ struct AtriaPhysiologicalCycle: Equatable {
             let stages = ((main.stageSegments ?? [])
                 + linked.flatMap { $0.stageSegments ?? [] })
                 .sorted { $0.start < $1.start }
+            let physiology = [main] + linked
+            func durationWeightedInt(_ value: (UserConfirmedSleep) -> Int) -> Int? {
+                let values = physiology.compactMap { sleep -> (Double, Double)? in
+                    let candidate = value(sleep)
+                    guard candidate > 0, sleep.duration > 0 else { return nil }
+                    return (Double(candidate), sleep.duration)
+                }
+                guard !values.isEmpty else { return nil }
+                let weight = values.reduce(0) { $0 + $1.1 }
+                return Int((values.reduce(0) { $0 + $1.0 * $1.1 } / weight).rounded())
+            }
+            func durationWeightedDouble(_ value: (UserConfirmedSleep) -> Double?) -> Double? {
+                let values = physiology.compactMap { sleep -> (Double, Double)? in
+                    guard let candidate = value(sleep),
+                          candidate > 0,
+                          sleep.duration > 0 else { return nil }
+                    return (candidate, sleep.duration)
+                }
+                guard !values.isEmpty else { return nil }
+                let weight = values.reduce(0) { $0 + $1.1 }
+                return values.reduce(0) { $0 + $1.0 * $1.1 } / weight
+            }
+            let hrvValues = physiology.compactMap { sleep -> (Double, Double)? in
+                guard let hrv = sleep.hrv, hrv > 0 else { return nil }
+                let weight = Double(max(sleep.hrvWindowCount ?? 0, 1))
+                return (Double(hrv), weight)
+            }
+            let combinedHRV: Int? = if hrvValues.isEmpty {
+                nil
+            } else {
+                // RMSSD is a root-mean-square statistic. Pool segment-level
+                // values in squared space instead of arithmetically averaging.
+                Int(sqrt(
+                    hrvValues.reduce(0) { $0 + $1.0 * $1.0 * $1.1 }
+                        / hrvValues.reduce(0) { $0 + $1.1 }
+                ).rounded())
+            }
             return UserConfirmedSleep(
                 id: main.id,
                 createdAt: max(main.createdAt, linked.map(\.createdAt).max() ?? main.createdAt),
@@ -213,12 +250,12 @@ struct AtriaPhysiologicalCycle: Equatable {
                 confidence: main.confidence,
                 sessions: main.sessions + linked.reduce(0) { $0 + $1.sessions },
                 samples: main.samples + linked.reduce(0) { $0 + $1.samples },
-                avgHR: main.avgHR,
+                avgHR: durationWeightedInt(\.avgHR) ?? main.avgHR,
                 peakHR: max(main.peakHR, linked.map(\.peakHR).max() ?? main.peakHR),
-                restingHR: main.restingHR,
-                hrv: main.hrv,
-                hrvWindowCount: main.hrvWindowCount,
-                respiratoryRate: main.respiratoryRate,
+                restingHR: durationWeightedInt(\.restingHR) ?? main.restingHR,
+                hrv: combinedHRV,
+                hrvWindowCount: physiology.reduce(0) { $0 + max($1.hrvWindowCount ?? 0, 0) },
+                respiratoryRate: durationWeightedDouble(\.respiratoryRate),
                 duration: duration,
                 span: finalEnd.timeIntervalSince(main.start),
                 reason: main.reason,
@@ -13118,9 +13155,10 @@ final class SessionStore: ObservableObject {
     }
     #endif
 
+    @discardableResult
     private nonisolated static func persistDailyMetricsSnapshot(_ metrics: [SavedDailyMetric],
                                                                 to url: URL,
-                                                                reason: String) {
+                                                                reason: String) -> Bool {
         do {
             let data = try JSONEncoder().encode(metrics)
             try data.write(to: url, options: .atomic)
@@ -13128,10 +13166,12 @@ final class SessionStore: ObservableObject {
                   reason,
                   metrics.count,
                   data.count)
+            return true
         } catch {
             AtriaDebugLog("ATRIADBG daily_metric_history_save status=failed op=%@ error=%@",
                   reason,
                   error.localizedDescription)
+            return false
         }
     }
 
@@ -21900,6 +21940,12 @@ final class SessionStore: ObservableObject {
                                                     confirmedSleeps: sorted,
                                                     dismissedCandidates: dismissedSleepCandidates)
         if !deferDerivedPublication {
+            _ = settleConfirmedMorningAuthority(
+                reason: "confirmed_sleep_save",
+                now: Date()
+            )
+        }
+        if !deferDerivedPublication {
             refreshHistorySnapshotCache(deferred: true)
         }
         if let transactionTicket = recoveredDataMutationTransaction.activeTicket {
@@ -29717,9 +29763,28 @@ final class SessionStore: ObservableObject {
               metric.sleepEnd == sleep.end,
               abs((metric.sleepDuration ?? -1) - sleep.duration) <= 1,
               abs((rollup.sleepSeconds ?? -1) - sleep.duration) <= 1,
+              metric.hrv == sleep.hrv,
+              metric.restingHR == (sleep.restingHR > 0 ? sleep.restingHR : nil),
               (rollup.sleepPerformance ?? 0) > 0,
               rollup.recovery == metric.recoveryPercent,
               rollup.rhr == metric.restingHR else { return false }
+
+        switch (metric.respiratoryRate, sleep.respiratoryRate) {
+        case (nil, nil):
+            break
+        case (.some(let metricRate), .some(let sleepRate)):
+            guard abs(metricRate - sleepRate) < 0.001 else { return false }
+        default:
+            return false
+        }
+        switch (rollup.respiratoryRate, metric.respiratoryRate) {
+        case (nil, nil):
+            break
+        case (.some(let rollupRate), .some(let metricRate)):
+            guard abs(rollupRate - metricRate) < 0.001 else { return false }
+        default:
+            return false
+        }
 
         switch (metric.hrv, rollup.lnRMSSD) {
         case (nil, nil):
@@ -29741,7 +29806,8 @@ final class SessionStore: ObservableObject {
 
     private func requestDeferredLaunchCardSettlement(
         reason: String,
-        attempt: Int = 0
+        attempt: Int = 0,
+        allowLightweightSettlement: Bool = true
     ) {
         let calendar = Calendar.current
         let now = Date()
@@ -29816,6 +29882,35 @@ final class SessionStore: ObservableObject {
                               metric?.strain.map { String(format: "%.2f", $0) } ?? "learning")
                 return
             }
+        }
+
+        // A confirmed sleep is already a compact, durable physiological
+        // authority. Repair missing/stale morning files from that record before
+        // asking the 150+ MB history archive to rebuild the same card.
+        if allowLightweightSettlement,
+           settleConfirmedMorningAuthority(
+               reason: "\(reason)_launch_repair",
+               now: now,
+               completion: { [weak self] succeeded in
+                   guard let self else { return }
+                   if succeeded {
+                       self.deferredLaunchCardSettlementRetryTask?.cancel()
+                       self.deferredLaunchCardSettlementRetryTask = nil
+                       self.deferredLaunchCardSettlementPending = false
+                       self.publishDashboardRevision()
+                       self.onDeferredLaunchCardSettlementPublished?(
+                           "\(reason)_confirmed_sleep_repair"
+                       )
+                   } else {
+                       self.requestDeferredLaunchCardSettlement(
+                           reason: reason,
+                           attempt: attempt,
+                           allowLightweightSettlement: false
+                       )
+                   }
+               }
+           ) {
+            return
         }
 
         requestRequiredHistorySnapshotRefresh(deferred: true) { [weak self] succeeded in
@@ -29900,6 +29995,157 @@ final class SessionStore: ObservableObject {
                           metric?.strain.map { String(format: "%.2f", $0) } ?? "learning",
                           rollup?.sleepPerformance ?? 0)
         }
+    }
+
+    /// Mints the morning metric and rollup directly from the exact confirmed
+    /// sleep record. This is bounded by the small persisted collections and
+    /// never reads the live journal or historical archive.
+    @discardableResult
+    private func settleConfirmedMorningAuthority(
+        reason: String,
+        now: Date = Date(),
+        completion: ((Bool) -> Void)? = nil,
+        calendar: Calendar = .current
+    ) -> Bool {
+        guard canonicalMutationAllowed,
+              recoveredDataMutationTransaction.activeTicket == nil,
+              let canonicalSleep = AtriaPhysiologicalCycle.latestCompletedMainSleep(
+                now: now,
+                confirmedSleeps: cachedConfirmedSleeps
+              ) else {
+            return false
+        }
+        let sleep = SleepHistorySnapshot(
+            rollups: historySnapshot.rollups,
+            confirmedSleeps: cachedConfirmedSleeps,
+            dismissedCandidates: dismissedSleepCandidates,
+            calendar: calendar
+        )
+        guard let projectedNight = sleep.nights.first(where: {
+            $0.id == canonicalSleep.id && $0.confirmed && !$0.isNapEvidence
+        }) else {
+            return false
+        }
+        let wakeDay = EventCivilTime.day(
+            containing: canonicalSleep.end,
+            eventTimeZoneIdentifier: canonicalSleep.eventTimeZoneIdentifier,
+            outputCalendar: calendar
+        )
+        guard let metric = Self.makeMorningFrozenDailyMetric(
+            for: wakeDay,
+            computed: dailyMetricHistory,
+            sessions: [],
+            sleep: sleep,
+            baseline: baseline,
+            maxHR: profile.maxHR,
+            now: now,
+            calendar: calendar
+        ),
+        metric.sleepStart == projectedNight.start,
+        metric.sleepEnd == projectedNight.end else {
+            return false
+        }
+
+        var metrics = dailyMetricHistory.filter {
+            !calendar.isDate($0.day, inSameDayAs: wakeDay)
+        }
+        metrics.append(metric)
+        metrics.sort { $0.day > $1.day }
+
+        let preparedRollups = Self.makeDailyRollupStoreEntries(
+            metrics: metrics,
+            sessions: [],
+            rest: baseline.restingInt ?? 60,
+            maxHR: profile.maxHR,
+            napHoursByDay: Self.napHoursByMorningDay(sleep: sleep, calendar: calendar),
+            calendar: calendar
+        )
+        guard var rollup = preparedRollups.first(where: {
+            calendar.isDate($0.day, inSameDayAs: wakeDay)
+        }) else {
+            return false
+        }
+        if let existing = dailyRollupStore.rollup(for: wakeDay) {
+            rollup.nutrition = existing.nutrition
+            rollup.fitnessAgeDelta = existing.fitnessAgeDelta
+            if rollup.vitals == nil { rollup.vitals = existing.vitals }
+            if rollup.strain == nil { rollup.strain = existing.strain }
+            if rollup.skinTemperatureDeviationCelsius == nil {
+                rollup.skinTemperatureDeviationCelsius =
+                    existing.skinTemperatureDeviationCelsius
+            }
+        }
+
+        dailyMetricHistory = metrics
+        let expectedMetricRevision = dailyMetricHistoryRevision
+        dailyRollupStore.upsert(rollup)
+        dailyRollupHistory = dailyRollupStore.rollups(last: 400)
+        dailyRollupHistoryRevision &+= 1
+        let expectedRollupRevision = dailyRollupHistoryRevision
+        let expectedSleepRevision = confirmedSleepsRevision
+
+        pendingDailyMetricSaveWorkItem?.cancel()
+        let metricURL = dailyMetricsURL
+        let metricSnapshot = metrics
+        var metricWriteFinished = false
+        var rollupWriteFinished = false
+        var metricWriteSucceeded = false
+        var rollupWriteSucceeded = false
+
+        func finishIfPossible() {
+            guard metricWriteFinished, rollupWriteFinished else { return }
+            let stillCurrent = confirmedSleepsRevision == expectedSleepRevision
+                && dailyMetricHistoryRevision == expectedMetricRevision
+                && dailyRollupHistoryRevision == expectedRollupRevision
+            let currentMetric = dailyMetricHistory.first {
+                calendar.isDate($0.day, inSameDayAs: wakeDay)
+            }
+            let currentRollup = dailyRollupHistory.first {
+                calendar.isDate($0.day, inSameDayAs: wakeDay)
+            }
+            let coherent = stillCurrent
+                && metricWriteSucceeded
+                && rollupWriteSucceeded
+                && Self.deferredLaunchCardSettlementMatches(
+                    sleep: canonicalSleep,
+                    metric: currentMetric,
+                    rollup: currentRollup,
+                    calendar: calendar
+                )
+            AtriaDebugLog(
+                "ATRIADBG confirmed_morning_settlement status=%@ reason=%@ sleep_id=%@ metric_write=%d rollup_write=%d current=%d",
+                coherent ? "durable" : "failed",
+                reason,
+                canonicalSleep.id,
+                metricWriteSucceeded ? 1 : 0,
+                rollupWriteSucceeded ? 1 : 0,
+                stillCurrent ? 1 : 0
+            )
+            completion?(coherent)
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            let succeeded = Self.persistDailyMetricsSnapshot(
+                metricSnapshot,
+                to: metricURL,
+                reason: reason
+            )
+            DispatchQueue.main.async {
+                guard self != nil else { return }
+                metricWriteSucceeded = succeeded
+                metricWriteFinished = true
+                finishIfPossible()
+            }
+        }
+        pendingDailyMetricSaveWorkItem = workItem
+        persistenceQueue.async(execute: workItem)
+        dailyRollupStore.persistCurrentSnapshot { succeeded in
+            rollupWriteSucceeded = succeeded
+            rollupWriteFinished = true
+            finishIfPossible()
+        }
+        publishDashboardRevision()
+        return true
     }
 
     /// Two bounded retries cover ordinary launch worker ordering. An
@@ -31402,7 +31648,7 @@ struct SleepHistorySnapshot: Equatable {
         var nightsByDay: [Date: Night] = [:]
         var additionalMainNightsList: [Night] = []
         var napNightsList: [Night] = []
-        var resumedSleepSegmentsByDay: [Date: [Night]] = [:]
+        var resumedSleepSegments: [Night] = []
         for sleep in confirmedSleeps {
             // Sleep is a wake-boundary event. Candidates, frozen recovery and
             // Activity already use the morning the sleep ended; re-keying the
@@ -31442,7 +31688,7 @@ struct SleepHistorySnapshot: Equatable {
                 // record. The canonical nightly projection combines only its
                 // observed duration with the earlier main sleep below; it never
                 // rewrites either record or credits the awake gap.
-                resumedSleepSegmentsByDay[day, default: []].append(night)
+                resumedSleepSegments.append(night)
                 additionalMainNightsList.append(night)
             } else {
                 if let existing = nightsByDay[day] {
@@ -31466,8 +31712,23 @@ struct SleepHistorySnapshot: Equatable {
             }
         }
 
-        for (day, segments) in resumedSleepSegmentsByDay {
-            guard let main = nightsByDay[day],
+        let canonicalMains = Array(nightsByDay.values)
+        for (day, main) in Array(nightsByDay) {
+            let segments = resumedSleepSegments.filter { segment in
+                guard let segmentStart = segment.start,
+                      let mainEnd = main.end,
+                      segmentStart >= mainEnd,
+                      segmentStart.timeIntervalSince(mainEnd)
+                        <= AggregateSleepCandidate.resumedSleepMaximumSeparationFromMain else {
+                    return false
+                }
+                return !canonicalMains.contains {
+                    $0.id != main.id
+                        && ($0.end ?? .distantFuture) > mainEnd
+                        && ($0.end ?? .distantPast) <= segmentStart
+                }
+            }
+            guard !segments.isEmpty,
                   let combined = Self.combiningResumedSleepSegments(
                     main: main,
                     resumed: segments
@@ -31582,16 +31843,51 @@ struct SleepHistorySnapshot: Equatable {
         )
         let stageSegments = (main.stageSegments + accepted.flatMap(\.stageSegments))
             .sorted { $0.start < $1.start }
+        let physiology = [main] + accepted
+        func durationWeightedInt(_ value: (Night) -> Int?) -> Int? {
+            let values = physiology.compactMap { night -> (Double, Double)? in
+                guard let candidate = value(night),
+                      candidate > 0,
+                      night.duration > 0 else { return nil }
+                return (Double(candidate), night.duration)
+            }
+            guard !values.isEmpty else { return nil }
+            let weight = values.reduce(0) { $0 + $1.1 }
+            return Int((values.reduce(0) { $0 + $1.0 * $1.1 } / weight).rounded())
+        }
+        func durationWeightedDouble(_ value: (Night) -> Double?) -> Double? {
+            let values = physiology.compactMap { night -> (Double, Double)? in
+                guard let candidate = value(night),
+                      candidate > 0,
+                      night.duration > 0 else { return nil }
+                return (candidate, night.duration)
+            }
+            guard !values.isEmpty else { return nil }
+            let weight = values.reduce(0) { $0 + $1.1 }
+            return values.reduce(0) { $0 + $1.0 * $1.1 } / weight
+        }
+        let hrvValues = physiology.compactMap { night -> (Double, Double)? in
+            guard let hrv = night.hrv, hrv > 0 else { return nil }
+            return (Double(hrv), Double(max(night.hrvWindowCount, 1)))
+        }
+        let combinedHRV: Int? = if hrvValues.isEmpty {
+            nil
+        } else {
+            Int(sqrt(
+                hrvValues.reduce(0) { $0 + $1.0 * $1.0 * $1.1 }
+                    / hrvValues.reduce(0) { $0 + $1.1 }
+            ).rounded())
+        }
         return Night(
             id: main.id,
             day: main.day,
             start: mainStart,
             end: lastEnd,
             duration: creditedDuration,
-            restingHR: main.restingHR,
-            hrv: main.hrv,
-            hrvWindowCount: main.hrvWindowCount,
-            respiratoryRate: main.respiratoryRate,
+            restingHR: durationWeightedInt(\.restingHR),
+            hrv: combinedHRV,
+            hrvWindowCount: physiology.reduce(0) { $0 + max($1.hrvWindowCount, 0) },
+            respiratoryRate: durationWeightedDouble(\.respiratoryRate),
             sleepEfficiency: Self.efficiency(
                 duration: creditedDuration,
                 span: lastEnd.timeIntervalSince(mainStart),

@@ -24,6 +24,7 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
                            restingHR: 52,
                            hrv: 48,
                            hrvWindowCount: 4,
+                           respiratoryRate: 15.2,
                            duration: duration,
                            span: duration,
                            reason: "fixture",
@@ -102,6 +103,7 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
                                             sleepPerformance: 93,
                                             bedtimeMinutes: 1_320,
                                             strain: 3.4,
+                                            respiratoryRate: 15.2,
                                             calendar: calendar)
 
         XCTAssertTrue(SessionStore.deferredLaunchCardSettlementMatches(
@@ -119,6 +121,7 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
             sleepPerformance: 93,
             bedtimeMinutes: 1_320,
             strain: 3.47,
+            respiratoryRate: 15.2,
             calendar: calendar
         )
         XCTAssertTrue(SessionStore.deferredLaunchCardSettlementMatches(
@@ -156,6 +159,29 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
             rollup: settled,
             calendar: calendar
         ), "a prior sleep boundary must not be published for the confirmed night")
+
+        let stalePhysiology = SavedDailyMetric(
+            day: day,
+            recoveryPercent: 71,
+            recoveryConfidence: "personal_baseline",
+            hrv: (sleep.hrv ?? 0) + 7,
+            restingHR: sleep.restingHR + 4,
+            respiratoryRate: 16.1,
+            sleepDuration: sleep.duration,
+            sleepSpan: sleep.span,
+            sleepStart: sleep.start,
+            sleepEnd: sleep.end,
+            sleepSource: sleep.source,
+            sleepStageSegments: sleep.stageSegments ?? [],
+            sleepConsistencyPercent: 84,
+            strain: 3.4
+        )
+        XCTAssertFalse(SessionStore.deferredLaunchCardSettlementMatches(
+            sleep: sleep,
+            metric: stalePhysiology,
+            rollup: settled,
+            calendar: calendar
+        ), "a corrected linked night must not retain physiology from only its first segment")
     }
 
     func testDeferredLaunchSettlementUsesCanonicalFinalWakeForLinkedResumedSleep() throws {
@@ -216,6 +242,7 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
             sleepPerformance: 68,
             bedtimeMinutes: 1_320,
             strain: 6.2,
+            respiratoryRate: canonical.respiratoryRate,
             calendar: calendar
         )
 
@@ -256,7 +283,7 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
                        "launch must use the inherited required-publication fence")
 
         let requestStart = try XCTUnwrap(sessions.range(of: "private func requestDeferredLaunchCardSettlement("))
-        let requestBody = String(sessions[requestStart.lowerBound...].prefix(8_000))
+        let requestBody = String(sessions[requestStart.lowerBound...].prefix(20_000))
         let persistedFastPath = try XCTUnwrap(requestBody.range(
             of: "status=published_fast_path"
         ))
