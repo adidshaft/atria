@@ -30878,9 +30878,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
         historicalMotionRefreshInFlight = true
-        Task.detached(priority: .utility) { [weak self, start, end] in
+        HistoricalArchive.consumerProjectionQueue.async { [weak self, start, end] in
             let summary = HistoricalArchive.motionFeatureSummary(start: start, end: end)
-            await MainActor.run { [weak self] in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.cachedHistoricalMotion = summary
                 self.cachedHistoricalMotionOrigin = start

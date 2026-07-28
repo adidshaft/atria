@@ -6416,10 +6416,8 @@ final class SessionStore: ObservableObject {
     /// core and make workout controls or the post-save Done button appear frozen
     /// even while the main run loop itself is idle. Revision checks still drop
     /// superseded snapshot work before it touches the archive.
-    nonisolated private static let historySnapshotProjectionQueue = DispatchQueue(
-        label: "com.atria.history-snapshot-projection",
-        qos: .utility
-    )
+    nonisolated private static let historySnapshotProjectionQueue =
+        HistoricalArchive.consumerProjectionQueue
     private var historicalArchiveStatusObserver: NSObjectProtocol?
     private var motionBankOffloadObserver: NSObjectProtocol?
     private var systemTimeZoneObserver: NSObjectProtocol?
@@ -6431,11 +6429,12 @@ final class SessionStore: ObservableObject {
     private var confirmedWorkoutRehydrationRescheduleRequested = false
     private var confirmedWorkoutRehydrationGeneration = 0
     private var confirmedWorkoutRehydrationCompletions: [(Bool) -> Void] = []
-    /// Strap-step publication must not wait behind lifetime HR rehydration.
-    private static let workoutStepEvidenceQueue = DispatchQueue(
-        label: "com.adidshaft.atria.workout-step-evidence",
-        qos: .utility
-    )
+    /// Receipt decoding shares the archive-consumer lane so a step refresh
+    /// cannot multiply memory/CPU with broader history reads. Home loads the
+    /// already-durable receipt directly, so this serialization delays only a
+    /// stronger re-decode—not launch-time publication.
+    private static let workoutStepEvidenceQueue =
+        HistoricalArchive.consumerProjectionQueue
     private var pendingWorkoutStepEvidenceWorkItem: DispatchWorkItem?
     private var workoutStepEvidenceGeneration = 0
     private var currentCycleStepReceiptGeneration = 0
@@ -6783,7 +6782,7 @@ final class SessionStore: ObservableObject {
             maxHR: maxHR
         )
         if deferred {
-            Self.historySnapshotProjectionQueue.asyncAfter(deadline: .now() + 0.12) { [weak self, sourceSessions, confirmedWorkouts, confirmedSleeps, dismissedSleepCandidates, archiveHeartRatePoints, biologicalSex, baselineSnapshot, rest, maxHR, projectionNow, physiologicalDayStart, revision] in
+            Self.historySnapshotProjectionQueue.asyncAfter(deadline: .now() + 0.12) { [weak self, sourceSessions, confirmedWorkouts, confirmedSleeps, dismissedSleepCandidates, archiveHeartRatePoints, biologicalSex, baselineSnapshot, rest, maxHR, physiologicalDayStart, revision] in
                 let isCurrent = DispatchQueue.main.sync {
                     self?.historySnapshotRevision == revision
                 }
@@ -6796,59 +6795,16 @@ final class SessionStore: ObservableObject {
                 let canonicalPage = HistoricalArchive
                     .readVerifiedCanonicalConsumerSourcePage(after: nil,
                                                              maximumSourceCount: 8)
-                let motionWindow = DateInterval(
-                    start: physiologicalDayStart,
-                    end: projectionNow
-                )
                 let motionStrapIdentifier = UserDefaults.standard.string(
                     forKey: AtriaBLEManager.OfflineSyncDefaults
                         .verifiedHistoryPeripheralID
                 )
-                let motionCoverage = motionStrapIdentifier.map {
-                    AtriaWhoop4MotionBankCoverageLedger.intervals(
-                        intersecting: motionWindow,
-                        strapIdentifier: $0,
-                        now: projectionNow
-                    )
-                } ?? []
                 let motionTickDayEvidence =
                     motionStrapIdentifier.flatMap { strapIdentifier in
-                      let store = AtriaWhoop4MotionTickDailyStore.shared
-                      let persisted = store.load(
-                        strapIdentifier: strapIdentifier,
-                        windowStart: physiologicalDayStart
-                      )
-                      let decoded = HistoricalArchive.motionTickDayEvidence(
-                        start: physiologicalDayStart,
-                        end: projectionNow,
-                        bankCoverage: motionCoverage,
-                        strapIdentifier: strapIdentifier
-                      )
-                      guard let decoded else { return persisted }
-                      let dominatesPersisted = persisted.map {
-                          decoded.knownCoverageSeconds
-                              >= $0.knownCoverageSeconds
-                              && decoded.capturedThrough >= $0.capturedThrough
-                              && (
-                                  decoded.knownCoverageSeconds
-                                      > $0.knownCoverageSeconds
-                                  || decoded.capturedThrough
-                                      > $0.capturedThrough
-                                  || decoded.motionTicks != $0.motionTicks
-                                  || decoded.steps != $0.steps
-                              )
-                      } ?? true
-                      guard dominatesPersisted else { return persisted }
-                      do {
-                          _ = try store.save(
-                            decoded,
-                            strapIdentifier: strapIdentifier
-                          )
-                      } catch {
-                          AtriaDebugLog("ATRIADBG whoop4_daily_steps status=receipt_save_failed error=%@ action=publish_verified_memory_evidence",
-                                        error.localizedDescription)
-                      }
-                      return decoded
+                        AtriaWhoop4MotionTickDailyStore.shared.load(
+                            strapIdentifier: strapIdentifier,
+                            windowStart: physiologicalDayStart
+                        )
                     }
                 let snapshots = SessionStore.makeHistorySnapshots(sessions: sourceSessions,
                                                                   confirmedWorkouts: confirmedWorkouts,
@@ -6951,6 +6907,20 @@ final class SessionStore: ObservableObject {
                     evidence,
                     strapIdentifier: strapIdentifier
                 )
+                // On relaunch the strongest receipt may already be durable.
+                // `save` correctly performs no write in that case, but Home
+                // can have rendered before CoreBluetooth republished the saved
+                // strap identity. Emit one lightweight availability event so
+                // every surface re-resolves the existing receipt immediately.
+                if !changed {
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(
+                            name: AtriaWhoop4MotionTickDailyStore
+                                .didSaveNotification,
+                            object: nil
+                        )
+                    }
+                }
                 AtriaDebugLog(
                     "ATRIADBG whoop4_daily_steps status=receipt_refresh_complete reason=%@ generation=%d changed=%d steps=%d known_s=%d missing_s=%d",
                     reason,
