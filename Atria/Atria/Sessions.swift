@@ -21430,6 +21430,19 @@ final class SessionStore: ObservableObject {
         let succeeded: Bool
     }
 
+    /// Exact-window HRV and respiration are persisted together by the
+    /// requalification pass. A respiration-only migration must invalidate the
+    /// wake day just like an HRV change; otherwise the new value is computed in
+    /// memory and then silently discarded before `saveConfirmedSleeps`.
+    nonisolated static func confirmedSleepQualifiedMetricsChanged(
+        previous: UserConfirmedSleep,
+        next: UserConfirmedSleep
+    ) -> Bool {
+        previous.hrv != next.hrv
+            || previous.hrvWindowCount != next.hrvWindowCount
+            || previous.respiratoryRate != next.respiratoryRate
+    }
+
     /// Baseline learning depends on the confirmed main-sleep windows, not on
     /// presentation-only fields such as stage labels or motion provenance.
     /// Keeping this comparison explicit prevents a stage repair from replaying
@@ -29633,8 +29646,10 @@ final class SessionStore: ObservableObject {
         let afterByID = Dictionary(uniqueKeysWithValues: after.map { ($0.id, $0) })
         let changedSleeps = before.filter { old in
             guard let updated = afterByID[old.id] else { return false }
-            return old.hrv != updated.hrv
-                || old.hrvWindowCount != updated.hrvWindowCount
+            return Self.confirmedSleepQualifiedMetricsChanged(
+                previous: old,
+                next: updated
+            )
         }
         let changedDays = Set(changedSleeps.map {
             EventCivilTime.day(containing: $0.end,
@@ -30924,10 +30939,10 @@ struct SleepHistorySnapshot: Equatable {
 
         var reviewContextText: String {
             if source == "resumed_sleep_candidate" {
-                return "Possible additional sleep. Kept separate from your earlier sleep; the awake gap is not counted."
+                return "Possible resumed sleep. Confirm to link it with your earlier sleep; the awake gap is not counted."
             }
             if source == "resumed_sleep" {
-                return "Confirmed additional sleep. Only the recorded segment is added; the awake gap is not counted."
+                return "Confirmed resumed sleep. Linked into one sleep episode; only recorded sleep is added and the awake gap is not counted."
             }
             if isNapEvidence {
                 return confirmed

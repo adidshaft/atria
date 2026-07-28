@@ -574,6 +574,55 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertNil(legacy.respiratoryRate)
     }
 
+    func testRespirationOnlyRequalificationInvalidatesConfirmedSleepWakeDay() throws {
+        let start = date(2032, 1, 2, 0, 0)
+        let end = date(2032, 1, 2, 3, 30)
+        let rrOffsets = stride(from: 0.0, through: 90.0, by: 0.9).map { $0 }
+        let session = respiratoryRRSession(
+            start: start,
+            end: end,
+            rrOffsets: rrOffsets
+        )
+        let legacy = UserConfirmedSleep(
+            id: "legacy-respiration-migration",
+            createdAt: end,
+            start: start,
+            end: end,
+            source: "overnight_sleep",
+            confidence: "user_confirmed_hr_only",
+            sessions: 1,
+            samples: session.points.count,
+            avgHR: session.avg,
+            peakHR: session.peak,
+            restingHR: session.restingStable,
+            hrv: nil,
+            hrvWindowCount: 0,
+            respiratoryRate: nil,
+            duration: end.timeIntervalSince(start),
+            span: end.timeIntervalSince(start),
+            reason: "legacy row",
+            motionSource: "user_review",
+            motionValidated: false,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: "UTC"
+        )
+
+        let migrated = try XCTUnwrap(
+            SessionStore.requalifiedConfirmedSleepHRVRecords(
+                [legacy],
+                sessions: [session]
+            ).first
+        )
+
+        XCTAssertEqual(migrated.hrv, legacy.hrv)
+        XCTAssertEqual(migrated.hrvWindowCount, legacy.hrvWindowCount)
+        XCTAssertNotNil(migrated.respiratoryRate)
+        XCTAssertTrue(SessionStore.confirmedSleepQualifiedMetricsChanged(
+            previous: legacy,
+            next: migrated
+        ), "a respiration-only migration must reach persistence and day invalidation")
+    }
+
     private var july26ReportedSleepSessionsURL: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
