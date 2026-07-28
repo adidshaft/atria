@@ -6,23 +6,59 @@ import UIKit
 /// never scans or connects; it only cancels peripherals restored from the
 /// contaminated v1 stream-5 trial so they cannot compete with production v2.
 private final class AtriaLegacyBLECentralCleaner: NSObject, CBCentralManagerDelegate {
-    private var central: CBCentralManager!
+    let id = UUID()
+    private var central: CBCentralManager?
+    private var releaseWorkItem: DispatchWorkItem?
+    private var restoredPeripheralCount = 0
+    private var didFinish = false
+    private let onFinished: (UUID) -> Void
 
-    init(restoreIdentifier: String) {
+    init(restoreIdentifier: String, onFinished: @escaping (UUID) -> Void) {
+        self.onFinished = onFinished
         super.init()
         central = CBCentralManager(delegate: self,
                                    queue: nil,
                                    options: [CBCentralManagerOptionRestoreIdentifierKey: restoreIdentifier])
     }
 
-    func centralManagerDidUpdateState(_ central: CBCentralManager) {}
+    deinit {
+        releaseWorkItem?.cancel()
+    }
+
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        // A namespace with no restored peripherals has completed its only
+        // purpose as soon as CoreBluetooth settles its initial state. Keep a
+        // short grace turn so a restoration callback queued beside this one
+        // can supersede the release with the longer cancellation grace below.
+        guard restoredPeripheralCount == 0 else { return }
+        scheduleRelease(after: 0.5)
+    }
 
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         let peripherals = (dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral]) ?? []
+        restoredPeripheralCount = peripherals.count
         for peripheral in peripherals {
             central.cancelPeripheralConnection(peripheral)
         }
         AtriaDebugLog("ATRIADBG ble_restore status=cleanup_obsolete_namespace peripherals=%d", peripherals.count)
+        // Cancellation is asynchronous. Retain this obsolete central only
+        // long enough for CoreBluetooth to enqueue the disconnects, then
+        // release its restoration/XPC session instead of leaking it for the
+        // entire application process.
+        scheduleRelease(after: peripherals.isEmpty ? 0.5 : 2)
+    }
+
+    private func scheduleRelease(after delay: TimeInterval) {
+        guard !didFinish else { return }
+        releaseWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.didFinish else { return }
+            self.didFinish = true
+            self.central = nil
+            self.onFinished(self.id)
+        }
+        releaseWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 }
 
@@ -4348,11 +4384,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             }
         }
         if motionHandshakeDiagnostic == nil {
-            legacyCentralCleaners = [
-                AtriaLegacyBLECentralCleaner(restoreIdentifier: "com.adidshaft.atria.ble-central"),
-                AtriaLegacyBLECentralCleaner(restoreIdentifier: "com.adidshaft.atria.ble-central-v2"),
-                AtriaLegacyBLECentralCleaner(restoreIdentifier: "com.adidshaft.atria.ble-central-v3"),
+            let obsoleteRestoreIdentifiers = [
+                "com.adidshaft.atria.ble-central",
+                "com.adidshaft.atria.ble-central-v2",
+                "com.adidshaft.atria.ble-central-v3",
             ]
+            legacyCentralCleaners = obsoleteRestoreIdentifiers.map { identifier in
+                AtriaLegacyBLECentralCleaner(
+                    restoreIdentifier: identifier
+                ) { [weak self] cleanerID in
+                    self?.legacyCentralCleaners.removeAll {
+                        $0.id == cleanerID
+                    }
+                }
+            }
         }
         // Begin journal recovery before CoreBluetooth can deliver restored or
         // newly connected packets. HR/realtime callbacks are held in the same
