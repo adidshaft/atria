@@ -2,7 +2,7 @@
 
 This is Atria's living, append-only notebook for WHOOP 4.0 ("Harvard") protocol work. It records the wire protocol, physical strap behaviour, failed approaches, and the evidence behind conclusions. New experiments must be appended to the experiment log even when they fail.
 
-Last updated: 2026-07-27 (Asia/Kolkata)
+Last updated: 2026-07-28 (Asia/Kolkata)
 
 ## Evidence labels
 
@@ -2010,13 +2010,21 @@ POSITIVE STILL REQUIRED**
 - **TEST evidence:** 431/431 BLE, bank, motion projection, daily receipt,
   strap-step ledger, and step-model tests pass in
   `Test-AtriaTests-2026.07.28_04-16-50-+0530.xcresult`.
-- **Acceptance status:** code regression is covered; physical acceptance
-  remains pending until the same production one-hour arm → close → durable
-  receipt advancement test passes after installation.
+- **PHYSICAL pass:** the installed Release closed the production bank, re-armed
+  the next bank, preserved its exact pending offload, and extended the existing
+  same-day durable receipt in place. The receipt advanced from 16,324 to 20,069
+  decoded WHOOP rows, 3,032 to 3,997 motion ticks, and 1,102 to 1,169
+  strap-only steps. `capturedThrough` advanced from 806842786.814209 to
+  806846482.9997559. This is a durable file diff from the app container, not a
+  UI projection or an archive-row count.
+- **Acceptance status:** PASS for the production one-hour arm → close → exact
+  offload → durable receipt boundary. Counted all-day numeric accuracy remains
+  a separate acceptance question.
 - **Evidence:**
   `evidence/2026-07-28-all-day-step-checkpoint/03-35/`,
   `evidence/2026-07-28-all-day-step-checkpoint/04-07/`, and
-  `evidence/2026-07-28-all-day-step-checkpoint/04-09/`.
+  `evidence/2026-07-28-all-day-step-checkpoint/04-09/`, compared with
+  `evidence/2026-07-28-all-day-step-checkpoint/expiration-fix-background-mature/receipt.json`.
 
 #### 2026-07-28 — background lease expiration could strand history ownership
 
@@ -2042,11 +2050,20 @@ POSITIVE STILL REQUIRED**
 - **TEST evidence:** 424/424 BLE recovery, historical policy, drain reducer,
   motion-bank ledger, and durable step-receipt tests pass in
   `Test-AtriaTests-2026.07.28_04-30-56-+0530.xcresult`.
-- **Acceptance status:** code regression is covered; physical durable-receipt
-  advancement remains required before this checkpoint passes.
+- **PHYSICAL observation after installation:** while the app was backgrounded,
+  the same durable receipt did advance (20,069 decoded rows, 3,997 ticks,
+  1,169 steps). The background execution lease had not expired in the captured
+  snapshot, however, so that advancement proves the offload durability path
+  but does not physically exercise the repaired expiration callback.
+- **Acceptance status:** code regression PASS; durable-prefix preservation and
+  receipt advancement PASS; physical expiration-callback/reconnect acceptance
+  remains pending until iOS actually invokes that boundary.
 - **Evidence:**
   `evidence/2026-07-28-all-day-step-checkpoint/fixed-install-baseline/` through
-  `evidence/2026-07-28-all-day-step-checkpoint/continuation-current/`.
+  `evidence/2026-07-28-all-day-step-checkpoint/continuation-current/`, plus
+  `evidence/2026-07-28-all-day-step-checkpoint/expiration-fix-background-30s/`
+  and
+  `evidence/2026-07-28-all-day-step-checkpoint/expiration-fix-background-mature/`.
 
 ## Notebook maintenance rules
 
