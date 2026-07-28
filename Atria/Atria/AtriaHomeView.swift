@@ -3998,6 +3998,13 @@ struct AtriaHomeView: View {
         }
         #endif
         refreshSavedWorkoutReviewCandidate(reason: "home_appear")
+        // A review candidate is an in-memory projection, not a persisted row.
+        // Prime it explicitly on launch instead of waiting for a notification
+        // deep link or a later evidence invalidation to request the cache.
+        _ = store.sleepReviewResolutionForUI(
+            rest: store.baseline.restingInt ?? 60,
+            source: "home_appear"
+        )
         presentCoexistenceModalIfNeeded(for: ble.officialAppCoexistenceRisk)
         guard !hasUnlockedPrimaryContent else { return }
         UIDevice.current.isBatteryMonitoringEnabled = true
@@ -4148,6 +4155,10 @@ struct AtriaHomeView: View {
             // foreground window. The next non-workout foreground can settle it.
             if workoutSession == nil {
                 store.autoConfirmSleepOnForegroundIfUseful(reason: "scene_foreground_deferred")
+                _ = store.sleepReviewResolutionForUI(
+                    rest: store.baseline.restingInt ?? 60,
+                    source: "scene_foreground_deferred"
+                )
                 Task { await AtriaResearchUploadQueue.runForegroundCatchUpIfMissed(store: store) }
                 let lastJournalActivity = [store.behaviorJournalEntries.map(\.day).max(),
                                            store.journalAnswers.latestActivityDay()]
