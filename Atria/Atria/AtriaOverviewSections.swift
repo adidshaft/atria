@@ -4038,7 +4038,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   tint: vo2TrendZone?.tint ?? (vo2MaxEstimate.value == nil ? .orange : .blue),
                                   zone: vo2TrendZone,
                                   accessibilityDetail: vo2MaxEstimate.value == nil
-                                    ? "VO2max building from resting baseline and measured HR max."
+                                    ? "VO2max unavailable. \(vo2MaxEstimate.compactStatusText). \(vo2MaxEstimate.narrative)"
                                     : "VO2max \(vo2MaxEstimate.confidence) \(vo2MaxEstimate.valueText), trend \(vo2MaxEstimate.trendText), \(vo2MaxEstimate.trendDetail).")
         case .bioAge:
             AtriaGlanceMetricCard(title: "Fitness age",
@@ -4229,10 +4229,16 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var hrvDetailText: String {
+        if metricIsPending(hero.hrvValue) {
+            let detail = hero.hrvDetail.trimmingCharacters(in: .whitespacesAndNewlines)
+            return AtriaCompactMetricPresentation.isPendingValue(detail)
+                ? "Needs quiet rest or sleep"
+                : detail
+        }
         let detail = hero.hrvDetail.lowercased()
         if detail.contains("validated") { return "Checked" }
         if detail.contains("personal baseline") || detail.contains("% kept") { return "Personal baseline" }
-        return "Learning"
+        return hero.hrvDetail
     }
 
     private var vo2MaxDetailText: String {

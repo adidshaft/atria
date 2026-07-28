@@ -15,25 +15,24 @@ final class AtriaConnectionGuidanceTruthTests: XCTestCase {
 
         XCTAssertFalse(AtriaConnectionGuidanceDomain.strapPower.offersConnectionGuide)
         XCTAssertFalse(AtriaConnectionGuidanceDomain.wearSignal.offersConnectionGuide)
-        XCTAssertFalse(AtriaConnectionGuidanceDomain.metricAcquisition.offersConnectionGuide)
     }
 
-    func testConnectedHRVSettlingIsInformationalAndCannotOpenReconnectGuide() throws {
+    func testConnectedMetricAcquisitionNeverBecomesAGlobalConnectionBanner() throws {
         let source = try appSource()
-        let branchStart = try XCTUnwrap(
-            source.range(of: "case .connected where live.needsRRQualityCoach && hasLivePulseSignal:")
+        let diagnosisStart = try XCTUnwrap(
+            source.range(of: "private struct AtriaConnectionDiagnosis: Equatable")
         )
-        let branchEnd = try XCTUnwrap(
-            source.range(of: "case _ where live.batteryLevel",
-                         range: branchStart.upperBound..<source.endIndex)
+        let diagnosisEnd = try XCTUnwrap(
+            source.range(of: "private struct AtriaConnectionDiagnosisBanner: View, Equatable",
+                         range: diagnosisStart.upperBound..<source.endIndex)
         )
-        let hrvBranch = String(source[branchStart.lowerBound..<branchEnd.lowerBound])
+        let diagnosisSource = String(
+            source[diagnosisStart.lowerBound..<diagnosisEnd.lowerBound]
+        )
 
-        XCTAssertTrue(hrvBranch.contains("title: \"HRV settling\""))
-        XCTAssertTrue(hrvBranch.contains("Heart rate is live. HRV needs steady beat-to-beat windows"))
-        XCTAssertTrue(hrvBranch.contains("guidanceDomain: .metricAcquisition"))
-        XCTAssertFalse(hrvBranch.localizedCaseInsensitiveContains("reconnect"))
-        XCTAssertFalse(hrvBranch.localizedCaseInsensitiveContains("Bluetooth"))
+        XCTAssertFalse(diagnosisSource.contains("title: \"HRV settling\""))
+        XCTAssertFalse(diagnosisSource.contains("title: \"Beat-to-beat waiting\""))
+        XCTAssertFalse(diagnosisSource.contains("live.needsRRQualityCoach"))
 
         let bannerStart = try XCTUnwrap(
             source.range(of: "private struct AtriaConnectionDiagnosisBanner: View, Equatable")
@@ -49,7 +48,6 @@ final class AtriaConnectionGuidanceTruthTests: XCTestCase {
         for expected in [
             "title: \"Strap battery too low\"",
             "title: \"Fit check needed\"",
-            "title: \"Beat-to-beat waiting\"",
             "title: \"Strap battery low\"",
         ] {
             let title = try XCTUnwrap(source.range(of: expected))
@@ -59,8 +57,7 @@ final class AtriaConnectionGuidanceTruthTests: XCTestCase {
             )])
             XCTAssertTrue(
                 following.contains("guidanceDomain: .strapPower")
-                    || following.contains("guidanceDomain: .wearSignal")
-                    || following.contains("guidanceDomain: .metricAcquisition"),
+                    || following.contains("guidanceDomain: .wearSignal"),
                 "\(expected) must remain informational instead of routing to reconnect help"
             )
         }
