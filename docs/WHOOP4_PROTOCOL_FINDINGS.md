@@ -64,6 +64,29 @@ No inference, archived row, unit test, or code structure is promoted to a physic
 - **Evidence:** `evidence/2026-07-28-current-metric-audit/full/` and
   `Test-AtriaTests-2026.07.28_12-16-14-+0530.xcresult`.
 
+### Physical correction after settling the main sleep
+
+- **PHYSICAL failure:** confirming 00:45–04:23 correctly wrote both the
+  confirmed main sleep and its durable settled/dismissed detector window, but
+  that main-window dismissal also prevented the separate 08:33–10:42 segment
+  from reaching the review card.
+- **CODE correction:** a confirmed overlap may unlock only a same-cycle
+  `resumed_sleep_candidate` even when the main detector window is settled. The
+  resumed candidate still passes its own `isUnsettled` check, so dismissing the
+  resumed window remains final and no older ordinary sleep candidate can leak
+  through.
+- **TEST evidence:** the exact confirmed-plus-dismissed physical main now
+  queues the 08:33–10:42 tail, while a separately dismissed tail returns no
+  review. The sequential Audit + ReviewCache suite passes 75/75 in
+  `Test-AtriaTests-2026.07.28_12-34-32-+0530.xcresult`.
+- **PHYSICAL acceptance:** signed Release commit `e15ecce2` was installed in
+  place with data and pairing preserved. Atria retained the main sleep as
+  3h38m and displayed a distinct “Possible sleep” card for 08:33–10:42 (2h09m).
+  The 04:23–08:33 awake interval was not added to sleep duration.
+- **Evidence:**
+  `evidence/2026-07-28-resumed-sleep-physical/resumed-sleep-card.png` and
+  `evidence/2026-07-28-resumed-sleep-physical/fixed-live-state/`.
+
 ## 2026-07-27 — sleep respiratory provenance boundary
 
 **CODE + PHYSICAL PERSISTENCE**
