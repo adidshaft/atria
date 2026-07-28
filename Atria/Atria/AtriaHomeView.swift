@@ -11485,6 +11485,29 @@ private struct AtriaTopStatusChip: View, Equatable {
     }
 }
 
+/// Determines whether a visible status belongs in the reconnect/setup guide.
+///
+/// Connected sensor and metric-acquisition states are useful explanations, but
+/// they are not connection failures. Keeping that distinction in the model
+/// prevents an informational "HRV settling" row from offering a false
+/// Bluetooth/reconnect action.
+enum AtriaConnectionGuidanceDomain: Equatable {
+    case bluetoothLink
+    case appCoexistence
+    case strapPower
+    case wearSignal
+    case metricAcquisition
+
+    var offersConnectionGuide: Bool {
+        switch self {
+        case .bluetoothLink, .appCoexistence:
+            return true
+        case .strapPower, .wearSignal, .metricAcquisition:
+            return false
+        }
+    }
+}
+
 private struct AtriaConnectionDiagnosis: Equatable {
     private static let lowBatteryThreshold = 25
     private static let pendingKnownReconnectActionAge: TimeInterval = 15
@@ -11493,11 +11516,13 @@ private struct AtriaConnectionDiagnosis: Equatable {
     let action: String
     let systemImage: String
     let tint: Color
+    let guidanceDomain: AtriaConnectionGuidanceDomain
 
     static func == (lhs: AtriaConnectionDiagnosis, rhs: AtriaConnectionDiagnosis) -> Bool {
         lhs.title == rhs.title
             && lhs.action == rhs.action
             && lhs.systemImage == rhs.systemImage
+            && lhs.guidanceDomain == rhs.guidanceDomain
     }
 
     var showsImmediately: Bool {
@@ -11535,93 +11560,110 @@ private struct AtriaConnectionDiagnosis: Equatable {
                 return AtriaConnectionDiagnosis(title: "Bluetooth permission needed",
                                                 action: "Allow Bluetooth for Atria in Settings.",
                                                 systemImage: "hand.raised.fill",
-                                                tint: .red)
+                                                tint: .red,
+                                                guidanceDomain: .bluetoothLink)
             }
             return AtriaConnectionDiagnosis(title: "Bluetooth is off",
                                             action: "Turn on Bluetooth in Settings.",
                                             systemImage: "bolt.slash.fill",
-                                            tint: .red)
+                                            tint: .red,
+                                            guidanceDomain: .bluetoothLink)
         case .connected where live.isLowBatteryLiveLimited:
             return AtriaConnectionDiagnosis(title: "Strap battery too low",
                                             action: "Charge your strap to resume live heart rate.",
                                             systemImage: "battery.25percent",
-                                            tint: Metrics.electricYellow)
+                                            tint: Metrics.electricYellow,
+                                            guidanceDomain: .strapPower)
         case .connected where needsContactCoach:
             return AtriaConnectionDiagnosis(title: "Fit check needed",
                                             action: "Tighten the strap fit so Atria can read pulse.",
                                             systemImage: "heart.slash",
-                                            tint: .orange)
+                                            tint: .orange,
+                                            guidanceDomain: .wearSignal)
         case .connected where live.needsRRQualityCoach && !hasLivePulseSignal:
             return AtriaConnectionDiagnosis(title: "Beat-to-beat waiting",
                                             action: "Atria needs pulse before it can build HRV and Recovery.",
                                             systemImage: "waveform.path.ecg",
-                                            tint: .orange)
+                                            tint: .orange,
+                                            guidanceDomain: .metricAcquisition)
         case .connected where live.needsRRQualityCoach && hasLivePulseSignal:
             return AtriaConnectionDiagnosis(title: "HRV settling",
-                                            action: "Heart rate is live. Keep wearing normally while HRV settles.",
+                                            action: "Heart rate is live. HRV needs steady beat-to-beat windows, usually during quiet rest or sleep.",
                                             systemImage: "waveform.path.ecg",
-                                            tint: .green)
+                                            tint: .green,
+                                            guidanceDomain: .metricAcquisition)
         case _ where live.batteryLevel >= 0 && live.batteryLevel <= Self.lowBatteryThreshold && live.batteryRecentlyDropping && !live.batteryIsCharging:
             return AtriaConnectionDiagnosis(title: "Strap battery low",
                                             action: "Charge your strap before a workout or overnight wear.",
                                             systemImage: "battery.25percent",
-                                            tint: Metrics.electricYellow)
+                                            tint: Metrics.electricYellow,
+                                            guidanceDomain: .strapPower)
         case .connected where officialAppRiskActive && live.officialAppCoexistenceRisk == .suspected:
             return AtriaConnectionDiagnosis(title: "WHOOP may interrupt",
                                             action: "Close or uninstall WHOOP if readings fragment.",
                                             systemImage: "exclamationmark.triangle.fill",
-                                            tint: .orange)
+                                            tint: .orange,
+                                            guidanceDomain: .appCoexistence)
         case .connected where officialAppRiskActive:
             return AtriaConnectionDiagnosis(title: "WHOOP app watch",
                                             action: "Atria is streaming; close WHOOP if drops return.",
                                             systemImage: "app.connected.to.app.below.fill",
-                                            tint: .orange)
+                                            tint: .orange,
+                                            guidanceDomain: .appCoexistence)
         case .scanning, .connecting:
             if officialAppRiskActive {
                 return AtriaConnectionDiagnosis(title: "WHOOP app may interfere",
                                                 action: "Keep the strap nearby and close WHOOP if it keeps reclaiming it.",
                                                 systemImage: "exclamationmark.triangle.fill",
-                                                tint: .orange)
+                                                tint: .orange,
+                                                guidanceDomain: .appCoexistence)
             }
             if pendingKnownReconnectActive {
                 return AtriaConnectionDiagnosis(title: "Strap out of range",
                                                 action: "Atria is still reconnecting to your saved strap. Bring it closer or keep wearing it.",
                                                 systemImage: "dot.radiowaves.left.and.right",
-                                                tint: .cyan)
+                                                tint: .cyan,
+                                                guidanceDomain: .bluetoothLink)
             }
             if stalePairingSuspected {
                 return AtriaConnectionDiagnosis(title: "Connection keeps dropping",
                                                 action: "Forget the strap in Bluetooth, then reconnect.",
                                                 systemImage: "arrow.triangle.2.circlepath.circle.fill",
-                                                tint: .orange)
+                                                tint: .orange,
+                                                guidanceDomain: .bluetoothLink)
             }
             return AtriaConnectionDiagnosis(title: "Looking for your strap",
                                             action: "Bring your strap closer and keep it on your wrist.",
                                             systemImage: "dot.radiowaves.left.and.right",
-                                            tint: .cyan)
+                                            tint: .cyan,
+                                            guidanceDomain: .bluetoothLink)
         case .disconnected:
             if officialAppRiskActive {
                 return AtriaConnectionDiagnosis(title: "WHOOP app may interfere",
                                                 action: "Close or uninstall WHOOP if it keeps reclaiming the strap.",
                                                 systemImage: "exclamationmark.triangle.fill",
-                                                tint: .orange)
+                                                tint: .orange,
+                                                guidanceDomain: .appCoexistence)
             }
             if pendingKnownReconnectActive {
                 return AtriaConnectionDiagnosis(title: "Strap out of range",
                                                 action: "Atria is still waiting for your saved strap. Bring it closer or keep wearing it.",
                                                 systemImage: "dot.radiowaves.left.and.right",
-                                                tint: .cyan)
+                                                tint: .cyan,
+                                                guidanceDomain: .bluetoothLink)
             }
             if stalePairingSuspected {
                 return AtriaConnectionDiagnosis(title: "Stale Bluetooth pairing",
                                                 action: "Forget the strap in Bluetooth, then reconnect.",
                                                 systemImage: "arrow.triangle.2.circlepath.circle.fill",
-                                                tint: .orange)
+                                                tint: .orange,
+                                                guidanceDomain: .bluetoothLink)
             }
             return AtriaConnectionDiagnosis(title: "Strap disconnected",
                                             action: "Bring it closer. If it keeps failing, forget it in Bluetooth and reconnect.",
                                             systemImage: "bolt.horizontal.circle",
-                                            tint: .blue)
+                                            tint: .blue,
+                                            guidanceDomain: .bluetoothLink)
         case .connected:
             return nil
         }
@@ -11664,15 +11706,17 @@ private struct AtriaConnectionDiagnosisBanner: View, Equatable {
 
             Spacer(minLength: 0)
 
-            Button(action: onHelp) {
-                Image(systemName: "questionmark.circle")
-                    .font(.caption.weight(.bold))
-                    .frame(width: 44, height: 44)
-                    .contentShape(.rect)
+            if diagnosis.guidanceDomain.offersConnectionGuide {
+                Button(action: onHelp) {
+                    Image(systemName: "questionmark.circle")
+                        .font(.caption.weight(.bold))
+                        .frame(width: 44, height: 44)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(diagnosis.tint)
+                .accessibilityLabel("Connection help")
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(diagnosis.tint)
-            .accessibilityLabel("Connection help")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)

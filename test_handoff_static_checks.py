@@ -1097,7 +1097,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "self.publishHeroPulse()\n                if self.prefersPulseSparklineUpdates",
             ".interactive()",
             ".frame(minWidth: AtriaHeaderControlMetrics.statusMinWidth,\n               maxWidth: 172,\n               minHeight: AtriaHeaderControlMetrics.height,\n               maxHeight: AtriaHeaderControlMetrics.height)",
-            "Heart rate is live. Keep wearing normally while HRV settles.",
+            "Heart rate is live. HRV needs steady beat-to-beat windows, usually during quiet rest or sleep.",
             "HRV-grade beat-to-beat data is ready as personal-baseline HRV.",
             "private static func hrvSettlingText(quality: String, liveHeartRate: Int) -> String",
             "guard liveHeartRate > 0 else { return quality }",
@@ -2493,7 +2493,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "Atria needs pulse before it can build HRV and Recovery.",
             "case .connected where live.needsRRQualityCoach && hasLivePulseSignal:",
             "HRV settling",
-            "Heart rate is live. Keep wearing normally while HRV settles.",
+            "Heart rate is live. HRV needs steady beat-to-beat windows, usually during quiet rest or sleep.",
             "case .connected where officialAppRiskActive && live.officialAppCoexistenceRisk == .suspected:",
             "WHOOP may interrupt",
             "Close or uninstall WHOOP if readings fragment.",
@@ -10588,8 +10588,9 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, home, 'Text("Data gap · \\(missedDataDurationText)")')
         assert_contains(self, home, 'Text(protectsLiveStream ? "Live protected" : "Check strap history")')
         assert_contains(self, home, "private var compactState: some View")
-        assert_contains(self, home, "Button(action: onHelp) {\n                Image(systemName: \"questionmark.circle\")")
-        assert_contains(self, home, ".buttonStyle(.plain)\n            .foregroundStyle(diagnosis.tint)")
+        assert_contains(self, home, "if diagnosis.guidanceDomain.offersConnectionGuide {")
+        assert_contains(self, home, "Button(action: onHelp) {\n                    Image(systemName: \"questionmark.circle\")")
+        assert_contains(self, home, ".buttonStyle(.plain)\n                .foregroundStyle(diagnosis.tint)")
         diagnosis_banner = re.search(
             r"private struct AtriaConnectionDiagnosisBanner: View, Equatable \{(?P<body>.*?)\n\}",
             home,
