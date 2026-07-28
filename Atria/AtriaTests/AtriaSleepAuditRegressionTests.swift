@@ -8,6 +8,12 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         return calendar
     }()
 
+    private static let indiaCalendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        return calendar
+    }()
+
     private func date(_ year: Int,
                       _ month: Int,
                       _ day: Int,
@@ -63,6 +69,42 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
             SavedSession.RRPoint(t: $0.t, ms: Int((60_000.0 / Double(bpm)).rounded()))
         }
         return value
+    }
+
+    private func physicalResumedSleepSession(start: Date,
+                                             end: Date,
+                                             activeTail: Bool = false) -> SavedSession {
+        let duration = end.timeIntervalSince(start)
+        let points = stride(from: 0.0, to: duration, by: 1.5).enumerated().map {
+            index, offset -> SavedSession.Point in
+            let bpm: Int
+            if activeTail {
+                bpm = index.isMultiple(of: 3) ? 108 : 92
+            } else if index.isMultiple(of: 100) {
+                bpm = 123
+            } else if index.isMultiple(of: 25) {
+                bpm = 94
+            } else if index.isMultiple(of: 10) {
+                bpm = 83
+            } else {
+                bpm = 65
+            }
+            return SavedSession.Point(t: offset, bpm: bpm)
+        }
+        let rrPoints = points.map {
+            SavedSession.RRPoint(
+                t: $0.t,
+                ms: Int((60_000.0 / Double($0.bpm)).rounded()),
+                source: .standardHeartRateMeasurement2A37
+            )
+        }
+        return SavedSession(id: UUID(),
+                            start: start,
+                            end: end,
+                            label: "Physical resumed-sleep shape",
+                            points: points,
+                            rrPoints: rrPoints,
+                            eventTimeZoneIdentifier: "Asia/Kolkata")
     }
 
     private func respiratoryRRSession(start: Date,
@@ -139,6 +181,283 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertEqual(mainSleep.sessions, 2)
         XCTAssertEqual(mainSleep.duration, first.duration + second.duration + 1, accuracy: 1)
         XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(mainSleep))
+    }
+
+    func testPhysicalMorningShapeQueuesSeparateResumedSleepAfterMainSettlement() throws {
+        let first = denseHRRRSession(
+            start: date(2032, 1, 2, 0, 45, timeZoneIdentifier: "Asia/Kolkata"),
+            end: date(2032, 1, 2, 3, 4, timeZoneIdentifier: "Asia/Kolkata"),
+            bpm: 70,
+            eventTimeZoneIdentifier: "Asia/Kolkata"
+        )
+        let second = denseHRRRSession(
+            start: date(2032, 1, 2, 3, 4, 1, timeZoneIdentifier: "Asia/Kolkata"),
+            end: date(2032, 1, 2, 4, 23, timeZoneIdentifier: "Asia/Kolkata"),
+            bpm: 69,
+            eventTimeZoneIdentifier: "Asia/Kolkata"
+        )
+        let tiny = denseHRRRSession(
+            start: date(2032, 1, 2, 5, 58, timeZoneIdentifier: "Asia/Kolkata"),
+            end: date(2032, 1, 2, 6, 4, timeZoneIdentifier: "Asia/Kolkata"),
+            bpm: 70,
+            eventTimeZoneIdentifier: "Asia/Kolkata"
+        )
+        let ambiguous = denseHRRRSession(
+            start: date(2032, 1, 2, 6, 17, timeZoneIdentifier: "Asia/Kolkata"),
+            end: date(2032, 1, 2, 6, 39, timeZoneIdentifier: "Asia/Kolkata"),
+            bpm: 61,
+            eventTimeZoneIdentifier: "Asia/Kolkata"
+        )
+        let resumed = physicalResumedSleepSession(
+            start: date(2032, 1, 2, 8, 33, timeZoneIdentifier: "Asia/Kolkata"),
+            end: date(2032, 1, 2, 10, 42, timeZoneIdentifier: "Asia/Kolkata")
+        )
+        let sessions = [first, second, tiny, ambiguous, resumed]
+        let candidates = SessionStore.aggregateSleepCandidates(
+            in: sessions,
+            rest: 60,
+            maxHR: 190,
+            calendar: Self.indiaCalendar,
+            historicalMotionPolicy: .sessionOnly
+        )
+        let main = try XCTUnwrap(candidates.first {
+            $0.kind == "overnight_sleep" && $0.start == first.start
+        })
+        let tail = try XCTUnwrap(candidates.first {
+            $0.kind == "resumed_sleep_candidate"
+        })
+
+        XCTAssertEqual(main.start, first.start)
+        XCTAssertEqual(main.end, second.end)
+        XCTAssertEqual(tail.start, resumed.start)
+        XCTAssertEqual(tail.end, resumed.end)
+        XCTAssertEqual(tail.duration, resumed.duration, accuracy: 1)
+        XCTAssertFalse(SessionStore.isAutoConfirmableMainSleepCandidate(
+            tail,
+            baselineRestingIsTrusted: true
+        ))
+
+        let firstReview = try XCTUnwrap(SessionStore.makeSleepReviewNightForCache(
+            snapshot: .empty,
+            canonicalSessions: sessions,
+            confirmedSleeps: [],
+            rest: 60,
+            maxHR: 190,
+            calendar: Self.indiaCalendar
+        ))
+        XCTAssertEqual(firstReview.start, first.start)
+        XCTAssertEqual(firstReview.end, second.end)
+
+        let confirmedMain = UserConfirmedSleep(
+            id: "physical-main",
+            createdAt: second.end,
+            start: first.start,
+            end: second.end,
+            source: "sleep_window",
+            confidence: "user_confirmed_hr_only",
+            sessions: 2,
+            samples: first.points.count + second.points.count,
+            avgHR: 70,
+            peakHR: 70,
+            restingHR: 60,
+            hrv: 50,
+            hrvWindowCount: 3,
+            duration: first.duration + second.duration + 1,
+            span: second.end.timeIntervalSince(first.start),
+            reason: "physical main",
+            motionSource: "user_review",
+            motionValidated: false,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: "Asia/Kolkata"
+        )
+        let queued = try XCTUnwrap(SessionStore.makeSleepReviewNightForCache(
+            snapshot: .empty,
+            canonicalSessions: sessions,
+            confirmedSleeps: [confirmedMain],
+            rest: 60,
+            maxHR: 190,
+            calendar: Self.indiaCalendar
+        ))
+        XCTAssertEqual(queued.source, "resumed_sleep_candidate")
+        XCTAssertEqual(queued.start, resumed.start)
+        XCTAssertEqual(queued.end, resumed.end)
+    }
+
+    func testResumedSleepNeedsPriorMainAndRejectsActiveTail() {
+        let quiet = physicalResumedSleepSession(
+            start: date(2032, 1, 2, 8, 33, timeZoneIdentifier: "Asia/Kolkata"),
+            end: date(2032, 1, 2, 10, 42, timeZoneIdentifier: "Asia/Kolkata")
+        )
+        XCTAssertFalse(SessionStore.aggregateSleepCandidates(
+            in: [quiet],
+            rest: 60,
+            maxHR: 190,
+            calendar: Self.indiaCalendar,
+            historicalMotionPolicy: .sessionOnly
+        ).contains { $0.kind == "resumed_sleep_candidate" })
+
+        let main = denseHRRRSession(
+            start: date(2032, 1, 2, 0, 45, timeZoneIdentifier: "Asia/Kolkata"),
+            end: date(2032, 1, 2, 4, 23, timeZoneIdentifier: "Asia/Kolkata"),
+            bpm: 69,
+            eventTimeZoneIdentifier: "Asia/Kolkata"
+        )
+        let active = physicalResumedSleepSession(
+            start: date(2032, 1, 2, 8, 33, timeZoneIdentifier: "Asia/Kolkata"),
+            end: date(2032, 1, 2, 10, 42, timeZoneIdentifier: "Asia/Kolkata"),
+            activeTail: true
+        )
+        XCTAssertFalse(SessionStore.aggregateSleepCandidates(
+            in: [main, active],
+            rest: 60,
+            maxHR: 190,
+            calendar: Self.indiaCalendar,
+            historicalMotionPolicy: .sessionOnly
+        ).contains { $0.kind == "resumed_sleep_candidate" })
+    }
+
+    func testConfirmedResumedSleepAddsOnlyObservedDurationToCycle() throws {
+        let mainStart = date(2032, 1, 2, 0, 45, timeZoneIdentifier: "Asia/Kolkata")
+        let mainEnd = date(2032, 1, 2, 4, 23, timeZoneIdentifier: "Asia/Kolkata")
+        let resumedStart = date(2032, 1, 2, 8, 33, timeZoneIdentifier: "Asia/Kolkata")
+        let resumedEnd = date(2032, 1, 2, 10, 42, timeZoneIdentifier: "Asia/Kolkata")
+        func confirmed(id: String,
+                       start: Date,
+                       end: Date,
+                       source: String) -> UserConfirmedSleep {
+            UserConfirmedSleep(
+                id: id,
+                createdAt: end,
+                start: start,
+                end: end,
+                source: source,
+                confidence: "user_confirmed_hr_only",
+                sessions: 1,
+                samples: 1_000,
+                avgHR: 65,
+                peakHR: 83,
+                restingHR: 59,
+                hrv: 50,
+                hrvWindowCount: 3,
+                duration: end.timeIntervalSince(start),
+                span: end.timeIntervalSince(start),
+                reason: "test",
+                motionSource: "user_review",
+                motionValidated: false,
+                stageSegments: nil,
+                eventTimeZoneIdentifier: "Asia/Kolkata"
+            )
+        }
+        let main = confirmed(id: "main", start: mainStart, end: mainEnd, source: "sleep_window")
+        let resumed = confirmed(
+            id: "resumed",
+            start: resumedStart,
+            end: resumedEnd,
+            source: "resumed_sleep"
+        )
+        let snapshot = SleepHistorySnapshot(
+            rollups: [],
+            confirmedSleeps: [main, resumed],
+            calendar: Self.indiaCalendar
+        )
+        let combined = try XCTUnwrap(snapshot.latestMainSleep)
+
+        XCTAssertEqual(combined.start, mainStart)
+        XCTAssertEqual(combined.end, resumedEnd)
+        XCTAssertEqual(
+            combined.duration,
+            main.duration + resumed.duration,
+            accuracy: 1,
+            "04:23–08:33 must remain awake and receive zero sleep credit"
+        )
+        XCTAssertEqual(
+            combined.sleepEfficiency ?? 0,
+            (main.duration + resumed.duration) / resumedEnd.timeIntervalSince(mainStart),
+            accuracy: 0.001
+        )
+        XCTAssertEqual(snapshot.additionalMainNights.map(\.id), ["resumed"])
+    }
+
+    @MainActor
+    func testConfirmingResumedSleepPersistsASeparateSegmentAndKeepsMain() throws {
+        let store = SessionStore()
+        let mainStart = date(2036, 1, 2, 0, 45, timeZoneIdentifier: "Asia/Kolkata")
+        let mainEnd = date(2036, 1, 2, 4, 23, timeZoneIdentifier: "Asia/Kolkata")
+        let resumedStart = date(2036, 1, 2, 8, 33, timeZoneIdentifier: "Asia/Kolkata")
+        let resumedEnd = date(2036, 1, 2, 10, 42, timeZoneIdentifier: "Asia/Kolkata")
+
+        func review(id: String,
+                    start: Date,
+                    end: Date,
+                    source: String) -> SleepHistorySnapshot.Night {
+            SleepHistorySnapshot.Night(
+                id: id,
+                day: Self.indiaCalendar.startOfDay(for: end),
+                start: start,
+                end: end,
+                duration: end.timeIntervalSince(start),
+                restingHR: 59,
+                hrv: 50,
+                hrvWindowCount: 3,
+                respiratoryRate: 15,
+                sleepEfficiency: 1,
+                confidence: "review_needed",
+                source: source,
+                confirmed: false,
+                stageSegments: [],
+                eventTimeZoneIdentifier: "Asia/Kolkata"
+            )
+        }
+
+        let main = try XCTUnwrap(store.saveSleepReviewNightForUI(
+            review(id: "main-review",
+                   start: mainStart,
+                   end: mainEnd,
+                   source: "sleep_window"),
+            start: mainStart,
+            end: mainEnd,
+            isNap: false,
+            rest: 60,
+            source: "test-main"
+        ))
+        defer { _ = store.deleteConfirmedSleep(id: main.id) }
+
+        let resumed = try XCTUnwrap(store.saveSleepReviewNightForUI(
+            review(id: "resumed-review",
+                   start: resumedStart,
+                   end: resumedEnd,
+                   source: "resumed_sleep_candidate"),
+            start: resumedStart,
+            end: resumedEnd,
+            isNap: false,
+            rest: 60,
+            source: "test-resumed"
+        ))
+        defer { _ = store.deleteConfirmedSleep(id: resumed.id) }
+
+        XCTAssertEqual(resumed.source, "resumed_sleep")
+        XCTAssertEqual(resumed.start, resumedStart)
+        XCTAssertEqual(resumed.end, resumedEnd)
+        XCTAssertEqual(resumed.duration, resumedEnd.timeIntervalSince(resumedStart), accuracy: 1)
+        XCTAssertEqual(resumed.span, resumed.duration, accuracy: 1)
+
+        let durableMain = try XCTUnwrap(store.confirmedSleeps.first { $0.id == main.id })
+        let durableResumed = try XCTUnwrap(store.confirmedSleeps.first { $0.id == resumed.id })
+        XCTAssertEqual(durableMain.start, mainStart)
+        XCTAssertEqual(durableMain.end, mainEnd)
+        XCTAssertEqual(durableResumed.start, resumedStart)
+        XCTAssertEqual(durableResumed.end, resumedEnd)
+        XCTAssertNotEqual(durableMain.id, durableResumed.id)
+
+        let projected = try XCTUnwrap(store.sleepHistorySnapshot.latestMainSleep)
+        XCTAssertEqual(projected.start, mainStart)
+        XCTAssertEqual(projected.end, resumedEnd)
+        XCTAssertEqual(
+            projected.duration,
+            main.duration + resumed.duration,
+            accuracy: 1,
+            "the 04:23–08:33 awake interval must remain zero-credit"
+        )
     }
 
     func testSleepWindowRespirationAggregatesFragmentedOverlappingQualifiedRuns() throws {

@@ -3261,6 +3261,14 @@ struct AggregateSleepCandidate {
     /// battery died), so Atria never fabricates it.
     static let briefSleepGapCreditMax: TimeInterval = 20 * 60
     static let minimumAutoConfirmHRCoverageFraction = 0.80
+    /// A later morning sleep after an already substantial main episode is kept
+    /// as a separate, user-reviewed segment. These bounds deliberately stop
+    /// short of the ordinary main-sleep gate: HR without validated motion may
+    /// suggest a continuation, but it may never confirm one automatically.
+    static let resumedSleepMinimumDuration: TimeInterval = 60 * 60
+    static let resumedSleepMaximumDuration: TimeInterval = 3 * 60 * 60
+    static let resumedSleepMinimumSeparation: TimeInterval = 90 * 60
+    static let resumedSleepMaximumSeparationFromMain: TimeInterval = 8 * 60 * 60
 
     let kind: String
     let day: Date
@@ -9694,6 +9702,7 @@ final class SessionStore: ObservableObject {
     /// surface as “Sleep detected.” Naps remain review-only, while main sleep
     /// needs motion or the existing high-specificity HR-only gates.
     nonisolated static func isReviewWorthySleepCandidate(_ candidate: AggregateSleepCandidate) -> Bool {
+        if candidate.kind == "resumed_sleep_candidate" { return true }
         if candidate.kind == "nap_candidate" { return true }
         if candidate.denseMorningHROnlyReviewQualified { return true }
         if candidate.denseLongHROnlyReviewQualified { return true }
@@ -9742,6 +9751,10 @@ final class SessionStore: ObservableObject {
     }
 
     private nonisolated static func sleepCandidateMainSleepRank(_ candidate: AggregateSleepCandidate) -> Int {
+        // A resumed segment is intentionally queued behind the primary main
+        // review for the day. Once that primary window is settled, candidate
+        // filtering exposes this lower-ranked, separate review.
+        if candidate.kind == "resumed_sleep_candidate" { return 2 }
         guard candidate.kind != "nap_candidate" else { return 1 }
         if candidate.duration >= AggregateSleepCandidate.strictMinimumDuration {
             return 4
@@ -9765,6 +9778,7 @@ final class SessionStore: ObservableObject {
 
     private nonisolated static func isStrapOnlyMainSleepReviewCandidate(_ candidate: AggregateSleepCandidate) -> Bool {
         candidate.kind != "nap_candidate"
+            && candidate.kind != "resumed_sleep_candidate"
             && !candidate.motionEvidenceValidated
             && (candidate.denseLongHROnlyReviewQualified
                 || candidate.duration >= AggregateSleepCandidate.strictMinimumDuration
@@ -18808,16 +18822,48 @@ final class SessionStore: ObservableObject {
                                                    maxHR: maxHR,
                                                    calendar: calendar,
                                                    historicalMotionPolicy: .boundedRecent)
-        let aggregateReview = preferredSleepCandidateForReview(from: candidates).flatMap { candidate -> SleepHistorySnapshot.Night? in
-            guard (!confirmedSleeps.contains(where: { sleepWindowsOverlap($0, candidate: candidate) })
-                    || sleepReviewExtensionTarget(existing: confirmedSleeps,
-                                                  candidateStart: candidate.start,
-                                                  candidateEnd: candidate.end,
-                                                  candidateDuration: candidate.duration,
-                                                  isNap: candidate.kind == "nap_candidate") != nil),
+        func isUnsettled(_ candidate: AggregateSleepCandidate) -> Bool {
+            let overlapsConfirmed = confirmedSleeps.contains {
+                sleepWindowsOverlap($0, candidate: candidate)
+            }
+            let isReviewableExtension = sleepReviewExtensionTarget(
+                existing: confirmedSleeps,
+                candidateStart: candidate.start,
+                candidateEnd: candidate.end,
+                candidateDuration: candidate.duration,
+                isNap: candidate.kind == "nap_candidate"
+            ) != nil
+            let dismissed = dismissedCandidates.contains {
+                $0.suppresses(start: candidate.start, end: candidate.end)
+            }
+            return (!overlapsConfirmed || isReviewableExtension) && !dismissed
+        }
+        let preferredCandidate = preferredSleepCandidateForReview(from: candidates)
+        let aggregateCandidate: AggregateSleepCandidate?
+        if let preferredCandidate, isUnsettled(preferredCandidate) {
+            aggregateCandidate = preferredCandidate
+        } else if let preferredCandidate,
                   !dismissedCandidates.contains(where: {
-                      $0.suppresses(start: candidate.start, end: candidate.end)
-                  }) else { return nil }
+                      $0.suppresses(start: preferredCandidate.start, end: preferredCandidate.end)
+                  }),
+                  confirmedSleeps.contains(where: {
+                      sleepWindowsOverlap($0, candidate: preferredCandidate)
+                  }) {
+            // A settled main must suppress ordinary older fallbacks, but it
+            // may unlock exactly one distinct, same-cycle resumed-sleep
+            // review. This preserves the one-card ordering contract without
+            // allowing a confirmed newest night to reveal stale older nights.
+            aggregateCandidate = preferredSleepCandidateForReview(
+                from: candidates.filter {
+                    $0.kind == "resumed_sleep_candidate"
+                        && $0.day == preferredCandidate.day
+                        && isUnsettled($0)
+                }
+            )
+        } else {
+            aggregateCandidate = nil
+        }
+        let aggregateReview = aggregateCandidate.map { candidate in
             let source = sleepReviewCandidateSource(for: candidate)
             let metrics = confirmedSleepWindowMetrics(from: canonicalSessions,
                                                        start: candidate.start,
@@ -19079,6 +19125,7 @@ final class SessionStore: ObservableObject {
     }
 
     private nonisolated static func sleepReviewCandidateSource(for candidate: AggregateSleepCandidate) -> String {
+        if candidate.kind == "resumed_sleep_candidate" { return "resumed_sleep_candidate" }
         if candidate.kind == "nap_candidate" { return "nap_candidate" }
         return candidate.sessions > 1 ? "aggregate_sleep" : "sleep_window"
     }
@@ -19097,7 +19144,12 @@ final class SessionStore: ObservableObject {
         let duration = night.duration > 0 ? night.duration : windowSpan
         let span = max(duration, windowSpan)
         let isNap = night.isNapEvidence
-        let confirmable = isNap
+        let isResumedSleep = night.source == "resumed_sleep_candidate"
+        let confirmable = isResumedSleep
+            ? duration >= AggregateSleepCandidate.resumedSleepMinimumDuration
+                && duration <= AggregateSleepCandidate.resumedSleepMaximumDuration
+                && span <= AggregateSleepCandidate.resumedSleepMaximumDuration
+            : isNap
             ? duration >= AggregateSleepCandidate.napMinimumDuration && span <= AggregateSleepCandidate.napMaximumSpan
             : duration >= AggregateSleepCandidate.fragmentedMinimumDuration
         guard confirmable else {
@@ -19110,7 +19162,10 @@ final class SessionStore: ObservableObject {
             return nil
         }
 
-        let extensionTarget = Self.sleepReviewExtensionTarget(
+        // A resumed-sleep review is a second observed segment after a real
+        // awake interval, never an extension of the first sleep. Persisting it
+        // independently is what keeps that interval at zero sleep credit.
+        let extensionTarget = isResumedSleep ? nil : Self.sleepReviewExtensionTarget(
             existing: cachedConfirmedSleeps,
             candidateStart: start,
             candidateEnd: end,
@@ -19120,7 +19175,9 @@ final class SessionStore: ObservableObject {
         // A five-minute physiology bucket may start just after the already
         // saved automatic night. Preserve the earlier durable boundary when
         // the review is an approved continuation; Save must only grow sleep.
-        let confirmedStart = min(start, extensionTarget?.start ?? start)
+        let confirmedStart = isResumedSleep
+            ? start
+            : min(start, extensionTarget?.start ?? start)
         let confirmedSpan = max(duration, end.timeIntervalSince(confirmedStart))
         let sleepSource = reviewedSleepSource(for: night)
         let id = confirmedSleepID(start: confirmedStart, end: end, source: sleepSource)
@@ -19223,6 +19280,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func reviewedSleepSource(for night: SleepHistorySnapshot.Night) -> String {
+        if night.source == "resumed_sleep_candidate" { return "resumed_sleep" }
         if night.isNapEvidence { return "nap_candidate" }
         if SleepHistorySnapshot.Night.explicitSleepSources.contains(night.source) {
             return night.source
@@ -20231,6 +20289,7 @@ final class SessionStore: ObservableObject {
         // Keep naps visible for review, but never auto-confirm them until the
         // strap decoder has a separately validated nap classifier.
         guard candidate.kind != "nap_candidate",
+              candidate.kind != "resumed_sleep_candidate",
               candidate.motionEvidenceValidated,
               candidate.confidence != .low,
               candidate.duration >= AggregateSleepCandidate.minimumAutoConfirmMainSleepDuration,
@@ -20270,6 +20329,7 @@ final class SessionStore: ObservableObject {
                                                                    calendar: Calendar = .current) -> Bool {
         _ = calendar
         guard candidate.kind != "nap_candidate",
+              candidate.kind != "resumed_sleep_candidate",
               candidate.duration >= 5 * 60 * 60,
               candidate.span <= candidate.duration * 1.20,
               candidate.span <= AggregateSleepCandidate.maximumAutoConfirmMainSleepSpan,
@@ -24250,8 +24310,186 @@ final class SessionStore: ObservableObject {
                                                denseMorningHROnlyReviewQualified: denseMorningHROnlyReviewReady,
                                                denseLongHROnlyReviewQualified: denseLongHROnlyReviewReady)
         }
-        return candidates
-        .sorted { $0.day > $1.day }
+        let resumed = resumedSleepReviewCandidates(
+            in: sourceSessions,
+            after: candidates,
+            rest: rest,
+            maxHR: maxHR,
+            calendar: calendar
+        )
+        return (candidates + resumed)
+            .sorted {
+                if $0.day != $1.day { return $0.day > $1.day }
+                if $0.start != $1.start { return $0.start < $1.start }
+                return $0.duration > $1.duration
+            }
+    }
+
+    /// Isolates a substantial later-morning sleep-shaped segment from tiny
+    /// intervening journals. It is deliberately contextual: the same two-hour
+    /// quiet-wear trace is not a sleep claim unless a review-worthy main episode
+    /// already exists in the same physiological morning. The returned candidate
+    /// is always review-only (`isAutoConfirmableMainSleepCandidate` rejects its
+    /// kind) and never credits the awake separation from the main episode.
+    nonisolated static func resumedSleepReviewCandidates(
+        in sourceSessions: [SavedSession],
+        after ordinaryCandidates: [AggregateSleepCandidate],
+        rest: Int,
+        maxHR: Int,
+        calendar: Calendar = .current
+    ) -> [AggregateSleepCandidate] {
+        let mainCandidates = ordinaryCandidates.filter {
+            $0.kind != "nap_candidate"
+                && $0.kind != "resumed_sleep_candidate"
+                && $0.duration >= AggregateSleepCandidate.strictMinimumDuration
+                && isReviewWorthySleepCandidate($0)
+        }
+        guard !mainCandidates.isEmpty else { return [] }
+
+        let orderedSessions = sourceSessions
+            .filter { !$0.points.isEmpty }
+            .sorted { $0.start < $1.start }
+        var result: [AggregateSleepCandidate] = []
+
+        for session in orderedSessions {
+            let duration = session.duration
+            guard duration >= AggregateSleepCandidate.resumedSleepMinimumDuration,
+                  duration <= AggregateSleepCandidate.resumedSleepMaximumDuration,
+                  session.hasQualifiedRRProvenance,
+                  let rrPoints = session.rrPoints,
+                  !rrPoints.isEmpty,
+                  !session.workoutReadiness(rest: rest, maxHR: maxHR).ready else {
+                continue
+            }
+
+            let eventCalendar = EventCivilTime.eventCalendar(
+                timeZoneIdentifier: session.eventTimeZoneIdentifier,
+                fallback: calendar
+            )
+            guard eventCalendar.component(.hour, from: session.start) < 12 else {
+                continue
+            }
+
+            let matchingMain = mainCandidates
+                .filter { main in
+                    main.day == aggregateSleepDay(
+                        for: [session],
+                        eventTimeZoneIdentifier: session.eventTimeZoneIdentifier,
+                        calendar: calendar
+                    )
+                        && session.start.timeIntervalSince(main.end)
+                            >= AggregateSleepCandidate.resumedSleepMinimumSeparation
+                        && session.start.timeIntervalSince(main.end)
+                            <= AggregateSleepCandidate.resumedSleepMaximumSeparationFromMain
+                }
+                .max { $0.end < $1.end }
+            guard let matchingMain else { continue }
+
+            // Tiny/ambiguous journals between the main wake and this tail stay
+            // separate. A fresh >90-minute wake boundary immediately before the
+            // substantial tail is required; no duration is credited across it.
+            let nearestPriorEnd = orderedSessions
+                .filter { $0.id != session.id && $0.end <= session.start }
+                .map(\.end)
+                .max() ?? matchingMain.end
+            guard session.start.timeIntervalSince(nearestPriorEnd)
+                    >= AggregateSleepCandidate.resumedSleepMinimumSeparation else {
+                continue
+            }
+
+            let values = session.bpms
+            guard !values.isEmpty else { continue }
+            let medianHR = percentileHR(0.50, values: values)
+            let hrP90 = percentileHR(0.90, values: values)
+            let avgHR = values.reduce(0, +) / values.count
+            let elevatedFraction = Double(values.filter { $0 >= rest + 35 }.count)
+                / Double(values.count)
+            guard avgHR <= rest + 12,
+                  medianHR <= rest + 8,
+                  hrP90 <= rest + 25,
+                  elevatedFraction < 0.10,
+                  elevatedFraction * duration < 15 * 60 else {
+                continue
+            }
+
+            let binSeconds: TimeInterval = 5 * 60
+            let expectedBins = max(1, Int(ceil(duration / binSeconds)))
+            func observedBinFraction(_ offsets: [TimeInterval]) -> Double {
+                let bins = Set(offsets.map {
+                    min(expectedBins - 1, max(0, Int(max(0, $0) / binSeconds)))
+                })
+                return Double(bins.count) / Double(expectedBins)
+            }
+            let hrCoverage = min(1, Double(values.count) / max(1, duration))
+            let rrCoverage = min(1, Double(rrPoints.count) / max(1, duration))
+            guard hrCoverage >= 0.60,
+                  rrCoverage >= 0.60,
+                  observedBinFraction(session.points.map(\.t))
+                    >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction,
+                  observedBinFraction(rrPoints.map(\.t))
+                    >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction,
+                  session.hrMaxAcceptedGapValue <= 60 else {
+                continue
+            }
+
+            let orderedSampleDates = session.points
+                .map { session.start.addingTimeInterval(max(0, min($0.t, duration))) }
+                .sorted()
+            let boundaries = [session.start] + orderedSampleDates + [session.end]
+            let maximumHRSampleGap = zip(boundaries, boundaries.dropFirst())
+                .map { max(0, $1.timeIntervalSince($0)) }
+                .max() ?? duration
+            guard maximumHRSampleGap <= 60 else { continue }
+
+            result.append(AggregateSleepCandidate(
+                kind: "resumed_sleep_candidate",
+                day: matchingMain.day,
+                eventTimeZoneIdentifier: session.eventTimeZoneIdentifier,
+                sessions: 1,
+                start: session.start,
+                end: session.end,
+                duration: duration,
+                span: duration,
+                maxGap: 0,
+                samples: session.points.count,
+                hrObservedCoverageFraction: observedBinFraction(session.points.map(\.t)),
+                maximumHRSampleGap: maximumHRSampleGap,
+                avgHR: avgHR,
+                peakHR: values.max() ?? 0,
+                hrStandardDeviation: standardDeviation(values.map(Double.init)),
+                medianHR: medianHR,
+                hrP90: hrP90,
+                elevatedSampleFraction: elevatedFraction,
+                baselineRestingHR: rest,
+                restingHR: percentileHR(0.05, values: values),
+                confidence: .low,
+                reason: "Dense HR+qualified RR later-morning segment after a separate main sleep; review required; awake gap excluded",
+                motionHintCount: session.motionHintCountValue,
+                motionHintKinds: session.motionHintKindsValue,
+                motionEvidenceSource: "strap_hr_rr_review_only",
+                motionEvidenceValidated: false,
+                motionShortCount: session.motionShortCountValue,
+                motionShortMean: session.motionShortMeanValue,
+                motionShortMin: session.motionShortMinValue,
+                motionShortMax: session.motionShortMaxValue,
+                motionShortOverOneCount: session.motionShortOverOneCountValue,
+                historicalMotionStatus: "not_required_review_only",
+                historicalMotionReason: "resumed_sleep_requires_user_confirmation",
+                historicalMotionRows: 0,
+                historicalMotionValidatedRows: 0,
+                historicalMotionCoverageSeconds: 0,
+                historicalMotionMeanVectorDelta: nil,
+                historicalMotionP95VectorDelta: nil,
+                historicalMotionMagnitudeStdDev: nil,
+                historicalMotionArchiveFirstUnix: 0,
+                historicalMotionArchiveLastUnix: 0,
+                historicalMotionNearestSeparationSeconds: 0,
+                historicalMotionValidated: false,
+                denseMorningHROnlyReviewQualified: false,
+                denseLongHROnlyReviewQualified: false
+            ))
+        }
+        return result
     }
 
     func sleepEvidenceStatusFast(rest: Int,
@@ -24453,11 +24691,13 @@ final class SessionStore: ObservableObject {
     }
 
     private func sleepFallbackSource(for candidate: AggregateSleepCandidate) -> String {
+        if candidate.kind == "resumed_sleep_candidate" { return "hr_only_resumed_sleep" }
         if candidate.kind == "nap_candidate" { return "hr_only_nap" }
         return candidate.sessions > 1 ? "hr_only_fragmented_sleep" : "hr_only_sleep"
     }
 
     private func sleepCandidateSource(for candidate: AggregateSleepCandidate) -> String {
+        if candidate.kind == "resumed_sleep_candidate" { return "resumed_sleep_candidate" }
         if candidate.kind == "nap_candidate" { return "nap_candidate" }
         return candidate.sessions > 1 ? "aggregate_sleep" : "sleep_window"
     }
@@ -30675,10 +30915,19 @@ struct SleepHistorySnapshot: Equatable {
             if confirmed {
                 return isNapEvidence ? "Confirmed nap" : "Confirmed sleep"
             }
+            if source == "resumed_sleep_candidate" {
+                return "Additional sleep candidate"
+            }
             return isNapEvidence ? "Nap candidate" : "Sleep candidate"
         }
 
         var reviewContextText: String {
+            if source == "resumed_sleep_candidate" {
+                return "Possible additional sleep. Kept separate from your earlier sleep; the awake gap is not counted."
+            }
+            if source == "resumed_sleep" {
+                return "Confirmed additional sleep. Only the recorded segment is added; the awake gap is not counted."
+            }
             if isNapEvidence {
                 return confirmed
                     ? "Confirmed nap. Kept separate from main sleep."
@@ -30738,6 +30987,8 @@ struct SleepHistorySnapshot: Equatable {
             "sleep_candidate",
             "single_session_sleep_candidate",
             "incomplete_fragmented_sleep",
+            "resumed_sleep_candidate",
+            "resumed_sleep",
             "user_adjusted_sleep"
         ]
 
@@ -30811,6 +31062,7 @@ struct SleepHistorySnapshot: Equatable {
         var nightsByDay: [Date: Night] = [:]
         var additionalMainNightsList: [Night] = []
         var napNightsList: [Night] = []
+        var resumedSleepSegmentsByDay: [Date: [Night]] = [:]
         for sleep in confirmedSleeps {
             // Sleep is a wake-boundary event. Candidates, frozen recovery and
             // Activity already use the morning the sleep ended; re-keying the
@@ -30845,6 +31097,13 @@ struct SleepHistorySnapshot: Equatable {
             // nap (or vice versa), silently dropping the nap credit from sameDayNapHours.
             if Night.explicitNapSources.contains(sleep.source) {
                 napNightsList.append(night)
+            } else if sleep.source == "resumed_sleep" {
+                // A confirmed resumed segment remains its own durable Activity
+                // record. The canonical nightly projection combines only its
+                // observed duration with the earlier main sleep below; it never
+                // rewrites either record or credits the awake gap.
+                resumedSleepSegmentsByDay[day, default: []].append(night)
+                additionalMainNightsList.append(night)
             } else {
                 if let existing = nightsByDay[day] {
                     // A civil day has one recovery-driving main sleep. Prefer
@@ -30865,6 +31124,15 @@ struct SleepHistorySnapshot: Equatable {
                     nightsByDay[day] = night
                 }
             }
+        }
+
+        for (day, segments) in resumedSleepSegmentsByDay {
+            guard let main = nightsByDay[day],
+                  let combined = Self.combiningResumedSleepSegments(
+                    main: main,
+                    resumed: segments
+                  ) else { continue }
+            nightsByDay[day] = combined
         }
 
         var projectedCandidateCount = 0
@@ -30930,6 +31198,71 @@ struct SleepHistorySnapshot: Equatable {
         let debtBasis = Self.makeRecentSleepDebtBasis(clippedNights)
         self.recentSleepAverageDurationHours = debtBasis.averageHours
         self.recentSleepRecordCount = debtBasis.recordCount
+    }
+
+    /// Builds the physiological-cycle presentation from separate durable
+    /// records. Only measured segment durations are summed; the wall-clock span
+    /// remains start-to-final-wake so efficiency honestly exposes every awake
+    /// gap. The resumed records themselves stay in `additionalMainNights`.
+    nonisolated static func combiningResumedSleepSegments(
+        main: Night,
+        resumed: [Night]
+    ) -> Night? {
+        guard main.confirmed,
+              !main.isNapEvidence,
+              let mainStart = main.start,
+              let mainEnd = main.end else { return nil }
+        let ordered = resumed
+            .filter {
+                $0.confirmed
+                    && $0.source == "resumed_sleep"
+                    && !$0.isNapEvidence
+                    && ($0.start ?? .distantPast) >= mainEnd
+                    && ($0.start ?? .distantFuture).timeIntervalSince(mainEnd)
+                        <= AggregateSleepCandidate.resumedSleepMaximumSeparationFromMain
+            }
+            .sorted { ($0.start ?? .distantPast) < ($1.start ?? .distantPast) }
+        guard !ordered.isEmpty else { return nil }
+
+        var accepted: [Night] = []
+        var lastEnd = mainEnd
+        for segment in ordered {
+            guard let start = segment.start,
+                  let end = segment.end,
+                  end > start,
+                  start >= lastEnd else { continue }
+            accepted.append(segment)
+            lastEnd = end
+        }
+        guard !accepted.isEmpty else { return nil }
+
+        let creditedDuration = min(
+            lastEnd.timeIntervalSince(mainStart),
+            main.duration + accepted.reduce(0) { $0 + $1.duration }
+        )
+        let stageSegments = (main.stageSegments + accepted.flatMap(\.stageSegments))
+            .sorted { $0.start < $1.start }
+        return Night(
+            id: main.id,
+            day: main.day,
+            start: mainStart,
+            end: lastEnd,
+            duration: creditedDuration,
+            restingHR: main.restingHR,
+            hrv: main.hrv,
+            hrvWindowCount: main.hrvWindowCount,
+            respiratoryRate: main.respiratoryRate,
+            sleepEfficiency: Self.efficiency(
+                duration: creditedDuration,
+                span: lastEnd.timeIntervalSince(mainStart),
+                source: main.source
+            ),
+            confidence: main.confidence,
+            source: main.source,
+            confirmed: true,
+            stageSegments: stageSegments,
+            eventTimeZoneIdentifier: main.eventTimeZoneIdentifier
+        )
     }
 
     private static func mergingConfirmedNight(_ night: Night, with rollup: DailyRollup) -> Night {
