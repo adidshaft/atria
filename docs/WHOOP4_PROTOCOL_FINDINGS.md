@@ -2410,6 +2410,31 @@ POSITIVE STILL REQUIRED**
   settlement.
 - **Evidence:** `evidence/2026-07-29-strain-steps-audit-preinstall/`.
 
+#### 2026-07-29 — full active-cycle v24 motion audit
+
+- **Physical input:** the installed Release's complete `raw-v2` container was
+  copied without stopping or re-pairing the strap. The active physiological
+  window contained 57,478 unique WHOOP 4 v24 rows with no conflicting flash
+  identities and 7,907 admitted firmware motion ticks.
+- **Burst shape:** those ticks formed 240 distinct counter-active bursts:
+  81 shorter than five seconds, 45 from five to ten seconds, 50 from ten to
+  twenty seconds, 28 from twenty to thirty seconds, 26 from thirty to sixty
+  seconds, and 10 from sixty to 120 seconds. No burst exceeded 120 seconds.
+- **Classifier result:** none satisfied the physically frozen sustained-walk
+  gates. The longest candidates either fell below the qualified tick-rate or
+  regular-transition boundary, or had gravity-delta MAD from 0.074 to 0.259,
+  above the accepted walk ceiling of 0.060. This explains the current durable
+  receipt's `motion observed / count unresolved` state; it is not a missing
+  receipt or a publication-refresh failure.
+- **Independent coordinate:** the durable R10 ledger still reports 4,257
+  preliminary cross-segment steps. That value remains ineligible for Home,
+  widget, or workout publication because it is not bounded to this
+  physiological cycle and has not passed charger-free counted-walk holdout.
+- **Consequence:** lowering the sustained-walk gates against this unlabeled day
+  would convert ordinary wrist motion into steps without evidence. A truthful
+  all-day value requires either a physically labelled short-burst classifier
+  or counted-walk validation of the independently bounded R10 coordinate.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.

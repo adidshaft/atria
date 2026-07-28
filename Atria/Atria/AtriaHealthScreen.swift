@@ -238,7 +238,9 @@ enum AtriaHealthMetricAuthority {
                 recoveryPercent: current.recoveryPercent,
                 recoveryValue: current.recoveryPercent.map { "\($0)%" } ?? AtriaCompactMetricPresentation.noValue,
                 recoveryDetail: current.recoveryPercent == nil
-                    ? "needs a few nights" : current.recoveryDetail,
+                    ? specificDetail(current.recoveryDetail,
+                                     fallback: "Recovery evidence incomplete")
+                    : current.recoveryDetail,
                 restingHeartRate: restingHeartRate,
                 restingHeartRateValue: restingHeartRate.map {
                     AtriaMetricFormat.restingHeartRate(Double($0))
@@ -248,7 +250,9 @@ enum AtriaHealthMetricAuthority {
                 hrvMS: Int(normalizedHRV),
                 hrvValue: normalizedHRV,
                 hrvDetail: normalizedHRV == AtriaCompactMetricPresentation.noValue
-                    ? "needs qualified sleep" : current.hrvDetail
+                    ? specificDetail(current.hrvDetail,
+                                     fallback: "Needs quiet rest or sleep")
+                    : current.hrvDetail
             )
         case .datedHistory(let rollup):
             let hrvMS = rollup.lnRMSSD.map { Int(exp($0).rounded()) }
@@ -290,6 +294,52 @@ enum AtriaHealthMetricAuthority {
         return AtriaCompactMetricPresentation.isPendingValue(trimmed)
             ? AtriaCompactMetricPresentation.noValue
             : trimmed
+    }
+
+    /// The Hero already knows why a current-cycle metric is absent (for
+    /// example, "HRV settling" versus "no sleep yet"). Do not erase that
+    /// concrete reason with a generic baseline message on the Vitals screen.
+    private static func specificDetail(_ detail: String,
+                                       fallback: String) -> String {
+        let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        return AtriaCompactMetricPresentation.isPendingValue(trimmed)
+            ? fallback
+            : trimmed
+    }
+}
+
+/// Status-specific presentation for saved current-cycle metrics in Health.
+///
+/// A retry is useful only from a settled disconnected state. While iOS is
+/// already scanning/connecting, another scan request is redundant; while
+/// Bluetooth is off, it cannot work. This keeps the row from offering a false
+/// "Reconnect" action in either state.
+enum AtriaHealthConnectionEvidencePresentation {
+    struct Notice: Equatable {
+        let title: String
+        let systemImage: String
+        let allowsRetry: Bool
+    }
+
+    static func notice(status: AtriaBLEManager.Status,
+                       hasEvidence: Bool) -> Notice? {
+        guard hasEvidence else { return nil }
+        switch status {
+        case .connected:
+            return nil
+        case .scanning, .connecting:
+            return Notice(title: "Reconnecting · saved current cycle",
+                          systemImage: "arrow.triangle.2.circlepath",
+                          allowsRetry: false)
+        case .poweredOff:
+            return Notice(title: "Bluetooth off · saved current cycle",
+                          systemImage: "bolt.slash.fill",
+                          allowsRetry: false)
+        case .disconnected:
+            return Notice(title: "Last known · current cycle",
+                          systemImage: "clock.arrow.circlepath",
+                          allowsRetry: true)
+        }
     }
 }
 
@@ -733,21 +783,26 @@ struct AtriaHealthScreen: View {
             // Disconnected honesty: Hero remains the active-cycle authority,
             // but its last projection is clearly labelled instead of borrowing
             // a civil-day rollup.
-            if isDisconnected(live: live), currentMetrics.hasEvidence {
+            if let notice = AtriaHealthConnectionEvidencePresentation.notice(
+                status: live.connectionStatus,
+                hasEvidence: currentMetrics.hasEvidence
+            ) {
                 HStack(spacing: 10) {
-                    Image(systemName: "clock.arrow.circlepath")
+                    Image(systemName: notice.systemImage)
                         .font(.caption.weight(.bold))
                         .foregroundStyle(.secondary)
-                    Text("Last known \u{00b7} current cycle")
+                    Text(notice.title)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 8)
-                    Button("Reconnect") {
-                        ble.startScan(reason: "health_monitor_reconnect")
+                    if notice.allowsRetry {
+                        Button("Retry") {
+                            ble.startScan(reason: "health_monitor_reconnect")
+                        }
+                        .font(.caption.weight(.bold))
+                        .buttonStyle(.glass)
+                        .controlSize(.regular)
                     }
-                    .font(.caption.weight(.bold))
-                    .buttonStyle(.glass)
-                    .controlSize(.regular)
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
@@ -1255,9 +1310,11 @@ struct AtriaHealthScreen: View {
         guard currentMetricProjection(live: live).hasEvidence else {
             return AtriaCompactMetricPresentation.noValue
         }
-        // Never a green "Updated" over stale data while disconnected
-        // (2026-07-07 design handoff honesty fix).
-        return isDisconnected(live: live) ? "Last known" : "Updated"
+        // Connection alone does not prove that Recovery, RHR, and HRV were
+        // recomputed just now. These values belong to the active
+        // physiological cycle, so name that scope instead of claiming a fresh
+        // update without a metric timestamp.
+        return isDisconnected(live: live) ? "Last known" : "Current cycle"
     }
 
     private func isDisconnected(live: AtriaHealthMonitorLiveProjection) -> Bool {
@@ -1265,7 +1322,10 @@ struct AtriaHealthScreen: View {
     }
 
     private func statusTint(live: AtriaHealthMonitorLiveProjection) -> Color {
-        statusValue(live: live) == "Updated" ? Metrics.electricGreen : .secondary
+        guard currentMetricProjection(live: live).hasEvidence else {
+            return .secondary
+        }
+        return isDisconnected(live: live) ? .secondary : .cyan
     }
 }
 

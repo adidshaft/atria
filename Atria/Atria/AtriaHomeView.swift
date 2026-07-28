@@ -1582,8 +1582,8 @@ struct AtriaHomeView: View {
                               onExportHealth: { store.exportToHealthKit() },
                               buildResearchBundle: { await AtriaResearchBundleBuilder.build(store: store) },
                               onSyncMissedData: {
-                                  _ = ble.requestOfflineHistoricalSyncIfNeeded(reason: "manual_user_request",
-                                                                              force: true)
+                                  ble.requestOfflineHistoricalSyncIfNeeded(reason: "manual_user_request",
+                                                                           force: true)
                               },
                               onNutritionHealthToggle: { store.requestNutritionReadAuthorizationIfEnabled() },
                               backupStatusProvider: { store.sessionBackupStatus() },
@@ -11487,22 +11487,20 @@ private struct AtriaTopStatusChip: View, Equatable {
 
 /// Determines whether a visible status belongs in the reconnect/setup guide.
 ///
-/// Connected sensor and metric-acquisition states are useful explanations, but
-/// they are not connection failures. Keeping that distinction in the model
-/// prevents an informational "HRV settling" row from offering a false
-/// Bluetooth/reconnect action.
+/// Connected sensor states are useful explanations, but they are not
+/// connection failures. Metric-acquisition states such as HRV settling belong
+/// on the metric that needs them, not in this global connection surface.
 enum AtriaConnectionGuidanceDomain: Equatable {
     case bluetoothLink
     case appCoexistence
     case strapPower
     case wearSignal
-    case metricAcquisition
 
     var offersConnectionGuide: Bool {
         switch self {
         case .bluetoothLink, .appCoexistence:
             return true
-        case .strapPower, .wearSignal, .metricAcquisition:
+        case .strapPower, .wearSignal:
             return false
         }
     }
@@ -11548,7 +11546,6 @@ private struct AtriaConnectionDiagnosis: Equatable {
         let stalePairingSuspected = !officialAppInstalled && live.officialAppCoexistenceRisk == .suspected
         let pendingKnownReconnectAge = live.pendingKnownReconnectAge() ?? 0
         let pendingKnownReconnectActive = pendingKnownReconnectAge >= Self.pendingKnownReconnectActionAge
-        let hasLivePulseSignal = pulse.hasPulseSignal || live.hasRecentHeartRateSample
         let isRecoveringLiveSignal = live.isInRecentLiveRecovery()
         let needsContactCoach = pulse.needsContactCoach
             && !live.hasRecentHeartRateSample
@@ -11580,18 +11577,6 @@ private struct AtriaConnectionDiagnosis: Equatable {
                                             systemImage: "heart.slash",
                                             tint: .orange,
                                             guidanceDomain: .wearSignal)
-        case .connected where live.needsRRQualityCoach && !hasLivePulseSignal:
-            return AtriaConnectionDiagnosis(title: "Beat-to-beat waiting",
-                                            action: "Atria needs pulse before it can build HRV and Recovery.",
-                                            systemImage: "waveform.path.ecg",
-                                            tint: .orange,
-                                            guidanceDomain: .metricAcquisition)
-        case .connected where live.needsRRQualityCoach && hasLivePulseSignal:
-            return AtriaConnectionDiagnosis(title: "HRV settling",
-                                            action: "Heart rate is live. HRV needs steady beat-to-beat windows, usually during quiet rest or sleep.",
-                                            systemImage: "waveform.path.ecg",
-                                            tint: .green,
-                                            guidanceDomain: .metricAcquisition)
         case _ where live.batteryLevel >= 0 && live.batteryLevel <= Self.lowBatteryThreshold && live.batteryRecentlyDropping && !live.batteryIsCharging:
             return AtriaConnectionDiagnosis(title: "Strap battery low",
                                             action: "Charge your strap before a workout or overnight wear.",

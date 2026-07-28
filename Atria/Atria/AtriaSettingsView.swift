@@ -73,6 +73,30 @@ final class AtriaProfileDraftPersistenceCoordinator {
     }
 }
 
+/// Honest acknowledgement for the manual history button. The BLE request API
+/// reports whether a transfer actually started; Settings must not replace a
+/// rejected/deferred request with a timed, fabricated "Syncing…" spinner.
+enum AtriaManualHistorySyncFeedback: Equatable {
+    case started
+    case notStarted
+
+    var title: String {
+        switch self {
+        case .started: return "Strap history sync started"
+        case .notStarted: return "No history sync started"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .started:
+            return "Atria accepted the transfer request. The data-gap status will update from durable rows."
+        case .notStarted:
+            return "The strap did not start a compatible recovery transfer. Live tracking continues."
+        }
+    }
+}
+
 /// Native iOS 26 settings hub. Uses a grouped Form and folds in the
 /// community-requested differentiators (no subscription, data ownership/export,
 /// custom HR-zone & strain alerts).
@@ -181,7 +205,7 @@ struct AtriaSettingsView: View {
     let onDismissMaxHRSuggestion: (Int) -> Void
     let onExportHealth: (() -> Void)?
     var buildResearchBundle: () async -> AtriaResearchBundleBuilder.Built? = { nil }
-    let onSyncMissedData: (() -> Void)?
+    let onSyncMissedData: (() -> Bool)?
     let onNutritionHealthToggle: (() -> Void)?
     let backupStatusProvider: () -> SessionBackupStatus
     /// Starts a required backup on the store's serial utility worker. The
@@ -210,7 +234,7 @@ struct AtriaSettingsView: View {
     @State private var coachHasAPIKey: Bool
     @State private var coachAPIKeyDraft = ""
     @State private var exportTapped = false
-    @State private var syncTapped = false
+    @State private var historySyncFeedback: AtriaManualHistorySyncFeedback?
     @State private var backupStatus: SessionBackupStatus
     @State private var backupImportPresented = false
     @State private var backupActionMessage: String?
@@ -281,7 +305,7 @@ struct AtriaSettingsView: View {
          onDismissMaxHRSuggestion: @escaping (Int) -> Void = { _ in },
          onExportHealth: (() -> Void)? = nil,
          buildResearchBundle: @escaping () async -> AtriaResearchBundleBuilder.Built? = { nil },
-         onSyncMissedData: (() -> Void)? = nil,
+         onSyncMissedData: (() -> Bool)? = nil,
          onNutritionHealthToggle: (() -> Void)? = nil,
          backupStatusProvider: @escaping () -> SessionBackupStatus = { .missing },
          onWriteBackup: ((@escaping @MainActor (SessionBackupStatus) -> Void) -> Void)? = nil,
@@ -938,18 +962,28 @@ struct AtriaSettingsView: View {
 
             if let onSyncMissedData {
                 Button {
-                    onSyncMissedData()
-                    syncTapped = true
+                    historySyncFeedback = onSyncMissedData() ? .started : .notStarted
                     Task { @MainActor in
                         try? await Task.sleep(for: .seconds(6))
-                        syncTapped = false
+                        historySyncFeedback = nil
                     }
                 } label: {
-                    Label(syncTapped ? "Syncing from strap…" : "Sync missed data from strap",
-                          systemImage: syncTapped ? "arrow.triangle.2.circlepath" : "arrow.down.circle")
+                    Label("Sync missed data from strap",
+                          systemImage: "arrow.down.circle")
                 }
-                .disabled(syncTapped)
-                .accessibilityHint("Pulls data stored by the strap while disconnected or closed. Briefly pauses live tracking.")
+                .disabled(historySyncFeedback != nil)
+                .accessibilityHint(historySyncFeedback?.detail
+                    ?? "Requests data stored by the strap while disconnected or closed. Atria reports whether a transfer actually starts.")
+
+                if let historySyncFeedback {
+                    settingsInfoRow(
+                        icon: historySyncFeedback == .started
+                            ? "checkmark.circle.fill" : "exclamationmark.circle.fill",
+                        tint: historySyncFeedback == .started ? .green : .orange,
+                        title: historySyncFeedback.title,
+                        detail: historySyncFeedback.detail
+                    )
+                }
             }
             storageFootprintRow
         } header: {
@@ -962,7 +996,7 @@ struct AtriaSettingsView: View {
             // Section footer is where a Form states this — putting the text
             // inside the rows themselves broke the native icon column on the
             // toggle and inherited the button's tint on the sync row.
-            Text("Nutrition is read-only — Atria never asks you to log meals. Syncing missed data pulls what the strap stored while disconnected, and briefly pauses live tracking.")
+            Text("Nutrition is read-only — Atria never asks you to log meals. Missed-data sync asks the strap for stored rows and reports whether a transfer actually starts.")
         }
     }
 

@@ -1097,7 +1097,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "self.publishHeroPulse()\n                if self.prefersPulseSparklineUpdates",
             ".interactive()",
             ".frame(minWidth: AtriaHeaderControlMetrics.statusMinWidth,\n               maxWidth: 172,\n               minHeight: AtriaHeaderControlMetrics.height,\n               maxHeight: AtriaHeaderControlMetrics.height)",
-            "Heart rate is live. HRV needs steady beat-to-beat windows, usually during quiet rest or sleep.",
             "HRV-grade beat-to-beat data is ready as personal-baseline HRV.",
             "private static func hrvSettlingText(quality: String, liveHeartRate: Int) -> String",
             "guard liveHeartRate > 0 else { return quality }",
@@ -1875,7 +1874,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "guard vo2MaxEstimate.trendText != \"Learning\" else { return confidence }",
             "return \"\\(confidence) · \\(vo2MaxEstimate.trendText)\"",
             "trend \\(vo2MaxEstimate.trendText), \\(vo2MaxEstimate.trendDetail)",
-            "VO2max building from resting baseline and measured HR max",
+            "VO2max unavailable. \\(vo2MaxEstimate.compactStatusText). \\(vo2MaxEstimate.narrative)",
             "case .bioAge:",
             "AtriaGlanceMetricCard(title: \"Fitness age\"",
             "value: biologicalAgeSummary.valueText",
@@ -2467,7 +2466,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "func pendingKnownReconnectAge(now: Date = Date()) -> TimeInterval?",
             "func isInRecentLiveRecovery(now: Date = Date()) -> Bool",
             "var needsRRQualityCoach: Bool { rrContinuityState == \"poor_contact\" }",
-            "let hasLivePulseSignal = pulse.hasPulseSignal || live.hasRecentHeartRateSample",
             "let isRecoveringLiveSignal = live.isInRecentLiveRecovery()",
             "&& !isRecoveringLiveSignal",
             "ble.$bluetoothPermissionDenied.removeDuplicates()",
@@ -2488,12 +2486,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "rangeLossBackfillPending: ble.rangeLossBackfillPending",
             "case .connected where needsContactCoach:",
             "return AtriaConnectionDiagnosis(title: \"Fit check needed\"",
-            "case .connected where live.needsRRQualityCoach && !hasLivePulseSignal:",
-            "Beat-to-beat waiting",
-            "Atria needs pulse before it can build HRV and Recovery.",
-            "case .connected where live.needsRRQualityCoach && hasLivePulseSignal:",
-            "HRV settling",
-            "Heart rate is live. HRV needs steady beat-to-beat windows, usually during quiet rest or sleep.",
             "case .connected where officialAppRiskActive && live.officialAppCoexistenceRisk == .suspected:",
             "WHOOP may interrupt",
             "Close or uninstall WHOOP if readings fragment.",
@@ -2521,6 +2513,15 @@ class HandoffStaticChecks(unittest.TestCase):
             "forget it in Bluetooth and reconnect",
         ]:
             assert_contains(self, home, needle)
+        diagnosis_start = home.index("private struct AtriaConnectionDiagnosis: Equatable")
+        diagnosis_end = home.index(
+            "private struct AtriaConnectionDiagnosisBanner: View, Equatable",
+            diagnosis_start,
+        )
+        diagnosis_source = home[diagnosis_start:diagnosis_end]
+        assert_not_contains(self, diagnosis_source, "title: \"HRV settling\"")
+        assert_not_contains(self, diagnosis_source, "title: \"Beat-to-beat waiting\"")
+        assert_not_contains(self, diagnosis_source, "live.needsRRQualityCoach")
         assert_not_contains(self, home, ".onReceive(model.coreLiveStore.$state.map { _ in () })")
         assert_not_contains(self, home, ".onReceive(model.pulseLiveStore.$state.map { _ in () })")
         for needle in [
@@ -2569,13 +2570,13 @@ class HandoffStaticChecks(unittest.TestCase):
         powered_off_index = diagnosis_body.find("case .poweredOff:")
         low_battery_index = diagnosis_body.find("case _ where live.batteryLevel >= 0")
         contact_index = diagnosis_body.find("case .connected where needsContactCoach:")
-        hrv_settling_index = diagnosis_body.find("case .connected where live.needsRRQualityCoach && hasLivePulseSignal:")
         self.assertGreaterEqual(powered_off_index, 0)
         self.assertGreaterEqual(contact_index, 0)
-        self.assertGreaterEqual(hrv_settling_index, 0)
         self.assertGreater(low_battery_index, powered_off_index)
         self.assertGreater(low_battery_index, contact_index)
-        self.assertGreater(low_battery_index, hrv_settling_index)
+        self.assertNotIn("live.needsRRQualityCoach", diagnosis_body)
+        self.assertNotIn("title: \"HRV settling\"", diagnosis_body)
+        self.assertNotIn("title: \"Beat-to-beat waiting\"", diagnosis_body)
 
         ble = (
             source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
