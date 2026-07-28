@@ -367,6 +367,26 @@ final class AtriaMetricConfidencePresentationTests: XCTestCase {
                       "strain must not claim an HRV contribution it never had")
     }
 
+    /// "Timestamp/source of the underlying data" is part of the expanded-detail
+    /// contract. Recovery has a real one -- the end of the night it was computed
+    /// from -- so it must be reported rather than left blank.
+    func testRecoveryProvenanceReportsTheNightItCameFrom() throws {
+        let today = try source("Atria/AtriaTodayScreen.swift")
+
+        XCTAssertTrue(today.contains("observedAt: latestDisplaySleep?.end"),
+                      "recovery must stamp the night its score came from")
+    }
+
+    /// Strain has no exposed last-accepted-sample time. Stamping it with Date()
+    /// would report when the sheet was drawn, not when the data was observed --
+    /// a render time dressed as provenance. Absent is the honest claim, so pin it.
+    func testStrainProvenanceDoesNotInventARenderTimestamp() throws {
+        let today = try source("Atria/AtriaTodayScreen.swift")
+
+        XCTAssertFalse(today.contains("observedAt: Date()"),
+                       "a render time must never be presented as observation time")
+    }
+
     func testBothProvenanceMetricsStillRenderTheCard() throws {
         let overview = try source("Atria/AtriaOverviewSections.swift")
         let occurrences = overview.components(separatedBy: "provenanceCard(provenance)").count - 1

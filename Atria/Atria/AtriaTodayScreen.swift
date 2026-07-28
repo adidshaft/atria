@@ -1567,7 +1567,11 @@ struct AtriaTodayScreen: View {
                 // day coverage is not the provenance for this number.
                 hrCoverageFraction: nil,
                 sourceLabel: "Strap sleep",
-                observedAt: nil
+                // The night this score was computed from ended here. That is the
+                // real timestamp of the underlying data, not a render time -- it
+                // is also what makes a carried-over score legible, since "prev.
+                // sleep" plus a stamp from yesterday morning explains itself.
+                observedAt: latestDisplaySleep?.end
             )
         case .strain:
             let presentation = AtriaCompactMetricPresentation.strain(
@@ -1583,6 +1587,11 @@ struct AtriaTodayScreen: View {
                 usesHRV: nil,
                 hrCoverageFraction: displayHero.dayWearCoverageFraction,
                 sourceLabel: "Strap heart rate",
+                // Strain accumulates continuously through the day, and no
+                // last-accepted-sample time is exposed on the hero. Stamping it
+                // with `Date()` would report when the sheet was drawn, not when
+                // the data was observed -- a render time dressed as provenance.
+                // Absent means not measured, which is the honest claim.
                 observedAt: nil
             )
         default:

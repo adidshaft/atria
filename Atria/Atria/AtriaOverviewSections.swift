@@ -8364,8 +8364,15 @@ struct AtriaMetricDetailSheet: View {
                 }
                 provenanceRow("Source", provenance.sourceLabel)
                 if let observedAt = provenance.observedAt {
+                    // Time alone is ambiguous the moment a score is carried over
+                    // from a previous night -- a bare "07:12" reads as this
+                    // morning. Same-day stays time-only; anything older names
+                    // its day.
+                    let isToday = Calendar.current.isDateInToday(observedAt)
                     provenanceRow("Updated",
-                                  observedAt.formatted(date: .omitted, time: .shortened))
+                                  isToday
+                                  ? observedAt.formatted(date: .omitted, time: .shortened)
+                                  : observedAt.formatted(date: .abbreviated, time: .shortened))
                 }
             }
 
