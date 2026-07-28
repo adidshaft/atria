@@ -11012,10 +11012,12 @@ final class SessionStore: ObservableObject {
     /// Presentation-only recovery for Home's live rings and cards.
     ///
     /// A real, current main-sleep review may provide a useful first-night number
-    /// before the user confirms it. That number is deliberately computed outside
+    /// before the user confirms it, but only while canonical Recovery has no
+    /// numeric result. That number is deliberately computed outside
     /// `recoveryProjection`: it never enters the four-hour canonical cache, daily
-    /// metric freeze/remint, HealthKit, notifications, or baseline learning. A
-    /// confirmed/frozen morning remains authoritative and always wins.
+    /// metric freeze/remint, HealthKit, notifications, or baseline learning. Any
+    /// canonical number, including a limited RHR-only day-one estimate, remains
+    /// authoritative so Home and Recovery detail cannot show different scores.
     func recoveryProjectionForPresentation(
         now: Date = Date(),
         calendar: Calendar = .current,
@@ -11056,8 +11058,8 @@ final class SessionStore: ObservableObject {
     }
 
     /// Pure authority boundary used by the production Home projection. Pending
-    /// review evidence can only replace an unfrozen, pre-confirmation presentation
-    /// value and is confidence-capped to `.unverified` even if mature baselines
+    /// review evidence can only fill an unfrozen, pre-confirmation presentation
+    /// absence and is confidence-capped to `.unverified` even if mature baselines
     /// would otherwise make Recovery v2 return a stronger tier.
     nonisolated static func presentationRecoveryEstimate(
         authoritative: Metrics.RecoveryEstimate,
@@ -11071,15 +11073,12 @@ final class SessionStore: ObservableObject {
         calendar: Calendar = .current,
         maximumPendingAge: TimeInterval = 24 * 60 * 60
     ) -> Metrics.RecoveryEstimate {
-        // A pending detector review is weaker than every settled recovery tier.
-        // The single presentation exception is an explicitly structured,
-        // RHR-only "sleep unavailable" estimate. That score is useful while
-        // no detector evidence exists, but once a current-cycle sleep is ready
-        // for review, displaying it as today's recovery hides the more relevant
-        // sleep-derived provisional result. This never changes the canonical
-        // estimate: the replacement stays in this presentation-only method.
-        guard authoritative.confidence == .learning
-                || Self.isRHROnlyNoSleepPresentationEstimate(authoritative),
+        // A pending detector review is weaker than every numeric canonical
+        // Recovery result. It may provide a transparent day-one preview only
+        // when canonical Recovery is still scoreless; otherwise substituting it
+        // makes Home disagree with the frozen detail/history authority.
+        guard authoritative.percent == nil,
+              authoritative.confidence == .learning,
               !hasConfirmedMainSleep, !hasFrozenRecovery,
               let pending = pendingSleepRecoveryEstimate(
                 pendingSleepReview,
@@ -11093,29 +11092,6 @@ final class SessionStore: ObservableObject {
             return authoritative
         }
         return pending
-    }
-
-    /// Recognizes only the narrow Recovery v2 state produced from a real RHR
-    /// reading when both sleep and HRV were unavailable. Do not infer this from
-    /// prose: contributor weights are the structured calculation record. This
-    /// protects any unverified score that contains actual sleep or HRV evidence
-    /// from being replaced by a detector review.
-    nonisolated static func isRHROnlyNoSleepPresentationEstimate(
-        _ estimate: Metrics.RecoveryEstimate
-    ) -> Bool {
-        guard estimate.percent != nil,
-              estimate.confidence == .unverified,
-              !estimate.usesHRV,
-              let sleep = estimate.contributors.first(where: { $0.kind == .sleep }),
-              sleep.weight == 0,
-              let hrv = estimate.contributors.first(where: { $0.kind == .hrv }),
-              hrv.weight == 0,
-              estimate.contributors.contains(where: {
-                  $0.kind == .restingHeartRate && $0.weight > 0
-              }) else {
-            return false
-        }
-        return true
     }
 
     /// Converts a detector-owned review into a display-only estimate. This gate

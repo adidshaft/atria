@@ -263,7 +263,7 @@ final class AtriaRecoveryProjectionCadenceTests: XCTestCase {
         XCTAssertNotEqual(projected, authoritative)
     }
 
-    func testPendingSleepReviewReplacesOnlyStructuredRHROnlyNoSleepDisplayEstimate() throws {
+    func testPendingSleepReviewNeverReplacesNumericRHROnlyDayOneEstimate() throws {
         let pending = pendingNight(end: start, duration: 4 * 60 * 60)
         let rhrOnlyNoSleep = Metrics.RecoveryEstimate(
             percent: 66,
@@ -300,11 +300,10 @@ final class AtriaRecoveryProjectionCadenceTests: XCTestCase {
             physiologicalCycle: makeCycle(start: start)
         )
 
-        XCTAssertNotEqual(projected, rhrOnlyNoSleep)
+        XCTAssertEqual(projected, rhrOnlyNoSleep)
+        XCTAssertEqual(projected.percent, 66)
         XCTAssertEqual(projected.confidence, .unverified)
-        XCTAssertTrue(projected.detail.hasPrefix("Today · pending sleep review · limited confidence"))
-        XCTAssertEqual(rhrOnlyNoSleep.percent, 66,
-                       "the canonical RHR-only estimate is immutable; this is display selection only")
+        XCTAssertTrue(projected.detail.contains("RHR-only"))
     }
 
     func testPendingReviewCanNeverOverrideConfirmedOrFrozenRecovery() {

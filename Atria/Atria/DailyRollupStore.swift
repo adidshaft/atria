@@ -284,11 +284,15 @@ enum DailyRecoveryResolver {
             || physiologicalCycle.boundaryKind == .noSleepFallback {
             guard anchorSleep == nil,
                   let rollup = rollups.first(where: {
-                      calendar.isDate($0.day, inSameDayAs: physiologicalCycle.start)
+                      limitedFallbackCivilDayBelongsToCycle(
+                          $0.day,
+                          physiologicalCycle: physiologicalCycle,
+                          calendar: calendar
+                      )
                           && $0.recovery != nil
                   }),
                   let metric = metrics.first(where: {
-                      calendar.isDate($0.day, inSameDayAs: physiologicalCycle.start)
+                      calendar.isDate($0.day, inSameDayAs: rollup.day)
                           && $0.recoveryPercent == rollup.recovery
                   }),
                   let summary = rollup.resolvedRecoverySummary(matching: metric,
@@ -330,6 +334,32 @@ enum DailyRecoveryResolver {
         return rollup.resolvedRecoverySummary(matching: metric, calendar: calendar)
     }
 
+    /// Durable metric history is civil-day keyed even when a no-sleep
+    /// physiological cycle begins in the afternoon. The midnight row inside
+    /// that still-active wake-to-wake interval belongs to the same cycle; if it
+    /// is rejected, Home recomputes from a later live RHR while detail/history
+    /// keep the persisted score. Never admit the following midnight or broaden
+    /// initial-wear authority beyond its own civil day.
+    private static func limitedFallbackCivilDayBelongsToCycle(
+        _ day: Date,
+        physiologicalCycle: AtriaPhysiologicalCycle,
+        calendar: Calendar
+    ) -> Bool {
+        if calendar.isDate(day, inSameDayAs: physiologicalCycle.start) {
+            return true
+        }
+        guard physiologicalCycle.boundaryKind == .noSleepFallback,
+              day > physiologicalCycle.start,
+              let nextBoundary = calendar.date(
+                  byAdding: .day,
+                  value: 1,
+                  to: physiologicalCycle.start
+              ) else {
+            return false
+        }
+        return day < nextBoundary
+    }
+
     /// Initial wear and a later no-sleep rollover have no current confirmed wake
     /// boundary, but production still mints one explicitly limited RHR-only
     /// score for the fallback day. Once persisted, that score must be the
@@ -347,16 +377,20 @@ enum DailyRecoveryResolver {
     ) -> Bool {
         guard physiologicalCycle.boundaryKind == .initialFallback
                 || physiologicalCycle.boundaryKind == .noSleepFallback,
-              calendar.isDate(metric.day, inSameDayAs: physiologicalCycle.start),
+              limitedFallbackCivilDayBelongsToCycle(
+                  metric.day,
+                  physiologicalCycle: physiologicalCycle,
+                  calendar: calendar
+              ),
               summary.scoredDay.map({
-                  calendar.isDate($0, inSameDayAs: physiologicalCycle.start)
+                  calendar.isDate($0, inSameDayAs: metric.day)
               }) == true else {
             return false
         }
         return limitedFallbackMetricIsStructurallyAuthoritative(
             metric,
             summary: summary,
-            day: physiologicalCycle.start,
+            day: metric.day,
             calendar: calendar
         )
     }
