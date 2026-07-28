@@ -40,6 +40,97 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
         )
     }
 
+    func testFrozenRecoveryAcceptsLinkedResumedFinalWakeWithoutAcceptingStaleEdit() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let day = at(24)
+        let start = day.addingTimeInterval(-10 * 3_600)
+        let originalEnd = start.addingTimeInterval(4 * 3_600)
+        let finalWake = day
+        let original = SleepHistorySnapshot.Night(
+            id: "main-fragment",
+            day: day,
+            start: start,
+            end: originalEnd,
+            duration: 4 * 3_600,
+            restingHR: 63,
+            hrv: 42,
+            respiratoryRate: 10.5,
+            sleepEfficiency: 0.82,
+            confidence: "confirmed",
+            source: "overnight_sleep",
+            confirmed: true,
+            stageSegments: []
+        )
+        let cycle = AtriaPhysiologicalCycle(
+            start: finalWake,
+            boundaryKind: .mainSleep,
+            anchorSleepID: original.id,
+            expectedInterval: 24 * 3_600
+        )
+        let estimate = Metrics.RecoveryEstimate(
+            percent: 39,
+            confidence: .unverified,
+            usesHRV: true,
+            detail: "frozen linked night",
+            contributors: []
+        )
+        let frozen = try XCTUnwrap(FrozenRecoverySummary(estimate: estimate, scoredDay: day))
+        let metric = SavedDailyMetric(
+            day: day,
+            recoveryPercent: 39,
+            recoveryConfidence: estimate.confidence.rawValue,
+            hrv: 42,
+            restingHR: 63,
+            respiratoryRate: 10.5,
+            sleepDuration: 6 * 3_600,
+            sleepSpan: finalWake.timeIntervalSince(start),
+            sleepStart: start,
+            sleepEnd: finalWake,
+            sleepSource: "overnight_sleep",
+            sleepStageSegments: [],
+            sleepConsistencyPercent: nil,
+            strain: nil,
+            recoverySummary: frozen
+        )
+        let rollup = DailyRollupStoreEntry(
+            day: day,
+            recoverySummary: frozen,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(DailyRecoveryResolver.summary(
+            rollups: [rollup],
+            metrics: [metric],
+            physiologicalCycle: cycle,
+            anchorSleep: original,
+            calendar: calendar
+        )?.score, 39)
+
+        let sameBoundaryEdit = SleepHistorySnapshot.Night(
+            id: original.id,
+            day: day,
+            start: start,
+            end: finalWake,
+            duration: 5 * 3_600,
+            restingHR: 63,
+            hrv: 42,
+            respiratoryRate: 10.5,
+            sleepEfficiency: 0.82,
+            confidence: "confirmed",
+            source: "overnight_sleep",
+            confirmed: true,
+            stageSegments: []
+        )
+        XCTAssertNil(DailyRecoveryResolver.summary(
+            rollups: [rollup],
+            metrics: [metric],
+            physiologicalCycle: cycle,
+            anchorSleep: sameBoundaryEdit,
+            calendar: calendar
+        ), "a true same-boundary edit must still invalidate the frozen row")
+    }
+
     private func metric(sleepEnd: Date? = nil,
                         sleepDuration: TimeInterval? = 7 * 3600,
                         sleepSpan: TimeInterval? = 7.5 * 3600,
