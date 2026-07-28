@@ -2078,7 +2078,8 @@ struct AtriaTodayScreen: View {
                                         // Same source the sleep ring uses (computed from the latest
                                         // sleep, falling back to the rollup) so the tile and ring can't
                                         // show two different sleep-performance percentages.
-                                        value: sleepPerformancePercent.map { "\($0)%" } ?? "Learning",
+                                        value: sleepPerformancePercent.map { "\($0)%" }
+                                            ?? AtriaCompactMetricPresentation.noValue,
                                         detail: legendDetail("of need"),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
