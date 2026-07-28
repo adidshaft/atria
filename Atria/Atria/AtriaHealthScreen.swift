@@ -390,7 +390,12 @@ struct AtriaHealthScreen: View {
     // The detected-activities fixture lives in the Trends scope; opening
     // there directly keeps the sim screenshot loop honest (simctl cannot tap
     // the segmented picker). DEBUG-only launch-argument routing.
-    @State private var scope: Scope = Self.debugOpensTrendsScope(arguments: ProcessInfo.processInfo.arguments) ? .trends : .live
+    @State private var scope: Scope = {
+        let arguments = ProcessInfo.processInfo.arguments
+        if Self.debugOpensTrendsScope(arguments: arguments) { return .trends }
+        if Self.debugOpensSleepScope(arguments: arguments) { return .sleep }
+        return .live
+    }()
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init(isActive: Bool,
@@ -919,8 +924,20 @@ struct AtriaHealthScreen: View {
         guard valueIndex < arguments.endIndex else { return false }
         return arguments[valueIndex] == "detected-activities"
     }
+
+    /// Opens the Sleep scope, mirroring the Trends hook above and existing for
+    /// the same stated reason: simctl cannot scroll or tap, so a scope only
+    /// reachable through the segmented control could not be screenshot-verified
+    /// at all. Trends and Live already had a route; Sleep was the one blind spot.
+    private static func debugOpensSleepScope(arguments: [String]) -> Bool {
+        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
+        let valueIndex = arguments.index(after: fixtureIndex)
+        guard valueIndex < arguments.endIndex else { return false }
+        return arguments[valueIndex] == "sleep-scope"
+    }
     #else
     private static func debugOpensTrendsScope(arguments: [String]) -> Bool { false }
+    private static func debugOpensSleepScope(arguments: [String]) -> Bool { false }
     #endif
 
     private func monitorGroupKicker(_ title: String) -> some View {
