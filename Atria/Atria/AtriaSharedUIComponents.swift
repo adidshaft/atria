@@ -387,7 +387,17 @@ enum AtriaMetricState: Equatable {
     var tint: Color {
         switch self {
         case .learning:
-            return .orange
+            // NEUTRAL, not amber. Amber is this app's caution tier, and "has not
+            // been scored yet" is not a caution -- it is the absence of a grade.
+            // Wearing amber made a fresh night show two orange badges on the
+            // journal card, reading as two warnings about data that simply did
+            // not exist. Same rule the metric values follow: colour is earned by
+            // a real reading, and an ungraded state renders neutral.
+            //
+            // `.conflict` and `.estimate` keep amber deliberately: a conflict IS
+            // a caution, and an estimate is a real value carrying real
+            // uncertainty. Neither is the same claim as "no data yet".
+            return .secondary
         case .personalBaseline:
             return .blue
         case .validated, .live:
