@@ -50,6 +50,22 @@ final class AtriaGraphInspectorTests: XCTestCase {
         XCTAssertTrue(contents.contains("adjustVisibleDuration(by: 0.5)"))
         XCTAssertTrue(contents.contains("adjustVisibleDuration(by: 2)"))
         XCTAssertTrue(contents.contains(".chartXSelection(value: $selectedDate)"))
+        XCTAssertGreaterThanOrEqual(contents.components(separatedBy: ".chartXAxis {").count - 1, 2)
+        XCTAssertTrue(contents.contains("AxisValueLabel"))
+    }
+
+    func testExpandedAndHealthMonitorGraphsExposeReadableXAxisAndUseLandscapeCanvas() throws {
+        let (_, expanded) = try source("AtriaExpandedChart.swift")
+        let (_, vitals) = try source("AtriaVitalsCollectionSections.swift")
+
+        XCTAssertTrue(expanded.contains("let landscapeHeight = min(proxy.size.width, proxy.size.height) - 24"))
+        XCTAssertTrue(expanded.contains(".frame(maxWidth: .infinity, maxHeight: .infinity)"))
+        XCTAssertTrue(expanded.contains(".chartXAxis {"))
+        XCTAssertTrue(expanded.contains("AxisValueLabel"))
+
+        XCTAssertTrue(vitals.contains("AxisMarks(values: compactAxisDates)"))
+        XCTAssertTrue(vitals.contains("Text(date, format: .dateTime.weekday(.narrow))"))
+        XCTAssertTrue(vitals.contains("selectedTime: .constant(nil),\n                                        showsXAxis: true)"))
     }
 
     func testMeaningfulGraphSurfacesUseSharedInspector() throws {

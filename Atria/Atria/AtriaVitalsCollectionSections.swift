@@ -1341,7 +1341,7 @@ private struct AtriaHealthMonitorRowView: View, Equatable {
                     .minimumScaleFactor(0.82)
 
                 AtriaHealthMonitorSparkline(points: row.points, tint: row.kind.tint)
-                    .frame(height: 18)
+                    .frame(height: 34)
 
                 if let hintText = row.hintText {
                     AtriaVitalsHintChip(text: hintText, tint: row.rangeState.tint)
@@ -1385,7 +1385,18 @@ private struct AtriaHealthMonitorSparkline: View, Equatable {
                     .interpolationMethod(.catmullRom)
                     .foregroundStyle(tint)
             }
-            .chartXAxis(.hidden)
+            .chartXAxis {
+                AxisMarks(values: compactAxisDates) { value in
+                    AxisTick().foregroundStyle(.secondary.opacity(0.45))
+                    if let date = value.as(Date.self) {
+                        AxisValueLabel {
+                            Text(date, format: .dateTime.weekday(.narrow))
+                                .font(.system(size: 8, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
             .chartYAxis(.hidden)
             .chartLegend(.hidden)
             .accessibilityHidden(true)
@@ -1393,8 +1404,17 @@ private struct AtriaHealthMonitorSparkline: View, Equatable {
             RoundedRectangle(cornerRadius: 2, style: .continuous)
                 .fill(.secondary.opacity(0.16))
                 .frame(height: 3)
-                .accessibilityHidden(true)
+            .accessibilityHidden(true)
         }
+    }
+
+    private var compactAxisDates: [Date] {
+        guard let first = points.first?.day,
+              let last = points.last?.day,
+              first != last else {
+            return points.first.map { [$0.day] } ?? []
+        }
+        return [first, last]
     }
 }
 
@@ -4067,7 +4087,7 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
                                         yDomain: series.yDomain,
                                         buckets: series.buckets,
                                         selectedTime: .constant(nil),
-                                        showsXAxis: false)
+                                        showsXAxis: true)
                     // This is a preview inside one large button, not an
                     // inspector. Disable the chart's selection gesture so a
                     // plot-area tap always reaches the card action.
@@ -4075,7 +4095,7 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
                     .padding(.top, 2)
                     .padding(.trailing, 2)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 170)
+                    .frame(height: 182)
                     .background(Color(.systemBackground).opacity(0.18), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .clipped()
