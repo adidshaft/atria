@@ -323,11 +323,14 @@ enum DailyRecoveryResolver {
         // Requiring the persisted overnight inputs to match lets consumers show
         // a freshly evaluated provisional result until the new freeze lands.
         if let anchorSleep {
-            guard anchorSleep.id == physiologicalCycle.anchorSleepID,
-                  anchorSleep.confirmed,
+            guard anchorSleep.confirmed,
                   !anchorSleep.isNapEvidence,
                   let metric,
-                  metricMatchesConfirmedNight(metric, night: anchorSleep) else {
+                  metricMatchesCurrentPhysiologicalNight(
+                    metric,
+                    night: anchorSleep,
+                    physiologicalCycle: physiologicalCycle
+                  ) else {
                 return nil
             }
         }
@@ -469,6 +472,40 @@ enum DailyRecoveryResolver {
             && metric.hrv == night.hrv
             && metric.restingHR == night.restingHR
             && metric.respiratoryRate == night.respiratoryRate
+    }
+
+    /// A resumed-sleep segment extends the physiological wake boundary while
+    /// the durable main-sleep card can still temporarily expose only the
+    /// original fragment. Accept that one precise shape without weakening the
+    /// ordinary exact-input gate. An edited same-boundary night still fails:
+    /// the exception requires the snapshot's old end to precede the cycle's
+    /// final linked wake and the persisted span to end exactly at that wake.
+    static func metricMatchesCurrentPhysiologicalNight(
+        _ metric: SavedDailyMetric,
+        night: SleepHistorySnapshot.Night,
+        physiologicalCycle: AtriaPhysiologicalCycle
+    ) -> Bool {
+        guard physiologicalCycle.boundaryKind == .mainSleep,
+              night.confirmed,
+              !night.isNapEvidence else { return false }
+        if metricMatchesConfirmedNight(metric, night: night) {
+            return metric.sleepEnd == physiologicalCycle.start
+        }
+        guard let nightStart = night.start,
+              let nightEnd = night.end,
+              nightEnd < physiologicalCycle.start,
+              metric.sleepStart == nightStart,
+              metric.sleepEnd == physiologicalCycle.start,
+              metric.sleepSpan == physiologicalCycle.start.timeIntervalSince(nightStart),
+              let metricDuration = metric.sleepDuration,
+              metricDuration >= night.duration,
+              metricDuration <= physiologicalCycle.start.timeIntervalSince(nightStart),
+              metric.hrv == night.hrv,
+              metric.restingHR == night.restingHR,
+              metric.respiratoryRate == night.respiratoryRate else {
+            return false
+        }
+        return true
     }
 
     static var noSleepEstimate: Metrics.RecoveryEstimate {

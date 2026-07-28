@@ -141,6 +141,77 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
         ), "a prior sleep boundary must not be published for the confirmed night")
     }
 
+    func testDeferredLaunchSettlementUsesCanonicalFinalWakeForLinkedResumedSleep() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let main = confirmedSleep(duration: 4 * 60 * 60, source: "overnight_sleep")
+        let resumedStart = main.end.addingTimeInterval(30 * 60)
+        let resumedDuration: TimeInterval = 2 * 60 * 60
+        let resumed = UserConfirmedSleep(
+            id: "resumed-fixture",
+            createdAt: resumedStart.addingTimeInterval(resumedDuration),
+            start: resumedStart,
+            end: resumedStart.addingTimeInterval(resumedDuration),
+            source: "resumed_sleep",
+            confidence: "manual_user_entered",
+            sessions: 1,
+            samples: 800,
+            avgHR: 58,
+            peakHR: 82,
+            restingHR: 50,
+            hrv: 51,
+            hrvWindowCount: 3,
+            duration: resumedDuration,
+            span: resumedDuration,
+            reason: "fixture",
+            motionSource: "manual",
+            motionValidated: false,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: "UTC"
+        )
+        let canonical = try XCTUnwrap(AtriaPhysiologicalCycle.latestCompletedMainSleep(
+            now: resumed.end.addingTimeInterval(60),
+            confirmedSleeps: [main, resumed]
+        ))
+        let day = calendar.startOfDay(for: canonical.end)
+        let metric = SavedDailyMetric(
+            day: day,
+            recoveryPercent: 39,
+            recoveryConfidence: "unverified",
+            hrv: canonical.hrv,
+            restingHR: canonical.restingHR,
+            respiratoryRate: 15.2,
+            sleepDuration: canonical.duration,
+            sleepSpan: canonical.span,
+            sleepStart: canonical.start,
+            sleepEnd: canonical.end,
+            sleepSource: canonical.source,
+            sleepStageSegments: canonical.stageSegments ?? [],
+            sleepConsistencyPercent: 72,
+            strain: 6.2
+        )
+        let rollup = DailyRollupStoreEntry(
+            day: day,
+            recovery: 39,
+            lnRMSSD: canonical.hrv.map { log(Double($0)) },
+            rhr: canonical.restingHR,
+            sleepSeconds: canonical.duration,
+            sleepPerformance: 68,
+            bedtimeMinutes: 1_320,
+            strain: 6.2,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(canonical.id, main.id)
+        XCTAssertEqual(canonical.end, resumed.end)
+        XCTAssertTrue(SessionStore.deferredLaunchCardSettlementMatches(
+            sleep: canonical,
+            metric: metric,
+            rollup: rollup,
+            calendar: calendar
+        ))
+    }
+
     func testDeferredLoadPublishesWidgetOnlyAfterVerifiedCardSettlement() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")

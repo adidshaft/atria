@@ -29684,9 +29684,10 @@ final class SessionStore: ObservableObject {
         requestRequiredHistorySnapshotRefresh(deferred: true) { [weak self] succeeded in
             guard let self, succeeded else { return }
             let calendar = Calendar.current
-            guard let sleep = self.cachedConfirmedSleeps
-                .filter(Self.confirmedSleepIsPhysiologicalMainSleep)
-                .max(by: { $0.end < $1.end }) else {
+            guard let sleep = AtriaPhysiologicalCycle.latestCompletedMainSleep(
+                now: Date(),
+                confirmedSleeps: self.cachedConfirmedSleeps
+            ) else {
                 // There is no confirmed main sleep to settle. Still publish the
                 // fully-loaded non-sleep dashboard once, without fabricating a
                 // Sleep or Recovery value.
