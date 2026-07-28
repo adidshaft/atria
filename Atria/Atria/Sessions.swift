@@ -159,7 +159,7 @@ struct AtriaPhysiologicalCycle: Equatable {
     /// final resumed wake starts the new cycle, while the original main-sleep
     /// ID remains the stable anchor. Canonicalizing here prevents a 4h main +
     /// 3h resumed block from producing two recovery/day boundaries.
-    private static func canonicalMainSleeps(
+    static func canonicalMainSleeps(
         from confirmedSleeps: [UserConfirmedSleep]
     ) -> [UserConfirmedSleep] {
         let mains = confirmedSleeps
@@ -14129,7 +14129,7 @@ final class SessionStore: ObservableObject {
                 skipped += 1
             }
         }
-        let confirmedSleepSeeds = Self.seedRestingBaselineFromConfirmedSleepsIfNeeded(
+        let confirmedSleepSeeds = Self.seedBaselineFromConfirmedSleeps(
             &rebuilt,
             confirmedSleeps: cachedConfirmedSleeps
         )
@@ -30427,13 +30427,30 @@ final class SessionStore: ObservableObject {
                                                         confirmedSleeps: [UserConfirmedSleep],
                                                         sessionFileURL: URL,
                                                         prunedShortLongWearFragments: Int = 0) -> DeferredLoadPreparation {
-        let shouldRebuildBaseline = shouldRebuildBaselineAfterLoading(decoded, baseline: baseline)
-        let preparedBaseline = shouldRebuildBaseline
-            ? rebuildBaseline(from: decoded,
-                              previousBaseline: baseline,
-                              profile: profile,
-                              confirmedSleeps: confirmedSleeps)
-            : baseline
+        let shouldRebuildBaseline = shouldRebuildBaselineAfterLoading(
+            decoded,
+            baseline: baseline
+        )
+        let needsConfirmedSleepMerge = baselineNeedsConfirmedSleepMerge(
+            baseline,
+            confirmedSleeps: confirmedSleeps
+        )
+        let preparedBaseline: PersonalBaseline
+        if shouldRebuildBaseline {
+            preparedBaseline = rebuildBaseline(from: decoded,
+                                                previousBaseline: baseline,
+                                                profile: profile,
+                                                confirmedSleeps: confirmedSleeps)
+        } else if needsConfirmedSleepMerge {
+            var merged = baseline
+            _ = seedBaselineFromConfirmedSleeps(
+                &merged,
+                confirmedSleeps: confirmedSleeps
+            )
+            preparedBaseline = merged
+        } else {
+            preparedBaseline = baseline
+        }
         let latestReferenceSource = latestReferenceValidatedHRVSource(in: decoded)
         let latestLocalSource = latestLocalRMSSDSource(in: decoded)
         return DeferredLoadPreparation(
@@ -30443,7 +30460,7 @@ final class SessionStore: ObservableObject {
             latestLocalRMSSDSource: latestLocalSource,
             canonicalSessions: makeCanonicalSessions(from: decoded),
             baseline: preparedBaseline,
-            didRebuildBaseline: shouldRebuildBaseline,
+            didRebuildBaseline: shouldRebuildBaseline || needsConfirmedSleepMerge,
             prunedShortLongWearFragments: prunedShortLongWearFragments
         )
     }
@@ -30490,38 +30507,64 @@ final class SessionStore: ObservableObject {
                           at: sleepHRV?.sleepEnd ?? session.end,
                           overnight: sleepHRV != nil)
         }
-        _ = seedRestingBaselineFromConfirmedSleepsIfNeeded(
+        _ = seedBaselineFromConfirmedSleeps(
             &rebuilt,
             confirmedSleeps: confirmedSleeps
         )
         return rebuilt
     }
 
-    /// Raw session retention must not permanently erase the resting baseline
-    /// after a sleep has already been confirmed. A confirmed main-sleep record
-    /// stores the exact RHR derived when its sensor window was canonicalized,
-    /// so it is a durable reconstruction source for resting HR only. This
-    /// fallback runs only when raw-session rebuilding yielded zero samples;
-    /// naps are excluded and no persisted sleep scalar is promoted into HRV.
-    @discardableResult
-    nonisolated static func seedRestingBaselineFromConfirmedSleepsIfNeeded(
-        _ baseline: inout PersonalBaseline,
-        confirmedSleeps: [UserConfirmedSleep]
-    ) -> Int {
-        guard baseline.restingSampleCount == 0 else { return 0 }
-        let seeds = confirmedSleeps
-            .filter {
-                confirmedSleepIsPhysiologicalMainSleep($0)
-                    && (35...240).contains($0.restingHR)
+    nonisolated static func baselineNeedsConfirmedSleepMerge(
+        _ baseline: PersonalBaseline,
+        confirmedSleeps: [UserConfirmedSleep],
+        calendar: Calendar = .current
+    ) -> Bool {
+        AtriaPhysiologicalCycle.canonicalMainSleeps(from: confirmedSleeps)
+            .contains { sleep in
+                guard (35...240).contains(sleep.restingHR) else { return false }
+                let qualifiedHRV = sleep.hrv.flatMap {
+                    $0 > 0 && (sleep.hrvWindowCount ?? 0) >= 3 ? Double($0) : nil
+                }
+                return !baseline.samples.contains {
+                    calendar.isDate($0.date, inSameDayAs: sleep.end)
+                        && $0.isOvernightSample
+                        && Int($0.restingHR.rounded()) == sleep.restingHR
+                        && (qualifiedHRV == nil || $0.rmssd == qualifiedHRV)
+                }
             }
+    }
+
+    /// Confirmed main-sleep records retain the exact qualified overnight
+    /// physiology after raw-session retirement. Merge every missing day—not
+    /// only the first—so a reinstall/relaunch cannot strand mature wear at
+    /// "Learning". Resumed sleep is canonicalized into its owning night; naps
+    /// never seed RHR or HRV.
+    @discardableResult
+    nonisolated static func seedBaselineFromConfirmedSleeps(
+        _ baseline: inout PersonalBaseline,
+        confirmedSleeps: [UserConfirmedSleep],
+        calendar: Calendar = .current
+    ) -> Int {
+        let seeds = AtriaPhysiologicalCycle.canonicalMainSleeps(
+            from: confirmedSleeps
+        )
+            .filter { (35...240).contains($0.restingHR) }
             .sorted { $0.end < $1.end }
+        var merged = 0
         for sleep in seeds {
-            baseline.learn(fromResting: sleep.restingHR,
-                           hrv: 0,
-                           at: sleep.end,
-                           overnight: true)
+            let qualifiedHRV = sleep.hrv.flatMap {
+                $0 > 0 && (sleep.hrvWindowCount ?? 0) >= 3 ? $0 : nil
+            }
+            if baseline.mergeConfirmedSleep(
+                resting: sleep.restingHR,
+                hrv: qualifiedHRV,
+                at: sleep.end,
+                calendar: calendar
+            ) {
+                merged += 1
+            }
         }
-        return seeds.count
+        return merged
     }
 
 }
