@@ -2,10 +2,10 @@ import XCTest
 @testable import Atria
 
 final class AtriaWhoop4MotionTickStepModelTests: XCTestCase {
-    func testGravityEstimatorPublishesPhysicallyCalibratedV13Only() {
+    func testGravityEstimatorPublishesPhysicallyCalibratedV14Only() {
         XCTAssertEqual(
             AtriaWhoop4GravityCadenceStepModel.algorithmVersion,
-            "whoop4-impact-gait-ensemble-v13"
+            "whoop4-impact-gait-ensemble-v14"
         )
     }
 
@@ -633,6 +633,70 @@ final class AtriaWhoop4MotionTickStepModelTests: XCTestCase {
         XCTAssertEqual(estimate.durationSeconds, 100, accuracy: 0.001)
     }
 
+    func testPhysicalShortWalkBurstsPublishConservativeStrapOnlyLowerBounds()
+        throws {
+        let walk109 = try physicalV24Points(
+            relativePath:
+                "evidence/2026-07-27-gate4-v10-fresh-slow-walk-109/historical-active-chunk.jsonl",
+            wallStart: 1_785_111_677,
+            wallEnd: 1_785_111_688.6
+        )
+        let walk115 = try physicalV24Points(
+            relativePath:
+                "evidence/2026-07-27-gate4-v11-fresh-slow-walk-115/historical-active-chunk.jsonl",
+            wallStart: 1_785_112_555,
+            wallEnd: 1_785_112_566.1
+        )
+
+        let first = try XCTUnwrap(
+            AtriaWhoop4GravityCadenceStepModel
+                .estimateShortQualifiedBurst(points: walk109)
+        )
+        let second = try XCTUnwrap(
+            AtriaWhoop4GravityCadenceStepModel
+                .estimateShortQualifiedBurst(points: walk115)
+        )
+
+        XCTAssertEqual(first.steps, 16)
+        XCTAssertEqual(second.steps, 17)
+        XCTAssertLessThan(first.steps, 109)
+        XCTAssertLessThan(second.steps, 115)
+        XCTAssertEqual(first.unresolvedMotionSeconds, 0)
+        XCTAssertEqual(second.unresolvedMotionSeconds, 0)
+    }
+
+    func testPhysicalShortBurstLaneRejectsPlantedFeetArmMotion() throws {
+        let armOnly = try physicalV24Points(
+            relativePath:
+                "evidence/2026-07-27-gate4-v12-fresh-arm-control/historical-archive-segments/raw-v2/raw-20260727-46633af5-c5d8-47df-baf9-d7b6f02c4672.jsonl",
+            wallStart: 1_785_114_492,
+            wallEnd: 1_785_114_507
+        )
+
+        XCTAssertNil(
+            AtriaWhoop4GravityCadenceStepModel
+                .estimateShortQualifiedBurst(points: armOnly)
+        )
+    }
+
+    func testDailyProjectionPublishesQualifiedShortBurstAsPartialLowerBound()
+        throws {
+        let shortWalk = try physicalV24Points(
+            relativePath:
+                "evidence/2026-07-27-gate4-v10-fresh-slow-walk-109/historical-active-chunk.jsonl",
+            wallStart: 1_785_111_677,
+            wallEnd: 1_785_111_688.6
+        )
+        let estimate = try XCTUnwrap(
+            AtriaWhoop4GravityCadenceStepModel.estimateCoveredActivity(
+                points: shortWalk
+            )
+        )
+
+        XCTAssertEqual(estimate.steps, 16)
+        XCTAssertEqual(estimate.unresolvedMotionSeconds, 0)
+    }
+
     private func cadencePoints(
         count: Int,
         duration: TimeInterval,
@@ -692,6 +756,87 @@ final class AtriaWhoop4MotionTickStepModelTests: XCTestCase {
             unknownMotionScalar32: point.unknownMotionScalar32,
             identity: "\(suffix)-\(point.identity)"
         )
+    }
+
+    private func physicalV24Points(
+        relativePath: String,
+        wallStart: TimeInterval,
+        wallEnd: TimeInterval
+    ) throws -> [AtriaWhoop4GravityCadenceStepModel.Point] {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let handle = try FileHandle(
+            forReadingFrom:
+                repositoryRoot.appendingPathComponent(relativePath)
+        )
+        defer { try? handle.close() }
+        var byFlash: [UInt32:
+            AtriaWhoop4GravityCadenceStepModel.Point] = [:]
+        func consume(_ lineData: Data) {
+            autoreleasepool {
+                guard let object = (try? JSONSerialization.jsonObject(
+                    with: lineData
+                )) as? [String: Any],
+                (object["sequence"] as? NSNumber)?.intValue == 24,
+                object["clockCorrectionStatus"] as? String
+                    == "clock_ref_present",
+                let wallSecond =
+                    (object["clockCorrectedUnix7"] as? NSNumber)?.doubleValue,
+                let deviceSecond =
+                    (object["unix7"] as? NSNumber)?.doubleValue,
+                let subsecond =
+                    (object["subsec11"] as? NSNumber)?.doubleValue,
+                let flash =
+                    (object["flash13"] as? NSNumber)?.uint32Value,
+                let tick =
+                    (object["motionTickCounter88"] as? NSNumber)?.intValue,
+                let gravityX =
+                    (object["gravityX36"] as? NSNumber)?.doubleValue,
+                let gravityY =
+                    (object["gravityY40"] as? NSNumber)?.doubleValue,
+                let gravityZ =
+                    (object["gravityZ44"] as? NSNumber)?.doubleValue,
+                let scalar =
+                    (object["unknownMotionScalar32"] as? NSNumber)?.doubleValue
+                else {
+                    return
+                }
+                let fraction = subsecond / 32_768
+                let wallTimestamp = wallSecond + fraction
+                guard wallTimestamp >= wallStart,
+                      wallTimestamp <= wallEnd else {
+                    return
+                }
+                byFlash[flash] = .init(
+                    timestamp: deviceSecond + fraction,
+                    flash: flash,
+                    tick: tick,
+                    gravityX: gravityX,
+                    gravityY: gravityY,
+                    gravityZ: gravityZ,
+                    unknownMotionScalar32: scalar,
+                    identity: "\(relativePath)#\(flash)"
+                )
+            }
+        }
+        var buffer = Data()
+        let newline = Data([0x0A])
+        while let chunk = try handle.read(upToCount: 64 * 1_024),
+              !chunk.isEmpty {
+            buffer.append(chunk)
+            while let newlineRange = buffer.range(of: newline) {
+                consume(buffer.subdata(in: 0..<newlineRange.lowerBound))
+                buffer.removeSubrange(0...newlineRange.lowerBound)
+            }
+        }
+        if !buffer.isEmpty {
+            consume(buffer)
+        }
+        return byFlash.values.sorted {
+            $0.timestamp < $1.timestamp
+        }
     }
 
     private func point(

@@ -2435,6 +2435,38 @@ POSITIVE STILL REQUIRED**
   all-day value requires either a physically labelled short-burst classifier
   or counted-walk validation of the independently bounded R10 coordinate.
 
+#### 2026-07-29 — physically qualified short-burst lower bound (v14)
+
+- **Physical inputs:** two independent charger-free counted walks were reused
+  only as labelled classifier evidence: the preserved 109-step and 115-step
+  walks in `evidence/2026-07-27-gate4-v10-fresh-slow-walk-109/` and
+  `evidence/2026-07-27-gate4-v11-fresh-slow-walk-115/`. The planted-feet
+  rhythmic-arm control in
+  `evidence/2026-07-27-gate4-v12-fresh-arm-control/` is the negative control.
+- **Observed short windows:** the accepted physical windows contain 21 and 23
+  admitted v24 motion ticks over approximately 10.6 seconds. The second walk
+  begins with several stationary frames before the firmware emits a valid
+  first resume batch; those frames are part of the bounded physical window and
+  must not be discarded when qualifying short activity.
+- **Classifier:** v14 admits only 10–30 second WHOOP-only bursts with at least
+  ten samples, gait-like counter transition density, sufficiently distributed
+  gravity-difference spectral power, bounded gravity MAD, and a low v24 motion
+  scalar. It uses no phone pedometer, location, distance, heart rate, workout
+  label, or user-entered total.
+- **Quantity:** accepted short bursts publish only
+  `floor(admittedMotionTicks / 1.30)`, producing conservative lower bounds of
+  16 and 17 for the two counted walks. The divisor is intentionally above the
+  physically observed tick-per-step ratios; v14 does not claim that a short
+  bank window contains the complete walk.
+- **Negative control:** the planted-feet arm motion remains rejected. Motion
+  which fails any short or sustained gate remains unresolved, so its daily
+  receipt is partial (`≥N`) rather than exact or extrapolated.
+- **Regression evidence:** the focused model and durable-receipt suites pass
+  39/39 in
+  `Test-AtriaTests-2026.07.29_03-20-18-+0530.xcresult`; static release pins pass
+  184/184. Physical current-cycle receipt publication and visible-card
+  verification are still required before calling the all-day UI path passed.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.
