@@ -184,4 +184,15 @@ final class AtriaBLEConnectedPeripheralRetainerTests: XCTestCase {
             "the retainer is touched from nonisolated CoreBluetooth callbacks"
         )
     }
+
+    func testObsoleteRestorationCleanersReleaseTheirCentralSessions() throws {
+        let source = try managerSource()
+        XCTAssertTrue(source.contains("private var central: CBCentralManager?"))
+        XCTAssertTrue(source.contains("self.central = nil"),
+                      "an obsolete restoration namespace must not retain its XPC central for the process lifetime")
+        XCTAssertTrue(source.contains("scheduleRelease(after: peripherals.isEmpty ? 0.5 : 2)"),
+                      "restored peripherals need a finite cancellation grace period")
+        XCTAssertTrue(source.contains("legacyCentralCleaners.removeAll"),
+                      "completed one-shot cleaners must leave the manager's strong-retention array")
+    }
 }
