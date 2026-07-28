@@ -229,7 +229,7 @@ enum AtriaWhoop4MotionTickStepModel {
 /// from that component counts the physical walks that defeated the fixed scale
 /// without using phone motion, distance, GPS, or heart rate.
 enum AtriaWhoop4GravityCadenceStepModel {
-    static let algorithmVersion = "whoop4-impact-gait-ensemble-v13"
+    static let algorithmVersion = "whoop4-impact-gait-ensemble-v14"
 
     struct Point: Hashable, Sendable {
         let timestamp: TimeInterval
@@ -303,6 +303,22 @@ enum AtriaWhoop4GravityCadenceStepModel {
     private static let minimumRegularPositiveIncrementCount = 55
     private static let minimumRegularPositiveIncrementMean = 1.60
     private static let maximumGravityDeltaMagnitudeMAD = 0.060
+    /// A daily walk is commonly split into short firmware-counter bursts even
+    /// when the person never starts a workout. Two independently counted
+    /// charger-free walks and a planted-feet arm-swing control provide a
+    /// conservative short-burst lane. It is deliberately a lower bound: the
+    /// 1 Hz v24 bank cannot resolve every footfall, so only low-scalar,
+    /// gait-textured bursts are admitted and their counter is divided by a
+    /// ratio above every accepted calibration walk.
+    private static let minimumShortBurstDurationSeconds: TimeInterval = 10
+    private static let maximumShortBurstDurationSeconds: TimeInterval = 30
+    private static let minimumShortBurstSampleCount = 10
+    private static let minimumShortBurstGaitTickRate = 1.40
+    private static let minimumShortBurstRegularIncrementCount = 6
+    private static let minimumShortBurstRegularIncrementMean = 1.40
+    private static let maximumShortBurstGravityDeltaMagnitudeMAD = 0.120
+    private static let maximumShortBurstScalarMean = 0.140
+    private static let conservativeShortBurstTicksPerStep = 1.30
     private static let highImpactScalarMean = 0.13
     private static let minimumHighImpactAliasFrequencyHz = 0.08
     private static let maximumHighImpactAliasFrequencyHz = 0.20
@@ -518,7 +534,10 @@ enum AtriaWhoop4GravityCadenceStepModel {
             return nil
         }
         guard let gaitQualification =
-                qualifiedOrdinaryBandPowerShare(points: ordered) else {
+                qualifiedOrdinaryBandPowerShare(
+                    points: ordered,
+                    policy: .sustained
+                ) else {
             return nil
         }
         let qualifiedOrdinaryBandPowerShare =
@@ -838,10 +857,77 @@ enum AtriaWhoop4GravityCadenceStepModel {
         let gravityDeltaMagnitudeMAD: Double
         let meanScalar: Double
         let gaitTickRate: Double
+        let motionTicks: Int
+        let durationSeconds: TimeInterval
+        let motionVolume: Double
+        let spectralEntropy: Double
+    }
+
+    private struct GaitQualificationPolicy {
+        let minimumDurationSeconds: TimeInterval
+        let maximumDurationSeconds: TimeInterval?
+        let minimumRegularPositiveIncrementCount: Int
+        let minimumRegularPositiveIncrementMean: Double
+        let minimumGaitTickRate: Double
+        let maximumGravityDeltaMagnitudeMAD: Double
+        let minimumSpectralEntropy: Double
+        let maximumScalarMean: Double?
+        let includeFullWindow: Bool
+
+        static let sustained = Self(
+            minimumDurationSeconds:
+                AtriaWhoop4GravityCadenceStepModel.minimumDurationSeconds,
+            maximumDurationSeconds: nil,
+            minimumRegularPositiveIncrementCount:
+                AtriaWhoop4GravityCadenceStepModel
+                    .minimumRegularPositiveIncrementCount,
+            minimumRegularPositiveIncrementMean:
+                AtriaWhoop4GravityCadenceStepModel
+                    .minimumRegularPositiveIncrementMean,
+            minimumGaitTickRate:
+                AtriaWhoop4GravityCadenceStepModel.minimumGaitTickRate,
+            maximumGravityDeltaMagnitudeMAD:
+                AtriaWhoop4GravityCadenceStepModel
+                    .maximumGravityDeltaMagnitudeMAD,
+            minimumSpectralEntropy:
+                AtriaWhoop4GravityCadenceStepModel
+                    .minimumGaitSpectralEntropy,
+            maximumScalarMean: nil,
+            includeFullWindow: false
+        )
+
+        static let short = Self(
+            minimumDurationSeconds:
+                AtriaWhoop4GravityCadenceStepModel
+                    .minimumShortBurstDurationSeconds,
+            maximumDurationSeconds:
+                AtriaWhoop4GravityCadenceStepModel
+                    .maximumShortBurstDurationSeconds,
+            minimumRegularPositiveIncrementCount:
+                AtriaWhoop4GravityCadenceStepModel
+                    .minimumShortBurstRegularIncrementCount,
+            minimumRegularPositiveIncrementMean:
+                AtriaWhoop4GravityCadenceStepModel
+                    .minimumShortBurstRegularIncrementMean,
+            minimumGaitTickRate:
+                AtriaWhoop4GravityCadenceStepModel
+                    .minimumShortBurstGaitTickRate,
+            maximumGravityDeltaMagnitudeMAD:
+                AtriaWhoop4GravityCadenceStepModel
+                    .maximumShortBurstGravityDeltaMagnitudeMAD,
+            minimumSpectralEntropy:
+                AtriaWhoop4GravityCadenceStepModel
+                    .minimumGaitSpectralEntropy,
+            maximumScalarMean:
+                AtriaWhoop4GravityCadenceStepModel
+                    .maximumShortBurstScalarMean,
+            includeFullWindow: true
+        )
     }
 
     private static func qualifiedOrdinaryBandPowerShare(
-        points: [Point]
+        points: [Point],
+        policy: GaitQualificationPolicy
     ) -> GaitQualification? {
         guard points.count >= 4 else { return nil }
         var positiveIndices: [Int] = []
@@ -883,7 +969,7 @@ enum AtriaWhoop4GravityCadenceStepModel {
         guard let firstPositive = positiveIndices.first,
               let lastPositive = positiveIndices.last,
               regularPositiveIncrements.count
-                >= minimumRegularPositiveIncrementCount else {
+                >= policy.minimumRegularPositiveIncrementCount else {
             return nil
         }
         for pair in zip(positiveIndices, positiveIndices.dropFirst()) {
@@ -904,21 +990,26 @@ enum AtriaWhoop4GravityCadenceStepModel {
             Double(regularPositiveIncrements.reduce(0, +))
                 / Double(regularPositiveIncrements.count)
         guard regularPositiveIncrementMean
-                >= minimumRegularPositiveIncrementMean else {
+                >= policy.minimumRegularPositiveIncrementMean else {
             return nil
         }
-        let active = Array(points[max(0, firstPositive - 1)...lastPositive])
+        let active = policy.includeFullWindow
+            ? points
+            : Array(points[max(0, firstPositive - 1)...lastPositive])
         guard let first = active.first,
               let last = active.last else { return nil }
         let duration = last.timestamp - first.timestamp
-        guard duration >= minimumDurationSeconds,
+        guard duration >= policy.minimumDurationSeconds,
+              policy.maximumDurationSeconds.map({
+                  duration < $0
+              }) ?? true,
               duration.isFinite else {
             return nil
         }
         let sampleRate = Double(active.count - 1) / duration
         let tickRate = Double(motionTicks) / duration
         guard (minimumSampleRateHz...maximumSampleRateHz).contains(sampleRate),
-              tickRate >= minimumGaitTickRate else {
+              tickRate >= policy.minimumGaitTickRate else {
             return nil
         }
 
@@ -939,6 +1030,11 @@ enum AtriaWhoop4GravityCadenceStepModel {
             return nil
         }
         let meanScalar = scalars.reduce(0, +) / Double(scalars.count)
+        guard policy.maximumScalarMean.map({
+            meanScalar <= $0
+        }) ?? true else {
+            return nil
+        }
         let meanGravityDelta = differences.reduce(0.0) {
             $0 + sqrt(
                 $1[0] * $1[0] + $1[1] * $1[1] + $1[2] * $1[2]
@@ -952,13 +1048,14 @@ enum AtriaWhoop4GravityCadenceStepModel {
         let gravityDeltaMagnitudes = differences.map {
             sqrt($0[0] * $0[0] + $0[1] * $0[1] + $0[2] * $0[2])
         }
+        let motionVolume = gravityDeltaMagnitudes.reduce(0, +)
         let gravityDeltaMedian = median(gravityDeltaMagnitudes)
         let gravityDeltaMagnitudeMAD = median(
             gravityDeltaMagnitudes.map { abs($0 - gravityDeltaMedian) }
         )
         guard gravityDeltaMagnitudeMAD.isFinite,
               gravityDeltaMagnitudeMAD
-                <= maximumGravityDeltaMagnitudeMAD else {
+                <= policy.maximumGravityDeltaMagnitudeMAD else {
             return nil
         }
         let binCount = count / 2
@@ -1036,12 +1133,60 @@ enum AtriaWhoop4GravityCadenceStepModel {
         // gait gates.
         _ = bandPowerShare
         _ = lagTwoAutocorrelation
-        guard entropy >= minimumGaitSpectralEntropy else { return nil }
+        guard entropy >= policy.minimumSpectralEntropy else { return nil }
         return .init(
             ordinaryBandPowerShare: bandPowerShare,
             gravityDeltaMagnitudeMAD: gravityDeltaMagnitudeMAD,
             meanScalar: meanScalar,
-            gaitTickRate: tickRate
+            gaitTickRate: tickRate,
+            motionTicks: motionTicks,
+            durationSeconds: duration,
+            motionVolume: motionVolume,
+            spectralEntropy: entropy
+        )
+    }
+
+    /// Conservative lower-bound estimator for ordinary all-day walking bursts
+    /// that are too short for cadence-frequency selection. The count remains
+    /// WHOOP-only: no phone motion, distance, GPS, HR, or extrapolation enters
+    /// this path. Rejected motion stays unresolved and therefore visible as
+    /// partial coverage.
+    static func estimateShortQualifiedBurst(points: [Point]) -> Estimate? {
+        let ordered = canonical(points)
+        guard ordered.count >= minimumShortBurstSampleCount,
+              let first = ordered.first,
+              let last = ordered.last else {
+            return nil
+        }
+        let duration = last.timestamp - first.timestamp
+        guard duration >= minimumShortBurstDurationSeconds,
+              duration < maximumShortBurstDurationSeconds,
+              duration.isFinite,
+              let qualification = qualifiedOrdinaryBandPowerShare(
+                  points: ordered,
+                  policy: .short
+              ) else {
+            return nil
+        }
+        let steps = Int(
+            floor(
+                Double(qualification.motionTicks)
+                    / conservativeShortBurstTicksPerStep
+            )
+        )
+        guard steps > 0 else { return nil }
+        return .init(
+            steps: steps,
+            durationSeconds: qualification.durationSeconds,
+            sampleRateHz: Double(ordered.count - 1) / duration,
+            aliasFrequencyHz: 0,
+            cadenceHz: Double(steps) / qualification.durationSeconds,
+            peakDominance: qualification.spectralEntropy,
+            motionTicks: qualification.motionTicks,
+            motionVolume: qualification.motionVolume,
+            cadenceOnlySteps: 0,
+            motionVolumeSteps: 0,
+            unresolvedMotionSeconds: 0
         )
     }
 
@@ -1113,9 +1258,9 @@ enum AtriaWhoop4GravityCadenceStepModel {
 
         var estimates: [Estimate] = []
         for range in ranges {
-            guard let estimate = estimateWindow(
-                points: Array(ordered[range])
-            ) else {
+            let rangePoints = Array(ordered[range])
+            guard let estimate = estimateWindow(points: rangePoints)
+                ?? estimateShortQualifiedBurst(points: rangePoints) else {
                 unresolvedMotionSeconds += max(
                     0,
                     ordered[range.upperBound].timestamp
