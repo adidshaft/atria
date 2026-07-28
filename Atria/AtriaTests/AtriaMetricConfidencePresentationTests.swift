@@ -320,6 +320,63 @@ final class AtriaMetricConfidencePresentationTests: XCTestCase {
         }
     }
 
+    // MARK: - Wiring
+
+    /// The model and its rendering are both covered, but nothing guarded the
+    /// wiring BETWEEN them. If a future edit drops the `provenance:` argument at
+    /// the call site, or removes the card from a metric case, every other test
+    /// here still passes and the expanded detail silently loses the section it
+    /// exists for. These are source-text pins in the same idiom the project
+    /// already uses (see AtriaStrainDetailPresentationTests).
+    private func source(_ relativePath: String) throws -> String {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent(relativePath)
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    func testTodayPassesProvenanceIntoTheDetailSheet() throws {
+        let today = try source("Atria/AtriaTodayScreen.swift")
+
+        XCTAssertTrue(today.contains("provenance: provenance(for: detail)"),
+                      "the detail sheet must still be handed provenance")
+        XCTAssertTrue(today.contains("private func provenance(for detail: AtriaMetricDetailKind) -> AtriaMetricProvenance?"),
+                      "the builder must still exist")
+    }
+
+    /// Strain is the metric whose confidence is derived from measured day wear,
+    /// so its coverage row is the one that must not quietly go missing.
+    func testStrainProvenanceCarriesMeasuredCoverage() throws {
+        let today = try source("Atria/AtriaTodayScreen.swift")
+
+        XCTAssertTrue(today.contains("hrCoverageFraction: displayHero.dayWearCoverageFraction"),
+                      "strain provenance must report real measured coverage")
+    }
+
+    /// Recovery is scored from the night, not day-long wear, and strain takes no
+    /// HRV input. Both nils are deliberate: an absent row means "not measured at
+    /// this scope" rather than zero, and pinning them stops either being
+    /// "helpfully" filled in later with a fabricated value.
+    func testDeliberateNilsAreNotQuietlyFilledIn() throws {
+        let today = try source("Atria/AtriaTodayScreen.swift")
+
+        XCTAssertTrue(today.contains("hrCoverageFraction: nil"),
+                      "recovery must not claim day wear coverage it does not use")
+        XCTAssertTrue(today.contains("usesHRV: nil"),
+                      "strain must not claim an HRV contribution it never had")
+    }
+
+    func testBothProvenanceMetricsStillRenderTheCard() throws {
+        let overview = try source("Atria/AtriaOverviewSections.swift")
+        let occurrences = overview.components(separatedBy: "provenanceCard(provenance)").count - 1
+
+        XCTAssertEqual(occurrences, 2,
+                       "recovery and strain must each still render the provenance card")
+        XCTAssertTrue(overview.contains("provenance: AtriaMetricProvenance? = nil"),
+                      "the sheet must still accept provenance")
+    }
+
     // MARK: - Canonical pending check
 
     /// The regression this collapse was built to prevent: a producer moving off
