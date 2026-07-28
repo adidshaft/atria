@@ -2132,13 +2132,26 @@ POSITIVE STILL REQUIRED**
   remains durable and leaves the live radio untouched until pressure recovers.
   Its attempt counter advances only after
   `requestOfflineHistoricalSyncIfNeeded` returns true.
-- **Acceptance status:** focused regression PASS; locked physical acceptance
-  pending installation and rerun. This is not yet a reliability claim.
+- **PHYSICAL correction:** the signed Release build was installed in place
+  without uninstalling, clearing data, or changing pairing. Low Power Mode
+  deliberately selected governor mode `serious` while the phone was locked.
+  Across the retry interval, history remained
+  `deferred_thermal_pressure`, the attempt count remained exactly 1,100, the
+  prior background lease stayed terminal, and accepted HR plus the active
+  journal continued advancing. The pending recovery was retained rather than
+  consumed.
+- **Acceptance status:** locked thermal admission and live-radio preservation
+  physically PASS; focused reliability regression 429/429 PASS in
+  `Test-AtriaTests-2026.07.28_09-22-37-+0530.xcresult`.
 - **Evidence:**
   `evidence/2026-07-28-connected-slice-physical/locked-cooldown-expiry/`,
   `evidence/2026-07-28-connected-slice-physical/locked-post-cooldown-45s/`,
   and
-  `evidence/2026-07-28-connected-slice-physical/locked-history-first-frame/`.
+  `evidence/2026-07-28-connected-slice-physical/locked-history-first-frame/`,
+  followed by the corrected-build proof in
+  `evidence/2026-07-28-thermal-admission-fix/low-power-locked-baseline/`
+  and
+  `evidence/2026-07-28-thermal-admission-fix/low-power-locked-soak/`.
 
 ## Notebook maintenance rules
 
