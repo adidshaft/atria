@@ -4269,20 +4269,36 @@ struct AtriaHomeView: View {
                     // Occluding scrim (2026-07-08, device-reported): the chrome
                     // band is transparent between the status chip and the icon
                     // buttons, so scrolled content bled through behind them
-                    // ("This week", glance rows showing through the pill). A
-                    // thin top-anchored fade — NOT a second full AtriaBackdropLayer
-                    // (overdraw trap) — occludes content under the band and
-                    // dissolves it into the page at the lower edge.
+                    // ("This week", glance rows showing through the pill).
+                    //
+                    // That scrim was a single gradient sized to the band, opaque
+                    // only to 62% of its height. The band is variable-height --
+                    // topChrome, plus the recovery-status banner, plus an
+                    // optional connectivity pill -- so a PROPORTIONAL stop cannot
+                    // reliably cover it. The banner sat inside the 0.62→1.0 fade,
+                    // which is exactly where content kept showing through
+                    // ("…rain" from the Strain chip beside the status chip,
+                    // "This week" rows behind the banner).
+                    //
+                    // The band is now fully opaque and the dissolve moved below
+                    // it at a FIXED height, so the softness no longer comes at
+                    // the cost of the band's own occlusion, whatever it contains.
+                    Color(.systemBackground)
+                        .ignoresSafeArea(edges: .top)
+                        .allowsHitTesting(false)
+                }
+                .overlay(alignment: .bottom) {
                     LinearGradient(
-                        stops: [
-                            .init(color: Color(.systemBackground), location: 0.0),
-                            .init(color: Color(.systemBackground), location: 0.62),
-                            .init(color: Color(.systemBackground).opacity(0), location: 1.0)
+                        colors: [
+                            Color(.systemBackground),
+                            Color(.systemBackground).opacity(0)
                         ],
                         startPoint: .top,
                         endPoint: .bottom
                     )
-                    .ignoresSafeArea(edges: .top)
+                    .frame(height: 14)
+                    // Sits entirely BELOW the band rather than eating into it.
+                    .offset(y: 14)
                     .allowsHitTesting(false)
                 }
             }
