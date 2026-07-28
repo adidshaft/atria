@@ -270,6 +270,79 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
         ))
     }
 
+    func testCompletedWalkingWorkoutExplainsEveryUnavailableStrapStepState() {
+        let end = Date(timeIntervalSince1970: 2_000_000_000)
+
+        XCTAssertEqual(
+            AtriaWorkoutSharePresentation.completedStepsPresentation(
+                count: 842,
+                isEstimated: true,
+                capturedAt: nil,
+                workoutEndedAt: end,
+                activity: .walking
+            ),
+            AtriaWorkoutSharePresentation.CompletedSteps(
+                valueText: "--",
+                detailText: "No verified strap motion for this workout",
+                isAvailable: false
+            )
+        )
+        XCTAssertEqual(
+            AtriaWorkoutSharePresentation.completedStepsPresentation(
+                count: 842,
+                isEstimated: true,
+                capturedAt: end.addingTimeInterval(
+                    -AtriaLiveWorkoutStepProjection.freshnessInterval - 1
+                ),
+                workoutEndedAt: end,
+                activity: .walking
+            ),
+            AtriaWorkoutSharePresentation.CompletedSteps(
+                valueText: "--",
+                detailText: "Strap motion was not verified at workout end",
+                isAvailable: false
+            )
+        )
+        XCTAssertEqual(
+            AtriaWorkoutSharePresentation.completedStepsPresentation(
+                count: nil,
+                isEstimated: nil,
+                capturedAt: end,
+                workoutEndedAt: end,
+                activity: .walking
+            ),
+            AtriaWorkoutSharePresentation.CompletedSteps(
+                valueText: "--",
+                detailText: "No verified strap step count for this workout",
+                isAvailable: false
+            )
+        )
+        XCTAssertEqual(
+            AtriaWorkoutSharePresentation.completedStepsPresentation(
+                count: 842,
+                isEstimated: true,
+                capturedAt: end,
+                workoutEndedAt: end,
+                activity: .walking
+            ),
+            AtriaWorkoutSharePresentation.CompletedSteps(
+                valueText: "~842",
+                detailText: "WHOOP strap motion",
+                isAvailable: true
+            )
+        )
+        XCTAssertNil(
+            AtriaWorkoutSharePresentation.completedStepsPresentation(
+                count: nil,
+                isEstimated: nil,
+                capturedAt: nil,
+                workoutEndedAt: end,
+                activity: .strength
+            ),
+            "Steps are not a relevant workout stat for non-locomotion activities"
+        )
+    }
+
     func testRoutePreviewBoundsGeometryAndPreservesEndpointsAndBreaks() {
         let start = Date(timeIntervalSinceReferenceDate: 900_000_000)
         let points = (0..<1_000).map { index in

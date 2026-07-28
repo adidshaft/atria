@@ -200,6 +200,12 @@ struct AtriaWorkoutShareSnapshot: Equatable, Hashable, Sendable {
 /// must not turn an unavailable metric into visible progress or make equal-size
 /// zone blocks imply equal time in every zone.
 enum AtriaWorkoutSharePresentation {
+    struct CompletedSteps: Equatable {
+        let valueText: String
+        let detailText: String
+        let isAvailable: Bool
+    }
+
     /// A social card should contain only measured values. Internal learning or
     /// sparse-evidence sentinels are useful inside Atria, but exporting them as
     /// a visible stat makes an unfinished calculation look like part of the
@@ -234,15 +240,61 @@ enum AtriaWorkoutSharePresentation {
                                    capturedAt: Date?,
                                    workoutEndedAt: Date,
                                    activity: AtriaWorkoutActivityType) -> String? {
-        guard let capturedAt,
-              capturedAt <= workoutEndedAt.addingTimeInterval(
-                AtriaLiveWorkoutStepProjection.futureTolerance
-              ),
-              workoutEndedAt.timeIntervalSince(capturedAt)
-                <= AtriaLiveWorkoutStepProjection.freshnessInterval else { return nil }
-        return stepsText(count: count,
-                         isEstimated: isEstimated,
-                         activity: activity)
+        guard let presentation = completedStepsPresentation(
+            count: count,
+            isEstimated: isEstimated,
+            capturedAt: capturedAt,
+            workoutEndedAt: workoutEndedAt,
+            activity: activity
+        ), presentation.isAvailable else { return nil }
+        return presentation.valueText
+    }
+
+    /// Saved walking workouts always explain their strap-step state. Sharing
+    /// remains measured-values-only, but the in-app workout detail must not
+    /// make missing/stale motion evidence disappear as if steps were
+    /// irrelevant.
+    static func completedStepsPresentation(
+        count: Int?,
+        isEstimated: Bool?,
+        capturedAt: Date?,
+        workoutEndedAt: Date,
+        activity: AtriaWorkoutActivityType
+    ) -> CompletedSteps? {
+        guard [.walking, .running, .hiking].contains(activity) else { return nil }
+        guard let capturedAt else {
+            return CompletedSteps(
+                valueText: "--",
+                detailText: "No verified strap motion for this workout",
+                isAvailable: false
+            )
+        }
+        guard capturedAt <= workoutEndedAt.addingTimeInterval(
+            AtriaLiveWorkoutStepProjection.futureTolerance
+        ), workoutEndedAt.timeIntervalSince(capturedAt)
+            <= AtriaLiveWorkoutStepProjection.freshnessInterval else {
+            return CompletedSteps(
+                valueText: "--",
+                detailText: "Strap motion was not verified at workout end",
+                isAvailable: false
+            )
+        }
+        guard let valueText = stepsText(
+            count: count,
+            isEstimated: isEstimated,
+            activity: activity
+        ) else {
+            return CompletedSteps(
+                valueText: "--",
+                detailText: "No verified strap step count for this workout",
+                isAvailable: false
+            )
+        }
+        return CompletedSteps(
+            valueText: valueText,
+            detailText: "WHOOP strap motion",
+            isAvailable: true
+        )
     }
 
     static func strainFraction(_ text: String) -> Double? {

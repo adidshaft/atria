@@ -1837,8 +1837,11 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                                      tint: Metrics.electricStrain)
                         }
                         statTile("Duration", durationText(workout.duration), tint: Metrics.electricStrain)
-                        if let steps = completedWorkoutStepsText {
-                            statTile("Steps", steps, tint: .mint)
+                        if let steps = completedWorkoutStepsPresentation {
+                            statTile("Steps",
+                                     steps.valueText,
+                                     detail: steps.detailText,
+                                     tint: .mint)
                         }
                         if AtriaWorkoutMetricPresentation.hasHeartRateData(workout) {
                             statTile("Avg HR",
@@ -2302,12 +2305,17 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     }
 
     private var completedWorkoutStepsText: String? {
+        guard completedWorkoutStepsPresentation?.isAvailable == true else { return nil }
+        return completedWorkoutStepsPresentation?.valueText
+    }
+
+    private var completedWorkoutStepsPresentation: AtriaWorkoutSharePresentation.CompletedSteps? {
         let resolvedActivity = AtriaWorkoutActivityType.resolved(
             activityType: workout.activityType,
             subtype: workout.activitySubtype,
             label: workout.label
         )
-        return AtriaWorkoutSharePresentation.completedStepsText(
+        return AtriaWorkoutSharePresentation.completedStepsPresentation(
             count: workout.workoutSteps,
             isEstimated: workout.workoutStepsAreEstimated,
             capturedAt: workout.workoutStepsCapturedAt,
@@ -2316,7 +2324,10 @@ private struct AtriaActivityWorkoutDetailSheet: View {
         )
     }
 
-    private func statTile(_ title: String, _ value: String, tint: Color) -> some View {
+    private func statTile(_ title: String,
+                          _ value: String,
+                          detail: String? = nil,
+                          tint: Color) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title.uppercased())
                 .font(.caption2.weight(.bold))
@@ -2324,6 +2335,12 @@ private struct AtriaActivityWorkoutDetailSheet: View {
             Text(value)
                 .font(.title2.weight(.black).monospacedDigit())
                 .foregroundStyle(tint)
+            if let detail {
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)

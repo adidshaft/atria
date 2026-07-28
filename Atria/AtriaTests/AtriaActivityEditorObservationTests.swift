@@ -36,13 +36,15 @@ final class AtriaActivityEditorObservationTests: XCTestCase {
         XCTAssertTrue(detail.contains("private var hasUnsavedChanges: Bool"))
         XCTAssertTrue(detail.contains("sharePresentationGate.requestPresentation()"))
         XCTAssertTrue(detail.contains("sharePresentationGate.completeRoutePreparation()"))
-        XCTAssertTrue(detail.contains("if let steps = completedWorkoutStepsText"),
-                      "Activity detail must apply the completed-step provenance gate before showing steps")
-        XCTAssertTrue(detail.contains("AtriaWorkoutSharePresentation.completedStepsText("))
+        XCTAssertTrue(detail.contains("if let steps = completedWorkoutStepsPresentation"),
+                      "Applicable workouts must always present their verified strap-step state")
+        XCTAssertTrue(detail.contains("detail: steps.detailText"))
+        XCTAssertTrue(detail.contains("AtriaWorkoutSharePresentation.completedStepsPresentation("))
         XCTAssertTrue(detail.contains("capturedAt: workout.workoutStepsCapturedAt"))
         XCTAssertTrue(detail.contains("workoutEndedAt: workout.end"))
         XCTAssertFalse(detail.contains("if let steps = workout.workoutSteps"),
                        "Activity detail must not expose stale or incomplete workout step evidence directly")
+        XCTAssertTrue(detail.contains("guard completedWorkoutStepsPresentation?.isAvailable == true"))
         XCTAssertTrue(detail.contains("steps: steps"),
                       "Activity sharing should forward only gated completed workout step evidence")
         XCTAssertTrue(detail.contains("|| isRouteTransactionInFlight)"))

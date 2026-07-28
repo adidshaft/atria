@@ -2861,6 +2861,72 @@ enum AtriaExperimentalSensorCopy {
     }
 }
 
+struct AtriaExperimentalRespiratoryRatePresentation: Equatable {
+    let sourceID: String?
+    let value: Double?
+    let zone: AtriaMetricZone?
+    let detail: String
+
+    var valueText: String {
+        value.map { String(format: "%.1f", $0) } ?? "--"
+    }
+
+    var state: AtriaMetricState {
+        value == nil ? .learning : .research
+    }
+
+    var tint: Color {
+        guard value != nil else { return .secondary }
+        return zone?.tint ?? .teal
+    }
+
+    static func resolve(
+        snapshot: SleepHistorySnapshot,
+        now: Date = Date(),
+        calendar: Calendar = .current,
+        greenDelta: Double,
+        yellowDelta: Double
+    ) -> Self {
+        guard let mainSleep = AtriaOverviewCurrentSleep.resolve(
+            from: snapshot,
+            now: now,
+            calendar: calendar
+        ) else {
+            return Self(
+                sourceID: nil,
+                value: nil,
+                zone: nil,
+                detail: "Needs a current confirmed main sleep."
+            )
+        }
+        guard let rate = mainSleep.respiratoryRate,
+              rate.isFinite,
+              rate > 0 else {
+            return Self(
+                sourceID: mainSleep.id,
+                value: nil,
+                zone: nil,
+                detail: "Current confirmed main sleep has no qualified respiratory rate."
+            )
+        }
+        let zone = Metrics.respiratoryRateZone(
+            rate,
+            baseline: snapshot.respiratoryBaselineMean,
+            baselineSamples: snapshot.respiratoryBaselineCount,
+            greenDelta: greenDelta,
+            yellowDelta: yellowDelta
+        )
+        return Self(
+            sourceID: mainSleep.id,
+            value: rate,
+            zone: zone,
+            detail: zone == nil
+                ? "Current confirmed main sleep · building your sleep baseline."
+                : "Current confirmed main sleep · compared with your sleep baseline."
+        )
+    }
+}
+
 private struct AtriaCollectionResearchSignalsCard: View, Equatable {
     let summary: IMUAuditSummary
     let sleepHistory: SleepHistorySnapshot
@@ -2880,22 +2946,12 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
             && lhs.bloodOxygenCandidateGoal == rhs.bloodOxygenCandidateGoal
     }
 
-    private var hasEvidence: Bool {
-        summary.probeFrameCount > 0
-            || summary.strapStepCount > 0
-            || latestRespiratoryRate != "--"
-    }
-
-    private var latestRespiratoryRate: String {
-        sleepHistory.nights.first?.respiratoryRateText ?? "--"
-    }
-
-    private var respiratoryRateZone: AtriaMetricZone? {
-        return Metrics.respiratoryRateZone(sleepHistory.latestMainSleep?.respiratoryRate,
-                                           baseline: sleepHistory.respiratoryBaselineMean,
-                                           baselineSamples: sleepHistory.respiratoryBaselineCount,
-                                           greenDelta: respiratoryGreenDelta,
-                                           yellowDelta: respiratoryYellowDelta)
+    private var respiratoryRatePresentation: AtriaExperimentalRespiratoryRatePresentation {
+        AtriaExperimentalRespiratoryRatePresentation.resolve(
+            snapshot: sleepHistory,
+            greenDelta: respiratoryGreenDelta,
+            yellowDelta: respiratoryYellowDelta
+        )
     }
 
     private var skinTemperatureDeviationZone: AtriaMetricZone? {
@@ -2905,6 +2961,10 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
     }
 
     var body: some View {
+        let respiratory = respiratoryRatePresentation
+        let hasEvidence = summary.probeFrameCount > 0
+            || summary.strapStepCount > 0
+            || respiratory.value != nil
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 AtriaPanelSectionHeader(title: "Experimental sensors", subtitle: "")
@@ -2953,12 +3013,12 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                     : nil,
                                 targetMetric: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable ? .bodyTemp : nil)
                 AtriaMetricTile(label: "Resp rate",
-                                value: latestRespiratoryRate,
-                                unit: latestRespiratoryRate == "--" ? nil : "/min",
-                                state: latestRespiratoryRate == "--" ? .learning : .research,
-                                tint: respiratoryRateZone?.tint ?? .teal,
-                                footnote: "Sleep-only estimate; needs comparison data.",
-                                zone: respiratoryRateZone,
+                                value: respiratory.valueText,
+                                unit: respiratory.value == nil ? nil : "/min",
+                                state: respiratory.state,
+                                tint: respiratory.tint,
+                                footnote: respiratory.detail,
+                                zone: respiratory.zone,
                                 targetMetric: .respiratoryRate)
                 AtriaMetricTile(label: "Strap steps",
                                 value: summary.strapStepText,

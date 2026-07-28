@@ -5,6 +5,29 @@ import XCTest
 /// shared under/optimal/over zone tints and the daily HR-zone tile text.
 final class AtriaTodayTileLogicTests: XCTestCase {
 
+    func testOverviewStressTintUsesCanonicalLevelForEveryScoredState() {
+        for level in AtriaStressLevel.allCases {
+            let state = AtriaStressState(level: level,
+                                         label: level.title,
+                                         detail: "test",
+                                         kind: .scored,
+                                         confidence: 1,
+                                         rawActivation: 0,
+                                         hrvAvailable: true)
+            let presentation = AtriaStressPresentation.make(state: state)
+            XCTAssertEqual(presentation.level, level)
+            XCTAssertEqual(AtriaOverviewMetricPresentation.stressTint(level: presentation.level),
+                           level.tint)
+        }
+        XCTAssertEqual(AtriaOverviewMetricPresentation.stressTint(level: nil),
+                       .secondary)
+    }
+
+    func testOverviewRHRNamesCurrentCycleMeasurementInsteadOfBaseline() {
+        XCTAssertEqual(AtriaOverviewMetricPresentation.currentCycleRHRDetail,
+                       "Current cycle")
+    }
+
     func testRingAchievementTintChangesOnlyWithRealProgress() {
         XCTAssertEqual(Metrics.ringAchievementTint(fill: nil), .secondary)
         XCTAssertEqual(Metrics.ringAchievementTint(fill: 0.25), .orange)
