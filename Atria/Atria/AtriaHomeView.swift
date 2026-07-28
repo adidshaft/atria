@@ -10228,7 +10228,9 @@ final class AtriaHomeModel {
                             hrvValue: fallbackHrv.value,
                             hrvDetail: fallbackHrv.detail,
                             hrvNarrative: fallbackHrv.narrative,
-                            stressValue: "Learning",
+                            // Standby/reconnecting snapshot: deterministic
+                            // no-value token like every other metric value.
+                            stressValue: AtriaCompactMetricPresentation.noValue,
                             stressDetail: "Beat-to-beat window",
                             stressNarrative: "Stress appears after the strap reconnects and beat-to-beat data is ready.",
                             rrPackageText: fallbackHrv.packageText,
