@@ -844,7 +844,10 @@ struct AtriaHealthScreen: View {
                                      layout: .compactTile,
                                      onTap: { metricDetail = .skinTemperature })
                 AtriaHealthMetricRow(title: "SpO2",
-                                     value: "\u{2014}",
+                                     // Was a lone em dash, sitting directly
+                                     // beside a Skin temp row already showing
+                                     // "--" for the same state.
+                                     value: AtriaCompactMetricPresentation.noValue,
                                      detail: AtriaExperimentalSensorCopy.bloodOxygenStatus(
                                         strapModel: ble.strapModel,
                                         decoderAvailable: AtriaResearchProbe.validatedSpO2DecoderAvailable),

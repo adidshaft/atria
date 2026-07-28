@@ -4323,8 +4323,13 @@ struct AtriaHomeView: View {
     @MainActor
     private func runDebugDashboardAutoScrollIfNeeded(proxy: ScrollViewProxy, title: String) async {
 #if DEBUG
-        guard title == "Today",
-              Self.debugDashboardAutoScrollEnabled(arguments: ProcessInfo.processInfo.arguments) else { return }
+        // Any tab, not just Today. Every tab renders through this same
+        // tabNavigation scroll surface, and the Today-only restriction meant
+        // below-the-fold content on Vitals, Journal and Activity could not be
+        // screenshot-verified at all when the simulator panel is unavailable --
+        // simctl can capture but cannot scroll. The task ID is already
+        // per-title, so each tab drives its own independent scroll.
+        guard Self.debugDashboardAutoScrollEnabled(arguments: ProcessInfo.processInfo.arguments) else { return }
         try? await Task.sleep(for: .milliseconds(900))
         while !Task.isCancelled {
             withAnimation(.easeInOut(duration: 1.45)) {
