@@ -3478,6 +3478,83 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testConnectedHistorySliceReleasesOnlyAfterUsefulSliceAndLiveSilence() {
+        let started = Date(timeIntervalSince1970: 10_000)
+
+        XCTAssertFalse(AtriaBLEManager.shouldReleaseConnectedHistorySlice(
+            sliceStartedAt: started,
+            lastRawHeartRateAt: started.addingTimeInterval(20),
+            now: started.addingTimeInterval(44.999),
+            minimumSliceDuration: 45,
+            liveSilenceLimit: 15
+        ), "history gets its bounded initial transfer window")
+
+        XCTAssertFalse(AtriaBLEManager.shouldReleaseConnectedHistorySlice(
+            sliceStartedAt: started,
+            lastRawHeartRateAt: started.addingTimeInterval(40),
+            now: started.addingTimeInterval(50),
+            minimumSliceDuration: 45,
+            liveSilenceLimit: 15
+        ), "fresh standard HR keeps a productive history serve alive")
+
+        XCTAssertTrue(AtriaBLEManager.shouldReleaseConnectedHistorySlice(
+            sliceStartedAt: started,
+            lastRawHeartRateAt: started.addingTimeInterval(20),
+            now: started.addingTimeInterval(45),
+            minimumSliceDuration: 45,
+            liveSilenceLimit: 15
+        ), "history progress cannot monopolize a silent live-HR connection")
+
+        XCTAssertTrue(AtriaBLEManager.shouldReleaseConnectedHistorySlice(
+            sliceStartedAt: started,
+            lastRawHeartRateAt: nil,
+            now: started.addingTimeInterval(45),
+            minimumSliceDuration: 45,
+            liveSilenceLimit: 15
+        ), "a connected slice with no live packet is bounded too")
+    }
+
+    func testConnectedHistorySlicePreservesPrefixAndAddsLiveCooldown() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func armConnectedHistoricalSliceIfNeeded("
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "private func armOfflineHistoricalSyncIdleWatchdog(",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(body.contains(
+            "shouldReleaseConnectedHistorySlice("
+        ))
+        XCTAssertTrue(body.contains(
+            "OfflineSyncDefaults.connectedSliceCooldownUntil"
+        ))
+        XCTAssertTrue(body.contains(
+            "retainPendingOfflineHistoricalSyncRequest("
+        ))
+        XCTAssertTrue(body.contains(
+            "history_connected_slice_live_silence"
+        ))
+        XCTAssertFalse(body.contains("Cmd.ackHistoricalData"))
+        XCTAssertFalse(body.contains("Cmd.abortHistoricalTransmits"))
+        XCTAssertFalse(body.contains("resolveOffload"))
+
+        XCTAssertTrue(source.contains(
+            "if !gate2FullDrainProofEnabled && !historySelectorSweepEnabled"
+        ), "the slice begins at the first served frame, including a fresh-owner reconnect")
+        XCTAssertTrue(source.contains(
+            "_ = releaseConnectedHistoricalSliceIfNeeded("
+        ), "served rows enforce the bound even if a locked phone suspends Task timers")
+        XCTAssertTrue(source.contains(
+            "backgroundHistoricalSliceMinimumDuration: TimeInterval = 5"
+        ))
+        XCTAssertTrue(source.contains(
+            "backgroundHistoricalSliceLiveSilenceLimit: TimeInterval = 3"
+        ))
+    }
+
     func testHistoricalDrainAllowsPhysicalFullRingServeSilenceUntilThirtyMinuteDeadline() {
         let lastProgressUptime: TimeInterval = 10_000
         let idleTimeout: TimeInterval = 30 * 60

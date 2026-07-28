@@ -2065,6 +2065,38 @@ POSITIVE STILL REQUIRED**
   and
   `evidence/2026-07-28-all-day-step-checkpoint/expiration-fix-background-mature/`.
 
+#### 2026-07-28 — connected history progress could starve live heart rate
+
+- **PHYSICAL failure:** the current-device UI claimed `Live 60 bpm` while the
+  persisted raw-HR and stream timestamps were already more than three minutes
+  old. The peripheral remained connected and a productive history generation
+  had materialized 3,669 rows, but standard 2A37 delivery had stopped. History
+  progress therefore concealed a stale live stream rather than proving that
+  both transports remained healthy.
+- **CODE diagnosis:** `connectedChunkedBackfill` was only an admission label.
+  Once admitted, a connected production history generation had no slice
+  boundary while rows continued to arrive; the 30-minute idle watchdog
+  correctly did not fire, and live-HR keepalive/reconnect paths correctly
+  deferred to the history transport owner. A productive archive drain could
+  consequently monopolize the connection.
+- **CODE correction:** connected production history now receives an initial
+  45-second slice and is monitored for standard-HR freshness. If 2A37 has been
+  silent for at least 15 seconds after that useful slice, Atria durably records
+  the release, retains the exact request and every fsynced ingress prefix, adds
+  a five-minute live-first cooldown, and disconnects only the BLE transport so
+  standing reconnect can restore live HR. It sends no ACK or abort, advances no
+  cursor, and resolves no gap. Explicit attended/research drains retain their
+  existing behavior.
+- **TEST evidence:** 409/409 BLE cadence, historical policy, motion-bank
+  ledger, daily receipt, and strap-step tests pass in
+  `Test-AtriaTests-2026.07.28_06-11-43-+0530.xcresult`.
+- **Acceptance status:** physical failure reproduced and code regression PASS;
+  physical connected-slice release and automatic live restoration are pending
+  verification on the installed signed build.
+- **Evidence:**
+  `evidence/2026-07-28-current-metric-audit/runtime/` and
+  `evidence/2026-07-28-current-metric-audit/live-stall-check/`.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.
