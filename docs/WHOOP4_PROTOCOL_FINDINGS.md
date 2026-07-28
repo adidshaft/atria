@@ -2356,6 +2356,29 @@ POSITIVE STILL REQUIRED**
   persisted state is still the honest `pure_hr_v10 / fallback_active` state
   with failure `lease_released_before_density_proof`.
 
+#### 2026-07-28 — current-cycle strap-step receipt publication correction
+
+- **Physical failure:** the active physiological cycle had 28,167 decoded v24
+  rows and 4,337 firmware motion ticks, but Home showed `-- / No verified
+  receipt for this cycle`.
+- **Root cause:** when every counter-active burst in a verified bank interval
+  was too short or ambiguous for gait classification, the daily aggregator
+  treated the complete interval—including stationary time—as unresolved. This
+  reduced qualified coverage to zero and the durable receipt store correctly
+  rejected publication.
+- **Correction:** an all-unresolved-motion interval now preserves its
+  independently verified stationary seconds as zero-step coverage and marks
+  only the counter-active duration unresolved. It does not convert motion
+  ticks into steps, relax gait gates, or use phone motion.
+- **Physical result:** installed Release `e4fb40c8` saved the current-cycle
+  receipt with 25,123 qualified seconds, 5,174 missing/unresolved seconds,
+  28,167 decoded rows, and a conservative strap-only lower bound of zero
+  steps. The async Home/widget invalidation fired without interrupting HR.
+- **Evidence:** raw phone trace is in
+  `evidence/2026-07-28-step-receipt-final/live.log`; the non-disruptive
+  installed-state pull and durable receipt are in
+  `evidence/2026-07-28-step-receipt-final-visible/`.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.
