@@ -1224,61 +1224,16 @@ struct AtriaTodayScreen: View {
     /// owns Recovery and sleep-need math. Keeping the two projections separate
     /// lets a first-night candidate show its measured duration immediately
     /// without silently promoting it into physiological truth.
-    /// Which of the four wake-settlement states last night is in.
-    ///
-    /// Recomputed on each body pass rather than cached, deliberately: the state
-    /// is time-dependent (the 30-minute settlement window) and the requirement
-    /// is that it refresh when the app returns to foreground and when new
-    /// accepted heart rate arrives. Both of those already re-evaluate this body
-    /// via scenePhase and the projection-store revisions, so reading the clock
-    /// here is what keeps the row honest rather than stale.
-    private var sleepSettlementState: AtriaSleepSettlementState {
+    /// Inputs for the wake-settlement row. The night snapshot carries no save
+    /// timestamp, so the model falls back to the night's end rather than
+    /// inventing one.
+    private var sleepSettlementRow: some View {
         let night = latestDisplaySleep
         let isConfirmed = night?.confirmed == true
-        return AtriaSleepSettlementPresentation.state(
+        return AtriaTodaySleepSettlementRow(
             confirmedSleepEnd: isConfirmed ? night?.end : nil,
-            // The night snapshot carries no save timestamp; the model falls back
-            // to the night's end rather than inventing one.
-            confirmedSleepSavedAt: nil,
-            candidateEnd: isConfirmed ? nil : night?.end,
-            now: Date()
+            candidateEnd: isConfirmed ? nil : night?.end
         )
-    }
-
-    @ViewBuilder
-    private var sleepSettlementRow: some View {
-        let state = sleepSettlementState
-        let freshness = AtriaSleepSettlementPresentation.freshnessText(for: state, now: Date())
-        HStack(spacing: AtriaDesignTokens.Spacing.md) {
-            Image(systemName: state.isSettling ? "clock.arrow.circlepath" : "moon.zzz.fill")
-                .font(.subheadline.weight(.bold))
-                .foregroundStyle(Metrics.electricSleep)
-                .frame(width: 24, height: 24)
-            Text(state.title)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-            Spacer(minLength: AtriaDesignTokens.Spacing.sm)
-            // Reserved, like the metric card status line: the stamp is absent
-            // for waitingForData, and a collapsing trailing label would change
-            // the row's height.
-            Text(freshness ?? " ")
-                .font(.caption2.weight(.semibold).monospacedDigit())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .accessibilityHidden(freshness == nil)
-        }
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        .padding(.horizontal, AtriaDesignTokens.Spacing.md)
-        // Same identity-hue inset card as the glance tiles. A plain grouped
-        // background rendered nearly invisible against the light page, so the
-        // row read as loose text beside its filled neighbours.
-        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip,
-                        tint: Metrics.electricSleep,
-                        hueTinted: true)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(freshness.map { "\(state.title), updated \($0)" } ?? state.title)
     }
 
     /// In-app stand-in for a morning journal nudge that the system could not
@@ -2642,6 +2597,79 @@ private struct AtriaTodayAddMetricsSheet: View {
     private func selectionBinding(for metric: AtriaTodayMetric) -> Binding<Bool> {
         Binding(get: { selectedKeys.contains(metric.rawValue) },
                 set: { onToggle(metric, $0) })
+    }
+}
+
+/// The wake-settlement row, as its own view so it can own a clock.
+///
+/// This state is TIME-dependent -- a night crosses from processing to review
+/// ready purely by 30 minutes elapsing, with no new data involved. Computing it
+/// inline in AtriaTodayScreen was wrong: that body re-evaluates on
+/// projection-store publishes, which covers newly accepted heart rate, but the
+/// screen does not observe scenePhase, so returning to a foregrounded app with
+/// nothing new to report could leave the row asserting "processing" long after
+/// the window had actually closed.
+///
+/// Owning `scenePhase` and the sampled clock HERE, rather than on the parent,
+/// follows the same containment the screen already uses for scroll state: only
+/// this small subtree re-evaluates when the phase changes, instead of the whole
+/// Today deck.
+private struct AtriaTodaySleepSettlementRow: View {
+    let confirmedSleepEnd: Date?
+    let candidateEnd: Date?
+
+    @Environment(\.scenePhase) private var scenePhase
+    /// Sampled rather than read inline, so the state and its freshness stamp are
+    /// computed against ONE instant and cannot disagree with each other.
+    @State private var now = Date()
+
+    var body: some View {
+        let state = AtriaSleepSettlementPresentation.state(
+            confirmedSleepEnd: confirmedSleepEnd,
+            confirmedSleepSavedAt: nil,
+            candidateEnd: candidateEnd,
+            now: now
+        )
+        let freshness = AtriaSleepSettlementPresentation.freshnessText(for: state, now: now)
+
+        HStack(spacing: AtriaDesignTokens.Spacing.md) {
+            Image(systemName: state.isSettling ? "clock.arrow.circlepath" : "moon.zzz.fill")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(Metrics.electricSleep)
+                .frame(width: 24, height: 24)
+            Text(state.title)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            Spacer(minLength: AtriaDesignTokens.Spacing.sm)
+            // Reserved, like the metric card status line: the stamp is absent
+            // for waitingForData, and a collapsing trailing label would change
+            // the row's height.
+            Text(freshness ?? " ")
+                .font(.caption2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .accessibilityHidden(freshness == nil)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .padding(.horizontal, AtriaDesignTokens.Spacing.md)
+        // Same identity-hue inset card as the glance tiles. A plain grouped
+        // background rendered nearly invisible against the light page, so the
+        // row read as loose text beside its filled neighbours.
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip,
+                        tint: Metrics.electricSleep,
+                        hueTinted: true)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(freshness.map { "\(state.title), updated \($0)" } ?? state.title)
+        .onAppear { now = Date() }
+        .onChange(of: scenePhase) { _, phase in
+            // Re-sample on return to foreground: elapsed time alone can have
+            // advanced the state while the app was away.
+            if phase == .active { now = Date() }
+        }
+        .onChange(of: candidateEnd) { _, _ in now = Date() }
+        .onChange(of: confirmedSleepEnd) { _, _ in now = Date() }
     }
 }
 
