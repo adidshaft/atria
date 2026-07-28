@@ -2079,20 +2079,29 @@ POSITIVE STILL REQUIRED**
   correctly did not fire, and live-HR keepalive/reconnect paths correctly
   deferred to the history transport owner. A productive archive drain could
   consequently monopolize the connection.
-- **CODE correction:** connected production history now receives an initial
-  45-second slice and is monitored for standard-HR freshness. If 2A37 has been
-  silent for at least 15 seconds after that useful slice, Atria durably records
-  the release, retains the exact request and every fsynced ingress prefix, adds
-  a five-minute live-first cooldown, and disconnects only the BLE transport so
-  standing reconnect can restore live HR. It sends no ACK or abort, advances no
-  cursor, and resolves no gap. Explicit attended/research drains retain their
-  existing behavior.
-- **TEST evidence:** 409/409 BLE cadence, historical policy, motion-bank
-  ledger, daily receipt, and strap-step tests pass in
-  `Test-AtriaTests-2026.07.28_06-11-43-+0530.xcresult`.
-- **Acceptance status:** physical failure reproduced and code regression PASS;
-  physical connected-slice release and automatic live restoration are pending
-  verification on the installed signed build.
+- **PHYSICAL correction to the first implementation:** an admission-time
+  `connected` classifier missed fresh-owner transactions because the deliberate
+  cutover temporarily disconnects before history starts. After arming on the
+  first real stream-5 row, a locked run proved a second constraint: iOS
+  suspended the process roughly seven seconds into the history owner despite
+  the finite background lease, so a 45-second Swift timer was not a valid
+  locked-phone safety boundary.
+- **CODE correction:** every production history serve now arms from its first
+  real row. Foreground history retains a 45-second/15-second-silence bound.
+  Background history uses a five-second/three-second-silence slice and evaluates
+  synchronously on every served frame, so the callback that durably enqueues
+  the row can also relinquish the radio before iOS suspends timers. Atria then
+  records the release, retains the exact request and every fsynced ingress
+  prefix, adds a five-minute live-first cooldown, and disconnects only the BLE
+  transport so standing reconnect can restore live HR. It sends no ACK or
+  abort, advances no cursor, and resolves no gap. Attended Gate 2 and selector
+  research drains retain their explicit full-drain behavior.
+- **TEST evidence:** 428/428 BLE cadence, historical policy, motion-bank
+  ledger, daily receipt, strap-step ledger, and strap-step model tests pass in
+  `Test-AtriaTests-2026.07.28_06-46-45-+0530.xcresult`.
+- **Acceptance status:** both physical failure modes reproduced and focused
+  code regression PASS; physical callback-bound release and automatic live
+  restoration are pending one launch of the already-installed signed build.
 - **Evidence:**
   `evidence/2026-07-28-current-metric-audit/runtime/` and
   `evidence/2026-07-28-current-metric-audit/live-stall-check/`.
