@@ -41,6 +41,11 @@ struct AtriaLiveActivityAttributes: ActivityAttributes {
         // avoids comparing a session delta with the user's all-day goal.
         var dailySteps: Int? = nil
         var dailyStepsAreEstimated: Bool? = nil
+        /// Daily receipt provenance is independent of workout-local motion.
+        /// Optional fields preserve decoding for activities started by an
+        /// earlier build.
+        var dailyStepsCapturedAt: Date? = nil
+        var dailyStepsIsLowerBound: Bool? = nil
         var dailyStepGoal: Int? = nil
         var workoutStrain: Double? = nil
         var workoutStrainCapturedAt: Date? = nil

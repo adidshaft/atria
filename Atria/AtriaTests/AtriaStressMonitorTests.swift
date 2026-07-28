@@ -234,7 +234,7 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertNil(state.level)
         let presentation = AtriaStressPresentation.make(state: state)
         XCTAssertEqual(presentation.value, "No signal")
-        XCTAssertEqual(presentation.detail, "Reconnect strap for a live read")
+        XCTAssertEqual(presentation.detail, "Waiting for a fresh strap signal")
     }
 
     func testImmatureBaselinePresentationNeverLeaksNumericStress() {

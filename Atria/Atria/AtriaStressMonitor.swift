@@ -104,8 +104,11 @@ struct AtriaStressPresentation: Equatable {
             detail = "Paused during detected sleep"
             narrative = "Stress monitoring pauses while sleep is actively detected."
         case .noSignal:
-            detail = "Reconnect strap for a live read"
-            narrative = "Stress is unavailable until live strap contact returns."
+            // No signal can mean a connected strap whose next qualified frame
+            // has not arrived yet. Do not prescribe reconnecting unless the
+            // connection authority independently proves a link failure.
+            detail = "Waiting for a fresh strap signal"
+            narrative = "Stress resumes after a fresh qualified strap reading."
         }
         return Self(level: state.level,
                     value: state.level?.title ?? state.label,

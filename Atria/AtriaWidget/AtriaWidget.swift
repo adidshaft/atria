@@ -1886,6 +1886,10 @@ enum AtriaWidgetMetric: String, Identifiable {
                     return (["Partial archive", coverage, progress].compactMap { $0 })
                         .joined(separator: " · ")
                 }
+                if let cycleExpiresAt = snapshot.stepsCycleExpiresAt,
+                   cycleExpiresAt > now {
+                    return "Today so far · verified"
+                }
                 return "Verified complete day"
             }
             guard let capturedAt = snapshot.stepsCapturedAt else {

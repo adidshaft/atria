@@ -2,10 +2,10 @@ import XCTest
 @testable import Atria
 
 final class AtriaWhoop4MotionTickStepModelTests: XCTestCase {
-    func testGravityEstimatorPublishesPhysicallyCalibratedV14Only() {
+    func testGravityEstimatorPublishesPhysicallyCalibratedV15Only() {
         XCTAssertEqual(
             AtriaWhoop4GravityCadenceStepModel.algorithmVersion,
-            "whoop4-impact-gait-ensemble-v14"
+            "whoop4-impact-gait-ensemble-v15"
         )
     }
 
@@ -697,6 +697,207 @@ final class AtriaWhoop4MotionTickStepModelTests: XCTestCase {
         XCTAssertEqual(estimate.unresolvedMotionSeconds, 0)
     }
 
+    func testDailyProjectionReassemblesContiguousCoverageFragmentsBeforeScoring()
+        throws {
+        let points = cadencePoints(
+            count: 97,
+            duration: 92.3,
+            aliasFrequency: 0.42,
+            moving: true
+        )
+        let fragments = [
+            Array(points[0...20]),
+            Array(points[20...46]),
+            Array(points[46...72]),
+            Array(points[72...96]),
+        ]
+
+        XCTAssertTrue(
+            fragments.allSatisfy {
+                AtriaWhoop4GravityCadenceStepModel
+                    .estimateWindow(points: $0) == nil
+            },
+            "no bookkeeping fragment independently contains a qualified walk"
+        )
+        let estimate = try XCTUnwrap(
+            AtriaWhoop4GravityCadenceStepModel
+                .estimateCoveredActivityFragments(fragments)
+        )
+
+        XCTAssertEqual(estimate.steps, 133)
+        XCTAssertEqual(estimate.motionTicks, 192)
+        XCTAssertEqual(estimate.unresolvedMotionSeconds, 0)
+    }
+
+    func testDailyProjectionNeverBridgesARealRadioGap() throws {
+        let first = cadencePoints(
+            count: 38,
+            duration: 36,
+            aliasFrequency: 0.42,
+            moving: true
+        )
+        let second = cadencePoints(
+            count: 38,
+            duration: 36,
+            aliasFrequency: 0.42,
+            moving: true
+        ).map {
+            AtriaWhoop4GravityCadenceStepModel.Point(
+                timestamp: $0.timestamp + 90,
+                flash: $0.flash + 100,
+                tick: $0.tick + 100,
+                gravityX: $0.gravityX,
+                gravityY: $0.gravityY,
+                gravityZ: $0.gravityZ,
+                unknownMotionScalar32: $0.unknownMotionScalar32,
+                identity: "after-gap-\($0.identity)"
+            )
+        }
+
+        let estimate = AtriaWhoop4GravityCadenceStepModel
+            .estimateCoveredActivityFragments([first, second])
+        XCTAssertNotNil(estimate)
+        XCTAssertLessThan(
+            estimate?.durationSeconds ?? .infinity,
+            80,
+            "independently scored runs must not include the radio gap"
+        )
+    }
+
+    func testAutonomousDayAnchorsRecoverWalkAcrossOrdinarySeventeenSecondTickPause()
+        throws {
+        let base = cadencePoints(
+            count: 101,
+            duration: 100,
+            aliasFrequency: 0.42,
+            moving: true
+        )
+        var tick = 0
+        let batched = base.enumerated().map { index, point in
+            if index > 0, index < 42 || index > 58 {
+                tick += 2
+            }
+            return pointWithTick(
+                point,
+                tick: tick,
+                suffix: "autonomous-pause"
+            )
+        }
+
+        XCTAssertNil(
+            AtriaWhoop4GravityCadenceStepModel.estimateWindow(points: batched),
+            "exact-workout scoring must retain its frozen resume-token rule"
+        )
+        let estimate = try XCTUnwrap(
+            AtriaWhoop4GravityCadenceStepModel
+                .estimateCoveredActivity(points: batched)
+        )
+        XCTAssertGreaterThan(estimate.steps, 100)
+        XCTAssertLessThan(estimate.steps, 160)
+        XCTAssertEqual(estimate.unresolvedMotionSeconds, 0)
+        XCTAssertGreaterThan(estimate.durationSeconds, 95)
+    }
+
+    func testAutonomousDayAnchorsDoNotJoinAcrossStationaryGravityBreak() {
+        let first = cadencePoints(
+            count: 36,
+            duration: 35,
+            aliasFrequency: 0.42,
+            moving: true
+        )
+        let stationary = (36..<53).map { index in
+            AtriaWhoop4GravityCadenceStepModel.Point(
+                timestamp: Double(index),
+                flash: UInt32(index),
+                tick: first.last!.tick,
+                gravityX: 0,
+                gravityY: 0,
+                gravityZ: 1,
+                unknownMotionScalar32: 0.02,
+                identity: "stationary-break-\(index)"
+            )
+        }
+        let second = cadencePoints(
+            count: 36,
+            duration: 35,
+            aliasFrequency: 0.42,
+            moving: true
+        ).map {
+            AtriaWhoop4GravityCadenceStepModel.Point(
+                timestamp: $0.timestamp + 53,
+                flash: $0.flash + 53,
+                tick: $0.tick + first.last!.tick,
+                gravityX: $0.gravityX,
+                gravityY: $0.gravityY,
+                gravityZ: $0.gravityZ,
+                unknownMotionScalar32: $0.unknownMotionScalar32,
+                identity: "after-stationary-\($0.identity)"
+            )
+        }
+
+        let estimate = AtriaWhoop4GravityCadenceStepModel
+            .estimateCoveredActivity(points: first + stationary + second)
+        XCTAssertNotNil(estimate)
+        XCTAssertLessThan(
+            estimate?.durationSeconds ?? .infinity,
+            75,
+            "proven stationary time cannot become counted gait duration"
+        )
+    }
+
+    func testAutonomousDayPhysicalCorpusKeepsWalkAccuracyAndRejectsArmControls()
+        throws {
+        let raw =
+            "Atria/AtriaTests/Fixtures/"
+            + "whoop4-v15-physical-gait-corpus.jsonl"
+        let walks: [(String, TimeInterval, TimeInterval, Int)] = [
+            ("W150", 1_785_096_721, 1_785_096_819, 150),
+            ("W129", 1_785_101_104, 1_785_101_199, 129),
+            ("W106", 1_785_104_940, 1_785_105_037, 106),
+            ("W108", 1_785_105_727, 1_785_105_821, 108),
+            ("W100", 1_785_106_514, 1_785_106_608, 100),
+            ("W110", 1_785_107_793, 1_785_107_886, 110),
+            ("W109", 1_785_108_502, 1_785_108_595, 109),
+            ("W109b", 1_785_111_646, 1_785_111_737, 109),
+            ("W115", 1_785_112_541, 1_785_112_632, 115),
+        ]
+        for (label, start, end, truth) in walks {
+            let points = try physicalV24Points(
+                relativePath: raw,
+                wallStart: start,
+                wallEnd: end,
+                useCorrectedTimestamp: true
+            )
+            let estimate = try XCTUnwrap(
+                AtriaWhoop4GravityCadenceStepModel
+                    .estimateCoveredActivityFragments([points]),
+                label
+            )
+            XCTAssertLessThanOrEqual(
+                abs(Double(estimate.steps - truth)) / Double(truth),
+                0.05,
+                "\(label): \(estimate.steps) vs \(truth)"
+            )
+        }
+
+        let controls: [(String, TimeInterval, TimeInterval)] = [
+            ("arm-1", 1_785_102_086, 1_785_102_206),
+            ("arm-2", 1_785_103_194, 1_785_103_300),
+            ("arm-3", 1_785_104_226, 1_785_104_332),
+        ]
+        for (label, start, end) in controls {
+            let points = try physicalV24Points(
+                relativePath: raw,
+                wallStart: start,
+                wallEnd: end,
+                useCorrectedTimestamp: true
+            )
+            let estimate = AtriaWhoop4GravityCadenceStepModel
+                .estimateCoveredActivityFragments([points])
+            XCTAssertEqual(estimate?.steps ?? 0, 0, label)
+        }
+    }
+
     private func cadencePoints(
         count: Int,
         duration: TimeInterval,
@@ -761,7 +962,8 @@ final class AtriaWhoop4MotionTickStepModelTests: XCTestCase {
     private func physicalV24Points(
         relativePath: String,
         wallStart: TimeInterval,
-        wallEnd: TimeInterval
+        wallEnd: TimeInterval,
+        useCorrectedTimestamp: Bool = false
     ) throws -> [AtriaWhoop4GravityCadenceStepModel.Point] {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -798,8 +1000,12 @@ final class AtriaWhoop4MotionTickStepModelTests: XCTestCase {
                     (object["gravityY40"] as? NSNumber)?.doubleValue,
                 let gravityZ =
                     (object["gravityZ44"] as? NSNumber)?.doubleValue,
-                let scalar =
+                let scalar = (
                     (object["unknownMotionScalar32"] as? NSNumber)?.doubleValue
+                    ?? (object["rawPayloadHex"] as? String).flatMap {
+                        littleEndianFloat(payloadHex: $0, offset: 32)
+                    }
+                )
                 else {
                     return
                 }
@@ -810,7 +1016,9 @@ final class AtriaWhoop4MotionTickStepModelTests: XCTestCase {
                     return
                 }
                 byFlash[flash] = .init(
-                    timestamp: deviceSecond + fraction,
+                    timestamp: (
+                        useCorrectedTimestamp ? wallSecond : deviceSecond
+                    ) + fraction,
                     flash: flash,
                     tick: tick,
                     gravityX: gravityX,
@@ -837,6 +1045,23 @@ final class AtriaWhoop4MotionTickStepModelTests: XCTestCase {
         return byFlash.values.sorted {
             $0.timestamp < $1.timestamp
         }
+    }
+
+    private func littleEndianFloat(
+        payloadHex: String,
+        offset: Int
+    ) -> Double? {
+        guard payloadHex.count >= (offset + 4) * 2 else { return nil }
+        let start = payloadHex.index(
+            payloadHex.startIndex,
+            offsetBy: offset * 2
+        )
+        let end = payloadHex.index(start, offsetBy: 8)
+        guard let value = UInt32(payloadHex[start..<end], radix: 16) else {
+            return nil
+        }
+        let float = Float(bitPattern: value.byteSwapped)
+        return float.isFinite ? Double(float) : nil
     }
 
     private func point(

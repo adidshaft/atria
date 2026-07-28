@@ -95,4 +95,50 @@ final class AtriaMetricTruthUXTests: XCTestCase {
         XCTAssertFalse(settings.contains("@State private var syncTapped"))
         XCTAssertTrue(settings.contains("historySyncFeedback = onSyncMissedData() ? .started : .notStarted"))
     }
+
+    func testUnavailableDetailHeroesUseNeutralNoValuePresentation() throws {
+        let overview = try source("AtriaOverviewSections.swift")
+        XCTAssertTrue(overview.contains(
+            "guard let percent = recoveryHeroRawPercent else {\n            return AtriaCompactMetricPresentation.noValue"
+        ))
+        XCTAssertTrue(overview.contains(
+            "guard let strainHeroRawValue else {\n            return AtriaCompactMetricPresentation.noValue"
+        ))
+        XCTAssertFalse(overview.contains(
+            "recoveryHeroRawPercent.map { Metrics.recoveryColor(Int($0.rounded())) } ?? Metrics.electricGreen"
+        ))
+        XCTAssertTrue(overview.contains(
+            "guard let latest = preparedHistory.fitnessAge[range]?.last?.value else { return .secondary }"
+        ))
+    }
+
+    func testConnectionGuideDoesNotPromoteTransportToLivePulse() throws {
+        let guide = try source("AtriaHeroConnectionSections.swift")
+        XCTAssertTrue(guide.contains(
+            "Text(status == .connected ? \"Connected\" : \"Setup\")"
+        ))
+        XCTAssertFalse(guide.contains(
+            "Text(status == .connected ? \"Live\" : \"Setup\")"
+        ))
+    }
+
+    func testWidgetDoesNotCallAnOpenPhysiologicalCycleComplete() throws {
+        let widget = try source("../AtriaWidget/AtriaWidget.swift")
+        XCTAssertTrue(widget.contains(
+            "if let cycleExpiresAt = snapshot.stepsCycleExpiresAt,\n                   cycleExpiresAt > now"
+        ))
+        XCTAssertTrue(widget.contains(
+            "return \"Today so far · verified\""
+        ))
+    }
+
+    func testFallbackHeroDoesNotPromoteBLETransportToLiveSignal() throws {
+        let home = try source("AtriaHomeView.swift")
+        XCTAssertTrue(home.contains(
+            "return \"Strap is connected.\""
+        ))
+        XCTAssertFalse(home.contains(
+            "return \"Live connection is active.\""
+        ))
+    }
 }
