@@ -625,6 +625,14 @@ struct AtriaTodayScreen: View {
                     }
                 }
             }
+            // This host deliberately ignores its content closure when comparing
+            // HeroStore publications. Give layout changes their own identity so
+            // an asynchronously restored Today configuration cannot leave the
+            // initially empty glance body cached at zero height.
+            .id(Self.glanceHostIdentity(
+                for: layoutConfig,
+                bars: glanceLayoutBars
+            ))
         case .coach:
             if layoutConfig.showAICoach && effectiveAICoachSettings.mode != .off {
                 AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in
@@ -1977,6 +1985,22 @@ struct AtriaTodayScreen: View {
     static func glanceMetrics(for layoutConfig: AtriaHomeLayoutConfig) -> [AtriaTodayMetric] {
         layoutConfig.validated().glanceMetrics
             .compactMap(AtriaTodayMetric.init(rawValue:))
+    }
+
+    static func glanceHostIdentity(
+        for layoutConfig: AtriaHomeLayoutConfig,
+        bars: Bool
+    ) -> String {
+        let validated = layoutConfig.validated()
+        let sizes = validated.sizeOverrides.keys.sorted().map {
+            "\($0)=\(validated.sizeOverrides[$0] ?? "")"
+        }.joined(separator: ",")
+        return [
+            bars ? "bars" : "grid",
+            validated.glanceMetrics.joined(separator: ","),
+            sizes,
+            validated.legendStatStyle.rawValue,
+        ].joined(separator: "|")
     }
 
     private func glanceItem(for metric: AtriaTodayMetric) -> AtriaTodayGlanceItem? {
