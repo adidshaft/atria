@@ -47,6 +47,31 @@ struct AtriaCompactMetricPresentation: Equatable {
 
     var hasValue: Bool { value != Self.noValue }
 
+    /// THE canonical "this value line is not a real reading" check.
+    ///
+    /// Three separate versions of this had drifted apart --
+    /// `AtriaTodayGlanceItem.isPendingValue` and `pendingShareValue` accepted
+    /// "--", while `metricIsPending` recognised only "learning"/"prepar"/empty.
+    /// That divergence was latent until a producer moved off the word
+    /// "Learning": the two-glyph token would have been read as a REAL value by
+    /// the third check, presenting "--" as a genuine measurement. Every caller
+    /// now delegates here so the set cannot drift again.
+    ///
+    /// Deliberately the union of the old behaviours -- exact tokens plus the
+    /// substring matches the widest version used -- so no string that was
+    /// previously treated as pending stops being pending. Applied only to value
+    /// lines, which are short numerals or status words, so substring matching
+    /// cannot swallow legitimate prose.
+    static func isPendingValue(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return true }
+        if trimmed == noValue || trimmed == "\u{2014}" { return true }
+        let lowered = trimmed.lowercased()
+        return lowered.contains("learning")
+            || lowered.contains("prepar")
+            || lowered.contains("building")
+    }
+
     /// The value exactly as it should appear, lower-bound prefix included.
     var displayValue: String {
         guard hasValue, isLowerBound else { return value }

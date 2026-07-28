@@ -11521,7 +11521,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "let guidance = Coach.guide(recovery: recovery, strain: strain, load: .learning)",
             'value: incomplete && !displayHero.strainValue.hasPrefix("≥")',
             '? "≥ \\(displayHero.strainValue)"',
-            'incomplete ? "Partial · sparse HR"',
+            # 2026-07-28 deterministic-presentation pass: the strain marker is now
+            # compact fixed vocabulary ("lower bound") instead of prose describing
+            # the plumbing ("Partial · sparse HR"), so the reserved status line
+            # cannot wrap and change a card's height. The "≥" lower-bound prefix
+            # pinned above is unchanged and still carries the same meaning.
+            'incomplete ? "lower bound"',
             # Strain-ring-semantics pass (2026-07-05): the ring fill switched from
             # strain-relative-to-target to absolute strain/21 (WHOOP scale), with the
             # former strain/target math now driving the ring's target marker instead

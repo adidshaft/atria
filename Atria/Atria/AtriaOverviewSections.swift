@@ -4296,10 +4296,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         metricIsPending(value) ? "--" : value
     }
 
+    /// Delegates to the canonical check so this cannot miss "--" -- see
+    /// `AtriaCompactMetricPresentation.isPendingValue` for why the three copies
+    /// of this predicate had to be collapsed into one.
     private func metricIsPending(_ value: String) -> Bool {
-        value.localizedCaseInsensitiveContains("learning")
-            || value.localizedCaseInsensitiveContains("prepar")
-            || value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        AtriaCompactMetricPresentation.isPendingValue(value)
     }
 
     private var recoveryZone: AtriaMetricZone? {

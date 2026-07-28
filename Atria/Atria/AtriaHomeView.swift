@@ -4699,12 +4699,12 @@ struct AtriaHomeView: View {
                                   stats: stats)
     }
 
+    /// Share cards must never print a placeholder as if it were a measurement,
+    /// so this routes through the canonical pending check rather than keeping
+    /// its own token list.
     private func pendingShareValue(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed == "--" || trimmed == "Learning" || trimmed == "Building" || trimmed == "Preparing" {
-            return ""
-        }
-        return trimmed
+        return AtriaCompactMetricPresentation.isPendingValue(trimmed) ? "" : trimmed
     }
 
 
@@ -8187,9 +8187,17 @@ final class AtriaHomeModel {
         }
 
         var strainValue: String {
+            // Not-computable, not merely uncertain: TRIMP is a Banister
+            // integration over heart-rate reserve, so without resting evidence,
+            // load evidence, or a max HR above rest there is no number to show
+            // (see strainConfidence). The token is `noValue` rather than the
+            // word "Learning" so the value line only ever carries a numeral or
+            // "--", and confidence lives in the marker instead. The detail hero
+            // already rendered "--" for this same state, so this also removes a
+            // contradiction between the compact card and its own detail sheet.
             guard !strainConfidence.localizedCaseInsensitiveContains("learning"),
                   !strainConfidence.localizedCaseInsensitiveContains("standby") else {
-                return "Learning"
+                return AtriaCompactMetricPresentation.noValue
             }
             let numeric = String(format: "%.1f", strain)
             return strainConfidence.localizedCaseInsensitiveContains("partial")
