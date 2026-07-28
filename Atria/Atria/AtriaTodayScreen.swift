@@ -2136,10 +2136,10 @@ struct AtriaTodayScreen: View {
     /// Pending-value set matching the app-wide convention (see AtriaHomeView's
     /// pending check): a metric that has no reading yet, so its tile can show
     /// time-to-detect progress instead of the bare placeholder.
+    /// Delegates to `AtriaTodayGlanceItem` so the sentinel set is defined once
+    /// and the glance tile's pending styling can never drift from this check.
     private func isPendingHeroValue(_ value: String) -> Bool {
-        let trimmed = value.trimmingCharacters(in: .whitespaces)
-        return trimmed == "--" || trimmed == "\u{2014}"
-            || trimmed == "Learning" || trimmed == "Building" || trimmed == "Preparing"
+        AtriaTodayGlanceItem.isPendingValue(value)
     }
 
     /// Honest "N of 14 nights" progress for the 14-night personal baselines
@@ -2491,6 +2491,18 @@ private struct AtriaTodayGlanceItem: Identifiable, Equatable {
     let layoutSize: LayoutSize
 
     var id: String { metricKey }
+
+    /// The one definition of "this metric has no reading yet", shared with
+    /// `AtriaTodayScreen.isPendingHeroValue`. Kept as a value check rather than
+    /// a stored flag so the ~20 `glanceItem(for:)` construction sites stay
+    /// untouched and can never forget to set it.
+    static func isPendingValue(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        return trimmed == "--" || trimmed == "\u{2014}"
+            || trimmed == "Learning" || trimmed == "Building" || trimmed == "Preparing"
+    }
+
+    var isPending: Bool { Self.isPendingValue(value) }
 }
 
 private struct AtriaTodayLiveStatusHost: View {
@@ -2950,10 +2962,15 @@ private struct AtriaTodayGlanceTile: View, Equatable {
                 .frame(width: 30, height: 30)
                 .background(item.tint.opacity(0.14), in: Circle())
             VStack(alignment: .leading, spacing: 2) {
+                // Same pending inversion as tileBody -- see the note there. A
+                // column of bars all reading "Learning" on the right is the same
+                // failure as a grid of tiles doing it, so the name takes over as
+                // the primary line until a real reading arrives.
                 Text(item.title)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.secondary)
+                    .font(item.isPending ? .subheadline.weight(.bold) : .caption.weight(.bold))
+                    .foregroundStyle(item.isPending ? .primary : .secondary)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.75)
                 if !item.detail.isEmpty {
                     Text(item.detail)
                         .font(.caption2.weight(.semibold))
@@ -2964,9 +2981,11 @@ private struct AtriaTodayGlanceTile: View, Equatable {
             }
             Spacer(minLength: 8)
             Text(item.value)
-                .font(.headline.weight(.bold).monospacedDigit())
+                .font(item.isPending
+                      ? .caption.weight(.semibold)
+                      : .headline.weight(.bold).monospacedDigit())
                 .contentTransition(reduceMotion ? .identity : .numericText())
-                .foregroundStyle(.primary)
+                .foregroundStyle(item.isPending ? .secondary : .primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
         }
@@ -2999,17 +3018,36 @@ private struct AtriaTodayGlanceTile: View, Equatable {
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(item.tint)
                 .frame(width: 24, height: 24)
-            Text(item.value)
-                .font(.title3.weight(.bold))
-                .monospacedDigit()
-                .contentTransition(reduceMotion ? .identity : .numericText())
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-            Text(item.title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            // Emphasis follows whichever line actually carries information. Once
+            // there is a reading that is the value. Before there is one, every
+            // tile's value collapses to the same placeholder word, so a default
+            // grid of eight would shout "Learning" eight times while the metric
+            // name -- the only thing still differing tile to tile -- hid in the
+            // small grey line. Pending tiles therefore lead with the name and let
+            // the state recede, so the grid stays scannable while it fills in.
+            if item.isPending {
+                Text(item.title)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                Text(item.value)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else {
+                Text(item.value)
+                    .font(.title3.weight(.bold))
+                    .monospacedDigit()
+                    .contentTransition(reduceMotion ? .identity : .numericText())
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                Text(item.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
             if !item.detail.isEmpty && item.layoutSize != .wideShort {
                 Text(item.detail)
                     .font(.caption2.weight(.semibold))
