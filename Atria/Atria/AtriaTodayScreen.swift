@@ -1167,6 +1167,10 @@ struct AtriaTodayScreen: View {
                                            recoveryLiftedAfterNap: arguments[valueIndex] == "recovery-after-nap",
                                            strain: strain,
                                            strainConfidence: "local",
+                                           // Debug fixture pins strain-target
+                                           // state only; coverage is not part of
+                                           // what it proves, so it stays unmeasured.
+                                           dayWearCoverageFraction: nil,
                                            guidance: guidance,
                                            hrvValue: "58",
                                            hrvDetail: "personal baseline",

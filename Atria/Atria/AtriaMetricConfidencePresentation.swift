@@ -92,6 +92,66 @@ struct AtriaCompactMetricPresentation: Equatable {
     }
 }
 
+// MARK: - Expanded detail
+
+/// The provenance behind a compact card, for the surface a tap opens.
+///
+/// Every field is optional and every optional means "not measured at this
+/// scope" -- never zero, never a guess. Day-level gap count and gap duration
+/// are deliberately absent: those are measured per detected window
+/// (`WorkoutReviewCandidate`, detection readiness), and no day-level aggregate
+/// exists. Rendering "0 gaps" from their absence would be fabrication, so the
+/// detail surface says the measurement is not available at this scope instead.
+struct AtriaMetricProvenance: Equatable {
+    /// The value exactly as the compact card shows it, lower-bound prefix and all.
+    let displayValue: String
+    let level: AtriaMetricConfidenceLevel
+    let isLowerBound: Bool
+    /// Whether HRV contributed to the score, or nil where the metric has no
+    /// HRV input at all.
+    let usesHRV: Bool?
+    /// Accepted strap coverage over the elapsed day, 0...1. Nil before the day
+    /// is long enough to judge.
+    let hrCoverageFraction: Double?
+    /// When the underlying data was last updated, and where it came from.
+    let sourceLabel: String
+    let observedAt: Date?
+
+    var coverageText: String? {
+        guard let hrCoverageFraction else { return nil }
+        return "HR coverage \(Int((hrCoverageFraction * 100).rounded()))%"
+    }
+
+    /// Why confidence is reduced, stated concretely rather than as an adjective.
+    /// Nil when confidence is high and there is nothing to explain.
+    var reducedConfidenceReason: String? {
+        if isLowerBound {
+            return "Strap wear covered only part of the day, so accumulated load is a floor, not a total."
+        }
+        if usesHRV == false {
+            return "HRV was not available for this score, so it was computed from resting heart rate alone."
+        }
+        switch level {
+        case .high: return nil
+        case .moderate: return "Scored against your own baseline, which is still narrowing as more nights arrive."
+        case .limited: return "Some inputs were missing or outside their trusted range."
+        case .provisional: return "Max heart rate is age-estimated rather than measured, so the scale is approximate."
+        }
+    }
+
+    /// What would actually raise confidence. Nil when nothing is needed.
+    var improvementHint: String? {
+        if isLowerBound { return "Wear the strap for more of the day." }
+        if usesHRV == false { return "Record a night of sleep with the strap on so HRV can contribute." }
+        switch level {
+        case .high: return nil
+        case .moderate: return "Keep recording nights -- the baseline tightens as it fills."
+        case .limited: return "Keep the strap connected so fewer inputs drop out."
+        case .provisional: return "Record a maximal effort so max heart rate is measured rather than estimated."
+        }
+    }
+}
+
 // MARK: - Recovery
 
 extension AtriaCompactMetricPresentation {
