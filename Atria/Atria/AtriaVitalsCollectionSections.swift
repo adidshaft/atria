@@ -4747,8 +4747,13 @@ private enum AtriaHeartRateOrientation {
         "atria.heartRateExplorer.landscapeFallback"
     )
     private static var landscapeRequestTask: Task<Void, Never>?
+    private static var portraitRestoreTask: Task<Void, Never>?
+    private static var presentationGeneration: UInt = 0
 
     static func prepareLandscapePresentation() {
+        presentationGeneration &+= 1
+        portraitRestoreTask?.cancel()
+        portraitRestoreTask = nil
         // Keep the outgoing portrait controller and incoming landscape host in
         // the app-mask intersection throughout the presentation transition.
         AtriaTransientPresentationState.suppressStandBy()
@@ -4766,21 +4771,30 @@ private enum AtriaHeartRateOrientation {
         // topmost leaves UIKit with no supported portrait intersection.
         landscapeRequestTask?.cancel()
         landscapeRequestTask = nil
+        portraitRestoreTask?.cancel()
+        portraitRestoreTask = nil
         AtriaTransientPresentationState.suppressStandBy()
         AtriaAppDelegate.supportedOrientations = AtriaHeartRateExplorerOrientationPolicy.transitionMask
     }
 
     static func restorePortraitAfterDismissal() {
         preparePortraitDismissal()
-        Task { @MainActor in
+        presentationGeneration &+= 1
+        let generation = presentationGeneration
+        portraitRestoreTask = Task { @MainActor in
             await Task.yield()
             for attempt in 1...5 {
+                guard !Task.isCancelled,
+                      generation == presentationGeneration else { return }
                 guard let scene = activeScene() else {
                     try? await Task.sleep(for: .milliseconds(150))
                     continue
                 }
                 if scene.effectiveGeometry.interfaceOrientation == .portrait {
+                    guard !Task.isCancelled,
+                          generation == presentationGeneration else { return }
                     finalizePortrait(on: scene, attempt: attempt)
+                    portraitRestoreTask = nil
                     return
                 }
                 requestSceneOrientation(.portrait,
@@ -4790,9 +4804,12 @@ private enum AtriaHeartRateOrientation {
                 try? await Task.sleep(for: .milliseconds(200))
             }
 
+            guard !Task.isCancelled,
+                  generation == presentationGeneration else { return }
             let current = activeScene()?.effectiveGeometry.interfaceOrientation
             AtriaDebugLog("ATRIADBG heart_rate_orientation status=portrait_pending orientation=%@ app_mask=allButUpsideDown",
                           String(describing: current))
+            portraitRestoreTask = nil
         }
     }
 
@@ -5020,7 +5037,18 @@ struct AtriaHeartRateAxisChart: View, Equatable {
                     AxisTick().foregroundStyle(.secondary.opacity(0.45))
                     AxisValueLabel {
                         if let time = value.as(Date.self) {
-                            Text(time, format: .dateTime.hour().minute())
+                            // The compact Vitals canvas is only a few hundred
+                            // points wide. `1:00 PM` labels were truncated to
+                            // `1:00 P…`, which made the newly visible axis look
+                            // broken. Minute precision adds no information at
+                            // this scale; the inspector retains the detailed
+                            // time readout for selection.
+                            Text(
+                                time,
+                                format: .dateTime.hour(
+                                    .defaultDigits(amPM: .narrow)
+                                )
+                            )
                                 .font(.caption2.monospacedDigit())
                                 .foregroundStyle(.secondary)
                         }
