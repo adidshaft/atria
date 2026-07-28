@@ -217,6 +217,47 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
         )
     }
 
+    func testResolvedOffloadPublishesDailyReceiptRefreshBoundary() throws {
+        let start = Date(timeIntervalSince1970: 5_250)
+        let end = start.addingTimeInterval(90)
+        AtriaWhoop4MotionBankCoverageLedger.open(
+            at: start,
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        AtriaWhoop4MotionBankCoverageLedger.close(
+            at: end,
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        let ticket = try XCTUnwrap(
+            AtriaWhoop4MotionBankCoverageLedger.nextPendingOffload(
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+        )
+        let notification = expectation(
+            forNotification: AtriaWhoop4MotionBankCoverageLedger
+                .didResolveOffloadNotification,
+            object: nil
+        ) { note in
+            note.object as? String == ticket.id
+        }
+
+        AtriaWhoop4MotionBankCoverageLedger.resolveOffload(
+            id: ticket.id,
+            defaults: defaults
+        )
+
+        wait(for: [notification], timeout: 1)
+        XCTAssertNil(
+            AtriaWhoop4MotionBankCoverageLedger.nextPendingOffload(
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+        )
+    }
+
     func testNewWorkoutGetsFirstAttemptBeforeOlderRetry() throws {
         let firstStart = Date(timeIntervalSince1970: 5_500)
         let firstEnd = firstStart.addingTimeInterval(90)

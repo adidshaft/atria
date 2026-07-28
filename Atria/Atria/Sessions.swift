@@ -6421,6 +6421,7 @@ final class SessionStore: ObservableObject {
         qos: .utility
     )
     private var historicalArchiveStatusObserver: NSObjectProtocol?
+    private var motionBankOffloadObserver: NSObjectProtocol?
     private var systemTimeZoneObserver: NSObjectProtocol?
     private var activeJournalSleepReviewObserver: NSObjectProtocol?
     /// Coalesces archive writes into one off-main scan. Rehydration is deliberately
@@ -10960,6 +10961,19 @@ final class SessionStore: ObservableObject {
                 self.compactHistoricalArchiveIfUseful(reason: "archive_did_update")
             }
         }
+        self.motionBankOffloadObserver = NotificationCenter.default.addObserver(
+            forName: AtriaWhoop4MotionBankCoverageLedger
+                .didResolveOffloadNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                // This bounded refresh owns the durable daily receipt and the
+                // shared Home/widget publication. It never waits on BLE and
+                // cannot delay accepted live HR.
+                self?.refreshHistorySnapshotCache(deferred: true)
+            }
+        }
         self.systemTimeZoneObserver = NotificationCenter.default.addObserver(forName: NSNotification.Name.NSSystemTimeZoneDidChange,
                                                                               object: nil,
                                                                               queue: .main) { [weak self] _ in
@@ -11073,6 +11087,9 @@ final class SessionStore: ObservableObject {
     deinit {
         if let historicalArchiveStatusObserver {
             NotificationCenter.default.removeObserver(historicalArchiveStatusObserver)
+        }
+        if let motionBankOffloadObserver {
+            NotificationCenter.default.removeObserver(motionBankOffloadObserver)
         }
         if let systemTimeZoneObserver {
             NotificationCenter.default.removeObserver(systemTimeZoneObserver)
