@@ -383,6 +383,16 @@ enum WidgetSnapshotPublisher {
         }
     }
 
+    /// A durable morning recovery is immutable for its physiological cycle and
+    /// therefore outranks any provisional value that was memoized before the
+    /// daily metric/rollup pair finished loading.
+    nonisolated static func canonicalRecovery(
+        displayed: Metrics.RecoveryEstimate,
+        frozen: FrozenRecoverySummary?
+    ) -> Metrics.RecoveryEstimate {
+        frozen?.recoveryEstimate ?? displayed
+    }
+
     @discardableResult
     static func publish(store: SessionStore,
                         ble: AtriaBLEManager,
@@ -411,16 +421,6 @@ enum WidgetSnapshotPublisher {
         let physiologicalCycle = AtriaPhysiologicalCycle.current(now: now,
                                                                  confirmedSleeps: store.confirmedSleeps,
                                                                  calendar: calendar)
-        // One SessionStore projection keeps Home, widgets and notifications on
-        // the same wake-to-wake value and prevents frequent widget publications
-        // from repeatedly evaluating Recovery v2.
-        let displayedRecovery = store.recoveryProjection(
-            now: now,
-            calendar: calendar,
-            initialFallbackHRVSnapshot: ble.recoveryHRVSnapshot,
-            liveRestingHeartRate: ble.restingHR
-        )
-        let recoveryPercent = displayedRecovery.percent
         let frozenRecovery = DailyRecoveryResolver.summary(
             rollups: store.dailyRollupHistory,
             metrics: store.dailyMetricHistory,
@@ -428,6 +428,23 @@ enum WidgetSnapshotPublisher {
             anchorSleep: latestSleep,
             calendar: calendar
         )
+        // Resolve the durable wake-to-wake summary before evaluating the
+        // provisional projection, then carry one complete estimate through the
+        // entire snapshot. This is intentionally defensive: a widget publish
+        // can race deferred daily-metric settlement, and mixing the provisional
+        // score/detail/confidence with a newly available frozen summary made
+        // Home show 39 while the widget persisted 42 on the same device.
+        let displayedRecovery = store.recoveryProjection(
+            now: now,
+            calendar: calendar,
+            initialFallbackHRVSnapshot: ble.recoveryHRVSnapshot,
+            liveRestingHeartRate: ble.restingHR
+        )
+        let widgetRecovery = canonicalRecovery(
+            displayed: displayedRecovery,
+            frozen: frozenRecovery
+        )
+        let recoveryPercent = widgetRecovery.percent
         let frozenTodayRollup = store.dailyRollupHistory.first {
             physiologicalCycle.boundaryKind == .mainSleep
                 && calendar.isDate($0.day, inSameDayAs: physiologicalCycle.start)
@@ -506,7 +523,7 @@ enum WidgetSnapshotPublisher {
             hrvRMSSD = frozenRecovery.usesHRV
                 ? frozenTodayRollup?.lnRMSSD.map { Int(exp($0).rounded()) }
                 : nil
-        } else if displayedRecovery.usesHRV {
+        } else if widgetRecovery.usesHRV {
             if let snapshot = ble.hrvSnapshot, snapshot.isDisplayEligible(on: now) {
                 hrvRMSSD = Int(snapshot.rmssd.rounded())
             } else {
@@ -519,7 +536,7 @@ enum WidgetSnapshotPublisher {
         if hrvRMSSD == nil {
             hrvState = "learning"
         } else {
-            hrvState = displayedRecovery.confidence == .validated ? "validated" : "personal_baseline"
+            hrvState = widgetRecovery.confidence == .validated ? "validated" : "personal_baseline"
         }
         let layout = currentHomeLayoutConfig()
         let widgetDiagnostics = Self.diagnostics
@@ -551,8 +568,8 @@ enum WidgetSnapshotPublisher {
         let snapshot = WidgetSnapshot(schema: 4,
                                       createdAt: now,
                                       recoveryPercent: recoveryPercent,
-                                      recoveryConfidence: displayedRecovery.confidence.rawValue,
-                                      recoveryDetail: displayedRecovery.detail,
+                                      recoveryConfidence: widgetRecovery.confidence.rawValue,
+                                      recoveryDetail: widgetRecovery.detail,
                                       strain: strain,
                                       strainDetail: strainIsCredible
                                         ? (strainIsPartial ? "Partial · sparse HR" : "Current cycle")
