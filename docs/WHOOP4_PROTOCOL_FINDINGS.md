@@ -13,6 +13,57 @@ Last updated: 2026-07-28 (Asia/Kolkata)
 
 No inference, archived row, unit test, or code structure is promoted to a physical pass.
 
+## 2026-07-28 — exact-window sleep respiration survives confirmation
+
+**PHYSICAL INPUT + CODE**
+
+- The July 28 device pull contains dense standard-2A37 RR evidence across the
+  00:45–04:23 sleep review window. The live qualified RR snapshot independently
+  produced a plausible 10.5 breaths/minute estimate, but the review and
+  `UserConfirmedSleep` projection paths discarded respiration by writing
+  `nil`.
+- Sleep-window respiration is now estimated only inside the candidate or
+  confirmed boundaries. It never joins RR across connection-bounded sessions
+  or across a greater-than-three-second RR gap; independently continuous runs
+  contribute bounded RSA estimates whose median becomes the nightly scalar.
+- The optional value is migration-safe and persists through review,
+  confirmation, adjustment, session compaction, physiological-day projection,
+  and `SleepHistorySnapshot`. Legacy confirmed-sleep rows decode with no
+  respiration instead of inventing one.
+- The focused respiratory tests and the complete sleep-audit regression suite
+  pass (38/38). This remains **CODE**, not a physical output pass, until the
+  current review is settled and the value is observed after an in-place install
+  and relaunch.
+- **Evidence:** `evidence/2026-07-28-current-metric-audit/full/` and
+  `Test-AtriaTests-2026.07.28_11-59-23-+0530.xcresult`.
+
+## 2026-07-28 — resumed morning sleep remains a separate segment
+
+**PHYSICAL INPUT + CODE**
+
+- The physical July 28 stream contains a qualified 00:45–04:23 main-sleep
+  review, tiny ambiguous 05:58 and 06:17 fragments, and a separate dense
+  08:33–10:42 low-HR/qualified-RR segment. The earlier pipeline clustered the
+  latter three records, then rejected the cluster because its 114-minute
+  internal gap exceeded the safety ceiling.
+- A substantial later-morning segment may now become a
+  `resumed_sleep_candidate` only when a review-worthy main sleep exists in the
+  same physiological morning, the separation is at least 90 minutes, the
+  segment ends before noon, HR and qualified RR are dense, robust HR gates are
+  low, and workout evidence is absent. It is review-only and cannot
+  auto-confirm.
+- The primary main-sleep review is always settled first. A resumed candidate is
+  queued separately afterward. Confirmation persists a distinct
+  `resumed_sleep` record; it cannot extend, replace, or delete the main record.
+  Cycle presentation sums only the observed segment durations, so the
+  04:23–08:33 awake gap receives zero sleep credit.
+- The sequential Audit + ReviewCache suite passes 75/75, including the actual
+  durable confirmation path and negative no-prior-main/active-tail controls.
+  Physical UI verification remains pending an in-place install and settlement
+  of the current main review.
+- **Evidence:** `evidence/2026-07-28-current-metric-audit/full/` and
+  `Test-AtriaTests-2026.07.28_12-16-14-+0530.xcresult`.
+
 ## 2026-07-27 — sleep respiratory provenance boundary
 
 **CODE + PHYSICAL PERSISTENCE**
