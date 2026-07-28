@@ -295,6 +295,18 @@ private struct AtriaGraphInspectorView: View {
         .chartScrollableAxes(.horizontal)
         .chartXVisibleDomain(length: visibleDuration ?? defaultVisibleDuration(series))
         .chartXSelection(value: $selectedDate)
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 6)) { value in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.16))
+                AxisTick().foregroundStyle(.secondary.opacity(0.55))
+                if let date = value.as(Date.self) {
+                    AxisValueLabel {
+                        Text(axisLabel(for: date, duration: currentVisibleDuration))
+                            .font(.caption2.monospacedDigit())
+                    }
+                }
+            }
+        }
         .chartLegend(position: .top, alignment: .leading)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -336,6 +348,18 @@ private struct AtriaGraphInspectorView: View {
         .chartScrollableAxes(.horizontal)
         .chartXVisibleDomain(length: visibleDuration ?? defaultIntervalVisibleDuration(domain: domain))
         .chartXSelection(value: $selectedDate)
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 6)) { value in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.16))
+                AxisTick().foregroundStyle(.secondary.opacity(0.55))
+                if let date = value.as(Date.self) {
+                    AxisValueLabel {
+                        Text(axisLabel(for: date, duration: currentVisibleDuration))
+                            .font(.caption2.monospacedDigit())
+                    }
+                }
+            }
+        }
         .simultaneousGesture(intervalMagnification(domain: domain))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -463,6 +487,13 @@ private struct AtriaGraphInspectorView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "h:mm a"
         return "\(formatter.string(from: start))–\(formatter.string(from: end))"
+    }
+
+    private func axisLabel(for date: Date, duration: TimeInterval) -> String {
+        if duration <= 48 * 60 * 60 {
+            return date.formatted(.dateTime.hour().minute())
+        }
+        return date.formatted(.dateTime.month(.abbreviated).day())
     }
 
     private func requestOrientation(_ mask: UIInterfaceOrientationMask) {

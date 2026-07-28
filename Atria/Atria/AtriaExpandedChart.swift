@@ -70,15 +70,18 @@ struct AtriaExpandedChartView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let landscapeWidth = max(proxy.size.width, proxy.size.height) - 32
-            let landscapeHeight = min(proxy.size.width, proxy.size.height) - 96
+            // Keep only a compact outer gutter. The previous 96-point vertical
+            // reservation left a large dead band on iPhone landscape and made
+            // the plot needlessly short.
+            let landscapeWidth = max(proxy.size.width, proxy.size.height) - 24
+            let landscapeHeight = min(proxy.size.width, proxy.size.height) - 24
             ZStack {
                 Color.black.ignoresSafeArea()
 
                 VStack(spacing: 10) {
                     header
                     chartBody
-                        .frame(width: landscapeWidth, height: landscapeHeight - 60)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     footer
                 }
                 .frame(width: landscapeWidth, height: landscapeHeight)
@@ -208,6 +211,24 @@ struct AtriaExpandedChartView: View {
         .chartXVisibleDomain(length: max(1, visibleDays) * 86_400)
         .chartXScale(domain: prepared.xDomain)
         .chartYScale(domain: prepared.yDomain)
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 6)) { value in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.16))
+                AxisTick().foregroundStyle(.secondary.opacity(0.55))
+                if let date = value.as(Date.self) {
+                    AxisValueLabel {
+                        Text(date, format: .dateTime.month(.abbreviated).day())
+                            .font(.caption2)
+                    }
+                }
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 5)) { _ in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                AxisValueLabel().font(.caption2.monospacedDigit())
+            }
+        }
         .chartOverlay { chartProxy in
             GeometryReader { geo in
                 Rectangle()
