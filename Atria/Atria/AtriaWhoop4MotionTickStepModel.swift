@@ -1125,7 +1125,32 @@ enum AtriaWhoop4GravityCadenceStepModel {
             }
             estimates.append(estimate)
         }
-        guard !estimates.isEmpty else { return nil }
+        // An interval with only short or otherwise unqualified motion bursts
+        // is still useful day evidence: its stationary seconds prove zero
+        // steps, while only the counter-active burst remains unresolved.
+        // Returning nil here previously made the daily projector mark the
+        // complete bank interval unresolved, reducing qualified coverage to
+        // zero and preventing an honest partial receipt from being saved.
+        guard !estimates.isEmpty else {
+            let duration = ordered.last!.timestamp - ordered.first!.timestamp
+            guard duration > 0, duration.isFinite else { return nil }
+            return .init(
+                steps: 0,
+                durationSeconds: duration,
+                sampleRateHz: Double(ordered.count - 1) / duration,
+                aliasFrequencyHz: 0,
+                cadenceHz: 0,
+                peakDominance: 0,
+                motionTicks: 0,
+                motionVolume: 0,
+                cadenceOnlySteps: 0,
+                motionVolumeSteps: 0,
+                unresolvedMotionSeconds: min(
+                    duration,
+                    unresolvedMotionSeconds
+                )
+            )
+        }
         let totalDuration = estimates.reduce(0) { $0 + $1.durationSeconds }
         let totalSteps = estimates.reduce(0) { $0 + $1.steps }
         let totalTicks = estimates.reduce(0) { $0 + $1.motionTicks }

@@ -598,6 +598,41 @@ final class AtriaWhoop4MotionTickStepModelTests: XCTestCase {
         XCTAssertEqual(estimate.unresolvedMotionSeconds, 30)
     }
 
+    func testDailyEstimatePreservesStationaryCoverageWhenAllMotionIsUnresolved()
+        throws {
+        let shortMotion = cadencePoints(
+            count: 6,
+            duration: 5,
+            aliasFrequency: 0.42,
+            moving: true
+        )
+        let stationary = cadencePoints(
+            count: 91,
+            duration: 90,
+            aliasFrequency: 0.42,
+            moving: false
+        ).map {
+            AtriaWhoop4GravityCadenceStepModel.Point(
+                timestamp: $0.timestamp + 10,
+                flash: $0.flash + 100,
+                tick: shortMotion.last!.tick,
+                gravityX: $0.gravityX,
+                gravityY: $0.gravityY,
+                gravityZ: $0.gravityZ,
+                unknownMotionScalar32: $0.unknownMotionScalar32,
+                identity: "stationary-\($0.identity)"
+            )
+        }
+        let estimate = try XCTUnwrap(
+            AtriaWhoop4GravityCadenceStepModel.estimateCoveredActivity(
+                points: shortMotion + stationary
+            )
+        )
+        XCTAssertEqual(estimate.steps, 0)
+        XCTAssertEqual(estimate.unresolvedMotionSeconds, 5, accuracy: 0.001)
+        XCTAssertEqual(estimate.durationSeconds, 100, accuracy: 0.001)
+    }
+
     private func cadencePoints(
         count: Int,
         duration: TimeInterval,
