@@ -730,7 +730,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private struct AtriaTrendRangeDock: View",
             "@Binding var selectedRange: AtriaTrendRange",
             "ForEach(AtriaTrendRange.allCases) { range in",
-            "withAnimation(.snappy(duration: 0.22))",
+            "withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard))",
             "selectedRange = range",
             ".accessibilityLabel(\"\\(range.menuLabel) trend range, \\(rangeStatusText(for: range))\")",
             "rangeStatusText(for: selectedRange)",

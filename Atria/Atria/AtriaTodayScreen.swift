@@ -483,7 +483,7 @@ struct AtriaTodayScreen: View {
             .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip,
                                            style: .continuous))
             .onLongPressGesture(minimumDuration: 0.45) {
-                withAnimation(.snappy(duration: 0.2)) {
+                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                     isEditingGlance = true
                 }
             }
@@ -642,7 +642,7 @@ struct AtriaTodayScreen: View {
         HStack(spacing: 8) {
             sectionKicker("At a glance")
             Button {
-                withAnimation(.snappy(duration: 0.2)) {
+                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                     isEditingGlance.toggle()
                 }
             } label: {
@@ -683,7 +683,7 @@ struct AtriaTodayScreen: View {
                     .buttonBorderShape(.circle)
                 Menu {
                     Button {
-                        withAnimation(.snappy(duration: 0.2)) {
+                        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                             glanceLayoutBars.toggle()
                         }
                     } label: {
@@ -3295,7 +3295,7 @@ private struct AtriaTodaySectionDropDelegate: DropDelegate {
               let to = order.firstIndex(of: item) else { return }
         var next = order
         next.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
-        withAnimation(.snappy(duration: 0.25)) {
+        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
             order = next
         }
     }

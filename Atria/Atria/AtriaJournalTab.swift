@@ -576,7 +576,7 @@ private struct AtriaJournalCheckInDeck: View {
                 ProgressView(value: deckProgressFraction)
                     .progressViewStyle(.linear)
                     .tint(.cyan)
-                    .animation(reduceMotion ? nil : .snappy(duration: 0.25),
+                    .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard),
                                value: deckProgressFraction)
                     .accessibilityHidden(true)
             }

@@ -62,7 +62,7 @@ struct AtriaAssistantScreen: View {
             }
         }
         .padding(16)
-        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: exchanges)
+        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard), value: exchanges)
     }
 
     #if DEBUG
