@@ -6,7 +6,7 @@ import Foundation
 /// notification and that the resulting raw source and aggregate catalog were
 /// committed. This journal deliberately records observed scan facts only; it
 /// does not claim that the strap accepted an app-selected time interval.
-final class AtriaHistoricalFullScanCompletionStore {
+final class AtriaHistoricalFullScanCompletionStore: @unchecked Sendable {
     struct Record: Codable, Equatable, Sendable {
         static let currentVersion = 1
 

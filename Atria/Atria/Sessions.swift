@@ -12293,6 +12293,31 @@ final class SessionStore: ObservableObject {
                                      backupCompletion: backupCompletion)
     }
 
+    /// BGTask-safe entry point. It never waits synchronously on the persistence
+    /// queue from MainActor, so expiration can complete the system task even
+    /// while an already-started atomic save finishes in the background.
+    func performBackgroundMaintenanceAsynchronously(
+        reason: String,
+        completion: @escaping @MainActor (Bool) -> Void
+    ) {
+        flushScheduledPersistenceAsync(reason: "\(reason)_persistence") {
+            [weak self] persistenceSucceeded in
+            guard let self else {
+                completion(false)
+                return
+            }
+            self.performBackgroundMaintenance(
+                reason: reason,
+                now: Date(),
+                calendar: .current,
+                backupCompletion: { backupSucceeded in
+                    completion(persistenceSucceeded && backupSucceeded)
+                },
+                persistenceAlreadyFlushed: true
+            )
+        }
+    }
+
     /// Evaluates the production 14-day / 512-MiB high-volume policy. One
     /// transaction still retires at most one raw chunk, but the off-main driver
     /// starts fresh verified transactions within a bounded work slice until the
@@ -12453,8 +12478,11 @@ final class SessionStore: ObservableObject {
     func performBackgroundMaintenance(reason: String,
                                       now: Date,
                                       calendar: Calendar,
-                                      backupCompletion: (@MainActor (Bool) -> Void)? = nil) {
-        flushScheduledPersistence(reason: "\(reason)_persistence")
+                                      backupCompletion: (@MainActor (Bool) -> Void)? = nil,
+                                      persistenceAlreadyFlushed: Bool = false) {
+        if !persistenceAlreadyFlushed {
+            flushScheduledPersistence(reason: "\(reason)_persistence")
+        }
         if let backupCompletion {
             // The BGTask's completion gate must cover both the off-main sleep
             // proposal and the durable backup. This preserves the original
@@ -12479,20 +12507,29 @@ final class SessionStore: ObservableObject {
         generateWeeklyPlanIfNeeded(now: now, calendar: calendar, reason: reason)
         compactHistoricalArchiveIfUseful(reason: reason, now: now)
         compactColdSessionsInShadowIfUseful(reason: reason, now: now)
-        let health = HealthKitExporter.diagnostics(for: sessions,
-                                                    rest: baseline.restingInt ?? 60,
-                                                    maxHR: profile.maxHR,
-                                                    confirmedWorkouts: confirmedWorkouts,
-                                                    confirmedSleeps: confirmedSleeps)
-        AtriaDebugLog("ATRIADBG bg_maintenance status=ok reason=%@ sessions=%d healthkit_hr_samples=%d healthkit_resting_hr_samples=%d healthkit_hrv_samples=%d healthkit_respiratory_rate_samples=%d healthkit_workouts=%d healthkit_sleeps=%d",
-              reason,
-              sessions.count,
-              health.planned.hrSamples,
-              health.planned.restingHRSamples,
-              health.planned.hrvSamples,
-              health.planned.respiratoryRateSamples,
-              health.planned.workouts,
-              health.planned.sleeps)
+        let healthSessions = sessions
+        let healthRest = baseline.restingInt ?? 60
+        let healthMaxHR = profile.maxHR
+        let healthWorkouts = confirmedWorkouts
+        let healthSleeps = confirmedSleeps
+        DispatchQueue.global(qos: .utility).async {
+            let health = HealthKitExporter.diagnostics(
+                for: healthSessions,
+                rest: healthRest,
+                maxHR: healthMaxHR,
+                confirmedWorkouts: healthWorkouts,
+                confirmedSleeps: healthSleeps
+            )
+            AtriaDebugLog("ATRIADBG bg_maintenance status=ok reason=%@ sessions=%d healthkit_hr_samples=%d healthkit_resting_hr_samples=%d healthkit_hrv_samples=%d healthkit_respiratory_rate_samples=%d healthkit_workouts=%d healthkit_sleeps=%d",
+                  reason,
+                  healthSessions.count,
+                  health.planned.hrSamples,
+                  health.planned.restingHRSamples,
+                  health.planned.hrvSamples,
+                  health.planned.respiratoryRateSamples,
+                  health.planned.workouts,
+                  health.planned.sleeps)
+        }
     }
 
     func generateWeeklyReportProductionFixtureFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
@@ -29405,7 +29442,7 @@ final class SessionStore: ObservableObject {
         let maxHR = profile.maxHR
         let biologicalSex = profile.biologicalSex
 
-        Task.detached(priority: .utility) { [weak self, before, sourceSessions, rest, maxHR, biologicalSex] in
+        Task.detached(priority: .utility) { [store = self, before, sourceSessions, rest, maxHR, biologicalSex] in
             let rescored = Self.rescoredConfirmedWorkoutsForCurrentStrainCalibration(
                 before,
                 sourceSessions: sourceSessions,
@@ -29415,11 +29452,10 @@ final class SessionStore: ObservableObject {
             )
             guard rescored != before else { return }
             await MainActor.run {
-                guard let self,
-                      self.cachedConfirmedWorkouts == before else {
+                guard store.cachedConfirmedWorkouts == before else {
                     return
                 }
-                guard self.saveConfirmedWorkouts(rescored, deferDerivedPublication: true) else {
+                guard store.saveConfirmedWorkouts(rescored, deferDerivedPublication: true) else {
                     return
                 }
                 let changed = zip(before, rescored).reduce(0) { count, pair in

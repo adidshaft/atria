@@ -3,6 +3,44 @@ import CoreBluetooth
 @testable import Atria
 
 final class AtriaBLERecoveryCadenceTests: XCTestCase {
+    func testCancelledRealtimeRestartCannotReenableStreaming() {
+        XCTAssertFalse(AtriaBLEManager.canFinishRealtimeRestart(
+            taskCancelled: true,
+            realtimeArmed: true,
+            samePeripheral: true,
+            sameConnectionEpoch: true,
+            connected: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.canFinishRealtimeRestart(
+            taskCancelled: false,
+            realtimeArmed: false,
+            samePeripheral: true,
+            sameConnectionEpoch: true,
+            connected: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.canFinishRealtimeRestart(
+            taskCancelled: false,
+            realtimeArmed: true,
+            samePeripheral: false,
+            sameConnectionEpoch: true,
+            connected: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.canFinishRealtimeRestart(
+            taskCancelled: false,
+            realtimeArmed: true,
+            samePeripheral: true,
+            sameConnectionEpoch: false,
+            connected: true
+        ))
+        XCTAssertTrue(AtriaBLEManager.canFinishRealtimeRestart(
+            taskCancelled: false,
+            realtimeArmed: true,
+            samePeripheral: true,
+            sameConnectionEpoch: true,
+            connected: true
+        ))
+    }
+
     func testHistoricalPageContinuationStartsPromptlyAndBacksOffOnReplay() {
         XCTAssertEqual(
             AtriaBLEManager.historicalPageContinuationDelays(

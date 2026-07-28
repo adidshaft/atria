@@ -46,8 +46,11 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
 
     func testBackgroundTaskWaitsForDurableBackupWorkerCompletion() throws {
         let app = try appSource("AtriaApp.swift")
+        let sessions = try appSource("Sessions.swift")
         XCTAssertTrue(app.contains("let backupSucceeded = await withCheckedContinuation"))
-        XCTAssertTrue(app.contains("store.performBackgroundMaintenance(reason: reason) { succeeded in"))
+        XCTAssertTrue(app.contains("store.performBackgroundMaintenanceAsynchronously(reason: reason) { succeeded in"))
+        XCTAssertTrue(sessions.contains("flushScheduledPersistenceAsync(reason: \"\\(reason)_persistence\")"))
+        XCTAssertTrue(sessions.contains("persistenceAlreadyFlushed: true"))
         XCTAssertTrue(app.contains("success: backupSucceeded"))
         XCTAssertTrue(app.contains("&& historicalRecoverySucceeded"))
         XCTAssertTrue(app.contains("&& recoveredPublicationSucceeded"))

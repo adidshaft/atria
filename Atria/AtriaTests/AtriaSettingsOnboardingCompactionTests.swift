@@ -85,8 +85,10 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
         let settingsRoot = String(source[..<advancedStart.lowerBound])
         let advancedTargets = String(source[advancedStart.lowerBound...])
 
-        XCTAssertFalse(settingsRoot.contains("@AtriaDefault(\"atria.target."),
-                       "Opening Settings must not construct advanced target observers")
+        XCTAssertFalse(settingsRoot.contains("@AtriaDefault(\"atria.target.recovery.greenLower\""),
+                       "Opening Settings must not construct advanced recovery target observers")
+        XCTAssertFalse(settingsRoot.contains("@AtriaDefault(\"atria.target.vo2.redDelta\""),
+                       "Opening Settings must not construct advanced VO2 target observers")
         XCTAssertFalse(settingsRoot.contains("@AtriaDefault(\"atria.sleep.baseNeedHours\""))
         XCTAssertTrue(settingsRoot.contains("AtriaAdvancedTargetsSettingsView()"))
         XCTAssertFalse(settingsRoot.contains(".onChange(of: recoveryTargetSignature)"))

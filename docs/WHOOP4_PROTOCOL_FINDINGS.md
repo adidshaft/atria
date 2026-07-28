@@ -2257,6 +2257,48 @@ POSITIVE STILL REQUIRED**
   intentionally pending user adjudication; no automated test or agent should
   confirm a detected sleep on the user's behalf.
 
+#### 2026-07-28 — release/runtime integrity hardening after the five physical gates
+
+- **BLE callback isolation:** CoreBluetooth discovery callbacks execute on the
+  manager's private delegate queue, not MainActor. The few policy bits needed
+  synchronously by that queue now publish through one lock-backed immutable
+  snapshot, preventing a callback from observing a torn combination of
+  standard-HR, history, onboarding, and protected-R10 modes.
+- **Restoration identity:** state restoration now selects the saved peripheral
+  UUID explicitly. A single restored peripheral is accepted only when no saved
+  UUID exists; an ambiguous or mismatched restored set fails closed and cannot
+  silently replace the paired strap.
+- **Failed-connect continuity:** a failed saved-peripheral connection installs
+  the next standing CoreBluetooth connect on the delegate queue before
+  MainActor bookkeeping. History-owned, diagnostic, app-cancelled, and
+  capture-disabled paths remain excluded.
+- **Realtime restart cancellation:** a cancelled delayed restart can no longer
+  send realtime ON after history handoff or an explicit stop. The delayed
+  command is fenced by task cancellation, connection epoch, peripheral
+  identity, connection state, and current realtime intent.
+- **Background work:** maintenance first flushes persistence asynchronously;
+  HealthKit export planning runs off MainActor; workout route and ActivityKit
+  assertions have synchronous expiration cleanup. This prevents a suspended
+  process from stranding an assertion or blocking the UI on a persistence
+  queue.
+- **Release packaging:** app and widget now include valid privacy manifests
+  for file timestamps, system uptime, and app/app-group UserDefaults. Release
+  signing is automatic rather than pinned to the development profiles.
+- **TEST evidence:** focused BLE recovery, background fast-lane, SwiftUI
+  performance, and onboarding suites pass in
+  `Test-AtriaTests-2026.07.28_13-25-57-+0530.xcresult`; the coherent callback
+  snapshot regression passes in
+  `Test-AtriaTests-2026.07.28_13-35-43-+0530.xcresult`.
+- **Packaging evidence:** the final clean Release archive completed with store
+  validation and contained both privacy manifests at
+  `/tmp/atria-rc-final.mlndVw/Atria.xcarchive`. App Store Connect export then
+  succeeded to `/tmp/atria-rc-final.mlndVw/export/Atria.ipa`; the exported app
+  and widget are Apple Distribution signed, carry `beta-reports-active=true`,
+  and have `get-task-allow=false`. A simulator clean install reached the first
+  onboarding page without reusing app-container data; physical fresh-strap
+  onboarding remains a separate acceptance test because the simulator cannot
+  provide CoreBluetooth strap hardware.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.

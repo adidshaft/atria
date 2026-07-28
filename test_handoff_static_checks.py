@@ -1477,7 +1477,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "&& historicalRecoverySucceeded",
             "&& recoveredPublicationSucceeded",
             "completion.complete(task, success: false)",
-            "store.performBackgroundMaintenance(reason: reason) { succeeded in",
+            "store.performBackgroundMaintenanceAsynchronously(reason: reason) { succeeded in",
             "continuation.resume(returning: succeeded)",
             'if reason == "bg_processing"',
         ]:
@@ -8551,7 +8551,10 @@ class HandoffStaticChecks(unittest.TestCase):
             cutover_start,
         )
         normal_restore_body = body[:cutover_start] + body[normal_restore_start:]
-        self.assertNotIn("cancelPeripheralConnection", normal_restore_body)
+        self.assertNotIn(
+            "central.cancelPeripheralConnection(restoredPeripheral)",
+            normal_restore_body,
+        )
         self.assertNotIn("full_protocol_fresh_scan", body)
 
     def test_long_wear_keepalive_survives_app_switch(self):
@@ -12367,14 +12370,15 @@ class HandoffStaticChecks(unittest.TestCase):
             "reason: \"\\(reason)_opportunistic\"",
             "offline_sync_required=%d",
             "offline_sync_succeeded=%d",
-            "store.performBackgroundMaintenance(reason: reason)",
+            "store.performBackgroundMaintenanceAsynchronously(reason: reason)",
         ]:
             assert_contains(self, app, needle)
 
         maintenance = re.search(
             r"func performBackgroundMaintenance\(reason: String,\s*"
             r"now: Date,\s*calendar: Calendar,\s*"
-            r"backupCompletion: \(@MainActor \(Bool\) -> Void\)\? = nil\) \{(?P<body>.*?)\n    \}",
+            r"backupCompletion: \(@MainActor \(Bool\) -> Void\)\? = nil,\s*"
+            r"persistenceAlreadyFlushed: Bool = false\) \{(?P<body>.*?)\n    \}",
             sessions,
             re.S,
         )
@@ -12385,7 +12389,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "autoConfirmSleepOnForegroundIfUseful(",
             "writeAutomaticSessionBackup(reason: reason,",
             "completion: backupCompletion",
-            "HealthKitExporter.diagnostics(for: sessions,",
+            "HealthKitExporter.diagnostics(",
             "ATRIADBG bg_maintenance status=ok",
         ]:
             assert_contains(self, maintenance_body, needle)

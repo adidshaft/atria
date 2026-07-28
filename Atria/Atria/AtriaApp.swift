@@ -418,7 +418,7 @@ struct AtriaApp: App {
             // only a short execution window, so it must never wait on backfill
             // before finalizing already-collected overnight evidence.
             let backupSucceeded = await withCheckedContinuation { continuation in
-                store.performBackgroundMaintenance(reason: reason) { succeeded in
+                store.performBackgroundMaintenanceAsynchronously(reason: reason) { succeeded in
                     continuation.resume(returning: succeeded)
                 }
             }

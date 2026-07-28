@@ -1255,7 +1255,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     @Published private(set) var onboardingPairingPreflightInFlight = false
     private var onboardingPairingPreflightGeneration: UInt64 = 0
     private var onboardingPairingPreflightTask: Task<Void, Never>?
-    private nonisolated(unsafe) var onboardingPairingPreflightDiscoveryRequested = false
+    private nonisolated let callbackPolicyState = AtriaBLECallbackPolicyState(
+        standardHROnly: UserDefaults.standard.bool(
+            forKey: RadioDefaults.standardHROnly
+        )
+    )
+    private nonisolated var onboardingPairingPreflightDiscoveryRequested: Bool {
+        get { callbackPolicyState.snapshot().onboardingPairingPreflight }
+        set {
+            callbackPolicyState.update {
+                $0.onboardingPairingPreflight = newValue
+            }
+        }
+    }
     private var onboardingPairingPreflightAttemptedConnection: String?
     private var onboardingPairingPreflightSequence: UInt8?
     private var onboardingPairingPreflightWriteResult:
@@ -1273,7 +1285,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     // CoreBluetooth delegate callbacks are delivered on the manager's main
     // queue but are `nonisolated` protocol requirements under Swift 6. This
     // read-through profile bit is mutated only by the main-actor history owner.
-    nonisolated(unsafe) private var historySkipDataRangeRequest = false
+    nonisolated private var historySkipDataRangeRequest: Bool {
+        get { callbackPolicyState.snapshot().historySkipsDataRange }
+        set {
+            callbackPolicyState.update {
+                $0.historySkipsDataRange = newValue
+            }
+        }
+    }
     private nonisolated let historyTransportPhaseFence =
         AtriaBLEHistoryTransportPhaseFence()
     private nonisolated var historyOnlyProbeMode: Bool {
@@ -1469,7 +1488,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     @Published private(set) var standardHROnlyEnabled = UserDefaults.standard.bool(forKey: RadioDefaults.standardHROnly)
     @Published private(set) var longWearModeEnabled = UserDefaults.standard.bool(forKey: LongWearDefaults.enabled)
     @Published private(set) var collectionProfile = CollectionProfile.load()
-    private nonisolated(unsafe) var standardHROnlyMode = UserDefaults.standard.bool(forKey: RadioDefaults.standardHROnly)
+    private nonisolated var standardHROnlyMode: Bool {
+        get { callbackPolicyState.snapshot().standardHROnly }
+        set {
+            callbackPolicyState.update {
+                $0.standardHROnly = newValue
+            }
+        }
+    }
     private var historicalArchiveRows = 0
     private var historicalArchiveRowsSinceAck = 0
     private var historicalArchiveWriteFailures = 0
@@ -2283,7 +2309,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     // but the protocol requirements are nonisolated under Swift 6. Keep only
     // the two read-through discovery gates unsafe; all mutation remains on the
     // main actor in the bounded owner state machine below.
-    nonisolated(unsafe) private var protectedR10ProfileCharacteristics: [CBUUID: CBCharacteristic] = [:]
+    private var protectedR10ProfileCharacteristics: [CBUUID: CBCharacteristic] = [:]
     private var protectedR10ProfileRequestedNotifyUUIDs = Set<CBUUID>()
     private var protectedR10ProfileConfirmedNotifyUUIDs = Set<CBUUID>()
     private var protectedR10CommandSequenceTask: Task<Void, Never>?
@@ -2333,7 +2359,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 #endif
         return 60 * 60
     }
-    nonisolated(unsafe) private var protectedR10StandardDiscoveryStarted = false
+    nonisolated private var protectedR10StandardDiscoveryStarted: Bool {
+        get { callbackPolicyState.snapshot().protectedStandardDiscoveryStarted }
+        set {
+            callbackPolicyState.update {
+                $0.protectedStandardDiscoveryStarted = newValue
+            }
+        }
+    }
 
     nonisolated static func motionHandshakeNotifyOrder(
         useResponseEventDataProfile: Bool
@@ -9035,6 +9068,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         protectedR10ProfileCharacteristics = Dictionary(
             uniqueKeysWithValues: characteristics.map { ($0.uuid, $0) }
         )
+        callbackPolicyState.update {
+            $0.protectedProfileIsEmpty = protectedR10ProfileCharacteristics.isEmpty
+        }
         protectedR10ProfileRequestedNotifyUUIDs.removeAll()
         protectedR10ProfileConfirmedNotifyUUIDs = Set(
             characteristics.compactMap { $0.isNotifying ? $0.uuid : nil }
@@ -9643,6 +9679,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         protectedR10StandardDiscoveryTask?.cancel()
         protectedR10StandardDiscoveryTask = nil
         protectedR10ProfileCharacteristics.removeAll()
+        callbackPolicyState.update { $0.protectedProfileIsEmpty = true }
         protectedR10ProfileRequestedNotifyUUIDs.removeAll()
         protectedR10ProfileConfirmedNotifyUUIDs.removeAll()
         protectedR10ActivationSent = false
@@ -9686,6 +9723,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         protectedR10StandardDiscoveryTask?.cancel()
         protectedR10StandardDiscoveryTask = nil
         protectedR10ProfileCharacteristics.removeAll()
+        callbackPolicyState.update { $0.protectedProfileIsEmpty = true }
         protectedR10ProfileRequestedNotifyUUIDs.removeAll()
         protectedR10ProfileConfirmedNotifyUUIDs.removeAll()
         protectedR10ActivationSent = false
@@ -10000,7 +10038,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historicalArchiveWarmBackgroundTask = UIApplication.shared.beginBackgroundTask(
             withName: "Atria history identity index warmup"
         ) { [weak self] in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 guard let self else { return }
                 AtriaDebugLog("ATRIADBG historical_archive_warm background_lease=expired action=retain_raw_and_retry_no_ack_no_coverage")
                 self.endHistoricalArchiveWarmBackgroundLease(status: "expired")
@@ -10541,16 +10579,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 return
             }
             guard let orphanVault = openedVault else { return }
+            let orphansToReplay = sealedOrphans
             defer {
-                sealedOrphans.forEach { HistoricalArchive.endDurableDrain(generation: $0.generation) }
+                orphansToReplay.forEach {
+                    HistoricalArchive.endDurableDrain(generation: $0.generation)
+                }
             }
             var archivedFrames = 0
             var ignoredMetadata = 0
             do {
-                AtriaDebugLog("ATRIADBG historyIngress status=replay_waiting_for_identity_store entries=%d", sealedOrphans.count)
+                AtriaDebugLog("ATRIADBG historyIngress status=replay_waiting_for_identity_store entries=%d", orphansToReplay.count)
                 archiveWarmGroup.wait()
-                AtriaDebugLog("ATRIADBG historyIngress status=replay_identity_store_ready entries=%d", sealedOrphans.count)
-                for sealedOrphan in sealedOrphans {
+                AtriaDebugLog("ATRIADBG historyIngress status=replay_identity_store_ready entries=%d", orphansToReplay.count)
+                for sealedOrphan in orphansToReplay {
                     let orphanGeneration = sealedOrphan.generation
                     AtriaDebugLog("ATRIADBG historyIngress status=replay_worker_started generation=%llu", orphanGeneration)
                     let spool = try orphanVault.spool(for: sealedOrphan)
@@ -10613,7 +10654,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     guard let self else { return }
                     self.orphanHistoricalIngressArchiveInFlight = false
                     AtriaDebugLog("ATRIADBG historyIngress status=archived_orphan frames=%d metadata=%d entries=%d action=raw_only_no_ack_no_coverage",
-                                  archivedFrames, ignoredMetadata, sealedOrphans.count)
+                                  archivedFrames, ignoredMetadata, orphansToReplay.count)
                     // A first accepted HR callback can start a replay that
                     // retires only the vault entries observed at worker open.
                     // Do not strand a second sealed journal until another
@@ -16822,10 +16863,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 AtriaDebugLog("ATRIADBG ble_link watchdog reason=%@ action=cancel_stuck_post_history_connect_once peripheral_state=%d",
                               reason,
                               peripheral.state.rawValue)
-                Task { @MainActor [weak self, weak peripheral] in
+                Task { @MainActor [self, peripheral] in
                     try? await Task.sleep(for: .seconds(1))
-                    guard let self, let peripheral,
-                          self.peripheral?.identifier == peripheral.identifier,
+                    guard self.peripheral?.identifier == peripheral.identifier,
                           peripheral.state == .disconnected else { return }
                     self.reconnectKnownPeripheralImmediately(
                         peripheral,
@@ -24488,6 +24528,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         realtimeOn = false
     }
 
+    nonisolated static func canFinishRealtimeRestart(
+        taskCancelled: Bool,
+        realtimeArmed: Bool,
+        samePeripheral: Bool,
+        sameConnectionEpoch: Bool,
+        connected: Bool
+    ) -> Bool {
+        !taskCancelled
+            && realtimeArmed
+            && samePeripheral
+            && sameConnectionEpoch
+            && connected
+    }
+
     private func beginRealtimePacketBatch() {
         realtimePacketBatchDepth += 1
     }
@@ -24543,13 +24597,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG realtimeReassert reason=zero_rr gap_s=%.1f threshold_s=%.1f",
                   zeroRRSeconds, reassertThreshold)
         }
+        let restartPeripheralID = peripheral?.identifier
+        let restartConnectionEpoch = bleCallbackEpochFence.epoch
         realtimeRestartTask = Task { @MainActor in
+            defer { realtimeRestartTask = nil }
             if restartThreshold > 0 {
                 sendCommand(Cmd.toggleRealtimeHR, [0x00], mode: .withoutResponse)
-                try? await Task.sleep(for: .milliseconds(500))
+                do {
+                    try await Task.sleep(for: .milliseconds(500))
+                } catch {
+                    return
+                }
             }
+            guard Self.canFinishRealtimeRestart(
+                taskCancelled: Task.isCancelled,
+                realtimeArmed: realtimeArmed,
+                samePeripheral: peripheral?.identifier == restartPeripheralID,
+                sameConnectionEpoch: bleCallbackEpochFence.epoch == restartConnectionEpoch,
+                connected: status == .connected && peripheral?.state == .connected
+            ) else { return }
             sendCommand(Cmd.toggleRealtimeHR, [0x01], mode: .withoutResponse)
-            realtimeRestartTask = nil
         }
     }
 
@@ -27342,8 +27409,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 AtriaDebugLog("ATRIADBG historyAdmission status=%@ generation=%llu action=terminal_state_durable",
                               succeeded ? "finished" : "failed",
                               generation)
-                Task { @MainActor [weak self] in
-                    self?.scheduleHistoricalAdmissionLedgerMaintenance(
+                Task { @MainActor [self] in
+                    self.scheduleHistoricalAdmissionLedgerMaintenance(
                         reason: "attempt_terminal"
                     )
                 }
@@ -32107,10 +32174,56 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
         }
     }
 
+    nonisolated static func canonicalRestoredPeripheralIndex(
+        identifiers: [UUID],
+        savedPeripheralIdentifier: UUID?
+    ) -> Int? {
+        if let savedPeripheralIdentifier {
+            return identifiers.firstIndex(of: savedPeripheralIdentifier)
+        }
+        return identifiers.count == 1 ? 0 : nil
+    }
+
     nonisolated func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         let restored = (dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral]) ?? []
         AtriaDebugLog("ATRIADBG ble_restore peripherals=%d", restored.count)
-        guard let restoredPeripheral = restored.first else { return }
+        let savedPeripheralIdentifier = UserDefaults.standard
+            .string(forKey: LinkDefaults.savedPeripheralUUID)
+            .flatMap(UUID.init(uuidString:))
+        guard let canonicalIndex = Self.canonicalRestoredPeripheralIndex(
+            identifiers: restored.map(\.identifier),
+            savedPeripheralIdentifier: savedPeripheralIdentifier
+        ) else {
+            for candidate in restored {
+                candidate.delegate = nil
+                connectedPeripheralRetainer.releaseAll(
+                    peripheralID: candidate.identifier
+                )
+                if candidate.state == .connected || candidate.state == .connecting {
+                    central.cancelPeripheralConnection(candidate)
+                }
+            }
+            AtriaDebugLog(
+                "ATRIADBG ble_restore status=rejected reason=no_unambiguous_saved_peripheral peripherals=%d action=cancel_noncanonical_and_wait_for_powered_on_recovery",
+                restored.count
+            )
+            return
+        }
+        let restoredPeripheral = restored[canonicalIndex]
+        for (index, candidate) in restored.enumerated() where index != canonicalIndex {
+            candidate.delegate = nil
+            connectedPeripheralRetainer.releaseAll(
+                peripheralID: candidate.identifier
+            )
+            if candidate.state == .connected || candidate.state == .connecting {
+                central.cancelPeripheralConnection(candidate)
+            }
+            AtriaDebugLog(
+                "ATRIADBG ble_restore status=discarded_noncanonical peripheral=%@ canonical=%@",
+                candidate.identifier.uuidString,
+                restoredPeripheral.identifier.uuidString
+            )
+        }
         let restorationAt = Date()
         let persistedLongWear = UserDefaults.standard.bool(forKey: LongWearDefaults.enabled)
         let persistedWorkout = AtriaPendingWorkoutIntent.isActiveForBLEContinuity(
@@ -32201,9 +32314,6 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 )
                 self.protectedR10InitialProfilePeripheralID = nil
                 self.protectedR10InitialProfileNotificationRequested = false
-                let savedPeripheralIdentifier = UserDefaults.standard
-                    .string(forKey: LinkDefaults.savedPeripheralUUID)
-                    .flatMap(UUID.init(uuidString:))
                 self.batteryConnectionRestoredSamePeripheral =
                     Self.batteryRestorationPreservesNotificationEpoch(
                         restoredPeripheralIdentifier: restoredPeripheral.identifier,
@@ -32497,6 +32607,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             protectedR10StandardDiscoveryTask?.cancel()
             protectedR10StandardDiscoveryTask = nil
             protectedR10ProfileCharacteristics.removeAll()
+            callbackPolicyState.update { $0.protectedProfileIsEmpty = true }
             protectedR10ProfileRequestedNotifyUUIDs.removeAll()
             protectedR10ProfileConfirmedNotifyUUIDs.removeAll()
             protectedR10StandardDiscoveryStarted = false
@@ -32731,6 +32842,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             protectedR10StandardDiscoveryTask?.cancel()
             protectedR10StandardDiscoveryTask = nil
             protectedR10ProfileCharacteristics.removeAll()
+            callbackPolicyState.update { $0.protectedProfileIsEmpty = true }
             protectedR10ProfileRequestedNotifyUUIDs.removeAll()
             protectedR10ProfileConfirmedNotifyUUIDs.removeAll()
             protectedR10StandardDiscoveryStarted = false
@@ -33153,14 +33265,54 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                         didFailToConnect peripheral: CBPeripheral,
                         error: Error?) {
         proprietaryFrameReassembler.reset()
-        // The connect request is over, so nothing is left to protect from
-        // CoreBluetooth's unused-peripheral teardown.
-        connectedPeripheralRetainer.releaseAll(peripheralID: peripheral.identifier)
+        let savedPeripheralIdentifier = UserDefaults.standard
+            .string(forKey: LinkDefaults.savedPeripheralUUID)
+            .flatMap(UUID.init(uuidString:))
+        let fastLaneDisposition = backgroundReconnectFence.consumeDisposition(
+            peripheralID: peripheral.identifier,
+            continuousCaptureWanted: heartRateCaptureIntent.snapshot(),
+            historyTransportActive: historyOnlyProbeMode
+                || historyTransportPhaseFence.snapshot().isActive,
+            diagnosticActive: motionHandshakeDiagnostic != nil
+        )
+        let synchronousReconnectIssued = Self
+            .shouldSynchronouslyReconnectAfterFailedConnect(
+                disposition: fastLaneDisposition,
+                failedPeripheralIsSaved:
+                    savedPeripheralIdentifier == peripheral.identifier,
+                peripheralIsDisconnected: peripheral.state == .disconnected
+            )
+        if synchronousReconnectIssued {
+            // A locked/background failure callback may be the last execution
+            // slice before suspension. Reinstall the standing request before
+            // yielding to MainActor so return-to-range can wake Atria.
+            peripheral.delegate = self
+            connectedPeripheralRetainer.retain(peripheral)
+            central.connect(peripheral, options: nil)
+            AtriaDebugLog(
+                "ATRIADBG ble_link status=reconnect_requested_sync reason=did_fail_to_connect_background_safe peripheral=%@",
+                peripheral.identifier.uuidString
+            )
+        } else {
+            // No replacement request owns this object. It is now safe to
+            // release the failed CoreBluetooth instance.
+            connectedPeripheralRetainer.releaseAll(
+                peripheralID: peripheral.identifier
+            )
+        }
         Task { @MainActor in
-            guard self.peripheral?.identifier == peripheral.identifier else {
+            guard Self.acceptsFailedConnectCallback(
+                trackedPeripheralIdentifier: self.peripheral?.identifier,
+                failedPeripheralIdentifier: peripheral.identifier,
+                synchronousReconnectIssued: synchronousReconnectIssued
+            ) else {
                 AtriaDebugLog("ATRIADBG ble_epoch status=stale_connect_failure_ignored peripheral=%@",
                               peripheral.identifier.uuidString)
                 return
+            }
+            if synchronousReconnectIssued {
+                self.peripheral = peripheral
+                peripheral.delegate = self
             }
             self.endBackgroundReconnectLease(reason: "connect_failed")
             self.writeCompletionLedger.reset()
@@ -33217,6 +33369,29 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     return
                 }
                 AtriaDebugLog("ATRIADBG protected_r10 status=connect_failed owner=v9 action=v10_cutover_already_consumed_no_loop")
+                return
+            }
+            switch fastLaneDisposition {
+            case .reconnectRealtime:
+                break
+            case .suppressHistoryOwner:
+                self.interruptOfflineHistoricalSyncForTransportLoss(
+                    reason: "history_owner_connect_failed"
+                )
+                self.recomputeConnectionStatus(reason: "event")
+                return
+            case .suppressAppOwnedCancellation,
+                 .suppressDiagnostic,
+                 .suppressCaptureInactive:
+                if self.peripheral === peripheral {
+                    self.peripheral = nil
+                }
+                self.recomputeConnectionStatus(reason: "event")
+                AtriaDebugLog(
+                    "ATRIADBG ble_link status=connect_failure_retry_suppressed reason=%@ peripheral=%@",
+                    String(describing: fastLaneDisposition),
+                    peripheral.identifier.uuidString
+                )
                 return
             }
             let savedUUID = UserDefaults.standard.string(forKey: LinkDefaults.savedPeripheralUUID)
@@ -33315,6 +33490,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             || fastLaneDefaults.bool(
                 forKey: Self.workoutHistoricalMotionBankPrearmRequestedKey
             )
+        let callbackPolicy = callbackPolicyState.snapshot()
         for service in peripheral.services ?? [] {
             let characteristics: [CBUUID]?
             if motionHandshakeDiagnostic != nil {
@@ -33335,7 +33511,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 default:
                     characteristics = nil
                 }
-            } else if onboardingPairingPreflightDiscoveryRequested,
+            } else if callbackPolicy.onboardingPairingPreflight,
                       service.uuid == Self.UUIDs.strapService {
                 // Pairing preflight needs only the command characteristic. It
                 // deliberately subscribes to no history stream.
@@ -33345,7 +33521,8 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 case Self.UUIDs.strapService:
                     let diagnosticStopsRealtime = Self
                         .shouldStopRealtimeBeforeHistoricalRecovery(
-                            diagnosticSelectorOrRangeProbe: !historySkipDataRangeRequest
+                            diagnosticSelectorOrRangeProbe:
+                                !callbackPolicy.historySkipsDataRange
                         )
                     let requiredNotifications = diagnosticStopsRealtime
                         ? Self.UUIDs.allNotify
@@ -33360,7 +33537,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 default:
                     characteristics = nil
                 }
-            } else if standardHROnlyMode,
+            } else if callbackPolicy.standardHROnly,
                       !historyOnlyProbeMode,
                       workoutBankTransportRequested,
                       service.uuid == Self.UUIDs.strapService {
@@ -33373,20 +33550,20 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     requested.append(Self.UUIDs.strapTX)
                 }
                 characteristics = requested
-            } else if standardHROnlyMode,
+            } else if callbackPolicy.standardHROnly,
                       !historyOnlyProbeMode,
                       protectedR10CleanOwner == .protectedV9,
                       (protectedR10CleanOwnerState == .protectedLaunchPending
                         || protectedR10CleanOwnerState == .proving) {
                 if service.uuid == Self.UUIDs.strapService {
-                    characteristics = protectedR10ProfileCharacteristics.isEmpty
+                    characteristics = callbackPolicy.protectedProfileIsEmpty
                         ? Self.protectedStandardHRCharacteristics(
                             for: service.uuid,
                             streamSuppressed: protectedR10StreamSuppressed,
                             cleanOwner: protectedR10CleanOwner
                         )
                         : nil
-                } else if protectedR10StandardDiscoveryStarted {
+                } else if callbackPolicy.protectedStandardDiscoveryStarted {
                     characteristics = Self.protectedStandardHRCharacteristics(
                         for: service.uuid,
                         streamSuppressed: protectedR10StreamSuppressed,
@@ -33395,7 +33572,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 } else {
                     characteristics = nil
                 }
-            } else if standardHROnlyMode, !historyOnlyProbeMode {
+            } else if callbackPolicy.standardHROnly, !historyOnlyProbeMode {
                 if gate4HistoricalIMUWindowProbeRequested,
                    service.uuid == Self.UUIDs.strapService {
                     characteristics = [Self.UUIDs.strapTX]
@@ -33519,8 +33696,9 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             || fastLaneDefaults.bool(
                 forKey: Self.workoutHistoricalMotionBankPrearmRequestedKey
             )
+        let callbackPolicy = callbackPolicyState.snapshot()
         if Self.shouldUseProtectedV9CharacteristicHandler(
-            standardHROnlyMode: standardHROnlyMode,
+            standardHROnlyMode: callbackPolicy.standardHROnly,
             historyRecoveryActive: historyOnlyProbeMode,
             strapService: service.uuid == Self.UUIDs.strapService,
             protectedV9Owner: protectedR10CleanOwner == .protectedV9,
@@ -33549,11 +33727,12 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         var protectedStream5NeedingInitialSubscribe: CBCharacteristic?
         let requiredHistoryNotifications: Set<CBUUID>? = historyOnlyProbeMode
             ? Set(Self.shouldStopRealtimeBeforeHistoricalRecovery(
-                diagnosticSelectorOrRangeProbe: !historySkipDataRangeRequest
+                diagnosticSelectorOrRangeProbe:
+                    !callbackPolicy.historySkipsDataRange
             ) ? Self.UUIDs.allNotify : requiredProductionHistoryNotifications)
             : nil
         let discoveryUsesProtectedStandardHR = Self.discoveryShouldUseProtectedStandardHR(
-            standardSnapshot: standardHROnlyMode,
+            standardSnapshot: callbackPolicy.standardHROnly,
             historyOnlyProbeMode: historyOnlyProbeMode
         )
         let alreadyActiveProprietaryNotifications = discoveryUsesProtectedStandardHR

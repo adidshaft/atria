@@ -47,6 +47,31 @@ private final class AtriaWorkoutStartAuthorityDeadline {
     }
 }
 
+/// Owns the short route-checkpoint assertion by reference so UIKit's
+/// expiration callback never captures a transient SwiftUI value. Expiration
+/// ends the assertion synchronously; suspension cannot strand a late Task.
+@MainActor
+private final class AtriaWorkoutRouteBackgroundLease {
+    private var identifier: UIBackgroundTaskIdentifier = .invalid
+
+    func begin() {
+        end()
+        identifier = UIApplication.shared.beginBackgroundTask(
+            withName: "Atria workout route checkpoint"
+        ) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.end()
+            }
+        }
+    }
+
+    func end() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
+    }
+}
+
 /// A deliberately tiny first frame for a Start tap whose durable intent is
 /// still being committed. It avoids presenting a fake live workout while
 /// making a busy disk/serial queue visibly distinct from an ignored tap.
@@ -884,7 +909,7 @@ struct AtriaHomeView: View {
     // Lifetime owner only. Route publishes are observed by the presented live
     // workout map, not this entire tab shell; using StateObject here made every
     // one-second GPS snapshot invalidate the whole Home hierarchy.
-    @State private var workoutRouteBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+    @State private var workoutRouteBackgroundLease = AtriaWorkoutRouteBackgroundLease()
     @State private var showCoexistenceModal = false
     @State private var officialAppInstalled: Bool = {
         guard let url = URL(string: "whoop://") else { return false }
@@ -4172,23 +4197,10 @@ struct AtriaHomeView: View {
     }
 
     private func flushWorkoutRouteAtBackgroundBoundary() {
-        endWorkoutRouteBackgroundTaskIfNeeded()
-        workoutRouteBackgroundTask = UIApplication.shared.beginBackgroundTask(
-            withName: "Atria workout route checkpoint"
-        ) {
-            Task { @MainActor in
-                endWorkoutRouteBackgroundTaskIfNeeded()
-            }
-        }
+        workoutRouteBackgroundLease.begin()
         workoutRouteRecorder.flushCheckpoint(reason: "scene_background") {
-            endWorkoutRouteBackgroundTaskIfNeeded()
+            workoutRouteBackgroundLease.end()
         }
-    }
-
-    private func endWorkoutRouteBackgroundTaskIfNeeded() {
-        guard workoutRouteBackgroundTask != .invalid else { return }
-        UIApplication.shared.endBackgroundTask(workoutRouteBackgroundTask)
-        workoutRouteBackgroundTask = .invalid
     }
 
     private func refreshAICoachKeyState() {
