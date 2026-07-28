@@ -909,6 +909,69 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
                        "only cumulative strain may advance during the same fallback day")
     }
 
+    func testNoSleepAfternoonBoundaryAcceptsPersistedMidnightScoreInsideSameCycle() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let cycleDay = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2032, month: 1, day: 2
+        )))
+        let cycle = AtriaPhysiologicalCycle(
+            start: cycleDay.addingTimeInterval(15 * 3_600),
+            boundaryKind: .noSleepFallback,
+            anchorSleepID: "last-confirmed-main-sleep",
+            expectedInterval: 24 * 3_600
+        )
+        let metricDay = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: cycleDay))
+        let persisted = Metrics.RecoveryEstimate(
+            percent: 58,
+            confidence: .unverified,
+            usesHRV: false,
+            detail: "Limited confidence · sleep and HRV unavailable · conservative RHR-only estimate",
+            contributors: [
+                .init(kind: .hrv, zScore: 0, weight: 0, detail: "HRV unavailable; excluded"),
+                .init(kind: .restingHeartRate, zScore: 0, weight: 0.2, detail: "RHR 0.0σ"),
+                .init(kind: .sleep, zScore: 0, weight: 0, detail: "Sleep unavailable; excluded"),
+            ]
+        )
+        let frozen = try XCTUnwrap(FrozenRecoverySummary(estimate: persisted,
+                                                         scoredDay: metricDay))
+        let rollup = DailyRollupStoreEntry(day: metricDay,
+                                           recoverySummary: frozen,
+                                           calendar: calendar)
+        let metric = SavedDailyMetric(
+            day: metricDay,
+            recoveryPercent: 58,
+            recoveryConfidence: Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
+            hrv: nil,
+            restingHR: 62,
+            respiratoryRate: nil,
+            sleepDuration: nil,
+            sleepSpan: nil,
+            sleepStart: nil,
+            sleepEnd: nil,
+            sleepSource: nil,
+            sleepStageSegments: [],
+            sleepConsistencyPercent: nil,
+            strain: 2.2,
+            recoverySummary: frozen
+        )
+        let laterLive = Metrics.RecoveryEstimate(
+            percent: 71,
+            confidence: .unverified,
+            usesHRV: false,
+            detail: "later live RHR recompute",
+            contributors: persisted.contributors
+        )
+
+        XCTAssertEqual(DailyRecoveryResolver.currentEstimate(
+            liveEstimate: laterLive,
+            rollups: [rollup],
+            metrics: [metric],
+            physiologicalCycle: cycle,
+            calendar: calendar
+        ).percent, 58)
+    }
+
     func testRecoveryProvenanceSurvivesMetricAndRollupJSONRoundTrip() throws {
         let day = at(24)
         let estimate = Metrics.RecoveryEstimate(
