@@ -9777,7 +9777,12 @@ final class AtriaHomeModel {
             calendar: calendar,
             liveRestingHeartRate: restingContext.currentForRecovery
         )
-        let restText = presentationRestingHeartRate.map(String.init) ?? "Learning"
+        // Same deterministic no-value token as every other metric value. Left as
+        // the old word, the Vitals heart-rate row rendered "Now --", "Average
+        // --", "Peak --" beside "Resting Learning": one row, one state, two
+        // vocabularies.
+        let restText = presentationRestingHeartRate.map(String.init)
+            ?? AtriaCompactMetricPresentation.noValue
         let fallbackHrv = fallbackHeroHRVState(ble: ble, store: store)
         let headline = deferredDetails?.headline ?? defaultHeroHeadline(status: ble.status)
         let nextAction = deferredDetails?.nextAction ?? defaultHeroNextAction(status: ble.status)

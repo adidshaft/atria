@@ -4014,7 +4014,15 @@ private struct AtriaPulseStatRail: View {
                 .allowsTightening(true)
             Text(value)
                 .font(.title3.weight(.bold).monospacedDigit())
-                .foregroundStyle(tint)
+                // A not-ready value renders NEUTRAL, never in the metric's hue.
+                // These tints are red and pink, so an empty heart-rate row was
+                // showing three red "--" side by side, which reads as an error
+                // rather than as "no reading yet" -- and red is the colour this
+                // app reserves for a genuinely poor measurement. Same honesty
+                // rule the metric cards follow: colour is earned by a real value.
+                .foregroundStyle(AtriaCompactMetricPresentation.isPendingValue(value)
+                                 ? AnyShapeStyle(.secondary)
+                                 : AnyShapeStyle(tint))
                 .lineLimit(1)
                 .minimumScaleFactor(0.55)
                 .allowsTightening(true)
