@@ -298,6 +298,20 @@ enum LocalNotificationScheduler {
     /// they are reading.
     static let morningCheckInKind = "morning_checkin"
 
+    /// Attempt-store key for the RICH morning summary -- the one that asserts
+    /// recovery, HRV and sleep numbers.
+    ///
+    /// The two morning notifications are split by what they CLAIM, and the split
+    /// is deliberate. The rich summary requires a persisted, sleep-derived daily
+    /// metric before it will fire, because it states measurements. The plain
+    /// check-in claims nothing and carries no metrics, so it stays unconditional
+    /// -- gating it too would reproduce the silent morning reported 2026-07-08,
+    /// on exactly the mornings where confirmation is late or never arrives.
+    ///
+    /// Kept as separate attempt records so "no rich summary" and "no nudge at
+    /// all" are answerable independently rather than collapsing into one silence.
+    static let morningSummaryKind = "morning_summary"
+
     nonisolated static func morningNudgeMinutes(windowEnd: Int) -> Int {
         windowEnd > 0 ? ((((windowEnd + 1440 - 60) % 1440) + 15) % 1440) : 8 * 60
     }

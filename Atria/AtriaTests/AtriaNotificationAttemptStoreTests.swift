@@ -120,4 +120,58 @@ final class AtriaNotificationAttemptStoreTests: XCTestCase {
     func testSchedulerAndFallbackAgreeOnTheKey() {
         XCTAssertEqual(LocalNotificationScheduler.morningCheckInKind, "morning_checkin")
     }
+
+    // MARK: - The two morning notifications are split by what they claim
+
+    /// They must stay separate records. Collapsing them would make "no rich
+    /// summary" and "no nudge at all" indistinguishable, which is the exact
+    /// ambiguity this work exists to remove.
+    func testTheTwoMorningNotificationsAreTrackedSeparately() {
+        XCTAssertNotEqual(LocalNotificationScheduler.morningSummaryKind,
+                          LocalNotificationScheduler.morningCheckInKind)
+
+        AtriaNotificationAttemptStore.record(kind: LocalNotificationScheduler.morningSummaryKind,
+                                             outcome: .deferred,
+                                             reason: "awaiting_confirmed_sleep_metric",
+                                             at: now, defaults: defaults)
+
+        XCTAssertEqual(AtriaNotificationAttemptStore.latest(
+            kind: LocalNotificationScheduler.morningSummaryKind, defaults: defaults)?.reason,
+                       "awaiting_confirmed_sleep_metric")
+        XCTAssertNil(AtriaNotificationAttemptStore.latest(
+            kind: LocalNotificationScheduler.morningCheckInKind, defaults: defaults),
+                     "deferring the rich summary must not imply the plain nudge was touched")
+    }
+
+    /// A deferred rich summary must NOT raise the in-app journal prompt. The
+    /// plain nudge is unconditional and still went out, so prompting again would
+    /// double up on a morning that was never actually silent.
+    func testADeferredRichSummaryDoesNotRaiseTheInAppFallback() {
+        AtriaNotificationAttemptStore.record(kind: LocalNotificationScheduler.morningSummaryKind,
+                                             outcome: .deferred,
+                                             reason: "awaiting_confirmed_sleep_metric",
+                                             at: now, defaults: defaults)
+
+        XCTAssertFalse(AtriaNotificationAttemptStore.needsInAppFallback(
+            kind: LocalNotificationScheduler.morningSummaryKind, now: now, defaults: defaults))
+    }
+
+    /// Source-text pin for the split itself: the rich summary requires a
+    /// persisted sleep-derived metric, and the plain nudge deliberately has no
+    /// such gate. If someone later "fixes" the asymmetry, the 2026-07-08 silent
+    /// morning comes back.
+    func testTheConfirmedBoundaryGatesOnlyTheRichSummary() throws {
+        let sessions = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/Sessions.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(sessions.contains("let sleepDuration = metric.sleepDuration"),
+                      "the rich summary must still require persisted sleep-derived metrics")
+        XCTAssertTrue(sessions.contains("reason: \"awaiting_confirmed_sleep_metric\""),
+                      "a deferred rich summary must leave a durable reason")
+    }
 }
