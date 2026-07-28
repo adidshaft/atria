@@ -18843,9 +18843,6 @@ final class SessionStore: ObservableObject {
         if let preferredCandidate, isUnsettled(preferredCandidate) {
             aggregateCandidate = preferredCandidate
         } else if let preferredCandidate,
-                  !dismissedCandidates.contains(where: {
-                      $0.suppresses(start: preferredCandidate.start, end: preferredCandidate.end)
-                  }),
                   confirmedSleeps.contains(where: {
                       sleepWindowsOverlap($0, candidate: preferredCandidate)
                   }) {
@@ -18853,6 +18850,10 @@ final class SessionStore: ObservableObject {
             // may unlock exactly one distinct, same-cycle resumed-sleep
             // review. This preserves the one-card ordering contract without
             // allowing a confirmed newest night to reveal stale older nights.
+            // Confirmation deliberately dismisses the main detector window,
+            // so that dismissal is proof of settlement here, not a reason to
+            // hide a separate later segment. The resumed segment still passes
+            // `isUnsettled` below and therefore honors its own dismissal.
             aggregateCandidate = preferredSleepCandidateForReview(
                 from: candidates.filter {
                     $0.kind == "resumed_sleep_candidate"

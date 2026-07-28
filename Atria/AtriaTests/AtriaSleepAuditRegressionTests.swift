@@ -274,6 +274,9 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
             snapshot: .empty,
             canonicalSessions: sessions,
             confirmedSleeps: [confirmedMain],
+            dismissedCandidates: [
+                AtriaDismissedSleepCandidate(start: first.start, end: second.end)
+            ],
             rest: 60,
             maxHR: 190,
             calendar: Self.indiaCalendar
@@ -281,6 +284,21 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertEqual(queued.source, "resumed_sleep_candidate")
         XCTAssertEqual(queued.start, resumed.start)
         XCTAssertEqual(queued.end, resumed.end)
+
+        let dismissedTail = SessionStore.makeSleepReviewNightForCache(
+            snapshot: .empty,
+            canonicalSessions: sessions,
+            confirmedSleeps: [confirmedMain],
+            dismissedCandidates: [
+                AtriaDismissedSleepCandidate(start: first.start, end: second.end),
+                AtriaDismissedSleepCandidate(start: resumed.start, end: resumed.end)
+            ],
+            rest: 60,
+            maxHR: 190,
+            calendar: Self.indiaCalendar
+        )
+        XCTAssertNil(dismissedTail,
+                     "the settled main may unlock the tail, but a dismissal of the tail itself remains final")
     }
 
     func testResumedSleepNeedsPriorMainAndRejectsActiveTail() {
