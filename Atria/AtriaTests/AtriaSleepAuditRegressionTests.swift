@@ -470,7 +470,7 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
     }
 
     @MainActor
-    func testConfirmingResumedSleepPersistsASeparateSegmentAndKeepsMain() throws {
+    func testConfirmingResumedSleepPersistsASeparateSegmentAndKeepsMain() async throws {
         let store = SessionStore()
         let mainStart = date(2036, 1, 2, 0, 45, timeZoneIdentifier: "Asia/Kolkata")
         let mainEnd = date(2036, 1, 2, 4, 23, timeZoneIdentifier: "Asia/Kolkata")
@@ -500,7 +500,7 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
             )
         }
 
-        let main = try XCTUnwrap(store.saveSleepReviewNightForUI(
+        let mainResult = await store.saveSleepReviewNightForUI(
             review(id: "main-review",
                    start: mainStart,
                    end: mainEnd,
@@ -510,10 +510,11 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
             isNap: false,
             rest: 60,
             source: "test-main"
-        ))
-        defer { _ = store.deleteConfirmedSleep(id: main.id) }
+        )
+        let main = try XCTUnwrap(mainResult)
+        defer { Task { @MainActor in _ = await store.deleteConfirmedSleep(id: main.id) } }
 
-        let resumed = try XCTUnwrap(store.saveSleepReviewNightForUI(
+        let resumedResult = await store.saveSleepReviewNightForUI(
             review(id: "resumed-review",
                    start: resumedStart,
                    end: resumedEnd,
@@ -523,8 +524,9 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
             isNap: false,
             rest: 60,
             source: "test-resumed"
-        ))
-        defer { _ = store.deleteConfirmedSleep(id: resumed.id) }
+        )
+        let resumed = try XCTUnwrap(resumedResult)
+        defer { Task { @MainActor in _ = await store.deleteConfirmedSleep(id: resumed.id) } }
 
         XCTAssertEqual(resumed.source, "resumed_sleep")
         XCTAssertEqual(resumed.start, resumedStart)

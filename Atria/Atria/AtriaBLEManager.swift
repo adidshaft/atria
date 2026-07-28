@@ -1333,6 +1333,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// read-only warmup is running, so the next verified ingress replay does
     /// not repeatedly pay the same restart-from-zero cost.
     private var historicalArchiveWarmBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var historicalArchiveWarmLeaseTimeoutTask: Task<Void, Never>?
     private lazy var historicalRequestAuthorityStore = AtriaBLEHistoryRequestAuthorityStore(
         directoryURL: FileManager.default.urls(for: .documentDirectory,
                                                in: .userDomainMask)[0]
@@ -2227,6 +2228,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         qos: .userInitiated
     )
     private nonisolated let historicalArchiveWarmGroup = DispatchGroup()
+    nonisolated static let historicalArchiveWarmReplayWaitLimit: TimeInterval = 8
+
+    /// The orphan journal is already durable before this wait. Never let a
+    /// damaged or exceptionally slow derived identity-index rebuild occupy the
+    /// only orphan replay lane forever; a later accepted HR callback retries
+    /// the same retained vault entry after warmup completes.
+    nonisolated static func waitForHistoricalArchiveWarm(
+        _ group: DispatchGroup,
+        timeout: TimeInterval
+    ) -> Bool {
+        group.wait(timeout: .now() + max(0, timeout)) == .success
+    }
     enum HistoricalArchiveWarmState: Equatable {
         case warming
         case ready
@@ -10079,9 +10092,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         AtriaDebugLog("ATRIADBG historical_archive_warm background_lease=%@ application_state=%ld",
                       historicalArchiveWarmBackgroundTask == .invalid ? "unavailable" : "active",
                       UIApplication.shared.applicationState.rawValue)
+        historicalArchiveWarmLeaseTimeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(20))
+            guard !Task.isCancelled else { return }
+            self?.endHistoricalArchiveWarmBackgroundLease(status: "bounded_timeout")
+        }
     }
 
     private func endHistoricalArchiveWarmBackgroundLease(status: String) {
+        historicalArchiveWarmLeaseTimeoutTask?.cancel()
+        historicalArchiveWarmLeaseTimeoutTask = nil
         let task = historicalArchiveWarmBackgroundTask
         historicalArchiveWarmBackgroundTask = .invalid
         if task != .invalid {
@@ -10621,7 +10641,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             var ignoredMetadata = 0
             do {
                 AtriaDebugLog("ATRIADBG historyIngress status=replay_waiting_for_identity_store entries=%d", orphansToReplay.count)
-                archiveWarmGroup.wait()
+                guard Self.waitForHistoricalArchiveWarm(
+                    archiveWarmGroup,
+                    timeout: Self.historicalArchiveWarmReplayWaitLimit
+                ) else {
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        self.orphanHistoricalIngressArchiveInFlight = false
+                        AtriaDebugLog(
+                            "ATRIADBG historyIngress status=deferred reason=identity_store_warm_timeout entries=%d action=retain_orphan_raw_retry_on_live",
+                            orphansToReplay.count
+                        )
+                    }
+                    return
+                }
                 AtriaDebugLog("ATRIADBG historyIngress status=replay_identity_store_ready entries=%d", orphansToReplay.count)
                 for sealedOrphan in orphansToReplay {
                     let orphanGeneration = sealedOrphan.generation

@@ -728,7 +728,7 @@ struct AtriaDetectionsListSheet: View {
                                           evidenceNight: night,
                                           evidencePerformancePercent: store.sleepHistorySnapshot.sleepPerformancePercent(for: night,
                                                                                                                          baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
-                        let saved = store.saveSleepReviewNightForUI(
+                        let saved = await store.saveSleepReviewNightForUI(
                             night,
                             start: start,
                             end: end,

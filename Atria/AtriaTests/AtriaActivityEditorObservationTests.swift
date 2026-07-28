@@ -49,9 +49,9 @@ final class AtriaActivityEditorObservationTests: XCTestCase {
         XCTAssertTrue(detail.contains("Save your changes before sharing."))
         XCTAssertTrue(detail.contains("Preparing the saved route."))
         XCTAssertTrue(detail.contains("Button(\"Delete workout\", systemImage: \"trash\", role: .destructive)"))
-        XCTAssertTrue(detail.contains("guard store.deleteConfirmedWorkout(id: workout.id) else"),
+        XCTAssertTrue(detail.contains("guard await store.deleteConfirmedWorkout(id: workout.id) else"),
                       "Route deletion and dismissal must be gated by durable workout deletion")
-        let metadataDelete = try XCTUnwrap(detail.range(of: "guard store.deleteConfirmedWorkout(id: workout.id) else"))
+        let metadataDelete = try XCTUnwrap(detail.range(of: "guard await store.deleteConfirmedWorkout(id: workout.id) else"))
         let routeDelete = try XCTUnwrap(detail.range(of: "AtriaWorkoutRouteStore.deleteAsync(workoutID: workout.id)",
                                                      range: metadataDelete.upperBound..<detail.endIndex))
         let deleteDismiss = try XCTUnwrap(detail.range(of: "dismiss()",
@@ -64,7 +64,7 @@ final class AtriaActivityEditorObservationTests: XCTestCase {
                       "Route JSON, full-point map projection, and GPX preparation must stay off MainActor")
         XCTAssertFalse(detail.contains("AtriaWorkoutRouteStore.gpxURL(for:"),
                        "SwiftUI body/share projection must consume the prepared GPX URL without file I/O")
-        XCTAssertTrue(detail.contains("let rollback = store.editConfirmedWorkout("),
+        XCTAssertTrue(detail.contains("let rollback = await store.editConfirmedWorkout("),
                       "A route failure must restore the original canonical workout metadata")
         XCTAssertTrue(detail.contains("your original workout was kept unchanged"))
         XCTAssertFalse(detail.contains("ToolbarItemGroup(placement: .topBarTrailing)"),
@@ -195,7 +195,7 @@ final class AtriaActivityLifecycleTests: XCTestCase {
 
         defer {
             for workout in store.confirmedWorkouts where workout.reviewCandidateID == candidateID {
-                _ = store.deleteConfirmedWorkout(id: workout.id)
+                Task { @MainActor in _ = await store.deleteConfirmedWorkout(id: workout.id) }
             }
             let unrelated = AtriaDismissedWorkoutCandidateStore.load().filter {
                 !$0.overlaps(start: start, end: end)
@@ -227,7 +227,7 @@ final class AtriaActivityLifecycleTests: XCTestCase {
         })
     }
 
-    func testDetectedReviewProvenanceSurvivesReloadRenameAndWindowEdit() throws {
+    func testDetectedReviewProvenanceSurvivesReloadRenameAndWindowEdit() async throws {
         let store = SessionStore()
         let candidateID = "detected-review-" + UUID().uuidString
         let start = Date(timeIntervalSince1970: 2_280_000_000 + Double.random(in: 0..<100_000))
@@ -235,7 +235,7 @@ final class AtriaActivityLifecycleTests: XCTestCase {
 
         defer {
             for workout in store.confirmedWorkouts where workout.reviewCandidateID == candidateID {
-                _ = store.deleteConfirmedWorkout(id: workout.id)
+                Task { @MainActor in _ = await store.deleteConfirmedWorkout(id: workout.id) }
             }
             let unrelated = AtriaDismissedWorkoutCandidateStore.load().filter {
                 !$0.overlaps(start: start, end: end.addingTimeInterval(10 * 60))
@@ -243,7 +243,7 @@ final class AtriaActivityLifecycleTests: XCTestCase {
             AtriaDismissedWorkoutCandidateStore.save(unrelated)
         }
 
-        let saved = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+        let savedResult = await store.confirmWorkoutWindowForUI(
             start: start,
             end: end,
             rest: 60,
@@ -255,7 +255,8 @@ final class AtriaActivityLifecycleTests: XCTestCase {
             reviewSource: "detected_activity_review",
             reviewCandidateID: candidateID,
             settlingCandidateWindow: (start: start, end: end)
-        ))
+        )
+        let saved = try XCTUnwrap(savedResult)
         XCTAssertEqual(saved.reviewSource, "detected_activity_review")
         XCTAssertEqual(saved.reviewCandidateID, candidateID)
         let savedEvidence = try XCTUnwrap(saved.activityCalibrationEvidence)
@@ -270,13 +271,17 @@ final class AtriaActivityLifecycleTests: XCTestCase {
         XCTAssertEqual(reloaded.reviewCandidateID, candidateID)
         XCTAssertEqual(reloaded.activityCalibrationEvidence, savedEvidence)
 
-        XCTAssertTrue(store.renameConfirmedWorkout(id: saved.id, label: "Badminton footwork"))
+        let renamedSuccessfully = await store.renameConfirmedWorkout(
+            id: saved.id,
+            label: "Badminton footwork"
+        )
+        XCTAssertTrue(renamedSuccessfully)
         let renamed = try XCTUnwrap(store.confirmedWorkouts.first { $0.id == saved.id })
         XCTAssertEqual(renamed.reviewCandidateID, candidateID)
         XCTAssertEqual(renamed.reviewSource, "detected_activity_review")
         XCTAssertEqual(renamed.activityCalibrationEvidence, savedEvidence)
 
-        let editedResult = store.editConfirmedWorkout(
+        let editedResult = await store.editConfirmedWorkout(
             id: renamed.id,
             label: renamed.label,
             activityType: AtriaWorkoutActivityType.badminton.rawValue,
@@ -343,7 +348,7 @@ final class AtriaActivityLifecycleTests: XCTestCase {
         XCTAssertEqual(evidence.motion.provenance, AtriaRecoveredMotionEpoch.source)
     }
 
-    func testWorkoutCandidateSaveDeleteAndManualReaddStaySingleAuthoritativeItem() throws {
+    func testWorkoutCandidateSaveDeleteAndManualReaddStaySingleAuthoritativeItem() async throws {
         let store = SessionStore()
         let marker = "workout-lifecycle-" + UUID().uuidString
         let start = Date(timeIntervalSince1970: 2_260_000_000 + Double.random(in: 0..<100_000))
@@ -362,7 +367,7 @@ final class AtriaActivityLifecycleTests: XCTestCase {
 
         defer {
             for workout in store.confirmedWorkouts where workout.reviewSource == marker {
-                _ = store.deleteConfirmedWorkout(id: workout.id)
+                Task { @MainActor in _ = await store.deleteConfirmedWorkout(id: workout.id) }
             }
             let unrelated = AtriaDismissedWorkoutCandidateStore.load().filter {
                 !$0.overlaps(start: start, end: end)
@@ -370,7 +375,7 @@ final class AtriaActivityLifecycleTests: XCTestCase {
             AtriaDismissedWorkoutCandidateStore.save(unrelated)
         }
 
-        let saved = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+        let savedResult = await store.confirmWorkoutWindowForUI(
             start: start,
             end: end,
             rest: 60,
@@ -380,10 +385,11 @@ final class AtriaActivityLifecycleTests: XCTestCase {
             activityLabel: "Morning walk",
             activityType: AtriaWorkoutActivityType.walking.rawValue,
             reviewSource: marker
-        ))
+        )
+        let saved = try XCTUnwrap(savedResult)
         XCTAssertEqual(saved.label, "Morning walk")
 
-        let resaved = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+        let resavedResult = await store.confirmWorkoutWindowForUI(
             start: start,
             end: end,
             rest: 60,
@@ -395,7 +401,8 @@ final class AtriaActivityLifecycleTests: XCTestCase {
             activitySubtype: "Incline walk",
             reviewSource: marker,
             settlingCandidateWindow: (start: start, end: end)
-        ))
+        )
+        let resaved = try XCTUnwrap(resavedResult)
         XCTAssertEqual(resaved.id, saved.id)
         XCTAssertEqual(resaved.label, "Incline walk")
         XCTAssertEqual(resaved.activityType, AtriaWorkoutActivityType.cardio.rawValue)
@@ -417,8 +424,9 @@ final class AtriaActivityLifecycleTests: XCTestCase {
             calendar: calendar
         ).isEmpty)
 
-        XCTAssertTrue(store.deleteConfirmedWorkout(id: resaved.id))
-        let readded = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+        let deleted = await store.deleteConfirmedWorkout(id: resaved.id)
+        XCTAssertTrue(deleted)
+        let readdedResult = await store.confirmWorkoutWindowForUI(
             start: start,
             end: end,
             rest: 60,
@@ -427,7 +435,8 @@ final class AtriaActivityLifecycleTests: XCTestCase {
             preserveUserDeclaredActivityWithoutHeartRate: true,
             activityType: AtriaWorkoutActivityType.walking.rawValue,
             reviewSource: marker
-        ))
+        )
+        let readded = try XCTUnwrap(readdedResult)
 
         XCTAssertEqual(readded.id, saved.id)
         XCTAssertNil(readded.activityCalibrationEvidence,
@@ -438,7 +447,7 @@ final class AtriaActivityLifecycleTests: XCTestCase {
         }, "An explicit re-add must clear the prior candidate/deletion tombstone")
     }
 
-    func testAdjustedNapCandidateSettlesOriginalWindowAndManualReaddClearsSuppression() throws {
+    func testAdjustedNapCandidateSettlesOriginalWindowAndManualReaddClearsSuppression() async throws {
         let store = SessionStore()
         let marker = "activity-lifecycle-" + UUID().uuidString
         let sessionID = UUID()
@@ -459,7 +468,7 @@ final class AtriaActivityLifecycleTests: XCTestCase {
 
         defer {
             for sleep in store.confirmedSleeps where sleep.reason.contains(marker) {
-                _ = store.deleteConfirmedSleep(id: sleep.id)
+                Task { @MainActor in _ = await store.deleteConfirmedSleep(id: sleep.id) }
             }
             store.deleteSession(id: sessionID)
             let unrelated = AtriaDismissedSleepCandidateStore.load().filter {
@@ -469,7 +478,7 @@ final class AtriaActivityLifecycleTests: XCTestCase {
         }
 
         store.add(session)
-        let adjusted = try XCTUnwrap(store.adjustSleepNight(
+        let adjustedResult = await store.adjustSleepNight(
             originalStart: originalStart,
             originalEnd: originalEnd,
             newStart: originalStart.addingTimeInterval(5 * 60),
@@ -477,18 +486,21 @@ final class AtriaActivityLifecycleTests: XCTestCase {
             isNap: true,
             rest: 55,
             source: marker
-        ))
+        )
+        let adjusted = try XCTUnwrap(adjustedResult)
 
         XCTAssertTrue(AtriaDismissedSleepCandidateStore.load().contains {
             $0.overlaps(start: originalStart, end: originalEnd)
         }, "A successful adjusted Save must settle the detector's original window")
 
-        XCTAssertTrue(store.deleteConfirmedSleep(id: adjusted.id))
-        let readded = try XCTUnwrap(store.addManualSleep(start: originalStart,
-                                                        end: originalEnd,
-                                                        isNap: true,
-                                                        rest: 55,
-                                                        source: marker))
+        let deletedSleep = await store.deleteConfirmedSleep(id: adjusted.id)
+        XCTAssertTrue(deletedSleep)
+        let readdedResult = await store.addManualSleep(start: originalStart,
+                                                       end: originalEnd,
+                                                       isNap: true,
+                                                       rest: 55,
+                                                       source: marker)
+        let readded = try XCTUnwrap(readdedResult)
         XCTAssertEqual(readded.start, originalStart)
         XCTAssertEqual(readded.end, originalEnd)
         XCTAssertFalse(AtriaDismissedSleepCandidateStore.load().contains {

@@ -1107,10 +1107,10 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         // the identity-changing path: its named `result` mutation must remain
         // after the durable transaction marker has been persisted.
         let metadataEdit = try XCTUnwrap(saveBody.range(
-            of: "let result = store.editConfirmedWorkout",
+            of: "let result = await store.editConfirmedWorkout",
             range: beginEdit.upperBound..<saveBody.endIndex
         ))
-        let routeEdit = try XCTUnwrap(saveBody.range(of: "AtriaWorkoutRouteStore.reconcile"))
+        let routeEdit = try XCTUnwrap(saveBody.range(of: "await AtriaWorkoutRouteStore.reconcileAsync"))
         XCTAssertLessThan(beginEdit.lowerBound, metadataEdit.lowerBound)
         XCTAssertLessThan(metadataEdit.lowerBound, routeEdit.lowerBound)
         XCTAssertTrue(saveBody.contains("await AtriaWorkoutRouteStore.beginEditTransactionAsync("),
@@ -1119,9 +1119,9 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         XCTAssertTrue(saveBody.contains("recoverPendingTransactionAsync("),
                       "A failed route write must drive the durable rollback recovery path")
 
-        let beginDelete = try XCTUnwrap(deleteBody.range(of: "beginDeleteTransaction"))
-        let metadataDelete = try XCTUnwrap(deleteBody.range(of: "store.deleteConfirmedWorkout"))
-        let routeDelete = try XCTUnwrap(deleteBody.range(of: "AtriaWorkoutRouteStore.delete"))
+        let beginDelete = try XCTUnwrap(deleteBody.range(of: "beginDeleteTransactionAsync"))
+        let metadataDelete = try XCTUnwrap(deleteBody.range(of: "await store.deleteConfirmedWorkout"))
+        let routeDelete = try XCTUnwrap(deleteBody.range(of: "AtriaWorkoutRouteStore.deleteAsync"))
         XCTAssertLessThan(beginDelete.lowerBound, metadataDelete.lowerBound)
         XCTAssertLessThan(metadataDelete.lowerBound, routeDelete.lowerBound)
     }

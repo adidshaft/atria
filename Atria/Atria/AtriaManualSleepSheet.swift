@@ -153,10 +153,10 @@ struct AtriaManualSleepSheet: View {
     /// Returns whether the save actually persisted. false keeps the sheet
     /// open and shows an inline error instead of silently dismissing
     /// (2026-07-07: failed adjustments used to vanish without a trace).
-    let onSave: (Date, Date, Bool) -> Bool
+    let onSave: (Date, Date, Bool) async -> Bool
     /// Removes a saved item, or dismisses an unsaved detection. Keeping this
     /// optional means the plain Add flow has no destructive action.
-    private let onRemove: (() -> Bool)?
+    private let onRemove: (() async -> Bool)?
     private let mode: AtriaManualSleepMode
     private let reviewDetectedTypeText: String?
     /// Detected night backing this review, when one exists (2026-07-07 design
@@ -179,6 +179,7 @@ struct AtriaManualSleepSheet: View {
     @State private var removeFailed = false
     @State private var showsRemoveConfirmation = false
     @State private var showsStageMethodology = false
+    @State private var isSaving = false
 
     init(initialStart: Date? = nil,
          initialEnd: Date? = nil,
@@ -187,8 +188,8 @@ struct AtriaManualSleepSheet: View {
          evidenceNight: SleepHistorySnapshot.Night? = nil,
          evidencePerformancePercent: Int? = nil,
          mode: AtriaManualSleepMode? = nil,
-         onRemove: (() -> Bool)? = nil,
-         onSave: @escaping (Date, Date, Bool) -> Bool) {
+         onRemove: (() async -> Bool)? = nil,
+         onSave: @escaping (Date, Date, Bool) async -> Bool) {
         self.onSave = onSave
         self.onRemove = onRemove
         self.mode = mode ?? {
@@ -369,10 +370,14 @@ struct AtriaManualSleepSheet: View {
 
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Save") {
-                        saveFailed = !onSave(start, end, isNap)
+                        isSaving = true
+                        Task { @MainActor in
+                            saveFailed = !(await onSave(start, end, isNap))
+                            isSaving = false
+                        }
                     }
                     .fontWeight(.bold)
-                    .disabled(!canSave)
+                    .disabled(!canSave || isSaving)
                 }
             }
             .confirmationDialog(removeConfirmationTitle,
@@ -380,10 +385,14 @@ struct AtriaManualSleepSheet: View {
                                 titleVisibility: .visible) {
                 Button(removeButtonTitle, role: .destructive) {
                     guard let onRemove else { return }
-                    if onRemove() {
-                        dismiss()
-                    } else {
-                        removeFailed = true
+                    isSaving = true
+                    Task { @MainActor in
+                        if await onRemove() {
+                            dismiss()
+                        } else {
+                            removeFailed = true
+                        }
+                        isSaving = false
                     }
                 }
                 Button("Cancel", role: .cancel) {}

@@ -490,7 +490,10 @@ final class AtriaBackupImportHardeningTests: XCTestCase {
         DispatchQueue.main.async { mainHeartbeat.fulfill() }
         releaseValidation.signal()
         await fulfillment(of: [mainHeartbeat], timeout: 1)
-        await fulfillment(of: [workerFinished], timeout: 5)
+        // This assertion validates actor isolation, not a performance SLA.
+        // Simulator full-suite contention can delay the utility worker even
+        // though the independently scheduled main heartbeat remains live.
+        await fulfillment(of: [workerFinished], timeout: 30)
 
         XCTAssertTrue(result.success)
         XCTAssertFalse(result.performedOnMain)

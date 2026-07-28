@@ -447,7 +447,17 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
 
     @MainActor
     func testCorrectedSleepSaveSettlesTodayRecoveryStrainAndWidgetInProcess() async throws {
-        let now = Date()
+        // Confirmed records are intentionally process-global durable state. A
+        // prior test can therefore leave a future-dated fixture behind. Anchor
+        // this scenario after the authoritative ledger so "latest" continues
+        // to mean the sleep saved by this test without deleting unrelated
+        // records or relying on suite order.
+        let durableLatestEnd = SessionStore().confirmedSleeps.map(\.end).max()
+        let now = max(
+            Date(),
+            durableLatestEnd?.addingTimeInterval(24 * 60 * 60) ?? Date()
+        )
+        let store = makeStore(now: now)
         let correctedEnd = now.addingTimeInterval(-45 * 60)
         let correctedStart = correctedEnd.addingTimeInterval(-(5 * 60 * 60 + 35 * 60))
         let wrongStart = correctedStart.addingTimeInterval(-(2 * 60 * 60 + 44 * 60))
@@ -464,12 +474,11 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
         let activityStart = correctedEnd.addingTimeInterval(10 * 60)
         let activityEnd = now.addingTimeInterval(-5 * 60)
         let activitySession = elevatedSession(start: activityStart, end: activityEnd)
-        let store = makeStore(now: now)
         for session in sleepSessions {
             XCTAssertTrue(store.add(session))
         }
         XCTAssertTrue(store.add(activitySession))
-        defer {
+        addTeardownBlock { @MainActor in
             for session in sleepSessions {
                 store.deleteSession(id: session.id)
             }
@@ -496,22 +505,28 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
         )
         let priorDashboardRevision = store.dashboardRevision
         let publication = expectation(description: "Today receives confirmed sleep")
+        var didFulfillPublication = false
         var cancellable: AnyCancellable?
         cancellable = today.$state.dropFirst().sink { state in
-            if state.sleepHistorySnapshot.latestMainSleep?.confirmed == true {
+            if state.sleepHistorySnapshot.latestMainSleep?.confirmed == true,
+               !didFulfillPublication {
+                didFulfillPublication = true
                 publication.fulfill()
             }
         }
 
-        let saved = try XCTUnwrap(store.saveSleepReviewNightForUI(
+        let savedResult = await store.saveSleepReviewNightForUI(
             review,
             start: correctedStart,
             end: correctedEnd,
             isNap: false,
             rest: 55,
             source: "post_sleep_cards_regression"
-        ))
-        defer { _ = store.deleteConfirmedSleep(id: saved.id) }
+        )
+        let saved = try XCTUnwrap(savedResult)
+        addTeardownBlock { @MainActor in
+            _ = await store.deleteConfirmedSleep(id: saved.id)
+        }
 
         await fulfillment(of: [publication], timeout: 2)
         withExtendedLifetime(cancellable) {}
@@ -558,7 +573,8 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
         let ble = AtriaBLEManager(startsBluetooth: false)
         let widget = WidgetSnapshotPublisher.publish(store: store,
                                                      ble: ble,
-                                                     reason: "post_sleep_cards_regression")
+                                                     reason: "post_sleep_cards_regression",
+                                                     now: now)
         XCTAssertEqual(widget.sleepHours ?? -1, saved.duration / 3_600, accuracy: 0.01)
         XCTAssertEqual(widget.recoveryPercent, recovery.percent)
         XCTAssertGreaterThan(widget.strain, 0)

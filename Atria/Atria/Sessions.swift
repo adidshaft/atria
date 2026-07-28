@@ -3824,12 +3824,20 @@ struct BiologicalAgeSummary: Equatable, Codable {
         if isRefreshing { return "Updating weekly estimate" }
         if isReady { return detailText }
         guard let first = blockers.first else { return "Building 28-day baseline" }
-        let blocker = Self.humanBlocker(first)
-        if blocker.localizedCaseInsensitiveContains("day")
-            || blocker.localizedCaseInsensitiveContains("night") {
-            return "Needs \(blocker)"
+        switch first {
+        case "vo2max_learning":
+            return "VO₂ max is still learning"
+        case "resting_hr_learning":
+            return "Building resting HR baseline"
+        case "hrv_learning":
+            return "Building HRV baseline"
+        case "sleep_history_thin":
+            return "3 sleep nights required"
+        case "training_load_learning":
+            return "Building training-load history"
+        default:
+            return "Building \(Self.humanBlocker(first))"
         }
-        return "Needs \(blocker)"
     }
 
     /// The producer keeps machine tokens (pinned, log-friendly); the UI never
@@ -4516,6 +4524,146 @@ final class AtriaCoalescingSerialWorker<Input: Sendable, Output: Sendable>: @unc
         // service for a required/manual request that arrived during the write.
         if hasPending {
             queue.async { [weak self] in self?.drainOneLatest() }
+        }
+    }
+}
+
+/// FIFO async mutex used by the confirmed-record stores. Callers never block
+/// MainActor while a previous JSON/file transaction is in flight, but every
+/// mutation observes and rebases onto the last durably published snapshot.
+@MainActor
+final class AtriaConfirmedRecordTransactionGate {
+    private var isHeld = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        guard isHeld else {
+            isHeld = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        guard !waiters.isEmpty else {
+            isHeld = false
+            return
+        }
+        waiters.removeFirst().resume()
+    }
+}
+
+enum AtriaConfirmedRecordWriteRequest: @unchecked Sendable {
+    case loadWorkouts(
+        fileURL: URL,
+        defaultsKey: String
+    )
+    case loadSleeps(
+        defaultsKey: String
+    )
+    case workouts(
+        generation: UInt64,
+        records: [UserConfirmedWorkout],
+        fileURL: URL,
+        defaultsKey: String
+    )
+    case sleeps(
+        generation: UInt64,
+        records: [UserConfirmedSleep],
+        defaultsKey: String
+    )
+}
+
+enum AtriaConfirmedRecordWriteResult: @unchecked Sendable {
+    case loadedWorkouts([UserConfirmedWorkout])
+    case loadedSleeps([UserConfirmedSleep])
+    case workouts(
+        generation: UInt64,
+        records: [UserConfirmedWorkout],
+        bytes: Int,
+        mirrorSucceeded: Bool
+    )
+    case sleeps(
+        generation: UInt64,
+        records: [UserConfirmedSleep],
+        bytes: Int
+    )
+    case failure(generation: UInt64, domain: String, reason: String)
+}
+
+/// Performs confirmed workout/sleep encoding and persistence on one required
+/// FIFO utility lane. The persisted wire format remains the original raw
+/// Codable array. Workout files remain authoritative; defaults are a mirror.
+enum AtriaConfirmedRecordWriter {
+    nonisolated static func write(
+        _ request: AtriaConfirmedRecordWriteRequest
+    ) -> AtriaConfirmedRecordWriteResult {
+        let encoder = JSONEncoder()
+        switch request {
+        case .loadWorkouts(let fileURL, let defaultsKey):
+            let data = (try? Data(contentsOf: fileURL))
+                ?? UserDefaults.standard.data(forKey: defaultsKey)
+            guard let data else { return .loadedWorkouts([]) }
+            guard let decoded = try? JSONDecoder().decode([UserConfirmedWorkout].self, from: data) else {
+                return .failure(generation: 0,
+                                domain: "workouts",
+                                reason: "authoritative_decode_failed")
+            }
+            return .loadedWorkouts(decoded.sorted { $0.start > $1.start })
+
+        case .loadSleeps(let defaultsKey):
+            guard let data = UserDefaults.standard.data(forKey: defaultsKey) else {
+                return .loadedSleeps([])
+            }
+            guard let decoded = try? JSONDecoder().decode([UserConfirmedSleep].self, from: data) else {
+                return .failure(generation: 0,
+                                domain: "sleeps",
+                                reason: "authoritative_decode_failed")
+            }
+            return .loadedSleeps(decoded.sorted { $0.start > $1.start })
+
+        case .workouts(let generation, let records, let fileURL, let defaultsKey):
+            let sorted = records.sorted { $0.start > $1.start }
+            do {
+                let data = try encoder.encode(sorted)
+                try data.write(to: fileURL, options: .atomic)
+                guard (try? Data(contentsOf: fileURL)) == data else {
+                    return .failure(generation: generation,
+                                    domain: "workouts",
+                                    reason: "authoritative_readback_mismatch")
+                }
+                UserDefaults.standard.set(data, forKey: defaultsKey)
+                let mirrorSucceeded = UserDefaults.standard.data(forKey: defaultsKey) == data
+                return .workouts(generation: generation,
+                                 records: sorted,
+                                 bytes: data.count,
+                                 mirrorSucceeded: mirrorSucceeded)
+            } catch {
+                return .failure(generation: generation,
+                                domain: "workouts",
+                                reason: String(describing: error))
+            }
+
+        case .sleeps(let generation, let records, let defaultsKey):
+            let sorted = records.sorted { $0.start > $1.start }
+            do {
+                let data = try encoder.encode(sorted)
+                UserDefaults.standard.set(data, forKey: defaultsKey)
+                guard UserDefaults.standard.data(forKey: defaultsKey) == data else {
+                    return .failure(generation: generation,
+                                    domain: "sleeps",
+                                    reason: "defaults_readback_mismatch")
+                }
+                return .sleeps(generation: generation,
+                               records: sorted,
+                               bytes: data.count)
+            } catch {
+                return .failure(generation: generation,
+                                domain: "sleeps",
+                                reason: String(describing: error))
+            }
         }
     }
 }
@@ -6232,6 +6380,20 @@ final class SessionStore: ObservableObject {
         qos: .utility,
         perform: { request in SessionStore.performSessionBackupIO(request) }
     )
+    /// Confirmed records are process-global persistence domains. A shared gate
+    /// and worker prevent a second SessionStore (tests, previews, scene
+    /// restoration) from overwriting a mutation accepted by the first.
+    private static let confirmedRecordTransactionGate = AtriaConfirmedRecordTransactionGate()
+    private static let confirmedRecordWorker = AtriaCoalescingSerialWorker<
+        AtriaConfirmedRecordWriteRequest,
+        AtriaConfirmedRecordWriteResult
+    >(
+        label: "com.adidshaft.atria.session-store.confirmed-records",
+        qos: .utility,
+        perform: { request in AtriaConfirmedRecordWriter.write(request) }
+    )
+    private var confirmedRecordWriteGeneration: UInt64 = 0
+    private var restoreOwnsConfirmedRecordTransactionGate = false
     private var sessionBackupUserOperationInProgress = false
     /// While true, canonical producers fail closed and background writers
     /// cannot publish an older file/archive image behind the restore
@@ -6491,12 +6653,15 @@ final class SessionStore: ObservableObject {
     private var pendingSleepReviewCacheWorkItem: DispatchWorkItem?
     private var activeJournalSleepReviewIdentity = ActiveSessionJournal.SleepReviewCacheIdentity.empty
     /// Sleep review is user-facing after both a notification deep link and a
-    /// manual save. A dedicated serial queue prevents its cold-cache build from
-    /// being starved behind unrelated global utility work while preserving the
-    /// single-projection-at-a-time invariant enforced by the generation guard.
-    private static let sleepReviewProjectionQueue = DispatchQueue(
+    /// manual save. Each store owns a dedicated serial queue so a discarded
+    /// preview, restored scene, or test store cannot strand the active store's
+    /// cold-cache build behind its projections. The per-store generation guard
+    /// still prevents an older build from publishing over newer state. This
+    /// projection directly resolves visible sleep UI, so it must not inherit
+    /// starvation from bulk utility/archive work.
+    private let sleepReviewProjectionQueue = DispatchQueue(
         label: "com.adidshaft.atria.sleep-review-projection",
-        qos: .utility
+        qos: .userInitiated
     )
     private var restingTrendInputsByID: [UUID: RestingTrendInput] = [:]
     private var pendingRestingTrendCheckpointHint: RestingTrendCheckpointHint?
@@ -8110,7 +8275,7 @@ final class SessionStore: ObservableObject {
                 recoveredSessions[index].strapStepResearchCount = fields.strapStepResearchCount
             }
 
-            DispatchQueue.main.async { [weak self, archivePoints, recoveredSessions, projection, rrProjection, ticket] in
+            Task { @MainActor [weak self, archivePoints, recoveredSessions, projection, rrProjection, ticket] in
                 guard let self,
                       case let .projecting(active) = self.recoveredDataRecompute.phase,
                       active == ticket else { return }
@@ -8159,7 +8324,7 @@ final class SessionStore: ObservableObject {
                 // Existing consumers now read the same merged, exact-timestamp
                 // session set. Stage backfill remains fail-closed when validated
                 // timestamped staging cannot cover the full sleep.
-                guard self.rebuildConfirmedSleepRecoveredMotionProvenance(
+                guard await self.rebuildConfirmedSleepRecoveredMotionProvenance(
                     reason: "historical_projection_\(ticket.reason)",
                     deferDerivedPublication: true
                 ) else {
@@ -8171,7 +8336,7 @@ final class SessionStore: ObservableObject {
                     )
                     return
                 }
-                guard self.backfillConfirmedSleepStagesFromSessions(
+                guard await self.backfillConfirmedSleepStagesFromSessions(
                     reason: "historical_projection_\(ticket.reason)",
                     deferDerivedPublication: true
                 ) else {
@@ -8183,7 +8348,7 @@ final class SessionStore: ObservableObject {
                     )
                     return
                 }
-                let hrvRequalification = self.requalifyPersistedConfirmedSleepHRVFromSessionsIfNeeded(
+                let hrvRequalification = await self.requalifyPersistedConfirmedSleepHRVFromSessionsIfNeeded(
                     self.cachedCanonicalSessions,
                     reason: "historical_projection_\(ticket.reason)",
                     deferDerivedPublication: true
@@ -9035,7 +9200,7 @@ final class SessionStore: ObservableObject {
                 return replacement == old ? nil : (old, replacement)
             }
 
-            DispatchQueue.main.async { [weak self, replacements, reason] in
+            Task { @MainActor [weak self, replacements, reason] in
                 guard let self else { return }
                 guard generation == self.confirmedWorkoutRehydrationGeneration else {
                     self.finishConfirmedWorkoutRehydrationCompletions(succeeded: false)
@@ -9057,7 +9222,7 @@ final class SessionStore: ObservableObject {
                     appliedReplacements.append((original: original, replacement: replacement))
                 }
                 if applied > 0 {
-                    persistenceSucceeded = self.saveConfirmedWorkouts(
+                    persistenceSucceeded = await self.saveConfirmedWorkouts(
                         updated,
                         deferDerivedPublication: !self.confirmedWorkoutRehydrationCompletions.isEmpty
                     )
@@ -9138,7 +9303,7 @@ final class SessionStore: ObservableObject {
                     )
                 return (old, replacement)
             }
-            DispatchQueue.main.async { [weak self, replacements, reason] in
+            Task { @MainActor [weak self, replacements, reason] in
                 guard let self,
                       generation == self.workoutStepEvidenceGeneration else {
                     return
@@ -9166,7 +9331,7 @@ final class SessionStore: ObservableObject {
                     )
                     return
                 }
-                let saved = self.saveConfirmedWorkouts(updated)
+                let saved = await self.saveConfirmedWorkouts(updated)
                 AtriaDebugLog(
                     "ATRIADBG confirmed_workout_steps status=%@ reason=%@ applied=%d",
                     saved ? "published" : "store_failed",
@@ -11096,7 +11261,9 @@ final class SessionStore: ObservableObject {
         loadPersistedSessionsDeferred()
         loadPersistedDailyMetrics()
         refreshSessionDerivedCaches()
-        rescorePersistedConfirmedWorkoutStrainIfVerified()
+        Task { @MainActor [weak self] in
+            await self?.rescorePersistedConfirmedWorkoutStrainIfVerified()
+        }
         refreshMaxHRSuggestion(reason: "init", force: true)
         recomputeCollectionResearchSummaries()
         sleepHistorySnapshot = SleepHistorySnapshot(rollups: [],
@@ -11124,7 +11291,7 @@ final class SessionStore: ObservableObject {
             UserDefaults.standard.set("session_store_init", forKey: Self.debugStrengthWorkoutProofReasonKey)
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(700))
-                self?.seedDebugStrengthWorkoutProofIfRequested(arguments: ProcessInfo.processInfo.arguments)
+                await self?.seedDebugStrengthWorkoutProofIfRequested(arguments: ProcessInfo.processInfo.arguments)
             }
         }
         #endif
@@ -11174,6 +11341,7 @@ final class SessionStore: ObservableObject {
         biologicalAgeSummaryRevision = 0
         cachedSkinTemperatureDeviationSummary = nil
     }
+
     #endif
 
     deinit {
@@ -12507,7 +12675,7 @@ final class SessionStore: ObservableObject {
             } else {
                 decoded = []
             }
-            await MainActor.run {
+            await Task { @MainActor in
                 guard let decoded else {
                     AtriaDebugLog("ATRIADBG daily_metric_load status=failed action=retain_widget_authority")
                     return
@@ -12536,7 +12704,7 @@ final class SessionStore: ObservableObject {
                         "daily_metrics_loaded"
                     )
                 }
-            }
+            }.value
         }
     }
 
@@ -16661,8 +16829,8 @@ final class SessionStore: ObservableObject {
         return min(1, overlap / shortest)
     }
 
-    func confirmBestWorkoutCandidateForUI(rest: Int, maxHR: Int, source: String = "ui") -> UserConfirmedWorkout? {
-        confirmBestWorkoutCandidate(rest: rest, maxHR: maxHR, source: source)
+    func confirmBestWorkoutCandidateForUI(rest: Int, maxHR: Int, source: String = "ui") async -> UserConfirmedWorkout? {
+        await confirmBestWorkoutCandidate(rest: rest, maxHR: maxHR, source: source)
     }
 
     func confirmWorkoutWindowForUI(start: Date,
@@ -16682,8 +16850,8 @@ final class SessionStore: ObservableObject {
                                    settlingCandidateWindow: (start: Date, end: Date)? = nil,
                                    workoutSteps: Int? = nil,
                                    workoutStepsAreEstimated: Bool? = nil,
-                                   workoutStepsCapturedAt: Date? = nil) -> UserConfirmedWorkout? {
-        confirmWorkoutWindow(start: start,
+                                   workoutStepsCapturedAt: Date? = nil) async -> UserConfirmedWorkout? {
+        await confirmWorkoutWindow(start: start,
                              end: end,
                              rest: rest,
                              maxHR: maxHR,
@@ -16781,7 +16949,7 @@ final class SessionStore: ObservableObject {
                 await Task.yield()
                 continue
             }
-            return commitPreparedWorkoutWindowConfirmation(prepared)
+            return await commitPreparedWorkoutWindowConfirmation(prepared)
         }
 
         AtriaDebugLog("ATRIADBG workout_confirm status=deferred reason=source_changed_during_off_main_prepare source=%@",
@@ -16803,8 +16971,15 @@ final class SessionStore: ObservableObject {
 
     func confirmBestWorkoutCandidateFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard arguments.contains("--atria-confirm-best-workout-candidate") else { return }
-        let rest = baseline.restingInt ?? 60
-        _ = confirmBestWorkoutCandidate(rest: rest, maxHR: profile.maxHR, source: "launch_arg")
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let rest = self.baseline.restingInt ?? 60
+            _ = await self.confirmBestWorkoutCandidate(
+                rest: rest,
+                maxHR: self.profile.maxHR,
+                source: "launch_arg"
+            )
+        }
     }
 
     /// Device-recovery hook for an exact user-supplied window. Arguments are
@@ -16827,7 +17002,7 @@ final class SessionStore: ObservableObject {
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
             guard let self else { return }
-            let confirmed = self.confirmWorkoutWindowForUI(
+            let confirmed = await self.confirmWorkoutWindowForUI(
                 start: Date(timeIntervalSince1970: startUnix),
                 end: Date(timeIntervalSince1970: endUnix),
                 rest: self.baseline.restingInt ?? 60,
@@ -16853,7 +17028,7 @@ final class SessionStore: ObservableObject {
     private func confirmBestWorkoutCandidate(rest: Int,
                                              maxHR: Int,
                                              source: String,
-                                             now: Date = Date()) -> UserConfirmedWorkout? {
+                                             now: Date = Date()) async -> UserConfirmedWorkout? {
         let summary = replaySavedWorkoutReadiness(rest: rest, maxHR: maxHR)
         guard let bestStart = summary.bestStart,
               let bestEnd = summary.bestEnd else {
@@ -16953,7 +17128,7 @@ final class SessionStore: ObservableObject {
                                              zoneSeconds: enriched.zoneSeconds,
                                              eventTimeZoneIdentifier: TimeZone.current.identifier)
         existing.append(confirmed)
-        guard saveConfirmedWorkouts(existing) else {
+        guard await saveConfirmedWorkouts(existing) else {
             AtriaDebugLog("ATRIADBG workout_confirm status=store_failed id=%@ source=%@ start=%@ end=%@ action=retain_pending_intent",
                           confirmed.id,
                           source,
@@ -17155,7 +17330,7 @@ final class SessionStore: ObservableObject {
 
     private func commitPreparedWorkoutWindowConfirmation(
         _ prepared: PreparedWorkoutWindowConfirmation
-    ) -> UserConfirmedWorkout? {
+    ) async -> UserConfirmedWorkout? {
         let request = prepared.request
         guard request.end > request.start else {
             AtriaDebugLog("ATRIADBG workout_confirm status=learning reason=invalid_window source=%@ start=%@ end=%@ metric_promotions=0",
@@ -17170,7 +17345,7 @@ final class SessionStore: ObservableObject {
                 isExplicitUserActivity: request.preserveUserDeclaredActivityWithoutHeartRate,
                 requestedDuration: request.end.timeIntervalSince(request.start)
             ) {
-                return confirmMetadataOnlyWorkout(
+                return await confirmMetadataOnlyWorkout(
                     start: request.start,
                     end: request.end,
                     rest: request.rest,
@@ -17242,7 +17417,7 @@ final class SessionStore: ObservableObject {
             )
             if merged != already {
                 existing[index] = merged
-                guard saveConfirmedWorkouts(existing) else { return nil }
+                guard await saveConfirmedWorkouts(existing) else { return nil }
             }
             settleWorkoutCandidateAfterCanonicalSave(
                 confirmed: merged,
@@ -17317,7 +17492,7 @@ final class SessionStore: ObservableObject {
             workoutStepsCapturedAt: request.workoutSteps == nil ? nil : request.workoutStepsCapturedAt
         )
         existing.append(confirmed)
-        guard saveConfirmedWorkouts(existing) else {
+        guard await saveConfirmedWorkouts(existing) else {
             AtriaDebugLog("ATRIADBG workout_confirm status=store_failed id=%@ source=%@ start=%@ end=%@ action=retain_pending_intent",
                           confirmed.id,
                           request.source,
@@ -17400,7 +17575,7 @@ final class SessionStore: ObservableObject {
                                       settlingCandidateWindow: (start: Date, end: Date)? = nil,
                                       workoutSteps: Int? = nil,
                                       workoutStepsAreEstimated: Bool? = nil,
-                                      workoutStepsCapturedAt: Date? = nil) -> UserConfirmedWorkout? {
+                                      workoutStepsCapturedAt: Date? = nil) async -> UserConfirmedWorkout? {
         guard requestedEnd > requestedStart else {
             AtriaDebugLog("ATRIADBG workout_confirm status=learning reason=invalid_window source=%@ start=%@ end=%@ metric_promotions=0",
                   source,
@@ -17437,7 +17612,7 @@ final class SessionStore: ObservableObject {
                 isExplicitUserActivity: preserveUserDeclaredActivityWithoutHeartRate,
                 requestedDuration: requestedEnd.timeIntervalSince(requestedStart)
             ) {
-                return confirmMetadataOnlyWorkout(
+                return await confirmMetadataOnlyWorkout(
                     start: requestedStart,
                     end: requestedEnd,
                     rest: rest,
@@ -17520,7 +17695,7 @@ final class SessionStore: ObservableObject {
             )
             if merged != already {
                 existing[index] = merged
-                guard saveConfirmedWorkouts(existing) else { return nil }
+                guard await saveConfirmedWorkouts(existing) else { return nil }
             }
             settleWorkoutCandidateAfterCanonicalSave(
                 confirmed: merged,
@@ -17604,7 +17779,7 @@ final class SessionStore: ObservableObject {
                                              workoutStepsAreEstimated: workoutSteps == nil ? nil : (workoutStepsAreEstimated ?? true),
                                              workoutStepsCapturedAt: workoutSteps == nil ? nil : workoutStepsCapturedAt)
         existing.append(confirmed)
-        guard saveConfirmedWorkouts(existing) else {
+        guard await saveConfirmedWorkouts(existing) else {
             AtriaDebugLog("ATRIADBG workout_confirm status=store_failed id=%@ source=%@ start=%@ end=%@ action=retain_pending_intent",
                           confirmed.id,
                           source,
@@ -17685,7 +17860,7 @@ final class SessionStore: ObservableObject {
         workoutSteps: Int?,
         workoutStepsAreEstimated: Bool?,
         workoutStepsCapturedAt: Date?
-    ) -> UserConfirmedWorkout? {
+    ) async -> UserConfirmedWorkout? {
         let workoutSource = "live_workout_window"
         let id = confirmedWorkoutID(start: start, end: end, source: workoutSource)
         if let index = cachedConfirmedWorkouts.firstIndex(where: { $0.id == id }) {
@@ -17705,7 +17880,7 @@ final class SessionStore: ObservableObject {
             if merged != existing {
                 var workouts = cachedConfirmedWorkouts
                 workouts[index] = merged
-                guard saveConfirmedWorkouts(workouts) else { return nil }
+                guard await saveConfirmedWorkouts(workouts) else { return nil }
             }
             settleWorkoutCandidateAfterCanonicalSave(
                 confirmed: merged,
@@ -17777,7 +17952,7 @@ final class SessionStore: ObservableObject {
         )
         var workouts = cachedConfirmedWorkouts
         workouts.append(confirmed)
-        guard saveConfirmedWorkouts(workouts) else {
+        guard await saveConfirmedWorkouts(workouts) else {
             AtriaDebugLog("ATRIADBG workout_confirm status=store_failed reason=metadata_only source=%@ id=%@",
                           source,
                           id)
@@ -18156,13 +18331,13 @@ final class SessionStore: ObservableObject {
     /// Banister/TRIMP evidence. Re-score only records with an exact persisted
     /// confirmation audit; summaries or current live HR are never substituted
     /// for missing historical evidence.
-    private func rescorePersistedConfirmedWorkoutStrainIfVerified() {
+    private func rescorePersistedConfirmedWorkoutStrainIfVerified() async {
         let result = AtriaPersistedWorkoutStrainRescorer.rescore(
             workouts: cachedConfirmedWorkouts,
             audits: AtriaStrainConfirmationAuditLog.load()
         )
         guard result.changed else { return }
-        guard saveConfirmedWorkouts(result.workouts, deferDerivedPublication: true) else {
+        guard await saveConfirmedWorkouts(result.workouts, deferDerivedPublication: true) else {
             AtriaDebugLog("ATRIADBG confirmed_workout_strain_rescore status=store_failed verified=%d",
                           result.rescoredWorkoutIDs.count)
             return
@@ -18171,27 +18346,94 @@ final class SessionStore: ObservableObject {
                       result.rescoredWorkoutIDs.count)
     }
 
+    nonisolated static func rebasedConfirmedWorkouts(
+        base: [UserConfirmedWorkout],
+        desired: [UserConfirmedWorkout],
+        current: [UserConfirmedWorkout]
+    ) -> [UserConfirmedWorkout] {
+        var baseByID: [String: UserConfirmedWorkout] = [:]
+        for record in base { baseByID[record.id] = record }
+        var desiredByID: [String: UserConfirmedWorkout] = [:]
+        var desiredLastIndex: [String: Int] = [:]
+        for (index, record) in desired.enumerated() {
+            desiredByID[record.id] = record
+            desiredLastIndex[record.id] = index
+        }
+        let removedIDs = Set(baseByID.keys).subtracting(desiredByID.keys)
+        let changed: [UserConfirmedWorkout] = desired.enumerated().compactMap { index, record in
+            guard desiredLastIndex[record.id] == index,
+                  baseByID[record.id] != record else { return nil }
+            return record
+        }
+        var currentOrder: [String] = []
+        var currentByID: [String: UserConfirmedWorkout] = [:]
+        for record in current {
+            if currentByID[record.id] == nil { currentOrder.append(record.id) }
+            currentByID[record.id] = record
+        }
+        var result = currentOrder.compactMap { id in
+            removedIDs.contains(id) ? nil : currentByID[id]
+        }
+        for record in changed {
+            if let index = result.firstIndex(where: { $0.id == record.id }) {
+                result[index] = record
+            } else {
+                result.append(record)
+            }
+        }
+        return result
+    }
+
     @discardableResult
     private func saveConfirmedWorkouts(
         _ workouts: [UserConfirmedWorkout],
         deferDerivedPublication: Bool = false
-    ) -> Bool {
+    ) async -> Bool {
+        let base = cachedConfirmedWorkouts
+        await Self.confirmedRecordTransactionGate.acquire()
+        defer { Self.confirmedRecordTransactionGate.release() }
         guard canonicalMutationAllowed else {
             AtriaDebugLog("ATRIADBG confirmed_workout_store status=blocked reason=restore_in_progress")
             return false
         }
-        let sorted = workouts.sorted(by: { $0.start > $1.start })
-        guard let data = try? JSONEncoder().encode(sorted) else { return false }
         let fileURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent(ConfirmedWorkoutDefaults.fileName)
-        do {
-            try data.write(to: fileURL, options: .atomic)
-        } catch {
-            AtriaDebugLog("ATRIADBG confirmed_workout_store status=failed error=%@",
-                          error.localizedDescription)
+        let loaded = await Self.confirmedRecordWorker.performAsync(.loadWorkouts(
+            fileURL: fileURL,
+            defaultsKey: ConfirmedWorkoutDefaults.key
+        ))
+        guard case .loadedWorkouts(let authoritativeCurrent) = loaded else {
+            AtriaDebugLog("ATRIADBG confirmed_workout_store status=failed reason=authoritative_load_failed")
             return false
         }
-        UserDefaults.standard.set(data, forKey: ConfirmedWorkoutDefaults.key)
+        let rebased = Self.rebasedConfirmedWorkouts(
+            base: base,
+            desired: workouts,
+            current: authoritativeCurrent
+        )
+        confirmedRecordWriteGeneration &+= 1
+        let generation = confirmedRecordWriteGeneration
+        let result = await Self.confirmedRecordWorker.performAsync(.workouts(
+            generation: generation,
+            records: rebased,
+            fileURL: fileURL,
+            defaultsKey: ConfirmedWorkoutDefaults.key
+        ))
+        guard case .workouts(let completedGeneration,
+                             let sorted,
+                             let bytes,
+                             let mirrorSucceeded) = result,
+              completedGeneration == generation else {
+            let reason: String
+            if case .failure(_, _, let failureReason) = result {
+                reason = failureReason
+            } else {
+                reason = "generation_or_domain_mismatch"
+            }
+            AtriaDebugLog("ATRIADBG confirmed_workout_store status=failed reason=%@",
+                          reason)
+            return false
+        }
         cachedConfirmedWorkouts = sorted
         backupCanonicalRevision &+= 1
         confirmedWorkoutsRevision &+= 1
@@ -18207,9 +18449,10 @@ final class SessionStore: ObservableObject {
         // newly added/edited/deleted workout cannot leave an older backup
         // incorrectly presented as current.
         refreshBackupStatusCacheDeferred(reason: "confirmed_workouts")
-        AtriaDebugLog("ATRIADBG confirmed_workout_store status=ok workouts=%d bytes=%d",
+        AtriaDebugLog("ATRIADBG confirmed_workout_store status=ok workouts=%d bytes=%d mirror_succeeded=%d",
                       sorted.count,
-                      data.count)
+                      bytes,
+                      mirrorSucceeded ? 1 : 0)
         return true
     }
 
@@ -18224,10 +18467,10 @@ final class SessionStore: ObservableObject {
     /// Bumps `dashboardRevision` (the @Published trigger) so the UI refreshes;
     /// `cachedConfirmedWorkouts` itself is not @Published.
     @discardableResult
-    func deleteConfirmedWorkout(id: String) -> Bool {
+    func deleteConfirmedWorkout(id: String) async -> Bool {
         guard let removed = cachedConfirmedWorkouts.first(where: { $0.id == id }) else { return false }
         let filtered = cachedConfirmedWorkouts.filter { $0.id != id }
-        guard saveConfirmedWorkouts(filtered) else { return false }
+        guard await saveConfirmedWorkouts(filtered) else { return false }
         addDismissedWorkoutCandidate(start: removed.start, end: removed.end)
         invalidateWorkoutReviewCache()
         dashboardRevision &+= 1
@@ -18387,7 +18630,7 @@ final class SessionStore: ObservableObject {
     /// (times, HR, strain, calories are all preserved). Returns false if the id
     /// is unknown or the new label is blank.
     @discardableResult
-    func renameConfirmedWorkout(id: String, label newLabel: String) -> Bool {
+    func renameConfirmedWorkout(id: String, label newLabel: String) async -> Bool {
         let trimmed = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               let index = cachedConfirmedWorkouts.firstIndex(where: { $0.id == id }),
@@ -18428,7 +18671,7 @@ final class SessionStore: ObservableObject {
         renamed.workoutStepsCapturedAt = old.workoutStepsCapturedAt
         var updated = cachedConfirmedWorkouts
         updated[index] = renamed
-        guard saveConfirmedWorkouts(updated) else { return false }
+        guard await saveConfirmedWorkouts(updated) else { return false }
         dashboardRevision &+= 1
         return true
     }
@@ -18436,14 +18679,14 @@ final class SessionStore: ObservableObject {
     /// Set (or clear) a confirmed workout's activity type -- e.g. relabel a
     /// generic effort as "Run", "Walk", "Dance". Measured metrics are untouched.
     @discardableResult
-    func setConfirmedWorkoutActivityType(id: String, activityType: String) -> Bool {
+    func setConfirmedWorkoutActivityType(id: String, activityType: String) async -> Bool {
         let trimmed = activityType.trimmingCharacters(in: .whitespacesAndNewlines)
         let newType = trimmed.isEmpty ? nil : trimmed
         guard let index = cachedConfirmedWorkouts.firstIndex(where: { $0.id == id }),
               cachedConfirmedWorkouts[index].activityType != newType else { return false }
         var updated = cachedConfirmedWorkouts
         updated[index].activityType = newType
-        guard saveConfirmedWorkouts(updated) else { return false }
+        guard await saveConfirmedWorkouts(updated) else { return false }
         dashboardRevision &+= 1
         return true
     }
@@ -18720,7 +18963,7 @@ final class SessionStore: ObservableObject {
                               start newStart: Date,
                               end newEnd: Date,
                               rest: Int,
-                              maxHR: Int) -> Result<UserConfirmedWorkout, ConfirmedWorkoutEditError> {
+                              maxHR: Int) async -> Result<UserConfirmedWorkout, ConfirmedWorkoutEditError> {
         let trimmedLabel = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedLabel.isEmpty else { return .failure(.emptyLabel) }
         guard newEnd > newStart else { return .failure(.invalidWindow) }
@@ -18933,7 +19176,7 @@ final class SessionStore: ObservableObject {
         guard replacement != old else { return .success(old) }
         var updated = cachedConfirmedWorkouts
         updated[oldIndex] = replacement
-        guard saveConfirmedWorkouts(updated) else { return .failure(.persistenceFailed) }
+        guard await saveConfirmedWorkouts(updated) else { return .failure(.persistenceFailed) }
         dashboardRevision &+= 1
         return .success(replacement)
     }
@@ -18948,9 +19191,9 @@ final class SessionStore: ObservableObject {
                               start newStart: Date,
                               end newEnd: Date,
                               rest: Int,
-                              maxHR: Int) -> Result<UserConfirmedWorkout, ConfirmedWorkoutEditError> {
+                              maxHR: Int) async -> Result<UserConfirmedWorkout, ConfirmedWorkoutEditError> {
         let oldSubtype = cachedConfirmedWorkouts.first(where: { $0.id == id })?.activitySubtype
-        return editConfirmedWorkout(id: id,
+        return await editConfirmedWorkout(id: id,
                                     label: newLabel,
                                     activityType: newActivityType,
                                     activitySubtype: oldSubtype,
@@ -18970,9 +19213,9 @@ final class SessionStore: ObservableObject {
                                       newStart: Date,
                                       newEnd: Date,
                                       rest: Int,
-                                      maxHR: Int) -> UserConfirmedWorkout? {
+                                      maxHR: Int) async -> UserConfirmedWorkout? {
         guard let old = cachedConfirmedWorkouts.first(where: { $0.id == id }) else { return nil }
-        switch editConfirmedWorkout(id: id,
+        switch await editConfirmedWorkout(id: id,
                                     label: old.label,
                                     activityType: old.activityType ?? "",
                                     start: newStart,
@@ -18986,14 +19229,14 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    func confirmBestSleepCandidateForUI(rest: Int, source: String = "ui") -> UserConfirmedSleep? {
-        confirmBestSleepCandidate(rest: rest, source: source)
+    func confirmBestSleepCandidateForUI(rest: Int, source: String = "ui") async -> UserConfirmedSleep? {
+        await confirmBestSleepCandidate(rest: rest, source: source)
     }
 
     func confirmSleepHistoryNightForUI(_ night: SleepHistorySnapshot.Night,
                                        rest: Int,
-                                       source: String = "ui") -> UserConfirmedSleep? {
-        confirmSleepHistoryNight(night, rest: rest, source: source)
+                                       source: String = "ui") async -> UserConfirmedSleep? {
+        await confirmSleepHistoryNight(night, rest: rest, source: source)
     }
 
     enum SleepReviewResolution: Equatable {
@@ -19014,7 +19257,7 @@ final class SessionStore: ObservableObject {
                                    end: Date,
                                    isNap: Bool,
                                    rest: Int,
-                                   source: String = "ui") -> UserConfirmedSleep? {
+                                   source: String = "ui") async -> UserConfirmedSleep? {
         if night.confirmed {
             guard let existing = cachedConfirmedSleeps.first(where: { $0.id == night.id }) else {
                 return nil
@@ -19030,7 +19273,7 @@ final class SessionStore: ObservableObject {
                                                isNap: isNap) {
                 return existing
             }
-            return adjustConfirmedSleepWindow(existing: existing,
+            return await adjustConfirmedSleepWindow(existing: existing,
                                               start: start,
                                               end: end,
                                               isNap: isNap,
@@ -19040,9 +19283,9 @@ final class SessionStore: ObservableObject {
                                            start: start,
                                            end: end,
                                            isNap: isNap) {
-            return confirmSleepHistoryNight(night, rest: rest, source: source)
+            return await confirmSleepHistoryNight(night, rest: rest, source: source)
         }
-        return adjustSleepNight(originalStart: night.start,
+        return await adjustSleepNight(originalStart: night.start,
                                 originalEnd: night.end,
                                 newStart: start,
                                 newEnd: end,
@@ -19221,7 +19464,7 @@ final class SessionStore: ObservableObject {
         pendingSleepReviewCacheInputKey = requestedInputKey
         pendingSleepReviewCacheGeneration = generation
         pendingSleepReviewCacheWorkItem = workItem
-        Self.sleepReviewProjectionQueue.async(execute: workItem)
+        sleepReviewProjectionQueue.async(execute: workItem)
     }
 
     nonisolated static func makeSleepReviewNightForCache(snapshot: SleepHistorySnapshot,
@@ -19554,7 +19797,7 @@ final class SessionStore: ObservableObject {
 
     private func confirmSleepHistoryNight(_ night: SleepHistorySnapshot.Night,
                                           rest: Int,
-                                          source: String) -> UserConfirmedSleep? {
+                                          source: String) async -> UserConfirmedSleep? {
         guard let start = night.start, let end = night.end, end > start else {
             AtriaDebugLog("ATRIADBG sleep_confirm status=learning reason=invalid_review_window source=%@ candidate_source=%@ metric_promotions=0 auto_gate_e_unchanged=1",
                           source,
@@ -19672,7 +19915,7 @@ final class SessionStore: ObservableObject {
                                                      candidateEnd: end)
         }
         existing.append(confirmed)
-        guard saveConfirmedSleeps(existing) else { return nil }
+        guard await saveConfirmedSleeps(existing) else { return nil }
         // Confirm permanently settles the detector suggestion only after the
         // canonical record is durable. A failed write must never dismiss the
         // sole actionable candidate and leave Activity empty.
@@ -19741,7 +19984,7 @@ final class SessionStore: ObservableObject {
                               retryState.evidence.readyCandidates,
                               retryState.pendingBackfill ? 1 : 0)
                 self.refreshHistoricalArchiveStatus(reason: "sleep_auto_confirm_retry")
-                let saved = self.autoConfirmStrongSleepCandidates(reason: "retry_\(reason)_attempt_\(attempt)")
+                let saved = await self.autoConfirmStrongSleepCandidates(reason: "retry_\(reason)_attempt_\(attempt)")
                 self.refreshHistorySnapshotCache(deferred: true)
                 if saved || !self.sleepReadinessRetryState().shouldRetry {
                     self.pendingSleepReadinessRetry = nil
@@ -19959,7 +20202,7 @@ final class SessionStore: ObservableObject {
                 lookbackDays: evaluationLookbackDays,
                 maximumSessions: maximumEvaluationSessions
             )
-            DispatchQueue.main.async { [weak self] in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 guard Self.shouldCommitForegroundSleepSettlement(
                     completedGeneration: generation,
@@ -19997,7 +20240,7 @@ final class SessionStore: ObservableObject {
                 }
                 self.pendingForegroundSleepSettlementWorkItem = nil
                 var persistenceSucceeded = true
-                var saved = self.autoConfirmStrongSleepCandidates(
+                var saved = await self.autoConfirmStrongSleepCandidates(
                     reason: reason,
                     limit: autoConfirmLimit,
                     sourceSessions: proposal.sourceSessions,
@@ -20007,7 +20250,7 @@ final class SessionStore: ObservableObject {
                     persistenceFailure: { persistenceSucceeded = false }
                 )
                 if !saved && persistenceSucceeded {
-                    saved = self.commitPreparedWakeBoundarySleepIfUseful(
+                    saved = await self.commitPreparedWakeBoundarySleepIfUseful(
                         proposal.wakeBoundary,
                         reason: reason,
                         sourceSessions: proposal.sourceSessions,
@@ -20124,7 +20367,7 @@ final class SessionStore: ObservableObject {
                                                    precomputedStrongCandidates: [AggregateSleepCandidate]? = nil,
                                                    evaluationNow: Date = Date(),
                                                    deferDerivedPublication: Bool = false,
-                                                   persistenceFailure: (() -> Void)? = nil) -> Bool {
+                                                   persistenceFailure: (() -> Void)? = nil) async -> Bool {
         let rest = baseline.restingInt ?? 60
         let now = evaluationNow
         let baselineRestingIsTrusted = baseline.restingInt != nil
@@ -20216,7 +20459,7 @@ final class SessionStore: ObservableObject {
             pendingSleepSettlementRetry?.cancel()
             pendingSleepSettlementRetry = nil
         }
-        guard saveConfirmedSleeps(existing,
+        guard await saveConfirmedSleeps(existing,
                                   deferDerivedPublication: deferDerivedPublication) else {
             persistenceFailure?()
             AtriaDebugLog("ATRIADBG sleep_auto_confirm status=store_failed source=%@ saved=%d", reason, saved)
@@ -20564,7 +20807,7 @@ final class SessionStore: ObservableObject {
         sourceSessions: [SavedSession]? = nil,
         deferDerivedPublication: Bool = false,
         persistenceFailure: (() -> Void)? = nil
-    ) -> Bool {
+    ) async -> Bool {
         guard let candidate = preparation.candidate else {
             if preparation.blocker == "before_window_end" {
                 AtriaDebugLog("ATRIADBG sleep_wake_boundary status=before_window_end reason=%@ window_end_min=%d now_min=%d learned=%d",
@@ -20633,7 +20876,7 @@ final class SessionStore: ObservableObject {
                                            candidate: candidate,
                                            reason: "\(reason)_wake_boundary_extend",
                                            sourceSessions: sourceSessions) {
-            guard saveConfirmedSleeps(existing,
+            guard await saveConfirmedSleeps(existing,
                                       deferDerivedPublication: deferDerivedPublication) else {
                 persistenceFailure?()
                 return false
@@ -20655,7 +20898,7 @@ final class SessionStore: ObservableObject {
 
         existing = insertionBase
         existing.append(confirmed)
-        guard saveConfirmedSleeps(existing,
+        guard await saveConfirmedSleeps(existing,
                                   deferDerivedPublication: deferDerivedPublication) else {
             persistenceFailure?()
             return false
@@ -21060,7 +21303,7 @@ final class SessionStore: ObservableObject {
                         end: Date,
                         isNap: Bool,
                         rest: Int,
-                        source: String = "manual_ui") -> UserConfirmedSleep? {
+                        source: String = "manual_ui") async -> UserConfirmedSleep? {
         guard end > start else { return nil }
         let sleepSource = isNap ? "manual_nap" : "manual_sleep"
         let id = confirmedSleepID(start: start, end: end, source: sleepSource)
@@ -21092,7 +21335,7 @@ final class SessionStore: ObservableObject {
         existing.append(confirmed)
         // A user may legitimately re-add a window they previously dismissed
         // or deleted. Their explicit save supersedes that detector tombstone.
-        guard saveConfirmedSleeps(existing) else { return nil }
+        guard await saveConfirmedSleeps(existing) else { return nil }
         clearDismissedSleepCandidates(overlappingStart: start, end: end)
         refreshSleepSnapshotAfterCandidateSettlement()
         AtriaDebugLog("ATRIADBG sleep_manual status=saved id=%@ source=%@ start=%@ end=%@ duration_s=%.0f kind=%@ stages=%d",
@@ -21129,7 +21372,7 @@ final class SessionStore: ObservableObject {
                             motionValidated: Bool = false,
                             motionSource: String = "user_adjusted",
                             fromSource: String = "user",
-                            settlingCandidateWindow: (start: Date, end: Date)? = nil) -> UserConfirmedSleep? {
+                            settlingCandidateWindow: (start: Date, end: Date)? = nil) async -> UserConfirmedSleep? {
         guard end > start else { return nil }
         let adjustedSource = isNap ? "user_adjusted_nap" : "user_adjusted_sleep"
         let id = confirmedSleepID(start: start, end: end, source: adjustedSource)
@@ -21216,7 +21459,7 @@ final class SessionStore: ObservableObject {
         // candidate immediately after a successful Save. Keep the original
         // suggestion settled while the newly confirmed record remains the
         // authoritative, editable Activity item.
-        guard saveConfirmedSleeps(remaining) else { return nil }
+        guard await saveConfirmedSleeps(remaining) else { return nil }
         clearDismissedSleepCandidates(overlappingStart: start, end: end)
         if let settlingCandidateWindow,
            settlingCandidateWindow.end > settlingCandidateWindow.start {
@@ -21243,8 +21486,8 @@ final class SessionStore: ObservableObject {
                                     start: Date,
                                     end: Date,
                                     isNap: Bool,
-                                    rest: Int) -> UserConfirmedSleep? {
-        let result = confirmSleepWindow(start: start,
+                                    rest: Int) async -> UserConfirmedSleep? {
+        let result = await confirmSleepWindow(start: start,
                                         end: end,
                                         isNap: isNap,
                                         rest: rest,
@@ -21272,13 +21515,13 @@ final class SessionStore: ObservableObject {
                           newEnd: Date,
                           isNap: Bool,
                           rest: Int,
-                          source: String = "review_adjust") -> UserConfirmedSleep? {
+                          source: String = "review_adjust") async -> UserConfirmedSleep? {
         // The night's own window locates the record to edit; if the review night
         // carried no bounds yet, fall back to the user's chosen window.
         let lookupStart = originalStart ?? newStart
         let lookupEnd = originalEnd ?? newEnd
         if let existing = cachedConfirmedSleeps.first(where: { $0.start < lookupEnd && $0.end > lookupStart }) {
-            return adjustConfirmedSleepWindow(existing: existing,
+            return await adjustConfirmedSleepWindow(existing: existing,
                                               start: newStart,
                                               end: newEnd,
                                               isNap: isNap,
@@ -21290,7 +21533,7 @@ final class SessionStore: ObservableObject {
         } else {
             candidateWindow = nil
         }
-        return confirmSleepWindow(start: newStart,
+        return await confirmSleepWindow(start: newStart,
                                   end: newEnd,
                                   isNap: isNap,
                                   rest: rest,
@@ -21301,9 +21544,9 @@ final class SessionStore: ObservableObject {
     /// Removes a saved sleep or nap and prevents the underlying detector window
     /// from immediately recreating it as a review candidate.
     @discardableResult
-    func deleteConfirmedSleep(id: String) -> Bool {
+    func deleteConfirmedSleep(id: String) async -> Bool {
         guard let removed = cachedConfirmedSleeps.first(where: { $0.id == id }) else { return false }
-        guard saveConfirmedSleeps(cachedConfirmedSleeps.filter { $0.id != id }) else { return false }
+        guard await saveConfirmedSleeps(cachedConfirmedSleeps.filter { $0.id != id }) else { return false }
         addDismissedSleepCandidate(start: removed.start, end: removed.end)
         refreshSleepSnapshotAfterCandidateSettlement()
         if autoSleepLoggedBanner?.sleepID == id { autoSleepLoggedBanner = nil }
@@ -21350,11 +21593,14 @@ final class SessionStore: ObservableObject {
 
     func confirmBestSleepCandidateFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard arguments.contains("--atria-confirm-best-sleep-candidate") else { return }
-        let rest = baseline.restingInt ?? 60
-        _ = confirmBestSleepCandidate(rest: rest, source: "launch_arg")
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let rest = self.baseline.restingInt ?? 60
+            _ = await self.confirmBestSleepCandidate(rest: rest, source: "launch_arg")
+        }
     }
 
-    private func confirmBestSleepCandidate(rest: Int, source: String) -> UserConfirmedSleep? {
+    private func confirmBestSleepCandidate(rest: Int, source: String) async -> UserConfirmedSleep? {
         guard let best = Self.preferredSleepCandidateForReview(from: aggregateSleepCandidates(rest: rest, calendar: .current)) else {
             AtriaDebugLog("ATRIADBG sleep_confirm status=learning reason=no_confirmable_candidate source=%@ rest_hr=%d metric_promotions=0 auto_gate_e_unchanged=1",
                   source,
@@ -21425,7 +21671,7 @@ final class SessionStore: ObservableObject {
                                            stageSegments: stageSegments.isEmpty ? nil : stageSegments,
                                            eventTimeZoneIdentifier: TimeZone.current.identifier)
         existing.append(confirmed)
-        guard saveConfirmedSleeps(existing) else { return nil }
+        guard await saveConfirmedSleeps(existing) else { return nil }
         AtriaDebugLog("ATRIADBG sleep_confirm status=confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ duration_s=%.0f span_s=%.0f sessions=%d samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d confidence=%@ motion_source=%@ motion_validated=%d stage_research_segments=%d reason=%@ metric_promotions=0 auto_gate_e_unchanged=1 healthkit_source=none local_only=1",
               confirmed.id,
               source,
@@ -21894,24 +22140,86 @@ final class SessionStore: ObservableObject {
         return windows(previous) != windows(next)
     }
 
+    nonisolated static func rebasedConfirmedSleeps(
+        base: [UserConfirmedSleep],
+        desired: [UserConfirmedSleep],
+        current: [UserConfirmedSleep]
+    ) -> [UserConfirmedSleep] {
+        var baseByID: [String: UserConfirmedSleep] = [:]
+        for record in base { baseByID[record.id] = record }
+        var desiredByID: [String: UserConfirmedSleep] = [:]
+        var desiredLastIndex: [String: Int] = [:]
+        for (index, record) in desired.enumerated() {
+            desiredByID[record.id] = record
+            desiredLastIndex[record.id] = index
+        }
+        let removedIDs = Set(baseByID.keys).subtracting(desiredByID.keys)
+        let changed: [UserConfirmedSleep] = desired.enumerated().compactMap { index, record in
+            guard desiredLastIndex[record.id] == index,
+                  baseByID[record.id] != record else { return nil }
+            return record
+        }
+        var currentOrder: [String] = []
+        var currentByID: [String: UserConfirmedSleep] = [:]
+        for record in current {
+            if currentByID[record.id] == nil { currentOrder.append(record.id) }
+            currentByID[record.id] = record
+        }
+        var result = currentOrder.compactMap { id in
+            removedIDs.contains(id) ? nil : currentByID[id]
+        }
+        for record in changed {
+            if let index = result.firstIndex(where: { $0.id == record.id }) {
+                result[index] = record
+            } else {
+                result.append(record)
+            }
+        }
+        return result
+    }
+
     @discardableResult
     private func saveConfirmedSleeps(
         _ sleeps: [UserConfirmedSleep],
         deferDerivedPublication: Bool = false
-    ) -> Bool {
+    ) async -> Bool {
+        let base = cachedConfirmedSleeps
+        await Self.confirmedRecordTransactionGate.acquire()
+        defer { Self.confirmedRecordTransactionGate.release() }
         guard canonicalMutationAllowed else {
             AtriaDebugLog("ATRIADBG confirmed_sleep_store status=blocked reason=restore_in_progress")
             return false
         }
         let previous = cachedConfirmedSleeps
-        let sorted = sleeps.sorted(by: { $0.start > $1.start })
-        guard let data = try? JSONEncoder().encode(sorted) else { return false }
-        UserDefaults.standard.set(data, forKey: ConfirmedSleepDefaults.key)
-        // UserDefaults updates its process-local domain synchronously. Verify
-        // the exact bytes before publishing success so every Save is atomic
-        // from the UI's perspective: durable record + Activity projection, or
-        // the sheet remains open with its candidate still actionable.
-        guard UserDefaults.standard.data(forKey: ConfirmedSleepDefaults.key) == data else {
+        let loaded = await Self.confirmedRecordWorker.performAsync(.loadSleeps(
+            defaultsKey: ConfirmedSleepDefaults.key
+        ))
+        guard case .loadedSleeps(let authoritativeCurrent) = loaded else {
+            AtriaDebugLog("ATRIADBG confirmed_sleep_store status=failed reason=authoritative_load_failed")
+            return false
+        }
+        let rebased = Self.rebasedConfirmedSleeps(
+            base: base,
+            desired: sleeps,
+            current: authoritativeCurrent
+        )
+        confirmedRecordWriteGeneration &+= 1
+        let generation = confirmedRecordWriteGeneration
+        let result = await Self.confirmedRecordWorker.performAsync(.sleeps(
+            generation: generation,
+            records: rebased,
+            defaultsKey: ConfirmedSleepDefaults.key
+        ))
+        guard case .sleeps(let completedGeneration, let sorted, _) = result,
+              completedGeneration == generation else {
+            let reason: String
+            if case .failure(_, _, let failureReason) = result {
+                reason = failureReason
+            } else {
+                reason = "generation_or_domain_mismatch"
+            }
+            AtriaDebugLog("ATRIADBG confirmed_sleep_store status=failed reason=%@",
+                          reason)
             return false
         }
         setCachedConfirmedSleeps(sorted)
@@ -22079,7 +22387,7 @@ final class SessionStore: ObservableObject {
     private func backfillConfirmedSleepStagesFromSessions(
         reason: String,
         deferDerivedPublication: Bool = false
-    ) -> Bool {
+    ) async -> Bool {
         let sourceSessions = canonicalSessions(includeActiveJournal: true)
         guard !sourceSessions.isEmpty, !cachedConfirmedSleeps.isEmpty else { return true }
 
@@ -22148,7 +22456,7 @@ final class SessionStore: ObservableObject {
         }
 
         guard repaired > 0 else { return true }
-        let saved = saveConfirmedSleeps(
+        let saved = await saveConfirmedSleeps(
             updated,
             deferDerivedPublication: deferDerivedPublication
         )
@@ -22180,7 +22488,7 @@ final class SessionStore: ObservableObject {
     private func rebuildConfirmedSleepRecoveredMotionProvenance(
         reason: String,
         deferDerivedPublication: Bool
-    ) -> Bool {
+    ) async -> Bool {
         let sourceSessions = canonicalSessions(includeActiveJournal: true)
         var changed = 0
         let updated = cachedConfirmedSleeps.map { sleep -> UserConfirmedSleep in
@@ -22215,7 +22523,7 @@ final class SessionStore: ObservableObject {
                                       eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier)
         }
         guard changed > 0 else { return true }
-        guard saveConfirmedSleeps(updated,
+        guard await saveConfirmedSleeps(updated,
                                   deferDerivedPublication: deferDerivedPublication) else {
             AtriaDebugLog("ATRIADBG recovered_sleep_motion status=store_failed reason=%@ records=%d",
                           reason,
@@ -28245,6 +28553,9 @@ final class SessionStore: ObservableObject {
 
     private func beginRestorePersistenceFence() async {
         restorePersistenceFenceActive = true
+        await Self.confirmedRecordTransactionGate.acquire()
+        restoreOwnsConfirmedRecordTransactionGate = true
+        await Self.confirmedRecordWorker.fence()
         automaticBackupGeneration &+= 1
         sessionBackupStatusGeneration &+= 1
         pendingSessionSaveWorkItem?.cancel()
@@ -28259,6 +28570,10 @@ final class SessionStore: ObservableObject {
     private func endRestorePersistenceFence() {
         dailyRollupStore.endPersistenceFence(persistCurrentSnapshot: true)
         restorePersistenceFenceActive = false
+        if restoreOwnsConfirmedRecordTransactionGate {
+            restoreOwnsConfirmedRecordTransactionGate = false
+            Self.confirmedRecordTransactionGate.release()
+        }
         // Any session finalized while the restore worker was preparing stayed
         // in memory and advanced the CAS revision. Persist its newest learned
         // baseline/profile only after the transaction is coherent.
@@ -29624,15 +29939,15 @@ final class SessionStore: ObservableObject {
             // Yield at least one runloop turn so the `sessions = merged` update
             // above gets its own commit before this heavier follow-up work runs.
             await Task.yield()
-            self?.continueDeferredLoadFollowUp(merged: merged,
-                                               finalPreparation: finalPreparation,
-                                               elapsedMS: elapsedMS)
+            await self?.continueDeferredLoadFollowUp(merged: merged,
+                                                     finalPreparation: finalPreparation,
+                                                     elapsedMS: elapsedMS)
         }
     }
 
     private func continueDeferredLoadFollowUp(merged: [SavedSession],
                                               finalPreparation: DeferredLoadPreparation,
-                                              elapsedMS: Int) {
+                                              elapsedMS: Int) async {
         runQueuedSessionBackupAfterDeferredLoadIfNeeded()
         refreshBackupStatusCacheDeferred(reason: "deferred_session_load")
         // BGTask execution is opportunistic. Evaluate the same once-per-day,
@@ -29643,7 +29958,7 @@ final class SessionStore: ObservableObject {
 
         reapplyConfirmedWorkoutStrainCalibrationIfNeeded(sourceSessions: merged)
 
-        let didRequalifyConfirmedSleepHRV = requalifyPersistedConfirmedSleepHRVFromSessionsIfNeeded(
+        let didRequalifyConfirmedSleepHRV = await requalifyPersistedConfirmedSleepHRVFromSessionsIfNeeded(
             merged,
             reason: "deferred_session_load"
         ).changed
@@ -29664,7 +29979,7 @@ final class SessionStore: ObservableObject {
                           elapsedMS)
             persistDailyRollups(from: dailyMetricHistory)
         }
-        backfillConfirmedSleepStagesFromSessions(
+        await backfillConfirmedSleepStagesFromSessions(
             reason: "deferred_session_load",
             deferDerivedPublication: true
         )
@@ -29692,7 +30007,7 @@ final class SessionStore: ObservableObject {
               finalPreparation.didRebuildBaseline ? 1 : 0,
               elapsedMS)
         #if DEBUG
-        seedDebugStrengthWorkoutProofIfRequested(arguments: ProcessInfo.processInfo.arguments)
+        await seedDebugStrengthWorkoutProofIfRequested(arguments: ProcessInfo.processInfo.arguments)
         #endif
     }
 
@@ -29720,11 +30035,11 @@ final class SessionStore: ObservableObject {
                 biologicalSex: biologicalSex
             )
             guard rescored != before else { return }
-            await MainActor.run {
+            await Task { @MainActor in
                 guard store.cachedConfirmedWorkouts == before else {
                     return
                 }
-                guard store.saveConfirmedWorkouts(rescored, deferDerivedPublication: true) else {
+                guard await store.saveConfirmedWorkouts(rescored, deferDerivedPublication: true) else {
                     return
                 }
                 let changed = zip(before, rescored).reduce(0) { count, pair in
@@ -29735,7 +30050,7 @@ final class SessionStore: ObservableObject {
                               rescored.count,
                               changed,
                               sourceSessions.count)
-            }
+            }.value
         }
     }
 
@@ -30183,7 +30498,7 @@ final class SessionStore: ObservableObject {
         reason: String,
         deferDerivedPublication: Bool = false,
         calendar: Calendar = .current
-    ) -> ConfirmedSleepHRVRequalificationOutcome {
+    ) async -> ConfirmedSleepHRVRequalificationOutcome {
         let before = cachedConfirmedSleeps
         let after = Self.requalifiedConfirmedSleepHRVRecords(before,
                                                               sessions: sourceSessions)
@@ -30212,7 +30527,7 @@ final class SessionStore: ObservableObject {
 
         let pendingInvalidationDaysBeforeSave = pendingDailyDerivedInvalidationDays
         pendingDailyDerivedInvalidationDays.formUnion(changedDays)
-        guard saveConfirmedSleeps(after,
+        guard await saveConfirmedSleeps(after,
                                   deferDerivedPublication: deferDerivedPublication) else {
             // A failed canonical write must not leave a latent invalidation
             // that a later unrelated history refresh could partially publish.
@@ -30251,7 +30566,7 @@ final class SessionStore: ObservableObject {
             || ProcessInfo.processInfo.environment["ATRIA_SEED_STRENGTH_WORKOUT_PROOF"] == "1"
     }
 
-    func seedDebugStrengthWorkoutProofIfRequested(arguments: [String]) {
+    func seedDebugStrengthWorkoutProofIfRequested(arguments: [String]) async {
         guard Self.shouldSeedDebugStrengthWorkoutProof(arguments: arguments) else {
             UserDefaults.standard.set("skipped", forKey: Self.debugStrengthWorkoutProofStatusKey)
             UserDefaults.standard.set("trigger_missing", forKey: Self.debugStrengthWorkoutProofReasonKey)
@@ -30265,10 +30580,10 @@ final class SessionStore: ObservableObject {
         guard hasCompletedDeferredSessionLoad else {
             UserDefaults.standard.set("waiting", forKey: Self.debugStrengthWorkoutProofStatusKey)
             UserDefaults.standard.set("deferred_session_load", forKey: Self.debugStrengthWorkoutProofReasonKey)
-            seedDebugStrengthWorkoutProofPersistedFileOnly()
+            await seedDebugStrengthWorkoutProofPersistedFileOnly()
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(900))
-                self?.seedDebugStrengthWorkoutProofIfRequested(arguments: arguments)
+                await self?.seedDebugStrengthWorkoutProofIfRequested(arguments: arguments)
             }
             return
         }
@@ -30311,7 +30626,7 @@ final class SessionStore: ObservableObject {
                                                 eventTimeZoneIdentifier: TimeZone.current.identifier)
         var workouts = cachedConfirmedWorkouts.filter { $0.id != proofWorkout.id }
         workouts.append(proofWorkout)
-        saveConfirmedWorkouts(workouts)
+        await saveConfirmedWorkouts(workouts)
         try? ActiveSessionJournal.mirrorStrengthState(strengthSets: [proof.strengthSet],
                                                       excludedIntervals: [proof.excluded])
         UserDefaults.standard.set("seeded", forKey: Self.debugStrengthWorkoutProofStatusKey)
@@ -30325,7 +30640,7 @@ final class SessionStore: ObservableObject {
                       proofSession.excludedIntervals?.count ?? 0)
     }
 
-    private func seedDebugStrengthWorkoutProofPersistedFileOnly() {
+    private func seedDebugStrengthWorkoutProofPersistedFileOnly() async {
         let proofSessionID = UUID(uuidString: "CD120000-0000-4000-8000-000000000012") ?? UUID()
         var proof = makeDebugStrengthWorkoutProof(proofSessionID: proofSessionID)
         proof.session.activeCalories = proof.session.activeCalories(rest: baseline.restingInt ?? 60,
@@ -30365,7 +30680,7 @@ final class SessionStore: ObservableObject {
                                                     eventTimeZoneIdentifier: TimeZone.current.identifier)
             var workouts = cachedConfirmedWorkouts.filter { $0.id != proofWorkout.id }
             workouts.append(proofWorkout)
-            saveConfirmedWorkouts(workouts)
+            await saveConfirmedWorkouts(workouts)
             UserDefaults.standard.set("seeded_persisted_file", forKey: Self.debugStrengthWorkoutProofStatusKey)
             UserDefaults.standard.set("deferred_load_not_ready", forKey: Self.debugStrengthWorkoutProofReasonKey)
             UserDefaults.standard.set(proof.session.id.uuidString, forKey: Self.debugStrengthWorkoutProofSessionIDKey)
@@ -30670,7 +30985,7 @@ struct HistoryView: View {
                     if let pendingSleepReview {
                         HistorySleepReviewCTA(night: pendingSleepReview,
                                               onConfirm: {
-                                                  store.confirmSleepHistoryNightForUI(
+                                                  await store.confirmSleepHistoryNightForUI(
                                                     pendingSleepReview,
                                                     rest: projectionStore.restingBaseline ?? 60,
                                                     source: "history_sleep_review"
@@ -30824,7 +31139,7 @@ struct HistoryView: View {
                                   evidenceNight: adjustment,
                                   evidencePerformancePercent: projectionStore.sleepHistorySnapshot.sleepPerformancePercent(for: adjustment,
                                                                                                                            baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
-                let saved = store.saveSleepReviewNightForUI(
+                let saved = await store.saveSleepReviewNightForUI(
                     adjustment,
                     start: start,
                     end: end,
@@ -31101,9 +31416,10 @@ struct HistoryView: View {
 
 private struct HistorySleepReviewCTA: View, Equatable {
     let night: SleepHistorySnapshot.Night
-    let onConfirm: () -> Bool
+    let onConfirm: () async -> Bool
     let onAdjust: () -> Void
     @State private var confirmationFailed = false
+    @State private var isConfirming = false
 
     static func == (lhs: HistorySleepReviewCTA, rhs: HistorySleepReviewCTA) -> Bool {
         lhs.night == rhs.night
@@ -31176,7 +31492,11 @@ private struct HistorySleepReviewCTA: View, Equatable {
                 .atriaCardAction(prominent: false, tint: tint)
 
                 Button {
-                    confirmationFailed = !onConfirm()
+                    isConfirming = true
+                    Task { @MainActor in
+                        confirmationFailed = !(await onConfirm())
+                        isConfirming = false
+                    }
                 } label: {
                     Label(night.isNapEvidence ? "Confirm nap" : "Confirm sleep",
                           systemImage: "checkmark.circle")
@@ -31184,6 +31504,7 @@ private struct HistorySleepReviewCTA: View, Equatable {
                         .frame(maxWidth: .infinity)
                 }
                 .atriaCardAction(tint: tint)
+                .disabled(isConfirming)
             }
 
             if confirmationFailed {

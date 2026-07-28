@@ -2057,7 +2057,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
             || startTime != workout.start
             || endTime != workout.end
         if !routeIdentityChanged {
-            switch store.editConfirmedWorkout(id: workout.id,
+            switch await store.editConfirmedWorkout(id: workout.id,
                                               label: label,
                                               activityType: activityType,
                                               activitySubtype: activitySubtype,
@@ -2096,7 +2096,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
             saveError = "Atria couldn’t prepare this route update safely. Nothing was changed; try Save again."
             return
         }
-        let result = store.editConfirmedWorkout(id: workout.id,
+        let result = await store.editConfirmedWorkout(id: workout.id,
                                                 label: label,
                                                 activityType: activityType,
                                                 activitySubtype: activitySubtype,
@@ -2133,7 +2133,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 // workout list. Restore the original metadata before reporting
                 // failure so Save cannot silently leave the visible workout at
                 // a new ID while its route remains attached to the old one.
-                let rollback = store.editConfirmedWorkout(
+                let rollback = await store.editConfirmedWorkout(
                     id: savedWorkout.id,
                     label: workout.label,
                     activityType: workout.activityType ?? "",
@@ -2207,7 +2207,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
             saveError = "Atria couldn’t prepare this deletion safely. Nothing was deleted; try again."
             return
         }
-        guard store.deleteConfirmedWorkout(id: workout.id) else {
+        guard await store.deleteConfirmedWorkout(id: workout.id) else {
             _ = await AtriaWorkoutRouteStore.clearPendingTransactionAsync()
             saveError = "Atria couldn’t remove this workout. Nothing was deleted; try again."
             return

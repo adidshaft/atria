@@ -501,18 +501,27 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
     }
 
     @MainActor
-    func testUnchangedDetectedSleepSavePersistsWithoutFinishedSessionAndProjectsToActivity() throws {
+    func testUnchangedDetectedSleepSavePersistsWithoutFinishedSessionAndProjectsToActivity() async throws {
         let store = SessionStore()
-        let start = calendar.date(from: DateComponents(year: 2034,
-                                                       month: 7,
-                                                       day: 14,
-                                                       hour: 3,
-                                                       minute: 50))!
-        let end = calendar.date(from: DateComponents(year: 2034,
-                                                     month: 7,
-                                                     day: 14,
-                                                     hour: 11,
-                                                     minute: 38))!
+        let fixtureStart = calendar.date(from: DateComponents(year: 2034,
+                                                              month: 7,
+                                                              day: 14,
+                                                              hour: 3,
+                                                              minute: 50))!
+        let fixtureEnd = calendar.date(from: DateComponents(year: 2034,
+                                                            month: 7,
+                                                            day: 14,
+                                                            hour: 11,
+                                                            minute: 38))!
+        // This test exercises persistence without SavedSession coverage. Give
+        // it a boundary that cannot alias another durable suite fixture;
+        // canonical sleep IDs are window-derived, not review-marker-derived.
+        let start = max(
+            fixtureStart,
+            store.confirmedSleeps.map(\.end).max()?.addingTimeInterval(24 * 60 * 60)
+                ?? .distantPast
+        )
+        let end = start.addingTimeInterval(fixtureEnd.timeIntervalSince(fixtureStart))
         let marker = "atomic-review-\(UUID().uuidString)"
         let review = SleepHistorySnapshot.Night(
             id: marker,
@@ -532,15 +541,18 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
             eventTimeZoneIdentifier: "UTC"
         )
 
-        let saved = try XCTUnwrap(store.saveSleepReviewNightForUI(
+        let savedResult = await store.saveSleepReviewNightForUI(
             review,
             start: start,
             end: end,
             isNap: false,
             rest: 55,
             source: marker
-        ))
-        defer { _ = store.deleteConfirmedSleep(id: saved.id) }
+        )
+        let saved = try XCTUnwrap(savedResult)
+        addTeardownBlock { @MainActor in
+            _ = await store.deleteConfirmedSleep(id: saved.id)
+        }
 
         XCTAssertEqual(saved.start, start)
         XCTAssertEqual(saved.end, end)
@@ -591,13 +603,21 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
     }
 
     @MainActor
-    func testUnchangedAlreadyConfirmedSleepSaveReturnsCanonicalRecordWithoutSensorCoverage() throws {
+    func testUnchangedAlreadyConfirmedSleepSaveReturnsCanonicalRecordWithoutSensorCoverage() async throws {
         let store = SessionStore()
-        let start = calendar.date(from: DateComponents(year: 2035,
-                                                       month: 2,
-                                                       day: 3,
-                                                       hour: 2,
-                                                       minute: 15))!
+        // The durable writer preserves records created by other SessionStore
+        // instances. Use a ledger-unique window so this idempotency test cannot
+        // accidentally resolve a canonical record from an earlier suite test
+        // that used the same historical fixture boundary.
+        let start = max(
+            calendar.date(from: DateComponents(year: 2035,
+                                               month: 2,
+                                               day: 3,
+                                               hour: 2,
+                                               minute: 15))!,
+            store.confirmedSleeps.map(\.end).max()?.addingTimeInterval(24 * 60 * 60)
+                ?? .distantPast
+        )
         let end = start.addingTimeInterval(7 * 3_600 + 20 * 60)
         let marker = "canonical-idempotent-\(UUID().uuidString)"
         let review = SleepHistorySnapshot.Night(
@@ -617,15 +637,18 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
             stageSegments: [],
             eventTimeZoneIdentifier: "UTC"
         )
-        let canonical = try XCTUnwrap(store.saveSleepReviewNightForUI(
+        let canonicalResult = await store.saveSleepReviewNightForUI(
             review,
             start: start,
             end: end,
             isNap: false,
             rest: 55,
             source: marker
-        ))
-        defer { _ = store.deleteConfirmedSleep(id: canonical.id) }
+        )
+        let canonical = try XCTUnwrap(canonicalResult)
+        addTeardownBlock { @MainActor in
+            _ = await store.deleteConfirmedSleep(id: canonical.id)
+        }
 
         let projected = try XCTUnwrap((store.sleepHistorySnapshot.nights
             + store.sleepHistorySnapshot.additionalMainNights
@@ -635,14 +658,15 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
 
         // There are deliberately no SavedSession samples in this future
         // window. Save must still be an idempotent read of canonical truth.
-        let savedAgain = try XCTUnwrap(store.saveSleepReviewNightForUI(
+        let savedAgainResult = await store.saveSleepReviewNightForUI(
             projected,
             start: canonical.start,
             end: canonical.end,
             isNap: projected.isNapEvidence,
             rest: 99,
             source: "must_not_rederive"
-        ))
+        )
+        let savedAgain = try XCTUnwrap(savedAgainResult)
 
         XCTAssertEqual(savedAgain, canonical)
         XCTAssertEqual(store.confirmedSleeps, before)
@@ -668,16 +692,17 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
                                                  range: hostStart.upperBound..<source.endIndex))
         let host = String(source[hostStart.lowerBound..<hostEnd.lowerBound])
 
-        XCTAssertTrue(card.contains("let onConfirmSleep: (SleepHistorySnapshot.Night) -> Bool"),
+        XCTAssertTrue(card.contains("let onConfirmSleep: (SleepHistorySnapshot.Night) async -> Bool"),
                       "Vitals must retain the durable confirmation result instead of treating every tap as success")
         XCTAssertTrue(card.contains("guard let latest = snapshot.latestReviewable"))
         XCTAssertTrue(card.contains("latest.confirmed == false"))
         XCTAssertTrue(card.contains("onConfirmSleep(latest)"))
-        XCTAssertTrue(host.contains("confirmSleepCandidate(_ night: SleepHistorySnapshot.Night) -> Bool"))
-        XCTAssertTrue(host.contains("confirmSleepHistoryNightForUI(night"))
+        XCTAssertTrue(host.contains("confirmSleepCandidate(_ night: SleepHistorySnapshot.Night) async -> Bool"))
+        XCTAssertTrue(host.contains("confirmSleepHistoryNightForUI("))
+        XCTAssertTrue(host.contains("\n            night,"))
         XCTAssertTrue(host.contains(") != nil"),
                       "The Vitals callback must report whether canonical persistence succeeded")
-        XCTAssertTrue(card.contains("sleepConfirmationFailed = !onConfirmSleep(latest)"))
+        XCTAssertTrue(card.contains("sleepConfirmationFailed = !(await onConfirmSleep(latest))"))
         XCTAssertTrue(card.contains("The suggestion is still here"),
                       "A failed Vitals save must leave an actionable, visible retry state")
         XCTAssertFalse(host.contains("latestMainSleep"),
@@ -703,8 +728,8 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
         let cardEnd = try XCTUnwrap(source.range(of: "struct AtriaTodaySleepReviewSection: View",
                                                  range: cardStart.upperBound..<source.endIndex))
         let card = String(source[cardStart.lowerBound..<cardEnd.lowerBound])
-        XCTAssertTrue(card.contains("let onConfirm: () -> Bool"))
-        XCTAssertTrue(card.contains("sleepConfirmationFailed = !onConfirm()"))
+        XCTAssertTrue(card.contains("let onConfirm: () async -> Bool"))
+        XCTAssertTrue(card.contains("sleepConfirmationFailed = !(await onConfirm())"))
         XCTAssertTrue(card.contains("The suggestion is still here"),
                       "A failed Today save must remain visible and retryable")
         XCTAssertTrue(card.contains(".onChange(of: night.id)"),
@@ -718,11 +743,11 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
         let journalCardEnd = try XCTUnwrap(source.range(of: "private struct AtriaJournalTodayTagStrip: View",
                                                         range: journalHostStart.upperBound..<source.endIndex))
         let journal = String(source[journalHostStart.lowerBound..<journalCardEnd.lowerBound])
-        XCTAssertTrue(journal.contains("let onConfirmSleep: () -> Bool"))
+        XCTAssertTrue(journal.contains("let onConfirmSleep: () async -> Bool"))
         XCTAssertTrue(journal.contains("source: \"morning_journal\""))
         XCTAssertTrue(journal.contains(") != nil"),
                       "Overview morning journal must retain canonical persistence success")
-        XCTAssertTrue(journal.contains("sleepConfirmationFailed = !onConfirmSleep()"))
+        XCTAssertTrue(journal.contains("sleepConfirmationFailed = !(await onConfirmSleep())"))
         XCTAssertTrue(journal.contains("The suggestion is still here"),
                       "A failed Overview save must remain visible and retryable")
         XCTAssertTrue(journal.contains(".onChange(of: latestNight?.id)"))
@@ -1035,7 +1060,9 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
         XCTAssertFalse(implementation[..<worker.lowerBound].contains("activeJournalSessionIfFresh"))
         XCTAssertFalse(implementation[mainPublication.lowerBound...].contains("ActiveSessionJournal.load"))
         XCTAssertFalse(implementation[mainPublication.lowerBound...].contains("activeJournalSessionIfFresh"))
-        XCTAssertTrue(implementation.contains("Self.sleepReviewProjectionQueue.async(execute: workItem)"),
+        XCTAssertTrue(implementation.contains("sleepReviewProjectionQueue.async(execute: workItem)"),
                       "Sleep review must not be starved behind unrelated global utility work")
+        XCTAssertFalse(source.contains("private static let sleepReviewProjectionQueue"),
+                       "An inactive store must not head-of-line block the active store's sleep review")
     }
 }

@@ -747,7 +747,7 @@ private struct AtriaSleepReviewHost: View {
         if let night = pending {
             AtriaSleepReviewCard(night: night,
                                  onConfirm: {
-                                     store.confirmSleepHistoryNightForUI(night,
+                                     await store.confirmSleepHistoryNightForUI(night,
                                                                          rest: store.baseline.restingInt ?? 60,
                                                                          source: "overview_sleep_review") != nil
                                  },
@@ -761,7 +761,7 @@ private struct AtriaSleepReviewHost: View {
                                           evidenceNight: adjustment,
                                           evidencePerformancePercent: state.sleepHistorySnapshot.sleepPerformancePercent(for: adjustment,
                                                                                                                          baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
-                        let saved = store.saveSleepReviewNightForUI(
+                        let saved = await store.saveSleepReviewNightForUI(
                             adjustment,
                             start: start,
                             end: end,
@@ -862,7 +862,7 @@ private struct AtriaAutoSleepLoggedBanner: View {
                                       initialEnd: banner.end,
                                       initialIsNap: false,
                                       preservesSensorStages: true) { start, end, isNap in
-                    let saved = store.adjustSleepNight(originalStart: banner.start,
+                    let saved = await store.adjustSleepNight(originalStart: banner.start,
                                                        originalEnd: banner.end,
                                                        newStart: start,
                                                        newEnd: end,
@@ -1078,10 +1078,11 @@ private struct AtriaSleepSyncNeededCard: View, Equatable {
 
 private struct AtriaSleepReviewCard: View {
     let night: SleepHistorySnapshot.Night
-    let onConfirm: () -> Bool
+    let onConfirm: () async -> Bool
     let onAdjust: () -> Void
     let onDismiss: () -> Void
     @State private var sleepConfirmationFailed = false
+    @State private var isConfirming = false
 
     private var isNap: Bool { night.isNapEvidence }
     private var isResumedSleep: Bool {
@@ -1196,7 +1197,11 @@ private struct AtriaSleepReviewCard: View {
         // spacing widened for tap separation.
         HStack(spacing: 10) {
             Button {
-                sleepConfirmationFailed = !onConfirm()
+                isConfirming = true
+                Task { @MainActor in
+                    sleepConfirmationFailed = !(await onConfirm())
+                    isConfirming = false
+                }
             } label: {
                 // "Confirm" alone — the card title already names what is
                 // being confirmed, and the full phrase cropped at a third of
@@ -1207,6 +1212,7 @@ private struct AtriaSleepReviewCard: View {
                     .frame(maxWidth: .infinity, minHeight: 28)
             }
             .atriaCardAction(tint: Metrics.electricSleep)
+            .disabled(isConfirming)
             .accessibilityLabel(isNap ? "Confirm nap" : "Confirm sleep")
             .accessibilityHint("Saves this detected \(isNap ? "nap" : "sleep") to your local history.")
 
@@ -2171,12 +2177,12 @@ struct AtriaOverviewReadinessSectionHost: View {
         sizeCSV = AtriaTodayMetric.sizeStorageValue(updating: metric, to: next, in: sizeCSV)
     }
 
-    private func addManualSleep(start: Date, end: Date, isNap: Bool) {
-        _ = store.addManualSleep(start: start,
-                                 end: end,
-                                 isNap: isNap,
-                                 rest: store.baseline.restingInt ?? 60,
-                                 source: "manual_today_glance")
+    private func addManualSleep(start: Date, end: Date, isNap: Bool) async -> Bool {
+        await store.addManualSleep(start: start,
+                                   end: end,
+                                   isNap: isNap,
+                                   rest: store.baseline.restingInt ?? 60,
+                                   source: "manual_today_glance") != nil
     }
 
     #if DEBUG
@@ -2815,7 +2821,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     let onOpenVitals: () -> Void
     let onOpenCollection: () -> Void
     let onOpenInsights: () -> Void
-    let onAddManualSleep: (Date, Date, Bool) -> Void
+    let onAddManualSleep: (Date, Date, Bool) async -> Bool
     let onStartWorkout: () -> Void
     @State private var isEditingGlance = false
     @State private var showWidgetManager = false
@@ -3056,9 +3062,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         .atriaCard(emphasis: .strong)
         .sheet(isPresented: $showManualSleepSheet) {
             AtriaManualSleepSheet { start, end, isNap in
-                onAddManualSleep(start, end, isNap)
-                showManualSleepSheet = false
-                return true
+                let saved = await onAddManualSleep(start, end, isNap)
+                if saved { showManualSleepSheet = false }
+                return saved
             }
         }
         .sheet(item: $targetEditorMetric) { metric in
@@ -12760,7 +12766,7 @@ struct AtriaOverviewMorningJournalHost: View {
                                             },
                                             onConfirmSleep: {
                                                 guard let night = sleepHistory.latest else { return false }
-                                                return store.confirmSleepHistoryNightForUI(
+                                                return await store.confirmSleepHistoryNightForUI(
                                                     night,
                                                     rest: store.baseline.restingInt ?? 60,
                                                     source: "morning_journal"
@@ -12787,7 +12793,7 @@ struct AtriaOverviewMorningJournalHost: View {
                                       evidenceNight: adjustment,
                                       evidencePerformancePercent: sleepHistory.sleepPerformancePercent(for: adjustment,
                                                                                                        baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
-                    let saved = store.saveSleepReviewNightForUI(
+                    let saved = await store.saveSleepReviewNightForUI(
                         adjustment,
                         start: start,
                         end: end,
@@ -12931,11 +12937,12 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
     let todayEntry: BehaviorJournalEntry
     let taggedDays: Int
     let onToggleTag: (BehaviorJournalEntry.Tag) -> Void
-    let onConfirmSleep: () -> Bool
+    let onConfirmSleep: () async -> Bool
     let onAdjustSleep: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showsAllJournalTags = false
     @State private var sleepConfirmationFailed = false
+    @State private var isConfirmingSleep = false
 
     static func == (lhs: AtriaOverviewMorningJournalCard, rhs: AtriaOverviewMorningJournalCard) -> Bool {
         lhs.snapshot.sleepValue == rhs.snapshot.sleepValue
@@ -13062,7 +13069,11 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
                             .atriaCardAction(prominent: false, tint: .cyan)
 
                             Button {
-                                sleepConfirmationFailed = !onConfirmSleep()
+                                isConfirmingSleep = true
+                                Task { @MainActor in
+                                    sleepConfirmationFailed = !(await onConfirmSleep())
+                                    isConfirmingSleep = false
+                                }
                             } label: {
                                 Label(latestNight?.isNapEvidence == true ? "Confirm nap" : "Confirm sleep",
                                       systemImage: "checkmark.circle")
@@ -13070,6 +13081,7 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
                                     .frame(maxWidth: .infinity)
                             }
                             .atriaCardAction(tint: .cyan)
+                            .disabled(isConfirmingSleep)
                         }
                     }
 

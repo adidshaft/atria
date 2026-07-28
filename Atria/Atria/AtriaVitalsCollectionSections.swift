@@ -2323,20 +2323,20 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
             .equatable()
     }
 
-    private func addManualSleep(start: Date, end: Date, isNap: Bool) {
+    private func addManualSleep(start: Date, end: Date, isNap: Bool) async -> Bool {
         let baseline = vitalsStore.state.baseline
-        _ = store.addManualSleep(start: start,
-                                 end: end,
-                                 isNap: isNap,
-                                 rest: baseline.restingInt ?? 60)
+        return await store.addManualSleep(start: start,
+                                          end: end,
+                                          isNap: isNap,
+                                          rest: baseline.restingInt ?? 60) != nil
     }
 
     private func adjustSleepCandidate(night: SleepHistorySnapshot.Night,
                                       start: Date,
                                       end: Date,
-                                      isNap: Bool) -> Bool {
+                                      isNap: Bool) async -> Bool {
         let baseline = vitalsStore.state.baseline
-        return store.saveSleepReviewNightForUI(
+        return await store.saveSleepReviewNightForUI(
             night,
             start: start,
             end: end,
@@ -2346,11 +2346,13 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
         ) != nil
     }
 
-    private func confirmSleepCandidate(_ night: SleepHistorySnapshot.Night) -> Bool {
+    private func confirmSleepCandidate(_ night: SleepHistorySnapshot.Night) async -> Bool {
         let vitals = vitalsStore.state
-        return store.confirmSleepHistoryNightForUI(night,
-                                                   rest: vitals.baseline.restingInt ?? 60,
-                                                   source: "vitals_sleep_history") != nil
+        return await store.confirmSleepHistoryNightForUI(
+            night,
+            rest: vitals.baseline.restingInt ?? 60,
+            source: "vitals_sleep_history"
+        ) != nil
     }
 
     #if DEBUG
@@ -5279,9 +5281,9 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     let sleepGoalHours: Double
     let sleepEfficiencyGreenLower: Double
     let sleepEfficiencyYellowLower: Double
-    let onAddManualSleep: (Date, Date, Bool) -> Void
-    let onAdjustSleep: (SleepHistorySnapshot.Night, Date, Date, Bool) -> Bool
-    let onConfirmSleep: (SleepHistorySnapshot.Night) -> Bool
+    let onAddManualSleep: (Date, Date, Bool) async -> Bool
+    let onAdjustSleep: (SleepHistorySnapshot.Night, Date, Date, Bool) async -> Bool
+    let onConfirmSleep: (SleepHistorySnapshot.Night) async -> Bool
 
     static func == (lhs: AtriaRecoveryStrainCard, rhs: AtriaRecoveryStrainCard) -> Bool {
         lhs.hero == rhs.hero
@@ -5464,13 +5466,14 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     let sleepGoalHours: Double
     let sleepEfficiencyGreenLower: Double
     let sleepEfficiencyYellowLower: Double
-    let onAddManualSleep: (Date, Date, Bool) -> Void
-    let onAdjustSleep: (SleepHistorySnapshot.Night, Date, Date, Bool) -> Bool
-    let onConfirmSleep: (SleepHistorySnapshot.Night) -> Bool
+    let onAddManualSleep: (Date, Date, Bool) async -> Bool
+    let onAdjustSleep: (SleepHistorySnapshot.Night, Date, Date, Bool) async -> Bool
+    let onConfirmSleep: (SleepHistorySnapshot.Night) async -> Bool
     @State private var showManualSleepSheet = false
     @State private var showNightDetails = false
     @State private var adjustmentNight: SleepHistorySnapshot.Night?
     @State private var sleepConfirmationFailed = false
+    @State private var isConfirmingSleep = false
 
     static func == (lhs: AtriaSleepHistoryCard, rhs: AtriaSleepHistoryCard) -> Bool {
         lhs.snapshot == rhs.snapshot
@@ -5611,14 +5614,20 @@ private struct AtriaSleepHistoryCard: View, Equatable {
 
                     Button {
                         guard let latest = snapshot.latestReviewable,
-                              latest.confirmed == false else { return }
-                        sleepConfirmationFailed = !onConfirmSleep(latest)
+                              latest.confirmed == false,
+                              !isConfirmingSleep else { return }
+                        isConfirmingSleep = true
+                        Task { @MainActor in
+                            sleepConfirmationFailed = !(await onConfirmSleep(latest))
+                            isConfirmingSleep = false
+                        }
                     } label: {
                         Label("Confirm", systemImage: "checkmark.circle")
                             .font(.caption.weight(.semibold))
                             .frame(maxWidth: .infinity)
                     }
                     .atriaCardAction(prominent: false, tint: .cyan)
+                    .disabled(isConfirmingSleep)
                     .accessibilityHint("Saves the shown sleep or nap candidate locally.")
                 }
 
@@ -5761,9 +5770,9 @@ private struct AtriaSleepHistoryCard: View, Equatable {
         }
         .sheet(isPresented: $showManualSleepSheet) {
             AtriaManualSleepSheet { start, end, isNap in
-                onAddManualSleep(start, end, isNap)
-                showManualSleepSheet = false
-                return true
+                let saved = await onAddManualSleep(start, end, isNap)
+                if saved { showManualSleepSheet = false }
+                return saved
             }
         }
         .sheet(item: $adjustmentNight) { night in
@@ -5774,7 +5783,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                   evidenceNight: night,
                                   evidencePerformancePercent: snapshot.sleepPerformancePercent(for: night,
                                                                                                baseNeedHours: SessionStore.configuredSleepBaseNeedHours())) { start, end, isNap in
-                let saved = onAdjustSleep(night, start, end, isNap)
+                let saved = await onAdjustSleep(night, start, end, isNap)
                 if saved { adjustmentNight = nil }
                 return saved
             }
