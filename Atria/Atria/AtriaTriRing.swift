@@ -549,6 +549,21 @@ struct AtriaTriRing: View, Equatable {
             .shadow(color: .black.opacity(0.25), radius: 1, x: 0, y: 0)
     }
 
+    /// Whether the status line has something worth saying. The name line
+    /// already states the metric, and in the not-ready state several metrics
+    /// resolve name, value and detail to the same word ("Strain / Learning /
+    /// Learning"), which reads as a rendering fault rather than a state. One
+    /// statement of a state is the design-handoff rule.
+    ///
+    /// Extracted so the rendered chip and its accessibility label read from the
+    /// same predicate -- they were two copies of this condition, and a change to
+    /// either would have let VoiceOver and the screen disagree.
+    private func showsLegendDetail(_ metric: AtriaTriRingMetric) -> Bool {
+        metric.detail != metric.title
+            && metric.detail != metric.value
+            && !metric.suppressesDetail
+    }
+
     private func legendChip(metric: AtriaTriRingMetric, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 6) {
@@ -568,19 +583,21 @@ struct AtriaTriRing: View, Equatable {
                         .minimumScaleFactor(0.7)
                         .allowsTightening(true)
                     // Value line suppressed when the ring center owns this
-                    // metric's numeral (dedup audit 2026-07-07).
-                    if !metric.suppressesValue {
+                    // metric's numeral (dedup audit 2026-07-07). The row is
+                    // still LAID OUT when suppressed -- see the reserved-space
+                    // note on the status line below -- so suppression removes
+                    // the duplicate text without changing the chip's height.
                     HStack(spacing: 4) {
                         // Tiny zone-tint dot -- an at-a-glance under/optimal/
                         // over cue that doesn't depend on reading the number.
                         // Nil (e.g. recovery, HRV, RHR) omits the dot -- the
                         // identity hue above already carries the meaning.
-                        if let stateTint = metric.stateTint {
+                        if let stateTint = metric.stateTint, !metric.suppressesValue {
                             Circle()
                                 .fill(stateTint)
                                 .frame(width: 5, height: 5)
                         }
-                        Text(metric.value)
+                        Text(metric.suppressesValue ? " " : metric.value)
                             .font(.caption.weight(.bold))
                             .monospacedDigit()
                             .foregroundStyle(metric.tint)
@@ -589,7 +606,7 @@ struct AtriaTriRing: View, Equatable {
                             .minimumScaleFactor(0.6)
                             .allowsTightening(true)
                     }
-                    }
+                    .accessibilityHidden(metric.suppressesValue)
                     // The name line above already says it -- don't repeat
                     // it when a learning-state detail defaults to the name.
                     // Nor when the detail collapses onto the VALUE: in the
@@ -597,25 +614,31 @@ struct AtriaTriRing: View, Equatable {
                     // word ("Strain / Learning / Learning"), which read as a
                     // rendering fault rather than a state. One statement of a
                     // state is the whole design-handoff rule.
-                    if metric.detail != metric.title,
-                       metric.detail != metric.value,
-                       !metric.suppressesDetail {
-                        Text(metric.detail)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            // Two lines, because one truncated the answer away.
-                            // The engine's confidence captions are sentences,
-                            // not labels -- "Limited confidence · HRV
-                            // unavailable" rendered as "Limited confidence ·
-                            // H…" at a third of the screen width, clipping the
-                            // half that says what to do about it. The chip is
-                            // min-height, not fixed, so it grows by one caption
-                            // line and the row equalises.
-                            .lineLimit(2)
-                            .minimumScaleFactor(0.6)
-                            .allowsTightening(true)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    // RESERVED STATUS SPACE. This line is always laid out, even
+                    // when there is nothing to say, so every chip in the row is
+                    // the same height by construction rather than by all of
+                    // them happening to fall under a minimum. Previously the
+                    // line appeared and disappeared with the data, which is how
+                    // Recovery rendered short while Sleep and Strain rendered
+                    // tall in the same row.
+                    //
+                    // One line is now correct where two used to be required.
+                    // That rule existed because the engine's confidence
+                    // captions were sentences -- "Limited confidence · HRV
+                    // unavailable" truncated to "Limited confidence · H…" at a
+                    // third of the screen width, clipping the half that said
+                    // what to do about it. Markers are now short by contract
+                    // (<= 14 characters, enumerated and machine-checked in
+                    // AtriaMetricConfidencePresentationTests), so the reason
+                    // for wrapping has been removed at the source instead of
+                    // being absorbed by a growing chip.
+                    Text(showsLegendDetail(metric) ? metric.detail : " ")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                        .allowsTightening(true)
+                        .accessibilityHidden(!showsLegendDetail(metric))
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -633,11 +656,9 @@ struct AtriaTriRing: View, Equatable {
         .buttonStyle(.plain)
         // Mirror the visual de-duplication above so VoiceOver does not read
         // "Strain Learning, Learning" either.
-        .accessibilityLabel(metric.detail == metric.title
-                            || metric.detail == metric.value
-                            || metric.suppressesDetail
-                            ? "\(metric.title) \(metric.value)"
-                            : "\(metric.title) \(metric.value), \(metric.detail)")
+        .accessibilityLabel(showsLegendDetail(metric)
+                            ? "\(metric.title) \(metric.value), \(metric.detail)"
+                            : "\(metric.title) \(metric.value)")
     }
 
     /// Spring fill-in that plays once per real appearance/value change, and

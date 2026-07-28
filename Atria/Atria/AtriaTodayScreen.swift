@@ -251,6 +251,16 @@ struct AtriaTodayScreen: View {
                     .preference(key: AtriaTodayCompactRingPreferenceKey.self,
                                 value: compactRingPresentation)
             }
+            // Says what the app is doing with last night instead of saying
+            // nothing while it settles. Sits under the hero because it is about
+            // the night the ring is already showing.
+            sleepSettlementRow
+
+            // Shown only when the system route could not deliver this morning's
+            // nudge. A notification the user switched off deliberately does NOT
+            // reach here -- honouring that toggle is the point of it.
+            journalFallbackPrompt
+
             if layoutConfig.showLiveStrip {
                 AtriaTodayLiveStatusHost(liveStore: liveStore,
                                          pulseStore: pulseStore)
@@ -298,7 +308,8 @@ struct AtriaTodayScreen: View {
                                        hrZoneMinutes: displayHero.hrZoneMinutes,
                                        maxHeartRate: sessionProjectionStore.state.maxHeartRate,
                                        vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
-                                       skinTemperatureDeviation: sessionProjectionStore.state.skinTemperatureDeviationSummary)
+                                       skinTemperatureDeviation: sessionProjectionStore.state.skinTemperatureDeviationSummary,
+                                       provenance: provenance(for: detail))
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
@@ -376,9 +387,9 @@ struct AtriaTodayScreen: View {
 
     private var glanceColumns: [GridItem] {
         if horizontalSizeClass == .regular {
-            return Array(repeating: GridItem(.flexible(), spacing: 10), count: 3)
+            return Array(repeating: GridItem(.flexible(), spacing: AtriaDesignTokens.Spacing.md), count: 3)
         }
-        return Array(repeating: GridItem(.flexible(), spacing: 10), count: 2)
+        return Array(repeating: GridItem(.flexible(), spacing: AtriaDesignTokens.Spacing.md), count: 2)
     }
 
     private var glanceColumnCount: Int {
@@ -483,7 +494,7 @@ struct AtriaTodayScreen: View {
             .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip,
                                            style: .continuous))
             .onLongPressGesture(minimumDuration: 0.45) {
-                withAnimation(.snappy(duration: 0.2)) {
+                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                     isEditingGlance = true
                 }
             }
@@ -596,14 +607,14 @@ struct AtriaTodayScreen: View {
                 Group {
                     if glanceLayoutBars {
                         // Bars layout: one full-width horizontal bar per metric.
-                        VStack(spacing: 10) {
+                        VStack(spacing: AtriaDesignTokens.Spacing.md) {
                             ForEach(glanceMetrics) { metric in
                                 interactiveGlanceTile(for: metric, isBar: true)
                             }
                             glanceAddMetricControl
                         }
                     } else {
-                        LazyVGrid(columns: glanceColumns, spacing: 10) {
+                        LazyVGrid(columns: glanceColumns, spacing: AtriaDesignTokens.Spacing.md) {
                             ForEach(glanceMetrics) { metric in
                                 interactiveGlanceTile(for: metric)
                                     .gridCellColumns(glanceColumnSpan(for: metric))
@@ -642,7 +653,7 @@ struct AtriaTodayScreen: View {
         HStack(spacing: 8) {
             sectionKicker("At a glance")
             Button {
-                withAnimation(.snappy(duration: 0.2)) {
+                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                     isEditingGlance.toggle()
                 }
             } label: {
@@ -683,7 +694,7 @@ struct AtriaTodayScreen: View {
                     .buttonBorderShape(.circle)
                 Menu {
                     Button {
-                        withAnimation(.snappy(duration: 0.2)) {
+                        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                             glanceLayoutBars.toggle()
                         }
                     } label: {
@@ -1167,6 +1178,10 @@ struct AtriaTodayScreen: View {
                                            recoveryLiftedAfterNap: arguments[valueIndex] == "recovery-after-nap",
                                            strain: strain,
                                            strainConfidence: "local",
+                                           // Debug fixture pins strain-target
+                                           // state only; coverage is not part of
+                                           // what it proves, so it stays unmeasured.
+                                           dayWearCoverageFraction: nil,
                                            guidance: guidance,
                                            hrvValue: "58",
                                            hrvDetail: "personal baseline",
@@ -1209,6 +1224,66 @@ struct AtriaTodayScreen: View {
     /// owns Recovery and sleep-need math. Keeping the two projections separate
     /// lets a first-night candidate show its measured duration immediately
     /// without silently promoting it into physiological truth.
+    /// Inputs for the wake-settlement row. The night snapshot carries no save
+    /// timestamp, so the model falls back to the night's end rather than
+    /// inventing one.
+    private var sleepSettlementRow: some View {
+        let night = latestDisplaySleep
+        let isConfirmed = night?.confirmed == true
+        return AtriaTodaySleepSettlementRow(
+            confirmedSleepEnd: isConfirmed ? night?.end : nil,
+            candidateEnd: isConfirmed ? nil : night?.end
+        )
+    }
+
+    /// In-app stand-in for a morning journal nudge that the system could not
+    /// deliver. Previously the scheduler returned early on a denied
+    /// authorization and nothing happened at all, so a permissions problem and a
+    /// broken app looked identical from the outside.
+    ///
+    /// Deliberately silent unless the durable attempt record says the system
+    /// route failed today: this is a fallback, not a second nudge, and it must
+    /// never double up with a notification that did go out.
+    @ViewBuilder
+    private var journalFallbackPrompt: some View {
+        if AtriaNotificationAttemptStore.needsInAppFallback(
+            kind: LocalNotificationScheduler.morningCheckInKind
+        ) {
+            Button {
+                onOpenJournal()
+            } label: {
+                HStack(spacing: AtriaDesignTokens.Spacing.md) {
+                    Image(systemName: "square.and.pencil")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(.blue)
+                        .frame(width: 24, height: 24)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Morning check-in")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text("Notifications are off, so here it is instead.")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                    }
+                    Spacer(minLength: AtriaDesignTokens.Spacing.sm)
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .padding(.horizontal, AtriaDesignTokens.Spacing.md)
+                .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip,
+                                tint: .blue,
+                                hueTinted: true)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Morning check-in. Notifications are off, so this prompt is shown instead. Opens the journal.")
+        }
+    }
+
     private var latestDisplaySleep: SleepHistorySnapshot.Night? {
         AtriaOverviewCurrentSleep.resolveDisplayEvidence(
             from: sessionProjectionStore.state.sleepHistorySnapshot
@@ -1327,7 +1402,11 @@ struct AtriaTodayScreen: View {
         // before ever falling back to a bare percent as the primary number.
         let value = latestDisplaySleep?.durationText
             ?? latestRollup?.sleepSeconds.map { AtriaMetricFormat.sleepDuration(seconds: $0) }
-            ?? "Learning"   // canonical not-ready word (was "Building"); consistent across tabs
+            // Deterministic no-value token, matching recovery and strain. With
+            // this left as the old word, the ring legend rendered "Sleep /
+            // Learning" directly beside "Strain / --" for the same not-ready
+            // state -- two vocabularies for one condition, in one row.
+            ?? AtriaCompactMetricPresentation.noValue
         let detail: String
         if let evidence = latestDisplaySleep, !evidence.confirmed {
             detail = evidence.isNapEvidence ? "Review nap" : "Review sleep"
@@ -1383,7 +1462,11 @@ struct AtriaTodayScreen: View {
             let detail = displayHero.recoveryLiftedAfterNap ? "↑ after nap" : displayHero.recoveryDetail
             return ("\(percent)%", detail, percent)
         }
-        return ("Learning", AtriaRecoveryAvailabilityPresentation.detail(
+        // Same rule as strainValue: the value line carries a numeral or "--",
+        // never a status word. Recovery is computable exactly when the estimator
+        // produced a percent, so this branch is genuinely no-value rather than a
+        // hidden one, and the reason travels in the detail/marker instead.
+        return (AtriaCompactMetricPresentation.noValue, AtriaRecoveryAvailabilityPresentation.detail(
             estimateDetail: estimate.detail,
             hrvBaselineSamples: sessionProjectionStore.state.baseline.freshHRVSampleCount(),
             restingBaselineSamples: sessionProjectionStore.state.baseline.freshRestingSampleCount()
@@ -1464,6 +1547,78 @@ struct AtriaTodayScreen: View {
         return ("Steady", "flat over \(nights) nights")
     }
 
+    /// Provenance for the metrics whose confidence is actually derived from
+    /// measured coverage. Other detail kinds return nil rather than a card full
+    /// of "not measured" rows, which would be noise rather than disclosure.
+    ///
+    /// Built here because this is what holds the hero snapshot; the sheet only
+    /// renders what it is handed, so the wording stays owned by the one
+    /// canonical presentation model.
+    private func provenance(for detail: AtriaMetricDetailKind) -> AtriaMetricProvenance? {
+        switch detail {
+        case .recovery:
+            let presentation = AtriaCompactMetricPresentation.recovery(
+                percent: displayHero.recoveryEstimate.percent,
+                confidence: displayHero.recoveryEstimate.confidence,
+                usesHRV: displayHero.recoveryEstimate.usesHRV,
+                isProvisional: displayHero.recoveryIsProvisional,
+                isFromPreviousSleep: displayHero.recoveryIsFromPreviousSleep
+            )
+            return AtriaMetricProvenance(
+                displayValue: presentation.displayValue,
+                level: presentation.level,
+                isLowerBound: presentation.isLowerBound,
+                usesHRV: displayHero.recoveryEstimate.usesHRV,
+                // Recovery is scored from the night, not from day-long wear, so
+                // day coverage is not the provenance for this number.
+                hrCoverageFraction: nil,
+                sourceLabel: "Strap sleep",
+                // The night this score was computed from ended here. That is the
+                // real timestamp of the underlying data, not a render time -- it
+                // is also what makes a carried-over score legible, since "prev.
+                // sleep" plus a stamp from yesterday morning explains itself.
+                observedAt: latestDisplaySleep?.end,
+                // Recovery's graded zone, from the user's own configured
+                // thresholds. Nil while there is no score, so the row stays
+                // neutral rather than asserting a standing.
+                valueStatusTint: displayHero.recoveryEstimate.percent == nil
+                    ? nil
+                    : ringRecoveryZone?.tint
+            )
+        case .strain:
+            let presentation = AtriaCompactMetricPresentation.strain(
+                strain: displayHero.strain,
+                confidence: displayHero.strainConfidence
+            )
+            return AtriaMetricProvenance(
+                displayValue: presentation.displayValue,
+                level: presentation.level,
+                isLowerBound: presentation.isLowerBound,
+                // Strain integrates heart-rate reserve; HRV is not an input, so
+                // "HRV contributed" is not a meaningful row here.
+                usesHRV: nil,
+                hrCoverageFraction: displayHero.dayWearCoverageFraction,
+                sourceLabel: "Strap heart rate",
+                // Strain accumulates continuously through the day, and no
+                // last-accepted-sample time is exposed on the hero. Stamping it
+                // with `Date()` would report when the sheet was drawn, not when
+                // the data was observed -- a render time dressed as provenance.
+                // Absent means not measured, which is the honest claim.
+                observedAt: nil,
+                // Strain's graded zone needs a real frozen target to grade
+                // against, and an incomplete or pending day has no standing to
+                // grade at all -- same condition the ring already uses to
+                // withhold its own state tint.
+                valueStatusTint: (dayStrainIsIncomplete
+                                  || isPendingHeroValue(displayHero.strainValue))
+                    ? nil
+                    : ringStrainZone(target: displayHero.guidance.target)?.tint
+            )
+        default:
+            return nil
+        }
+    }
+
     private var recoveryMetric: AtriaTriRingMetric {
         let display = displayRecovery
         return AtriaTriRingMetric(title: "Recovery",
@@ -1499,9 +1654,16 @@ struct AtriaTodayScreen: View {
                                   value: incomplete && !displayHero.strainValue.hasPrefix("≥")
                                     ? "≥ \(displayHero.strainValue)"
                                     : displayHero.strainValue,
+                                  // Compact fixed-vocabulary markers, not prose.
+                                  // "Partial · sparse HR" described the plumbing
+                                  // rather than the number's meaning, and was long
+                                  // enough to wrap and make one card taller than
+                                  // its neighbour. "lower bound" says the same
+                                  // thing about the value the user is looking at,
+                                  // and matches the "≥" prefix already on it.
                                   detail: pending
-                                    ? "Learning"
-                                    : (incomplete ? "Partial · sparse HR" : (target.map { String(format: "of %.1f", $0) } ?? "Strain")),
+                                    ? "HR pending"
+                                    : (incomplete ? "lower bound" : (target.map { String(format: "of %.1f", $0) } ?? "Strain")),
                                   systemImage: "flame.fill",
                                   // Without a Recovery-derived target, measured
                                   // strain keeps its identity blue instead of
@@ -1922,7 +2084,8 @@ struct AtriaTodayScreen: View {
                                         // Same source the sleep ring uses (computed from the latest
                                         // sleep, falling back to the rollup) so the tile and ring can't
                                         // show two different sleep-performance percentages.
-                                        value: sleepPerformancePercent.map { "\($0)%" } ?? "Learning",
+                                        value: sleepPerformancePercent.map { "\($0)%" }
+                                            ?? AtriaCompactMetricPresentation.noValue,
                                         detail: legendDetail("of need"),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
@@ -1980,7 +2143,9 @@ struct AtriaTodayScreen: View {
             // not blame the strap when Atria has not validated its payload layout.
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: "\u{2014}",
+                                        // Last em dash in the app; the glance grid
+                                        // around it already speaks "--".
+                                        value: AtriaCompactMetricPresentation.noValue,
                                         detail: legendDetail("Decoder unavailable"),
                                         systemImage: metric.systemImage,
                                         tint: .secondary,
@@ -2142,10 +2307,10 @@ struct AtriaTodayScreen: View {
     /// Pending-value set matching the app-wide convention (see AtriaHomeView's
     /// pending check): a metric that has no reading yet, so its tile can show
     /// time-to-detect progress instead of the bare placeholder.
+    /// Delegates to `AtriaTodayGlanceItem` so the sentinel set is defined once
+    /// and the glance tile's pending styling can never drift from this check.
     private func isPendingHeroValue(_ value: String) -> Bool {
-        let trimmed = value.trimmingCharacters(in: .whitespaces)
-        return trimmed == "--" || trimmed == "\u{2014}"
-            || trimmed == "Learning" || trimmed == "Building" || trimmed == "Preparing"
+        AtriaTodayGlanceItem.isPendingValue(value)
     }
 
     /// HRV is qualified from confirmed sleep; resting HR may also learn from a
@@ -2467,6 +2632,104 @@ private struct AtriaTodayAddMetricsSheet: View {
     }
 }
 
+/// The wake-settlement row, as its own view so it can own a clock.
+///
+/// This state is TIME-dependent -- a night crosses from processing to review
+/// ready purely by 30 minutes elapsing, with no new data involved. Computing it
+/// inline in AtriaTodayScreen was wrong: that body re-evaluates on
+/// projection-store publishes, which covers newly accepted heart rate, but the
+/// screen does not observe scenePhase, so returning to a foregrounded app with
+/// nothing new to report could leave the row asserting "processing" long after
+/// the window had actually closed.
+///
+/// Owning `scenePhase` and the sampled clock HERE, rather than on the parent,
+/// follows the same containment the screen already uses for scroll state: only
+/// this small subtree re-evaluates when the phase changes, instead of the whole
+/// Today deck.
+private struct AtriaTodaySleepSettlementRow: View {
+    let confirmedSleepEnd: Date?
+    let candidateEnd: Date?
+
+    @Environment(\.scenePhase) private var scenePhase
+    /// Sampled rather than read inline, so the state and its freshness stamp are
+    /// computed against ONE instant and cannot disagree with each other.
+    @State private var now = Date()
+
+    var body: some View {
+        let state = AtriaSleepSettlementPresentation.state(
+            confirmedSleepEnd: confirmedSleepEnd,
+            confirmedSleepSavedAt: nil,
+            candidateEnd: candidateEnd,
+            now: now
+        )
+        let freshness = AtriaSleepSettlementPresentation.freshnessText(for: state, now: now)
+
+        HStack(spacing: AtriaDesignTokens.Spacing.md) {
+            Image(systemName: state.isSettling ? "clock.arrow.circlepath" : "moon.zzz.fill")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(Metrics.electricSleep)
+                .frame(width: 24, height: 24)
+            // Status dot, not a recoloured icon: the icon keeps sleep's identity
+            // hue while the dot carries where the night actually stands. Same
+            // split the provenance rows use, and it does not depend on colour
+            // alone being legible.
+            if let statusTint = state.statusTint {
+                Circle()
+                    .fill(statusTint)
+                    .frame(width: 6, height: 6)
+            }
+            Text(state.title)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            Spacer(minLength: AtriaDesignTokens.Spacing.sm)
+            // Reserved, like the metric card status line: the stamp is absent
+            // for waitingForData, and a collapsing trailing label would change
+            // the row's height.
+            Text(freshness ?? " ")
+                .font(.caption2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .accessibilityHidden(freshness == nil)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .padding(.horizontal, AtriaDesignTokens.Spacing.md)
+        // Same identity-hue inset card as the glance tiles. A plain grouped
+        // background rendered nearly invisible against the light page, so the
+        // row read as loose text beside its filled neighbours.
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip,
+                        tint: Metrics.electricSleep,
+                        hueTinted: true)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(freshness.map { "\(state.title), updated \($0)" } ?? state.title)
+        .onAppear { now = Date() }
+        .onChange(of: scenePhase) { _, phase in
+            // Re-sample on return to foreground: elapsed time alone can have
+            // advanced the state while the app was away.
+            if phase == .active { now = Date() }
+        }
+        .onChange(of: candidateEnd) { _, _ in now = Date() }
+        .onChange(of: confirmedSleepEnd) { _, _ in now = Date() }
+        .task(id: candidateEnd) {
+            now = Date()
+            guard confirmedSleepEnd == nil, let candidateEnd else { return }
+            let transitionAt = candidateEnd.addingTimeInterval(
+                AtriaSleepSettlementPresentation.settlementDelay
+            )
+            let delay = transitionAt.timeIntervalSinceNow
+            guard delay > 0 else { return }
+            do {
+                try await Task.sleep(for: .seconds(delay))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            now = Date()
+        }
+    }
+}
+
 private struct AtriaTodayGlanceItem: Identifiable, Equatable {
     enum LayoutSize: String, Equatable {
         case compact
@@ -2497,6 +2760,16 @@ private struct AtriaTodayGlanceItem: Identifiable, Equatable {
     let layoutSize: LayoutSize
 
     var id: String { metricKey }
+
+    /// The one definition of "this metric has no reading yet", shared with
+    /// `AtriaTodayScreen.isPendingHeroValue`. Kept as a value check rather than
+    /// a stored flag so the ~20 `glanceItem(for:)` construction sites stay
+    /// untouched and can never forget to set it.
+    static func isPendingValue(_ value: String) -> Bool {
+        AtriaCompactMetricPresentation.isPendingValue(value)
+    }
+
+    var isPending: Bool { Self.isPendingValue(value) }
 }
 
 private struct AtriaTodayLiveStatusHost: View {
@@ -2927,10 +3200,15 @@ private struct AtriaTodayGlanceTile: View, Equatable {
                 .frame(width: 30, height: 30)
                 .background(item.tint.opacity(0.14), in: Circle())
             VStack(alignment: .leading, spacing: 2) {
+                // Same pending inversion as tileBody -- see the note there. A
+                // column of bars all reading "Learning" on the right is the same
+                // failure as a grid of tiles doing it, so the name takes over as
+                // the primary line until a real reading arrives.
                 Text(item.title)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.secondary)
+                    .font(item.isPending ? .subheadline.weight(.bold) : .caption.weight(.bold))
+                    .foregroundStyle(item.isPending ? .primary : .secondary)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.75)
                 if !item.detail.isEmpty {
                     Text(item.detail)
                         .font(.caption2.weight(.semibold))
@@ -2941,9 +3219,11 @@ private struct AtriaTodayGlanceTile: View, Equatable {
             }
             Spacer(minLength: 8)
             Text(item.value)
-                .font(.headline.weight(.bold).monospacedDigit())
+                .font(item.isPending
+                      ? .caption.weight(.semibold)
+                      : .headline.weight(.bold).monospacedDigit())
                 .contentTransition(reduceMotion ? .identity : .numericText())
-                .foregroundStyle(.primary)
+                .foregroundStyle(item.isPending ? .secondary : .primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
         }
@@ -2964,22 +3244,48 @@ private struct AtriaTodayGlanceTile: View, Equatable {
     }
 
     private var tileBody: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        // Reading order inside a tile is value -> label -> detail, but the type
+        // scale used to contradict it: the value was .subheadline (15) against a
+        // .caption (12) label, both .bold, so a 2-up grid of eight tiles read as
+        // one flat field of text with nothing to scan. The value is the only
+        // thing a glance is for, so it now takes .title3 while the label drops to
+        // .semibold and recedes. Tile height stays put -- the stack gap tightens
+        // from an off-scale 7 to Spacing.xs, paying for the larger number.
+        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.xs) {
             Image(systemName: item.systemImage)
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(item.tint)
                 .frame(width: 24, height: 24)
-            Text(item.value)
-                .font(.subheadline.weight(.bold))
-                .monospacedDigit()
-                .contentTransition(reduceMotion ? .identity : .numericText())
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-            Text(item.title)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            // Emphasis follows whichever line actually carries information. Once
+            // there is a reading that is the value. Before there is one, every
+            // tile's value collapses to the same placeholder word, so a default
+            // grid of eight would shout "Learning" eight times while the metric
+            // name -- the only thing still differing tile to tile -- hid in the
+            // small grey line. Pending tiles therefore lead with the name and let
+            // the state recede, so the grid stays scannable while it fills in.
+            if item.isPending {
+                Text(item.title)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                Text(item.value)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else {
+                Text(item.value)
+                    .font(.title3.weight(.bold))
+                    .monospacedDigit()
+                    .contentTransition(reduceMotion ? .identity : .numericText())
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                Text(item.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
             if !item.detail.isEmpty && item.layoutSize != .wideShort {
                 Text(item.detail)
                     .font(.caption2.weight(.semibold))
@@ -2989,7 +3295,7 @@ private struct AtriaTodayGlanceTile: View, Equatable {
             }
         }
         .frame(maxWidth: .infinity, minHeight: item.layoutSize.minHeight, alignment: .leading)
-        .padding(10)
+        .padding(AtriaDesignTokens.Spacing.md)
         // Consistency (2026-07-05): route the glance tile's corner radius through the
         // shared chip token instead of a hardcoded 8, so the deck's dominant card
         // shares one radius scale (chip < tile < card).
@@ -3227,7 +3533,7 @@ private struct AtriaTodaySectionDropDelegate: DropDelegate {
               let to = order.firstIndex(of: item) else { return }
         var next = order
         next.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
-        withAnimation(.snappy(duration: 0.25)) {
+        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
             order = next
         }
     }

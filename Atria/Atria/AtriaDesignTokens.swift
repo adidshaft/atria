@@ -37,6 +37,24 @@ enum AtriaDesignTokens {
         static let xxl: CGFloat = 28
     }
 
+    /// One motion rhythm. `.snappy` was already the house curve (56 call sites),
+    /// but its duration had drifted across ten distinct values -- 0.12, 0.14,
+    /// 0.18, 0.2, 0.22, 0.24, 0.25, 0.28, 0.3, 0.35 -- so comparable gestures
+    /// resolved at visibly different speeds depending on which file they lived
+    /// in. Nobody chose 0.24 over 0.25 on purpose; that tail is drift, not
+    /// intent. Three tiers cover every real case, so pick by the SIZE of the
+    /// move rather than by feel:
+    ///   quick    -- press/toggle feedback on a single control
+    ///   standard -- the default: reveals, selection changes, chip swaps
+    ///   emphatic -- structural moves: drag reorder, section insert/remove
+    /// Long ambient animations (breathing glows, ring fills) deliberately stay
+    /// off this scale -- they are not interaction feedback.
+    enum Motion {
+        static let quick: Double = 0.14
+        static let standard: Double = 0.2
+        static let emphatic: Double = 0.3
+    }
+
     enum Surface {
         static func appBackground(isDark: Bool) -> [Color] {
             if isDark {

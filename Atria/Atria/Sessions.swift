@@ -3659,8 +3659,14 @@ struct VO2MaxEstimateSummary: Equatable {
     let trendDetail: String
     let trendDelta: Double?
 
+    /// Presentation only -- no estimator input. Falls back to the deterministic
+    /// no-value token so VO2 max stops being the last value line saying
+    /// "Learning" while Recovery, Stress, Respiration and Sleep beside it all
+    /// say "--". The reason still shows: the row's DETAIL carries "Learning",
+    /// so the pair reads "-- / Learning" rather than "Learning / Learning",
+    /// which was the same word twice for one state.
     var valueText: String {
-        value.map { String(format: "%.1f", $0) } ?? "Learning"
+        value.map { String(format: "%.1f", $0) } ?? AtriaCompactMetricPresentation.noValue
     }
 
     /// One-line evidence status for glance surfaces. This deliberately exposes
@@ -7532,11 +7538,27 @@ final class SessionStore: ObservableObject {
             return
         }
 
+        // THIS is the confirmed-boundary gate for the notification that asserts
+        // measurements: sleepDuration only exists once a sleep has been
+        // persisted into the day's metric, so the rich summary cannot fire on an
+        // unconfirmed night. The plain journal check-in has no equivalent gate
+        // on purpose -- it claims nothing, and gating it too would reproduce the
+        // silent morning reported 2026-07-08.
+        //
+        // Recorded durably rather than only logged, so a morning with no rich
+        // summary can say which input was missing instead of being silent about
+        // its own silence.
         guard let metric = metrics.first(where: { calendar.isDate($0.day, inSameDayAs: today) }),
               let recovery = metric.recoveryPercent,
               let hrv = metric.hrv,
               let sleepDuration = metric.sleepDuration else {
             AtriaDebugLog("ATRIADBG morning_summary_skip reason=missing_metric day=%@", dayID)
+            AtriaNotificationAttemptStore.record(
+                kind: LocalNotificationScheduler.morningSummaryKind,
+                outcome: .deferred,
+                reason: "awaiting_confirmed_sleep_metric",
+                at: now
+            )
             return
         }
 
@@ -32323,7 +32345,7 @@ struct TrendSummaryView: View {
             windowStrip
         }
         .onAppear { logTrendChartUI() }
-        .animation(.snappy(duration: 0.24), value: selectedDays)
+        .animation(.snappy(duration: AtriaDesignTokens.Motion.standard), value: selectedDays)
     }
 
     private var selectedSummary: TrendSummary? {

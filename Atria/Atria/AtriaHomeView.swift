@@ -3006,7 +3006,7 @@ struct AtriaHomeView: View {
         if reduceMotion {
             update()
         } else {
-            withAnimation(.snappy(duration: 0.24)) {
+            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                 update()
             }
         }
@@ -4292,20 +4292,36 @@ struct AtriaHomeView: View {
                     // Occluding scrim (2026-07-08, device-reported): the chrome
                     // band is transparent between the status chip and the icon
                     // buttons, so scrolled content bled through behind them
-                    // ("This week", glance rows showing through the pill). A
-                    // thin top-anchored fade — NOT a second full AtriaBackdropLayer
-                    // (overdraw trap) — occludes content under the band and
-                    // dissolves it into the page at the lower edge.
+                    // ("This week", glance rows showing through the pill).
+                    //
+                    // That scrim was a single gradient sized to the band, opaque
+                    // only to 62% of its height. The band is variable-height --
+                    // topChrome, plus the recovery-status banner, plus an
+                    // optional connectivity pill -- so a PROPORTIONAL stop cannot
+                    // reliably cover it. The banner sat inside the 0.62→1.0 fade,
+                    // which is exactly where content kept showing through
+                    // ("…rain" from the Strain chip beside the status chip,
+                    // "This week" rows behind the banner).
+                    //
+                    // The band is now fully opaque and the dissolve moved below
+                    // it at a FIXED height, so the softness no longer comes at
+                    // the cost of the band's own occlusion, whatever it contains.
+                    Color(.systemBackground)
+                        .ignoresSafeArea(edges: .top)
+                        .allowsHitTesting(false)
+                }
+                .overlay(alignment: .bottom) {
                     LinearGradient(
-                        stops: [
-                            .init(color: Color(.systemBackground), location: 0.0),
-                            .init(color: Color(.systemBackground), location: 0.62),
-                            .init(color: Color(.systemBackground).opacity(0), location: 1.0)
+                        colors: [
+                            Color(.systemBackground),
+                            Color(.systemBackground).opacity(0)
                         ],
                         startPoint: .top,
                         endPoint: .bottom
                     )
-                    .ignoresSafeArea(edges: .top)
+                    .frame(height: 14)
+                    // Sits entirely BELOW the band rather than eating into it.
+                    .offset(y: 14)
                     .allowsHitTesting(false)
                 }
             }
@@ -4330,8 +4346,13 @@ struct AtriaHomeView: View {
     @MainActor
     private func runDebugDashboardAutoScrollIfNeeded(proxy: ScrollViewProxy, title: String) async {
 #if DEBUG
-        guard title == "Today",
-              Self.debugDashboardAutoScrollEnabled(arguments: ProcessInfo.processInfo.arguments) else { return }
+        // Any tab, not just Today. Every tab renders through this same
+        // tabNavigation scroll surface, and the Today-only restriction meant
+        // below-the-fold content on Vitals, Journal and Activity could not be
+        // screenshot-verified at all when the simulator panel is unavailable --
+        // simctl can capture but cannot scroll. The task ID is already
+        // per-title, so each tab drives its own independent scroll.
+        guard Self.debugDashboardAutoScrollEnabled(arguments: ProcessInfo.processInfo.arguments) else { return }
         try? await Task.sleep(for: .milliseconds(900))
         while !Task.isCancelled {
             withAnimation(.easeInOut(duration: 1.45)) {
@@ -4438,7 +4459,7 @@ struct AtriaHomeView: View {
             connectivityPillTask?.cancel()
             connectivityPillTask = Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(2_500))
-                withAnimation(.snappy(duration: 0.2)) {
+                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                     showConnectivityPill = false
                 }
             }
@@ -4510,7 +4531,7 @@ struct AtriaHomeView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
-            .animation(.snappy(duration: 0.2), value: coreLiveStore.state.historicalRecoveryPresentation)
+            .animation(.snappy(duration: AtriaDesignTokens.Motion.standard), value: coreLiveStore.state.historicalRecoveryPresentation)
         }
 
         /// Advances on a wall-clock boundary so every rotating banner in the
@@ -4722,12 +4743,12 @@ struct AtriaHomeView: View {
                                   stats: stats)
     }
 
+    /// Share cards must never print a placeholder as if it were a measurement,
+    /// so this routes through the canonical pending check rather than keeping
+    /// its own token list.
     private func pendingShareValue(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed == "--" || trimmed == "Learning" || trimmed == "Building" || trimmed == "Preparing" {
-            return ""
-        }
-        return trimmed
+        return AtriaCompactMetricPresentation.isPendingValue(trimmed) ? "" : trimmed
     }
 
 
@@ -6503,7 +6524,7 @@ private struct AtriaWorkoutReviewFlow: View {
                     .atriaCardAction(prominent: selectedType == type, tint: selectedType == type ? .orange : .secondary)
                 }
             }
-            .animation(.snappy(duration: 0.2), value: showsAllWorkoutTypes)
+            .animation(.snappy(duration: AtriaDesignTokens.Motion.standard), value: showsAllWorkoutTypes)
 
             if !selectedType.subtypeOptions.isEmpty {
                 chipSection(title: "Style", values: selectedType.subtypeOptions, selected: selectedSubtype) { value in
@@ -6525,7 +6546,7 @@ private struct AtriaWorkoutReviewFlow: View {
             Spacer(minLength: 8)
 
             Button {
-                withAnimation(.snappy(duration: 0.2)) {
+                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                     showsAllWorkoutTypes.toggle()
                 }
             } label: {
@@ -7495,7 +7516,7 @@ private struct AtriaDashboardScrollSurface<Content: View>: View {
                 .safeAreaPadding(.top, 8)
                 .padding(.trailing, 12)
                 .allowsHitTesting(false)
-                .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: showsCompactHeader)
+                .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard), value: showsCompactHeader)
             }
             .task(id: taskID) {
                 await autoScroll(scrollProxy)
@@ -7642,7 +7663,7 @@ private struct AtriaStandByOverlay: View {
                         .monospacedDigit()
                         .lineLimit(1)
                         .contentTransition(.numericText())
-                        .animation(reduceMotion ? nil : .snappy(duration: 0.3),
+                        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic),
                                    value: pulseLiveStore.state.heartRate)
                         .foregroundStyle(.white)
                         .minimumScaleFactor(0.45)
@@ -8145,6 +8166,15 @@ final class AtriaHomeModel {
         let recoveryLiftedAfterNap: Bool
         let strain: Double
         let strainConfidence: String
+        /// Fraction of the elapsed physiological day covered by accepted strap
+        /// wear, or nil before the day is long enough to judge (< 3h elapsed).
+        ///
+        /// This was already being computed in makeHeroSnapshot, used once to
+        /// pick a confidence word, and then thrown away -- so a card could say
+        /// a number was a lower bound while having no way to state the coverage
+        /// that made it one. Carried on the snapshot so the expanded detail can
+        /// show the real percentage instead of restating the adjective.
+        let dayWearCoverageFraction: Double?
         let guidance: Coach.Guidance
         let hrvValue: String
         let hrvDetail: String
@@ -8195,25 +8225,41 @@ final class AtriaHomeModel {
             recoveryIsFromPreviousSleep: Bool,
             recoveryLiftedAfterNap: Bool
         ) -> String {
-            if recoveryIsFromPreviousSleep {
-                return "Previous sleep score · awaiting today’s sleep"
-            }
-            if recoveryEstimate.confidence == .unverified,
-               recoveryEstimate.detail.localizedCaseInsensitiveContains("HRV unavailable") {
-                return recoveryLiftedAfterNap
-                    ? "Limited confidence · HRV unavailable · ↑ after nap"
-                    : "Limited confidence · HRV unavailable"
-            }
-            let base = recoveryIsProvisional
-                ? "\(recoveryEstimate.confidence.rawValue) · provisional"
-                : recoveryEstimate.confidence.rawValue
+            // Compact fixed-vocabulary marker, not prose. These strings ran up to
+            // 49 characters ("Limited confidence · HRV unavailable · ↑ after
+            // nap"), which read as an error block beside a ring already showing a
+            // real score, and wrapped -- so one card ended up taller than its
+            // neighbour. The marker now states the same thing in <= 14
+            // characters; the full reason belongs in the expanded detail.
+            //
+            // HRV availability now comes from the estimate's structured
+            // `usesHRV` flag instead of sniffing its prose for the substring
+            // "HRV unavailable". That flag is set false at exactly the sites
+            // that emit those details, so this is the authoritative source and
+            // cannot drift when the wording changes.
+            let presentation = AtriaCompactMetricPresentation.recovery(
+                percent: recoveryEstimate.percent,
+                confidence: recoveryEstimate.confidence,
+                usesHRV: recoveryEstimate.usesHRV,
+                isProvisional: recoveryIsProvisional,
+                isFromPreviousSleep: recoveryIsFromPreviousSleep
+            )
+            let base = presentation.marker ?? presentation.level.shortLabel
             return recoveryLiftedAfterNap ? "\(base) · ↑ after nap" : base
         }
 
         var strainValue: String {
+            // Not-computable, not merely uncertain: TRIMP is a Banister
+            // integration over heart-rate reserve, so without resting evidence,
+            // load evidence, or a max HR above rest there is no number to show
+            // (see strainConfidence). The token is `noValue` rather than the
+            // word "Learning" so the value line only ever carries a numeral or
+            // "--", and confidence lives in the marker instead. The detail hero
+            // already rendered "--" for this same state, so this also removes a
+            // contradiction between the compact card and its own detail sheet.
             guard !strainConfidence.localizedCaseInsensitiveContains("learning"),
                   !strainConfidence.localizedCaseInsensitiveContains("standby") else {
-                return "Learning"
+                return AtriaCompactMetricPresentation.noValue
             }
             let numeric = String(format: "%.1f", strain)
             return strainConfidence.localizedCaseInsensitiveContains("partial")
@@ -8233,6 +8279,7 @@ final class AtriaHomeModel {
                 && lhs.recoveryIsFromPreviousSleep == rhs.recoveryIsFromPreviousSleep
                 && lhs.recoveryLiftedAfterNap == rhs.recoveryLiftedAfterNap
                 && lhs.strainConfidence == rhs.strainConfidence
+                && lhs.dayWearCoverageFraction == rhs.dayWearCoverageFraction
                 && lhs.guidance == rhs.guidance
                 && lhs.hrvValue == rhs.hrvValue
                 && lhs.hrvDetail == rhs.hrvDetail
@@ -9877,7 +9924,12 @@ final class AtriaHomeModel {
             calendar: calendar,
             liveRestingHeartRate: restingContext.currentForRecovery
         )
-        let restText = presentationRestingHeartRate.map(String.init) ?? "Learning"
+        // Same deterministic no-value token as every other metric value. Left as
+        // the old word, the Vitals heart-rate row rendered "Now --", "Average
+        // --", "Peak --" beside "Resting Learning": one row, one state, two
+        // vocabularies.
+        let restText = presentationRestingHeartRate.map(String.init)
+            ?? AtriaCompactMetricPresentation.noValue
         let fallbackHrv = fallbackHeroHRVState(ble: ble, store: store)
         let headline = deferredDetails?.headline ?? defaultHeroHeadline(status: ble.status)
         let nextAction = deferredDetails?.nextAction ?? defaultHeroNextAction(status: ble.status)
@@ -9975,6 +10027,7 @@ final class AtriaHomeModel {
                             recoveryLiftedAfterNap: false,
                             strain: strain,
                             strainConfidence: strainConfidence,
+                            dayWearCoverageFraction: wearCoverage,
                             guidance: guidance,
                             hrvValue: deferredDetails?.hrvValue ?? fallbackHrv.value,
                             hrvDetail: deferredDetails?.hrvDetail ?? fallbackHrv.detail,
@@ -10071,6 +10124,10 @@ final class AtriaHomeModel {
                             recoveryLiftedAfterNap: false,
                             strain: strain,
                             strainConfidence: "local",
+                            // Night-scoped snapshot: day wear coverage is not
+                            // evaluated here, and nil means "not measured"
+                            // rather than "zero coverage".
+                            dayWearCoverageFraction: nil,
                             guidance: guidance,
                             hrvValue: night.hrvText,
                             hrvDetail: "personal baseline",
@@ -10129,7 +10186,8 @@ final class AtriaHomeModel {
         } else if let localSource {
             value = "\(localSource.value)"
         } else {
-            value = "Learning"
+            // Deterministic no-value token, matching every other metric value.
+            value = AtriaCompactMetricPresentation.noValue
         }
 
         let detail: String
@@ -10262,11 +10320,16 @@ final class AtriaHomeModel {
                             recoveryLiftedAfterNap: false,
                             strain: 0,
                             strainConfidence: "standby",
+                            // Standby/reconnecting snapshot: nothing has been
+                            // measured yet, so coverage is unknown rather than 0.
+                            dayWearCoverageFraction: nil,
                             guidance: guidance,
                             hrvValue: fallbackHrv.value,
                             hrvDetail: fallbackHrv.detail,
                             hrvNarrative: fallbackHrv.narrative,
-                            stressValue: "Learning",
+                            // Standby/reconnecting snapshot: deterministic
+                            // no-value token like every other metric value.
+                            stressValue: AtriaCompactMetricPresentation.noValue,
                             stressDetail: "Beat-to-beat window",
                             stressNarrative: "Stress appears after the strap reconnects and beat-to-beat data is ready.",
                             rrPackageText: fallbackHrv.packageText,

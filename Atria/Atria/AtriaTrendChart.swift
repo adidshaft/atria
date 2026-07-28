@@ -197,7 +197,7 @@ struct AtriaTrendChartCard: View {
             }
         }
         .padding(16)
-        .animation(reduceMotion ? nil : .snappy(duration: 0.28), value: showMoreInsights)
+        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: showMoreInsights)
         .atriaCard(cornerRadius: 24, emphasis: .soft)
         // Metric/range controls already animate their own selection chrome. A
         // broad implicit animation here also animated every Chart mark and the
@@ -1343,7 +1343,7 @@ private struct AtriaTrendRangeDock: View, Equatable {
             HStack(spacing: 7) {
                 ForEach(AtriaTrendRange.allCases) { range in
                     Button {
-                        withAnimation(.snappy(duration: 0.22)) {
+                        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                             selectedRange = range
                         }
                     } label: {

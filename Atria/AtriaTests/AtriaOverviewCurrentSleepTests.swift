@@ -184,7 +184,16 @@ final class AtriaOverviewCurrentSleepTests: XCTestCase {
         XCTAssertEqual(current.recoveryDetail,
                        "Previous sleep score · awaiting today’s sleep")
         XCTAssertEqual(current.restingHeartRate, 73)
-        XCTAssertEqual(current.hrvValue, "Learning")
+        // 2026-07-28 deterministic-presentation pass: the authority's
+        // normaliser now maps any pending input onto the app-wide no-value
+        // token instead of passing "Learning" straight through. That is the
+        // point of it -- it previously rewrote "--" INTO "Learning", which
+        // silently undid the token upstream and left Health Monitor speaking a
+        // different vocabulary from the row beside it.
+        //
+        // The invariant this test is NAMED for is untouched and still asserted
+        // above: the hero's 46% wins over the civil row's 99%.
+        XCTAssertEqual(current.hrvValue, AtriaCompactMetricPresentation.noValue)
     }
 
     func testVitalsLiveCardHasNoCivilLatestRollupAuthority() throws {

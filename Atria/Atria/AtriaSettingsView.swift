@@ -218,7 +218,37 @@ struct AtriaSettingsView: View {
     @State private var backupOperationInProgress = false
     @State private var didLoadBackupStatus = false
     @State private var storageFootprintTotal: String?
-    @State private var navigationPath = NavigationPath()
+    /// Seeded from a launch argument in DEBUG so each settings subpage can be
+    /// screenshot-verified. Every destination is otherwise reachable only by
+    /// tapping a hub row, and simctl can capture but not tap -- so with the
+    /// simulator panel unavailable the six subpages were the last surfaces in
+    /// the app that could not be looked at.
+    ///
+    /// This only pushes onto the EXISTING path; it adds no new NavigationLink
+    /// specialisation. That matters here: this hub deliberately uses one
+    /// concrete row type in a single ForEach, because several specialised
+    /// NavigationLink expressions previously caused an on-device
+    /// swift_getTypeByMangledName metadata stack overflow.
+    @State private var navigationPath: NavigationPath = {
+        #if DEBUG
+        if let destination = Self.debugInitialDestination(
+            arguments: ProcessInfo.processInfo.arguments
+        ) {
+            var path = NavigationPath()
+            path.append(destination)
+            return path
+        }
+        #endif
+        return NavigationPath()
+    }()
+
+    #if DEBUG
+    private static func debugInitialDestination(arguments: [String]) -> Destination? {
+        guard let index = arguments.firstIndex(of: "--atria-settings-destination"),
+              arguments.indices.contains(arguments.index(after: index)) else { return nil }
+        return Destination(rawValue: arguments[arguments.index(after: index)])
+    }
+    #endif
     @State private var profilePersistence: AtriaProfileDraftPersistenceCoordinator
 
     /// Support destinations are shown as text only. Atria's core stays local-first
