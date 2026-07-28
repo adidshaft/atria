@@ -288,7 +288,7 @@ struct AtriaOnboardingFlow: View {
         if reduceMotion {
             step = next
         } else {
-            withAnimation(.snappy(duration: 0.28)) { step = next }
+            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.emphatic)) { step = next }
         }
     }
 
@@ -670,7 +670,7 @@ struct AtriaOnboardingFlow: View {
         if reduceMotion {
             focusMetric = next
         } else {
-            withAnimation(.snappy(duration: 0.22)) { focusMetric = next }
+            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) { focusMetric = next }
         }
     }
 

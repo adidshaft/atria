@@ -369,7 +369,7 @@ struct AtriaNotificationSettingsCard: View {
         }
         .padding(14)
         .atriaInsetCard(tint: .blue)
-        .animation(.snappy(duration: 0.2), value: settings.allowNotifications)
+        .animation(.snappy(duration: AtriaDesignTokens.Motion.standard), value: settings.allowNotifications)
     }
 
     private func notificationToggle(_ title: String,

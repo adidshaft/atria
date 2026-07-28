@@ -3132,7 +3132,7 @@ private struct AtriaLiveWorkoutHeartBlock: View {
                         Capsule()
                             .fill(candidate == zone ? candidate.color : candidate.color.opacity(0.22))
                             .frame(height: candidate == zone ? 11 : 7)
-                            .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: zone)
+                            .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard), value: zone)
                         Text("Z\(candidate.rawValue)")
                             .font(.system(size: 9,
                                           weight: candidate == zone ? .black : .bold,

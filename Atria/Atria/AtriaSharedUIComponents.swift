@@ -566,7 +566,7 @@ struct AtriaMetricTile: View, Equatable {
                         .font(.system(size: 29, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .contentTransition(reduceMotion ? .identity : .numericText())
-                        .animation(reduceMotion ? nil : .snappy(duration: 0.3), value: displayValue)
+                        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: displayValue)
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                 }

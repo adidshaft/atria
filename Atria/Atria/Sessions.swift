@@ -31525,7 +31525,7 @@ struct TrendSummaryView: View {
             windowStrip
         }
         .onAppear { logTrendChartUI() }
-        .animation(.snappy(duration: 0.24), value: selectedDays)
+        .animation(.snappy(duration: AtriaDesignTokens.Motion.standard), value: selectedDays)
     }
 
     private var selectedSummary: TrendSummary? {

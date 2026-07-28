@@ -637,8 +637,8 @@ struct OnboardingConnectionStatusView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .atriaCard(emphasis: .soft)
-        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: ble.status)
-        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: ble.hasContact)
+        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard), value: ble.status)
+        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard), value: ble.hasContact)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(title). \(subtitle)")
     }

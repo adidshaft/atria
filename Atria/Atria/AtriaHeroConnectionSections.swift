@@ -400,7 +400,7 @@ private struct AtriaConnectedPulseStatusCard: View, Equatable {
                             .font(.system(size: 38, weight: .bold, design: .rounded))
                             .monospacedDigit()
                             .contentTransition(reduceMotion ? .identity : .numericText())
-                            .animation(reduceMotion ? nil : .snappy(duration: 0.3), value: heartRateText)
+                            .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: heartRateText)
                         Text("bpm")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
@@ -520,7 +520,7 @@ private struct AtriaHeartRateZoneRail: View, Equatable {
                         .fill(segmentTint(index))
                         .frame(maxWidth: .infinity)
                         .frame(height: index == zone.index ? 9 : 5)
-                        .animation(.snappy(duration: 0.22), value: zone.index)
+                        .animation(.snappy(duration: AtriaDesignTokens.Motion.standard), value: zone.index)
                 }
             }
             .accessibilityHidden(true)

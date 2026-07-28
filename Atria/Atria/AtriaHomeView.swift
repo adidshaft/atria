@@ -2981,7 +2981,7 @@ struct AtriaHomeView: View {
         if reduceMotion {
             update()
         } else {
-            withAnimation(.snappy(duration: 0.24)) {
+            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                 update()
             }
         }
@@ -4415,7 +4415,7 @@ struct AtriaHomeView: View {
             connectivityPillTask?.cancel()
             connectivityPillTask = Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(2_500))
-                withAnimation(.snappy(duration: 0.2)) {
+                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                     showConnectivityPill = false
                 }
             }
@@ -4487,7 +4487,7 @@ struct AtriaHomeView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
-            .animation(.snappy(duration: 0.2), value: coreLiveStore.state.historicalRecoveryPresentation)
+            .animation(.snappy(duration: AtriaDesignTokens.Motion.standard), value: coreLiveStore.state.historicalRecoveryPresentation)
         }
 
         /// Advances on a wall-clock boundary so every rotating banner in the
@@ -6479,7 +6479,7 @@ private struct AtriaWorkoutReviewFlow: View {
                     .atriaCardAction(prominent: selectedType == type, tint: selectedType == type ? .orange : .secondary)
                 }
             }
-            .animation(.snappy(duration: 0.2), value: showsAllWorkoutTypes)
+            .animation(.snappy(duration: AtriaDesignTokens.Motion.standard), value: showsAllWorkoutTypes)
 
             if !selectedType.subtypeOptions.isEmpty {
                 chipSection(title: "Style", values: selectedType.subtypeOptions, selected: selectedSubtype) { value in
@@ -6501,7 +6501,7 @@ private struct AtriaWorkoutReviewFlow: View {
             Spacer(minLength: 8)
 
             Button {
-                withAnimation(.snappy(duration: 0.2)) {
+                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                     showsAllWorkoutTypes.toggle()
                 }
             } label: {
@@ -7471,7 +7471,7 @@ private struct AtriaDashboardScrollSurface<Content: View>: View {
                 .safeAreaPadding(.top, 8)
                 .padding(.trailing, 12)
                 .allowsHitTesting(false)
-                .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: showsCompactHeader)
+                .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard), value: showsCompactHeader)
             }
             .task(id: taskID) {
                 await autoScroll(scrollProxy)
@@ -7618,7 +7618,7 @@ private struct AtriaStandByOverlay: View {
                         .monospacedDigit()
                         .lineLimit(1)
                         .contentTransition(.numericText())
-                        .animation(reduceMotion ? nil : .snappy(duration: 0.3),
+                        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic),
                                    value: pulseLiveStore.state.heartRate)
                         .foregroundStyle(.white)
                         .minimumScaleFactor(0.45)

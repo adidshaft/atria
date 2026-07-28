@@ -164,7 +164,7 @@ struct AtriaCustomizeSheet: View {
                 guard let payload = payloads.first,
                       let dragged = AtriaTodayMetric.draggedMetric(from: payload),
                       selectedMetrics.contains(dragged) else { return false }
-                withAnimation(.snappy(duration: 0.2)) {
+                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                     draft.moveGlanceMetric(dragged.rawValue, before: metric.rawValue)
                 }
                 return true

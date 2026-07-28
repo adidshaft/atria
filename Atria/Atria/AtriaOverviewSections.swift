@@ -3002,7 +3002,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                         Spacer(minLength: 8)
 
                         Button {
-                            withAnimation(.snappy(duration: 0.2)) {
+                            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                                 isEditingGlance = false
                             }
                         } label: {
@@ -3039,7 +3039,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 }
                 .frame(maxWidth: .infinity)
                 .onLongPressGesture(minimumDuration: 0.45) {
-                    withAnimation(.snappy(duration: 0.2)) {
+                    withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                         isEditingGlance = true
                     }
                 }
@@ -3062,12 +3062,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         .sheet(isPresented: $showWidgetManager) {
             AtriaGlanceWidgetManagerSheet(hiddenMetrics: hiddenMetrics,
                                           onEditWidgets: {
-                                              withAnimation(.snappy(duration: 0.2)) {
+                                              withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                                                   isEditingGlance = true
                                               }
                                           },
                                           onShowMetric: { metric in
-                                              withAnimation(.snappy(duration: 0.2)) {
+                                              withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                                                   onShowMetric(metric)
                                               }
                                           })
@@ -3334,7 +3334,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             HStack(spacing: 8) {
                 if isEditingGlance {
                     Button {
-                        withAnimation(.snappy(duration: 0.2)) {
+                        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                             isEditingGlance = false
                         }
                     } label: {
@@ -3349,7 +3349,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
                 if !isEditingGlance {
                     Button {
-                        withAnimation(.snappy(duration: 0.2)) {
+                        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                             glanceLayoutBars.toggle()
                         }
                     } label: {
@@ -3662,7 +3662,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             .simultaneousGesture(
                 LongPressGesture(minimumDuration: 0.45)
                     .onEnded { _ in
-                        withAnimation(.snappy(duration: 0.2)) {
+                        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                             isEditingGlance = true
                         }
                     }
@@ -3681,7 +3681,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 }
 
                 Button {
-                    withAnimation(.snappy(duration: 0.2)) {
+                    withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                         onToggleMetricSize(metric)
                     }
                 } label: {
@@ -3690,7 +3690,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 }
 
                 Button(role: .destructive) {
-                    withAnimation(.snappy(duration: 0.2)) {
+                    withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                         onHideMetric(metric)
                         if visibleMetrics.count <= 1 {
                             isEditingGlance = false
@@ -3706,7 +3706,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             .dropDestination(for: String.self) { items, _ in
                 guard let raw = items.first,
                       let dragged = AtriaTodayMetric.draggedMetric(from: raw) else { return false }
-                withAnimation(.snappy(duration: 0.2)) {
+                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                     isEditingGlance = true
                     onMoveMetric(dragged, metric)
                 }
@@ -3787,7 +3787,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private func glanceRemoveControl(for metric: AtriaTodayMetric) -> some View {
         Button(role: .destructive) {
-            withAnimation(.snappy(duration: 0.2)) {
+            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                 onHideMetric(metric)
                 if visibleMetrics.count <= 1 {
                     isEditingGlance = false
@@ -3806,7 +3806,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private func glanceResizeControl(for metric: AtriaTodayMetric,
                                      sizeOverrides: [String: AtriaGlanceGridSize]) -> some View {
         Button {
-            withAnimation(.snappy(duration: 0.2)) {
+            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                 onToggleMetricSize(metric)
             }
         } label: {
@@ -6016,7 +6016,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
                         .font(.system(size: 30, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .contentTransition(reduceMotion ? .identity : .numericText())
-                        .animation(reduceMotion ? nil : .snappy(duration: 0.3), value: displayValue)
+                        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: displayValue)
                         .lineLimit(1)
                         .minimumScaleFactor(0.58)
                 }
@@ -6071,7 +6071,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
                     .font(.system(size: 26, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .contentTransition(reduceMotion ? .identity : .numericText())
-                    .animation(reduceMotion ? nil : .snappy(duration: 0.3), value: displayValue)
+                    .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: displayValue)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
                     .layoutPriority(1)
@@ -10362,7 +10362,7 @@ private struct AtriaStrainScoreHero: View {
                     if let score {
                         Capsule(style: .continuous).fill(tint)
                             .frame(width: max(8, width * AtriaStrainTargetPresentation.progress(for: score)))
-                            .animation(reduceMotion ? nil : .snappy(duration: 0.35), value: score)
+                            .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: score)
                     }
                 }
             }
@@ -10446,7 +10446,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .animation(reduceMotion ? nil : .snappy(duration: 0.28), value: showDetails)
+        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: showDetails)
     }
 
     private var revealAffordance: some View {
@@ -10518,7 +10518,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
                     .minimumScaleFactor(0.56)
                     .foregroundStyle(heroTint)
                     .contentTransition(reduceMotion ? .identity : .numericText())
-                    .animation(reduceMotion ? nil : .snappy(duration: 0.3), value: heroValue)
+                    .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: heroValue)
 
                 HStack(spacing: 6) {
                     Circle()
@@ -13050,7 +13050,7 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
                                       showsAllTags: showsAllJournalTags,
                                       hiddenTagCount: hiddenJournalTagCount,
                                       onToggleMore: {
-                                          withAnimation(.snappy(duration: 0.2)) {
+                                          withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                                               showsAllJournalTags.toggle()
                                           }
                                       })
@@ -13061,7 +13061,7 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
                         if reduceMotion {
                             onToggleTag(tag)
                         } else {
-                            withAnimation(.snappy(duration: 0.2)) {
+                            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                                 onToggleTag(tag)
                             }
                         }
@@ -13082,7 +13082,7 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
                     .atriaGlassSelectable(selected: todayEntry.tags.contains(tag))
                 }
             }
-            .animation(.snappy(duration: 0.2), value: showsAllJournalTags)
+            .animation(.snappy(duration: AtriaDesignTokens.Motion.standard), value: showsAllJournalTags)
         }
         .padding(16)
         .atriaCard(emphasis: .soft)

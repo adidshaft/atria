@@ -273,7 +273,7 @@ struct AtriaVitalsTabContent: View {
                     Spacer(minLength: 8)
 
                     Button {
-                        withAnimation(.snappy(duration: 0.2)) {
+                        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                             isEditingVitalsLayout = false
                         }
                     } label: {
@@ -397,7 +397,7 @@ struct AtriaVitalsTabContent: View {
         }
         .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.card, style: .continuous))
         .onLongPressGesture(minimumDuration: 0.45) {
-            withAnimation(.snappy(duration: 0.2)) {
+            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                 isEditingVitalsLayout = true
             }
         }
@@ -406,7 +406,7 @@ struct AtriaVitalsTabContent: View {
         .dropDestination(for: String.self) { items, _ in
             guard let raw = items.first,
                   let dragged = AtriaVitalsSection.draggedSection(from: raw) else { return false }
-            withAnimation(.snappy(duration: 0.2)) {
+            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                 isEditingVitalsLayout = true
                 sectionOrderCSV = AtriaVitalsSection.moving(dragged, before: section, in: sectionOrderCSV)
             }
@@ -425,7 +425,7 @@ struct AtriaVitalsTabContent: View {
         GlassEffectContainer(spacing: 10) {
             HStack(spacing: 6) {
                 Button {
-                    withAnimation(.snappy(duration: 0.2)) {
+                    withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                         moveSection(section, direction: -1)
                     }
                 } label: {
@@ -436,7 +436,7 @@ struct AtriaVitalsTabContent: View {
                 .accessibilityLabel("Move \(section.label) up")
 
                 Button {
-                    withAnimation(.snappy(duration: 0.2)) {
+                    withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                         moveSection(section, direction: 1)
                     }
                 } label: {
@@ -3273,7 +3273,7 @@ private struct AtriaResearchManeuverMarkerCard: View, Equatable {
                         if reduceMotion {
                             onMark(kind)
                         } else {
-                            withAnimation(.snappy(duration: 0.18)) {
+                            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                                 onMark(kind)
                             }
                         }
@@ -4025,7 +4025,7 @@ private struct AtriaPulseStatRail: View {
                 // three surfaces have nine between them. One number, animated
                 // in three places and snapping in the fourth.
                 .contentTransition(reduceMotion ? .identity : .numericText())
-                .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: value)
+                .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard), value: value)
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 2)
@@ -6334,7 +6334,7 @@ private struct AtriaProfileCard: View, Equatable {
                 }
             }
             .pickerStyle(.segmented)
-            .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: profile.maxHRSource)
+            .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard), value: profile.maxHRSource)
 
             VStack(spacing: 12) {
                 profileStepperTiles

@@ -51,7 +51,7 @@ struct AtriaSegmentButtonStyle: ButtonStyle {
             }
         }
         .scaleEffect(configuration.isPressed ? 0.97 : 1)
-        .animation(reduceMotion ? nil : .snappy(duration: 0.14), value: selected)
+        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.quick), value: selected)
         // Haptics deliberately NOT here: a feedback modifier inside a reusable
         // ButtonStyle registers an engine observer per rendered segment. Owners
         // fire .selection once at their segment-change handler instead.
@@ -78,7 +78,7 @@ struct AtriaGlassIconButtonStyle: ButtonStyle {
             .frame(width: hitSize, height: hitSize)
             .contentShape(Circle())
             .scaleEffect(configuration.isPressed ? 0.94 : 1)
-            .animation(reduceMotion ? nil : .snappy(duration: 0.12), value: configuration.isPressed)
+            .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.quick), value: configuration.isPressed)
     }
 
     private var foreground: Color {
