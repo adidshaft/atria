@@ -8351,8 +8351,15 @@ struct AtriaMetricDetailSheet: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             VStack(spacing: 0) {
-                provenanceRow("Value", provenance.displayValue)
-                provenanceRow("Confidence", provenance.level.rawValue.capitalized)
+                // Two status axes, deliberately kept apart. The value carries the
+                // metric's own graded zone (green/amber/red) and stays NEUTRAL
+                // when it has no real grade -- colouring an ungraded number would
+                // assert a standing the app has not earned. Confidence carries
+                // how far the number can be trusted, which is green/amber only.
+                provenanceRow("Value", provenance.displayValue,
+                              tint: provenance.valueStatusTint)
+                provenanceRow("Confidence", provenance.level.rawValue.capitalized,
+                              tint: provenance.level.statusTint)
                 if let fraction = provenance.hrCoverageFraction {
                     provenanceRow("HR coverage", "\(Int((fraction * 100).rounded()))%")
                 }
@@ -8388,15 +8395,26 @@ struct AtriaMetricDetailSheet: View {
         .atriaCard(cornerRadius: AtriaDesignTokens.Radius.card, emphasis: .soft)
     }
 
-    private func provenanceRow(_ label: String, _ value: String) -> some View {
+    /// `tint` nil means this row has no graded status, and renders neutral.
+    private func provenanceRow(_ label: String,
+                               _ value: String,
+                               tint: Color? = nil) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: AtriaDesignTokens.Spacing.md) {
             Text(label)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             Spacer(minLength: AtriaDesignTokens.Spacing.sm)
+            if let tint {
+                // The dot carries the status without depending on colour alone
+                // being legible against the value text, and keeps the row height
+                // fixed whether or not a status exists.
+                Circle()
+                    .fill(tint)
+                    .frame(width: 6, height: 6)
+            }
             Text(value)
                 .font(.caption.weight(.bold).monospacedDigit())
-                .foregroundStyle(.primary)
+                .foregroundStyle(tint ?? .primary)
                 .multilineTextAlignment(.trailing)
         }
         .frame(minHeight: 32)

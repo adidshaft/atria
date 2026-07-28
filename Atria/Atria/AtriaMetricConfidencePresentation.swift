@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 /// ONE deterministic presentation model for every compact metric card.
 ///
@@ -35,6 +36,20 @@ enum AtriaMetricConfidenceLevel: String, Equatable, CaseIterable {
         case .moderate: return "baseline"
         case .limited: return "limited"
         case .provisional: return "provisional"
+        }
+    }
+
+    /// Status colour for how far this number can be TRUSTED -- a separate axis
+    /// from how good the number is.
+    ///
+    /// Deliberately green/amber only. Red is reserved for a genuinely poor
+    /// measured value (a red recovery zone), and reusing it for data confidence
+    /// would read as "your recovery is bad" when it actually means "we are less
+    /// sure of it". Those are different claims and must not share a colour.
+    var statusTint: Color {
+        switch self {
+        case .high, .moderate: return AtriaMetricZoneLevel.green.tint
+        case .limited, .provisional: return AtriaMetricZoneLevel.yellow.tint
         }
     }
 }
@@ -116,6 +131,12 @@ struct AtriaMetricProvenance: Equatable {
     /// When the underlying data was last updated, and where it came from.
     let sourceLabel: String
     let observedAt: Date?
+    /// The metric's own graded status -- the green/amber/red zone its value
+    /// falls in. Nil where the value has NO real grade, which keeps the
+    /// documented honesty guard: painting a colour around an ungraded number
+    /// asserts a standing the app has not earned. Neutral is the honest render
+    /// for nil, never green.
+    var valueStatusTint: Color? = nil
 
     var coverageText: String? {
         guard let hrCoverageFraction else { return nil }
