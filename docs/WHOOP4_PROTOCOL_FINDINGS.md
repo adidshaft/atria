@@ -2331,6 +2331,31 @@ POSITIVE STILL REQUIRED**
   `Test-AtriaTests-2026.07.28_14-33-13-+0530.xcresult`; the final consolidated
   suite result is recorded with the release commit.
 
+#### 2026-07-28 — connected-peripheral lifetime correction, physical observation
+
+- **Earlier observation:** the pre-fix phone trace repeatedly showed a local
+  `API MISUSE` disconnect shortly after connection because the connected
+  `CBPeripheral` had been deallocated. A later reconnect then commonly ended
+  in supervision timeout. Those events were host object-lifetime failures, not
+  evidence of weak 2.4 GHz radio quality or a WHOOP protocol requirement.
+- **CODE correction:** commit `80defc75` retains each connected peripheral by
+  object identity across every connection owner and releases it only at a
+  terminal CoreBluetooth callback.
+- **Physical observation:** Release commit `f950f8c6`, which contains that
+  correction, remained connected while the phone received 156 GATT
+  indications from the saved strap over 149 seconds. The trace contains zero
+  API-misuse forced disconnects, zero reason-722 local-host disconnects, and
+  zero reason-708 supervision timeouts.
+- **Evidence:** raw phone `bluetoothd` capture and filtered link lines are in
+  `evidence/2026-07-28-link-retainer-after/`. The simultaneous non-disruptive
+  runtime pull is in `evidence/2026-07-28-post-retainer-runtime/`; it records a
+  live stream, fresh segmented journal, 108,294 accepted notifications, zero
+  dropped artifacts, and the exact installed source commit.
+- **Scope:** this proves the deallocation churn is absent in this physical
+  observation. It does not by itself requalify proprietary R10 motion:
+  persisted state is still the honest `pure_hr_v10 / fallback_active` state
+  with failure `lease_released_before_density_proof`.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.
