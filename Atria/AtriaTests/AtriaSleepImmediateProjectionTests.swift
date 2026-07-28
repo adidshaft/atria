@@ -240,6 +240,17 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
 
         let requestStart = try XCTUnwrap(sessions.range(of: "private func requestDeferredLaunchCardSettlement("))
         let requestBody = String(sessions[requestStart.lowerBound...].prefix(8_000))
+        let persistedFastPath = try XCTUnwrap(requestBody.range(
+            of: "status=published_fast_path"
+        ))
+        let historicalRefresh = try XCTUnwrap(requestBody.range(
+            of: "requestRequiredHistorySnapshotRefresh(deferred: true)"
+        ))
+        XCTAssertLessThan(
+            persistedFastPath.lowerBound,
+            historicalRefresh.lowerBound,
+            "coherent persisted cards must not wait on the historical archive projection"
+        )
         let verification = try XCTUnwrap(requestBody.range(of: "deferredLaunchCardSettlementMatches"))
         let dashboard = try XCTUnwrap(requestBody.range(of: "self.publishDashboardRevision()",
                                                         range: verification.upperBound..<requestBody.endIndex))

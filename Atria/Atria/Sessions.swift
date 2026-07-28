@@ -29681,6 +29681,49 @@ final class SessionStore: ObservableObject {
                           physiologicalCycle.boundaryKind.rawValue)
             return
         }
+
+        // The persisted session, daily metric and daily rollup files are
+        // already loaded before this method is entered. When those three
+        // authorities agree exactly, release Home/widget publication now.
+        // Waiting for a full historical projection here made a 150+ MB archive
+        // scan (and its independent 90-second recovery timeout) hold an already
+        // valid morning card behind an old widget snapshot.
+        if let sleep = AtriaPhysiologicalCycle.latestCompletedMainSleep(
+            now: now,
+            confirmedSleeps: cachedConfirmedSleeps
+        ) {
+            let morningDay = EventCivilTime.day(
+                containing: sleep.end,
+                eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+                outputCalendar: calendar
+            )
+            let metric = dailyMetricHistory.first {
+                calendar.isDate($0.day, inSameDayAs: morningDay)
+            }
+            let rollup = dailyRollupHistory.first {
+                calendar.isDate($0.day, inSameDayAs: morningDay)
+            }
+            if Self.deferredLaunchCardSettlementMatches(
+                sleep: sleep,
+                metric: metric,
+                rollup: rollup,
+                calendar: calendar
+            ) {
+                deferredLaunchCardSettlementRetryTask?.cancel()
+                deferredLaunchCardSettlementRetryTask = nil
+                deferredLaunchCardSettlementPending = false
+                publishDashboardRevision()
+                onDeferredLaunchCardSettlementPublished?("\(reason)_persisted_fast_path")
+                AtriaDebugLog("ATRIADBG deferred_launch_cards status=published_fast_path reason=%@ attempts=%d sleep_id=%@ recovery=%@ strain=%@",
+                              reason,
+                              attempt + 1,
+                              sleep.id,
+                              metric?.recoveryPercent.map(String.init) ?? "learning",
+                              metric?.strain.map { String(format: "%.2f", $0) } ?? "learning")
+                return
+            }
+        }
+
         requestRequiredHistorySnapshotRefresh(deferred: true) { [weak self] succeeded in
             guard let self, succeeded else { return }
             let calendar = Calendar.current
