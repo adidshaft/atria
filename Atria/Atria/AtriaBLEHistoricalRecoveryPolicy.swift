@@ -681,6 +681,32 @@ extension AtriaBLEManager {
         return nowUptime - lastProgressUptime >= idleTimeout
     }
 
+    /// A connected history transfer may keep producing useful archive rows
+    /// after it has silenced the standard heart-rate characteristic. Progress
+    /// is not permission to monopolize the user's live stream indefinitely.
+    /// Release only after both a useful initial history slice and a sustained
+    /// 2A37 silence; callers preserve the ingress spool and exact gap ticket.
+    nonisolated static func shouldReleaseConnectedHistorySlice(
+        sliceStartedAt: Date,
+        lastRawHeartRateAt: Date?,
+        now: Date,
+        minimumSliceDuration: TimeInterval,
+        liveSilenceLimit: TimeInterval
+    ) -> Bool {
+        guard sliceStartedAt.timeIntervalSince1970.isFinite,
+              now.timeIntervalSince1970.isFinite,
+              minimumSliceDuration.isFinite,
+              liveSilenceLimit.isFinite,
+              minimumSliceDuration > 0,
+              liveSilenceLimit > 0,
+              now >= sliceStartedAt,
+              now.timeIntervalSince(sliceStartedAt) >= minimumSliceDuration
+        else { return false }
+        let liveReference = max(lastRawHeartRateAt ?? sliceStartedAt,
+                                sliceStartedAt)
+        return now.timeIntervalSince(liveReference) >= liveSilenceLimit
+    }
+
     /// A replayed frame proves that the BLE callback path is alive, but it does
     /// not prove that the strap cursor or our durable prefix advanced. Counting
     /// duplicate persistence as progress lets an endless replay suppress the

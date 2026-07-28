@@ -1601,6 +1601,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var gate4DailyBankRearmGeneration: UInt64?
     private var gate4DailyBankRearmTask: Task<Void, Never>?
     private var offlineHistoricalSyncTimeoutTask: Task<Void, Never>?
+    /// A productive WHOOP history serve is allowed to continue while standard
+    /// 2A37 remains fresh. If that same connected transaction silences live HR,
+    /// release only the transport after a bounded slice; every fsynced prefix
+    /// and exact ticket remains durable for a later retry.
+    private var connectedHistoricalSliceTask: Task<Void, Never>?
+    private var connectedHistoricalSliceGeneration: UInt64?
+    private var connectedHistoricalSliceStartedAt: Date?
+    private let connectedHistoricalSliceMinimumDuration: TimeInterval = 45
+    private let connectedHistoricalSliceLiveSilenceLimit: TimeInterval = 15
+    private let backgroundHistoricalSliceMinimumDuration: TimeInterval = 5
+    private let backgroundHistoricalSliceLiveSilenceLimit: TimeInterval = 3
     /// Some physically tested WHOOP 4 firmware advances its durable read cursor
     /// after 0x17 but does not autonomously start the next page. Only an
     /// already-confirmed ACK may arm this bounded 0x16 continuation. Any next
@@ -7994,6 +8005,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG offline_sync status=skipped reason=%@ detail=disabled", reason)
             return false
         }
+        let connectedSliceCooldownUntil = defaults.double(
+            forKey: OfflineSyncDefaults.connectedSliceCooldownUntil
+        )
+        if connectedLink,
+           connectedSliceCooldownUntil > now.timeIntervalSince1970,
+           !explicitUserRequest,
+           !explicitResearchRequest {
+            retainPendingOfflineHistoricalSyncRequest(
+                reason: reason,
+                force: false,
+                explicitRequest: false
+            )
+            defaults.set(
+                "deferred_connected_slice_live_cooldown",
+                forKey: OfflineSyncDefaults.lastStatus
+            )
+            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=deferred_connected_slice_live_cooldown reason=%@ remaining_s=%.0f action=preserve_live_and_exact_ticket",
+                reason,
+                connectedSliceCooldownUntil - now.timeIntervalSince1970
+            )
+            return false
+        }
         guard Self.supportsVerifiedHistoricalRecovery(model: strapModel,
                                                        previouslyVerified: previouslyVerified) else {
             retainPendingOfflineHistoricalSyncRequest(
@@ -10669,6 +10704,126 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
     }
 
+    private func armConnectedHistoricalSliceIfNeeded(
+        generation: UInt64,
+        reason: String,
+        connectedChunkedBackfill: Bool
+    ) {
+        connectedHistoricalSliceTask?.cancel()
+        connectedHistoricalSliceTask = nil
+        guard connectedChunkedBackfill else { return }
+        let startedAt = Date()
+        connectedHistoricalSliceGeneration = generation
+        connectedHistoricalSliceStartedAt = startedAt
+        let defaults = UserDefaults.standard
+        defaults.set(
+            "monitoring_live_heart_rate",
+            forKey: OfflineSyncDefaults.connectedSliceStatus
+        )
+        defaults.set(
+            startedAt.timeIntervalSince1970,
+            forKey: OfflineSyncDefaults.connectedSliceAt
+        )
+        connectedHistoricalSliceTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled,
+                      self.offlineHistoricalSyncInProgress,
+                      self.offlineHistoricalSyncGeneration == generation else {
+                    return
+                }
+                if self.releaseConnectedHistoricalSliceIfNeeded(
+                    generation: generation,
+                    reason: reason,
+                    now: Date()
+                ) { return }
+            }
+        }
+    }
+
+    /// Evaluate on every served frame as well as the foreground timer. iOS may
+    /// suspend a locked-phone process before a long Task sleep resumes, while
+    /// the active CoreBluetooth callback is still a valid synchronous boundary
+    /// at which to preserve the row and relinquish history ownership.
+    @discardableResult
+    private func releaseConnectedHistoricalSliceIfNeeded(
+        generation: UInt64,
+        reason: String,
+        now: Date
+    ) -> Bool {
+        guard connectedHistoricalSliceGeneration == generation,
+              let startedAt = connectedHistoricalSliceStartedAt,
+              offlineHistoricalSyncInProgress,
+              offlineHistoricalSyncGeneration == generation else {
+            return false
+        }
+        let foreground = UIApplication.shared.applicationState == .active
+        let minimumDuration = foreground
+            ? connectedHistoricalSliceMinimumDuration
+            : backgroundHistoricalSliceMinimumDuration
+        let silenceLimit = foreground
+            ? connectedHistoricalSliceLiveSilenceLimit
+            : backgroundHistoricalSliceLiveSilenceLimit
+        guard Self.shouldReleaseConnectedHistorySlice(
+            sliceStartedAt: startedAt,
+            lastRawHeartRateAt: lastRawHRNotificationAt,
+            now: now,
+            minimumSliceDuration: minimumDuration,
+            liveSilenceLimit: silenceLimit
+        ) else { return false }
+        let liveSilence = now.timeIntervalSince(
+            max(lastRawHRNotificationAt ?? startedAt, startedAt)
+        )
+        let defaults = UserDefaults.standard
+        defaults.set(
+            "released_for_live_heart_rate",
+            forKey: OfflineSyncDefaults.connectedSliceStatus
+        )
+        defaults.set(
+            now.timeIntervalSince1970,
+            forKey: OfflineSyncDefaults.connectedSliceAt
+        )
+        defaults.set(
+            now.addingTimeInterval(
+                automaticConnectedHistoryAttemptCooldown
+            ).timeIntervalSince1970,
+            forKey: OfflineSyncDefaults.connectedSliceCooldownUntil
+        )
+        retainPendingOfflineHistoricalSyncRequest(
+            reason: "connected_slice_retry_\(reason)",
+            force: false,
+            explicitRequest: false
+        )
+        updateStrapStreamState(
+            reason: "connected_history_slice_live_silence"
+        )
+        AtriaDebugLog(
+            "ATRIADBG offline_sync status=connected_slice_released generation=%llu elapsed_s=%.0f live_silence_s=%.0f foreground=%d reason=%@ action=disconnect_without_ack_or_abort_preserve_prefix_restore_live",
+            generation,
+            now.timeIntervalSince(startedAt),
+            liveSilence,
+            foreground ? 1 : 0,
+            reason
+        )
+        connectedHistoricalSliceTask?.cancel()
+        connectedHistoricalSliceTask = nil
+        connectedHistoricalSliceGeneration = nil
+        connectedHistoricalSliceStartedAt = nil
+        if let current = peripheral,
+           current.state == .connected {
+            cancelPeripheralConnection(
+                current,
+                reason: "history_connected_slice_live_silence"
+            )
+        } else {
+            interruptOfflineHistoricalSyncForTransportLoss(
+                reason: "history_connected_slice_live_silence"
+            )
+        }
+        return true
+    }
+
     /// A short whole-drain deadline truncated healthy physical WHOOP transfers.
     /// Watch the absence of progress instead: active data,
     /// persistence, fsync and ACK callbacks may keep a large asynchronous drain
@@ -10988,6 +11143,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historyClockRef = nil
         historyRealtimeStopRequestedGeneration = nil
         historyRealtimeStopCompletedGeneration = nil
+        connectedHistoricalSliceTask?.cancel()
+        connectedHistoricalSliceTask = nil
+        connectedHistoricalSliceGeneration = nil
+        connectedHistoricalSliceStartedAt = nil
         endOfflineHistoricalSyncBackgroundLease(status: "terminal_\(reason)")
         historyInitSweepCommands.removeAll()
         historySkipDataRangeRequest = false
@@ -16190,6 +16349,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         proprietaryNotifyFallbackTask?.cancel()
         rangeLossBackfillTask?.cancel()
         offlineHistoricalSyncTimeoutTask?.cancel()
+        connectedHistoricalSliceTask?.cancel()
+        connectedHistoricalSliceTask = nil
+        connectedHistoricalSliceGeneration = nil
+        connectedHistoricalSliceStartedAt = nil
         passiveR10FirstFrameTask?.cancel()
         stepCalibrationMotionPreparationTask?.cancel()
         cancelTrailingActiveJournalCheckpoint()
@@ -26142,6 +26305,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 Date().timeIntervalSince1970,
                 forKey: OfflineSyncDefaults.handshakeAt
             )
+            // Arm from the first real served frame, not request admission.
+            // A fresh-owner cutover starts while the peripheral is temporarily
+            // disconnected, so admission-time `connected` state is not a
+            // reliable classifier. Every production drain must yield if it
+            // starves live HR; attended Gate 2 and selector research retain
+            // their explicit full-drain behavior.
+            if !gate2FullDrainProofEnabled && !historySelectorSweepEnabled {
+                armConnectedHistoricalSliceIfNeeded(
+                    generation: generation,
+                    reason: offlineHistoricalSyncReason,
+                    connectedChunkedBackfill: true
+                )
+            }
             AtriaDebugLog("ATRIADBG historyServe status=first_frame generation=%llu action=continue_durable_drain",
                           generation)
         }
@@ -26164,6 +26340,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
         }
         scheduleHistoricalTransportEventDrain()
+        _ = releaseConnectedHistoricalSliceIfNeeded(
+            generation: generation,
+            reason: offlineHistoricalSyncReason,
+            now: Date()
+        )
     }
 
     private func scheduleHistoricalTransportEventDrain() {

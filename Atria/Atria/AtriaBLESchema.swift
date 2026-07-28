@@ -335,6 +335,16 @@ extension AtriaBLEManager {
             "atria.offlineSync.lastDrainAttemptYieldedRows.v1"
         static let backgroundLeaseStatus = "atria.offlineSync.backgroundLeaseStatus.v1"
         static let backgroundLeaseAt = "atria.offlineSync.backgroundLeaseAt.v1"
+        /// A connected history serve may continue making archive progress
+        /// after standard 2A37 has gone silent. Bound that ownership epoch,
+        /// preserve its durable prefix, and give live HR a cooldown before a
+        /// later background slice retries.
+        static let connectedSliceStatus =
+            "atria.offlineSync.connectedSliceStatus.v1"
+        static let connectedSliceAt =
+            "atria.offlineSync.connectedSliceAt.v1"
+        static let connectedSliceCooldownUntil =
+            "atria.offlineSync.connectedSliceCooldownUntil.v1"
         static let handshakeStatus = "atria.offlineSync.handshakeStatus.v1"
         static let handshakeAt = "atria.offlineSync.handshakeAt.v1"
         static let lastWriteErrorDomain = "atria.offlineSync.lastWriteErrorDomain.v1"
