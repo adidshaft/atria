@@ -1186,6 +1186,7 @@ struct AtriaTodayScreen: View {
                                            hrvValue: "58",
                                            hrvDetail: "personal baseline",
                                            hrvNarrative: "Debug fixture: strain target state is fixed for visual proof.",
+                                           stressLevel: .low,
                                            stressValue: "1/3",
                                            stressDetail: "steady",
                                            stressNarrative: "Debug fixture stress stays neutral while strain target state changes.",

@@ -8187,6 +8187,7 @@ final class AtriaHomeModel {
         let hrvValue: String
         let hrvDetail: String
         let hrvNarrative: String
+        let stressLevel: AtriaStressLevel?
         let stressValue: String
         let stressDetail: String
         let stressNarrative: String
@@ -8292,6 +8293,7 @@ final class AtriaHomeModel {
                 && lhs.hrvValue == rhs.hrvValue
                 && lhs.hrvDetail == rhs.hrvDetail
                 && lhs.hrvNarrative == rhs.hrvNarrative
+                && lhs.stressLevel == rhs.stressLevel
                 && lhs.stressValue == rhs.stressValue
                 && lhs.stressDetail == rhs.stressDetail
                 && lhs.stressNarrative == rhs.stressNarrative
@@ -10045,6 +10047,7 @@ final class AtriaHomeModel {
                             hrvValue: deferredDetails?.hrvValue ?? fallbackHrv.value,
                             hrvDetail: deferredDetails?.hrvDetail ?? fallbackHrv.detail,
                             hrvNarrative: deferredDetails?.hrvNarrative ?? fallbackHrv.narrative,
+                            stressLevel: stress.level,
                             stressValue: stress.value,
                             stressDetail: stress.detail,
                             stressNarrative: stress.narrative,
@@ -10145,6 +10148,7 @@ final class AtriaHomeModel {
                             hrvValue: night.hrvText,
                             hrvDetail: "personal baseline",
                             hrvNarrative: "Debug fixture: pending sleep uses the normal recovery model before confirmation.",
+                            stressLevel: .calm,
                             stressValue: "0/3",
                             stressDetail: "personal baseline",
                             stressNarrative: "Debug fixture stress is neutral while provisional recovery is shown.",
@@ -10340,6 +10344,7 @@ final class AtriaHomeModel {
                             hrvValue: fallbackHrv.value,
                             hrvDetail: fallbackHrv.detail,
                             hrvNarrative: fallbackHrv.narrative,
+                            stressLevel: nil,
                             // Standby/reconnecting snapshot: deterministic
                             // no-value token like every other metric value.
                             stressValue: AtriaCompactMetricPresentation.noValue,

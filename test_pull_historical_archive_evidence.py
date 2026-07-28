@@ -134,6 +134,17 @@ exit 2
 
 
 class PullHistoricalArchiveEvidenceTests(unittest.TestCase):
+    def test_runtime_snapshots_reuse_identical_physical_storage(self):
+        source = PULL.read_text(encoding="utf-8")
+        self.assertIn(
+            'deduplicate_archive_file "$evidence_dir/sessions.json" "sessions"',
+            source,
+        )
+        self.assertIn(
+            'deduplicate_archive_file "$evidence_dir/sessions-cold.json" "sessions_cold"',
+            source,
+        )
+
     def test_runtime_pull_accepts_only_complete_fresh_segment_chain(self):
         with tempfile.TemporaryDirectory() as directory:
             first = active_journal_segment(7, 0, 0, sample_count=2, rr_count=2)

@@ -1939,9 +1939,10 @@ class HandoffStaticChecks(unittest.TestCase):
             # longer read anywhere -- Data/backfill status now surfaces via
             # onOpenCollection instead of its own glance card. Not re-adding it.
             "AtriaGlanceMetricCard(title: \"Sleep eff\"",
-            # 2026-07-06: not-ready word standardized "Building" -> "Learning".
-            # 2026-07-12: glance sleep metrics are anchored to main sleep.
-            "value: currentMainSleep?.sleepEfficiencyText ?? \"Learning\"",
+            # Glance values use the shared no-value token; the reason belongs
+            # on the detail line.
+            "value: currentMainSleep?.sleepEfficiencyText",
+            "?? AtriaCompactMetricPresentation.noValue",
             "Duration-based",
             # 2026-07-12: accessibility copy follows the main-night metric.
             "accessibilityDetail: currentMainSleep?.sleepEfficiency == nil",
@@ -2006,7 +2007,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "snapshot.sleepConsistencyText",
             "snapshot.sleepDebtText(goalHours: sleepGoalHours)",
             "AtriaGlanceMetricCard(title: \"Resp rate\"",
-            "value: currentMainSleep?.respiratoryRateText ?? \"Learning\"",
+            "value: currentMainSleep?.respiratoryRateText",
+            "?? AtriaCompactMetricPresentation.noValue",
             "detail: currentMainSleep?.respiratoryRate == nil",
             "? \"Needs qualified sleep\" : \"Early\"",
             "accessibilityDetail: currentMainSleep?.respiratoryRate == nil",
@@ -8212,7 +8214,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "never core temperature",
             "Experimental, local, and not medical advice. SpO2 and temperature are not written to HealthKit.",
             "targetMetric: nil",
-            "footnote: \"Sleep-only estimate; needs comparison data.\"",
+            "footnote: respiratory.detail",
+            "AtriaExperimentalRespiratoryRatePresentation.resolve(",
             "Skin temperature is only a sleep-baseline change.",
         ]:
             assert_contains(self, collection, needle)
@@ -10249,8 +10252,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "value: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable",
             "AtriaExperimentalSensorCopy.skinTemperatureFootnote(",
             "AtriaMetricTile(label: \"Resp rate\"",
+            "footnote: respiratory.detail",
             "AtriaMetricTile(label: \"Strap steps\"",
-            "Sleep-only estimate; needs comparison data.",
+            "AtriaExperimentalRespiratoryRatePresentation.resolve(",
             "Rows show evidence counts until checked. Skin temperature is only a sleep-baseline change.",
             "private struct AtriaResearchSignalInfoSheet: View",
             "@Environment(\\.dismiss) private var dismiss",

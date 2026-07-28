@@ -77,6 +77,7 @@ struct AtriaStressState: Equatable {
 /// second stress algorithm or presenting a numeric value while the canonical
 /// monitor is calibrating, warming up, asleep, active, or disconnected.
 struct AtriaStressPresentation: Equatable {
+    let level: AtriaStressLevel?
     let value: String
     let detail: String
     let narrative: String
@@ -106,7 +107,8 @@ struct AtriaStressPresentation: Equatable {
             detail = "Reconnect strap for a live read"
             narrative = "Stress is unavailable until live strap contact returns."
         }
-        return Self(value: state.level?.title ?? state.label,
+        return Self(level: state.level,
+                    value: state.level?.title ?? state.label,
                     detail: detail,
                     narrative: narrative)
     }

@@ -62,6 +62,17 @@ enum AtriaOverviewTrendPresentation {
     }
 }
 
+/// Pure presentation policy for Overview metric cards. The stress tint follows
+/// the canonical scored level rather than parsing display copy, while the RHR
+/// qualifier names the wake-to-wake measurement actually shown by HeroSnapshot.
+enum AtriaOverviewMetricPresentation {
+    static let currentCycleRHRDetail = "Current cycle"
+
+    static func stressTint(level: AtriaStressLevel?) -> Color {
+        level?.tint ?? .secondary
+    }
+}
+
 fileprivate struct AtriaGlanceGridSize: Equatable {
     let rows: Int
     let columns: Int
@@ -3933,19 +3944,22 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             sleepHistoryCard
         case .sleepEfficiency:
             AtriaGlanceMetricCard(title: "Sleep eff",
-                                  value: currentMainSleep?.sleepEfficiencyText ?? "Learning",
+                                  value: currentMainSleep?.sleepEfficiencyText
+                                    ?? AtriaCompactMetricPresentation.noValue,
                                   detail: currentMainSleep?.sleepEfficiency == nil ? "Needs time in bed" : "Duration-based",
                                   systemImage: metric.systemImage,
-                                  tint: sleepEfficiencyZone?.tint ?? (currentMainSleep?.sleepEfficiency == nil ? .orange : .cyan),
+                                  tint: sleepEfficiencyZone?.tint
+                                    ?? (currentMainSleep?.sleepEfficiency == nil ? .secondary : .cyan),
                                   zone: sleepEfficiencyZone,
                                   accessibilityDetail: currentMainSleep?.sleepEfficiency == nil
                                     ? "Sleep efficiency is building from saved sleep duration."
-                                    : "Sleep efficiency duration-based estimate \(currentMainSleep?.sleepEfficiencyText ?? "Learning").",
+                                    : "Sleep efficiency duration-based estimate \(currentMainSleep?.sleepEfficiencyText ?? AtriaCompactMetricPresentation.noValue).",
                                   calibratingDay: sleepEfficiencyCalibratingDay)
         case .sleepPerformance:
             detailButton(.sleepPerformance) {
                 AtriaGlanceMetricCard(title: "Sleep perf",
-                                      value: currentSleepPerformancePercent.map { "\($0)%" } ?? "Learning",
+                                      value: currentSleepPerformancePercent.map { "\($0)%" }
+                                        ?? AtriaCompactMetricPresentation.noValue,
                                       detail: currentSleepPerformancePercent == nil
                                         ? "Save sleep to score"
                                         : "of need",
@@ -3957,7 +3971,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             detailButton(.restingHeartRate) {
                 AtriaGlanceMetricCard(title: "RHR",
                                       value: restingCalibratingValue ?? metricDisplayValue(hero.restingHeartRateText),
-                                      detail: restingCalibratingValue != nil ? calibratingProgressDetail(samples: restingBaselineSamples) : "Baseline",
+                                      detail: restingCalibratingValue != nil
+                                        ? calibratingProgressDetail(samples: restingBaselineSamples)
+                                        : AtriaOverviewMetricPresentation.currentCycleRHRDetail,
                                       systemImage: metric.systemImage,
                                       tint: (restingCalibratingValue != nil ? nil : restingHeartRateZone)?.tint ?? Metrics.electricRHR,
                                       sparklineValues: dailyMetricSparklines.restingHeartRate,
@@ -3968,11 +3984,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             }
         case .respiratoryRate:
             AtriaGlanceMetricCard(title: "Resp rate",
-                                  value: currentMainSleep?.respiratoryRateText ?? "Learning",
+                                  value: currentMainSleep?.respiratoryRateText
+                                    ?? AtriaCompactMetricPresentation.noValue,
                                   detail: currentMainSleep?.respiratoryRate == nil
                                     ? "Needs qualified sleep" : "Early",
                                   systemImage: metric.systemImage,
-                                  tint: respiratoryRateZone?.tint ?? (currentMainSleep?.respiratoryRate == nil ? .orange : Metrics.electricRespiratory),
+                                  tint: respiratoryRateZone?.tint
+                                    ?? (currentMainSleep?.respiratoryRate == nil
+                                        ? .secondary
+                                        : Metrics.electricRespiratory),
                                   zone: respiratoryRateZone,
                                   accessibilityDetail: currentMainSleep?.respiratoryRate == nil
                                     ? "Respiratory rate needs qualified sleep evidence."
@@ -4181,11 +4201,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var stressTint: Color {
-        if hero.stressValue == "Learning" { return .orange }
-        if hero.stressValue.hasPrefix("0") { return .green }
-        if hero.stressValue.hasPrefix("1") { return .mint }
-        if hero.stressValue.hasPrefix("2") { return .orange }
-        return .red
+        AtriaOverviewMetricPresentation.stressTint(level: hero.stressLevel)
     }
 
     private var strainCompareDetailText: String {

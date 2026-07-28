@@ -200,7 +200,7 @@ copy_first_from_container() {
 }
 
 # Preserve every evidence path while avoiding another physical copy when an
-# archive artifact is byte-identical to one in an earlier sibling pull. The
+# immutable artifact is byte-identical to one in an earlier sibling pull. The
 # replacement is atomic: create the hard link first, then rename it over the
 # newly pulled file. A failed link leaves the fresh copy untouched.
 deduplicate_archive_file() {
@@ -328,6 +328,8 @@ copy_from_container "Documents/atria-installed-app-provenance.json" \
   "installed_app_provenance" || true
 copy_from_container "Documents/sessions.json" "$evidence_dir/sessions.json" "sessions" || true
 copy_from_container "Documents/sessions-cold.json" "$evidence_dir/sessions-cold.json" "sessions_cold" || true
+deduplicate_archive_file "$evidence_dir/sessions.json" "sessions"
+deduplicate_archive_file "$evidence_dir/sessions-cold.json" "sessions_cold"
 copy_from_container "Documents/daily-rollups.json" "$evidence_dir/daily-rollups.json" "daily_rollups" || true
 copy_from_container "Documents/daily-metrics.json" "$evidence_dir/daily-metrics.json" "daily_metrics" || true
 copy_from_container "Documents/confirmed-workouts.json" "$evidence_dir/confirmed-workouts.json" "confirmed_workouts" || true
