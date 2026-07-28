@@ -73,6 +73,43 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
                                               historicalMotionPolicy: .boundedRecent)
     }
 
+    func testDelayedTinyMorningFragmentCannotEraseCompletedMainSleep() throws {
+        let first = denseHRRRSession(
+            start: date(2032, 1, 2, 0, 45, timeZoneIdentifier: "Asia/Kolkata"),
+            end: date(2032, 1, 2, 3, 4, timeZoneIdentifier: "Asia/Kolkata"),
+            bpm: 70,
+            eventTimeZoneIdentifier: "Asia/Kolkata"
+        )
+        let second = denseHRRRSession(
+            start: date(2032, 1, 2, 3, 4, 1, timeZoneIdentifier: "Asia/Kolkata"),
+            end: date(2032, 1, 2, 4, 23, timeZoneIdentifier: "Asia/Kolkata"),
+            bpm: 69,
+            eventTimeZoneIdentifier: "Asia/Kolkata"
+        )
+        let delayedTinyFragment = denseHRRRSession(
+            start: date(2032, 1, 2, 5, 58, timeZoneIdentifier: "Asia/Kolkata"),
+            end: date(2032, 1, 2, 6, 4, timeZoneIdentifier: "Asia/Kolkata"),
+            bpm: 70,
+            eventTimeZoneIdentifier: "Asia/Kolkata"
+        )
+        let laterQuietFragment = denseHRRRSession(
+            start: date(2032, 1, 2, 6, 17, timeZoneIdentifier: "Asia/Kolkata"),
+            end: date(2032, 1, 2, 6, 39, timeZoneIdentifier: "Asia/Kolkata"),
+            bpm: 61,
+            eventTimeZoneIdentifier: "Asia/Kolkata"
+        )
+
+        let result = candidates([first, second, delayedTinyFragment, laterQuietFragment], rest: 60)
+        let mainSleep = try XCTUnwrap(result.first)
+
+        XCTAssertEqual(result.count, 1)
+        XCTAssertEqual(mainSleep.start, first.start)
+        XCTAssertEqual(mainSleep.end, second.end)
+        XCTAssertEqual(mainSleep.sessions, 2)
+        XCTAssertEqual(mainSleep.duration, first.duration + second.duration + 1, accuracy: 1)
+        XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(mainSleep))
+    }
+
     private var july26ReportedSleepSessionsURL: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

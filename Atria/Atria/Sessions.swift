@@ -20196,7 +20196,12 @@ final class SessionStore: ObservableObject {
         // broad review gate, but not a credible sleep signature while awake.
         // Keep the looser path available when strap stillness is actually
         // validated; this HR-only exception must fail closed instead.
-        guard candidate.medianHR <= candidate.baselineRestingHR + 8,
+        // The candidate builder already bounds degraded review physiology at
+        // resting+10 median. Keep that same robust median allowance here while
+        // retaining the tighter P90 guard: the July 28 physical sleep was
+        // median +10 / P90 +17, whereas the disproven July 23 quiet-awake
+        // window still fails decisively at P90 +21.
+        guard candidate.medianHR <= candidate.baselineRestingHR + 10,
               candidate.hrP90 <= candidate.baselineRestingHR + 18,
               candidate.elevatedSampleFraction < 0.10 else { return false }
         // Wake/false-night guard: an active evening cannot masquerade as sleep just
@@ -28476,6 +28481,18 @@ final class SessionStore: ObservableObject {
             || (duration < AggregateSleepCandidate.minimumAutoConfirmMainSleepDuration
                 && gap <= 60 * 60)
         guard !likelyResumedMainSleep else { return false }
+        // A completed main-sleep-sized block must not disappear because a
+        // tiny low-HR journal arrives much later in the morning. The July 28
+        // physical record contained 3h38 of dense sleep, then a six-minute
+        // fragment after a 95-minute wake gap; clustering that fragment into
+        // the night made the otherwise valid review candidate fail its
+        // continuity gate. Split only sub-nap-length tails beyond the same
+        // 90-minute continuity ceiling used by the degraded-review gate.
+        // A meaningful resumed sleep remains eligible for clustering/review.
+        if gap > 90 * 60,
+           next.duration < AggregateSleepCandidate.napMinimumDuration {
+            return true
+        }
         let nextEventCalendar = EventCivilTime.eventCalendar(timeZoneIdentifier: next.eventTimeZoneIdentifier,
                                                              fallback: calendar)
         let nextStartHour = nextEventCalendar.component(.hour, from: next.start)

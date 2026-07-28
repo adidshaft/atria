@@ -468,6 +468,7 @@ final class AtriaStressMonitorStore: ObservableObject {
                 hrvSnapshot: HRVSnapshot?,
                 baseline: PersonalBaseline,
                 restingMaxHR: (rest: Int, max: Int),
+                hasActiveSleepEvidence: Bool = false,
                 now: Date = Date()) {
 
         if !hasContact {
@@ -521,7 +522,12 @@ final class AtriaStressMonitorStore: ObservableObject {
                                            restingMaxHR: restingMaxHR,
                                            workoutActive: isRecording || cooldownActive,
                                            zoneIndex: zoneIndex,
-                                           inSleepWindow: AtriaResearchUploadQueue.isWithinSleepWindow(now: now),
+                                           // The learned duty-cycle window is a
+                                           // radio/upload schedule, not proof that
+                                           // the wearer is asleep. Only an actual
+                                           // active-sleep authority may suppress
+                                           // the live stress reading.
+                                           inSleepWindow: hasActiveSleepEvidence,
                                            hasContact: hasContact,
                                            contactAgeSeconds: contactAge,
                                            now: now)

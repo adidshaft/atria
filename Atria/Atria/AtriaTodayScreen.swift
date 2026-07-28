@@ -2571,47 +2571,18 @@ private struct AtriaTodayLiveStatusStrip: View, Equatable {
             // this pill could only ever read "Learning" — repeating, less
             // precisely and less actionably, what the Live pill beside it
             // already says ("Bluetooth off", "Disconnected"), and implying a
-            // calibration that is not happening. It appears when there is a
-            // zone to show, the way the battery pill already behaves.
+            // calibration that is not happening. It appears only when there is
+            // a zone to show.
             if let heartRateZone = pulse.heartRateZone {
                 AtriaTodayLivePill(title: "Zone",
                                    value: heartRateZone.shortLabel,
                                    systemImage: "waveform.path.ecg",
                                    tint: heartRateZone.tint)
             }
-            if live.batteryLevel >= 0 {
-                AtriaTodayLivePill(title: "Battery",
-                                   value: batteryPillText,
-                                   systemImage: live.batterySymbol,
-                                   tint: batteryPillTint)
-            }
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Live status. \(pulse.heartRate > 0 ? "\(pulse.heartRate) beats per minute" : live.status.rawValue).\(pulse.heartRateZone.map { " Zone \($0.shortLabel)." } ?? "")\(batteryAccessibilitySuffix)")
-    }
-
-    /// Power state lives in the battery SF Symbol, keeping this compact value
-    /// to one line. VoiceOver still receives the detailed charging language
-    /// through `batteryAccessibilitySuffix` below.
-    private var batteryPillText: String {
-        guard live.batteryLevel >= 0 else { return "—" }
-        if live.batteryShowsPowered || live.batteryChargeStatus == .full {
-            return live.batteryText
-        }
-        if live.batteryLevel <= 20 { return "\(live.batteryText) \u{00b7} Low" }
-        return live.batteryText
-    }
-
-    private var batteryPillTint: Color {
-        guard live.batteryLevel >= 0 else { return .secondary }
-        if live.batteryShowsPowered { return .green }
-        if live.batteryLevel <= 20 { return .orange }
-        return .blue
-    }
-
-    private var batteryAccessibilitySuffix: String {
-        live.batteryLevel >= 0 ? " \(live.batteryAccessibilityText)" : ""
+        .accessibilityLabel("Live status. \(pulse.heartRate > 0 ? "\(pulse.heartRate) beats per minute" : live.status.rawValue).\(pulse.heartRateZone.map { " Zone \($0.shortLabel)." } ?? "")")
     }
 
     private var liveStatusText: String {

@@ -2,6 +2,41 @@ import XCTest
 @testable import Atria
 
 final class AtriaStressMonitorTests: XCTestCase {
+    @MainActor
+    func testLiveStoreRequiresExplicitActiveSleepEvidenceBeforeShowingAsleep() {
+        let baseline = makeBaseline(restingMean: 60, restingSD: 4)
+
+        let awakeStore = AtriaStressMonitorStore()
+        awakeStore.update(
+            heartRate: 64,
+            hasContact: true,
+            recentRRSamples: [],
+            isRecording: false,
+            zoneIndex: 0,
+            hrvSnapshot: nil,
+            baseline: baseline,
+            restingMaxHR: restingMaxHR,
+            hasActiveSleepEvidence: false,
+            now: now
+        )
+        XCTAssertNotEqual(awakeStore.state.kind, .asleep)
+
+        let sleepingStore = AtriaStressMonitorStore()
+        sleepingStore.update(
+            heartRate: 64,
+            hasContact: true,
+            recentRRSamples: [],
+            isRecording: false,
+            zoneIndex: 0,
+            hrvSnapshot: nil,
+            baseline: baseline,
+            restingMaxHR: restingMaxHR,
+            hasActiveSleepEvidence: true,
+            now: now
+        )
+        XCTAssertEqual(sleepingStore.state.kind, .asleep)
+    }
+
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
     private let restingMaxHR: (rest: Int, max: Int) = (rest: 60, max: 190)
 

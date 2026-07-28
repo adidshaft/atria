@@ -1378,6 +1378,12 @@ private struct AtriaHealthStressSection: View {
                                   baseline: baseline,
                                   restingMaxHR: (rest: baseline.restingInt ?? 60,
                                                 max: maxHeartRate),
+                                  // Vitals currently has no authoritative
+                                  // in-progress sleep interval. The learned
+                                  // overnight duty-cycle window must not be
+                                  // presented as "Asleep" while the wearer is
+                                  // actively viewing the app.
+                                  hasActiveSleepEvidence: false,
                                   now: now)
         breathworkStressStore.update(
             AtriaBreathworkStressReading(state: stressMonitorStore.state,
