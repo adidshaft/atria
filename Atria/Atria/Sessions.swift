@@ -29635,14 +29635,14 @@ final class SessionStore: ObservableObject {
         default:
             return false
         }
-        switch (metric.strain, rollup.strain) {
-        case (nil, nil):
-            return true
-        case (.some(let metricStrain), .some(let rollupStrain)):
-            return abs(metricStrain - rollupStrain) < 0.001
-        default:
-            return false
-        }
+        // Day strain is intentionally mutable while the user is awake. The
+        // metric and rollup files can be persisted a checkpoint apart, while
+        // the widget recomputes current-cycle strain from the already-loaded HR
+        // sessions. Requiring exact equality here held an immutable 39%
+        // recovery behind 6.38-vs-6.34 strain forever. Validate shape only;
+        // sleep/recovery/vitals above remain exact.
+        let strainValues = [metric.strain, rollup.strain].compactMap { $0 }
+        return strainValues.allSatisfy { $0.isFinite && $0 >= 0 }
     }
 
     private func requestDeferredLaunchCardSettlement(

@@ -110,6 +110,23 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
             rollup: settled,
             calendar: calendar
         ))
+        let laterStrainRollup = DailyRollupStoreEntry(
+            day: day,
+            recovery: 71,
+            lnRMSSD: sleep.hrv.map { log(Double($0)) },
+            rhr: sleep.restingHR,
+            sleepSeconds: sleep.duration,
+            sleepPerformance: 93,
+            bedtimeMinutes: 1_320,
+            strain: 3.47,
+            calendar: calendar
+        )
+        XCTAssertTrue(SessionStore.deferredLaunchCardSettlementMatches(
+            sleep: sleep,
+            metric: metric,
+            rollup: laterStrainRollup,
+            calendar: calendar
+        ), "live day-strain drift must not hold an immutable recovery widget")
 
         let grey = DailyRollupStoreEntry(day: day, calendar: calendar)
         XCTAssertFalse(SessionStore.deferredLaunchCardSettlementMatches(
