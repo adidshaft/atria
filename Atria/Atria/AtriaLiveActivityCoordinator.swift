@@ -271,6 +271,8 @@ final class AtriaLiveActivityCoordinator {
     private var pendingActivityUpdateTask: Task<Void, Never>?
     private var activityWriteTask: Task<Void, Never>?
     private var activityEndTask: Task<Void, Never>?
+    private var terminalActivityBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var activeActivityWriteBackgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var queuedActivityUpdate: QueuedActivityUpdate?
     private var queuedActivityBackgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var hasReconciledExistingActivity = false
@@ -334,14 +336,18 @@ final class AtriaLiveActivityCoordinator {
             let finalSnapshot = lastSnapshot ?? snapshot
             isEndingActivity = true
             let predecessor = activityWriteTask
-            let terminalBackgroundTask = UIApplication.shared.beginBackgroundTask(
+            endTerminalActivityBackgroundTaskIfNeeded()
+            terminalActivityBackgroundTask = UIApplication.shared.beginBackgroundTask(
                 withName: "Atria live workout terminal"
-            )
+            ) { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.activityEndTask?.cancel()
+                    self?.endTerminalActivityBackgroundTaskIfNeeded()
+                }
+            }
             activityEndTask = Task { @MainActor in
                 defer {
-                    if terminalBackgroundTask != .invalid {
-                        UIApplication.shared.endBackgroundTask(terminalBackgroundTask)
-                    }
+                    endTerminalActivityBackgroundTaskIfNeeded()
                 }
                 if let predecessor { await predecessor.value }
                 await endActivity(with: finalSnapshot)
@@ -552,7 +558,11 @@ final class AtriaLiveActivityCoordinator {
                 // snapshot from ever reaching ActivityKit.
                 queuedActivityBackgroundTask = UIApplication.shared.beginBackgroundTask(
                     withName: "Atria live workout snapshot"
-                )
+                ) { [weak self] in
+                    MainActor.assumeIsolated {
+                        self?.endQueuedActivityBackgroundTaskIfNeeded()
+                    }
+                }
             }
             return
         }
@@ -566,14 +576,20 @@ final class AtriaLiveActivityCoordinator {
             backgroundTask = preacquiredBackgroundTask
         } else {
             backgroundTask = protectsBackgroundWrite
-                ? UIApplication.shared.beginBackgroundTask(withName: "Atria live workout snapshot")
+                ? UIApplication.shared.beginBackgroundTask(
+                    withName: "Atria live workout snapshot"
+                ) { [weak self] in
+                    MainActor.assumeIsolated {
+                        self?.activityWriteTask?.cancel()
+                        self?.endActiveActivityWriteBackgroundTaskIfNeeded()
+                    }
+                }
                 : .invalid
         }
+        activeActivityWriteBackgroundTask = backgroundTask
         activityWriteTask = Task { @MainActor in
             defer {
-                if backgroundTask != .invalid {
-                    UIApplication.shared.endBackgroundTask(backgroundTask)
-                }
+                endActiveActivityWriteBackgroundTaskIfNeeded()
             }
             if snapshot.isRecording, !isEndingActivity {
                 await updateActivity(with: snapshot)
@@ -600,6 +616,18 @@ final class AtriaLiveActivityCoordinator {
         guard queuedActivityBackgroundTask != .invalid else { return }
         UIApplication.shared.endBackgroundTask(queuedActivityBackgroundTask)
         queuedActivityBackgroundTask = .invalid
+    }
+
+    private func endActiveActivityWriteBackgroundTaskIfNeeded() {
+        guard activeActivityWriteBackgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(activeActivityWriteBackgroundTask)
+        activeActivityWriteBackgroundTask = .invalid
+    }
+
+    private func endTerminalActivityBackgroundTaskIfNeeded() {
+        guard terminalActivityBackgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(terminalActivityBackgroundTask)
+        terminalActivityBackgroundTask = .invalid
     }
 
     private func staleDate(for snapshot: Snapshot) -> Date {

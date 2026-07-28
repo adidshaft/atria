@@ -85,6 +85,25 @@ extension AtriaBLEManager {
         }
     }
 
+    nonisolated static func shouldSynchronouslyReconnectAfterFailedConnect(
+        disposition: BackgroundReconnectFence.Disposition,
+        failedPeripheralIsSaved: Bool,
+        peripheralIsDisconnected: Bool
+    ) -> Bool {
+        disposition == .reconnectRealtime
+            && failedPeripheralIsSaved
+            && peripheralIsDisconnected
+    }
+
+    nonisolated static func acceptsFailedConnectCallback(
+        trackedPeripheralIdentifier: UUID?,
+        failedPeripheralIdentifier: UUID,
+        synchronousReconnectIssued: Bool
+    ) -> Bool {
+        synchronousReconnectIssued
+            || trackedPeripheralIdentifier == failedPeripheralIdentifier
+    }
+
     enum AutomaticRecoveryIntent: Int, Equatable {
         case repairPipeline
         case rebuildConnection

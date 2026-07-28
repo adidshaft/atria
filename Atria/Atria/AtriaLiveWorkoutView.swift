@@ -1212,12 +1212,12 @@ final class AtriaPendingWorkoutIntentStore: @unchecked Sendable {
         // Cancel only work that has not begun.  An in-flight atomic progress
         // write remains valid recovery evidence and is allowed to complete;
         // terminal is the very next meaningful write after it.
-        progressSchedulingLock.lock()
-        if let queued = queuedProgressID {
-            cancelledProgressIDs.insert(queued)
-            queuedProgressID = nil
+        progressSchedulingLock.withLock {
+            if let queued = queuedProgressID {
+                cancelledProgressIDs.insert(queued)
+                queuedProgressID = nil
+            }
         }
-        progressSchedulingLock.unlock()
         return await performIO {
             let beganAt = ProcessInfo.processInfo.systemUptime
             let result = self.persistTerminalLocked(requested)

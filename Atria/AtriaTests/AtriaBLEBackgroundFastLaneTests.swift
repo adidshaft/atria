@@ -2,6 +2,104 @@ import XCTest
 @testable import Atria
 
 final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
+    func testCallbackPolicyPublishesOneCoherentDiscoverySnapshot() {
+        let state = AtriaBLECallbackPolicyState(standardHROnly: true)
+        XCTAssertEqual(
+            state.snapshot(),
+            .init(
+                standardHROnly: true,
+                onboardingPairingPreflight: false,
+                historySkipsDataRange: false,
+                protectedProfileIsEmpty: true,
+                protectedStandardDiscoveryStarted: false
+            )
+        )
+
+        state.update {
+            $0.standardHROnly = false
+            $0.onboardingPairingPreflight = true
+            $0.historySkipsDataRange = true
+            $0.protectedProfileIsEmpty = false
+            $0.protectedStandardDiscoveryStarted = true
+        }
+
+        XCTAssertEqual(
+            state.snapshot(),
+            .init(
+                standardHROnly: false,
+                onboardingPairingPreflight: true,
+                historySkipsDataRange: true,
+                protectedProfileIsEmpty: false,
+                protectedStandardDiscoveryStarted: true
+            )
+        )
+    }
+
+    func testRestorationSelectsSavedPeripheralInsteadOfFirstEntry() {
+        let stale = UUID()
+        let saved = UUID()
+
+        XCTAssertEqual(
+            AtriaBLEManager.canonicalRestoredPeripheralIndex(
+                identifiers: [stale, saved],
+                savedPeripheralIdentifier: saved
+            ),
+            1
+        )
+        XCTAssertNil(
+            AtriaBLEManager.canonicalRestoredPeripheralIndex(
+                identifiers: [stale, saved],
+                savedPeripheralIdentifier: UUID()
+            )
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.canonicalRestoredPeripheralIndex(
+                identifiers: [saved],
+                savedPeripheralIdentifier: nil
+            ),
+            0
+        )
+        XCTAssertNil(
+            AtriaBLEManager.canonicalRestoredPeripheralIndex(
+                identifiers: [stale, saved],
+                savedPeripheralIdentifier: nil
+            )
+        )
+    }
+
+    func testFailedSavedConnectInstallsStandingReconnectBeforeMainActorBookkeeping() {
+        XCTAssertTrue(
+            AtriaBLEManager.shouldSynchronouslyReconnectAfterFailedConnect(
+                disposition: .reconnectRealtime,
+                failedPeripheralIsSaved: true,
+                peripheralIsDisconnected: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldSynchronouslyReconnectAfterFailedConnect(
+                disposition: .suppressHistoryOwner,
+                failedPeripheralIsSaved: true,
+                peripheralIsDisconnected: true
+            )
+        )
+        let failed = UUID()
+        XCTAssertTrue(
+            AtriaBLEManager.acceptsFailedConnectCallback(
+                trackedPeripheralIdentifier: nil,
+                failedPeripheralIdentifier: failed,
+                synchronousReconnectIssued: true
+            ),
+            "the callback must survive the pre-MainActor bookkeeping window"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.acceptsFailedConnectCallback(
+                trackedPeripheralIdentifier: UUID(),
+                failedPeripheralIdentifier: failed,
+                synchronousReconnectIssued: false
+            )
+        )
+    }
+
     func testUnexpectedDisconnectReconnectsButEveryAppOwnedCancelIsConsumedOnce() {
         let fence = AtriaBLEManager.BackgroundReconnectFence(markerMaximumAge: 30)
         let peripheralID = UUID()
