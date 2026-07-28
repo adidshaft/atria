@@ -10258,38 +10258,71 @@ private struct AtriaRecoveryScoreHero: View {
     /// neutral until there is.
     private var heroTint: Color { score == nil ? Color.secondary : tint }
 
+    /// Geometry is declared once instead of being spread across three literals
+    /// that did not agree. Previously the halo was 178pt (189pt at its 1.06
+    /// breathing peak) and both rings were unframed 14pt strokes filling the
+    /// ZStack, yet the container was pinned to 154x154 -- so the halo overflowed
+    /// ~17pt per side and each stroke's outer edge sat 3.5pt outside the frame.
+    /// The disc read as a muddy plate larger than, and unrelated to, the ring it
+    /// was supposed to sit behind, and it collided with the comparison chip.
+    ///
+    /// Now the ring is the outermost element (halo peak stays just inside its
+    /// outer edge, so it reads as a glow behind the arc rather than a plate
+    /// around it) and the container is sized to fit the largest child at its
+    /// animated maximum, so nothing clips.
+    private static let ringDiameter: CGFloat = 140
+    private static let ringLineWidth: CGFloat = 14
+    private static let haloDiameter: CGFloat = 142
+    /// ringDiameter + ringLineWidth = 154 outer edge, plus breathing room.
+    private static let heroDiameter: CGFloat = 178
+    /// Usable width inside the stroke, so a three-digit "100%" cannot run under
+    /// the ring the way it did at a fixed 42pt.
+    private static var centerContentWidth: CGFloat {
+        ringDiameter - ringLineWidth * 2 - 12
+    }
+
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 16) {
             ZStack {
                 Circle()
                     .fill(heroTint.opacity(haloExpanded ? 0.12 : 0.05))
-                    .frame(width: 178, height: 178)
+                    .frame(width: Self.haloDiameter, height: Self.haloDiameter)
                     .scaleEffect(reduceMotion ? 1 : (haloExpanded ? 1.06 : 0.94))
                     .shadow(color: heroTint.opacity(haloExpanded ? 0.28 : 0.12), radius: 18)
                     .animation(motionEnabled ? .easeInOut(duration: 2.8).repeatForever(autoreverses: true) : nil,
                                value: haloExpanded)
-                Circle().stroke(heroTint.opacity(0.14), lineWidth: 14)
+                Circle()
+                    .stroke(heroTint.opacity(0.14), lineWidth: Self.ringLineWidth)
+                    .frame(width: Self.ringDiameter, height: Self.ringDiameter)
                 if let score {
                     Circle()
                         .trim(from: 0,
                               to: ringRevealed ? min(max(score / 100, 0), 1) : 0)
-                        .stroke(tint, style: StrokeStyle(lineWidth: 14, lineCap: .round))
+                        .stroke(tint, style: StrokeStyle(lineWidth: Self.ringLineWidth, lineCap: .round))
                         .rotationEffect(.degrees(-90))
+                        .frame(width: Self.ringDiameter, height: Self.ringDiameter)
                         .shadow(color: tint.opacity(haloExpanded ? 0.38 : 0.16), radius: 9)
                         .animation(reduceMotion ? nil : .timingCurve(0.22, 1, 0.36, 1, duration: 2.6),
                                    value: ringRevealed)
                         .animation(motionEnabled ? .easeInOut(duration: 2.8).repeatForever(autoreverses: true) : nil,
                                    value: haloExpanded)
                 }
-                VStack(spacing: 1) {
+                VStack(spacing: 2) {
                     Text(score.map { "\(Int($0.rounded()))%" } ?? "--")
-                        .font(.system(size: 42, weight: .bold, design: .rounded))
+                        .font(.system(size: 40, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .contentTransition(reduceMotion ? .identity : .numericText())
-                    Text(state).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                    Text(state)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
                 }
+                .frame(maxWidth: Self.centerContentWidth)
             }
-            .frame(width: 154, height: 154)
+            .frame(width: Self.heroDiameter, height: Self.heroDiameter)
 
             if let baselineComparison {
                 Label(baselineComparison,
