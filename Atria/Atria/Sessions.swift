@@ -6438,6 +6438,7 @@ final class SessionStore: ObservableObject {
     )
     private var pendingWorkoutStepEvidenceWorkItem: DispatchWorkItem?
     private var workoutStepEvidenceGeneration = 0
+    private var currentCycleStepReceiptGeneration = 0
     private var pendingSleepReadinessRetry: Task<Void, Never>?
     private var pendingSleepSettlementRetry: Task<Void, Never>?
     /// Foreground sleep settlement reads and aggregates the growing live journal
@@ -6889,6 +6890,84 @@ final class SessionStore: ObservableObject {
                                                 history: snapshots.history,
                                                 sleep: snapshots.sleep,
                                                 completion: completion)
+        }
+    }
+
+    /// Publishes the current physiological cycle's strap-only step receipt
+    /// without waiting for the much broader recovered-history transaction.
+    ///
+    /// A verified 0x69 offload has already released BLE ownership before this
+    /// runs. The scan stays on the existing serial utility queue, and the
+    /// daily store posts the one lightweight Home/widget invalidation only
+    /// after its atomic receipt is durable.
+    private func refreshCurrentCycleStrapStepReceipt(reason: String) {
+        let identifiers =
+            AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers()
+        guard let strapIdentifier = identifiers.first else {
+            AtriaDebugLog(
+                "ATRIADBG whoop4_daily_steps status=receipt_refresh_skipped reason=%@ detail=missing_strap_identifier",
+                reason
+            )
+            return
+        }
+        currentCycleStepReceiptGeneration &+= 1
+        let generation = currentCycleStepReceiptGeneration
+        let now = Date()
+        let cycleStart = AtriaPhysiologicalCycle.current(
+            now: now,
+            confirmedSleeps: cachedConfirmedSleeps,
+            calendar: .current
+        ).start
+        let coverage = AtriaWhoop4MotionBankCoverageLedger.intervals(
+            intersecting: .init(start: cycleStart, end: now),
+            strapIdentifier: strapIdentifier,
+            now: now
+        )
+        guard !coverage.isEmpty else {
+            AtriaDebugLog(
+                "ATRIADBG whoop4_daily_steps status=receipt_refresh_skipped reason=%@ detail=missing_bank_coverage",
+                reason
+            )
+            return
+        }
+        Self.workoutStepEvidenceQueue.async {
+            let evidence = HistoricalArchive.motionTickDayEvidence(
+                start: cycleStart,
+                end: now,
+                bankCoverage: coverage,
+                strapIdentifier: strapIdentifier
+            )
+            guard let evidence else {
+                AtriaDebugLog(
+                    "ATRIADBG whoop4_daily_steps status=receipt_refresh_missing reason=%@ generation=%d coverage_intervals=%d",
+                    reason,
+                    generation,
+                    coverage.count
+                )
+                return
+            }
+            do {
+                let changed = try AtriaWhoop4MotionTickDailyStore.shared.save(
+                    evidence,
+                    strapIdentifier: strapIdentifier
+                )
+                AtriaDebugLog(
+                    "ATRIADBG whoop4_daily_steps status=receipt_refresh_complete reason=%@ generation=%d changed=%d steps=%d known_s=%d missing_s=%d",
+                    reason,
+                    generation,
+                    changed ? 1 : 0,
+                    evidence.steps,
+                    evidence.knownCoverageSeconds,
+                    evidence.missingCoverageSeconds
+                )
+            } catch {
+                AtriaDebugLog(
+                    "ATRIADBG whoop4_daily_steps status=receipt_save_failed reason=%@ generation=%d error=%@",
+                    reason,
+                    generation,
+                    error.localizedDescription
+                )
+            }
         }
     }
 
@@ -10968,10 +11047,13 @@ final class SessionStore: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                // This bounded refresh owns the durable daily receipt and the
-                // shared Home/widget publication. It never waits on BLE and
-                // cannot delay accepted live HR.
-                self?.refreshHistorySnapshotCache(deferred: true)
+                // Exact-gap recovery can deliberately defer the full history
+                // snapshot for hours. Daily strap steps are an independent,
+                // already-offloaded consumer and must not disappear behind
+                // that unrelated priority fence.
+                self?.refreshCurrentCycleStrapStepReceipt(
+                    reason: "verified_bank_offload"
+                )
             }
         }
         self.systemTimeZoneObserver = NotificationCenter.default.addObserver(forName: NSNotification.Name.NSSystemTimeZoneDidChange,
@@ -11020,6 +11102,9 @@ final class SessionStore: ObservableObject {
             guard let self else { return }
             self.scheduleConfirmedWorkoutStepEvidencePublication(
                 reason: "session_store_init_workout_evidence"
+            )
+            self.refreshCurrentCycleStrapStepReceipt(
+                reason: "session_store_init"
             )
         }
         refreshHistorySnapshotCache(deferred: true)
