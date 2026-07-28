@@ -824,4 +824,34 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(widget.contains("evidenceNote: metric.evidenceNote(entry.snapshot)"))
     }
 
+    func testWidgetFrozenRecoveryAtomicallyOverridesProvisionalProjection() throws {
+        let provisional = Metrics.RecoveryEstimate(
+            percent: 42,
+            confidence: .unverified,
+            usesHRV: false,
+            detail: "provisional live recompute",
+            contributors: []
+        )
+        let frozen = try XCTUnwrap(FrozenRecoverySummary(
+            estimate: Metrics.RecoveryEstimate(
+                percent: 39,
+                confidence: .personalBaseline,
+                usesHRV: true,
+                detail: "frozen morning recovery",
+                contributors: []
+            ),
+            scoredDay: Date(timeIntervalSince1970: 1_722_096_000)
+        ))
+
+        let resolved = WidgetSnapshotPublisher.canonicalRecovery(
+            displayed: provisional,
+            frozen: frozen
+        )
+
+        XCTAssertEqual(resolved.percent, 39)
+        XCTAssertEqual(resolved.confidence, .personalBaseline)
+        XCTAssertEqual(resolved.detail, "frozen morning recovery")
+        XCTAssertTrue(resolved.usesHRV)
+    }
+
 }
