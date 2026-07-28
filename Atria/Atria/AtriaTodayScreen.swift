@@ -2137,7 +2137,9 @@ struct AtriaTodayScreen: View {
             // not blame the strap when Atria has not validated its payload layout.
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: "\u{2014}",
+                                        // Last em dash in the app; the glance grid
+                                        // around it already speaks "--".
+                                        value: AtriaCompactMetricPresentation.noValue,
                                         detail: legendDetail("Decoder unavailable"),
                                         systemImage: metric.systemImage,
                                         tint: .secondary,
