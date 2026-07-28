@@ -267,6 +267,16 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
         let finishEnd = try XCTUnwrap(sessions.range(of: "private func continueDeferredLoadFollowUp",
                                                      range: finishStart.upperBound..<sessions.endIndex))
         let finish = String(sessions[finishStart.lowerBound..<finishEnd.lowerBound])
+        let historyInvalidation = try XCTUnwrap(finish.range(
+            of: "historySnapshotRevision &+= 1"
+        ))
+        let rollupInvalidation = try XCTUnwrap(finish.range(
+            of: "dailyRollupPreparationRevision &+= 1"
+        ))
+        let loadedSessions = try XCTUnwrap(finish.range(of: "sessions = merged"))
+        XCTAssertTrue(historyInvalidation.lowerBound < loadedSessions.lowerBound)
+        XCTAssertTrue(rollupInvalidation.lowerBound < loadedSessions.lowerBound,
+                      "pre-load empty history/rollup work must be stale before real sessions publish")
         let fence = try XCTUnwrap(finish.range(of: "deferredLaunchCardSettlementPending = true"))
         let loaded = try XCTUnwrap(finish.range(of: "self.hasCompletedDeferredSessionLoad = true"))
         let earlyDashboard = try XCTUnwrap(finish.range(of: "publishDashboardRevision()"))
