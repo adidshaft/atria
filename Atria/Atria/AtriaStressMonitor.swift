@@ -423,6 +423,9 @@ struct AtriaStressDistributionArchive: Codable, Equatable {
 @MainActor
 final class AtriaStressMonitorStore: ObservableObject {
     @Published private(set) var state: AtriaStressState = .noSignal
+    /// Clock of the most recent scored evaluation. Presentation surfaces use
+    /// this source clock; merely opening a screen must never renew freshness.
+    @Published private(set) var lastMeasuredAt: Date?
     /// Scored readings from this app session (thinned to ~1 per 30s, capped
     /// at 12h). In-memory only — the history chart shows real gaps for any
     /// stretch the strap wasn't read, never interpolation.
@@ -582,6 +585,7 @@ final class AtriaStressMonitorStore: ObservableObject {
             lastEmittedLevel = nil
             candidateLevel = nil
             candidateStreak = 0
+            lastMeasuredAt = nil
             if raw != state { state = raw }
             return
         }
@@ -628,6 +632,7 @@ final class AtriaStressMonitorStore: ObservableObject {
         if finalState != state {
             state = finalState
         }
+        lastMeasuredAt = now
         recordHistory(now: now)
     }
 }

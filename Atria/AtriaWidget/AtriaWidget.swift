@@ -1356,27 +1356,15 @@ private func liveActivityDailyStepGoalPresentation(
     now: Date = Date()
 ) -> AtriaLiveActivityGoalPresentation? {
     guard let goal = state.dailyStepGoal, goal > 0 else { return nil }
-    switch state.stepsAvailability {
-    case .some(.reconnecting):
-        return AtriaLiveActivityGoalPresentation(text: "Step goal syncing",
-                                                 tint: .orange,
-                                                 fraction: nil,
-                                                 accessibilityText: "Daily strap step goal reconnecting")
-    case .some(.stale):
-        return AtriaLiveActivityGoalPresentation(text: "Step goal stale",
-                                                 tint: .orange,
-                                                 fraction: nil,
-                                                 accessibilityText: "Daily strap step goal stale")
-    case .some(.unavailable):
+    // Workout-local motion has a different clock and availability state. It
+    // must never make an all-day receipt look fresh (or unavailable).
+    guard let steps = state.dailySteps else {
         return AtriaLiveActivityGoalPresentation(text: "Step goal --",
                                                  tint: .secondary,
                                                  fraction: nil,
                                                  accessibilityText: "Daily strap step goal unavailable")
-    case .some(.live), .none:
-        break
     }
-    guard let steps = state.dailySteps,
-          let capturedAt = state.stepsCapturedAt,
+    guard let capturedAt = state.dailyStepsCapturedAt,
           capturedAt <= now.addingTimeInterval(5),
           now.timeIntervalSince(capturedAt) <= atriaLiveActivityStepFreshness else {
         return AtriaLiveActivityGoalPresentation(text: "Step goal stale",
@@ -1385,18 +1373,24 @@ private func liveActivityDailyStepGoalPresentation(
                                                  accessibilityText: "Daily strap step goal stale")
     }
     let estimated = state.dailyStepsAreEstimated != false
-    let prefix = estimated ? "~" : ""
+    // Missing lower-bound provenance belongs to an older activity payload and
+    // therefore fails closed. Only an explicit false value can claim exactness.
+    let lowerBound = state.dailyStepsIsLowerBound != false
+    let exact = !estimated && !lowerBound
+    let prefix = lowerBound ? "≥" : estimated ? "~" : ""
     let reached = steps >= goal
-    let text = reached && !estimated
+    let text = reached && exact
         ? "Goal ✓ · \(steps)"
         : "\(prefix)\(steps) / \(goal)"
-    let accessibility = estimated
+    let accessibility = lowerBound
+        ? "At least \(steps) of \(goal) verified daily strap steps"
+        : estimated
         ? "Approximately \(steps) of \(goal) daily strap steps"
         : reached
             ? "Daily strap step goal reached with \(steps) steps"
             : "\(steps) of \(goal) daily strap steps"
     return AtriaLiveActivityGoalPresentation(text: text,
-                                             tint: reached && !estimated ? .green : .mint,
+                                             tint: reached && exact ? .green : .mint,
                                              fraction: min(max(Double(steps) / Double(goal), 0), 1),
                                              accessibilityText: accessibility)
 }

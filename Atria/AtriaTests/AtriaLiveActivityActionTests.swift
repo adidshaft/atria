@@ -830,8 +830,14 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(source.contains("liveActivityDailyStepGoalPresentation(for: context.state)"))
         XCTAssertTrue(source.contains("state.dailyStepsAreEstimated != false"),
                       "missing daily-step provenance must fail closed as estimated")
-        XCTAssertTrue(source.contains("reached && !estimated"),
-                      "preliminary steps must never claim an exact goal completion")
+        XCTAssertTrue(source.contains("state.dailyStepsIsLowerBound != false"),
+                      "missing daily-step completeness must fail closed as a lower bound")
+        XCTAssertTrue(source.contains("let capturedAt = state.dailyStepsCapturedAt"),
+                      "daily goal freshness must use the durable daily receipt clock")
+        XCTAssertFalse(source.contains("let capturedAt = state.stepsCapturedAt,\n          capturedAt <= now"),
+                       "workout-local motion must not renew the daily step goal")
+        XCTAssertTrue(source.contains("reached && exact"),
+                      "estimated or lower-bound steps must never claim goal completion")
         XCTAssertTrue(source.contains("liveActivitySensorStatusText"))
         XCTAssertTrue(source.contains("return statuses.isEmpty ? nil"),
                       "healthy live sources must not waste Lock Screen space on a redundant status row")

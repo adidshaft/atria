@@ -250,6 +250,7 @@ struct AtriaStressDetailView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
+    @State private var freshnessNow = Date()
 
     init(input: AtriaStressDetailInput,
          onDismiss: @escaping () -> Void,
@@ -287,6 +288,24 @@ struct AtriaStressDetailView: View {
             .scrollIndicators(.hidden)
         }
         .foregroundStyle(.primary)
+        .task(id: input.updatedAt) {
+            freshnessNow = Date()
+            guard input.state.kind == .scored,
+                  let updatedAt = input.updatedAt else { return }
+            let expiresAt = updatedAt.addingTimeInterval(
+                AtriaStressReadingFreshness.liveWindow
+            )
+            let delay = expiresAt.timeIntervalSince(freshnessNow)
+            guard delay > 0 else { return }
+            let nanoseconds = UInt64(
+                min(delay + 0.05, 24 * 60 * 60) * 1_000_000_000
+            )
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled else { return }
+            // One invalidation at the actual expiry boundary is enough; avoid
+            // a per-second timer invalidating the entire chart hierarchy.
+            freshnessNow = Date()
+        }
     }
 
     private var background: Color {
@@ -508,7 +527,8 @@ struct AtriaStressDetailView: View {
     private var stressFreshness: AtriaStressReadingFreshness {
         AtriaStressReadingFreshness.resolve(
             isScored: input.state.kind == .scored,
-            updatedAt: input.updatedAt
+            updatedAt: input.updatedAt,
+            now: freshnessNow
         )
     }
 
