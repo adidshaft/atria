@@ -111,8 +111,38 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
     ) throws -> Bool {
         guard let strapIdentifier = Self.canonicalStrapIdentifier(
             strapIdentifier
-        ),
-        Self.valid(evidence) else {
+        ) else {
+            AtriaDebugLog(
+                "ATRIADBG whoop4_daily_steps status=receipt_rejected detail=invalid_strap_identifier"
+            )
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
+        guard let validationFailure = Self.validationFailure(evidence) else {
+            return try saveValidated(
+                evidence,
+                strapIdentifier: strapIdentifier
+            )
+        }
+        AtriaDebugLog(
+            "ATRIADBG whoop4_daily_steps status=receipt_rejected detail=%@ start=%.3f end=%.3f captured=%.3f ticks=%d steps=%d known=%d missing=%d rows=%d",
+            validationFailure,
+            evidence.windowStart.timeIntervalSince1970,
+            evidence.windowEnd.timeIntervalSince1970,
+            evidence.capturedThrough.timeIntervalSince1970,
+            evidence.motionTicks,
+            evidence.steps,
+            evidence.knownCoverageSeconds,
+            evidence.missingCoverageSeconds,
+            evidence.decodedRows
+        )
+        throw CocoaError(.fileWriteInvalidFileName)
+    }
+
+    private func saveValidated(
+        _ evidence: HistoricalArchive.MotionTickDayEvidence,
+        strapIdentifier: String
+    ) throws -> Bool {
+        guard Self.valid(evidence) else {
             throw CocoaError(.fileWriteInvalidFileName)
         }
         lock.lock()
@@ -342,14 +372,31 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
 
     private static func valid(_ evidence: HistoricalArchive.MotionTickDayEvidence)
         -> Bool {
-        evidence.windowEnd > evidence.windowStart
-            && evidence.capturedThrough >= evidence.windowStart
-            && evidence.capturedThrough <= evidence.windowEnd
-            && evidence.motionTicks >= 0
-            && evidence.steps >= 0
-            && evidence.knownCoverageSeconds > 0
-            && evidence.missingCoverageSeconds >= 0
-            && evidence.decodedRows >= 2
+        validationFailure(evidence) == nil
+    }
+
+    private static func validationFailure(
+        _ evidence: HistoricalArchive.MotionTickDayEvidence
+    ) -> String? {
+        if evidence.windowEnd <= evidence.windowStart {
+            return "invalid_window"
+        }
+        if evidence.capturedThrough < evidence.windowStart {
+            return "captured_before_window"
+        }
+        if evidence.capturedThrough > evidence.windowEnd {
+            return "captured_after_window"
+        }
+        if evidence.motionTicks < 0 { return "negative_motion_ticks" }
+        if evidence.steps < 0 { return "negative_steps" }
+        if evidence.knownCoverageSeconds <= 0 {
+            return "missing_known_coverage"
+        }
+        if evidence.missingCoverageSeconds < 0 {
+            return "negative_missing_coverage"
+        }
+        if evidence.decodedRows < 2 { return "insufficient_decoded_rows" }
+        return nil
     }
 
     private static func valid(_ record: Record) -> Bool {
