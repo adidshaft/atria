@@ -1327,7 +1327,11 @@ struct AtriaTodayScreen: View {
         // before ever falling back to a bare percent as the primary number.
         let value = latestDisplaySleep?.durationText
             ?? latestRollup?.sleepSeconds.map { AtriaMetricFormat.sleepDuration(seconds: $0) }
-            ?? "Learning"   // canonical not-ready word (was "Building"); consistent across tabs
+            // Deterministic no-value token, matching recovery and strain. With
+            // this left as the old word, the ring legend rendered "Sleep /
+            // Learning" directly beside "Strain / --" for the same not-ready
+            // state -- two vocabularies for one condition, in one row.
+            ?? AtriaCompactMetricPresentation.noValue
         let detail: String
         if let evidence = latestDisplaySleep, !evidence.confirmed {
             detail = evidence.isNapEvidence ? "Review nap" : "Review sleep"
