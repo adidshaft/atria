@@ -66,6 +66,11 @@ final class AtriaGraphInspectorTests: XCTestCase {
         XCTAssertTrue(vitals.contains("AxisMarks(values: compactAxisDates)"))
         XCTAssertTrue(vitals.contains("Text(date, format: .dateTime.weekday(.narrow))"))
         XCTAssertTrue(vitals.contains("selectedTime: .constant(nil),\n                                        showsXAxis: true)"))
+        XCTAssertTrue(vitals.contains(".defaultDigits(amPM: .narrow)"),
+                      "the compact HR preview must not truncate long minute/meridiem labels")
+        XCTAssertTrue(vitals.contains("private static var portraitRestoreTask: Task<Void, Never>?"))
+        XCTAssertTrue(vitals.contains("generation == presentationGeneration"),
+                      "a stale portrait restoration must not override a reopened landscape graph")
     }
 
     func testMeaningfulGraphSurfacesUseSharedInspector() throws {
