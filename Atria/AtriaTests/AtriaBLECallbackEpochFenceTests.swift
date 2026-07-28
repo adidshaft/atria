@@ -4,7 +4,7 @@ import XCTest
 final class AtriaBLECallbackEpochFenceTests: XCTestCase {
     func testReconnectInvalidatesQueuedWorkFromPriorLink() {
         let strapID = UUID()
-        var fence = AtriaBLECallbackEpochFence()
+        let fence = AtriaBLECallbackEpochFence()
         let firstEpoch = fence.activate(peripheralID: strapID)
         XCTAssertTrue(fence.accepts(
             callbackEpoch: firstEpoch,
@@ -28,7 +28,7 @@ final class AtriaBLECallbackEpochFenceTests: XCTestCase {
 
     func testStaleDisconnectCannotInvalidateDifferentPeripheral() {
         let active = UUID()
-        var fence = AtriaBLECallbackEpochFence()
+        let fence = AtriaBLECallbackEpochFence()
         let epoch = fence.activate(peripheralID: active)
 
         XCTAssertEqual(fence.invalidate(ifMatching: UUID()), epoch)
@@ -41,6 +41,58 @@ final class AtriaBLECallbackEpochFenceTests: XCTestCase {
             callbackEpoch: epoch,
             peripheralID: active,
             peripheralConnected: false
+        ))
+    }
+
+    func testPoweredOnMarkersAreConsumedTogetherExactlyOnce() {
+        let fence = AtriaBLECallbackEpochFence()
+        fence.markAwaitingPowerOn(
+            standingConnect: true,
+            silentStreamRebuild: true
+        )
+
+        XCTAssertEqual(
+            fence.consumePowerOnMarkers(),
+            .init(standingConnect: true, silentStreamRebuild: true)
+        )
+        XCTAssertEqual(fence.consumePowerOnMarkers(), .init())
+    }
+
+    func testConcurrentEpochMutationLeavesCoherentFinalTuple() {
+        let fence = AtriaBLECallbackEpochFence()
+        let strapID = UUID()
+        let otherID = UUID()
+        let queue = DispatchQueue(
+            label: "atria.tests.ble-callback-epoch",
+            attributes: .concurrent
+        )
+        let group = DispatchGroup()
+
+        for iteration in 0..<2_000 {
+            group.enter()
+            queue.async {
+                if iteration % 3 == 0 {
+                    _ = fence.activate(peripheralID: strapID)
+                } else if iteration % 3 == 1 {
+                    _ = fence.invalidate(ifMatching: strapID)
+                } else {
+                    _ = fence.activate(peripheralID: otherID)
+                }
+                group.leave()
+            }
+        }
+        XCTAssertEqual(group.wait(timeout: .now() + 5), .success)
+
+        let finalEpoch = fence.activate(peripheralID: strapID)
+        XCTAssertTrue(fence.accepts(
+            callbackEpoch: finalEpoch,
+            peripheralID: strapID,
+            peripheralConnected: true
+        ))
+        XCTAssertFalse(fence.accepts(
+            callbackEpoch: finalEpoch,
+            peripheralID: otherID,
+            peripheralConnected: true
         ))
     }
 }

@@ -187,7 +187,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// Captured synchronously at CoreBluetooth delegate entry. Main-actor work
     /// must carry this token so callbacks queued by a dead link cannot mutate a
     /// newer history generation after reconnect.
-    private nonisolated(unsafe) var bleCallbackEpochFence = AtriaBLECallbackEpochFence()
+    private nonisolated let bleCallbackEpochFence = AtriaBLECallbackEpochFence()
 
     // Compatibility aliases keep the manager's publication call sites stable;
     // validation and reconstruction are owned by the Foundation-only preparer.
@@ -1200,19 +1200,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// the disproven timestamp payload or the unproven 0x21 seek path.
     private var gate2FullDrainProofEnabled = false
     private var gate2FullDrainRequestedGapID: UUID?
-    /// Set when a standing connect was wanted but the central had not reached
-    /// `.poweredOn`, so `retrievePeripherals` came back empty. Consumed by
-    /// `centralManagerDidUpdateState`; it exists so that window ends in a retry
-    /// rather than dormancy.
-    /// `nonisolated(unsafe)` to match `standardHROnlyMode`: it is read and
-    /// cleared inside `centralManagerDidUpdateState`, which CoreBluetooth
-    /// delivers off the main actor.
-    private nonisolated(unsafe) var standingConnectAwaitingCentralPowerOn = false
-    /// Durable-forensics marker for the one-shot silent-stream central
-    /// replacement. CoreBluetooth state callbacks arrive off the main actor,
-    /// so this mirrors the synchronization contract of the standing-connect
-    /// marker immediately above it.
-    private nonisolated(unsafe) var silentStreamCentralRebuildAwaitingPowerOn = false
     private var historyOnlyProbeEnabled = false
     private var historyOnlyProbeArmed = false
     private var historyOnlyProbeTask: Task<Void, Never>?
@@ -17233,7 +17220,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     // central has no retrievable peripherals yet, and treating
                     // that as "no strap" is what ends an era in dormancy.
                     if case .centralNotReady = resolution {
-                        self.standingConnectAwaitingCentralPowerOn = true
+                        self.bleCallbackEpochFence.markAwaitingPowerOn(
+                            standingConnect: true
+                        )
                     }
                     if let resolved = resolution?.peripheral {
                         self.ensureStandingConnectAtLeaseExpiryIfNeeded(
@@ -17380,7 +17369,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // and connects the moment it reaches `.poweredOn`, so the only thing
         // needed is to not end this era believing there is nothing to wait for.
         if case .centralNotReady = resolution {
-            standingConnectAwaitingCentralPowerOn = true
+            bleCallbackEpochFence.markAwaitingPowerOn(standingConnect: true)
             AtriaDebugLog("ATRIADBG ble_link status=standing_connect_deferred reason=central_not_ready action=await_powered_on")
         }
         if let resolved {
@@ -17583,8 +17572,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // Set these only after the obsolete central is fenced. Otherwise a
         // late state callback from that central can consume the replacement's
         // powered-on markers before the new instance exists.
-        standingConnectAwaitingCentralPowerOn = true
-        silentStreamCentralRebuildAwaitingPowerOn = true
+        bleCallbackEpochFence.markAwaitingPowerOn(
+            standingConnect: true,
+            silentStreamRebuild: true
+        )
         central = CBCentralManager(delegate: self,
                                    queue: centralDelegateQueue,
                                    options: [
@@ -32058,7 +32049,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 // MARK: - CBCentralManagerDelegate
 extension AtriaBLEManager: CBCentralManagerDelegate {
     nonisolated func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        if silentStreamCentralRebuildAwaitingPowerOn {
+        let pendingPowerOnMarkers =
+            bleCallbackEpochFence.powerOnMarkerSnapshot()
+        if pendingPowerOnMarkers.silentStreamRebuild {
             recordReconnectLeaseStage(
                 "central_rebuild_state_\(central.state.rawValue)",
                 detail: "callback_received"
@@ -32080,6 +32073,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             bleCallbackEpochFence.invalidate()
         }
         if central.state == .poweredOn {
+            let powerOnMarkers =
+                bleCallbackEpochFence.consumePowerOnMarkers()
             let defaults = UserDefaults.standard
             // Connection-diagnostics logging (2026-07-06): this precheck used
             // to log ONLY the success branch, so the two most common real-world
@@ -32112,7 +32107,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             } else {
                 AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=powered_on_precheck action=no_saved_uuid saved_uuid=0")
             }
-            if silentStreamCentralRebuildAwaitingPowerOn {
+            if powerOnMarkers.silentStreamRebuild {
                 recordReconnectLeaseStage(
                     earlyPendingConnect == nil
                         ? "central_rebuild_standing_connect_not_issued"
@@ -32121,14 +32116,12 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                         ? "saved_peripheral_not_disconnected"
                         : "pending_connect"
                 )
-                silentStreamCentralRebuildAwaitingPowerOn = false
             }
-            if standingConnectAwaitingCentralPowerOn {
+            if powerOnMarkers.standingConnect {
                 // The deferred era ends here: the precheck above has already
                 // retrieved and connected the saved strap if iOS knows it, so
                 // the flag's job is done either way. Record which, so a repeat
                 // is diagnosable rather than silent.
-                standingConnectAwaitingCentralPowerOn = false
                 recordReconnectLeaseStage(
                     "standing_connect_resumed_on_power_on",
                     detail: earlyPendingConnect == nil ? "no_pending_connect" : "pending_connect"
@@ -32282,12 +32275,14 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     ? "explicit_workout_process_restore_gap"
                     : "long_wear_process_restore_gap"
             )
+        let restoreCallbackEpoch: UInt64
         if restoredPeripheral.state == .connected {
-            _ = bleCallbackEpochFence.activate(
+            restoreCallbackEpoch = bleCallbackEpochFence.activate(
                 peripheralID: restoredPeripheral.identifier
             )
+        } else {
+            restoreCallbackEpoch = bleCallbackEpochFence.epoch
         }
-        let restoreCallbackEpoch = bleCallbackEpochFence.epoch
         // A connected restoration does not emit `didConnect`. Assign the
         // delegate and start the same enable-only HR transaction synchronously;
         // iOS may suspend this restoration launch before MainActor is serviced.
