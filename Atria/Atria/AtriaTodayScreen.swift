@@ -1383,7 +1383,11 @@ struct AtriaTodayScreen: View {
             let detail = displayHero.recoveryLiftedAfterNap ? "↑ after nap" : displayHero.recoveryDetail
             return ("\(percent)%", detail, percent)
         }
-        return ("Learning", AtriaRecoveryAvailabilityPresentation.detail(
+        // Same rule as strainValue: the value line carries a numeral or "--",
+        // never a status word. Recovery is computable exactly when the estimator
+        // produced a percent, so this branch is genuinely no-value rather than a
+        // hidden one, and the reason travels in the detail/marker instead.
+        return (AtriaCompactMetricPresentation.noValue, AtriaRecoveryAvailabilityPresentation.detail(
             estimateDetail: estimate.detail,
             hrvBaselineSamples: sessionProjectionStore.state.baseline.freshHRVSampleCount(),
             restingBaselineSamples: sessionProjectionStore.state.baseline.freshRestingSampleCount()
@@ -1493,9 +1497,16 @@ struct AtriaTodayScreen: View {
                                   value: incomplete && !displayHero.strainValue.hasPrefix("≥")
                                     ? "≥ \(displayHero.strainValue)"
                                     : displayHero.strainValue,
+                                  // Compact fixed-vocabulary markers, not prose.
+                                  // "Partial · sparse HR" described the plumbing
+                                  // rather than the number's meaning, and was long
+                                  // enough to wrap and make one card taller than
+                                  // its neighbour. "lower bound" says the same
+                                  // thing about the value the user is looking at,
+                                  // and matches the "≥" prefix already on it.
                                   detail: pending
-                                    ? "Learning"
-                                    : (incomplete ? "Partial · sparse HR" : (target.map { String(format: "of %.1f", $0) } ?? "Strain")),
+                                    ? "HR pending"
+                                    : (incomplete ? "lower bound" : (target.map { String(format: "of %.1f", $0) } ?? "Strain")),
                                   systemImage: "flame.fill",
                                   // Without a Recovery-derived target, measured
                                   // strain keeps its identity blue instead of
@@ -2497,9 +2508,7 @@ private struct AtriaTodayGlanceItem: Identifiable, Equatable {
     /// a stored flag so the ~20 `glanceItem(for:)` construction sites stay
     /// untouched and can never forget to set it.
     static func isPendingValue(_ value: String) -> Bool {
-        let trimmed = value.trimmingCharacters(in: .whitespaces)
-        return trimmed == "--" || trimmed == "\u{2014}"
-            || trimmed == "Learning" || trimmed == "Building" || trimmed == "Preparing"
+        AtriaCompactMetricPresentation.isPendingValue(value)
     }
 
     var isPending: Bool { Self.isPendingValue(value) }
