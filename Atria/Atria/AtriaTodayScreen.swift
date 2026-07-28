@@ -298,7 +298,8 @@ struct AtriaTodayScreen: View {
                                        hrZoneMinutes: displayHero.hrZoneMinutes,
                                        maxHeartRate: sessionProjectionStore.state.maxHeartRate,
                                        vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
-                                       skinTemperatureDeviation: sessionProjectionStore.state.skinTemperatureDeviationSummary)
+                                       skinTemperatureDeviation: sessionProjectionStore.state.skinTemperatureDeviationSummary,
+                                       provenance: provenance(for: detail))
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
@@ -1468,6 +1469,55 @@ struct AtriaTodayScreen: View {
         if delta <= -1 { return ("\u{2193} \(-delta) bpm", "lower over \(nights) nights") }
         if delta >= 1 { return ("\u{2191} \(delta) bpm", "higher over \(nights) nights") }
         return ("Steady", "flat over \(nights) nights")
+    }
+
+    /// Provenance for the metrics whose confidence is actually derived from
+    /// measured coverage. Other detail kinds return nil rather than a card full
+    /// of "not measured" rows, which would be noise rather than disclosure.
+    ///
+    /// Built here because this is what holds the hero snapshot; the sheet only
+    /// renders what it is handed, so the wording stays owned by the one
+    /// canonical presentation model.
+    private func provenance(for detail: AtriaMetricDetailKind) -> AtriaMetricProvenance? {
+        switch detail {
+        case .recovery:
+            let presentation = AtriaCompactMetricPresentation.recovery(
+                percent: displayHero.recoveryEstimate.percent,
+                confidence: displayHero.recoveryEstimate.confidence,
+                usesHRV: displayHero.recoveryEstimate.usesHRV,
+                isProvisional: displayHero.recoveryIsProvisional,
+                isFromPreviousSleep: displayHero.recoveryIsFromPreviousSleep
+            )
+            return AtriaMetricProvenance(
+                displayValue: presentation.displayValue,
+                level: presentation.level,
+                isLowerBound: presentation.isLowerBound,
+                usesHRV: displayHero.recoveryEstimate.usesHRV,
+                // Recovery is scored from the night, not from day-long wear, so
+                // day coverage is not the provenance for this number.
+                hrCoverageFraction: nil,
+                sourceLabel: "Strap sleep",
+                observedAt: nil
+            )
+        case .strain:
+            let presentation = AtriaCompactMetricPresentation.strain(
+                strain: displayHero.strain,
+                confidence: displayHero.strainConfidence
+            )
+            return AtriaMetricProvenance(
+                displayValue: presentation.displayValue,
+                level: presentation.level,
+                isLowerBound: presentation.isLowerBound,
+                // Strain integrates heart-rate reserve; HRV is not an input, so
+                // "HRV contributed" is not a meaningful row here.
+                usesHRV: nil,
+                hrCoverageFraction: displayHero.dayWearCoverageFraction,
+                sourceLabel: "Strap heart rate",
+                observedAt: nil
+            )
+        default:
+            return nil
+        }
     }
 
     private var recoveryMetric: AtriaTriRingMetric {
