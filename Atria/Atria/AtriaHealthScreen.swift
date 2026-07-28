@@ -236,25 +236,25 @@ enum AtriaHealthMetricAuthority {
             let normalizedHRV = normalizedMetricText(current.hrvValue)
             return Projection(
                 recoveryPercent: current.recoveryPercent,
-                recoveryValue: current.recoveryPercent.map { "\($0)%" } ?? "Learning",
+                recoveryValue: current.recoveryPercent.map { "\($0)%" } ?? AtriaCompactMetricPresentation.noValue,
                 recoveryDetail: current.recoveryPercent == nil
                     ? "needs a few nights" : current.recoveryDetail,
                 restingHeartRate: restingHeartRate,
                 restingHeartRateValue: restingHeartRate.map {
                     AtriaMetricFormat.restingHeartRate(Double($0))
-                } ?? "Learning",
+                } ?? AtriaCompactMetricPresentation.noValue,
                 restingHeartRateDetail: restingHeartRate == nil
                     ? "needs enough wear" : "current cycle",
                 hrvMS: Int(normalizedHRV),
                 hrvValue: normalizedHRV,
-                hrvDetail: normalizedHRV == "Learning"
+                hrvDetail: normalizedHRV == AtriaCompactMetricPresentation.noValue
                     ? "needs qualified sleep" : current.hrvDetail
             )
         case .datedHistory(let rollup):
             let hrvMS = rollup.lnRMSSD.map { Int(exp($0).rounded()) }
             return Projection(
                 recoveryPercent: rollup.recovery,
-                recoveryValue: rollup.recovery.map { "\($0)%" } ?? "Learning",
+                recoveryValue: rollup.recovery.map { "\($0)%" } ?? AtriaCompactMetricPresentation.noValue,
                 recoveryDetail: AtriaHealthMetricEvidencePresentation.recoveryDetail(
                     rollup: rollup,
                     liveRecoveryAvailable: false
@@ -262,14 +262,14 @@ enum AtriaHealthMetricAuthority {
                 restingHeartRate: rollup.rhr,
                 restingHeartRateValue: rollup.rhr.map {
                     AtriaMetricFormat.restingHeartRate(Double($0))
-                } ?? "Learning",
+                } ?? AtriaCompactMetricPresentation.noValue,
                 restingHeartRateDetail:
                     AtriaHealthMetricEvidencePresentation.restingHeartRateDetail(
                         rollup: rollup,
                         liveValueAvailable: false
                     ),
                 hrvMS: hrvMS,
-                hrvValue: hrvMS.map(String.init) ?? "Learning",
+                hrvValue: hrvMS.map(String.init) ?? AtriaCompactMetricPresentation.noValue,
                 hrvDetail: AtriaHealthMetricEvidencePresentation.hrvDetail(
                     rollup: rollup,
                     liveValueAvailable: false
@@ -278,9 +278,18 @@ enum AtriaHealthMetricAuthority {
         }
     }
 
+    /// Normalises an absent metric onto the deterministic no-value token.
+    ///
+    /// This previously did the REVERSE -- it rewrote "--" into "Learning" --
+    /// which silently undid the token upstream and left Health Monitor reading
+    /// "Learning" beside a Vitals row already showing "--". A normaliser that
+    /// converts the canonical token into a different word is the one place a
+    /// vocabulary can never converge.
     private static func normalizedMetricText(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty || trimmed == "--" ? "Learning" : trimmed
+        return AtriaCompactMetricPresentation.isPendingValue(trimmed)
+            ? AtriaCompactMetricPresentation.noValue
+            : trimmed
     }
 }
 
@@ -382,7 +391,12 @@ struct AtriaHealthScreen: View {
     // The detected-activities fixture lives in the Trends scope; opening
     // there directly keeps the sim screenshot loop honest (simctl cannot tap
     // the segmented picker). DEBUG-only launch-argument routing.
-    @State private var scope: Scope = Self.debugOpensTrendsScope(arguments: ProcessInfo.processInfo.arguments) ? .trends : .live
+    @State private var scope: Scope = {
+        let arguments = ProcessInfo.processInfo.arguments
+        if Self.debugOpensTrendsScope(arguments: arguments) { return .trends }
+        if Self.debugOpensSleepScope(arguments: arguments) { return .sleep }
+        return .live
+    }()
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init(isActive: Bool,
@@ -830,7 +844,10 @@ struct AtriaHealthScreen: View {
                                      layout: .compactTile,
                                      onTap: { metricDetail = .skinTemperature })
                 AtriaHealthMetricRow(title: "SpO2",
-                                     value: "\u{2014}",
+                                     // Was a lone em dash, sitting directly
+                                     // beside a Skin temp row already showing
+                                     // "--" for the same state.
+                                     value: AtriaCompactMetricPresentation.noValue,
                                      detail: AtriaExperimentalSensorCopy.bloodOxygenStatus(
                                         strapModel: ble.strapModel,
                                         decoderAvailable: AtriaResearchProbe.validatedSpO2DecoderAvailable),
@@ -910,8 +927,20 @@ struct AtriaHealthScreen: View {
         guard valueIndex < arguments.endIndex else { return false }
         return arguments[valueIndex] == "detected-activities"
     }
+
+    /// Opens the Sleep scope, mirroring the Trends hook above and existing for
+    /// the same stated reason: simctl cannot scroll or tap, so a scope only
+    /// reachable through the segmented control could not be screenshot-verified
+    /// at all. Trends and Live already had a route; Sleep was the one blind spot.
+    private static func debugOpensSleepScope(arguments: [String]) -> Bool {
+        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
+        let valueIndex = arguments.index(after: fixtureIndex)
+        guard valueIndex < arguments.endIndex else { return false }
+        return arguments[valueIndex] == "sleep-scope"
+    }
     #else
     private static func debugOpensTrendsScope(arguments: [String]) -> Bool { false }
+    private static func debugOpensSleepScope(arguments: [String]) -> Bool { false }
     #endif
 
     private func monitorGroupKicker(_ title: String) -> some View {
@@ -1010,23 +1039,26 @@ struct AtriaHealthScreen: View {
         // rollover; the sleep snapshot already merges any matching rollup
         // respiratory evidence into the current night.
         guard let value = currentMainSleep?.respiratoryRate else {
-            // Canonical not-ready word, matching every sibling Health Monitor row
-            // (Recovery/RHR/HRV/Sleep) instead of the banned "--". Respiration is
-            // sleep-derived, so it genuinely learns after a night — not "unavailable".
-            return "Learning"
+            // Matches every sibling Health Monitor row. Those siblings have all
+            // moved onto the deterministic no-value token, so keeping the word
+            // here would make respiration the only row speaking the old
+            // vocabulary. The "learns after a night" nuance lives in the detail
+            // line, where it belongs -- the value line carries a numeral or "--".
+            return AtriaCompactMetricPresentation.noValue
         }
         return String(format: "%.1f rpm", value)
     }
 
     private var respiratoryDetail: String {
         AtriaHealthMetricEvidencePresentation.respiratoryDetail(
-            valueAvailable: respiratoryValue != "Learning"
+            valueAvailable: respiratoryValue != AtriaCompactMetricPresentation.noValue
         )
     }
 
     private var sleepValue: String {
         guard let seconds = currentMainSleep?.duration else {
-            return "Learning"   // canonical not-ready word, consistent with Today/Overview
+            // Consistent with Today/Overview, which now use the deterministic token.
+            return AtriaCompactMetricPresentation.noValue
         }
         return AtriaMetricFormat.sleepDuration(seconds: seconds)
     }
@@ -1220,7 +1252,9 @@ struct AtriaHealthScreen: View {
     }
 
     private func statusValue(live: AtriaHealthMonitorLiveProjection) -> String {
-        guard currentMetricProjection(live: live).hasEvidence else { return "Learning" }
+        guard currentMetricProjection(live: live).hasEvidence else {
+            return AtriaCompactMetricPresentation.noValue
+        }
         // Never a green "Updated" over stale data while disconnected
         // (2026-07-07 design handoff honesty fix).
         return isDisconnected(live: live) ? "Last known" : "Updated"
@@ -1331,6 +1365,11 @@ private struct AtriaHealthStressSection: View {
         )
     }
 
+    /// Falls back to the deterministic no-value token, not to the state's label.
+    /// Falling back to the label put "No signal" on the VALUE line while every
+    /// sibling row showed "--" -- a third vocabulary for one state. The reason is
+    /// not lost: `stressDetail` below already surfaces that same label as the
+    /// detail, which is where an explanation belongs.
     private var stressValue: String {
         AtriaStressPresentation.make(state: stressMonitorStore.state).value
     }

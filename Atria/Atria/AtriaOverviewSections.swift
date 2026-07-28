@@ -3009,7 +3009,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                         Spacer(minLength: 8)
 
                         Button {
-                            withAnimation(.snappy(duration: 0.2)) {
+                            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                                 isEditingGlance = false
                             }
                         } label: {
@@ -3046,7 +3046,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 }
                 .frame(maxWidth: .infinity)
                 .onLongPressGesture(minimumDuration: 0.45) {
-                    withAnimation(.snappy(duration: 0.2)) {
+                    withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                         isEditingGlance = true
                     }
                 }
@@ -3069,12 +3069,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         .sheet(isPresented: $showWidgetManager) {
             AtriaGlanceWidgetManagerSheet(hiddenMetrics: hiddenMetrics,
                                           onEditWidgets: {
-                                              withAnimation(.snappy(duration: 0.2)) {
+                                              withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                                                   isEditingGlance = true
                                               }
                                           },
                                           onShowMetric: { metric in
-                                              withAnimation(.snappy(duration: 0.2)) {
+                                              withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                                                   onShowMetric(metric)
                                               }
                                           })
@@ -3341,7 +3341,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             HStack(spacing: 8) {
                 if isEditingGlance {
                     Button {
-                        withAnimation(.snappy(duration: 0.2)) {
+                        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                             isEditingGlance = false
                         }
                     } label: {
@@ -3356,7 +3356,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
                 if !isEditingGlance {
                     Button {
-                        withAnimation(.snappy(duration: 0.2)) {
+                        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                             glanceLayoutBars.toggle()
                         }
                     } label: {
@@ -3669,7 +3669,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             .simultaneousGesture(
                 LongPressGesture(minimumDuration: 0.45)
                     .onEnded { _ in
-                        withAnimation(.snappy(duration: 0.2)) {
+                        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                             isEditingGlance = true
                         }
                     }
@@ -3688,7 +3688,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 }
 
                 Button {
-                    withAnimation(.snappy(duration: 0.2)) {
+                    withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                         onToggleMetricSize(metric)
                     }
                 } label: {
@@ -3697,7 +3697,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 }
 
                 Button(role: .destructive) {
-                    withAnimation(.snappy(duration: 0.2)) {
+                    withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                         onHideMetric(metric)
                         if visibleMetrics.count <= 1 {
                             isEditingGlance = false
@@ -3713,7 +3713,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             .dropDestination(for: String.self) { items, _ in
                 guard let raw = items.first,
                       let dragged = AtriaTodayMetric.draggedMetric(from: raw) else { return false }
-                withAnimation(.snappy(duration: 0.2)) {
+                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                     isEditingGlance = true
                     onMoveMetric(dragged, metric)
                 }
@@ -3794,7 +3794,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
 
     private func glanceRemoveControl(for metric: AtriaTodayMetric) -> some View {
         Button(role: .destructive) {
-            withAnimation(.snappy(duration: 0.2)) {
+            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                 onHideMetric(metric)
                 if visibleMetrics.count <= 1 {
                     isEditingGlance = false
@@ -3813,7 +3813,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private func glanceResizeControl(for metric: AtriaTodayMetric,
                                      sizeOverrides: [String: AtriaGlanceGridSize]) -> some View {
         Button {
-            withAnimation(.snappy(duration: 0.2)) {
+            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                 onToggleMetricSize(metric)
             }
         } label: {
@@ -4303,10 +4303,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         metricIsPending(value) ? "--" : value
     }
 
+    /// Delegates to the canonical check so this cannot miss "--" -- see
+    /// `AtriaCompactMetricPresentation.isPendingValue` for why the three copies
+    /// of this predicate had to be collapsed into one.
     private func metricIsPending(_ value: String) -> Bool {
-        value.localizedCaseInsensitiveContains("learning")
-            || value.localizedCaseInsensitiveContains("prepar")
-            || value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        AtriaCompactMetricPresentation.isPendingValue(value)
     }
 
     private var recoveryZone: AtriaMetricZone? {
@@ -6023,7 +6024,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
                         .font(.system(size: 30, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .contentTransition(reduceMotion ? .identity : .numericText())
-                        .animation(reduceMotion ? nil : .snappy(duration: 0.3), value: displayValue)
+                        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: displayValue)
                         .lineLimit(1)
                         .minimumScaleFactor(0.58)
                 }
@@ -6078,7 +6079,7 @@ private struct AtriaGlanceMetricCard: View, Equatable {
                     .font(.system(size: 26, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .contentTransition(reduceMotion ? .identity : .numericText())
-                    .animation(reduceMotion ? nil : .snappy(duration: 0.3), value: displayValue)
+                    .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: displayValue)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
                     .layoutPriority(1)
@@ -8300,6 +8301,11 @@ struct AtriaMetricDetailSheet: View {
     @State private var range: AtriaTrendRange = .day
     @State private var showingMeaningSheet = false
     private let initialScrubbedDay: Date?
+    /// Built by the caller from the canonical presentation model, because the
+    /// caller is what holds the hero snapshot. Nil where a metric has no
+    /// provenance to show, in which case the section is simply absent rather
+    /// than rendered empty.
+    var provenance: AtriaMetricProvenance? = nil
 
     private final class ExpandedChartEventsCache {
         private var key: Int?
@@ -8351,6 +8357,7 @@ struct AtriaMetricDetailSheet: View {
          maxHeartRate: Int? = nil,
          vo2MaxEstimate: VO2MaxEstimateSummary? = nil,
          skinTemperatureDeviation: IMUAuditSummary.SkinTemperatureDeviationSummary? = nil,
+         provenance: AtriaMetricProvenance? = nil,
          initialRange: AtriaTrendRange = .day,
          initialScrubbedDay: Date? = nil,
          initialBucketOverride: AtriaChartBucketOverride = .auto,
@@ -8359,6 +8366,7 @@ struct AtriaMetricDetailSheet: View {
         self.initialScrubbedDay = initialScrubbedDay
         _bucketOverride = State(initialValue: initialBucketOverride)
         _showMinMaxBand = State(initialValue: initialShowMinMaxBand)
+        self.provenance = provenance
         self.metric = metric
         self.confirmedWorkouts = confirmedWorkouts
         self.confirmedWorkoutsRevision = confirmedWorkoutsRevision
@@ -8523,6 +8531,9 @@ struct AtriaMetricDetailSheet: View {
                                       tint: recoveryHeroRawPercent.map { Metrics.recoveryColor(Int($0.rounded())) } ?? Metrics.electricGreen,
                                       heroStyle: .recoveryRing(score: recoveryHeroRawPercent,
                                                                baselineComparison: recoveryBaselineComparisonText)) {
+                if let provenance {
+                    AtriaMetricProvenanceCard(provenance: provenance)
+                }
                 contributorCard
                 behaviorsMoveYouCard
             } contributors: {
@@ -8680,6 +8691,9 @@ struct AtriaMetricDetailSheet: View {
                                       tint: Metrics.electricStrain,
                                       heroStyle: .strain(score: strainHeroRawValue,
                                                          target: guidance.target)) {
+                if let provenance {
+                    AtriaMetricProvenanceCard(provenance: provenance)
+                }
                 strainWorkoutSection
                 strainZoneHistogramCard
                 strainActivityMixCard
@@ -10265,38 +10279,71 @@ private struct AtriaRecoveryScoreHero: View {
     /// neutral until there is.
     private var heroTint: Color { score == nil ? Color.secondary : tint }
 
+    /// Geometry is declared once instead of being spread across three literals
+    /// that did not agree. Previously the halo was 178pt (189pt at its 1.06
+    /// breathing peak) and both rings were unframed 14pt strokes filling the
+    /// ZStack, yet the container was pinned to 154x154 -- so the halo overflowed
+    /// ~17pt per side and each stroke's outer edge sat 3.5pt outside the frame.
+    /// The disc read as a muddy plate larger than, and unrelated to, the ring it
+    /// was supposed to sit behind, and it collided with the comparison chip.
+    ///
+    /// Now the ring is the outermost element (halo peak stays just inside its
+    /// outer edge, so it reads as a glow behind the arc rather than a plate
+    /// around it) and the container is sized to fit the largest child at its
+    /// animated maximum, so nothing clips.
+    private static let ringDiameter: CGFloat = 140
+    private static let ringLineWidth: CGFloat = 14
+    private static let haloDiameter: CGFloat = 142
+    /// ringDiameter + ringLineWidth = 154 outer edge, plus breathing room.
+    private static let heroDiameter: CGFloat = 178
+    /// Usable width inside the stroke, so a three-digit "100%" cannot run under
+    /// the ring the way it did at a fixed 42pt.
+    private static var centerContentWidth: CGFloat {
+        ringDiameter - ringLineWidth * 2 - 12
+    }
+
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 16) {
             ZStack {
                 Circle()
                     .fill(heroTint.opacity(haloExpanded ? 0.12 : 0.05))
-                    .frame(width: 178, height: 178)
+                    .frame(width: Self.haloDiameter, height: Self.haloDiameter)
                     .scaleEffect(reduceMotion ? 1 : (haloExpanded ? 1.06 : 0.94))
                     .shadow(color: heroTint.opacity(haloExpanded ? 0.28 : 0.12), radius: 18)
                     .animation(motionEnabled ? .easeInOut(duration: 2.8).repeatForever(autoreverses: true) : nil,
                                value: haloExpanded)
-                Circle().stroke(heroTint.opacity(0.14), lineWidth: 14)
+                Circle()
+                    .stroke(heroTint.opacity(0.14), lineWidth: Self.ringLineWidth)
+                    .frame(width: Self.ringDiameter, height: Self.ringDiameter)
                 if let score {
                     Circle()
                         .trim(from: 0,
                               to: ringRevealed ? min(max(score / 100, 0), 1) : 0)
-                        .stroke(tint, style: StrokeStyle(lineWidth: 14, lineCap: .round))
+                        .stroke(tint, style: StrokeStyle(lineWidth: Self.ringLineWidth, lineCap: .round))
                         .rotationEffect(.degrees(-90))
+                        .frame(width: Self.ringDiameter, height: Self.ringDiameter)
                         .shadow(color: tint.opacity(haloExpanded ? 0.38 : 0.16), radius: 9)
                         .animation(reduceMotion ? nil : .timingCurve(0.22, 1, 0.36, 1, duration: 2.6),
                                    value: ringRevealed)
                         .animation(motionEnabled ? .easeInOut(duration: 2.8).repeatForever(autoreverses: true) : nil,
                                    value: haloExpanded)
                 }
-                VStack(spacing: 1) {
+                VStack(spacing: 2) {
                     Text(score.map { "\(Int($0.rounded()))%" } ?? "--")
-                        .font(.system(size: 42, weight: .bold, design: .rounded))
+                        .font(.system(size: 40, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .contentTransition(reduceMotion ? .identity : .numericText())
-                    Text(state).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                    Text(state)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
                 }
+                .frame(maxWidth: Self.centerContentWidth)
             }
-            .frame(width: 154, height: 154)
+            .frame(width: Self.heroDiameter, height: Self.heroDiameter)
 
             if let baselineComparison {
                 Label(baselineComparison,
@@ -10369,7 +10416,7 @@ private struct AtriaStrainScoreHero: View {
                     if let score {
                         Capsule(style: .continuous).fill(tint)
                             .frame(width: max(8, width * AtriaStrainTargetPresentation.progress(for: score)))
-                            .animation(reduceMotion ? nil : .snappy(duration: 0.35), value: score)
+                            .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: score)
                     }
                 }
             }
@@ -10453,7 +10500,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .animation(reduceMotion ? nil : .snappy(duration: 0.28), value: showDetails)
+        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: showDetails)
     }
 
     private var revealAffordance: some View {
@@ -10525,7 +10572,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
                     .minimumScaleFactor(0.56)
                     .foregroundStyle(heroTint)
                     .contentTransition(reduceMotion ? .identity : .numericText())
-                    .animation(reduceMotion ? nil : .snappy(duration: 0.3), value: heroValue)
+                    .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: heroValue)
 
                 HStack(spacing: 6) {
                     Circle()
@@ -13057,7 +13104,7 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
                                       showsAllTags: showsAllJournalTags,
                                       hiddenTagCount: hiddenJournalTagCount,
                                       onToggleMore: {
-                                          withAnimation(.snappy(duration: 0.2)) {
+                                          withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                                               showsAllJournalTags.toggle()
                                           }
                                       })
@@ -13068,7 +13115,7 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
                         if reduceMotion {
                             onToggleTag(tag)
                         } else {
-                            withAnimation(.snappy(duration: 0.2)) {
+                            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                                 onToggleTag(tag)
                             }
                         }
@@ -13089,7 +13136,7 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
                     .atriaGlassSelectable(selected: todayEntry.tags.contains(tag))
                 }
             }
-            .animation(.snappy(duration: 0.2), value: showsAllJournalTags)
+            .animation(.snappy(duration: AtriaDesignTokens.Motion.standard), value: showsAllJournalTags)
         }
         .padding(16)
         .atriaCard(emphasis: .soft)

@@ -42,8 +42,14 @@ struct AtriaStrapScreen: View {
                 // state-differentiated hero above renders the identical
                 // value + detail strings; the row added nothing.
                 AtriaStrapStatusRow(title: "Battery",
+                                    // Was an em dash, which made Battery the last
+                                    // value line in the app using a different
+                                    // glyph for "no reading". The pending check
+                                    // accepts both, so nothing was broken -- it
+                                    // just looked like a different idea.
                                     value: coreLiveStore.state.batteryLevel >= 0
-                                        ? coreLiveStore.state.batteryText : "—",
+                                        ? coreLiveStore.state.batteryText
+                                        : AtriaCompactMetricPresentation.noValue,
                                     detail: coreLiveStore.state.batteryLevel >= 0
                                         ? coreLiveStore.state.batteryChargeCompactText : "Connect to read",
                                     systemImage: coreLiveStore.state.batterySymbol,

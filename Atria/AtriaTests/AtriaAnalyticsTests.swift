@@ -93,7 +93,13 @@ final class AtriaAnalyticsTests: XCTestCase {
         )
 
         XCTAssertNil(summary.value)
-        XCTAssertEqual(summary.valueText, "Learning")
+        // 2026-07-28 deterministic-presentation pass: valueText is a DISPLAY
+        // string and now uses the app-wide no-value token. The invariant this
+        // test is named for is untouched and still asserted either side of this
+        // line -- no value, and confidence still reads "learning". VO2 max was
+        // the last value line saying "Learning" while Recovery, Stress,
+        // Respiration and Sleep beside it said "--".
+        XCTAssertEqual(summary.valueText, AtriaCompactMetricPresentation.noValue)
         XCTAssertEqual(summary.confidence, "learning")
         XCTAssertEqual(summary.detail, "2/14 RHR")
         XCTAssertEqual(summary.compactStatusText, "2/14 RHR")
@@ -3523,7 +3529,13 @@ final class AtriaAnalyticsTests: XCTestCase {
                 recoveryIsFromPreviousSleep: true,
                 recoveryLiftedAfterNap: false
             ),
-            "Previous sleep score · awaiting today’s sleep"
+            // 2026-07-28 deterministic-presentation pass: the status line is now
+            // a compact fixed-vocabulary marker rather than prose. The invariant
+            // this test names is unchanged -- a carried score still says it came
+            // from the previous sleep -- but it says so in 11 characters instead
+            // of 44, because at 44 it wrapped and made one compact card taller
+            // than the one beside it.
+            "prev. sleep"
         )
         XCTAssertEqual(
             AtriaHomeModel.HeroSnapshot.recoveryDetailText(
@@ -3532,7 +3544,10 @@ final class AtriaAnalyticsTests: XCTestCase {
                 recoveryIsFromPreviousSleep: false,
                 recoveryLiftedAfterNap: false
             ),
-            Metrics.RecoveryEstimate.Confidence.personalBaseline.rawValue
+            // Same migration: the raw confidence name ("personal baseline") is
+            // 17 characters and would wrap, so a confident score falls back to
+            // the level's short label.
+            AtriaMetricConfidenceLevel.moderate.shortLabel
         )
     }
 
