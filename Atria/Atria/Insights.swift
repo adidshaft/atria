@@ -117,6 +117,55 @@ struct PersonalBaseline: Codable {
         }
     }
 
+    /// A confirmed main sleep is the durable day-level authority for its
+    /// overnight RHR/HRV. Merge it idempotently so retained confirmed nights
+    /// can fill baseline days after raw-session retirement or app relaunch.
+    @discardableResult
+    mutating func mergeConfirmedSleep(
+        resting: Int,
+        hrv: Int?,
+        at observedAt: Date,
+        calendar: Calendar = .current
+    ) -> Bool {
+        guard (35...240).contains(resting) else { return false }
+        let qualifiedHRV = hrv.flatMap { $0 > 0 ? Double($0) : nil }
+        let day = calendar.startOfDay(for: observedAt)
+        let existing = samples.first {
+            calendar.isDate($0.date, inSameDayAs: day)
+        }
+        // A nil confirmed-sleep HRV means "not available from this compact
+        // record", not proof that already-qualified raw RR for the same night
+        // was invalid. Preserve that stronger same-day overnight evidence.
+        let resolvedHRV = qualifiedHRV
+            ?? existing.flatMap { $0.isOvernightSample ? $0.rmssd : nil }
+        if let existing,
+           existing.isOvernightSample,
+           Int(existing.restingHR.rounded()) == resting,
+           existing.rmssd == resolvedHRV {
+            return false
+        }
+
+        let insertedNewDay = existing == nil
+        samples.removeAll {
+            calendar.isDate($0.date, inSameDayAs: day)
+        }
+        samples.append(BaselineSample(date: observedAt,
+                                      restingHR: Double(resting),
+                                      rmssd: resolvedHRV,
+                                      overnight: true))
+        samples = Self.canonicalDailySamples(samples, calendar: calendar)
+        if samples.count > Self.maxSamples {
+            samples.removeFirst(samples.count - Self.maxSamples)
+        }
+        if insertedNewDay {
+            sessions += 1
+        }
+        updated = max(updated ?? observedAt, observedAt)
+        hrvQualificationVersion = Self.currentHRVQualificationVersion
+        rebuildLearnedValuesFromCanonicalSamples()
+        return true
+    }
+
     var restingInt: Int? { restingHR.map { Int($0.rounded()) } }
     var hrvInt: Int? {
         guard hrvQualificationVersion >= Self.currentHRVQualificationVersion else { return nil }

@@ -332,7 +332,7 @@ final class AtriaHRVQualificationTests: XCTestCase {
         )
         var baseline = PersonalBaseline()
 
-        let seeded = SessionStore.seedRestingBaselineFromConfirmedSleepsIfNeeded(
+        let seeded = SessionStore.seedBaselineFromConfirmedSleeps(
             &baseline,
             confirmedSleeps: [nap]
         )
@@ -340,6 +340,60 @@ final class AtriaHRVQualificationTests: XCTestCase {
         XCTAssertEqual(seeded, 0)
         XCTAssertNil(baseline.restingInt)
         XCTAssertEqual(baseline.restingSampleCount, 0)
+    }
+
+    func testConfirmedSleepBaselineMergeFillsEveryMissingQualifiedDayAndIsIdempotent() {
+        let firstSession = session(dayOffset: 0,
+                                   source: .standardHeartRateMeasurement2A37)
+        let secondSession = session(dayOffset: 1,
+                                    source: .standardHeartRateMeasurement2A37)
+        let thirdSession = session(dayOffset: 2,
+                                   source: .standardHeartRateMeasurement2A37)
+        let sleeps = [
+            confirmedMainSleep(for: firstSession,
+                               id: "sleep-day-0",
+                               persistedHRV: 44,
+                               persistedHRVWindowCount: 3),
+            confirmedMainSleep(for: secondSession,
+                               id: "sleep-day-1",
+                               persistedHRV: 48,
+                               persistedHRVWindowCount: 4),
+            confirmedMainSleep(for: thirdSession,
+                               id: "sleep-day-2",
+                               persistedHRV: 52,
+                               persistedHRVWindowCount: 5),
+        ]
+        var baseline = PersonalBaseline()
+        baseline.learn(fromResting: 58,
+                       hrv: 0,
+                       at: firstSession.end,
+                       overnight: false)
+
+        XCTAssertTrue(SessionStore.baselineNeedsConfirmedSleepMerge(
+            baseline,
+            confirmedSleeps: sleeps,
+            calendar: calendar
+        ))
+        XCTAssertEqual(SessionStore.seedBaselineFromConfirmedSleeps(
+            &baseline,
+            confirmedSleeps: sleeps,
+            calendar: calendar
+        ), 3)
+        XCTAssertEqual(baseline.restingSampleCount, 3)
+        XCTAssertEqual(baseline.hrvSampleCount, 3)
+        XCTAssertEqual(baseline.freshHRVSampleCount(now: thirdSession.end), 3)
+        XCTAssertFalse(SessionStore.baselineNeedsConfirmedSleepMerge(
+            baseline,
+            confirmedSleeps: sleeps,
+            calendar: calendar
+        ))
+        XCTAssertEqual(SessionStore.seedBaselineFromConfirmedSleeps(
+            &baseline,
+            confirmedSleeps: sleeps,
+            calendar: calendar
+        ), 0)
+        XCTAssertEqual(baseline.restingSampleCount, 3)
+        XCTAssertEqual(baseline.hrvSampleCount, 3)
     }
 
     func testQualifiedRRMustFallInsideConfirmedMainSleepWindow() {
