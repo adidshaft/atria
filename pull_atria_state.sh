@@ -263,13 +263,23 @@ else
 fi
 
 if "${devicectl_cmd[@]}" device info processes --device "$device_id" > "$evidence_dir/processes.txt" 2>&1; then
+  atria_main_pattern='/Atria\.app/Atria([[:space:]]|$)'
+  atria_widget_pattern='/Atria\.app/PlugIns/AtriaWidget\.appex/AtriaWidget([[:space:]]|$)'
   whoop_widget_pattern='/Whoop\.app/PlugIns/(WhoopWidgetExtension|AtriaWidgetExtension)\.appex/(WhoopWidgetExtension|AtriaWidgetExtension)'
-  if grep -E "Atria|com\.adidshaft\.atria|/Whoop\.app/Whoop|${whoop_widget_pattern}" "$evidence_dir/processes.txt" > "$evidence_dir/process-check.txt"; then
-    printf 'process_status=running\n' | tee -a "$summary"
-    if grep -Eq 'Atria|com\.adidshaft\.atria' "$evidence_dir/process-check.txt"; then
+  if grep -E "${atria_main_pattern}|${atria_widget_pattern}|/Whoop\.app/Whoop|${whoop_widget_pattern}" "$evidence_dir/processes.txt" > "$evidence_dir/process-check.txt"; then
+    if grep -Eq "$atria_main_pattern" "$evidence_dir/process-check.txt"; then
+      printf 'process_status=running\n' | tee -a "$summary"
       printf 'process_name_status=atria\n' | tee -a "$summary"
+      printf 'atria_main_process=1\n' | tee -a "$summary"
     else
+      printf 'process_status=not_listed\n' | tee -a "$summary"
       printf 'process_name_status=not_atria\n' | tee -a "$summary"
+      printf 'atria_main_process=0\n' | tee -a "$summary"
+    fi
+    if grep -Eq "$atria_widget_pattern" "$evidence_dir/process-check.txt"; then
+      printf 'atria_widget_process=1\n' | tee -a "$summary"
+    else
+      printf 'atria_widget_process=0\n' | tee -a "$summary"
     fi
     whoop_process_count=$(grep -Ec "/Whoop\.app/(Whoop|PlugIns/(WhoopWidgetExtension|AtriaWidgetExtension)\.appex/(WhoopWidgetExtension|AtriaWidgetExtension))" "$evidence_dir/process-check.txt" || true)
     if [[ "$whoop_process_count" -gt 0 ]]; then
@@ -296,6 +306,9 @@ if "${devicectl_cmd[@]}" device info processes --device "$device_id" > "$evidenc
     cat "$evidence_dir/process-check.txt" >> "$summary"
   else
     printf 'process_status=not_listed\n' | tee -a "$summary"
+    printf 'process_name_status=not_atria\n' | tee -a "$summary"
+    printf 'atria_main_process=0\n' | tee -a "$summary"
+    printf 'atria_widget_process=0\n' | tee -a "$summary"
     printf 'official_whoop_process_status=not_listed\n' | tee -a "$summary"
     printf 'official_whoop_process_count=0\n' | tee -a "$summary"
     printf 'official_whoop_main_process=0\n' | tee -a "$summary"
@@ -304,6 +317,9 @@ if "${devicectl_cmd[@]}" device info processes --device "$device_id" > "$evidenc
   fi
 else
   printf 'process_status=unknown\n' | tee -a "$summary"
+  printf 'process_name_status=unknown\n' | tee -a "$summary"
+  printf 'atria_main_process=unknown\n' | tee -a "$summary"
+  printf 'atria_widget_process=unknown\n' | tee -a "$summary"
   printf 'official_whoop_process_status=unknown\n' | tee -a "$summary"
 fi
 
