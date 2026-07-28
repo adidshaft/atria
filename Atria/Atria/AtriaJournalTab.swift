@@ -1171,7 +1171,6 @@ private struct AtriaJournalFollowUpSheet: View {
         .padding(24)
         .presentationDetents([.medium])
         .presentationDragIndicator(.visible)
-        .presentationBackground(.thinMaterial)
         .onAppear {
             guard let value = existingAnswer?.value else { return }
             switch question {

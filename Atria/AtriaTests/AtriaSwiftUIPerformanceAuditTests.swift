@@ -217,6 +217,35 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
         XCTAssertTrue(payload.contains("rrPoints.append"))
     }
 
+    func testResearchOutboxFilesystemWorkUsesSerialUtilityWorker() throws {
+        let source = try appSource("AtriaResearchBundle.swift")
+        let queueStart = try XCTUnwrap(source.range(of: "enum AtriaResearchUploadQueue"))
+        let consentStart = try XCTUnwrap(source.range(
+            of: "struct AtriaResearchConsentSheet",
+            range: queueStart.upperBound..<source.endIndex
+        ))
+        let queue = String(source[queueStart.lowerBound..<consentStart.lowerBound])
+
+        XCTAssertTrue(queue.contains(
+            "AtriaCoalescingSerialWorker<OutboxOperation, OutboxOperationResult>"
+        ))
+        XCTAssertTrue(queue.contains("label: \"com.adidshaft.atria.research-outbox\""))
+        XCTAssertTrue(queue.contains("qos: .utility"))
+        XCTAssertTrue(queue.contains("await outboxWorker.performAsync(.stats)"))
+        XCTAssertTrue(queue.contains("await outboxWorker.performAsync(.persist("))
+        XCTAssertTrue(queue.contains("await outboxWorker.performAsync(.clear("))
+        XCTAssertTrue(queue.contains("await outboxWorker.performAsync(.prune("))
+
+        let directoryStart = try XCTUnwrap(queue.range(of: "static var outboxDirectory: URL"))
+        let configuredStart = try XCTUnwrap(queue.range(
+            of: "static var configuredEndpoint",
+            range: directoryStart.upperBound..<queue.endIndex
+        ))
+        let directoryAccessor = String(queue[directoryStart.lowerBound..<configuredStart.lowerBound])
+        XCTAssertFalse(directoryAccessor.contains("createDirectory"),
+                       "Reading the outbox URL on MainActor must not perform filesystem work")
+    }
+
     func testCoalescingSerialWorkerKeepsInFlightAndNewestPendingRequest() {
         let firstStarted = DispatchSemaphore(value: 0)
         let releaseFirst = DispatchSemaphore(value: 0)

@@ -1162,7 +1162,7 @@ struct AtriaHomeView: View {
                                   onRemove: route.night.map { night in
                                       {
                                           let removed = night.confirmed
-                                              ? store.deleteConfirmedSleep(id: night.id)
+                                              ? await store.deleteConfirmedSleep(id: night.id)
                                               : store.dismissSleepCandidate(night)
                                           if removed { sleepReviewSheetRoute = nil }
                                           return removed
@@ -1171,7 +1171,7 @@ struct AtriaHomeView: View {
                 let rest = store.baseline.restingInt ?? 60
                 let saved: Bool
                 if let night = route.night {
-                    saved = store.saveSleepReviewNightForUI(
+                    saved = await store.saveSleepReviewNightForUI(
                         night,
                         start: start,
                         end: end,
@@ -1180,7 +1180,7 @@ struct AtriaHomeView: View {
                         source: "notification_sleep_review"
                     ) != nil
                 } else {
-                    saved = store.addManualSleep(start: start,
+                    saved = await store.addManualSleep(start: start,
                                                  end: end,
                                                  isNap: isNap,
                                                  rest: rest,
@@ -1437,8 +1437,8 @@ struct AtriaHomeView: View {
         .sheet(item: $workoutReviewDraft) { draft in
             AtriaWorkoutReviewFlow(draft: draft) {
                 workoutReviewDraft = nil
-            } onSave: { result in
-                saveWorkoutReview(
+            } onSave: { @MainActor result in
+                await saveWorkoutReview(
                     result,
                     settlingCandidateWindow: (draft.suggestedStart, draft.suggestedEnd)
                 )
@@ -2676,7 +2676,7 @@ struct AtriaHomeView: View {
             selectedTab = .overview
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(700))
-                store.seedDebugStrengthWorkoutProofIfRequested(arguments: arguments)
+                await store.seedDebugStrengthWorkoutProofIfRequested(arguments: arguments)
             }
         }
         if let requestedOverviewSegment {
@@ -3905,9 +3905,9 @@ struct AtriaHomeView: View {
     private func saveWorkoutReview(
         _ result: AtriaWorkoutReviewResult,
         settlingCandidateWindow: (start: Date, end: Date)
-    ) -> UserConfirmedWorkout? {
+    ) async -> UserConfirmedWorkout? {
         let rest = store.baseline.restingInt ?? model.heroStore.state.restingHeartRate
-        let confirmed = store.confirmWorkoutWindowForUI(start: result.start,
+        let confirmed = await store.confirmWorkoutWindowForUI(start: result.start,
                                                         end: result.end,
                                                         rest: rest,
                                                         maxHR: store.profile.maxHR,
@@ -4601,9 +4601,9 @@ struct AtriaHomeView: View {
                   live.lastReadingAt.map({ now.timeIntervalSince($0) <= 15 }) == true else {
                 return nil
             }
-            return Status(title: "Live capture protected",
+            return Status(title: "Capturing live",
                           symbol: "checkmark.shield.fill",
-                          accessibilityLabel: "Live heart-rate capture is protected.")
+                          accessibilityLabel: "Heart rate is being recorded live.")
         }
 
         private struct Status {
@@ -6076,7 +6076,7 @@ private struct AtriaWorkoutZoneEvidenceStrip: View, Equatable {
 private struct AtriaWorkoutReviewFlow: View {
     let draft: AtriaWorkoutReviewDraft
     let onCancel: () -> Void
-    let onSave: (AtriaWorkoutReviewResult) -> UserConfirmedWorkout?
+    let onSave: @MainActor (AtriaWorkoutReviewResult) async -> UserConfirmedWorkout?
 
     @State private var step: AtriaWorkoutReviewStep = .time
     @State private var start: Date
@@ -6090,10 +6090,11 @@ private struct AtriaWorkoutReviewFlow: View {
     @State private var filteredExerciseGroups: [AtriaWorkoutExerciseGroup]
     @State private var showsAllWorkoutTypes = false
     @State private var summaryExerciseHistoryMemo = AtriaWorkoutSummaryExerciseHistoryMemo()
+    @State private var isSaving = false
 
     init(draft: AtriaWorkoutReviewDraft,
          onCancel: @escaping () -> Void,
-         onSave: @escaping (AtriaWorkoutReviewResult) -> UserConfirmedWorkout?) {
+         onSave: @escaping @MainActor (AtriaWorkoutReviewResult) async -> UserConfirmedWorkout?) {
         self.draft = draft
         self.onCancel = onCancel
         self.onSave = onSave
@@ -7131,10 +7132,10 @@ private struct AtriaWorkoutReviewFlow: View {
                 .atriaCardAction(prominent: false, tint: .secondary)
             }
 
-            Button(primaryActionTitle) {
+            Button(isSaving ? "Saving…" : primaryActionTitle) {
                 primaryAction()
             }
-            .disabled(end <= start)
+            .disabled(end <= start || isSaving)
             .atriaCardAction(tint: .orange)
         }
         .padding(10)
@@ -7341,12 +7342,19 @@ private struct AtriaWorkoutReviewFlow: View {
 
     private func primaryAction() {
         if step == .summary {
-            _ = onSave(AtriaWorkoutReviewResult(start: start,
-                                                end: end,
-                                                activityType: selectedType.rawValue,
-                                                activitySubtype: selectedSubtype,
-                                                exerciseNames: selectedExerciseNames,
-                                                strengthSets: draft.strengthSets))
+            guard !isSaving else { return }
+            isSaving = true
+            Task { @MainActor in
+                _ = await onSave(AtriaWorkoutReviewResult(
+                    start: start,
+                    end: end,
+                    activityType: selectedType.rawValue,
+                    activitySubtype: selectedSubtype,
+                    exerciseNames: selectedExerciseNames,
+                    strengthSets: draft.strengthSets
+                ))
+                isSaving = false
+            }
             return
         }
         if step == .type, !selectedType.supportsExerciseSelection {

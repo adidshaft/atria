@@ -10,7 +10,7 @@ final class AtriaBiologicalAgeCacheTests: XCTestCase {
 
         XCTAssertFalse(summary.isReady)
         XCTAssertEqual(summary.valueText, "--")
-        XCTAssertEqual(summary.compactStatusText, "Needs VO₂ max learning")
+        XCTAssertEqual(summary.compactStatusText, "VO₂ max is still learning")
     }
 
     func testRefreshingFitnessAgeHasDeterministicCompactStatus() {

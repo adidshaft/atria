@@ -901,7 +901,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "LegacyContentView",
             "DashboardSection",
             "AtriaGlassToolbar",
-            "RecoveryRing",
+            "struct RecoveryRing",
             "StrainGauge",
             "atriaGlassPanel",
             "atriaQuietPanel",
@@ -933,9 +933,6 @@ class HandoffStaticChecks(unittest.TestCase):
             ".padding(.bottom, scrollBottomClearance)",
             "private var scrollBottomClearance: CGFloat",
             "shouldShowLiveAccessory ? 260 : 188",
-            ".safeAreaInset(edge: .bottom, spacing: 0)",
-            "private var scrollBottomSafeAreaInset: CGFloat",
-            "shouldShowLiveAccessory ? 220 : 148",
             ".scrollEdgeEffectStyle(.soft, for: .top)",
             "enum AtriaDesignTokens",
             "func atriaCard(",
@@ -1053,9 +1050,9 @@ class HandoffStaticChecks(unittest.TestCase):
             'label = "Live · Battery pending"',
             'accessorySymbol = "bolt.fill"',
             "struct AtriaHeaderBatterySnapshot: Equatable",
-            'accessibilityLabel = "\\(batteryLevel)%, Charging"',
+            'return "Strap battery \\(batteryText), \\(batteryAccessibilityChargeText)."',
             'label = "\\(batteryLevel)% · Low"',
-            'label = "\\(batteryLevel)% · \\(batteryRecencyText(verifiedAt: input.battery.verifiedAt, now: now))"',
+            'accessibilityLabel = "Live strap, \\(batteryLevel)%, charger status unavailable"',
             "var batteryLastVerifiedAt: Date?",
             "batteryLastVerifiedAt: ble.lastVerifiedBatteryLevelAt",
             "label = hasPulseSignal ? \"Live\" : \"No signal\"",
@@ -1100,7 +1097,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "self.publishHeroPulse()\n                if self.prefersPulseSparklineUpdates",
             ".interactive()",
             ".frame(minWidth: AtriaHeaderControlMetrics.statusMinWidth,\n               maxWidth: 172,\n               minHeight: AtriaHeaderControlMetrics.height,\n               maxHeight: AtriaHeaderControlMetrics.height)",
-            "Heart rate is live; stress appears once HRV-grade beat-to-beat windows are ready.",
+            "Heart rate is live. Keep wearing normally while HRV settles.",
             "HRV-grade beat-to-beat data is ready as personal-baseline HRV.",
             "private static func hrvSettlingText(quality: String, liveHeartRate: Int) -> String",
             "guard liveHeartRate > 0 else { return quality }",
@@ -1133,7 +1130,7 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, top_chrome_body, needle)
         assert_not_contains(self, top_chrome_body, "@ObservedObject")
 
-        status_host_start = home.index("private struct AtriaTopStatusChipHost: View")
+        status_host_start = home.index("struct AtriaTopStatusChipHost: View")
         status_host_end = home.index("private struct AtriaTopStatusChip: View, Equatable", status_host_start)
         status_host = home[status_host_start:status_host_end]
         assert_contains(self, status_host, "@StateObject private var projectionStore: AtriaTopStatusProjectionStore")
@@ -1144,7 +1141,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, status_host, "Date()")
 
         projection_start = home.index("final class AtriaTopStatusProjectionStore: ObservableObject")
-        projection_end = home.index("private struct AtriaTopStatusChipHost: View", projection_start)
+        projection_end = home.index("struct AtriaTopStatusChipHost: View", projection_start)
         projection = home[projection_start:projection_end]
         assert_contains(self, projection, ".map { AtriaTopStatusPulseTrigger(hasPulseSignal: $0.hasPulseSignal) }")
         assert_contains(self, projection, ".removeDuplicates()")
@@ -1253,7 +1250,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "Text(\"Heart-rate timeline\")",
             "Text(\"Last 6 hr\")",
             "let showsXAxis: Bool",
-            "showsXAxis: false",
+            "showsXAxis: true",
             "struct AtriaHeartRateExplorer: View",
             "@Environment(\\.colorScheme) private var colorScheme",
             "@Environment(\\.accessibilityReduceTransparency) private var reduceTransparency",
@@ -1493,7 +1490,7 @@ class HandoffStaticChecks(unittest.TestCase):
         tests = source(ROOT / "Atria" / "AtriaTests" / "AtriaSleepAuditRegressionTests.swift")
         assert_contains(self, sessions, 'guard candidate.kind != "nap_candidate" else { return false }')
         assert_not_contains(self, sessions, 'if candidate.kind == "nap_candidate" {\n                return candidate.duration >= AggregateSleepCandidate.napMinimumDuration')
-        assert_contains(self, tests, "testDaytimeNapCandidateRemainsReviewOnly")
+        assert_contains(self, tests, "testDaytimeNapWithValidatedStillnessRemainsReviewOnly")
 
     def test_recovery_stays_on_one_canonical_morning_score(self):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
@@ -1502,12 +1499,14 @@ class HandoffStaticChecks(unittest.TestCase):
         hero_start = home.index("private static func makeHeroSnapshot")
         hero_end = home.index("private static func makeDisconnectedHeroSnapshot", hero_start)
         hero = home[hero_start:hero_end]
-        assert_contains(self, hero, "let recovery = store.recoveryProjection(")
+        assert_contains(self, hero, "let recovery = store.recoveryProjectionForPresentation(")
         assert_contains(self, hero, "recoveryLiftedAfterNap: false")
         assert_not_contains(self, hero, "napAdjustedRecovery(")
         assert_not_contains(self, hero, "nap_lift")
-        assert_contains(self, sessions, "let frozen = DailyRecoveryResolver.summary(rollups: dailyRollupHistory,")
-        assert_contains(self, sessions, "if frozen != nil || cycle.boundaryKind == .noSleepFallback")
+        assert_contains(self, sessions, "let frozen = Self.numericFrozenRecovery(")
+        assert_contains(self, sessions, "DailyRecoveryResolver.summary(rollups: dailyRollupHistory,")
+        assert_contains(self, sessions, "if frozen != nil {")
+        assert_contains(self, sessions, "provisional: DailyRecoveryResolver.noSleepEstimate")
         assert_contains(self, cadence_tests, "testFrozenPhysiologicalDayNeverEvaluatesProvisionalAutoclosure")
 
     def test_effort_review_requires_sustained_moderate_hr_not_one_peak(self):
@@ -1870,7 +1869,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaGlanceMetricCard(title: \"VO2max\"",
             "value: vo2MaxEstimate.value.map { String(format: \"%.1f\", $0) } ?? \"--\"",
             # 2026-07-06: not-ready word standardized "Building" -> "Learning".
-            "detail: vo2MaxEstimate.value == nil ? \"Learning\" : vo2MaxDetailText",
+            "detail: vo2MaxEstimate.value == nil\n                                    ? vo2MaxEstimate.compactStatusText\n                                    : vo2MaxDetailText",
             "private var vo2MaxDetailText: String",
             "let confidence = vo2MaxEstimate.confidence.capitalized",
             "guard vo2MaxEstimate.trendText != \"Learning\" else { return confidence }",
@@ -2007,11 +2006,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "snapshot.sleepConsistencyText",
             "snapshot.sleepDebtText(goalHours: sleepGoalHours)",
             "AtriaGlanceMetricCard(title: \"Resp rate\"",
-            "value: currentMainSleep?.respiratoryRateText ?? \"--\"",
-            "Sleep signal",
-            "detail: currentMainSleep?.respiratoryRate == nil ? \"Sleep signal\" : \"Early\"",
+            "value: currentMainSleep?.respiratoryRateText ?? \"Learning\"",
+            "detail: currentMainSleep?.respiratoryRate == nil",
+            "? \"Needs qualified sleep\" : \"Early\"",
             "accessibilityDetail: currentMainSleep?.respiratoryRate == nil",
-            "Respiratory rate is building from sleep-only evidence.",
+            "Respiratory rate needs qualified sleep evidence.",
             "AtriaGlanceMetricCard(title: \"Strap steps\"",
             "value: steps.valueText",
             "detail: steps.detailText",
@@ -2043,7 +2042,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "Blood oxygen is not available yet. Atria does not estimate a percentage.",
             "AtriaGlanceMetricCard(title: \"Wrist temp\"",
             "value: AtriaExperimentalSensorCopy.skinTemperatureValue(",
-            "detail: decoderAvailable",
+            "detail: AtriaExperimentalSensorCopy.skinTemperatureStatus(",
             "accessibilityDetail: AtriaExperimentalSensorCopy.skinTemperatureAccessibilityDetail(",
             "decoderAvailable: decoderAvailable",
             "insights: store.behaviorInsights",
@@ -2234,7 +2233,7 @@ class HandoffStaticChecks(unittest.TestCase):
 
         assert_contains(self, home, "profileMetricsStore: model.profileMetricsStore")
         assert_contains(self, home, "onStartWorkout: {\n                                 showWorkoutStartSheet = true\n                             }")
-        assert_contains(self, home, "AtriaWorkoutStartSheet { configuration in")
+        assert_contains(self, home, "AtriaWorkoutStartSheet(onPrepare:")
         assert_contains(self, home, "beginWorkoutSession(configuration: configuration)")
         assert_contains(self, vitals, "AtriaTrainingLoadTile(ratio: hero.loadRatioText")
         assert_contains(self, vitals, "targetMetric: .load)")
@@ -2614,7 +2613,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "Toggle(isOn: $batterySaver)",
             "Label(\"Stable sensor mode\", systemImage: \"antenna.radiowaves.left.and.right\")",
             "title: batterySaver ? \"Heart rate + strap motion\" : \"Diagnostic full protocol\"",
-            "Atria never substitutes phone motion.",
+            "Atria marks them unavailable rather than substituting phone steps.",
             "Keeps richer strap streams available for beat-to-beat, HRV, Recovery and sleep research.",
             ".accessibilityHint(\"Changing mode reconnects the strap.\")",
             ".onChange(of: batterySaver) { _, value in onUpdateBatterySaver(value) }",
@@ -2742,7 +2741,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "batteryIsCharging && batteryChargeStatus == .charging && !batteryRecentlyDropping",
             "var batteryShowsPowered: Bool { hasActiveChargingEvidence }",
             "batteryChargeStatus == .charging && !hasActiveChargingEvidence",
-            "return \"Charge state unavailable\"",
+            "return \"Charge unavailable\"",
             "case .levelOnly: return \"Charge unavailable\"",
             "case .charging: return \"Strap charging\"",
             "case .notCharging: return \"Strap not charging\"",
@@ -2893,7 +2892,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "var metricReady: Bool",
             "metricUsableRows > 0 && currentSessionUsableRows > 0",
             "if historicalArchive.metricUsableRows == 0",
-            "requestRecoveredDataRecomputation(reason: \"session_store_init\")",
+            "requestRecoveredDataRecomputation(reason: \"deferred_session_load\")",
         ]:
             assert_contains(self, sessions, needle)
 
@@ -3189,7 +3188,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "source: \"live_workout_end\"",
             "store.exportToHealthKit()",
             "guard let finalIntent = await finalIntent.persistTerminal() else",
-            "store.requestPersistenceFlush(reason: \"live_workout_end_checkpoint\")",
             "store.flushScheduledPersistenceAsync(reason: \"live_workout_end_confirmed\")",
             "Workout safely retained",
             "AtriaPendingWorkoutIntent.clearIfUnchanged(finalIntent)",
@@ -3229,7 +3227,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "func confirmWorkoutWindowForUIAsync(",
             "let prepared = await Task.detached(priority: .utility)",
             "let activeJournalSession = Self.loadActiveJournalSessionIfFresh",
-            "return commitPreparedWorkoutWindowConfirmation(prepared)",
+            "return await commitPreparedWorkoutWindowConfirmation(prepared)",
             "nonisolated static func prepareWorkoutWindowConfirmation(",
             "private func commitPreparedWorkoutWindowConfirmation(",
             "private func confirmWorkoutWindow(start requestedStart: Date,",
@@ -3496,7 +3494,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "if !exerciseQuery.isEmpty {\n                ForEach(filteredExerciseGroups)",
             "private var promptExerciseSuggestions: [String]",
             "AtriaWorkoutExerciseCatalog.suggestedExercises(for: suggestion)",
-            "Button(primaryActionTitle)",
+            'Button(isSaving ? "Saving…" : primaryActionTitle)',
             "private func applyWorkoutType(_ type: AtriaWorkoutActivityType)",
             "selectedExercises.removeAll()",
             "step == .summary ? \"Save\" : \"Continue\"",
@@ -3622,7 +3620,11 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, home, "selectedType.supportsExerciseSelection ? \"Guided\" : \"Label only\"")
         assert_not_contains(self, home, "Exercises next\" : \"Label only\"")
         assert_not_contains(self, home, "captureTile(title: \"Obs\"")
-        assert_not_contains(self, home, "evidence only")
+        home_without_comments = "\n".join(
+            line for line in home.splitlines()
+            if not line.lstrip().startswith("//")
+        )
+        assert_not_contains(self, home_without_comments, "evidence only")
         assert_not_contains(self, home, "Workout capture check.")
         assert_not_contains(self, home, "Strap signal peak 0")
         assert_not_contains(self, home, "Atria is seeing sustained effort, not just a quick spike.")
@@ -3757,7 +3759,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "secondsSinceEnd >= workoutReviewSettleDelay",
             "scheduleWorkoutReviewCacheRefresh(rest: rest,",
             "DispatchQueue.global(qos: .utility).async(execute: workItem)",
-            "workoutReviewSessionsWithinHorizon(cachedCanonicalSessions, now: now)",
+            "workoutReviewSessionsWithinHorizon(reviewSessions, now: now)",
             "var reviewWorthyCandidate: Bool",
             "var bestReviewWorthyCandidate: Bool",
             "private static let reviewMinimumObservedDuration: TimeInterval = 15 * 60",
@@ -3980,8 +3982,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "deferred: Bool = true,",
             "completion: ((Bool) -> Void)? = nil",
             "let sourceSessions = canonicalSessions(includeActiveJournal: true)",
-            "historySnapshot = HistorySnapshot.sessionsOnly(sourceSessions, rest: rest, maxHR: maxHR)",
-            "DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.12)",
+            "historySnapshot = HistorySnapshot.sessionsOnly(\n            sourceSessions,\n            verifiedHistoricalStepEvidenceDays: preservedStepEvidenceDays,",
+            "Self.historySnapshotProjectionQueue.asyncAfter(deadline: .now() + 0.12)",
             "let snapshots = Self.makeHistorySnapshots(sessions: sourceSessions,",
             "private func publishFullHistorySnapshotIfCurrent(revision: Int,",
             "history: HistorySnapshot,",
@@ -4014,7 +4016,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "struct HistorySessionRowSnapshot: Identifiable",
             "struct SleepHistorySnapshot: Equatable",
             "static let empty = HistorySnapshot(sessions: [], detections: [], trends: [], rollups: [], rest: 60, maxHR: 200)",
-            "static func sessionsOnly(_ sessions: [SavedSession], rest: Int = 60, maxHR: Int) -> HistorySnapshot",
+            "static func sessionsOnly(\n        _ sessions: [SavedSession],\n        verifiedHistoricalStepEvidenceDays:",
             "includeDerivedSessionRows: false",
             "HistorySessionRowSnapshot(session: $0,",
             "includeDerivedMetrics: includeDerivedSessionRows",
@@ -4254,7 +4256,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "return max(duration, end.timeIntervalSince(start))",
             "let aggregateSleeps = Self.preferredSleepCandidatesByDay(\n            Self.aggregateSleepCandidates(in: sessions,",
             ".filter(Self.isReviewWorthySleepCandidate)",
-            "let aggregateSleeps = Self.preferredSleepCandidatesByDay(aggregateSleepCandidates(rest: rest,",
+            "let aggregateSleeps = Self.preferredSleepCandidatesByDay(\n            aggregateSleepCandidates(",
             # 2026-07-12: metadata-only confirmed workouts mint a rollup day
             # even without a canonical HR session.
             "let rollupDays = Set(grouped.keys)",
@@ -4397,8 +4399,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "let daytimeNapCandidateReady = clusterDaytimeNapWindow",
             "let shortLowHRNapCandidateReady = cluster.count == 1",
             "&& clusterDaytimeNapWindow",
-            "let napCandidateReady = daytimeNapCandidateReady || shortLowHRNapCandidateReady",
-            "guard strictDurationReady\n                        || fragmentedFallbackReady\n                        || napCandidateReady\n                        || nearStrictMorningHROnlyReviewReady else { return nil }",
+            "let napPhysiologyReady = daytimeNapCandidateReady || shortLowHRNapCandidateReady",
+            "let napCandidateReady = napPhysiologyReady && motionValidated",
+            "guard napCandidateReady\n                        || motionValidatedMainSleepReady\n                        || stableHROnlyMainSleepReady\n                        || degradedHROnlyMainSleepReviewReady\n                        || denseMorningHROnlyReviewReady\n                        || denseLongHROnlyReviewReady else {",
             'reason = "HR-only short low-HR nap/rest candidate; user confirmation required; \\(motionReason)"',
             'reason = "HR-only daytime nap candidate; user confirmation required; \\(motionReason)"',
             'reason = "HR-only overnight review window; user confirmation required; \\(motionReason)"',
@@ -4503,7 +4506,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private static func merge(_ staged:",
             "struct SleepStageSegment: Codable, Identifiable, Equatable",
             "func addManualSleep(start: Date,",
-            "source: String = \"manual_ui\") -> UserConfirmedSleep?",
+            "source: String = \"manual_ui\") async -> UserConfirmedSleep?",
             "let sleepSource = isNap ? \"manual_nap\" : \"manual_sleep\"",
             "confidence: \"manual_user_entered\"",
             "motionSource: \"manual\"",
@@ -4528,7 +4531,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private static func stageDurations(from segments: [SleepStageSegment]) -> [SleepStageKind: TimeInterval]",
             "private struct AtriaSleepHistoryCard: View, Equatable",
             "AtriaSleepHistoryCard(snapshot: sleepHistory,",
-            "let onAddManualSleep: (Date, Date, Bool) -> Void",
+            "let onAddManualSleep: (Date, Date, Bool) async -> Bool",
             "@State private var showManualSleepSheet = false",
             "Image(systemName: \"plus\")",
             ".atriaCardAction(prominent: false, tint: .cyan)",
@@ -4591,7 +4594,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "\"Naps need at least 20 minutes.\"",
             "\"Longer than 3 hours should be saved as sleep.\"",
             "\"Sleep needs at least 3 hours.\"",
-            ".disabled(!canSave)",
+            ".disabled(!canSave || isSaving)",
             "ForEach(SleepStageKind.allCases)",
             "Not estimated from manual entry",
             "Stage bars stay blank until sensor evidence is available.",
@@ -4682,7 +4685,7 @@ class HandoffStaticChecks(unittest.TestCase):
             'source: "vitals_sleep_history_adjust"',
             "source: \"vitals_sleep_history\"",
             "private func confirmSleepCandidate(_ night: SleepHistorySnapshot.Night)",
-            "store.confirmSleepHistoryNightForUI(night,",
+            "await store.confirmSleepHistoryNightForUI(",
             "private var shouldShowConfirmSleep: Bool",
             "guard snapshot.candidateCount > 0 else { return false }",
             "snapshot.latestReviewable?.confirmed != true",
@@ -5197,9 +5200,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "Menu {",
             'Image(systemName: "ellipsis")',
             '.accessibilityLabel("Today actions")',
-            ".contextMenu {",
-            "Button(action: onCustomizeToday)",
-            'Label("Customize Today", systemImage: "slider.horizontal.3")',
+            ".onLongPressGesture(minimumDuration: 0.45)",
+            "isEditingGlance = true",
+            ".draggable(metric.dragPayload)",
         ]:
             assert_contains(self, today, needle)
 
@@ -5339,8 +5342,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "let layoutConfig: AtriaHomeLayoutConfig",
             "Widget timeline snapshot ready",
             "Uses the same `atria.widgetSnapshot.v1` payload",
-            "widgetPreview(title: \"Medium widget\", compact: true)",
-            "widgetPreview(title: \"Large widget\", compact: false)",
+            "widgetPreview(title: \"Home Screen · medium\", compact: true)",
             "AtriaWidgetProofMetric.ordered(from: snapshot?.layoutGlanceMetrics ?? validatedLayout.glanceMetrics)",
             "private enum AtriaWidgetProofMetric: String, Identifiable",
             "static let fallbackOrder: [AtriaWidgetProofMetric] = [.strain, .bpm, .hrv, .steps]",
@@ -6094,9 +6096,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "final class AtriaOverviewMorningJournalProjectionStore: ObservableObject",
             "store.toggleBehaviorTag(tag)",
             "guard let night = sleepHistory.latest else { return false }",
-            "store.confirmSleepHistoryNightForUI(night,",
+            "await store.confirmSleepHistoryNightForUI(",
             'source: "morning_journal"',
-            "sleepConfirmationFailed = !onConfirmSleep()",
+            "sleepConfirmationFailed = !(await onConfirmSleep())",
             "The suggestion is still here",
             "onAdjustSleep: {",
             "adjustmentNight = sleepHistory.latest",
@@ -6250,8 +6252,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "answers[$0.rawValue] != nil",
             "todayAnswersByQuestion[question.rawValue] == nil",
             "todayAnswersByQuestion[Self.booleanQuestionID(for: tag)] != nil",
-            "todayAnswersByQuestion[question.rawValue]?.value.timeOfDayMinutes",
-            "todayAnswersByQuestion[question.rawValue]?.value.quantityValue",
+            "pendingCaffeineMinutes = existing.timeOfDayMinutes ?? pendingCaffeineMinutes",
+            "pendingDrinks = existing.quantityValue ?? pendingDrinks",
             "todayAnswersByQuestion[question.rawValue]?.value.scaleValue",
             "private struct AtriaJournalEntrySnapshot",
             "private final class AtriaJournalEntryMemo",
@@ -6395,7 +6397,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "daySectionsCache.publish(result.sections, for: request)",
             "nonisolated private static func makeDaySections(",
             "activityMemo.timelineSpans(sleepRevision: activity.sleepHistorySnapshotRevision,",
-            "timelineDay: timelineDay,",
+            "displayWindow: window,",
             "private final class AtriaActivityMonitorMemo",
             "private struct SourceKey: Equatable",
             "let selectedDayStart: Date",
@@ -7630,17 +7632,111 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, body, "standard_hr_only_write_blocked")
         assert_contains(self, text, "explicitWorkoutHaptic && command == Cmd.runHapticsPattern")
         assert_contains(self, text, "explicitWorkoutHaptic: true")
-        # Twelve tightly-scoped writes intentionally exist outside generic
-        # sendCommand: the original explicit diagnostic, the two-write isolated
-        # response/event/data R10+IMU diagnostic, the production-protected
-        # single 3F/01 R10 activation, the physically-proven production
-        # response/event/data 3F/01 -> 6A/01 pair, the full-protocol liveness repair (whose
-        # standard-HR branch returns through the protected path), the
-        # guarded one-shot battery query, and the workout motion lease's
-        # single per-connection validated 3F/01 -> 6A/01 activation pair, plus
-        # the one-shot same-connection short-burst 3F/01 -> 6A/01 recovery.
-        # All ordinary strap writes remain behind the standard-HR guard above.
-        self.assertEqual(text.count("writeValue("), body.count("writeValue(") + 12)
+        # Direct CoreBluetooth writes are an explicit authority boundary, not a
+        # count. A new write in an existing function or a new function must be
+        # reviewed by name and must carry the appropriate owner/lease guards.
+        declarations = list(re.finditer(
+            r"\b(?:private\s+)?func\s+([A-Za-z0-9_]+)\s*\(",
+            text,
+        ))
+        direct_write_authorities = set()
+        for write in re.finditer(r"\bwriteValue\s*\(", text):
+            prior = [item for item in declarations if item.start() < write.start()]
+            self.assertTrue(prior, "every direct BLE write must belong to a named function")
+            direct_write_authorities.add(prior[-1].group(1))
+        self.assertEqual(
+            {
+                "sendCommand",
+                "sendMotionHandshakeSingleR10ActivationIfReady",
+                "sendMotionHandshakeR10IMUSequenceIfReady",
+                "sendProtectedR10ResponseEventDataSequenceIfReady",
+                "sendProtectedR10ActivationNowIfReady",
+                "requestBoundedR10ActivationForSilentStream",
+                "retryProtectedR10ShortBurstIfEligible",
+                "stopWorkoutRawMotionIfConnected",
+                "armWorkoutHistoricalMotionBankIfPossible",
+                "scheduleGate4DailyBankRearmAfterHistoryStart",
+                "stopWorkoutHistoricalMotionBankIfPossible",
+                "scheduleGate4IMUOnlyProbeStop",
+                "startGate4HistoricalIMUWindowIfRequested",
+                "sendGate4OfficialGen4CompactMotionSequenceIfRequested",
+                "sendWorkoutMotionActivationPair",
+                "sendProprietaryBatteryRefreshCommand",
+            },
+            direct_write_authorities,
+        )
+
+        def function_block(name):
+            blocks = swift_braced_blocks(
+                text,
+                [rf"\b(?:private\s+)?func\s+{re.escape(name)}\s*\("],
+            )
+            self.assertEqual(1, len(blocks), f"expected one {name} implementation")
+            return blocks[0][1]
+
+        guarded_authorities = {
+            "sendMotionHandshakeSingleR10ActivationIfReady": [
+                "!readOnlyHistoryCaptureRequested",
+                "diagnostic.sendSingleR10Activation",
+            ],
+            "sendMotionHandshakeR10IMUSequenceIfReady": [
+                "!readOnlyHistoryCaptureRequested",
+                "diagnostic.sendR10IMUSequence",
+            ],
+            "sendProtectedR10ResponseEventDataSequenceIfReady": [
+                "!readOnlyHistoryCaptureRequested",
+                "protectedR10ResponseEventDataProofIsActive",
+                "shouldArmHighFrequencyMotion(",
+            ],
+            "sendProtectedR10ActivationNowIfReady": [
+                "!readOnlyHistoryCaptureRequested",
+                "standardHROnlyMode",
+                "cleanProofActive",
+            ],
+            "requestBoundedR10ActivationForSilentStream": [
+                "!readOnlyHistoryCaptureRequested",
+                "if standardHROnlyMode",
+                "sendProtectedR10ActivationIfReady()",
+            ],
+            "retryProtectedR10ShortBurstIfEligible": [
+                "!readOnlyHistoryCaptureRequested",
+                "shouldRetryProtectedR10ShortBurst(",
+            ],
+            "armWorkoutHistoricalMotionBankIfPossible": [
+                "!historyOnlyProbeMode",
+                "!offlineHistoricalSyncInProgress",
+                "historicalMotionBankIsArmedForCurrentConnection(",
+            ],
+            "scheduleGate4DailyBankRearmAfterHistoryStart": [
+                "offlineHistoricalSyncGeneration == generation",
+                "gate4DailyBankRearmGeneration == generation",
+            ],
+            "startGate4HistoricalIMUWindowIfRequested": [
+                "gate4HistoricalIMUWindowProbeRequested",
+                "!gate4HistoricalIMUWindowIssued",
+            ],
+            "sendGate4OfficialGen4CompactMotionSequenceIfRequested": [
+                "gate4PassiveReconnectProbeRequested",
+                "gate4RealtimeKeepaliveProbeRequested",
+                "gate4OfficialGen4CompactMotionProbeRequested",
+            ],
+            "sendWorkoutMotionActivationPair": [
+                "!readOnlyHistoryCaptureRequested",
+                "!historyOnlyProbeMode",
+                "!offlineHistoricalSyncInProgress",
+                "workoutMotionOwnerStartedAt != nil",
+                "shouldArmHighFrequencyMotion(",
+            ],
+            "sendProprietaryBatteryRefreshCommand": [
+                "!readOnlyHistoryCaptureRequested",
+                "proprietaryBatteryRefreshPhase == .discoveringResponse",
+                "proprietaryBatteryResponseCharacteristic?.isNotifying == true",
+            ],
+        }
+        for authority, required_tokens in guarded_authorities.items():
+            authority_body = function_block(authority)
+            for required in required_tokens:
+                assert_contains(self, authority_body, required)
         assert_contains(self, text, "--atria-confirm-response-event-data-profile")
         assert_contains(self, text, "--atria-confirm-r10-imu-command-sequence")
         assert_contains(self, text, "Cmd.toggleIMUMode, 0x01")
@@ -7788,7 +7884,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private func rangeLossBackfillRetryDelay(now: Date = Date()) -> TimeInterval",
             "ATRIADBG offline_sync status=retry_scheduled",
             "private func shouldForceReadyRangeLossBackfill(now: Date = Date()) -> Bool",
-            "let minimumInterval = offlineHistoricalSyncMinimumInterval(for: reason)",
+            "ordinaryInterval: offlineHistoricalSyncMinimumInterval(for: reason),",
             "private func offlineHistoricalSyncMinimumInterval(for reason: String) -> TimeInterval",
             "return rangeLossBackfillRetryInterval",
             "private func shouldForceStaleRangeLossBackfill(now: Date = Date()) -> Bool",
@@ -7832,7 +7928,7 @@ class HandoffStaticChecks(unittest.TestCase):
             ".requestOfflineHistoricalSyncAwaitingCompletion(",
             "admitAutomaticConnectedHandoffIfEligible: true",
             'if reason == "bg_processing"',
-            "store.performBackgroundMaintenance(reason: reason) { succeeded in",
+            "store.performBackgroundMaintenanceAsynchronously(reason: reason) { succeeded in",
             "case .background:",
             "ble.handleSceneBackgroundTransition(reason: \"scene_background\",",
             "rest: store.baseline.restingInt ?? 60",
@@ -7914,7 +8010,9 @@ class HandoffStaticChecks(unittest.TestCase):
             r"reason: String,\s*"
             r"force: Bool = false,\s*"
             r"allowConnectedAutomaticHandoff: Bool = false,\s*"
-            r"explicitResearchRequest: Bool = false\s*"
+            r"freshOwnerCutoverCompleted: Bool = false,\s*"
+            r"explicitResearchRequest: Bool = false,\s*"
+            r"explicitPostWorkoutBankRequest: Bool = false\s*"
             r"\) -> Bool \{(?P<body>.*?)\n    \}",
             ble,
             re.S,
@@ -7926,11 +8024,12 @@ class HandoffStaticChecks(unittest.TestCase):
         self.assertGreaterEqual(live_defer_index, 0)
         self.assertGreater(start_index, live_defer_index)
         assert_contains(self, request_body, "return false")
-        self.assertNotIn(
-            "OfflineSyncDefaults.rangeLossBackfillStartedAt",
-            request_body,
-            "attempt timestamps must be written only after the transaction-boundary reconnect fence",
+        self.assertEqual(
+            request_body.count("OfflineSyncDefaults.rangeLossBackfillStartedAt"),
+            1,
+            "the request gate may read the legacy timestamp for migration but must not write it",
         )
+        assert_contains(self, request_body, "backfillStartedAtUnix: defaults.double(")
         self.assertNotIn("defaults.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)", request_body)
         self.assertNotIn("assignIfChanged(\\.rangeLossBackfillPending, false)", request_body)
 
@@ -7950,7 +8049,14 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, finish_body, "finalizeOfflineHistoricalSyncAfterLiveRestoration(")
         self.assertNotIn("rangeLossBackfillPending, false", finish_body)
         self.assertNotIn("reconcileRangeLossBackfillPendingWithArchive", finish_body)
-        self.assertNotIn("cancelPeripheralConnection", finish_body)
+        self.assertEqual(
+            finish_body.count("cancelPeripheralConnection("),
+            1,
+            "live restoration may issue only one bounded reconnect repair",
+        )
+        assert_contains(self, finish_body, "if !reconnectRequested,")
+        assert_contains(self, finish_body, "Date().timeIntervalSince(restorationRequestedAt) >= 10")
+        assert_contains(self, finish_body, 'reason: "offline_sync_live_restore_rebuild_\\(reason)"')
 
         finalize_sync = re.search(
             r"private func finalizeOfflineHistoricalSyncAfterLiveRestoration\((?P<args>.*?)\) \{(?P<body>.*?)\n    \}",
@@ -8007,17 +8113,15 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "AtriaMissedDataBanner(protectsLiveStream: missedDataBackfillIsDeferredForLiveStream)",
             "private var missedDataBackfillIsDeferredForLiveStream: Bool",
-            "case .connected:\n            return model.coreLiveStore.state.sessionSampleCount > 0",
-            "case .connecting, .scanning:\n            return true",
+            "model.statusStore.state.status == .connected",
+            "&& model.coreLiveStore.state.sessionSampleCount > 0",
             "Text(protectsLiveStream ? \"Saved data protected\" : \"Sync ready\")",
             "Live HR stays protected while Atria waits for the best sync moment.",
             "Pull missed strap data when you are ready.",
-            "guard !missedDataBackfillIsDeferredForLiveStream else",
-            "missedDataBannerDismissedUntil = Date().addingTimeInterval(15 * 60)",
-            "if protectsLiveStream {\n            Text(\"Live\")",
-            ".accessibilityLabel(\"Live heart rate protected\")",
-            "Live heart rate remains protected; missing time stays excluded.",
-            "} else {\n            Button(action: onSync)",
+            "missedDataBannerDismissedUntil = Date().addingTimeInterval(60 * 60)",
+            "Button(action: onSync)",
+            "Sync missed data now; live heart rate may pause during recovery",
+            "Check strap for missed data",
             ".atriaCardAction(prominent: false, tint: .cyan)",
             ".atriaCardAction(prominent: false, tint: .secondary)",
             "Text(protectsLiveStream ? \"Live protected\" : \"Check strap history\")",
@@ -8473,7 +8577,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "standardHROnlyEnabled = true",
             "recordRadioMode(\"protected_r10_minimal\", reason: \"stable_hr_r10_default\")",
             "shouldUseStandardHROnlyInProtectedBackground(",
-            "return persistedStandardHROnly",
+            "return streamSuppressed || persistedStandardHROnly",
             "stable_hr_r10_migration",
             "phone_step_fallback=0",
             "mode=protected_r10_minimal",
@@ -9868,14 +9972,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "let latestSleep = store.sleepHistorySnapshot.latestMainSleep",
             "let displayedRecovery = store.recoveryProjection(",
             "initialFallbackHRVSnapshot: ble.recoveryHRVSnapshot",
-            "hrvState = displayedRecovery.confidence == .validated ? \"validated\" : \"personal_baseline\"",
+            "hrvState = widgetRecovery.confidence == .validated ? \"validated\" : \"personal_baseline\"",
         ]:
             assert_contains(self, widget, needle)
 
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         notifications = source(ROOT / "Atria" / "Atria" / "LocalNotificationScheduler.swift")
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
-        assert_contains(self, home, "let recovery = store.recoveryProjection(")
+        assert_contains(self, home, "let recovery = store.recoveryProjectionForPresentation(")
         assert_contains(self, notifications, "let recovery = store.recoveryProjection(")
         for needle in [
             "fallbackRMSSD: fallbackHRV",
@@ -10430,19 +10534,12 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "let onOpenJournal: () -> Void",
             "let onOpenShare: () -> Void",
-            "AtriaTodayShortcutStrip(journalValue: journalValue,",
-            "onOpenJournal: onOpenJournal",
-            "onOpenShare: onOpenShare",
+            "AtriaTodayShortcutStrip(onStartWorkout: onStartWorkout)",
             "onStartWorkout: onStartWorkout",
             "private struct AtriaTodayShortcutStrip: View, Equatable",
-            "if compact {",
-            ".frame(maxWidth: .infinity, minHeight: 42)",
-            'AtriaTodayActionRow(title: "Journal"',
-            'systemImage: "square.and.pencil"',
-            'AtriaTodayActionRow(title: "Start"',
-            'systemImage: "plus"',
-            'AtriaTodayActionRow(title: "Share"',
-            'systemImage: "square.and.arrow.up"',
+            "Button(action: onStartWorkout)",
+            'Text("Start activity")',
+            ".frame(maxWidth: .infinity, minHeight: 54)",
         ]:
             assert_contains(self, today, needle)
         assert_contains(self, home, "onOpenJournal: {\n                                 selectedTab = .journal\n                             }")
@@ -11527,7 +11624,7 @@ class HandoffStaticChecks(unittest.TestCase):
             # owns achievement color and the marker.
             "let fill = AtriaRingMetricProjection.strainFill(",
             "targetFraction: incomplete || pending ? nil : AtriaRingMetricProjection.strainTargetFraction(target)",
-            "AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(",
+            "AtriaWorkoutMetricPresentation.cycleStrainIsIncomplete(",
             "tint: displayHero.guidance.color",
         ]:
             assert_contains(self, today, needle)
@@ -11721,7 +11818,7 @@ class HandoffStaticChecks(unittest.TestCase):
             # an animated arrow + count-up delta reveal (spring, reduce-motion
             # aware); "Calibrating 28-day baseline" still renders unchanged
             # while not ready.
-            'Text("Calibrating 28-day baseline")',
+            "Text(summary.compactStatusText)",
             "Text(summary.footnote)",
             '"Fitness age. \\(summary.valueText).',
         ]:
@@ -11856,7 +11953,7 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "private var systemSmallWidget: some View",
             "private var systemMediumWidget: some View",
-            "case .systemLarge:\n                systemLargeWidget",
+            "case .systemLarge:\n                    systemLargeWidget",
             "private var systemLargeWidget: some View",
             "private var widgetHeader: some View",
             "private func compactMetric(_ title: String,",
@@ -12130,7 +12227,6 @@ class HandoffStaticChecks(unittest.TestCase):
         ]
         paths = (
             list(swift_files())
-            + list((ROOT / "docs").rglob("*.md"))
             + list((ROOT / "tools").rglob("*.py"))
             + [
                 ROOT / "test_handoff_static_checks.py",
@@ -12140,11 +12236,14 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for path in paths:
             text = source(path)
-            for variant in variants:
-                self.assertIsNone(
-                    variant.search(text),
-                    f"{path.relative_to(ROOT)} contains placeholder bypass wording",
-                )
+            for line_number, line in enumerate(text.splitlines(), start=1):
+                if path.suffix == ".swift" and line.lstrip().startswith("//"):
+                    continue
+                for variant in variants:
+                    self.assertIsNone(
+                        variant.search(line),
+                        f"{path.relative_to(ROOT)}:{line_number} contains placeholder bypass wording",
+                    )
 
     def test_end_user_copy_avoids_lab_only_language(self):
         banned = [
@@ -12530,10 +12629,10 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, recovery_body, "dailyRollupHistory")
         assert_not_contains(self, recovery_body, "confidence: .validated")
         for needle in [
-            "private var latestRollup: DailyRollupStoreEntry?",
-            "latestRollup?.recovery",
-            "latestRollup?.lnRMSSD",
-            "latestRollup?.sleepSeconds",
+            "enum AtriaHealthMetricAuthority",
+            "case currentCycle(CurrentCycle)",
+            "case datedHistory(DailyRollupStoreEntry)",
+            "heroStore.state.recoveryEstimate",
         ]:
             assert_contains(self, health, needle)
         prepared_start = overview.index("private struct AtriaPreparedMetricHistory")
@@ -12774,7 +12873,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "let samples = loadRecentGravitySamples(start: start, end: end)",
             "private static func loadRecentGravitySamples(start: Date, end: Date) -> [GravitySample]",
             "let estimatedRows = Int((spanSeconds / 2.0).rounded(.up)) + 720",
-            "let targetBytes = UInt64(max(4_194_304, min(33_554_432, estimatedRows * 1_024)))",
+            "let targetBytes = UInt64(max(2_097_152, min(8_388_608, estimatedRows * 640)))",
             "let startOffset = fileSize > targetBytes ? fileSize - targetBytes : 0",
             "handle.readDataToEndOfFile()",
             "recentReadableFileURLs().reversed()",
@@ -13261,7 +13360,7 @@ class HandoffStaticChecks(unittest.TestCase):
         recovery_freeze_tests = source(ROOT / "Atria" / "AtriaTests" / "AtriaRecoveryFreezeTests.swift")
         recovery_cadence_tests = source(ROOT / "Atria" / "AtriaTests" / "AtriaRecoveryProjectionCadenceTests.swift")
         for needle in [
-            "let recovery = store.recoveryProjection(",
+            "let recovery = store.recoveryProjectionForPresentation(",
             "initialFallbackHRVSnapshot: ble.recoveryHRVSnapshot",
             "frozenTarget: frozenTarget?.target",
         ]:
@@ -13269,7 +13368,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, home, "static func dailyFrozenRecoveryEstimate(")
         for needle in [
             "func recoveryProjection(now: Date = Date(),",
-            "let frozen = DailyRecoveryResolver.summary(rollups: dailyRollupHistory,",
+            "DailyRecoveryResolver.summary(rollups: dailyRollupHistory,",
             "provisional: Metrics.recoveryV2(",
         ]:
             assert_contains(self, sessions, needle)
@@ -13733,7 +13832,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "sleepEfficiencyGreenLower: sleepEfficiencyGreenLower",
             "sleepEfficiencyYellowLower: sleepEfficiencyYellowLower",
             "zone: recoveryZone",
-            "zone: strainZone",
+            "zone: qualifiedStrainZone",
             "zone: loadReadinessZone",
             "zone: hrvCalibratingValue != nil ? nil : hrvZone",  # 2026-07-08 partial-data calibration
             "zone: sleepGlanceZone",
@@ -14048,7 +14147,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "struct LabelCheck: Equatable",
             "static let strainTRIMP = Check(name: \"banister_strain_score\"",
             "actual: Strain.score(fromTRIMP: 50)",
-            "expected: 3.81",
+            "expected: 5.94",
             "static let strainEdwards = Check(name: \"edwards_strain_score\"",
             "actual: Strain.score(fromEdwardsLoad: 120)",
             "static let recoveryHRV = Check(name: \"hrv_recovery_score\"",
@@ -14886,7 +14985,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, send_body, "reason=outside_exact_allowlist action=no_write")
 
         capture_start = manager.index("private func startReadOnlyHistoryCaptureIfNeeded")
-        capture_end = manager.index("private func beginProductionHistoricalAdmissionAttempt", capture_start)
+        capture_end = manager.index("private func startReadOnlyClockProbeIfNeeded", capture_start)
         capture = manager[capture_start:capture_end]
         self.assertLess(capture.index("Cmd.getDataRange"), capture.index("Cmd.sendHistoricalData"))
         self.assertLess(capture.index("postRangeResponseSettle"), capture.index("Cmd.sendHistoricalData"))

@@ -396,7 +396,8 @@ enum WidgetSnapshotPublisher {
     @discardableResult
     static func publish(store: SessionStore,
                         ble: AtriaBLEManager,
-                        reason: String = "update") -> WidgetSnapshot {
+                        reason: String = "update",
+                        now: Date = Date()) -> WidgetSnapshot {
         // Cold-start strain-flash fix (2026-07-07, device-diagnosed): the
         // volatile live BLE resting reading used to outrank the stable
         // saved-session resting, so the first widget snapshots computed
@@ -404,7 +405,6 @@ enum WidgetSnapshotPublisher {
         // number until session load. Stable sources first; the live reading
         // is only the last resort before the session_load republish.
         let rest = store.baseline.restingInt ?? store.sessions.first?.restingStable ?? ble.restingHR
-        let now = Date()
         let presentationRestingHeartRate = store.currentCycleRestingHeartRateForPresentation(
             on: now,
             liveRestingHeartRate: ble.restingHR
@@ -452,7 +452,9 @@ enum WidgetSnapshotPublisher {
         }
         let savedAggregate = store.homeSavedAggregate(rest: rest ?? 60,
                                                        maxHR: store.profile.maxHR,
-                                                       activeSessionID: ble.currentLiveSessionID)
+                                                       activeSessionID: ble.currentLiveSessionID,
+                                                       calendar: calendar,
+                                                       now: now)
         let strain = dayStrain(saved: savedAggregate,
                                store: store,
                                ble: ble,
