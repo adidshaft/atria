@@ -8121,6 +8121,15 @@ final class AtriaHomeModel {
         let recoveryLiftedAfterNap: Bool
         let strain: Double
         let strainConfidence: String
+        /// Fraction of the elapsed physiological day covered by accepted strap
+        /// wear, or nil before the day is long enough to judge (< 3h elapsed).
+        ///
+        /// This was already being computed in makeHeroSnapshot, used once to
+        /// pick a confidence word, and then thrown away -- so a card could say
+        /// a number was a lower bound while having no way to state the coverage
+        /// that made it one. Carried on the snapshot so the expanded detail can
+        /// show the real percentage instead of restating the adjective.
+        let dayWearCoverageFraction: Double?
         let guidance: Coach.Guidance
         let hrvValue: String
         let hrvDetail: String
@@ -8225,6 +8234,7 @@ final class AtriaHomeModel {
                 && lhs.recoveryIsFromPreviousSleep == rhs.recoveryIsFromPreviousSleep
                 && lhs.recoveryLiftedAfterNap == rhs.recoveryLiftedAfterNap
                 && lhs.strainConfidence == rhs.strainConfidence
+                && lhs.dayWearCoverageFraction == rhs.dayWearCoverageFraction
                 && lhs.guidance == rhs.guidance
                 && lhs.hrvValue == rhs.hrvValue
                 && lhs.hrvDetail == rhs.hrvDetail
@@ -9865,6 +9875,7 @@ final class AtriaHomeModel {
                             recoveryLiftedAfterNap: false,
                             strain: strain,
                             strainConfidence: strainConfidence,
+                            dayWearCoverageFraction: wearCoverage,
                             guidance: guidance,
                             hrvValue: deferredDetails?.hrvValue ?? fallbackHrv.value,
                             hrvDetail: deferredDetails?.hrvDetail ?? fallbackHrv.detail,
@@ -9961,6 +9972,10 @@ final class AtriaHomeModel {
                             recoveryLiftedAfterNap: false,
                             strain: strain,
                             strainConfidence: "local",
+                            // Night-scoped snapshot: day wear coverage is not
+                            // evaluated here, and nil means "not measured"
+                            // rather than "zero coverage".
+                            dayWearCoverageFraction: nil,
                             guidance: guidance,
                             hrvValue: night.hrvText,
                             hrvDetail: "personal baseline",
@@ -10200,6 +10215,9 @@ final class AtriaHomeModel {
                             recoveryLiftedAfterNap: false,
                             strain: 0,
                             strainConfidence: "standby",
+                            // Standby/reconnecting snapshot: nothing has been
+                            // measured yet, so coverage is unknown rather than 0.
+                            dayWearCoverageFraction: nil,
                             guidance: guidance,
                             hrvValue: fallbackHrv.value,
                             hrvDetail: fallbackHrv.detail,

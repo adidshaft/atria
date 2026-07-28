@@ -256,6 +256,70 @@ final class AtriaMetricConfidencePresentationTests: XCTestCase {
         XCTAssertEqual(presentation.marker, "prev. sleep")
     }
 
+    // MARK: - Expanded detail provenance
+
+    private func provenance(
+        displayValue: String = "75%",
+        level: AtriaMetricConfidenceLevel = .limited,
+        isLowerBound: Bool = false,
+        usesHRV: Bool? = true,
+        hrCoverageFraction: Double? = nil,
+        sourceLabel: String = "strap",
+        observedAt: Date? = nil
+    ) -> AtriaMetricProvenance {
+        AtriaMetricProvenance(displayValue: displayValue,
+                              level: level,
+                              isLowerBound: isLowerBound,
+                              usesHRV: usesHRV,
+                              hrCoverageFraction: hrCoverageFraction,
+                              sourceLabel: sourceLabel,
+                              observedAt: observedAt)
+    }
+
+    func testCoverageTextRoundsToWholePercent() {
+        XCTAssertEqual(provenance(hrCoverageFraction: 0.68).coverageText, "HR coverage 68%")
+        XCTAssertEqual(provenance(hrCoverageFraction: 1.0).coverageText, "HR coverage 100%")
+        XCTAssertEqual(provenance(hrCoverageFraction: 0.0).coverageText, "HR coverage 0%")
+    }
+
+    /// Absence must read as "not measured", never as zero. Day-level gap counts
+    /// genuinely do not exist, so nothing may synthesise them.
+    func testUnmeasuredCoverageProducesNoTextRatherThanZero() {
+        XCTAssertNil(provenance(hrCoverageFraction: nil).coverageText)
+    }
+
+    func testLowerBoundReasonOutranksEverythingElse() {
+        let detail = provenance(level: .provisional, isLowerBound: true, usesHRV: false)
+
+        XCTAssertEqual(detail.reducedConfidenceReason,
+                       "Strap wear covered only part of the day, so accumulated load is a floor, not a total.")
+        XCTAssertEqual(detail.improvementHint, "Wear the strap for more of the day.")
+    }
+
+    func testMissingHRVIsExplainedConcretely() {
+        let detail = provenance(level: .limited, usesHRV: false)
+
+        XCTAssertEqual(detail.reducedConfidenceReason,
+                       "HRV was not available for this score, so it was computed from resting heart rate alone.")
+        XCTAssertNotNil(detail.improvementHint)
+    }
+
+    func testHighConfidenceExplainsNothingAndAsksForNothing() {
+        let detail = provenance(level: .high, usesHRV: true)
+
+        XCTAssertNil(detail.reducedConfidenceReason)
+        XCTAssertNil(detail.improvementHint)
+    }
+
+    /// Anything below high confidence owes the user both a reason and a way out.
+    func testEveryReducedLevelStatesAReasonAndAnImprovement() {
+        for level in AtriaMetricConfidenceLevel.allCases where level != .high {
+            let detail = provenance(level: level, usesHRV: true)
+            XCTAssertNotNil(detail.reducedConfidenceReason, "no reason for \(level)")
+            XCTAssertNotNil(detail.improvementHint, "no improvement path for \(level)")
+        }
+    }
+
     // MARK: - Canonical pending check
 
     /// The regression this collapse was built to prevent: a producer moving off
