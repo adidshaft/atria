@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 /// What the app tells you about last night while it is still working it out.
 ///
@@ -56,6 +57,23 @@ enum AtriaSleepSettlementState: Equatable {
     var isSettling: Bool {
         if case .processing = self { return true }
         return false
+    }
+
+    /// Status colour for where last night stands, on the same calibrated
+    /// three-band scale the metric zones use.
+    ///
+    /// Green only for `saved`, because that is the only state backed by a
+    /// persisted confirmation -- the same honesty rule that keeps an ungraded
+    /// metric neutral. Amber for `reviewReady`, which is genuinely waiting on
+    /// the user and is the one state that wants attention. Nil for `processing`
+    /// and `waitingForData`: the app is working or has nothing to judge, and
+    /// neither is a status the user needs to act on. Nil renders neutral.
+    var statusTint: Color? {
+        switch self {
+        case .saved: return AtriaMetricZoneLevel.green.tint
+        case .reviewReady: return AtriaMetricZoneLevel.yellow.tint
+        case .processing, .waitingForData: return nil
+        }
     }
 }
 

@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import Atria
 
 /// State-machine tests for the wake-settlement row.
@@ -141,6 +142,49 @@ final class AtriaSleepSettlementPresentationTests: XCTestCase {
         XCTAssertEqual(state, .waitingForData)
         XCTAssertEqual(state.title, "Still waiting for enough strap data")
         XCTAssertNil(state.since, "no event behind this state, so no stamp")
+    }
+
+    // MARK: - Status colour
+
+    /// Green is backed by a persisted confirmation and nothing else. This is the
+    /// colour equivalent of the `.saved` invariant: no amount of elapsed time on
+    /// an unconfirmed night may turn the row green.
+    func testOnlyAPersistedConfirmationReadsGreen() {
+        XCTAssertEqual(AtriaSleepSettlementState.saved(at: wake).statusTint,
+                       AtriaMetricZoneLevel.green.tint)
+
+        for state: AtriaSleepSettlementState in [.processing(since: wake),
+                                                 .reviewReady(since: wake),
+                                                 .waitingForData] {
+            XCTAssertNotEqual(state.statusTint, AtriaMetricZoneLevel.green.tint,
+                              "\(state) must not read as a completed night")
+        }
+    }
+
+    /// The one state genuinely waiting on the user is the one that wants
+    /// attention.
+    func testReviewReadyIsTheOnlyAmberState() {
+        XCTAssertEqual(AtriaSleepSettlementState.reviewReady(since: wake).statusTint,
+                       AtriaMetricZoneLevel.yellow.tint)
+    }
+
+    /// Working, or nothing to judge. Neither is a status the user must act on,
+    /// and neither has earned a colour.
+    func testInProgressAndUnknownStatesStayNeutral() {
+        XCTAssertNil(AtriaSleepSettlementState.processing(since: wake).statusTint)
+        XCTAssertNil(AtriaSleepSettlementState.waitingForData.statusTint)
+    }
+
+    /// Sleep settlement is not a health grade, so it must not borrow the colour
+    /// reserved for a genuinely poor measured value.
+    func testSettlementNeverBorrowsThePoorValueRed() {
+        for state: AtriaSleepSettlementState in [.processing(since: wake),
+                                                 .reviewReady(since: wake),
+                                                 .saved(at: wake),
+                                                 .waitingForData] {
+            XCTAssertNotEqual(state.statusTint, AtriaMetricZoneLevel.red.tint,
+                              "\(state) must not read as a poor measurement")
+        }
     }
 
     // MARK: - Freshness

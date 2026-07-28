@@ -2660,6 +2660,15 @@ private struct AtriaTodaySleepSettlementRow: View {
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(Metrics.electricSleep)
                 .frame(width: 24, height: 24)
+            // Status dot, not a recoloured icon: the icon keeps sleep's identity
+            // hue while the dot carries where the night actually stands. Same
+            // split the provenance rows use, and it does not depend on colour
+            // alone being legible.
+            if let statusTint = state.statusTint {
+                Circle()
+                    .fill(statusTint)
+                    .frame(width: 6, height: 6)
+            }
             Text(state.title)
                 .font(.caption.weight(.bold))
                 .foregroundStyle(.primary)
