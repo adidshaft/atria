@@ -3522,7 +3522,13 @@ final class AtriaAnalyticsTests: XCTestCase {
                 recoveryIsFromPreviousSleep: true,
                 recoveryLiftedAfterNap: false
             ),
-            "Previous sleep score · awaiting today’s sleep"
+            // 2026-07-28 deterministic-presentation pass: the status line is now
+            // a compact fixed-vocabulary marker rather than prose. The invariant
+            // this test names is unchanged -- a carried score still says it came
+            // from the previous sleep -- but it says so in 11 characters instead
+            // of 44, because at 44 it wrapped and made one compact card taller
+            // than the one beside it.
+            "prev. sleep"
         )
         XCTAssertEqual(
             AtriaHomeModel.HeroSnapshot.recoveryDetailText(
@@ -3531,7 +3537,10 @@ final class AtriaAnalyticsTests: XCTestCase {
                 recoveryIsFromPreviousSleep: false,
                 recoveryLiftedAfterNap: false
             ),
-            Metrics.RecoveryEstimate.Confidence.personalBaseline.rawValue
+            // Same migration: the raw confidence name ("personal baseline") is
+            // 17 characters and would wrap, so a confident score falls back to
+            // the level's short label.
+            AtriaMetricConfidenceLevel.moderate.shortLabel
         )
     }
 
