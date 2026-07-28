@@ -10822,8 +10822,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "@State private var lastStressEvaluationAt: Date?",
             ".onChange(of: isActive, initial: true)",
             ".onChange(of: stressMonitorStore.state, initial: true)",
-            "private func publishStressForBreathwork(now: Date = Date())",
-            "lastStressEvaluationAt = now",
+            ".onChange(of: stressMonitorStore.lastMeasuredAt, initial: true)",
+            "private func publishStressForBreathwork()",
+            "let measuredAt = stressMonitorStore.lastMeasuredAt",
+            "lastStressEvaluationAt = measuredAt",
             ".onChange(of: stressMonitorStore.historyRevision, initial: true)",
             "stressStripReduced = AtriaHealthScreen.reduceStressStrip(stressMonitorStore.history)",
         ]:

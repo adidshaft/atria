@@ -45,7 +45,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.count, 8_412)
         XCTAssertEqual(value.source, .verifiedCanonical)
         XCTAssertEqual(value.completeness, .complete)
-        XCTAssertEqual(value.detailText, "Verified complete day")
+        XCTAssertEqual(value.detailText, "Today so far · verified")
     }
 
     func testPartialCanonicalCoverageUsesLowerBoundLabel() {

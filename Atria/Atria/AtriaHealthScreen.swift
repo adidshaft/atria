@@ -1373,6 +1373,9 @@ private struct AtriaHealthStressSection: View {
             guard active else { return }
             publishStressForBreathwork()
         }
+        .onChange(of: stressMonitorStore.lastMeasuredAt, initial: true) { _, _ in
+            publishStressForBreathwork()
+        }
         .onChange(of: stressMonitorStore.state, initial: true) { _, _ in
             publishStressForBreathwork()
         }
@@ -1417,11 +1420,12 @@ private struct AtriaHealthStressSection: View {
         }
     }
 
-    private func publishStressForBreathwork(now: Date = Date()) {
-        lastStressEvaluationAt = now
+    private func publishStressForBreathwork() {
+        let measuredAt = stressMonitorStore.lastMeasuredAt
+        lastStressEvaluationAt = measuredAt
         breathworkStressStore.update(
             AtriaBreathworkStressReading(state: stressMonitorStore.state,
-                                         measuredAt: now)
+                                         measuredAt: measuredAt)
         )
     }
 
