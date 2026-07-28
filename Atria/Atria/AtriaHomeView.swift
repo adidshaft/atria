@@ -3073,6 +3073,7 @@ struct AtriaHomeView: View {
                                                                sensorAvailability: heartRateAvailability)
         let storedDailyStepGoal = UserDefaults.standard.integer(forKey: "atria.target.steps.goal")
         let dailyStepGoal = storedDailyStepGoal > 0 ? storedDailyStepGoal : 8_000
+        let dailySteps = model.coreLiveStore.state.dailyStepPresentation
         let displayableBatteryLevel = ble.displayableBatteryLevel(now: now)
         let batteryCapturedAt = [ble.lastVerifiedBatteryLevelAt,
                                  ble.batteryDisplayCorroboratedAt(now: now)]
@@ -3118,11 +3119,15 @@ struct AtriaHomeView: View {
                 && metricProjection.steps.isEstimated,
             stepsCapturedAt: metricProjection.steps.capturedAt,
             stepsAvailability: metricProjection.steps.availability,
-            dailySteps: metricProjection.steps.availability == .live
-                ? max(0, model.coreLiveStore.state.strapStepResearchCount)
-                : nil,
-            dailyStepsAreEstimated: metricProjection.steps.availability == .live
-                && metricProjection.steps.isEstimated,
+            // The daily goal uses the same physiological-cycle authority as
+            // Home and the widget. Workout-local source freshness must never
+            // expose the raw research counter as an all-day total.
+            dailySteps: dailySteps.count,
+            dailyStepsAreEstimated: dailySteps.count != nil && !dailySteps.isValidated,
+            dailyStepsCapturedAt: dailySteps.count == nil ? nil : dailySteps.capturedAt,
+            dailyStepsIsLowerBound: dailySteps.count != nil
+                && dailySteps.source == .verifiedCanonical
+                && dailySteps.completeness == .partial,
             dailyStepGoal: dailyStepGoal,
             workoutStrain: metricProjection.strain,
             workoutStrainCapturedAt: metricProjection.loadIsComplete
@@ -10267,7 +10272,7 @@ final class AtriaHomeModel {
 
     private static func defaultHeroHeadline(status: AtriaBLEManager.Status) -> String {
         if status == .connected {
-            return "Live connection is active."
+            return "Strap is connected."
         }
         return "A lighter dashboard that gets to your signal faster."
     }

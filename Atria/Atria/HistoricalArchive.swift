@@ -2423,6 +2423,7 @@ enum HistoricalArchive {
         var totalDecodedRows = 0
         var totalSteps = 0
         var totalUnresolvedMotion: TimeInterval = 0
+        var cadenceFragments: [[CadencePoint]] = []
         var capturedThrough: Date?
         for interval in intervals {
             typealias IntervalAlignment = (
@@ -2502,10 +2503,19 @@ enum HistoricalArchive {
                 intervals: [rawInterval],
                 boundaryTolerance: 0.001
             ) else { continue }
-            let cadence = AtriaWhoop4GravityCadenceStepModel
-                .estimateCoveredActivity(
-                    points: selected.members.map(\.cadence)
+            cadenceFragments.append(selected.members.map { member in
+                let point = member.cadence
+                return .init(
+                    timestamp: point.timestamp + Double(selected.offset),
+                    flash: point.flash,
+                    tick: point.tick,
+                    gravityX: point.gravityX,
+                    gravityY: point.gravityY,
+                    gravityZ: point.gravityZ,
+                    unknownMotionScalar32: point.unknownMotionScalar32,
+                    identity: point.identity
                 )
+            })
             totalTicks += reduced.ticks
             totalKnownDuration += reduced.knownDuration
             totalDecodedRows += reduced.admittedRows
@@ -2514,12 +2524,13 @@ enum HistoricalArchive {
                     + Double(selected.offset)
             )
             capturedThrough = max(capturedThrough ?? wallCaptured, wallCaptured)
-            if let cadence {
-                totalSteps += cadence.steps
-                totalUnresolvedMotion += cadence.unresolvedMotionSeconds
-            } else {
-                totalUnresolvedMotion += reduced.knownDuration
-            }
+        }
+        if let cadence = AtriaWhoop4GravityCadenceStepModel
+            .estimateCoveredActivityFragments(cadenceFragments) {
+            totalSteps = cadence.steps
+            totalUnresolvedMotion = cadence.unresolvedMotionSeconds
+        } else {
+            totalUnresolvedMotion = totalKnownDuration
         }
         let knownSeconds = max(0, Int(totalKnownDuration.rounded()))
         guard knownSeconds > 0, totalDecodedRows >= 2,

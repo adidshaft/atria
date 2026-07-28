@@ -229,7 +229,7 @@ enum AtriaWhoop4MotionTickStepModel {
 /// from that component counts the physical walks that defeated the fixed scale
 /// without using phone motion, distance, GPS, or heart rate.
 enum AtriaWhoop4GravityCadenceStepModel {
-    static let algorithmVersion = "whoop4-impact-gait-ensemble-v14"
+    static let algorithmVersion = "whoop4-impact-gait-ensemble-v15"
 
     struct Point: Hashable, Sendable {
         let timestamp: TimeInterval
@@ -465,6 +465,21 @@ enum AtriaWhoop4GravityCadenceStepModel {
     /// Estimates one already-bounded sustained walking interval. A flat counter
     /// returns zero; ambiguous/sparse motion returns nil rather than a number.
     static func estimateWindow(points: [Point]) -> Estimate? {
+        estimateQualifiedWindow(
+            points: points,
+            policy: .sustained,
+            selectDominantMotionWindow: true
+        )
+    }
+
+    /// Shared cadence/alias quantity path. Autonomous day reconstruction may
+    /// supply a gait-qualified bout assembled from overlapping strap-only
+    /// anchors; exact workout scoring retains the stricter sustained policy.
+    private static func estimateQualifiedWindow(
+        points: [Point],
+        policy: GaitQualificationPolicy,
+        selectDominantMotionWindow: Bool
+    ) -> Estimate? {
         var ordered = canonical(points)
         guard ordered.count >= 30,
               let first = ordered.first,
@@ -506,8 +521,16 @@ enum AtriaWhoop4GravityCadenceStepModel {
             )
         }
 
-        guard let selected = dominantMotionWindow(from: ordered),
-              let selectedFirst = selected.first,
+        let selected: [Point]
+        if selectDominantMotionWindow {
+            guard let dominant = dominantMotionWindow(from: ordered) else {
+                return nil
+            }
+            selected = dominant
+        } else {
+            selected = ordered
+        }
+        guard let selectedFirst = selected.first,
               let selectedLast = selected.last else {
             return nil
         }
@@ -536,7 +559,7 @@ enum AtriaWhoop4GravityCadenceStepModel {
         guard let gaitQualification =
                 qualifiedOrdinaryBandPowerShare(
                     points: ordered,
-                    policy: .sustained
+                    policy: policy
                 ) else {
             return nil
         }
@@ -634,7 +657,7 @@ enum AtriaWhoop4GravityCadenceStepModel {
             shouldUseLowAliasForHighRateSubharmonic(
                 lowPower: lowAliasPeak.power,
                 ordinaryPower: ordinaryAliasPeak.power,
-                gaitTickRate: Double(motionTicks) / selectedDuration
+                gaitTickRate: gaitQualification.gaitTickRate
             )
         let lowAliasPowerRatio =
             lowAliasPeak.power / ordinaryAliasPeak.power
@@ -873,6 +896,10 @@ enum AtriaWhoop4GravityCadenceStepModel {
         let minimumSpectralEntropy: Double
         let maximumScalarMean: Double?
         let includeFullWindow: Bool
+        let maximumPositiveTransitionGap: TimeInterval
+        let maximumStationaryGravityRunSeconds: TimeInterval?
+        let requiresResumeBatchAfterOrdinaryGap: Bool
+        let requiresValidatedIncrementTexture: Bool
 
         static let sustained = Self(
             minimumDurationSeconds:
@@ -893,7 +920,12 @@ enum AtriaWhoop4GravityCadenceStepModel {
                 AtriaWhoop4GravityCadenceStepModel
                     .minimumGaitSpectralEntropy,
             maximumScalarMean: nil,
-            includeFullWindow: false
+            includeFullWindow: false,
+            maximumPositiveTransitionGap:
+                AtriaWhoop4GravityCadenceStepModel.maximumGaitIdleGap,
+            maximumStationaryGravityRunSeconds: nil,
+            requiresResumeBatchAfterOrdinaryGap: true,
+            requiresValidatedIncrementTexture: true
         )
 
         static let short = Self(
@@ -921,7 +953,59 @@ enum AtriaWhoop4GravityCadenceStepModel {
             maximumScalarMean:
                 AtriaWhoop4GravityCadenceStepModel
                     .maximumShortBurstScalarMean,
-            includeFullWindow: true
+            includeFullWindow: true,
+            maximumPositiveTransitionGap:
+                AtriaWhoop4GravityCadenceStepModel.maximumGaitIdleGap,
+            maximumStationaryGravityRunSeconds: nil,
+            requiresResumeBatchAfterOrdinaryGap: true,
+            requiresValidatedIncrementTexture: true
+        )
+
+        /// Local day-only gait proof. A 32-second overlapping anchor needs
+        /// enough regular firmware transitions to prove locomotion, while
+        /// retaining the physical walk/control gravity and entropy margins.
+        static let autonomousAnchor = Self(
+            minimumDurationSeconds: 36,
+            maximumDurationSeconds: 50,
+            minimumRegularPositiveIncrementCount: 3,
+            minimumRegularPositiveIncrementMean:
+                AtriaWhoop4GravityCadenceStepModel
+                    .minimumRegularPositiveIncrementMean,
+            minimumGaitTickRate: 0.15,
+            maximumGravityDeltaMagnitudeMAD:
+                AtriaWhoop4GravityCadenceStepModel
+                    .maximumShortBurstGravityDeltaMagnitudeMAD,
+            minimumSpectralEntropy: 0.65,
+            maximumScalarMean: nil,
+            includeFullWindow: true,
+            maximumPositiveTransitionGap: 48,
+            maximumStationaryGravityRunSeconds: 10,
+            requiresResumeBatchAfterOrdinaryGap: false,
+            requiresValidatedIncrementTexture: false
+        )
+
+        /// Whole-bout proof after overlapping anchors establish continuous
+        /// gait on both sides of a firmware batching pause. This widens only
+        /// the positive-transition cadence, never the raw sample continuity.
+        static let autonomousBout = Self(
+            minimumDurationSeconds:
+                AtriaWhoop4GravityCadenceStepModel.minimumDurationSeconds,
+            maximumDurationSeconds: nil,
+            minimumRegularPositiveIncrementCount: 3,
+            minimumRegularPositiveIncrementMean:
+                AtriaWhoop4GravityCadenceStepModel
+                    .minimumRegularPositiveIncrementMean,
+            minimumGaitTickRate: 0.15,
+            maximumGravityDeltaMagnitudeMAD:
+                AtriaWhoop4GravityCadenceStepModel
+                    .maximumShortBurstGravityDeltaMagnitudeMAD,
+            minimumSpectralEntropy: 0.65,
+            maximumScalarMean: nil,
+            includeFullWindow: true,
+            maximumPositiveTransitionGap: 48,
+            maximumStationaryGravityRunSeconds: 10,
+            requiresResumeBatchAfterOrdinaryGap: false,
+            requiresValidatedIncrementTexture: false
         )
     }
 
@@ -959,7 +1043,10 @@ enum AtriaWhoop4GravityCadenceStepModel {
                             && (11...13).contains(delta)
                     )
                 ) {
-                    return nil
+                    guard !policy.requiresValidatedIncrementTexture else {
+                        return nil
+                    }
+                    regularPositiveIncrements.append(delta)
                 }
                 positiveIndices.append(index)
                 motionTicks += delta
@@ -979,10 +1066,14 @@ enum AtriaWhoop4GravityCadenceStepModel {
                 from: points[pair.1 - 1],
                 to: points[pair.1]
             )
-            guard motionBurstContinues(
-                gap: gap,
-                resumedDelta: resumedDelta
-            ) else {
+            guard gap <= policy.maximumPositiveTransitionGap else {
+                return nil
+            }
+            if policy.requiresResumeBatchAfterOrdinaryGap,
+               !motionBurstContinues(
+                   gap: gap,
+                   resumedDelta: resumedDelta
+               ) {
                 return nil
             }
         }
@@ -1047,6 +1138,23 @@ enum AtriaWhoop4GravityCadenceStepModel {
         }
         let gravityDeltaMagnitudes = differences.map {
             sqrt($0[0] * $0[0] + $0[1] * $0[1] + $0[2] * $0[2])
+        }
+        if let maximumStationaryGravityRunSeconds =
+            policy.maximumStationaryGravityRunSeconds {
+            var stationaryRun: TimeInterval = 0
+            for index in 1..<active.count {
+                let gap = active[index].timestamp
+                    - active[index - 1].timestamp
+                if gravityDeltaMagnitudes[index - 1] <= 0.005 {
+                    stationaryRun += gap
+                    guard stationaryRun
+                            <= maximumStationaryGravityRunSeconds else {
+                        return nil
+                    }
+                } else {
+                    stationaryRun = 0
+                }
+            }
         }
         let motionVolume = gravityDeltaMagnitudes.reduce(0, +)
         let gravityDeltaMedian = median(gravityDeltaMagnitudes)
@@ -1190,12 +1298,190 @@ enum AtriaWhoop4GravityCadenceStepModel {
         )
     }
 
+    /// Reconstructs ordinary day walking from overlapping v24 gait anchors.
+    ///
+    /// The firmware may batch its motion coordinate for 10–18 seconds while
+    /// gravity continues at the normal one-second cadence. Treating every
+    /// positive-counter pause as an activity boundary destroys an otherwise
+    /// complete walk. Local anchors first prove gait independently, then only
+    /// overlapping anchors may form a bout. Raw sample gaps are never crossed,
+    /// and the existing cadence/alias estimator owns the resulting quantity.
+    private static func autonomousGaitBouts(
+        in ordered: [Point]
+    ) -> [(range: ClosedRange<Int>, estimate: Estimate)] {
+        let anchorDuration: TimeInterval = 48
+        let anchorStride: TimeInterval = 8
+        let boundarySearch: TimeInterval = 12
+        guard ordered.count >= 25,
+              let first = ordered.first,
+              let last = ordered.last,
+              last.timestamp > first.timestamp else {
+            return []
+        }
+
+        var anchors: [ClosedRange<Int>] = []
+        var lower = 0
+        while lower < ordered.count - 1 {
+            let start = ordered[lower].timestamp
+            var upper = lower
+            while upper + 1 < ordered.count,
+                  ordered[upper + 1].timestamp - start <= anchorDuration {
+                upper += 1
+            }
+            if upper > lower,
+               qualifiedOrdinaryBandPowerShare(
+                   points: Array(ordered[lower...upper]),
+                   policy: .autonomousAnchor
+               ) != nil {
+                anchors.append(lower...upper)
+            }
+            let nextStart = start + anchorStride
+            repeat {
+                lower += 1
+            } while lower < ordered.count
+                && ordered[lower].timestamp < nextStart
+        }
+        guard !anchors.isEmpty else { return [] }
+
+        func expandedToObservedMotion(
+            _ range: ClosedRange<Int>
+        ) -> ClosedRange<Int> {
+            var expandedLower = range.lowerBound
+            let lowerLimit = ordered[expandedLower].timestamp - boundarySearch
+            var probe = expandedLower
+            while probe > 0,
+                  ordered[probe - 1].timestamp >= lowerLimit {
+                if admittedTickDelta(
+                    from: ordered[probe - 1],
+                    to: ordered[probe]
+                ).map({ $0 > 0 }) == true {
+                    expandedLower = probe - 1
+                }
+                probe -= 1
+            }
+            var expandedUpper = range.upperBound
+            let upperLimit = ordered[expandedUpper].timestamp + boundarySearch
+            probe = expandedUpper + 1
+            while probe < ordered.count,
+                  ordered[probe].timestamp <= upperLimit {
+                if admittedTickDelta(
+                    from: ordered[probe - 1],
+                    to: ordered[probe]
+                ).map({ $0 > 0 }) == true {
+                    expandedUpper = probe
+                }
+                probe += 1
+            }
+            return expandedLower...expandedUpper
+        }
+        anchors = anchors.map(expandedToObservedMotion)
+
+        // Overlap is sufficient continuity proof. A small separation is
+        // admitted only when every intervening raw sample is present and its
+        // gravity vector remains physically active. Wall-time proximity alone
+        // can never bridge a radio gap or two stationary-separated walks.
+        var merged: [ClosedRange<Int>] = []
+        var current = anchors[0]
+        for anchor in anchors.dropFirst() {
+            if anchor.lowerBound <= current.upperBound
+                || strapMotionContinues(
+                    in: ordered,
+                    from: current.upperBound,
+                    through: anchor.lowerBound,
+                    maximumDuration: 18
+                ) {
+                current = current.lowerBound...max(
+                    current.upperBound,
+                    anchor.upperBound
+                )
+            } else {
+                merged.append(current)
+                current = anchor
+            }
+        }
+        merged.append(current)
+
+        var results: [(ClosedRange<Int>, Estimate)] = []
+        for anchorRange in merged {
+            let range = expandedToObservedMotion(anchorRange)
+            guard let estimate = estimateQualifiedWindow(
+                points: Array(ordered[range]),
+                policy: .autonomousBout,
+                selectDominantMotionWindow: false
+            ) else {
+                continue
+            }
+            results.append((range, estimate))
+        }
+        return results
+    }
+
+    /// Read-only diagnostics for physical replay tooling and regression tests.
+    /// Production publication still flows exclusively through
+    /// `estimateCoveredActivity`.
+    static func autonomousGaitBoutEstimates(
+        points: [Point]
+    ) -> [Estimate] {
+        autonomousGaitBouts(in: canonical(points)).map(\.estimate)
+    }
+
+    private static func strapMotionContinues(
+        in points: [Point],
+        from lower: Int,
+        through upper: Int,
+        maximumDuration: TimeInterval
+    ) -> Bool {
+        guard lower >= 0,
+              upper < points.count,
+              upper > lower else {
+            return false
+        }
+        let duration = points[upper].timestamp - points[lower].timestamp
+        guard duration > 0,
+              duration <= maximumDuration else {
+            return false
+        }
+        var magnitudes: [Double] = []
+        for index in (lower + 1)...upper {
+            let gap = points[index].timestamp - points[index - 1].timestamp
+            guard gap > 0,
+                  gap <= maximumContinuousSampleGap else {
+                return false
+            }
+            let dx = points[index].gravityX - points[index - 1].gravityX
+            let dy = points[index].gravityY - points[index - 1].gravityY
+            let dz = points[index].gravityZ - points[index - 1].gravityZ
+            magnitudes.append(sqrt(dx * dx + dy * dy + dz * dz))
+        }
+        guard magnitudes.count >= 4 else { return false }
+        let mean = magnitudes.reduce(0, +) / Double(magnitudes.count)
+        let center = median(magnitudes)
+        let mad = median(magnitudes.map { abs($0 - center) })
+        return mean.isFinite
+            && mad.isFinite
+            && mean >= 0.02
+            && mad <= maximumShortBurstGravityDeltaMagnitudeMAD
+    }
+
     /// Splits a covered day into sustained motion bursts. Any counter-active
     /// burst which cannot support cadence estimation makes the subtotal
     /// unavailable; silently dropping short walks would under-count the day.
     static func estimateCoveredActivity(points: [Point]) -> Estimate? {
         let ordered = canonical(points)
         guard ordered.count >= 2 else { return nil }
+        // Preserve the physically validated exact-window result whenever the
+        // complete input already qualifies. Autonomous reconstruction exists
+        // only for an otherwise fragmented day and must not replace a stronger
+        // bounded cadence estimate with a looser anchor boundary.
+        if let qualified = estimateWindow(points: ordered) {
+            return qualified
+        }
+        let autonomousBouts = autonomousGaitBouts(in: ordered)
+        let autonomouslyOwnedIndices = autonomousBouts.reduce(
+            into: Set<Int>()
+        ) { owned, bout in
+            owned.formUnion(bout.range)
+        }
         var activeTransitionIndices: [Int] = []
         var unresolvedMotionSeconds: TimeInterval = 0
         for index in 1..<ordered.count {
@@ -1214,11 +1500,11 @@ enum AtriaWhoop4GravityCadenceStepModel {
             ) else {
                 return nil
             }
-            if delta > 0 {
+            if delta > 0, !autonomouslyOwnedIndices.contains(index) {
                 activeTransitionIndices.append(index)
             }
         }
-        guard !activeTransitionIndices.isEmpty else {
+        guard !activeTransitionIndices.isEmpty || !autonomousBouts.isEmpty else {
             let duration = ordered.last!.timestamp - ordered.first!.timestamp
             return .init(
                 steps: 0,
@@ -1236,27 +1522,29 @@ enum AtriaWhoop4GravityCadenceStepModel {
         }
 
         var ranges: [ClosedRange<Int>] = []
-        var rangeStart = max(0, activeTransitionIndices[0] - 1)
-        var lastActive = activeTransitionIndices[0]
-        for index in activeTransitionIndices.dropFirst() {
-            let gap = ordered[index].timestamp
-                - ordered[lastActive].timestamp
-            let resumedDelta = admittedTickDelta(
-                from: ordered[index - 1],
-                to: ordered[index]
-            )
-            if !motionBurstContinues(
-                gap: gap,
-                resumedDelta: resumedDelta
-            ) {
-                ranges.append(rangeStart...lastActive)
-                rangeStart = max(0, index - 1)
+        if let firstActive = activeTransitionIndices.first {
+            var rangeStart = max(0, firstActive - 1)
+            var lastActive = firstActive
+            for index in activeTransitionIndices.dropFirst() {
+                let gap = ordered[index].timestamp
+                    - ordered[lastActive].timestamp
+                let resumedDelta = admittedTickDelta(
+                    from: ordered[index - 1],
+                    to: ordered[index]
+                )
+                if !motionBurstContinues(
+                    gap: gap,
+                    resumedDelta: resumedDelta
+                ) {
+                    ranges.append(rangeStart...lastActive)
+                    rangeStart = max(0, index - 1)
+                }
+                lastActive = index
             }
-            lastActive = index
+            ranges.append(rangeStart...lastActive)
         }
-        ranges.append(rangeStart...lastActive)
 
-        var estimates: [Estimate] = []
+        var estimates = autonomousBouts.map(\.estimate)
         for range in ranges {
             let rangePoints = Array(ordered[range])
             guard let estimate = estimateWindow(points: rangePoints)
@@ -1325,6 +1613,89 @@ enum AtriaWhoop4GravityCadenceStepModel {
             cadenceOnlySteps: totalCadenceOnlySteps,
             motionVolumeSteps: totalMotionVolumeSteps,
             unresolvedMotionSeconds: unresolvedMotionSeconds
+        )
+    }
+
+    /// Reassembles cadence evidence which was split only by durable bank
+    /// bookkeeping. A WHOOP walk can cross several adjacent 0x69 coverage
+    /// receipts; scoring each receipt independently turns one qualified walk
+    /// into short, uncountable fragments. Payload identity is deduplicated
+    /// first, while true radio/sample gaps remain separate runs and are never
+    /// interpolated or extrapolated.
+    static func estimateCoveredActivityFragments(
+        _ fragments: [[Point]]
+    ) -> Estimate? {
+        let ordered = canonical(fragments.flatMap { $0 })
+        guard ordered.count >= 2 else { return nil }
+
+        var runs: [[Point]] = []
+        var current: [Point] = []
+        for point in ordered {
+            if let previous = current.last {
+                let gap = point.timestamp - previous.timestamp
+                if gap <= 0 || gap > maximumContinuousSampleGap {
+                    if current.count >= 2 {
+                        runs.append(current)
+                    }
+                    current = []
+                }
+            }
+            current.append(point)
+        }
+        if current.count >= 2 {
+            runs.append(current)
+        }
+        guard !runs.isEmpty else { return nil }
+
+        var estimates: [Estimate] = []
+        var unresolvedMotionSeconds: TimeInterval = 0
+        for run in runs {
+            if let estimate = estimateCoveredActivity(points: run) {
+                estimates.append(estimate)
+                continue
+            }
+            guard let first = run.first, let last = run.last else { continue }
+            let duration = max(0, last.timestamp - first.timestamp)
+            let hasMotion = zip(run, run.dropFirst()).contains {
+                guard let delta = admittedTickDelta(from: $0.0, to: $0.1)
+                else { return true }
+                return delta > 0
+            }
+            if hasMotion {
+                unresolvedMotionSeconds += duration
+            }
+        }
+        guard !estimates.isEmpty else { return nil }
+
+        let totalDuration = estimates.reduce(0) {
+            $0 + $1.durationSeconds
+        }
+        guard totalDuration > 0 else { return nil }
+        let totalSteps = estimates.reduce(0) { $0 + $1.steps }
+        return .init(
+            steps: totalSteps,
+            durationSeconds: totalDuration,
+            sampleRateHz: estimates.reduce(0) {
+                $0 + $1.sampleRateHz * $1.durationSeconds
+            } / totalDuration,
+            aliasFrequencyHz: estimates.reduce(0) {
+                $0 + $1.aliasFrequencyHz * $1.durationSeconds
+            } / totalDuration,
+            cadenceHz: Double(totalSteps) / totalDuration,
+            peakDominance: estimates.map(\.peakDominance).min() ?? 0,
+            motionTicks: estimates.reduce(0) { $0 + $1.motionTicks },
+            motionVolume: estimates.reduce(0) { $0 + $1.motionVolume },
+            cadenceOnlySteps: estimates.reduce(0) {
+                $0 + $1.cadenceOnlySteps
+            },
+            motionVolumeSteps: estimates.reduce(0) {
+                $0 + $1.motionVolumeSteps
+            },
+            unresolvedMotionSeconds: estimates.reduce(
+                unresolvedMotionSeconds
+            ) {
+                $0 + $1.unresolvedMotionSeconds
+            }
         )
     }
 

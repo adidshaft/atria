@@ -3427,10 +3427,14 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                      tint: sleepGlanceTint,
                                      progress: sleepFocusProgress),
             AtriaDailyFocusRail.Item(title: "Live",
-                                     value: live.status == .connected ? "On" : "Off",
+                                     value: AtriaLiveSignalTruth.valueText(
+                                        status: live.status,
+                                        streamState: live.strapStreamState,
+                                        hasRecentHeartRate: live.hasRecentHeartRateSample
+                                     ),
                                      detail: liveFocusDetailText,
                                      systemImage: "waveform.path.ecg",
-                                     tint: live.status == .connected ? .green : .secondary,
+                                     tint: liveFocusTint,
                                      progress: live.sessionSampleCount > 0 ? min(Double(live.sessionSampleCount) / 720.0, 1) : nil)
         ]
     }
@@ -3530,20 +3534,29 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         return "Sleep \(sleepGlanceValueText), \(sleepTriRingDetailText). Recovery \(triRingRecoveryMetric.value), \(recoveryTriRingDetailText). \(strain)"
     }
 
+    private var liveFocusTint: Color {
+        switch AtriaLiveSignalTruth.tone(
+            status: live.status,
+            streamState: live.strapStreamState,
+            hasRecentHeartRate: live.hasRecentHeartRateSample
+        ) {
+        case .healthy:
+            return .green
+        case .waiting:
+            return .cyan
+        case .attention:
+            return .orange
+        case .unavailable:
+            return .secondary
+        }
+    }
+
     private var liveFocusDetailText: String {
-        if live.status == .connected, live.sessionSampleCount > 0 {
-            return "Strap live"
-        }
-        switch live.status {
-        case .connected:
-            return "Strap ready"
-        case .connecting, .scanning:
-            return "Reconnecting"
-        case .poweredOff:
-            return "Bluetooth off"
-        case .disconnected:
-            return live.batteryLevel >= 0 ? "Last seen \(live.batteryText)" : "Unavailable"
-        }
+        AtriaLiveSignalTruth.detailText(
+            status: live.status,
+            streamState: live.strapStreamState,
+            hasRecentHeartRate: live.hasRecentHeartRateSample
+        )
     }
 
     private var targetValueText: String {
@@ -4713,13 +4726,106 @@ private struct AtriaOverviewBreathworkSessionHost: View {
     }
 }
 
+enum AtriaLiveSignalTruth {
+    enum Tone: Equatable {
+        case healthy
+        case waiting
+        case attention
+        case unavailable
+    }
+
+    static func isLive(status: AtriaBLEManager.Status,
+                       streamState: AtriaBLEManager.StrapStreamState,
+                       hasRecentHeartRate: Bool) -> Bool {
+        guard status == .connected, hasRecentHeartRate else { return false }
+        return streamState == .live || streamState == .unknown
+    }
+
+    static func valueText(status: AtriaBLEManager.Status,
+                          streamState: AtriaBLEManager.StrapStreamState,
+                          hasRecentHeartRate: Bool) -> String {
+        if isLive(status: status,
+                  streamState: streamState,
+                  hasRecentHeartRate: hasRecentHeartRate) {
+            return "Live"
+        }
+        switch status {
+        case .connected:
+            switch streamState {
+            case .lowBatteryShutoff:
+                return "Charge strap"
+            case .lowBatteryReducedDetail:
+                return "Low battery"
+            case .silentUnknown:
+                return "No signal"
+            case .live, .warming, .unknown:
+                return "Waiting"
+            }
+        case .connecting, .scanning:
+            return "Finding"
+        case .disconnected:
+            return "Off"
+        case .poweredOff:
+            return "Bluetooth off"
+        }
+    }
+
+    static func detailText(status: AtriaBLEManager.Status,
+                           streamState: AtriaBLEManager.StrapStreamState,
+                           hasRecentHeartRate: Bool) -> String {
+        if isLive(status: status,
+                  streamState: streamState,
+                  hasRecentHeartRate: hasRecentHeartRate) {
+            return "Heart rate live"
+        }
+        switch status {
+        case .connected:
+            switch streamState {
+            case .lowBatteryShutoff:
+                return "Charge to resume heart rate"
+            case .lowBatteryReducedDetail:
+                return "Reduced detail until charged"
+            case .silentUnknown:
+                return "Connected · no fresh heart rate"
+            case .live, .warming, .unknown:
+                return "Connected · waiting for heart rate"
+            }
+        case .connecting, .scanning:
+            return "Reconnecting"
+        case .poweredOff:
+            return "Bluetooth off"
+        case .disconnected:
+            return "Disconnected"
+        }
+    }
+
+    static func tone(status: AtriaBLEManager.Status,
+                     streamState: AtriaBLEManager.StrapStreamState,
+                     hasRecentHeartRate: Bool) -> Tone {
+        if isLive(status: status,
+                  streamState: streamState,
+                  hasRecentHeartRate: hasRecentHeartRate) {
+            return .healthy
+        }
+        guard status == .connected else {
+            return status == .connecting || status == .scanning ? .waiting : .unavailable
+        }
+        switch streamState {
+        case .lowBatteryShutoff, .lowBatteryReducedDetail, .silentUnknown:
+            return .attention
+        case .live, .warming, .unknown:
+            return .waiting
+        }
+    }
+}
+
 private struct AtriaTriRingLiveStatusStrip: View, Equatable {
     let live: AtriaHomeModel.CoreLiveState
     let pulse: AtriaHomeModel.HeroPulseState
 
     private var tint: Color {
         if let zone = pulse.heartRateZone { return zone.tint }
-        return live.status == .connected ? .green : .secondary
+        return pulse.hasPulseSignal ? .green : .secondary
     }
 
     private var zoneText: String {
@@ -8628,7 +8734,11 @@ struct AtriaMetricDetailSheet: View {
             // (2026-07-07, design handoff full-scroll mock).
             AtriaMetricDetailTemplate(heroValue: recoveryHeroValue,
                                       heroState: recoveryHeroState,
-                                      tint: recoveryHeroRawPercent.map { Metrics.recoveryColor(Int($0.rounded())) } ?? Metrics.electricGreen,
+                                      // Missing Recovery is neutral. Green is
+                                      // reserved for an actual qualified score.
+                                      tint: recoveryHeroRawPercent.map {
+                                        Metrics.recoveryColor(Int($0.rounded()))
+                                      } ?? .secondary,
                                       heroStyle: .recoveryRing(score: recoveryHeroRawPercent,
                                                                baselineComparison: recoveryBaselineComparisonText)) {
                 if let provenance {
@@ -9010,7 +9120,7 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private var fitnessAgeTint: Color {
-        guard let latest = preparedHistory.fitnessAge[range]?.last?.value else { return .orange }
+        guard let latest = preparedHistory.fitnessAge[range]?.last?.value else { return .secondary }
         return latest <= 0 ? Metrics.electricGreen : Metrics.electricYellow
     }
 
@@ -9124,7 +9234,9 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private var recoveryHeroValue: String {
-        guard let percent = recoveryHeroRawPercent else { return "Learning" }
+        guard let percent = recoveryHeroRawPercent else {
+            return AtriaCompactMetricPresentation.noValue
+        }
         return AtriaDetailPeriodSummary.valueText(percent, unit: "%")
     }
 
@@ -9177,7 +9289,9 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private var strainHeroValue: String {
-        guard let strainHeroRawValue else { return "Learning" }
+        guard let strainHeroRawValue else {
+            return AtriaCompactMetricPresentation.noValue
+        }
         let value = AtriaDetailPeriodSummary.valueText(strainHeroRawValue, unit: "")
         return dayStrainMetricsIncomplete ? "≥ \(value)" : value
     }
@@ -14612,15 +14726,19 @@ struct AtriaOverviewLiveStrapSection: View, Equatable {
     let stats: AtriaHomeModel.HomeStatsState
 
     private var statusTint: Color {
-        switch live.status {
-        case .connected:
+        switch AtriaLiveSignalTruth.tone(
+            status: live.status,
+            streamState: live.strapStreamState,
+            hasRecentHeartRate: live.hasRecentHeartRateSample
+        ) {
+        case .healthy:
             return .green
-        case .connecting, .scanning:
+        case .waiting:
+            return .cyan
+        case .attention:
             return .orange
-        case .poweredOff:
-            return .red
-        case .disconnected:
-            return .blue
+        case .unavailable:
+            return live.status == .poweredOff ? .red : .secondary
         }
     }
 
@@ -14631,8 +14749,11 @@ struct AtriaOverviewLiveStrapSection: View, Equatable {
 
                 Spacer(minLength: 0)
 
-                AtriaStatusChip(text: live.status == .connected
-                                    ? live.strapStreamConnectionLabel : live.status.rawValue,
+                AtriaStatusChip(text: AtriaLiveSignalTruth.valueText(
+                                    status: live.status,
+                                    streamState: live.strapStreamState,
+                                    hasRecentHeartRate: live.hasRecentHeartRateSample
+                                ),
                                 systemImage: live.status == .connected
                                     ? live.strapStreamConnectionSymbol : "dot.radiowaves.left.and.right",
                                 tint: statusTint)

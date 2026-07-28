@@ -2467,6 +2467,43 @@ POSITIVE STILL REQUIRED**
   184/184. Physical current-cycle receipt publication and visible-card
   verification are still required before calling the all-day UI path passed.
 
+#### 2026-07-29 — autonomous gait-bout reconstruction (v15)
+
+- **Demonstrated failure:** v14 treated ordinary 10–18-second pauses in the
+  v24 firmware motion coordinate as activity boundaries. The preserved active
+  physiological day therefore published only 165 steps despite 7,907 admitted
+  motion ticks.
+- **Repair:** v15 scans clock-corrected v24 gravity and motion in overlapping
+  48-second windows. Independently qualified gait anchors may merge only when
+  their raw samples overlap or every intervening WHOOP sample is present and
+  its gravity vector remains active. A sample gap above three seconds or a
+  continuous stationary-gravity run above ten seconds is a hard boundary.
+  The reconstructed bout is counted by the existing
+  gravity-cadence/alias estimator; the day never scales aggregate ticks and
+  never uses phone motion, HR, GPS, distance, or missing-time extrapolation.
+- **Quantity correction:** cadence subharmonic arbitration now uses the
+  gait-qualified active tick rate rather than diluting that rate over inactive
+  workout edges. This preserves the physical 115-step slow walk at 115 instead
+  of selecting its 132-step ordinary alias.
+- **Physical replay matrix:** authoritative preserved JSONL windows replayed
+  as 147/150, 127/129, 106/106, 112/108, 102/100, 105/110,
+  106/109, 104/109, and 112/115. All are within 5%. Four separately captured
+  planted-feet rhythmic-arm controls replay as zero/unavailable.
+- **Whole-day replay:** 63,107 unique clock-corrected v24 rows produce 4,315
+  strap-only steps across 47 gait bouts, replacing v14's 165-step lower bound.
+  The replay still reports 12,504 seconds of counter-active motion unresolved,
+  so this is a truthful partial day value, not proof of an exact complete-day
+  total. Exact all-day accuracy still requires an independently counted full
+  physiological day; unresolved or missing coverage must remain visibly
+  partial.
+- **Evidence:** `evidence/2026-07-29-autonomous-day-model/`, the read-only
+  replay tool `tools/replay_whoop4_day_steps.swift`, and the reduced immutable
+  walk/control regression fixture
+  `Atria/AtriaTests/Fixtures/whoop4-v15-physical-gait-corpus.jsonl`
+  (`SHA-256 52fc68e95940cfad016dc62baca0dd8bb59944aa584c05b7046c6c1f1d05c2f3`).
+  The reduced fixture contains only the named acceptance windows; it cannot be
+  used to claim whole-day accuracy.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.

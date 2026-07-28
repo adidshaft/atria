@@ -39,6 +39,11 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     let capturedAt: Date?
     let coverageFraction: Double?
     var unavailabilityReason: UnavailabilityReason = .none
+    /// Coverage can be complete through the current projection boundary while
+    /// the physiological day itself is still open. Keep those two facts
+    /// separate so an exact "today so far" count is never described as a
+    /// completed day.
+    var isOpenCycle: Bool = false
 
     var valueText: String {
         guard let count else { return "--" }
@@ -52,7 +57,7 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     var detailText: String {
         switch (source, completeness) {
         case (.verifiedCanonical, .complete):
-            return "Verified complete day"
+            return isOpenCycle ? "Today so far · verified" : "Verified complete day"
         case (.verifiedCanonical, .partial):
             if let coverageFraction {
                 return "Partial archive · \(Int((coverageFraction * 100).rounded()))% covered"
@@ -80,7 +85,9 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         guard let count else { return "Step count unavailable. \(detailText)." }
         switch (source, completeness) {
         case (.verifiedCanonical, .complete):
-            return "\(count) steps. Verified complete day."
+            return isOpenCycle
+                ? "\(count) verified steps today so far."
+                : "\(count) steps. Verified complete day."
         case (.verifiedCanonical, .partial):
             return "At least \(count) steps. Partial verified archive coverage."
         case (.live, .partial):
@@ -148,7 +155,8 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                          source: .verifiedCanonical,
                          isValidated: true,
                          capturedAt: matching.map(\.dayEnd).max(),
-                         coverageFraction: 1)
+                         coverageFraction: 1,
+                         isOpenCycle: isOpenDay)
         }
         if completeCounts.count > 1 {
             return .init(day: dayStart,
@@ -158,7 +166,8 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                          isValidated: false,
                          capturedAt: nil,
                          coverageFraction: nil,
-                         unavailabilityReason: .conflictingExactReceipts)
+                         unavailabilityReason: .conflictingExactReceipts,
+                         isOpenCycle: isOpenDay)
         }
         let partial = completeCounts.isEmpty
             ? matching
@@ -187,7 +196,8 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                          isValidated: true,
                          capturedAt: partial.dayEnd,
                          coverageFraction: total > 0
-                            ? Double(partial.knownCoverageSeconds) / Double(total) : nil)
+                            ? Double(partial.knownCoverageSeconds) / Double(total) : nil,
+                         isOpenCycle: isOpenDay)
         }
         // A live strap subtotal is only an open-day source while its
         // detector-applied coordinate is fresh. A restored prefix is retained
@@ -200,7 +210,8 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                          source: .live,
                          isValidated: true,
                          capturedAt: liveCapturedAt,
-                         coverageFraction: nil)
+                         coverageFraction: nil,
+                         isOpenCycle: isOpenDay)
         }
         return .init(day: dayStart,
                      count: nil,
@@ -215,6 +226,7 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                             : (liveCapturedAt == nil
                                 ? .noCurrentCycleReceipt
                                 : (liveBelongsToDay
-                                   ? .unvalidatedLiveReceipt : .staleLiveReceipt)))
+                                   ? .unvalidatedLiveReceipt : .staleLiveReceipt)),
+                     isOpenCycle: isOpenDay)
     }
 }

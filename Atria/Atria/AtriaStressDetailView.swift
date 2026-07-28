@@ -77,6 +77,24 @@ struct AtriaStressDetailInput: Equatable {
     }
 }
 
+enum AtriaStressReadingFreshness: Equatable {
+    case live
+    case stale
+    case untimed
+
+    static let liveWindow: TimeInterval = 90
+    static let futureTolerance: TimeInterval = 5
+
+    static func resolve(isScored: Bool,
+                        updatedAt: Date?,
+                        now: Date = Date()) -> Self {
+        guard isScored, let updatedAt else { return .untimed }
+        let age = now.timeIntervalSince(updatedAt)
+        guard age >= -futureTolerance, age <= liveWindow else { return .stale }
+        return .live
+    }
+}
+
 struct AtriaStressLoggedContext: Identifiable, Equatable {
     let id: String
     let label: String
@@ -303,7 +321,7 @@ struct AtriaStressDetailView: View {
                 .accessibilityLabel("About Stress")
             }
 
-            if input.state.kind == .scored {
+            if stressFreshness == .live {
                 Label("Live", systemImage: "circle.fill")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(input.tint)
@@ -476,10 +494,22 @@ struct AtriaStressDetailView: View {
     }
 
     private var updateText: String {
-        guard let updatedAt = input.updatedAt else {
-            return input.state.kind == .scored ? "Live" : input.state.label
+        switch stressFreshness {
+        case .live:
+            return "Live"
+        case .stale:
+            guard let updatedAt = input.updatedAt else { return "Last reading" }
+            return "Last reading \(updatedAt.formatted(.relative(presentation: .named)))"
+        case .untimed:
+            return input.state.kind == .scored ? "Current reading · time unavailable" : input.state.label
         }
-        return "Updated \(updatedAt.formatted(.relative(presentation: .named)))"
+    }
+
+    private var stressFreshness: AtriaStressReadingFreshness {
+        AtriaStressReadingFreshness.resolve(
+            isScored: input.state.kind == .scored,
+            updatedAt: input.updatedAt
+        )
     }
 
     private var rangeText: String? {

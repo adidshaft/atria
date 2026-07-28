@@ -246,6 +246,8 @@ final class AtriaLiveActivityCoordinator {
         var stepsAvailability: AtriaLiveSensorAvailability = .unavailable
         var dailySteps: Int? = nil
         var dailyStepsAreEstimated: Bool = false
+        var dailyStepsCapturedAt: Date? = nil
+        var dailyStepsIsLowerBound: Bool = false
         var dailyStepGoal: Int? = nil
         var workoutStrain: Double
         var workoutStrainCapturedAt: Date? = nil
@@ -503,6 +505,8 @@ final class AtriaLiveActivityCoordinator {
                                                  stepsAvailability: snapshot.stepsAvailability,
                                                  dailySteps: snapshot.dailySteps,
                                                  dailyStepsAreEstimated: snapshot.dailyStepsAreEstimated,
+                                                 dailyStepsCapturedAt: snapshot.dailyStepsCapturedAt,
+                                                 dailyStepsIsLowerBound: snapshot.dailyStepsIsLowerBound,
                                                  dailyStepGoal: snapshot.dailyStepGoal,
                                                  workoutStrain: snapshot.workoutStrain,
                                                  workoutStrainCapturedAt: snapshot.workoutStrainCapturedAt,
@@ -736,6 +740,8 @@ final class AtriaLiveActivityCoordinator {
             || current.stepsAvailability != previous.stepsAvailability
             || (current.dailySteps == nil) != (previous.dailySteps == nil)
             || current.dailyStepsAreEstimated != previous.dailyStepsAreEstimated
+            || (current.dailyStepsCapturedAt == nil) != (previous.dailyStepsCapturedAt == nil)
+            || current.dailyStepsIsLowerBound != previous.dailyStepsIsLowerBound
             || current.dailyStepGoal != previous.dailyStepGoal {
             return true
         }
@@ -750,6 +756,7 @@ final class AtriaLiveActivityCoordinator {
            let previousSteps = previous.dailySteps,
            let currentSteps = current.dailySteps,
            !current.dailyStepsAreEstimated,
+           !current.dailyStepsIsLowerBound,
            (previousSteps < goal) != (currentSteps < goal) {
             return true
         }

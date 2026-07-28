@@ -1088,7 +1088,10 @@ private struct AtriaConnectionGuideSheet: View {
             Circle()
                 .fill(statusTint)
                 .frame(width: 8, height: 8)
-            Text(status == .connected ? "Live" : "Setup")
+            // The guide can prove the BLE link, not a fresh pulse. The
+            // top-level live surfaces promote this to "Live" only after
+            // accepted heart-rate evidence arrives.
+            Text(status == .connected ? "Connected" : "Setup")
                 .font(.caption.weight(.bold))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)

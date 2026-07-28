@@ -2891,15 +2891,11 @@ private struct AtriaTodayLiveStatusStrip: View, Equatable {
 
     private var liveStatusText: String {
         if pulse.heartRate > 0 { return "\(pulse.heartRate) bpm" }
-        switch live.status {
-        case .connected: return "Live"
-        case .connecting, .scanning: return "Finding"
-        case .disconnected: return "Off"
-        // "BT off" was the only abbreviation on the Today deck, and it names
-        // the one thing the wearer can actually fix. The pill is half-width
-        // with minimumScaleFactor(0.72), so the full word fits.
-        case .poweredOff: return "Bluetooth off"
-        }
+        return AtriaLiveSignalTruth.valueText(
+            status: live.status,
+            streamState: live.strapStreamState,
+            hasRecentHeartRate: live.hasRecentHeartRateSample
+        )
     }
 }
 
