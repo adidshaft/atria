@@ -8,6 +8,9 @@ import Foundation
 /// already-open interval instead of silently resetting its beginning.
 enum AtriaWhoop4MotionBankCoverageLedger {
     static let algorithmVersion = "whoop4-motion-bank-coverage-v1"
+    static let didResolveOffloadNotification = Notification.Name(
+        "AtriaWhoop4MotionBankCoverageLedger.didResolveOffload"
+    )
 
     struct Interval: Codable, Equatable, Sendable {
         let start: Date
@@ -147,8 +150,21 @@ enum AtriaWhoop4MotionBankCoverageLedger {
         defaults: UserDefaults = .standard
     ) {
         var state = load(defaults: defaults)
+        let resolved = state.pendingOffloads?.first { $0.id == id }
         state.pendingOffloads?.removeAll { $0.id == id }
         save(state, defaults: defaults)
+        guard resolved != nil else { return }
+        // Archive-update notifications can arrive while history transport
+        // still owns the link, so SessionStore correctly defers them. This
+        // terminal receipt is the first point at which the exact bank window
+        // is both durably present and safe to project into the daily step
+        // authority. Publish after the defaults transaction commits.
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: didResolveOffloadNotification,
+                object: id
+            )
+        }
     }
 
     /// Repairs tickets cleared by the retired transport-only verifier. The
