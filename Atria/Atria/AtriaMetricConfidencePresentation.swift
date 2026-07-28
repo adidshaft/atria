@@ -24,6 +24,19 @@ enum AtriaMetricConfidenceLevel: String, Equatable, CaseIterable {
     case moderate
     case limited
     case provisional
+
+    /// What a status line shows when there is no more specific marker to give.
+    /// Short by contract -- the raw confidence names ("personal baseline") are
+    /// long enough to wrap a compact card and were part of why cards ended up
+    /// at different heights.
+    var shortLabel: String {
+        switch self {
+        case .high: return "checked"
+        case .moderate: return "baseline"
+        case .limited: return "limited"
+        case .provisional: return "provisional"
+        }
+    }
 }
 
 struct AtriaCompactMetricPresentation: Equatable {

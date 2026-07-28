@@ -228,6 +228,34 @@ final class AtriaMetricConfidencePresentationTests: XCTestCase {
         }
     }
 
+    /// The status line falls back to `shortLabel` whenever a metric is confident
+    /// enough to need no marker, so these are subject to the same width contract.
+    /// The raw confidence names they replace ("personal baseline") are 17
+    /// characters and would wrap.
+    func testEveryShortLabelIsShortEnoughToNeverWrap() {
+        for level in AtriaMetricConfidenceLevel.allCases {
+            XCTAssertLessThanOrEqual(level.shortLabel.count, 14,
+                                     "short label too long: \(level.shortLabel)")
+            XCTAssertFalse(level.shortLabel.isEmpty,
+                           "status line must never be blank for \(level)")
+        }
+    }
+
+    /// Recovery carried from a previous sleep must say so even at high
+    /// confidence -- otherwise a stale-looking number gets no explanation at all.
+    func testCarryOverMarkerOutranksHighConfidenceSilence() {
+        let presentation = AtriaCompactMetricPresentation.recovery(
+            percent: 88,
+            confidence: .validated,
+            usesHRV: true,
+            isProvisional: false,
+            isFromPreviousSleep: true
+        )
+
+        XCTAssertEqual(presentation.level, .high)
+        XCTAssertEqual(presentation.marker, "prev. sleep")
+    }
+
     // MARK: - Canonical pending check
 
     /// The regression this collapse was built to prevent: a producer moving off

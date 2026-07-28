@@ -8171,18 +8171,26 @@ final class AtriaHomeModel {
             recoveryIsFromPreviousSleep: Bool,
             recoveryLiftedAfterNap: Bool
         ) -> String {
-            if recoveryIsFromPreviousSleep {
-                return "Previous sleep score · awaiting today’s sleep"
-            }
-            if recoveryEstimate.confidence == .unverified,
-               recoveryEstimate.detail.localizedCaseInsensitiveContains("HRV unavailable") {
-                return recoveryLiftedAfterNap
-                    ? "Limited confidence · HRV unavailable · ↑ after nap"
-                    : "Limited confidence · HRV unavailable"
-            }
-            let base = recoveryIsProvisional
-                ? "\(recoveryEstimate.confidence.rawValue) · provisional"
-                : recoveryEstimate.confidence.rawValue
+            // Compact fixed-vocabulary marker, not prose. These strings ran up to
+            // 49 characters ("Limited confidence · HRV unavailable · ↑ after
+            // nap"), which read as an error block beside a ring already showing a
+            // real score, and wrapped -- so one card ended up taller than its
+            // neighbour. The marker now states the same thing in <= 14
+            // characters; the full reason belongs in the expanded detail.
+            //
+            // HRV availability now comes from the estimate's structured
+            // `usesHRV` flag instead of sniffing its prose for the substring
+            // "HRV unavailable". That flag is set false at exactly the sites
+            // that emit those details, so this is the authoritative source and
+            // cannot drift when the wording changes.
+            let presentation = AtriaCompactMetricPresentation.recovery(
+                percent: recoveryEstimate.percent,
+                confidence: recoveryEstimate.confidence,
+                usesHRV: recoveryEstimate.usesHRV,
+                isProvisional: recoveryIsProvisional,
+                isFromPreviousSleep: recoveryIsFromPreviousSleep
+            )
+            let base = presentation.marker ?? presentation.level.shortLabel
             return recoveryLiftedAfterNap ? "\(base) · ↑ after nap" : base
         }
 
