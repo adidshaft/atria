@@ -8880,7 +8880,9 @@ final class AtriaHomeModel {
             .store(in: &cancellables)
 
         let throttledCoreLiveChanges = Publishers.MergeMany([
+            ble.$status.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$bluetoothPermissionDenied.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$isBluetoothReady.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$hasContact.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$batteryLevel.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$batteryChargeStatus.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
@@ -9048,7 +9050,10 @@ final class AtriaHomeModel {
 
         store.$historySnapshot
             .map { _ in () }
-            .sink { [weak self] _ in self?.coreRefreshSubject.send(()) }
+            .sink { [weak self] _ in
+                self?.publishCoreLive()
+                self?.coreRefreshSubject.send(())
+            }
             .store(in: &cancellables)
 
         Publishers.Merge(

@@ -1,6 +1,15 @@
 import Foundation
 
 enum HistoricalArchive {
+    /// All heavyweight read-only projections over the historical archive share
+    /// one lane. Running the JSONL scanners concurrently multiplies their
+    /// resident buffers and can saturate every performance core, starving the
+    /// main run loop even though each individual caller is off-main.
+    static let consumerProjectionQueue = DispatchQueue(
+        label: "com.atria.historical-archive-consumer-projection",
+        qos: .utility
+    )
+
     enum DurableAdmissionReconciliationError: Error {
         case rematerializationFailed(String)
     }

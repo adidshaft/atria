@@ -398,6 +398,82 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         XCTAssertTrue(sessions.contains(
             "reason: \"session_store_init\""
         ))
+        XCTAssertTrue(body.contains(
+            "if !changed"
+        ))
+        XCTAssertTrue(body.contains(
+            ".didSaveNotification"
+        ), "an unchanged durable receipt must still refresh relaunch surfaces")
+    }
+
+    func testArchiveWideMotionReadersShareOneSerialConsumerLane() throws {
+        let testsURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let sourcesURL = testsURL.deletingLastPathComponent()
+            .appendingPathComponent("Atria")
+        let sessions = try String(
+            contentsOf: sourcesURL.appendingPathComponent("Sessions.swift"),
+            encoding: .utf8
+        )
+        let ble = try String(
+            contentsOf: sourcesURL.appendingPathComponent(
+                "AtriaBLEManager.swift"
+            ),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(sessions.contains(
+            "historySnapshotProjectionQueue =\n        HistoricalArchive.consumerProjectionQueue"
+        ))
+        XCTAssertTrue(sessions.contains(
+            "workoutStepEvidenceQueue =\n        HistoricalArchive.consumerProjectionQueue"
+        ))
+        XCTAssertTrue(ble.contains(
+            "HistoricalArchive.consumerProjectionQueue.async"
+        ))
+
+        let historyStart = try XCTUnwrap(sessions.range(
+            of: "private func refreshHistorySnapshotCache"
+        ))
+        let historyEnd = try XCTUnwrap(sessions.range(
+            of: "private func refreshCurrentCycleStrapStepReceipt",
+            range: historyStart.upperBound..<sessions.endIndex
+        ))
+        let historyBody = String(
+            sessions[historyStart.lowerBound..<historyEnd.lowerBound]
+        )
+        XCTAssertFalse(historyBody.contains(
+            "HistoricalArchive.motionTickDayEvidence("
+        ), "history refresh must consume the durable receipt, not decode it again")
+        XCTAssertTrue(historyBody.contains(
+            "AtriaWhoop4MotionTickDailyStore.shared.load("
+        ))
+
+        let home = try String(
+            contentsOf: sourcesURL.appendingPathComponent(
+                "AtriaHomeView.swift"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(home.contains(
+            "ble.$status.removeDuplicates().map { _ in () }"
+        ))
+        XCTAssertTrue(home.contains(
+            "ble.$isBluetoothReady.removeDuplicates().map { _ in () }"
+        ))
+        let historyPublisher = try XCTUnwrap(home.range(
+            of: "store.$historySnapshot"
+        ))
+        let historyPublisherEnd = try XCTUnwrap(home.range(
+            of: ".store(in: &cancellables)",
+            range: historyPublisher.upperBound..<home.endIndex
+        ))
+        let historyPublisherBody = String(
+            home[historyPublisher.lowerBound..<historyPublisherEnd.upperBound]
+        )
+        XCTAssertTrue(historyPublisherBody.contains(
+            "self?.publishCoreLive()"
+        ))
     }
 
     private func makeEvidence(
