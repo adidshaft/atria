@@ -256,6 +256,11 @@ struct AtriaTodayScreen: View {
             // the night the ring is already showing.
             sleepSettlementRow
 
+            // Shown only when the system route could not deliver this morning's
+            // nudge. A notification the user switched off deliberately does NOT
+            // reach here -- honouring that toggle is the point of it.
+            journalFallbackPrompt
+
             if layoutConfig.showLiveStrip {
                 AtriaTodayLiveStatusHost(liveStore: liveStore,
                                          pulseStore: pulseStore)
@@ -1274,6 +1279,54 @@ struct AtriaTodayScreen: View {
                         hueTinted: true)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(freshness.map { "\(state.title), updated \($0)" } ?? state.title)
+    }
+
+    /// In-app stand-in for a morning journal nudge that the system could not
+    /// deliver. Previously the scheduler returned early on a denied
+    /// authorization and nothing happened at all, so a permissions problem and a
+    /// broken app looked identical from the outside.
+    ///
+    /// Deliberately silent unless the durable attempt record says the system
+    /// route failed today: this is a fallback, not a second nudge, and it must
+    /// never double up with a notification that did go out.
+    @ViewBuilder
+    private var journalFallbackPrompt: some View {
+        if AtriaNotificationAttemptStore.needsInAppFallback(
+            kind: LocalNotificationScheduler.morningCheckInKind
+        ) {
+            Button {
+                onOpenJournal()
+            } label: {
+                HStack(spacing: AtriaDesignTokens.Spacing.md) {
+                    Image(systemName: "square.and.pencil")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(.blue)
+                        .frame(width: 24, height: 24)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Morning check-in")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text("Notifications are off, so here it is instead.")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                    }
+                    Spacer(minLength: AtriaDesignTokens.Spacing.sm)
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .padding(.horizontal, AtriaDesignTokens.Spacing.md)
+                .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip,
+                                tint: .blue,
+                                hueTinted: true)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Morning check-in. Notifications are off, so this prompt is shown instead. Opens the journal.")
+        }
     }
 
     private var latestDisplaySleep: SleepHistorySnapshot.Night? {
