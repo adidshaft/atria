@@ -8294,6 +8294,11 @@ struct AtriaMetricDetailSheet: View {
     @State private var range: AtriaTrendRange = .day
     @State private var showingMeaningSheet = false
     private let initialScrubbedDay: Date?
+    /// Built by the caller from the canonical presentation model, because the
+    /// caller is what holds the hero snapshot. Nil where a metric has no
+    /// provenance to show, in which case the section is simply absent rather
+    /// than rendered empty.
+    var provenance: AtriaMetricProvenance? = nil
 
     private final class ExpandedChartEventsCache {
         private var key: Int?
@@ -8328,6 +8333,76 @@ struct AtriaMetricDetailSheet: View {
         }
     }
 
+    /// Everything the compact card could not say. Rows appear only when the
+    /// underlying measurement exists -- an absent row means "not measured at
+    /// this scope", which is why nothing here renders a zero as a stand-in.
+    private func provenanceCard(_ provenance: AtriaMetricProvenance) -> some View {
+        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.md) {
+            Text("How this number was measured")
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(spacing: 0) {
+                provenanceRow("Value", provenance.displayValue)
+                provenanceRow("Confidence", provenance.level.rawValue.capitalized)
+                if let fraction = provenance.hrCoverageFraction {
+                    provenanceRow("HR coverage", "\(Int((fraction * 100).rounded()))%")
+                }
+                if let usesHRV = provenance.usesHRV {
+                    provenanceRow("HRV", usesHRV ? "Contributed" : "Not available")
+                }
+                if provenance.isLowerBound {
+                    provenanceRow("Reading", "Lower bound")
+                }
+                provenanceRow("Source", provenance.sourceLabel)
+                if let observedAt = provenance.observedAt {
+                    provenanceRow("Updated",
+                                  observedAt.formatted(date: .omitted, time: .shortened))
+                }
+            }
+
+            if let reason = provenance.reducedConfidenceReason {
+                provenanceNote(title: "Why confidence is reduced", body: reason)
+            }
+            if let hint = provenance.improvementHint {
+                provenanceNote(title: "What would improve it", body: hint)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(AtriaDesignTokens.Spacing.lg)
+        .atriaCard(cornerRadius: AtriaDesignTokens.Radius.card, emphasis: .soft)
+    }
+
+    private func provenanceRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: AtriaDesignTokens.Spacing.md) {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: AtriaDesignTokens.Spacing.sm)
+            Text(value)
+                .font(.caption.weight(.bold).monospacedDigit())
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.trailing)
+        }
+        .frame(minHeight: 32)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label): \(value)")
+    }
+
+    private func provenanceNote(title: String, body: String) -> some View {
+        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.xs) {
+            Text(title)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+            Text(body)
+                .font(.caption)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     init(metric: AtriaMetricDetailKind,
          rollups: [DailyRollupStoreEntry],
          rollupsRevision: Int? = nil,
@@ -8345,6 +8420,7 @@ struct AtriaMetricDetailSheet: View {
          maxHeartRate: Int? = nil,
          vo2MaxEstimate: VO2MaxEstimateSummary? = nil,
          skinTemperatureDeviation: IMUAuditSummary.SkinTemperatureDeviationSummary? = nil,
+         provenance: AtriaMetricProvenance? = nil,
          initialRange: AtriaTrendRange = .day,
          initialScrubbedDay: Date? = nil,
          initialBucketOverride: AtriaChartBucketOverride = .auto,
@@ -8353,6 +8429,7 @@ struct AtriaMetricDetailSheet: View {
         self.initialScrubbedDay = initialScrubbedDay
         _bucketOverride = State(initialValue: initialBucketOverride)
         _showMinMaxBand = State(initialValue: initialShowMinMaxBand)
+        self.provenance = provenance
         self.metric = metric
         self.confirmedWorkouts = confirmedWorkouts
         self.confirmedWorkoutsRevision = confirmedWorkoutsRevision
@@ -8411,6 +8488,14 @@ struct AtriaMetricDetailSheet: View {
                     preparationShell
                 } else {
                     detailTemplate
+                }
+
+                // Sits directly below the hero score, so the number comes first
+                // and its provenance second -- the compact card carries only a
+                // short marker, and this is where that marker is cashed out into
+                // the measurements behind it.
+                if let provenance {
+                    provenanceCard(provenance)
                 }
             }
             .padding(18)
