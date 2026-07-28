@@ -293,6 +293,11 @@ enum LocalNotificationScheduler {
     /// (the duty-cycle window end is median wake + 1 h, so `windowEnd - 60` is
     /// wake), or 08:00 until the window is learned. Pure + wraps across midnight,
     /// so it's unit-testable.
+    /// Attempt-store key for the morning journal nudge. Named once so the
+    /// scheduler and the in-app fallback cannot disagree about which record
+    /// they are reading.
+    static let morningCheckInKind = "morning_checkin"
+
     nonisolated static func morningNudgeMinutes(windowEnd: Int) -> Int {
         windowEnd > 0 ? ((((windowEnd + 1440 - 60) % 1440) + 15) % 1440) : 8 * 60
     }
@@ -310,8 +315,15 @@ enum LocalNotificationScheduler {
     static func scheduleMorningJournalCheckIn(lastJournalActivity: Date?,
                                               now: Date = Date(),
                                               calendar: Calendar = .current) {
+        // Every exit below now leaves a durable record as well as a log line.
+        // Logs are not readable by the UI, so a morning with no notification
+        // could not say why -- toggle off, journal inactive, authorization
+        // denied and outright failure all looked identical to silence.
         guard AtriaNotificationSettings.load().allows(kind: "morning_summary") else {
             AtriaDebugLog("ATRIADBG notification_schedule status=skipped_toggle kind=morning_checkin")
+            AtriaNotificationAttemptStore.record(kind: Self.morningCheckInKind,
+                                                 outcome: .blockedByToggle,
+                                                 reason: "toggle_off")
             return
         }
         // 14-day (not 7-day) re-engage window: a journal reminder must survive a
@@ -320,6 +332,10 @@ enum LocalNotificationScheduler {
         guard let lastJournalActivity,
               now.timeIntervalSince(lastJournalActivity) <= 14 * 24 * 60 * 60 else {
             AtriaDebugLog("ATRIADBG notification_skip kind=morning_checkin reason=journal_inactive")
+            AtriaNotificationAttemptStore.record(kind: Self.morningCheckInKind,
+                                                 outcome: .skippedInactive,
+                                                 reason: "journal_inactive",
+                                                 at: now)
             return
         }
         // Scene foregrounds fire this many times a day; schedule at most once per
@@ -353,6 +369,11 @@ enum LocalNotificationScheduler {
                     settings.authorizationStatus == .ephemeral else {
                 AtriaDebugLog("ATRIADBG notification_schedule status=blocked reason=authorization_%@ kind=morning_checkin",
                               status)
+                // The one outcome that obliges an in-app equivalent: the system
+                // route cannot deliver, and the user did not choose that.
+                AtriaNotificationAttemptStore.record(kind: Self.morningCheckInKind,
+                                                     outcome: .blockedByAuthorization,
+                                                     reason: "authorization_\(status)")
                 return
             }
 
@@ -372,9 +393,15 @@ enum LocalNotificationScheduler {
                 UserDefaults.standard.set(targetDay, forKey: scheduledDayKey)
                 AtriaDebugLog("ATRIADBG notification_schedule status=scheduled kind=morning_checkin target_day=%@ delay_s=%.0f",
                               targetDay, delay)
+                AtriaNotificationAttemptStore.record(kind: Self.morningCheckInKind,
+                                                     outcome: .scheduled,
+                                                     reason: "target_day_\(targetDay)")
             } catch {
                 AtriaDebugLog("ATRIADBG notification_error kind=morning_checkin error=%@",
                               String(describing: error))
+                AtriaNotificationAttemptStore.record(kind: Self.morningCheckInKind,
+                                                     outcome: .failed,
+                                                     reason: String(describing: error))
             }
         }
     }
