@@ -1399,8 +1399,13 @@ private struct AtriaHealthStressSection: View {
         )
     }
 
+    /// Falls back to the deterministic no-value token, not to the state's label.
+    /// Falling back to the label put "No signal" on the VALUE line while every
+    /// sibling row showed "--" -- a third vocabulary for one state. The reason is
+    /// not lost: `stressDetail` below already surfaces that same label as the
+    /// detail, which is where an explanation belongs.
     private var stressValue: String {
-        stressMonitorStore.state.level?.title ?? stressMonitorStore.state.label
+        stressMonitorStore.state.level?.title ?? AtriaCompactMetricPresentation.noValue
     }
 
     private var stressDetail: String {
