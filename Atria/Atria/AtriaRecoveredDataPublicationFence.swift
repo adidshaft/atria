@@ -15,6 +15,7 @@ final class AtriaRecoveredDataPublicationFence {
     private(set) var archiveRevision: UInt64 = 0
     private(set) var lastPublishedRevision: UInt64 = 0
     private var waiters: [UUID: Waiter] = [:]
+    var pendingWaiterCount: Int { waiters.count }
 
     deinit {
         let continuations = waiters.values.map(\.continuation)
@@ -37,13 +38,34 @@ final class AtriaRecoveredDataPublicationFence {
         let targetRevision = archiveRevision
         guard targetRevision > priorRevision else { return true }
         guard lastPublishedRevision < targetRevision else { return true }
+        guard !Task.isCancelled else { return false }
 
-        return await withCheckedContinuation { continuation in
-            let id = UUID()
-            waiters[id] = Waiter(targetRevision: targetRevision,
-                                 continuation: continuation)
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                waiters[id] = Waiter(
+                    targetRevision: targetRevision,
+                    continuation: continuation
+                )
+                Task { @MainActor [weak self] in
+                    do {
+                        try await Task.sleep(for: timeout)
+                    } catch {
+                        return
+                    }
+                    self?.finishWaiter(id: id, succeeded: false)
+                }
+            }
+        } onCancel: {
+            // Cancellation handlers are not actor-isolated. Schedule the
+            // removal onto the owning actor; the continuation was registered
+            // synchronously before this method suspended, so the queued
+            // removal cannot miss a live waiter.
             Task { @MainActor [weak self] in
-                try? await Task.sleep(for: timeout)
                 self?.finishWaiter(id: id, succeeded: false)
             }
         }
