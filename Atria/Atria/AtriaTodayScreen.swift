@@ -251,6 +251,11 @@ struct AtriaTodayScreen: View {
                     .preference(key: AtriaTodayCompactRingPreferenceKey.self,
                                 value: compactRingPresentation)
             }
+            // Says what the app is doing with last night instead of saying
+            // nothing while it settles. Sits under the hero because it is about
+            // the night the ring is already showing.
+            sleepSettlementRow
+
             if layoutConfig.showLiveStrip {
                 AtriaTodayLiveStatusHost(liveStore: liveStore,
                                          pulseStore: pulseStore)
@@ -1214,6 +1219,63 @@ struct AtriaTodayScreen: View {
     /// owns Recovery and sleep-need math. Keeping the two projections separate
     /// lets a first-night candidate show its measured duration immediately
     /// without silently promoting it into physiological truth.
+    /// Which of the four wake-settlement states last night is in.
+    ///
+    /// Recomputed on each body pass rather than cached, deliberately: the state
+    /// is time-dependent (the 30-minute settlement window) and the requirement
+    /// is that it refresh when the app returns to foreground and when new
+    /// accepted heart rate arrives. Both of those already re-evaluate this body
+    /// via scenePhase and the projection-store revisions, so reading the clock
+    /// here is what keeps the row honest rather than stale.
+    private var sleepSettlementState: AtriaSleepSettlementState {
+        let night = latestDisplaySleep
+        let isConfirmed = night?.confirmed == true
+        return AtriaSleepSettlementPresentation.state(
+            confirmedSleepEnd: isConfirmed ? night?.end : nil,
+            // The night snapshot carries no save timestamp; the model falls back
+            // to the night's end rather than inventing one.
+            confirmedSleepSavedAt: nil,
+            candidateEnd: isConfirmed ? nil : night?.end,
+            now: Date()
+        )
+    }
+
+    @ViewBuilder
+    private var sleepSettlementRow: some View {
+        let state = sleepSettlementState
+        let freshness = AtriaSleepSettlementPresentation.freshnessText(for: state, now: Date())
+        HStack(spacing: AtriaDesignTokens.Spacing.md) {
+            Image(systemName: state.isSettling ? "clock.arrow.circlepath" : "moon.zzz.fill")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(Metrics.electricSleep)
+                .frame(width: 24, height: 24)
+            Text(state.title)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            Spacer(minLength: AtriaDesignTokens.Spacing.sm)
+            // Reserved, like the metric card status line: the stamp is absent
+            // for waitingForData, and a collapsing trailing label would change
+            // the row's height.
+            Text(freshness ?? " ")
+                .font(.caption2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .accessibilityHidden(freshness == nil)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .padding(.horizontal, AtriaDesignTokens.Spacing.md)
+        // Same identity-hue inset card as the glance tiles. A plain grouped
+        // background rendered nearly invisible against the light page, so the
+        // row read as loose text beside its filled neighbours.
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip,
+                        tint: Metrics.electricSleep,
+                        hueTinted: true)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(freshness.map { "\(state.title), updated \($0)" } ?? state.title)
+    }
+
     private var latestDisplaySleep: SleepHistorySnapshot.Night? {
         AtriaOverviewCurrentSleep.resolveDisplayEvidence(
             from: sessionProjectionStore.state.sleepHistorySnapshot
