@@ -3472,8 +3472,14 @@ struct VO2MaxEstimateSummary: Equatable {
     let trendDetail: String
     let trendDelta: Double?
 
+    /// Presentation only -- no estimator input. Falls back to the deterministic
+    /// no-value token so VO2 max stops being the last value line saying
+    /// "Learning" while Recovery, Stress, Respiration and Sleep beside it all
+    /// say "--". The reason still shows: the row's DETAIL carries "Learning",
+    /// so the pair reads "-- / Learning" rather than "Learning / Learning",
+    /// which was the same word twice for one state.
     var valueText: String {
-        value.map { String(format: "%.1f", $0) } ?? "Learning"
+        value.map { String(format: "%.1f", $0) } ?? AtriaCompactMetricPresentation.noValue
     }
 }
 
