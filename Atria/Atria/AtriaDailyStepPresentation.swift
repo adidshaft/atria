@@ -27,6 +27,7 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         case noCurrentCycleReceipt
         case staleLiveReceipt
         case unvalidatedLiveReceipt
+        case motionObservedCountUnresolved
         case conflictingExactReceipts
     }
 
@@ -65,6 +66,8 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                 return "Last strap movement is no longer live"
             case .unvalidatedLiveReceipt:
                 return "Strap motion is still validating"
+            case .motionObservedCountUnresolved:
+                return "Strap motion found · count still resolving"
             case .conflictingExactReceipts:
                 return "Conflicting verified strap receipts"
             case .none, .noCurrentCycleReceipt:
@@ -167,6 +170,11 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                 return $0.knownEpochCount < $1.knownEpochCount
             })
             : nil
+        let hasUnresolvedMotionReceipt = matching.contains {
+            $0.state == .missing
+                && $0.knownEpochCount > 0
+                && $0.knownCoverageSeconds == 0
+        }
         // A durable receipt, including a partial lower bound, remains the
         // authority wherever one exists. Live detector state is considered
         // only when no receipt has been published for the active cycle.
@@ -202,9 +210,11 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                      capturedAt: nil,
                      coverageFraction: nil,
                      unavailabilityReason:
-                        liveCapturedAt == nil
-                            ? .noCurrentCycleReceipt
-                            : (liveBelongsToDay
-                               ? .unvalidatedLiveReceipt : .staleLiveReceipt))
+                        hasUnresolvedMotionReceipt
+                            ? .motionObservedCountUnresolved
+                            : (liveCapturedAt == nil
+                                ? .noCurrentCycleReceipt
+                                : (liveBelongsToDay
+                                   ? .unvalidatedLiveReceipt : .staleLiveReceipt)))
     }
 }

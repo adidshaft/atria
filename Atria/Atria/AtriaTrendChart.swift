@@ -2618,6 +2618,94 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable, Sendable {
             return .distantPast
         }
     }
+
+    /// Calendar-aligned period used by metric detail navigation. This is
+    /// deliberately separate from the legacy rolling `cutoffDate` contract:
+    /// choosing Week or Month in a navigable sheet means an inspectable
+    /// calendar week/month, not an unlabelled trailing number of seconds.
+    func periodInterval(
+        containing anchor: Date,
+        calendar: Calendar = .current
+    ) -> DateInterval {
+        switch self {
+        case .day:
+            let start = calendar.startOfDay(for: anchor)
+            return DateInterval(
+                start: start,
+                end: calendar.date(byAdding: .day, value: 1, to: start)
+                    ?? start.addingTimeInterval(86_400)
+            )
+        case .week:
+            return calendar.dateInterval(of: .weekOfYear, for: anchor)
+                ?? DateInterval(
+                    start: calendar.startOfDay(for: anchor),
+                    duration: 7 * 86_400
+                )
+        case .month:
+            return calendar.dateInterval(of: .month, for: anchor)
+                ?? DateInterval(
+                    start: calendar.startOfDay(for: anchor),
+                    duration: 30 * 86_400
+                )
+        case .quarter, .sixMonths, .year, .all:
+            let start = cutoffDate(now: anchor, calendar: calendar)
+            let end = calendar.date(byAdding: .day, value: 1,
+                                    to: calendar.startOfDay(for: anchor))
+                ?? anchor
+            return DateInterval(start: start, end: end)
+        }
+    }
+
+    func adjacentPeriodAnchor(
+        from anchor: Date,
+        offset: Int,
+        calendar: Calendar = .current
+    ) -> Date {
+        let component: Calendar.Component
+        switch self {
+        case .day: component = .day
+        case .week: component = .weekOfYear
+        case .month: component = .month
+        case .quarter: component = .quarter
+        case .sixMonths: component = .month
+        case .year: component = .year
+        case .all: return anchor
+        }
+        let amount = self == .sixMonths ? offset * 6 : offset
+        return calendar.date(byAdding: component, value: amount, to: anchor)
+            ?? anchor
+    }
+
+    func periodLabel(
+        containing anchor: Date,
+        calendar: Calendar = .current
+    ) -> String {
+        let interval = periodInterval(containing: anchor, calendar: calendar)
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        switch self {
+        case .day:
+            formatter.setLocalizedDateFormatFromTemplate("EEE d MMM")
+            return formatter.string(from: interval.start)
+        case .week:
+            let end = interval.end.addingTimeInterval(-1)
+            let startMonth = calendar.component(.month, from: interval.start)
+            let endMonth = calendar.component(.month, from: end)
+            formatter.setLocalizedDateFormatFromTemplate(
+                startMonth == endMonth ? "d" : "d MMM"
+            )
+            let startText = formatter.string(from: interval.start)
+            formatter.setLocalizedDateFormatFromTemplate("d MMM")
+            return "\(startText)–\(formatter.string(from: end))"
+        case .month:
+            formatter.setLocalizedDateFormatFromTemplate("MMMM yyyy")
+            return formatter.string(from: interval.start)
+        default:
+            formatter.setLocalizedDateFormatFromTemplate("d MMM yyyy")
+            return formatter.string(from: interval.start)
+        }
+    }
 }
 
 enum AtriaTrendMetric: String, CaseIterable, Identifiable {

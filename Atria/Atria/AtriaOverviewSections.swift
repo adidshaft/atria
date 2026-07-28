@@ -8267,6 +8267,65 @@ private struct AtriaMetricDetailPreparationInput: Equatable, Sendable {
         self.referenceDate = calendar.startOfDay(for: referenceDate)
         self.calendar = calendar
     }
+
+    func anchored(at date: Date) -> Self {
+        .init(
+            rollupsRevision: rollupsRevision,
+            rollups: rollups,
+            baseline: baseline,
+            sleepGoalHours: sleepGoalHours,
+            referenceDate: calendar.startOfDay(for: date),
+            calendar: calendar
+        )
+    }
+
+    private init(rollupsRevision: Int?,
+                 rollups: [Rollup],
+                 baseline: Baseline,
+                 sleepGoalHours: Double,
+                 referenceDate: Date,
+                 calendar: Calendar) {
+        self.rollupsRevision = rollupsRevision
+        self.rollups = rollups
+        self.baseline = baseline
+        self.sleepGoalHours = sleepGoalHours
+        self.referenceDate = referenceDate
+        self.calendar = calendar
+    }
+}
+
+struct AtriaMetricPeriodIndexProjection: Equatable, Sendable {
+    let currentIndices: [Int]
+    let priorIndices: [Int]
+    let interval: DateInterval
+    let priorInterval: DateInterval
+
+    init(days: [Date],
+         referenceDate: Date,
+         range: AtriaTrendRange,
+         calendar: Calendar) {
+        let visibleInterval = range.periodInterval(
+            containing: referenceDate,
+            calendar: calendar
+        )
+        let previousAnchor = range.adjacentPeriodAnchor(
+            from: referenceDate,
+            offset: -1,
+            calendar: calendar
+        )
+        let earlierInterval = range.periodInterval(
+            containing: previousAnchor,
+            calendar: calendar
+        )
+        currentIndices = days.indices.filter {
+            days[$0] >= visibleInterval.start && days[$0] < visibleInterval.end
+        }
+        priorIndices = days.indices.filter {
+            days[$0] >= earlierInterval.start && days[$0] < earlierInterval.end
+        }
+        interval = visibleInterval
+        priorInterval = earlierInterval
+    }
 }
 
 private actor AtriaMetricDetailPreparationCache {
@@ -8305,7 +8364,7 @@ struct AtriaMetricDetailSheet: View {
     let maxHeartRate: Int?
     let behaviorImpacts: [BehaviorImpactSummary]
     private let rollups: [DailyRollupStoreEntry]
-    private let preparationInput: AtriaMetricDetailPreparationInput
+    private let preparationBaseInput: AtriaMetricDetailPreparationInput
     private let latestNutrition: AtriaNutritionSummary?
     @State private var openedHistoryDay: AtriaHistoryDay?
     @State private var showChartOptions = false
@@ -8321,6 +8380,7 @@ struct AtriaMetricDetailSheet: View {
     // Detail sheets open on today rather than a month aggregate. The range
     // picker still provides week/month context without hiding the current day.
     @State private var range: AtriaTrendRange = .day
+    @State private var periodAnchor: Date
     @State private var showingMeaningSheet = false
     private let initialScrubbedDay: Date?
     /// Built by the caller from the canonical presentation model, because the
@@ -8384,7 +8444,10 @@ struct AtriaMetricDetailSheet: View {
          initialScrubbedDay: Date? = nil,
          initialBucketOverride: AtriaChartBucketOverride = .auto,
          initialShowMinMaxBand: Bool = true) {
-        _range = State(initialValue: initialRange)
+        let resolvedInitialRange: AtriaTrendRange =
+            metric == .fitnessAge && initialRange == .day ? .week : initialRange
+        _range = State(initialValue: resolvedInitialRange)
+        _periodAnchor = State(initialValue: Date())
         self.initialScrubbedDay = initialScrubbedDay
         _bucketOverride = State(initialValue: initialBucketOverride)
         _showMinMaxBand = State(initialValue: initialShowMinMaxBand)
@@ -8406,10 +8469,16 @@ struct AtriaMetricDetailSheet: View {
         self.rollups = rollups
         self.behaviorImpacts = behaviorImpacts
         self.latestNutrition = rollups.first(where: { $0.nutrition != nil })?.nutrition
-        self.preparationInput = AtriaMetricDetailPreparationInput(rollups: rollups,
-                                                                  rollupsRevision: rollupsRevision,
-                                                                  baseline: baseline,
-                                                                  sleepGoalHours: sleepGoalHours)
+        self.preparationBaseInput = AtriaMetricDetailPreparationInput(
+            rollups: rollups,
+            rollupsRevision: rollupsRevision,
+            baseline: baseline,
+            sleepGoalHours: sleepGoalHours
+        )
+    }
+
+    private var preparationInput: AtriaMetricDetailPreparationInput {
+        preparationBaseInput.anchored(at: periodAnchor)
     }
 
     var body: some View {
@@ -8453,6 +8522,9 @@ struct AtriaMetricDetailSheet: View {
         }
         .task(id: preparationInput) {
             await refreshPreparedHistory()
+        }
+        .onChange(of: range) { _, _ in
+            periodAnchor = Date()
         }
         .sheet(isPresented: $showingMeaningSheet) {
             AtriaMetricMeaningSheet(metric: metric,
@@ -8962,11 +9034,46 @@ struct AtriaMetricDetailSheet: View {
     private func chartSlot<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             Picker("Range", selection: $range) {
-                ForEach(AtriaTrendRange.primarySegments) { option in
+                ForEach(metric == .fitnessAge
+                    ? [.week, .month]
+                    : AtriaTrendRange.primarySegments) { option in
                     Text(option.menuLabel).tag(option)
                 }
             }
             .pickerStyle(.segmented)
+
+            HStack(spacing: 12) {
+                Button {
+                    periodAnchor = range.adjacentPeriodAnchor(
+                        from: periodAnchor,
+                        offset: -1
+                    )
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .frame(width: 32, height: 32)
+                }
+                .accessibilityLabel("Previous \(range.narrativeLabel)")
+
+                Text(range.periodLabel(containing: periodAnchor))
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+
+                Button {
+                    periodAnchor = range.adjacentPeriodAnchor(
+                        from: periodAnchor,
+                        offset: 1
+                    )
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .frame(width: 32, height: 32)
+                }
+                .disabled(
+                    range.periodInterval(containing: periodAnchor).end
+                        > Date()
+                )
+                .accessibilityLabel("Next \(range.narrativeLabel)")
+            }
+            .buttonStyle(.plain)
 
             // Detail redesign (2026-07-06): the "Trend snapshot"
             // AtriaDetailRangeLensCard was removed here — it restated the exact
@@ -9617,12 +9724,17 @@ struct AtriaMetricDetailSheet: View {
             showMinMaxBand: showMinMaxBand
         )
         let prepared = metricChartPreparedDataCache.value(for: cacheKey) {
-            AtriaMetricChartPreparedData(
+            let visiblePeriod = range.periodInterval(
+                containing: (preparation.valueKey ?? preparationInput).referenceDate,
+                calendar: (preparation.valueKey ?? preparationInput).calendar
+            )
+            return AtriaMetricChartPreparedData(
                 points: points,
                 priorPoints: priorPoints,
                 baselineBounds: baselineBand.map { $0.lower...$0.upper },
                 priorAverage: comparison?.priorAverage,
-                companionPoints: companions.map(\.points)
+                companionPoints: companions.map(\.points),
+                xDomain: visiblePeriod.start...visiblePeriod.end
             )
         }
         return AtriaPreparedMetricChart(
@@ -9822,6 +9934,7 @@ struct AtriaMetricDetailSheet: View {
 
 struct AtriaMetricChartPreparedData {
     let domain: ClosedRange<Double>
+    let xDomain: ClosedRange<Date>?
     let minMaxPoints: [AtriaDetailChartPoint]
     private let pointTimes: [TimeInterval]
     private let companionIndicesByDay: [[Date: Int]]
@@ -9832,7 +9945,8 @@ struct AtriaMetricChartPreparedData {
          baselineBounds: ClosedRange<Double>?,
          priorAverage: Double?,
          companionPoints: [[AtriaDetailChartPoint]],
-         calendar: Calendar = .current) {
+         calendar: Calendar = .current,
+         xDomain: ClosedRange<Date>? = nil) {
         var low: Double?
         var high: Double?
         func include(_ value: Double?) {
@@ -9850,6 +9964,7 @@ struct AtriaMetricChartPreparedData {
         include(baselineBounds?.upperBound)
         include(priorAverage)
         domain = low.flatMap { low in high.map { AtriaTrendChartScale.domain(low: low, high: $0) } } ?? 0...1
+        self.xDomain = xDomain
         minMaxPoints = points.filter {
             guard let lower = $0.bandLower, let upper = $0.bandUpper else { return false }
             return upper > lower
@@ -9963,9 +10078,9 @@ private struct AtriaPreparedMetricChart: View {
             }
             if let summary { AtriaDetailPeriodSummaryStrip(summary: summary, tint: tint) }
 
-            if points.count < 2 {
+            if points.isEmpty {
                 VStack(spacing: 6) {
-                    Text("Building trend").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Text("No saved observations").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     if let emptyExplanation {
                         Text(emptyExplanation).font(.caption2).foregroundStyle(.secondary)
                             .multilineTextAlignment(.center).padding(.horizontal, 18)
@@ -9973,6 +10088,8 @@ private struct AtriaPreparedMetricChart: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 150)
                 .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+            } else if points.count == 1 {
+                singleObservationChart
             } else {
                 chartContent
                 chartLegendAndCompanions
@@ -10074,6 +10191,7 @@ private struct AtriaPreparedMetricChart: View {
         }
         .chartXSelection(value: $scrubbedDay)
         .chartYScale(domain: prepared.domain)
+        .chartXScale(domain: prepared.xDomain ?? fallbackXDomain)
         .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) }
         .chartYAxisLabel(unit)
         .chartXAxis {
@@ -10086,6 +10204,43 @@ private struct AtriaPreparedMetricChart: View {
             if let target = scrubbedDay, let onOpenDay { onOpenDay(target) }
         }
         .accessibilityLabel(accessibilitySummary)
+    }
+
+    private var singleObservationChart: some View {
+        Chart(points) { point in
+            RuleMark(y: .value(title, point.value))
+                .foregroundStyle(tint.opacity(0.16))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+            PointMark(x: .value("Day", point.day),
+                      y: .value(title, point.value))
+                .foregroundStyle(point.tint)
+                .symbolSize(130)
+                .annotation(position: .top, spacing: 6) {
+                    Text(valueText(point.value))
+                        .font(.caption.weight(.bold).monospacedDigit())
+                        .foregroundStyle(tint)
+                }
+        }
+        .chartYScale(domain: prepared.domain)
+        .chartXScale(domain: prepared.xDomain ?? fallbackXDomain)
+        .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) }
+        .chartYAxisLabel(unit)
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                AxisGridLine()
+                AxisTick()
+                AxisValueLabel(format: .dateTime.month(.abbreviated).day())
+            }
+        }
+        .frame(height: 180)
+        .clipped()
+        .accessibilityLabel("\(accessibilitySummary) One saved observation.")
+    }
+
+    private var fallbackXDomain: ClosedRange<Date> {
+        let start = points.first?.day ?? Date()
+        let end = points.last?.day ?? start.addingTimeInterval(1)
+        return start...max(end, start.addingTimeInterval(1))
     }
 
     @ViewBuilder private var chartLegendAndCompanions: some View {
@@ -12123,7 +12278,11 @@ private struct AtriaPreparedMetricHistory: Sendable {
                                     range: AtriaTrendRange,
                                     calendar: Calendar) -> [AtriaDetailChartPoint] {
         let shifted = points.compactMap { point -> AtriaDetailChartPoint? in
-            guard let day = calendar.date(byAdding: .day, value: range.days, to: point.day) else { return nil }
+            let day = range.adjacentPeriodAnchor(
+                from: point.day,
+                offset: 1,
+                calendar: calendar
+            )
             return AtriaDetailChartPoint(day: day, value: point.value, tint: point.tint)
         }
         return bucketedForDisplay(shifted, range: range, calendar: calendar).map { point in
@@ -12177,14 +12336,24 @@ private struct AtriaPreparedMetricHistory: Sendable {
         let paceDeltas = chronologicalRollups.compactMap { entry in
             entry.fitnessAgeDelta.map { AtriaFitnessAge.DailyDelta(day: entry.day, delta: $0) }
         }
-        let fitnessAgeEntryCount = AtriaFitnessAge.weeklyObservations(from: paceDeltas, calendar: calendar).count
+        let weeklyFitnessAge = AtriaFitnessAge.weeklyObservations(
+            from: paceDeltas,
+            calendar: calendar
+        )
+        let fitnessAgeEntryCount = weeklyFitnessAge.count
         self.paceOfAging = AtriaFitnessAge.paceOfAging(deltas: paceDeltas, calendar: calendar)
 
         for range in AtriaTrendRange.allCases {
-            let cutoff = range.cutoffDate(now: input.referenceDate, calendar: calendar)
-            let previousCutoff = calendar.startOfDay(for: cutoff.addingTimeInterval(-Double(range.days) * 86_400))
-            let filtered = chronologicalRollups.filter { $0.day >= cutoff }
-            let priorFiltered = chronologicalRollups.filter { $0.day >= previousCutoff && $0.day < cutoff }
+            let projection = AtriaMetricPeriodIndexProjection(
+                days: chronologicalRollups.map(\.day),
+                referenceDate: input.referenceDate,
+                range: range,
+                calendar: calendar
+            )
+            let interval = projection.interval
+            let previousInterval = projection.priorInterval
+            let filtered = projection.currentIndices.map { chronologicalRollups[$0] }
+            let priorFiltered = projection.priorIndices.map { chronologicalRollups[$0] }
             let recoveryPoints: [AtriaDetailChartPoint] = filtered.compactMap { item in
                 item.recovery.map { AtriaDetailChartPoint(day: item.day, value: Double($0), tint: Metrics.recoveryColor($0)) }
             }
@@ -12293,19 +12462,28 @@ private struct AtriaPreparedMetricHistory: Sendable {
             sleepPerformanceSummaryByRange[range] = AtriaDetailPeriodSummary(points: sleepPerformancePoints, unit: "%")
             sleepPerformanceComparisonByRange[range] = AtriaDetailComparisonSummary(current: sleepPerformancePoints, prior: priorSleepPerformancePoints, unit: "%")
 
-            let fitnessAgePoints: [AtriaDetailChartPoint] = filtered.compactMap { item in
-                item.fitnessAgeDelta.map { delta in
-                    AtriaDetailChartPoint(day: item.day,
-                                          value: Double(delta),
-                                          tint: delta <= 0 ? Metrics.electricGreen : Metrics.electricYellow)
-                }
+            let fitnessAgePoints: [AtriaDetailChartPoint] = weeklyFitnessAge
+                .filter { $0.day >= interval.start && $0.day < interval.end }
+                .map { item in
+                    AtriaDetailChartPoint(
+                        day: item.day,
+                        value: Double(item.delta),
+                        tint: item.delta <= 0
+                            ? Metrics.electricGreen : Metrics.electricYellow
+                    )
             }
-            let priorFitnessAgePoints: [AtriaDetailChartPoint] = priorFiltered.compactMap { item in
-                item.fitnessAgeDelta.map { delta in
-                    AtriaDetailChartPoint(day: item.day,
-                                          value: Double(delta),
-                                          tint: delta <= 0 ? Metrics.electricGreen : Metrics.electricYellow)
+            let priorFitnessAgePoints: [AtriaDetailChartPoint] = weeklyFitnessAge
+                .filter {
+                    $0.day >= previousInterval.start
+                        && $0.day < previousInterval.end
                 }
+                .map { item in
+                    AtriaDetailChartPoint(
+                        day: item.day,
+                        value: Double(item.delta),
+                        tint: item.delta <= 0
+                            ? Metrics.electricGreen : Metrics.electricYellow
+                    )
             }
             fitnessAgeByRange[range] = Self.bucketedForDisplay(fitnessAgePoints, range: range, calendar: calendar)
             fitnessAgeSummaryByRange[range] = AtriaDetailPeriodSummary(points: fitnessAgePoints, unit: "y")

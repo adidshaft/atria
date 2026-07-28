@@ -1007,6 +1007,32 @@ struct SavedSession: Codable, Identifiable {
             }
     }
 
+    /// All-day cardiovascular load. Unlike workout TRIMP, this excludes the
+    /// standard Z0/rest band so ordinary quiet wear cannot accumulate into a
+    /// double-digit training day merely through duration.
+    func dailyLoadTRIMP(rest: Int, max: Int, within interval: DateInterval) -> Double {
+        guard !isBreathwork,
+              sleepWakeResearchState != "sleep_research",
+              interval.end > interval.start,
+              end > interval.start,
+              start < interval.end else { return 0 }
+        let projected = loadPoints(within: interval)
+        guard projected.count >= 2 else { return 0 }
+        let clippedExclusions = (excludedIntervals ?? []).compactMap { exclusion -> ExcludedInterval? in
+            let clippedStart = Swift.max(exclusion.start, interval.start)
+            let clippedEnd = Swift.min(exclusion.end, interval.end)
+            guard clippedEnd > clippedStart else { return nil }
+            return ExcludedInterval(start: clippedStart, end: clippedEnd)
+        }
+        let samples = projected.map { HRSample(t: $0.date, bpm: $0.bpm) }
+        return AtriaAnalytics.Strain.contiguousSegments(samples, excluding: clippedExclusions)
+            .reduce(0) { total, segment in
+                total + Metrics.dailyLoadTRIMP(segment.map {
+                    (t: $0.t.timeIntervalSince(interval.start), bpm: $0.bpm)
+                }, rest: rest, max: max, sex: biologicalSex ?? .unspecified)
+            }
+    }
+
     /// The exact pause-aware, civil-day load evidence used by strain
     /// validation. Keeping zones and TRIMP on one projection prevents the
     /// diagnostic from counting a whole cross-midnight session on its start
@@ -9877,7 +9903,7 @@ final class SessionStore: ObservableObject {
                     .timeIntervalSince(max(session.start, interval.start)))
             }
             let strainTRIMP = dayIntervals.reduce(0.0) { total, pair in
-                total + pair.0.trimp(rest: rest, max: maxHR, within: pair.1)
+                total + pair.0.dailyLoadTRIMP(rest: rest, max: maxHR, within: pair.1)
             }
             let localDayEnd = calendar.date(byAdding: .day, value: 1, to: day) ?? day
             let archiveTRIMP = archiveOnlyTRIMP(archiveHeartRatePoints,
@@ -12354,7 +12380,7 @@ final class SessionStore: ObservableObject {
         let todaySessions = canonicalSessions.filter { $0.end > day && $0.start < dayEnd }
         let canonicalSavedTRIMP = todaySessions.reduce(0) { total, session in
             total + loadIntervals.reduce(0) { subtotal, interval in
-                subtotal + session.trimp(rest: rest, max: maxHR, within: interval)
+                subtotal + session.dailyLoadTRIMP(rest: rest, max: maxHR, within: interval)
             }
         }
         let savedTodayTRIMP = canonicalSavedTRIMP + loadIntervals.reduce(0) {
@@ -12370,7 +12396,7 @@ final class SessionStore: ObservableObject {
         let savedActiveSessionTRIMP = activeSessionID.flatMap { activeID in
             todaySessions.first(where: { $0.id == activeID }).map { session in
                 loadIntervals.reduce(0) {
-                    $0 + session.trimp(rest: rest, max: maxHR, within: $1)
+                    $0 + session.dailyLoadTRIMP(rest: rest, max: maxHR, within: $1)
                 }
             }
         } ?? 0
@@ -12483,10 +12509,12 @@ final class SessionStore: ObservableObject {
                                                     within: interval)
         return segments.reduce(0) { total, segment in
             guard let origin = segment.first?.t else { return total }
-            return total + Metrics.trimp(segment.map { ($0.t.timeIntervalSince(origin), $0.bpm) },
-                                         rest: rest,
-                                         max: maxHR,
-                                         sex: biologicalSex)
+            return total + Metrics.dailyLoadTRIMP(
+                segment.map { ($0.t.timeIntervalSince(origin), $0.bpm) },
+                rest: rest,
+                max: maxHR,
+                sex: biologicalSex
+            )
         }
     }
 
@@ -24102,7 +24130,9 @@ final class SessionStore: ObservableObject {
         let interval = DateInterval(start: day, end: dayEnd)
         let value = canonicalSessions()
             .filter { $0.end > day && $0.start < dayEnd }
-            .reduce(0) { $0 + $1.trimp(rest: rest, max: max, within: interval) }
+            .reduce(0) {
+                $0 + $1.dailyLoadTRIMP(rest: rest, max: max, within: interval)
+            }
         cachedTodayTRIMP = (rest: rest, maxHR: max, day: day, value: value)
         return value
     }
@@ -24231,7 +24261,7 @@ final class SessionStore: ObservableObject {
                     .timeIntervalSince(max(session.start, interval.start)))
             }
             let strainTRIMP = dayIntervals.reduce(0.0) { total, pair in
-                total + pair.0.trimp(rest: rest, max: maxHR, within: pair.1)
+                total + pair.0.dailyLoadTRIMP(rest: rest, max: maxHR, within: pair.1)
             }
             let hrvs = daySessions.compactMap(\.localRMSSD).filter { $0 > 0 }
             let hrvWindowCount = daySessions.reduce(0) {

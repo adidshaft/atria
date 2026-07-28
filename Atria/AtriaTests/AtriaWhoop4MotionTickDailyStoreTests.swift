@@ -367,6 +367,81 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         XCTAssertEqual(merged.first?.stepCount, 271)
     }
 
+    func testObservedMotionWithNoQualifiedCadenceIsNotPublishedAsZero()
+        throws {
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+        let start = Date(timeIntervalSince1970: 110_000)
+        let unresolved = makeEvidence(
+            start: start,
+            ticks: 7_097,
+            steps: 0,
+            capturedAfter: 600,
+            known: 530
+        )
+        XCTAssertTrue(try store.save(unresolved, strapIdentifier: strap))
+
+        let merged = store.mergingCurrentCycleReceipt(
+            into: [],
+            strapIdentifiers: [strap],
+            windowStart: start,
+            now: unresolved.capturedThrough,
+            calendar: utcCalendar
+        )
+        let day = try XCTUnwrap(merged.first)
+        XCTAssertEqual(day.state, .missing)
+        XCTAssertNil(day.stepCount)
+        XCTAssertEqual(day.knownCoverageSeconds, 0)
+        XCTAssertGreaterThan(day.missingCoverageSeconds, 0)
+
+        let presentation = AtriaDailyStepPresentation.resolve(
+            day: start,
+            now: unresolved.capturedThrough,
+            liveCount: 4_257,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: unresolved.capturedThrough,
+            canonicalDays: merged,
+            physiologicalDayStart: start,
+            calendar: utcCalendar
+        )
+        XCTAssertNil(presentation.count)
+        XCTAssertEqual(
+            presentation.unavailabilityReason,
+            .motionObservedCountUnresolved
+        )
+        XCTAssertEqual(
+            presentation.detailText,
+            "Strap motion found · count still resolving"
+        )
+    }
+
+    func testTrueStationaryCompleteReceiptMayPublishVerifiedZero() throws {
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+        let start = Date(timeIntervalSince1970: 160_000)
+        let stationary = HistoricalArchive.MotionTickDayEvidence(
+            windowStart: start,
+            windowEnd: start.addingTimeInterval(600),
+            motionTicks: 0,
+            steps: 0,
+            knownCoverageSeconds: 600,
+            missingCoverageSeconds: 0,
+            decodedRows: 600,
+            capturedThrough: start.addingTimeInterval(600)
+        )
+        XCTAssertTrue(try store.save(stationary, strapIdentifier: strap))
+
+        let merged = store.mergingCurrentCycleReceipt(
+            into: [],
+            strapIdentifiers: [strap],
+            windowStart: start,
+            now: stationary.capturedThrough,
+            calendar: utcCalendar
+        )
+        XCTAssertEqual(merged.first?.state, .available)
+        XCTAssertEqual(merged.first?.stepCount, 0)
+    }
+
     func testVerifiedOffloadRefreshBypassesUnrelatedHistoryPriorityFence() throws {
         let testsURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

@@ -1193,4 +1193,47 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
                           "\(deeper) must remain in allCases for range math + data prep")
         }
     }
+
+    func testMetricDetailPeriodsAreCalendarAlignedAndNavigable() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(
+            TimeZone(identifier: "America/Los_Angeles")
+        )
+        let anchor = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 3,
+            day: 10,
+            hour: 12
+        )))
+
+        let day = AtriaTrendRange.day.periodInterval(
+            containing: anchor,
+            calendar: calendar
+        )
+        XCTAssertEqual(
+            calendar.dateComponents([.day], from: day.start, to: day.end).day,
+            1,
+            "calendar arithmetic must survive DST instead of assuming 86,400 seconds"
+        )
+
+        let month = AtriaTrendRange.month.periodInterval(
+            containing: anchor,
+            calendar: calendar
+        )
+        XCTAssertEqual(calendar.component(.day, from: month.start), 1)
+        XCTAssertEqual(calendar.component(.month, from: month.start), 3)
+        XCTAssertEqual(calendar.component(.month, from: month.end), 4)
+
+        let previous = AtriaTrendRange.month.adjacentPeriodAnchor(
+            from: anchor,
+            offset: -1,
+            calendar: calendar
+        )
+        let previousMonth = AtriaTrendRange.month.periodInterval(
+            containing: previous,
+            calendar: calendar
+        )
+        XCTAssertEqual(calendar.component(.month, from: previousMonth.start), 2)
+        XCTAssertEqual(previousMonth.end, month.start)
+    }
 }

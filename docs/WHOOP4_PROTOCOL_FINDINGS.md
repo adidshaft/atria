@@ -2379,6 +2379,37 @@ POSITIVE STILL REQUIRED**
   installed-state pull and durable receipt are in
   `evidence/2026-07-28-step-receipt-final-visible/`.
 
+#### 2026-07-29 — current-cycle zero receipt and daily-strain audit
+
+- **Physical step observation:** the active wake-to-wake receipt contained
+  46,937 decoded v24 rows, 7,097 firmware motion ticks, 41,914 seconds marked
+  known, and zero published steps. The separate live ledger contained a 4,257
+  cross-segment preliminary coordinate; it is not bounded to this
+  physiological cycle and was not substituted as today's count.
+- **Step diagnosis:** the stationary-coverage fallback returned a non-nil
+  zero-step estimate when every counter-active burst failed the sustained
+  cadence gate. The daily store then treated that zero subtotal as verified
+  authority. A nonzero counter plus zero qualified cadence is now represented
+  as unresolved motion, never as verified zero or `≥0`. A genuinely stationary
+  complete interval (`motionTicks == 0`) may still publish exact zero.
+- **Remaining step truth:** this correction removes the false authority but
+  does not invent a count for short unqualified bursts. Publishing those steps
+  still requires a strap-only short-burst model with physical counted
+  acceptance; the preliminary cross-segment R10 total and the disproven fixed
+  v24 tick scale remain ineligible.
+- **Physical strain reproduction:** twelve sequential, non-overlapping
+  post-wake wear sessions plus the active live tail reproduced the displayed
+  13.5404 exactly. There was no workout duplication, sleep leakage, or
+  pre-cycle contribution. Roughly ten quiet hours below 95 bpm accumulated
+  most of the Banister TRIMP because workout-window math had been applied
+  continuously to all-day wear.
+- **Strain correction:** workout TRIMP remains unchanged. Daily load now begins
+  at the existing standard Z0/rest boundary (50% of configured max HR), so
+  quiet wear cannot become training load solely through duration. The same
+  captured day recalculates to approximately 6.0 strain before final live-tail
+  settlement.
+- **Evidence:** `evidence/2026-07-29-strain-steps-audit-preinstall/`.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.

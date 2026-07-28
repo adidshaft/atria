@@ -17,6 +17,41 @@ final class AtriaStrainConsistencyTests: XCTestCase {
                             biologicalSex: biologicalSex)
     }
 
+    func testQuietAllDayWearDoesNotBecomeTrainingLoad() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let quiet = workout(start: start, bpm: 84, minutes: 12 * 60)
+        let aggregate = SessionStore.homeSavedAggregate(
+            from: [quiet],
+            rest: 56,
+            maxHR: 190,
+            biologicalSex: .male,
+            now: start.addingTimeInterval(12 * 60 * 60),
+            cycleStart: start
+        )
+
+        XCTAssertEqual(aggregate.savedTodayTRIMP, 0, accuracy: 0.000_001)
+        XCTAssertGreaterThan(
+            quiet.trimp(rest: 56, max: 190),
+            100,
+            "workout-window TRIMP must remain unchanged"
+        )
+    }
+
+    func testDailyLoadRetainsMeasuredExerciseAboveRestZone() {
+        let start = Date(timeIntervalSince1970: 1_800_100_000)
+        let exercise = workout(start: start, bpm: 130, minutes: 60)
+        let interval = DateInterval(
+            start: start,
+            end: start.addingTimeInterval(60 * 60)
+        )
+
+        XCTAssertEqual(
+            exercise.dailyLoadTRIMP(rest: 56, max: 190, within: interval),
+            exercise.trimp(rest: 56, max: 190, within: interval),
+            accuracy: 0.000_001
+        )
+    }
+
     func testPerDayStrainSumsWithinDayAndBeatsPerSessionAverage() {
         let day = Calendar.current.startOfDay(for: Date(timeIntervalSince1970: 1_800_000_000)).addingTimeInterval(10 * 3600)
         let s1 = workout(start: day, bpm: 150, minutes: 25)

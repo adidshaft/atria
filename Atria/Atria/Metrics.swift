@@ -41,6 +41,13 @@ enum Metrics {
         AtriaAnalytics.Strain.trimp(series, rest: rest, max: max, sex: sex)
     }
 
+    static func dailyLoadTRIMP(_ series: [(t: Double, bpm: Int)],
+                               rest: Int,
+                               max: Int,
+                               sex: AthleteProfile.BiologicalSex) -> Double {
+        AtriaAnalytics.Strain.dailyTRIMP(series, rest: rest, max: max, sex: sex)
+    }
+
     static func edwardsLoad(_ series: [(t: Double, bpm: Int)], rest: Int, max: Int) -> Double {
         AtriaAnalytics.Strain.edwardsLoad(series, rest: rest, max: max)
     }
