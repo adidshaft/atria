@@ -8333,109 +8333,6 @@ struct AtriaMetricDetailSheet: View {
         }
     }
 
-    /// Everything the compact card could not say. Rows appear only when the
-    /// underlying measurement exists -- an absent row means "not measured at
-    /// this scope", which is why nothing here renders a zero as a stand-in.
-    ///
-    /// Passed into the template's content slot rather than appended after the
-    /// template. Appending put it below `revealAffordance`, so the card that
-    /// explains the number was orphaned underneath the "Show details" toggle at
-    /// the very bottom of the sheet. Note the template renders `chart` BEFORE
-    /// `betweenHeroAndContributors` despite that property's name, so the content
-    /// slot is the earliest place a caller can inject without changing the
-    /// template's generic signature at all eight metric call sites.
-    private func provenanceCard(_ provenance: AtriaMetricProvenance) -> some View {
-        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.md) {
-            Text("How this number was measured")
-                .font(.subheadline.weight(.semibold))
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            VStack(spacing: 0) {
-                // Two status axes, deliberately kept apart. The value carries the
-                // metric's own graded zone (green/amber/red) and stays NEUTRAL
-                // when it has no real grade -- colouring an ungraded number would
-                // assert a standing the app has not earned. Confidence carries
-                // how far the number can be trusted, which is green/amber only.
-                provenanceRow("Value", provenance.displayValue,
-                              tint: provenance.valueStatusTint)
-                provenanceRow("Confidence", provenance.level.rawValue.capitalized,
-                              tint: provenance.level.statusTint)
-                if let fraction = provenance.hrCoverageFraction {
-                    provenanceRow("HR coverage", "\(Int((fraction * 100).rounded()))%")
-                }
-                if let usesHRV = provenance.usesHRV {
-                    provenanceRow("HRV", usesHRV ? "Contributed" : "Not available")
-                }
-                if provenance.isLowerBound {
-                    provenanceRow("Reading", "Lower bound")
-                }
-                provenanceRow("Source", provenance.sourceLabel)
-                if let observedAt = provenance.observedAt {
-                    // Time alone is ambiguous the moment a score is carried over
-                    // from a previous night -- a bare "07:12" reads as this
-                    // morning. Same-day stays time-only; anything older names
-                    // its day.
-                    let isToday = Calendar.current.isDateInToday(observedAt)
-                    provenanceRow("Updated",
-                                  isToday
-                                  ? observedAt.formatted(date: .omitted, time: .shortened)
-                                  : observedAt.formatted(date: .abbreviated, time: .shortened))
-                }
-            }
-
-            if let reason = provenance.reducedConfidenceReason {
-                provenanceNote(title: "Why confidence is reduced", body: reason)
-            }
-            if let hint = provenance.improvementHint {
-                provenanceNote(title: "What would improve it", body: hint)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(AtriaDesignTokens.Spacing.lg)
-        .atriaCard(cornerRadius: AtriaDesignTokens.Radius.card, emphasis: .soft)
-    }
-
-    /// `tint` nil means this row has no graded status, and renders neutral.
-    private func provenanceRow(_ label: String,
-                               _ value: String,
-                               tint: Color? = nil) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: AtriaDesignTokens.Spacing.md) {
-            Text(label)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Spacer(minLength: AtriaDesignTokens.Spacing.sm)
-            if let tint {
-                // The dot carries the status without depending on colour alone
-                // being legible against the value text, and keeps the row height
-                // fixed whether or not a status exists.
-                Circle()
-                    .fill(tint)
-                    .frame(width: 6, height: 6)
-            }
-            Text(value)
-                .font(.caption.weight(.bold).monospacedDigit())
-                .foregroundStyle(tint ?? .primary)
-                .multilineTextAlignment(.trailing)
-        }
-        .frame(minHeight: 32)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(label): \(value)")
-    }
-
-    private func provenanceNote(title: String, body: String) -> some View {
-        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.xs) {
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-            Text(body)
-                .font(.caption)
-                .foregroundStyle(.primary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
     init(metric: AtriaMetricDetailKind,
          rollups: [DailyRollupStoreEntry],
          rollupsRevision: Int? = nil,
@@ -8628,7 +8525,7 @@ struct AtriaMetricDetailSheet: View {
                                       heroStyle: .recoveryRing(score: recoveryHeroRawPercent,
                                                                baselineComparison: recoveryBaselineComparisonText)) {
                 if let provenance {
-                    provenanceCard(provenance)
+                    AtriaMetricProvenanceCard(provenance: provenance)
                 }
                 contributorCard
                 behaviorsMoveYouCard
@@ -8788,7 +8685,7 @@ struct AtriaMetricDetailSheet: View {
                                       heroStyle: .strain(score: strainHeroRawValue,
                                                          target: guidance.target)) {
                 if let provenance {
-                    provenanceCard(provenance)
+                    AtriaMetricProvenanceCard(provenance: provenance)
                 }
                 strainWorkoutSection
                 strainZoneHistogramCard
