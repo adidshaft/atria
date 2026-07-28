@@ -55,6 +55,8 @@
 	<array>
 		<string>whoop</string>
 	</array>
+	<key>NSAlarmKitUsageDescription</key>
+	<string>Atria uses alarms only when you choose a wake time, so the phone can reliably alert you by that time even if the app is not open.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Atria can use the camera only when you choose to place a photo behind a share card.</string>
 	<key>NSHealthShareUsageDescription</key>
