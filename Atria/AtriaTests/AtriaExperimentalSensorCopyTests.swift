@@ -45,7 +45,7 @@ final class AtriaExperimentalSensorCopyTests: XCTestCase {
         XCTAssertEqual(AtriaExperimentalSensorCopy.skinTemperatureStatus(
             summary: summary,
             decoderAvailable: false),
-            "Not available yet")
+            "Decoder not verified")
         XCTAssertEqual(AtriaExperimentalSensorCopy.skinTemperatureDetail(
             summary: summary,
             decoderAvailable: false),

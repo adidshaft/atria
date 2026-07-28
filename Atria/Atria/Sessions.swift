@@ -100,22 +100,16 @@ struct AtriaPhysiologicalCycle: Equatable {
 
     static func latestCompletedMainSleep(now: Date,
                                          confirmedSleeps: [UserConfirmedSleep]) -> UserConfirmedSleep? {
-        confirmedSleeps
-            .filter { sleep in
-                sleep.end <= now
-                    && SessionStore.confirmedSleepIsPhysiologicalMainSleep(sleep)
-            }
+        canonicalMainSleeps(from: confirmedSleeps)
+            .filter { $0.end <= now }
             .max { $0.end < $1.end }
     }
 
     static func current(now: Date,
                         confirmedSleeps: [UserConfirmedSleep],
                         calendar: Calendar = .current) -> Self {
-        let mainSleeps = confirmedSleeps
-            .filter { sleep in
-                sleep.end <= now
-                    && SessionStore.confirmedSleepIsPhysiologicalMainSleep(sleep)
-            }
+        let mainSleeps = canonicalMainSleeps(from: confirmedSleeps)
+            .filter { $0.end <= now }
             .sorted { $0.end < $1.end }
         let expected = learnedInterval(from: mainSleeps.map(\.end))
 
@@ -158,6 +152,82 @@ struct AtriaPhysiologicalCycle: Equatable {
                     boundaryKind: .noSleepFallback,
                     anchorSleepID: latest.id,
                     expectedInterval: expected)
+    }
+
+    /// Resumed sleep is stored as a separate durable Activity record so either
+    /// segment remains editable. Physiologically it is still one night: the
+    /// final resumed wake starts the new cycle, while the original main-sleep
+    /// ID remains the stable anchor. Canonicalizing here prevents a 4h main +
+    /// 3h resumed block from producing two recovery/day boundaries.
+    private static func canonicalMainSleeps(
+        from confirmedSleeps: [UserConfirmedSleep]
+    ) -> [UserConfirmedSleep] {
+        let mains = confirmedSleeps
+            .filter {
+                $0.source != "resumed_sleep"
+                    && SessionStore.confirmedSleepIsPhysiologicalMainSleep($0)
+            }
+            .sorted { $0.end < $1.end }
+        let resumed = confirmedSleeps
+            .filter {
+                $0.source == "resumed_sleep"
+                    && $0.end > $0.start
+                    && $0.duration > 0
+            }
+            .sorted { $0.start < $1.start }
+
+        return mains.map { main in
+            var finalEnd = main.end
+            var linked: [UserConfirmedSleep] = []
+            for segment in resumed {
+                guard segment.start >= finalEnd,
+                      segment.start.timeIntervalSince(main.end)
+                        <= AggregateSleepCandidate.resumedSleepMaximumSeparationFromMain else {
+                    continue
+                }
+                // A later main sleep owns any resumed record after its wake.
+                let hasCloserMain = mains.contains {
+                    $0.id != main.id
+                        && $0.end > main.end
+                        && $0.end <= segment.start
+                }
+                guard !hasCloserMain else { continue }
+                linked.append(segment)
+                finalEnd = segment.end
+            }
+            guard !linked.isEmpty else { return main }
+
+            let duration = min(
+                finalEnd.timeIntervalSince(main.start),
+                main.duration + linked.reduce(0) { $0 + $1.duration }
+            )
+            let stages = ((main.stageSegments ?? [])
+                + linked.flatMap { $0.stageSegments ?? [] })
+                .sorted { $0.start < $1.start }
+            return UserConfirmedSleep(
+                id: main.id,
+                createdAt: max(main.createdAt, linked.map(\.createdAt).max() ?? main.createdAt),
+                start: main.start,
+                end: finalEnd,
+                source: main.source,
+                confidence: main.confidence,
+                sessions: main.sessions + linked.reduce(0) { $0 + $1.sessions },
+                samples: main.samples + linked.reduce(0) { $0 + $1.samples },
+                avgHR: main.avgHR,
+                peakHR: max(main.peakHR, linked.map(\.peakHR).max() ?? main.peakHR),
+                restingHR: main.restingHR,
+                hrv: main.hrv,
+                hrvWindowCount: main.hrvWindowCount,
+                respiratoryRate: main.respiratoryRate,
+                duration: duration,
+                span: finalEnd.timeIntervalSince(main.start),
+                reason: main.reason,
+                motionSource: main.motionSource,
+                motionValidated: main.motionValidated,
+                stageSegments: stages.isEmpty ? nil : stages,
+                eventTimeZoneIdentifier: main.eventTimeZoneIdentifier
+            )
+        }
     }
 
     private static func learnedInterval(from wakeTimes: [Date]) -> TimeInterval {
@@ -3592,6 +3662,21 @@ struct VO2MaxEstimateSummary: Equatable {
     var valueText: String {
         value.map { String(format: "%.1f", $0) } ?? "Learning"
     }
+
+    /// One-line evidence status for glance surfaces. This deliberately exposes
+    /// the producer's real blocker instead of replacing every not-ready state
+    /// with a generic "Learning" label.
+    var compactStatusText: String {
+        guard value == nil else { return "Estimate" }
+        switch detail {
+        case "Need RHR":
+            return "Needs resting HR"
+        case "Need HRmax":
+            return "Needs measured HRmax"
+        default:
+            return detail
+        }
+    }
 }
 
 struct BioAgeFactor: Equatable, Identifiable, Codable {
@@ -3687,6 +3772,21 @@ struct BiologicalAgeSummary: Equatable, Codable {
 
     var blockerText: String {
         blockers.isEmpty ? footnote : blockers.map(Self.humanBlocker).joined(separator: " · ")
+    }
+
+    /// A compact, deterministic reason for cards where the full blocker list
+    /// would make the surface look broken. No estimate is shown until every
+    /// existing evidence gate passes.
+    var compactStatusText: String {
+        if isRefreshing { return "Updating weekly estimate" }
+        if isReady { return detailText }
+        guard let first = blockers.first else { return "Building 28-day baseline" }
+        let blocker = Self.humanBlocker(first)
+        if blocker.localizedCaseInsensitiveContains("day")
+            || blocker.localizedCaseInsensitiveContains("night") {
+            return "Needs \(blocker)"
+        }
+        return "Needs \(blocker)"
     }
 
     /// The producer keeps machine tokens (pinned, log-friendly); the UI never
@@ -6995,7 +7095,16 @@ final class SessionStore: ObservableObject {
                                                          completion: completion)
             return
         }
-        historySnapshot = history
+        let frozenTrends = TrendSummary.Window.allCases.map { window in
+            Self.dailyMetricTrendSummary(
+                metrics: preparation.metrics,
+                rollups: history.rollups,
+                days: window.rawValue,
+                now: Date(),
+                diagnosticSessionCount: history.sessions.count
+            )
+        }
+        historySnapshot = history.replacingTrends(frozenTrends)
         sleepHistorySnapshot = sleep
         if preparation.metrics != dailyMetricHistory {
             dailyMetricHistory = preparation.metrics
@@ -9597,6 +9706,93 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// User-facing trends are one point per physiological (wake) day. Raw
+    /// sessions can be fragmented by checkpoints, reconnects, or an overnight
+    /// civil-day boundary, so averaging `TrendSessionMetricRow` values weights
+    /// whichever day happened to contain more fragments. `SavedDailyMetric`
+    /// rows are the frozen, resolved morning/day summaries and are therefore
+    /// the only source of metric values here. Session count remains diagnostic.
+    nonisolated static func dailyMetricTrendSummary(
+        metrics: [SavedDailyMetric],
+        rollups: [DailyRollup],
+        days: Int,
+        now: Date,
+        diagnosticSessionCount: Int = 0,
+        calendar: Calendar = .current
+    ) -> TrendSummary {
+        let today = calendar.startOfDay(for: now)
+        let cutoff = calendar.date(byAdding: .day,
+                                  value: -(max(days, 1) - 1),
+                                  to: today) ?? today
+        let byDay = Dictionary(
+            metrics
+                .filter { metric in
+                    let day = calendar.startOfDay(for: metric.day)
+                    return day >= cutoff && day <= today
+                }
+                .map { (calendar.startOfDay(for: $0.day), $0) },
+            uniquingKeysWith: { existing, candidate in
+                if existing.recoverySummary == nil,
+                   candidate.recoverySummary != nil {
+                    return candidate
+                }
+                return existing
+            }
+        )
+        let recentMetrics = byDay.values.sorted { $0.day < $1.day }
+        let recentRollups = rollups.filter {
+            let day = calendar.startOfDay(for: $0.day)
+            return day >= cutoff && day <= today
+        }
+        let coverageDays = recentMetrics.count
+        let requiredCoverageDays = trendRequiredCoverageDaysSnapshot(windowDays: days)
+        let coveragePercent = Int((Double(coverageDays) / Double(max(days, 1)) * 100).rounded())
+        let recoveries = recentMetrics.compactMap {
+            $0.recoverySummary?.score ?? $0.recoveryPercent
+        }
+        let hrvs = recentMetrics.compactMap(\.hrv).filter { $0 > 0 }
+        let rhrs = recentMetrics.compactMap(\.restingHR).filter { $0 > 0 }
+        let strains = recentMetrics.compactMap(\.strain).filter { $0 > 0 }
+        let respiratoryRates = recentMetrics.compactMap(\.respiratoryRate).filter { $0 > 0 }
+        let hrvState = hrvs.isEmpty
+            ? "learning"
+            : "frozen_daily_samples_\(hrvs.count)"
+        let anomalies = trendAnomaliesSnapshot(rollups: recentRollups)
+        let avgRecovery = averageIntSnapshot(recoveries)
+        let avgHRV = averageIntSnapshot(hrvs)
+        return TrendSummary(
+            id: days,
+            days: days,
+            sessions: diagnosticSessionCount,
+            coverageDays: coverageDays,
+            requiredCoverageDays: requiredCoverageDays,
+            coveragePercent: coveragePercent,
+            confidence: trendConfidenceSnapshot(coverageDays: coverageDays,
+                                                windowDays: days),
+            avgRecovery: avgRecovery,
+            avgHRV: avgHRV,
+            avgRHR: averageIntSnapshot(rhrs),
+            avgStrain: averageDoubleSnapshot(strains),
+            avgRespiratoryRate: averageDoubleSnapshot(respiratoryRates),
+            anomalies: anomalies,
+            anomalySource: "frozen_daily_metrics",
+            anomalySampleDays: recentRollups.count,
+            hrvState: hrvState,
+            detail: trendDetailSnapshot(coverageDays: coverageDays,
+                                        windowDays: days,
+                                        hrvState: hrvState,
+                                        rhrSamples: rhrs.count,
+                                        strainSamples: strains.count,
+                                        anomalySampleDays: recentRollups.count,
+                                        anomalies: anomalies),
+            blockers: trendSummaryBlockersSnapshot(coverageDays: coverageDays,
+                                                   requiredCoverageDays: requiredCoverageDays,
+                                                   avgRecovery: avgRecovery,
+                                                   avgHRV: avgHRV,
+                                                   hrvState: hrvState)
+        )
+    }
+
     private nonisolated static func makeHistoryTrendSummaries(sessions: [SavedSession],
                                                               rollups: [DailyRollup],
                                                               baseline: PersonalBaseline,
@@ -11795,6 +11991,9 @@ final class SessionStore: ObservableObject {
                                                 calendar: calendar,
                                                 now: now,
                                                 cycleStart: day,
+                                                excludedLoadIntervals: cachedConfirmedSleeps.map {
+                                                    DateInterval(start: $0.start, end: $0.end)
+                                                },
                                                 rawSessionCount: sessions.count)
         cachedHomeSavedAggregate = aggregate
         return aggregate
@@ -11844,46 +12043,68 @@ final class SessionStore: ObservableObject {
                                                calendar: Calendar = .current,
                                                now: Date = Date(),
                                                cycleStart: Date? = nil,
+                                               excludedLoadIntervals: [DateInterval] = [],
                                                rawSessionCount: Int? = nil) -> HomeSavedAggregate {
         let day = cycleStart ?? calendar.startOfDay(for: now)
         let dayEnd = now
         let dayInterval = DateInterval(start: day, end: dayEnd)
-        let todaySessions = canonicalSessions.filter { $0.end > day && $0.start < dayEnd }
-        let canonicalSavedTRIMP = todaySessions.reduce(0) {
-            $0 + $1.trimp(rest: rest, max: maxHR, within: dayInterval)
-        }
-        let savedTodayTRIMP = canonicalSavedTRIMP + archiveOnlyTRIMP(
-            archiveHeartRatePoints,
-            excludingCoverageFrom: todaySessions,
+        let loadIntervals = includedLoadIntervals(
             within: dayInterval,
-            rest: rest,
-            maxHR: maxHR,
-            biologicalSex: biologicalSex
+            excluding: excludedLoadIntervals
         )
+        let todaySessions = canonicalSessions.filter { $0.end > day && $0.start < dayEnd }
+        let canonicalSavedTRIMP = todaySessions.reduce(0) { total, session in
+            total + loadIntervals.reduce(0) { subtotal, interval in
+                subtotal + session.trimp(rest: rest, max: maxHR, within: interval)
+            }
+        }
+        let savedTodayTRIMP = canonicalSavedTRIMP + loadIntervals.reduce(0) {
+            $0 + archiveOnlyTRIMP(
+                archiveHeartRatePoints,
+                excludingCoverageFrom: todaySessions,
+                within: $1,
+                rest: rest,
+                maxHR: maxHR,
+                biologicalSex: biologicalSex
+            )
+        }
         let savedActiveSessionTRIMP = activeSessionID.flatMap { activeID in
-            todaySessions.first(where: { $0.id == activeID })?.trimp(rest: rest,
-                                                                     max: maxHR,
-                                                                     within: dayInterval)
+            todaySessions.first(where: { $0.id == activeID }).map { session in
+                loadIntervals.reduce(0) {
+                    $0 + session.trimp(rest: rest, max: maxHR, within: $1)
+                }
+            }
         } ?? 0
         let savedTodayActiveCalories: Double?
         let savedActiveSessionActiveCalories: Double?
         if let profile, profile.hasEnergyProfile {
-            let canonicalCalorieValues = todaySessions.compactMap {
-                $0.activeCalories(rest: rest, profile: profile, within: dayInterval)
+            let canonicalCalorieValues = todaySessions.compactMap { session -> Double? in
+                let values = loadIntervals.compactMap {
+                    session.activeCalories(rest: rest, profile: profile, within: $0)
+                }
+                return values.isEmpty ? nil : values.reduce(0, +)
             }
-            let archiveCalories = archiveOnlyActiveCalories(
-                archiveHeartRatePoints,
-                excludingCoverageFrom: todaySessions,
-                within: dayInterval,
-                rest: rest,
-                profile: profile
-            )
+            let archiveCalorieValues = loadIntervals.compactMap {
+                archiveOnlyActiveCalories(
+                    archiveHeartRatePoints,
+                    excludingCoverageFrom: todaySessions,
+                    within: $0,
+                    rest: rest,
+                    profile: profile
+                )
+            }
+            let archiveCalories = archiveCalorieValues.isEmpty
+                ? nil : archiveCalorieValues.reduce(0, +)
             savedTodayActiveCalories = canonicalCalorieValues.isEmpty && archiveCalories == nil
                 ? nil
                 : canonicalCalorieValues.reduce(0, +) + (archiveCalories ?? 0)
             savedActiveSessionActiveCalories = activeSessionID.flatMap { activeID in
-                todaySessions.first(where: { $0.id == activeID })?
-                    .activeCalories(rest: rest, profile: profile, within: dayInterval)
+                todaySessions.first(where: { $0.id == activeID }).flatMap { session in
+                    let values = loadIntervals.compactMap {
+                        session.activeCalories(rest: rest, profile: profile, within: $0)
+                    }
+                    return values.isEmpty ? nil : values.reduce(0, +)
+                }
             }
         } else {
             savedTodayActiveCalories = nil
@@ -11912,6 +12133,35 @@ final class SessionStore: ObservableObject {
                                   activeSessionID: activeSessionID,
                                   hasSavedToday: !todaySessions.isEmpty || savedTodayTRIMP > 0,
                                   sessionsCount: rawSessionCount ?? canonicalSessions.count)
+    }
+
+    nonisolated static func includedLoadIntervals(
+        within interval: DateInterval,
+        excluding exclusions: [DateInterval]
+    ) -> [DateInterval] {
+        var included = [interval]
+        for exclusion in exclusions where exclusion.end > interval.start
+            && exclusion.start < interval.end {
+            included = included.flatMap { candidate in
+                guard exclusion.end > candidate.start,
+                      exclusion.start < candidate.end else { return [candidate] }
+                var pieces: [DateInterval] = []
+                if exclusion.start > candidate.start {
+                    pieces.append(DateInterval(
+                        start: candidate.start,
+                        end: min(exclusion.start, candidate.end)
+                    ))
+                }
+                if exclusion.end < candidate.end {
+                    pieces.append(DateInterval(
+                        start: max(exclusion.end, candidate.start),
+                        end: candidate.end
+                    ))
+                }
+                return pieces
+            }
+        }
+        return included
     }
 
     /// Adds only historical HR time that canonical sessions do not already
@@ -24881,77 +25131,21 @@ final class SessionStore: ObservableObject {
         let maximumWindowDays = TrendSummary.Window.allCases.map(\.rawValue).max() ?? 0
         let oldestCutoff = now.addingTimeInterval(-Double(maximumWindowDays) * 24 * 60 * 60)
         let trendSessions = sessions.filter { $0.start >= oldestCutoff }
-        let rows = Self.trendSessionRows(sessions: trendSessions, rest: rest, maxHR: maxHR, calendar: calendar)
         return TrendSummary.Window.allCases.map { window in
-            let cutoff = now.addingTimeInterval(-Double(window.rawValue) * 24 * 60 * 60)
-            let recentRows = rows.filter { $0.session.start >= cutoff }
-            let recent = recentRows.map(\.session)
-            let recentRollups = rollups.filter { $0.day >= calendar.startOfDay(for: cutoff) }
-            let coverageDays = Set(recentRows.map(\.day)).count
-            let requiredCoverageDays = trendRequiredCoverageDays(windowDays: window.rawValue)
-            let coveragePercent = Int((Double(coverageDays) / Double(window.rawValue) * 100).rounded())
-            let confidence = trendConfidence(coverageDays: coverageDays, windowDays: window.rawValue)
-            let rhrs = recentRows.compactMap(\.acceptedRestingHR)
-            let strains = Self.perDayStrains(recent, rest: rest, maxHR: maxHR)
-            let hrvs = recentRows.compactMap(\.localRMSSD).filter { $0 > 0 }
-            let respiratoryRates = recentRows.compactMap(\.sleepRespiratoryRate)
-            let rollupsByDay = Dictionary(uniqueKeysWithValues: recentRollups.map { (calendar.startOfDay(for: $0.day), $0) })
-            let recoveries: [Int] = recentRows.compactMap { row in
-                let session = row.session
-                let sleepRollup = rollupsByDay[row.day]
-                let recovery = Metrics.recoveryV2(hrvSnapshot: nil,
-                                                  fallbackRMSSD: row.localRMSSD,
-                                                  restingNow: session.restingStable,
-                                                  baseline: baseline,
-                                                  hrvReferenceValidated: session.hrvReferenceValidated == true,
-                                                  sleepEfficiency: Self.sleepEfficiency(duration: sleepRollup?.sleepDuration,
-                                                                                        span: sleepRollup?.sleepSpan),
-                                                  sleepDurationHours: sleepRollup?.sleepDuration.map { $0 / 3_600 },
-                                                  respiratoryRate: row.sleepRespiratoryRate,
-                                                  respiratoryBaseline: sleepHistorySnapshot.respiratoryBaselineStats)
-                return recovery.percent
-            }
-
-            let anomalies = trendAnomalies(rollups: recentRollups)
-            let validatedHRVs = recentRows.compactMap(\.referenceValidatedHRV).filter { $0 > 0 }
-            let hrvState = hrvs.isEmpty
-                ? "learning"
-                : (validatedHRVs.count == hrvs.count
-                   ? "validated_samples_\(hrvs.count)"
-                   : "personal_baseline_samples_\(hrvs.count)")
-            let avgRecovery = averageInt(recoveries)
-            let avgHRV = averageInt(hrvs)
-            let detail = trendDetail(coverageDays: coverageDays,
-                                     windowDays: window.rawValue,
-                                     hrvState: hrvState,
-                                     rhrSamples: rhrs.count,
-                                     strainSamples: strains.count,
-                                     anomalySource: "daily_rollups",
-                                     anomalySampleDays: recentRollups.count,
-                                     anomalies: anomalies)
-            let blockers = trendSummaryBlockers(coverageDays: coverageDays,
-                                                requiredCoverageDays: requiredCoverageDays,
-                                                avgRecovery: avgRecovery,
-                                                avgHRV: avgHRV,
-                                                hrvState: hrvState)
-            return TrendSummary(id: window.rawValue,
-                                days: window.rawValue,
-                                sessions: recent.count,
-                                coverageDays: coverageDays,
-                                requiredCoverageDays: requiredCoverageDays,
-                                coveragePercent: coveragePercent,
-                                confidence: confidence,
-                                avgRecovery: avgRecovery,
-                                avgHRV: avgHRV,
-                                avgRHR: averageInt(rhrs),
-                                avgStrain: averageDouble(strains),
-                                avgRespiratoryRate: averageDouble(respiratoryRates),
-                                anomalies: anomalies,
-                                anomalySource: "daily_rollups",
-                                anomalySampleDays: recentRollups.count,
-                                hrvState: hrvState,
-                                detail: detail,
-                                blockers: blockers)
+            let diagnosticCutoff = calendar.date(byAdding: .day,
+                                                 value: -(window.rawValue - 1),
+                                                 to: calendar.startOfDay(for: now))
+                ?? calendar.startOfDay(for: now)
+            return Self.dailyMetricTrendSummary(
+                metrics: dailyMetricHistory,
+                rollups: rollups,
+                days: window.rawValue,
+                now: now,
+                diagnosticSessionCount: trendSessions.filter {
+                    $0.start >= diagnosticCutoff
+                }.count,
+                calendar: calendar
+            )
         }
     }
 
@@ -25582,76 +25776,11 @@ final class SessionStore: ObservableObject {
         let recent = recentCanonicalSessions(windowDays: days,
                                              limitSessions: limitSessions,
                                              now: now)
-        let calendar = Calendar.current
-        let rows = Self.trendSessionRows(sessions: recent, rest: rest, maxHR: maxHR, calendar: calendar)
-        let coverageDays = Set(rows.map(\.day)).count
-        let requiredCoverageDays = trendRequiredCoverageDays(windowDays: days)
-        let coveragePercent = Int((Double(coverageDays) / Double(days) * 100).rounded())
-        let confidence = trendConfidence(coverageDays: coverageDays, windowDays: days)
-        let rhrs = rows.compactMap(\.acceptedRestingHR)
-        let strains = Self.perDayStrains(recent, rest: rest, maxHR: maxHR)
-        let hrvs = rows.compactMap(\.localRMSSD).filter { $0 > 0 }
-        let respiratoryRates = rows.compactMap(\.sleepRespiratoryRate)
-        // Per-day sleep (2026-07-08 consistency audit): each session's recovery
-        // must use ITS OWN night's sleep, not the single latest night applied to
-        // every session in the window — which diverged from the per-day history
-        // recovery (makeHistoryTrendSummaries resolves per-day the same way).
-        let nightsByDay = Dictionary(sleepHistorySnapshot.nights.map {
-            (calendar.startOfDay(for: $0.day), $0)
-        }, uniquingKeysWith: { first, _ in first })
-        let recoveries = rows.compactMap { row -> Int? in
-            let session = row.session
-            let night = nightsByDay[row.day]
-            let recovery = Metrics.recoveryV2(hrvSnapshot: nil,
-                                              fallbackRMSSD: row.localRMSSD,
-                                              restingNow: session.restingStable,
-                                              baseline: baseline,
-                                              hrvReferenceValidated: session.hrvReferenceValidated == true,
-                                              sleepEfficiency: night?.sleepEfficiency,
-                                              sleepDurationHours: night?.durationHours,
-                                              respiratoryRate: row.sleepRespiratoryRate,
-                                              respiratoryBaseline: sleepHistorySnapshot.respiratoryBaselineStats)
-            return recovery.percent
-        }
-        let validatedHRVs = rows.compactMap(\.referenceValidatedHRV).filter { $0 > 0 }
-        let hrvState = hrvs.isEmpty
-            ? "learning"
-            : (validatedHRVs.count == hrvs.count
-               ? "validated_samples_\(hrvs.count)"
-               : "personal_baseline_samples_\(hrvs.count)")
-        let avgRecovery = averageInt(recoveries)
-        let avgHRV = averageInt(hrvs)
-        let detail = trendDetail(coverageDays: coverageDays,
-                                 windowDays: days,
-                                 hrvState: hrvState,
-                                 rhrSamples: rhrs.count,
-                                 strainSamples: strains.count,
-                                 anomalySource: "bounded_recent_sessions",
-                                 anomalySampleDays: coverageDays,
-                                 anomalies: [])
-        let blockers = trendSummaryBlockers(coverageDays: coverageDays,
-                                            requiredCoverageDays: requiredCoverageDays,
-                                            avgRecovery: avgRecovery,
-                                            avgHRV: avgHRV,
-                                            hrvState: hrvState)
-        return TrendSummary(id: days,
-                            days: days,
-                            sessions: recent.count,
-                            coverageDays: coverageDays,
-                            requiredCoverageDays: requiredCoverageDays,
-                            coveragePercent: coveragePercent,
-                            confidence: confidence,
-                            avgRecovery: avgRecovery,
-                            avgHRV: avgHRV,
-                            avgRHR: averageInt(rhrs),
-                            avgStrain: averageDouble(strains),
-                            avgRespiratoryRate: averageDouble(respiratoryRates),
-                            anomalies: [],
-                            anomalySource: "bounded_recent_sessions",
-                            anomalySampleDays: coverageDays,
-                            hrvState: hrvState,
-                            detail: detail,
-                            blockers: blockers)
+        return Self.dailyMetricTrendSummary(metrics: dailyMetricHistory,
+                                            rollups: historySnapshot.rollups,
+                                            days: days,
+                                            now: now,
+                                            diagnosticSessionCount: recent.count)
     }
 
     func logTrendSummariesFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
@@ -30727,6 +30856,27 @@ struct HistorySnapshot {
         self.verifiedCanonicalHistoryHasMore = verifiedCanonicalHistoryHasMore
     }
 
+    func replacingTrends(_ trends: [TrendSummary]) -> HistorySnapshot {
+        HistorySnapshot(copying: self, trends: trends)
+    }
+
+    private init(copying source: HistorySnapshot, trends: [TrendSummary]) {
+        sessions = source.sessions
+        sessionRows = source.sessionRows
+        restingTrendPoints = source.restingTrendPoints
+        detections = source.detections
+        self.trends = trends
+        rollups = source.rollups
+        verifiedHistoricalStepDays = source.verifiedHistoricalStepDays
+        verifiedHistoricalStepEvidenceDays =
+            source.verifiedHistoricalStepEvidenceDays
+        verifiedReplayIdentityRowCount = source.verifiedReplayIdentityRowCount
+        verifiedCanonicalSources = source.verifiedCanonicalSources
+        verifiedCanonicalPageCursor = source.verifiedCanonicalPageCursor
+        verifiedCanonicalHistoryHasMore =
+            source.verifiedCanonicalHistoryHasMore
+    }
+
     private static func makeRestingTrendPoints(_ sessions: [SavedSession]) -> [RestingTrendPoint] {
         sessions
             .sorted { $0.start < $1.start }
@@ -31082,8 +31232,8 @@ struct SleepHistorySnapshot: Equatable {
 
     init(nights: [Night], confirmedCount: Int, candidateCount: Int) {
         let baselineValues = nights
-            .filter(\.confirmed)
             .dropFirst()
+            .filter { $0.confirmed && !$0.isNapEvidence }
             .compactMap(\.respiratoryRate)
             .filter { $0 > 0 }
         self.nights = nights
@@ -31225,8 +31375,8 @@ struct SleepHistorySnapshot: Equatable {
         let sorted = nightsByDay.values.sorted { $0.day > $1.day }
         let clippedNights = Array(sorted.prefix(Self.maximumResidentNightCount))
         let baselineValues = clippedNights
-            .filter(\.confirmed)
             .dropFirst()
+            .filter { $0.confirmed && !$0.isNapEvidence }
             .compactMap(\.respiratoryRate)
             .filter { $0 > 0 }
         self.nights = clippedNights
@@ -31415,6 +31565,7 @@ struct SleepHistorySnapshot: Equatable {
     var respiratoryBaselineStats: (mean: Double, sd: Double, count: Int)? {
         let values = nights
             .dropFirst()
+            .filter { $0.confirmed && !$0.isNapEvidence }
             .compactMap(\.respiratoryRate)
             .filter { $0 > 0 }
         guard values.count >= PersonalBaseline.trustedMinimumSamples else { return nil }

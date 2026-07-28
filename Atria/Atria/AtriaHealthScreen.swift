@@ -351,6 +351,7 @@ struct AtriaHealthScreen: View {
     let homeStatsStore: AtriaHomeModel.HomeStatsStore
     let profileStore: AtriaHomeModel.ProfileStore
     let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
+    let stressMonitorStore: AtriaStressMonitorStore
     let store: SessionStore
     let onViewPlan: () -> Void
     @StateObject private var vitalsStore: AtriaVitalsSessionProjectionStore
@@ -392,6 +393,7 @@ struct AtriaHealthScreen: View {
          homeStatsStore: AtriaHomeModel.HomeStatsStore,
          profileStore: AtriaHomeModel.ProfileStore,
          profileMetricsStore: AtriaHomeModel.ProfileMetricsStore,
+         stressMonitorStore: AtriaStressMonitorStore,
          store: SessionStore,
          ble: AtriaBLEManager,
          horizontalSizeClass: UserInterfaceSizeClass?,
@@ -404,6 +406,7 @@ struct AtriaHealthScreen: View {
         self.homeStatsStore = homeStatsStore
         self.profileStore = profileStore
         self.profileMetricsStore = profileMetricsStore
+        self.stressMonitorStore = stressMonitorStore
         self.store = store
         self.onViewPlan = onViewPlan
         _vitalsStore = StateObject(wrappedValue: AtriaVitalsSessionProjectionStore(store: store))
@@ -774,12 +777,9 @@ struct AtriaHealthScreen: View {
 
             // Stress owns a timeline and action, so it remains full width while
             // the glanceable readiness metrics use a compact adaptive grid.
-            AtriaHealthStressSection(pulseStore: pulseStore,
-                                     ble: ble,
-                                     baseline: vitalsStore.state.baseline,
-                                     maxHeartRate: live.maxHeartRate,
-                                     behaviorJournalEntries: store.behaviorJournalEntries,
+            AtriaHealthStressSection(behaviorJournalEntries: store.behaviorJournalEntries,
                                      isActive: isActive,
+                                     stressMonitorStore: stressMonitorStore,
                                      breathworkStressStore: breathworkStressStore,
                                      onStartBreathwork: {
                                          showBreathworkSession = true
@@ -812,7 +812,7 @@ struct AtriaHealthScreen: View {
                 // sheet (section 3), not just the education sheet, per spec.
                 AtriaHealthMetricRow(title: "VO2 max",
                                      value: live.vo2MaxEstimate.valueText,
-                                     detail: live.vo2MaxEstimate.value == nil ? "Learning" : "Estimate",
+                                     detail: live.vo2MaxEstimate.compactStatusText,
                                      systemImage: "lungs.fill",
                                      tint: Metrics.electricGreen,
                                      layout: .compactTile,
@@ -1253,37 +1253,16 @@ private struct AtriaHealthBreathworkSessionHost: View {
 }
 
 private struct AtriaHealthStressSection: View {
-    let pulseStore: AtriaHomeModel.PulseLiveStore
-    let ble: AtriaBLEManager
-    let baseline: PersonalBaseline
-    let maxHeartRate: Int
     let behaviorJournalEntries: [BehaviorJournalEntry]
     let isActive: Bool
+    @ObservedObject var stressMonitorStore: AtriaStressMonitorStore
     let breathworkStressStore: AtriaHealthBreathworkStressStore
     let onStartBreathwork: () -> Void
     let onOpenEducation: () -> Void
 
-    @StateObject private var stressMonitorStore = AtriaStressMonitorStore()
     @State private var stressStripReduced: [StressStripPoint] = []
-    @State private var lastStressInputKey: StressInputKey?
     @State private var lastStressEvaluationAt: Date?
     @State private var showStressDetail = false
-
-    private struct StressInputKey: Equatable {
-        let heartRate: Int
-        let hasContact: Bool
-        let rrCount: Int
-        let lastRRDate: Date?
-        let lastRRMS: Int?
-        let isRecording: Bool
-        let zoneIndex: Int?
-        let restingHR: Int
-        let maxHeartRate: Int
-
-        var isNoSignal: Bool {
-            heartRate <= 0 && !hasContact && rrCount == 0 && !isRecording
-        }
-    }
 
     var body: some View {
         Group {
@@ -1298,14 +1277,10 @@ private struct AtriaHealthStressSection: View {
         }
         .onChange(of: isActive, initial: true) { _, active in
             guard active else { return }
-            recomputeStress(force: true)
+            publishStressForBreathwork()
         }
-        .background {
-            if isActive {
-                AtriaVitalsStressActivityObserver {
-                    recomputeStress()
-                }
-            }
+        .onChange(of: stressMonitorStore.state, initial: true) { _, _ in
+            publishStressForBreathwork()
         }
         .onChange(of: stressMonitorStore.historyRevision, initial: true) { _, _ in
             stressStripReduced = AtriaHealthScreen.reduceStressStrip(stressMonitorStore.history)
@@ -1348,43 +1323,8 @@ private struct AtriaHealthStressSection: View {
         }
     }
 
-    private func recomputeStress(force: Bool = false, now: Date = Date()) {
-        let pulse = pulseStore.state
-        let inputKey = StressInputKey(heartRate: pulse.heartRate,
-                                      hasContact: pulse.hasContact,
-                                      rrCount: pulse.recentRRSamples.count,
-                                      lastRRDate: pulse.recentRRSamples.last?.date,
-                                      lastRRMS: pulse.recentRRSamples.last?.ms,
-                                      isRecording: ble.isRecording,
-                                      zoneIndex: pulse.heartRateZone?.index,
-                                      restingHR: baseline.restingInt ?? 60,
-                                      maxHeartRate: maxHeartRate)
-        let inputChanged = inputKey != lastStressInputKey
-        guard AtriaStressMonitorStore.shouldEvaluateStressInput(force: force,
-                                                                inputChanged: inputChanged,
-                                                                isNoSignal: inputKey.isNoSignal,
-                                                                lastEvaluatedAt: lastStressEvaluationAt,
-                                                                now: now) else {
-            return
-        }
-        lastStressInputKey = inputKey
+    private func publishStressForBreathwork(now: Date = Date()) {
         lastStressEvaluationAt = now
-        stressMonitorStore.update(heartRate: pulse.heartRate,
-                                  hasContact: pulse.hasContact,
-                                  recentRRSamples: pulse.recentRRSamples,
-                                  isRecording: ble.isRecording,
-                                  zoneIndex: pulse.heartRateZone?.index,
-                                  hrvSnapshot: ble.hrvSnapshot,
-                                  baseline: baseline,
-                                  restingMaxHR: (rest: baseline.restingInt ?? 60,
-                                                max: maxHeartRate),
-                                  // Vitals currently has no authoritative
-                                  // in-progress sleep interval. The learned
-                                  // overnight duty-cycle window must not be
-                                  // presented as "Asleep" while the wearer is
-                                  // actively viewing the app.
-                                  hasActiveSleepEvidence: false,
-                                  now: now)
         breathworkStressStore.update(
             AtriaBreathworkStressReading(state: stressMonitorStore.state,
                                          measuredAt: now)
@@ -1392,11 +1332,11 @@ private struct AtriaHealthStressSection: View {
     }
 
     private var stressValue: String {
-        stressMonitorStore.state.level?.title ?? stressMonitorStore.state.label
+        AtriaStressPresentation.make(state: stressMonitorStore.state).value
     }
 
     private var stressDetail: String {
-        stressMonitorStore.state.detail.isEmpty ? stressMonitorStore.state.label : stressMonitorStore.state.detail
+        AtriaStressPresentation.make(state: stressMonitorStore.state).detail
     }
 
     private var stressHistoryStrip: some View {
@@ -1560,7 +1500,7 @@ private struct AtriaHealthFitnessAgeCard: View, Equatable {
                                 .foregroundStyle(.secondary)
                         }
                     } else {
-                        Text("Calibrating 28-day baseline")
+                        Text(summary.compactStatusText)
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                     }

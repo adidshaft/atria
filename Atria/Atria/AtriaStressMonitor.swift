@@ -72,6 +72,46 @@ struct AtriaStressState: Equatable {
                                            rawActivation: 0, hrvAvailable: false)
 }
 
+/// One presentation policy shared by Home, Today, and Health. Keeping this
+/// projection beside the scorer prevents individual screens from inventing a
+/// second stress algorithm or presenting a numeric value while the canonical
+/// monitor is calibrating, warming up, asleep, active, or disconnected.
+struct AtriaStressPresentation: Equatable {
+    let value: String
+    let detail: String
+    let narrative: String
+
+    static func make(state: AtriaStressState) -> Self {
+        let detail: String
+        let narrative: String
+        switch state.kind {
+        case .scored:
+            detail = state.detail.isEmpty ? "Live strap reading" : state.detail
+            narrative = state.hrvAvailable
+                ? "Measured from live HR and HRV against your personal baseline."
+                : "Measured from live HR against your personal baseline; high stress requires HRV corroboration."
+        case .calibrating:
+            detail = state.detail.isEmpty ? "Building your personal HR baseline" : state.detail
+            narrative = "Stress will activate after Atria builds a reliable personal resting baseline."
+        case .warmingUp:
+            detail = "Collecting 2 min of live signal"
+            narrative = "Stress is waiting for enough continuous live signal to make a reliable reading."
+        case .active:
+            detail = "Paused during activity"
+            narrative = "Stress monitoring pauses during activity and the post-workout recovery window."
+        case .asleep:
+            detail = "Paused during detected sleep"
+            narrative = "Stress monitoring pauses while sleep is actively detected."
+        case .noSignal:
+            detail = "Reconnect strap for a live read"
+            narrative = "Stress is unavailable until live strap contact returns."
+        }
+        return Self(value: state.level?.title ?? state.label,
+                    detail: detail,
+                    narrative: narrative)
+    }
+}
+
 /// Pure, testable scoring core (mirrors the `AtriaSleepBudget` / `AtriaNapRecovery`
 /// style: static functions, no I/O, all thresholds are named constants).
 enum AtriaStressMonitor {

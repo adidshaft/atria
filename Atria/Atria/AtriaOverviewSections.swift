@@ -4005,7 +4005,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .vo2max:
             AtriaGlanceMetricCard(title: "VO2max",
                                   value: vo2MaxEstimate.value.map { String(format: "%.1f", $0) } ?? "--",
-                                  detail: vo2MaxEstimate.value == nil ? "Learning" : vo2MaxDetailText,
+                                  detail: vo2MaxEstimate.value == nil
+                                    ? vo2MaxEstimate.compactStatusText
+                                    : vo2MaxDetailText,
                                   systemImage: metric.systemImage,
                                   tint: vo2TrendZone?.tint ?? (vo2MaxEstimate.value == nil ? .orange : .blue),
                                   zone: vo2TrendZone,
@@ -4015,9 +4017,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .bioAge:
             AtriaGlanceMetricCard(title: "Fitness age",
                                   value: biologicalAgeSummary.valueText,
-                                  detail: biologicalAgeSummary.isRefreshing
-                                    ? "Updating weekly estimate"
-                                    : biologicalAgeSummary.isReady ? biologicalAgeSummary.detailText : "Calibrating",
+                                  detail: biologicalAgeSummary.compactStatusText,
                                   systemImage: metric.systemImage,
                                   tint: biologicalAgeZone?.tint ?? (biologicalAgeSummary.isReady ? (biologicalAgeSummary.ageDelta ?? 0 <= 0 ? .green : .orange) : .orange),
                                   zone: biologicalAgeZone,
@@ -4041,9 +4041,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: AtriaExperimentalSensorCopy.skinTemperatureValue(
                                     summary: skinTemperatureSummary,
                                     decoderAvailable: decoderAvailable),
-                                  detail: decoderAvailable
-                                    ? skinTemperatureSummary.detailText
-                                    : "Not available yet",
+                                  detail: AtriaExperimentalSensorCopy.skinTemperatureStatus(
+                                    summary: skinTemperatureSummary,
+                                    decoderAvailable: decoderAvailable),
                                   systemImage: metric.systemImage,
                                   tint: decoderAvailable
                                     ? (skinTemperatureDeviationZone?.tint ?? Metrics.electricRespiratory)

@@ -128,7 +128,7 @@ final class AtriaTodayTileLogicTests: XCTestCase {
             estimateDetail: "learning RHR baseline 3/14",
             hrvBaselineSamples: 3,
             restingBaselineSamples: 3
-        ), "RHR baseline 3 of 14 nights")
+        ), "RHR baseline 3 of 14 days")
     }
 
     // MARK: TodayHRZoneMinutes text

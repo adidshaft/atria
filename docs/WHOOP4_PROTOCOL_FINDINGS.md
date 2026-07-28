@@ -2299,6 +2299,38 @@ POSITIVE STILL REQUIRED**
   onboarding remains a separate acceptance test because the simulator cannot
   provide CoreBluetooth strap hardware.
 
+#### 2026-07-28 — daily metric authority and physiological-day corrections
+
+- **Sleep-cycle authority:** linked resumed sleep retains the original main
+  sleep as its durable anchor, but the final linked wake is the single
+  physiological-day boundary. A reconnect-created sleep fragment cannot start
+  a second recovery day.
+- **Respiration authority:** a respiratory baseline admits only prior
+  confirmed main sleeps. The currently scored sleep, naps, and unconfirmed
+  candidates cannot train the baseline they are being compared against.
+- **Baseline/trend weighting:** resting-HR and HRV learning canonicalize one
+  observation per physiological day. User-facing trends consume one frozen
+  `SavedDailyMetric` per wake day; checkpoint and reconnect fragments remain
+  diagnostic counts only and cannot overweight a day.
+- **Load exclusion:** confirmed sleep intervals are subtracted before TRIMP,
+  strain, and active-calorie integration. Daily wear coverage unions accepted
+  HR point intervals and no longer treats a sparse session's start/end
+  envelope as continuous wear.
+- **Step precedence:** an exact canonical strap result always wins. During an
+  open day, fresher validated live WHOOP/R10 motion may supersede only a
+  partial historical receipt; preliminary or stale motion never does, and a
+  closed day is never rewritten from live state.
+- **Stress authority:** Home, Today, Health, and breathwork now consume the
+  same model-owned stress projection, including explicit calibrating, warming,
+  asleep, active, and no-signal states. No screen privately re-scores stress
+  from a different evidence subset.
+- **TEST evidence:** physiological-cycle/respiration 29/29 PASS in
+  `Test-AtriaTests-2026.07.28_14-21-52-+0530.xcresult`; stress 15/15 PASS in
+  `/tmp/atria-stress-dd.0YHJdF/Logs/Test/Test-AtriaTests-2026.07.28_14-21-13-+0530.xcresult`;
+  daily trend regression PASS in
+  `Test-AtriaTests-2026.07.28_14-33-13-+0530.xcresult`; the final consolidated
+  suite result is recorded with the release commit.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.

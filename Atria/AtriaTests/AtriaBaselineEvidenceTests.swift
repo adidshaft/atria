@@ -105,19 +105,53 @@ final class AtriaBaselineEvidenceTests: XCTestCase {
             }
             return value
         }
-        // 2026-07-27: wording aligned with the tiles' "N of 14 nights" so one
-        // baseline is described one way across the app. Counts unchanged.
+        // Resting evidence may come from a qualified daytime low-HR window, so
+        // its maturity unit is days. HRV remains sleep-window qualified.
         XCTAssertEqual(
             baseline(days: 1).restingBaselineMaturityQualifierText(now: now),
-            "Learning · 1 of 14 nights"
+            "Learning · 1 of 14 days"
         )
         XCTAssertEqual(
             baseline(days: 5).restingBaselineMaturityQualifierText(now: now),
-            "Learning · 5 of 14 nights"
+            "Learning · 5 of 14 days"
         )
         // Once trusted the qualifier disappears entirely — one caveat, and only
         // while it is true.
         XCTAssertNil(baseline(days: 14).restingBaselineMaturityQualifierText(now: now))
+    }
+
+    func testReconnectFragmentsReceiveOneBaselineObservationPerDay() {
+        let firstDay = Date(timeIntervalSince1970: 1_783_036_800)
+        var canonical = PersonalBaseline()
+        var fragmented = PersonalBaseline()
+
+        for day in 0..<14 {
+            let date = firstDay.addingTimeInterval(Double(day) * 86_400 + 12 * 3_600)
+            let resting = day == 7 ? 90 : 60
+            canonical.learn(fromResting: resting, hrv: 0, at: date)
+            let fragments = day == 7 ? 4 : 1
+            for fragment in 0..<fragments {
+                fragmented.learn(
+                    fromResting: resting,
+                    hrv: 0,
+                    at: date.addingTimeInterval(Double(fragment) * 600)
+                )
+            }
+        }
+
+        XCTAssertEqual(fragmented.restingSampleCount, 14)
+        XCTAssertEqual(try XCTUnwrap(fragmented.restingHR),
+                       try XCTUnwrap(canonical.restingHR),
+                       accuracy: 0.000_001)
+        XCTAssertEqual(
+            try XCTUnwrap(fragmented.restingStats(
+                now: firstDay.addingTimeInterval(15 * 86_400)
+            )).mean,
+            try XCTUnwrap(canonical.restingStats(
+                now: firstDay.addingTimeInterval(15 * 86_400)
+            )).mean,
+            accuracy: 0.000_001
+        )
     }
 
 }

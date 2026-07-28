@@ -22,6 +22,14 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         case none
     }
 
+    enum UnavailabilityReason: Equatable, Sendable {
+        case none
+        case noCurrentCycleReceipt
+        case staleLiveReceipt
+        case unvalidatedLiveReceipt
+        case conflictingExactReceipts
+    }
+
     let day: Date
     let count: Int?
     let completeness: Completeness
@@ -29,6 +37,7 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     let isValidated: Bool
     let capturedAt: Date?
     let coverageFraction: Double?
+    var unavailabilityReason: UnavailabilityReason = .none
 
     var valueText: String {
         guard let count else { return "--" }
@@ -51,12 +60,21 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         case (.live, .partial):
             return isValidated ? "Today so far · live" : "Today so far · estimate"
         default:
-            return "No verified step coverage"
+            switch unavailabilityReason {
+            case .staleLiveReceipt:
+                return "Last strap movement is no longer live"
+            case .unvalidatedLiveReceipt:
+                return "Strap motion is still validating"
+            case .conflictingExactReceipts:
+                return "Conflicting verified strap receipts"
+            case .none, .noCurrentCycleReceipt:
+                return "No verified receipt for this cycle"
+            }
         }
     }
 
     var accessibilityText: String {
-        guard let count else { return "Step count unavailable. No verified step coverage." }
+        guard let count else { return "Step count unavailable. \(detailText)." }
         switch (source, completeness) {
         case (.verifiedCanonical, .complete):
             return "\(count) steps. Verified complete day."
@@ -94,26 +112,14 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                 && $0 <= now.addingTimeInterval(5)
                 && now.timeIntervalSince($0) <= liveEvidenceMaximumAge
         } ?? false
+        let liveIsValidated = WidgetSnapshotPublisher.strapStepsAreValidated(
+            state: liveValidationState
+        )
         let physiologicalMatching = usesPhysiologicalOpenWindow
             ? canonicalDays.filter {
                 abs($0.dayStart.timeIntervalSince(activeWindowStart)) < 1
             }
             : []
-        // A live strap subtotal is only an open-day source while its
-        // detector-applied coordinate is fresh. A restored prefix is retained
-        // in the strap detail view as "Not live", but it cannot silently
-        // masquerade as today's current count.
-        if isOpenDay, liveBelongsToDay, physiologicalMatching.isEmpty {
-            return .init(day: dayStart,
-                         count: max(0, liveCount),
-                         completeness: .partial,
-                         source: .live,
-                         isValidated: WidgetSnapshotPublisher.strapStepsAreValidated(
-                            state: liveValidationState
-                         ),
-                         capturedAt: liveCapturedAt,
-                         coverageFraction: nil)
-        }
 
         let civilMatching = canonicalDays.filter {
             calendar.isDate($0.dayStart, inSameDayAs: dayStart)
@@ -141,15 +147,30 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                          capturedAt: matching.map(\.dayEnd).max(),
                          coverageFraction: 1)
         }
-        if completeCounts.isEmpty,
-           let partial = matching
+        if completeCounts.count > 1 {
+            return .init(day: dayStart,
+                         count: nil,
+                         completeness: .unavailable,
+                         source: .none,
+                         isValidated: false,
+                         capturedAt: nil,
+                         coverageFraction: nil,
+                         unavailabilityReason: .conflictingExactReceipts)
+        }
+        let partial = completeCounts.isEmpty
+            ? matching
             .filter({ $0.state == .missing && $0.knownCoverageSeconds > 0 })
             .max(by: {
                 if $0.knownCoverageSeconds != $1.knownCoverageSeconds {
                     return $0.knownCoverageSeconds < $1.knownCoverageSeconds
                 }
                 return $0.knownEpochCount < $1.knownEpochCount
-            }) {
+            })
+            : nil
+        // A durable receipt, including a partial lower bound, remains the
+        // authority wherever one exists. Live detector state is considered
+        // only when no receipt has been published for the active cycle.
+        if let partial {
             let total = partial.knownCoverageSeconds + partial.missingCoverageSeconds
             return .init(day: dayStart,
                          count: partial.knownStepDeltaSum,
@@ -160,12 +181,30 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                          coverageFraction: total > 0
                             ? Double(partial.knownCoverageSeconds) / Double(total) : nil)
         }
+        // A live strap subtotal is only an open-day source while its
+        // detector-applied coordinate is fresh. A restored prefix is retained
+        // in the strap detail view as "Not live", but it cannot silently
+        // masquerade as today's current count.
+        if isOpenDay, liveBelongsToDay, liveIsValidated {
+            return .init(day: dayStart,
+                         count: max(0, liveCount),
+                         completeness: .partial,
+                         source: .live,
+                         isValidated: true,
+                         capturedAt: liveCapturedAt,
+                         coverageFraction: nil)
+        }
         return .init(day: dayStart,
                      count: nil,
                      completeness: .unavailable,
                      source: .none,
                      isValidated: false,
                      capturedAt: nil,
-                     coverageFraction: nil)
+                     coverageFraction: nil,
+                     unavailabilityReason:
+                        liveCapturedAt == nil
+                            ? .noCurrentCycleReceipt
+                            : (liveBelongsToDay
+                               ? .unvalidatedLiveReceipt : .staleLiveReceipt))
     }
 }

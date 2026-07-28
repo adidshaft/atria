@@ -143,7 +143,7 @@ enum AtriaRecoveryAvailabilityPresentation {
             return "Needs resting HR"
         }
         if normalized.contains("rhr baseline") {
-            return "RHR baseline \(max(0, restingBaselineSamples)) of \(PersonalBaseline.trustedMinimumSamples) nights"
+            return "RHR baseline \(max(0, restingBaselineSamples)) of \(PersonalBaseline.trustedMinimumSamples) days"
         }
         if normalized.contains("hrv baseline") {
             return "HRV baseline \(max(0, hrvBaselineSamples)) of \(PersonalBaseline.trustedMinimumSamples) nights"

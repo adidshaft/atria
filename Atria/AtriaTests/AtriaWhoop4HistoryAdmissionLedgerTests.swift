@@ -996,7 +996,7 @@ final class AtriaWhoop4HistoryAdmissionLedgerTests: XCTestCase {
         let directory: URL
         let databaseURL: URL
         private let archiveURL: URL
-        private let archiveStore: AtriaHistoricalArchiveDurableStore
+        private var archiveStore: AtriaHistoricalArchiveDurableStore?
         private var nextArchiveCounter: UInt32 = 1
 
         init() throws {
@@ -1014,6 +1014,11 @@ final class AtriaWhoop4HistoryAdmissionLedgerTests: XCTestCase {
         }
 
         deinit {
+            // Release the SQLite-backed lookup before removing its temporary
+            // directory. Stored properties are otherwise destroyed only after
+            // this deinit body, which unlinks an open WAL and makes SQLite
+            // report a database-integrity API violation.
+            archiveStore = nil
             try? FileManager.default.removeItem(at: directory)
         }
 
@@ -1034,6 +1039,9 @@ final class AtriaWhoop4HistoryAdmissionLedgerTests: XCTestCase {
         func archiveReceipt(
             recordCount: Int
         ) throws -> AtriaHistoricalArchiveDurableStore.FlushReceipt {
+            guard let archiveStore else {
+                preconditionFailure("fixture archive store released before receipt creation")
+            }
             let batch = archiveStore.beginDrainBatch()
             for _ in 0..<recordCount {
                 let counter = nextArchiveCounter

@@ -133,6 +133,53 @@ final class AtriaStrainConsistencyTests: XCTestCase {
                        "1 Hz archive rows beneath a 10-second saved stream must add zero load")
     }
 
+    func testConfirmedSleepIntervalContributesNoDailyLoadOrCalories() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let day = calendar.date(from: DateComponents(
+            year: 2026, month: 7, day: 12
+        ))!
+        let sleepStart = day.addingTimeInterval(1 * 3_600)
+        let sleepEnd = sleepStart.addingTimeInterval(6 * 3_600)
+        let sleepLike = workout(start: sleepStart,
+                                bpm: 145,
+                                minutes: 6 * 60)
+        let awake = workout(start: day.addingTimeInterval(9 * 3_600),
+                            bpm: 145,
+                            minutes: 20)
+        let profile = AthleteProfile(
+            age: 30,
+            measuredMaxHR: 190,
+            maxHRSource: .measured,
+            biologicalSex: .male,
+            weightKg: 75,
+            heightCm: 175,
+            updated: day,
+            hasCompletedOnboarding: true
+        )
+
+        let aggregate = SessionStore.homeSavedAggregate(
+            from: [sleepLike, awake],
+            rest: 60,
+            maxHR: 190,
+            biologicalSex: .male,
+            profile: profile,
+            calendar: calendar,
+            now: day.addingTimeInterval(12 * 3_600),
+            excludedLoadIntervals: [
+                DateInterval(start: sleepStart, end: sleepEnd)
+            ]
+        )
+        XCTAssertEqual(aggregate.savedTodayTRIMP,
+                       awake.trimp(rest: 60, max: 190),
+                       accuracy: 0.000_001)
+        XCTAssertEqual(
+            aggregate.savedTodayActiveCalories ?? -1,
+            awake.activeCalories(rest: 60, profile: profile) ?? -2,
+            accuracy: 0.000_001
+        )
+    }
+
     func testArchiveOverlapDoesNotDoubleCountHistoryRollup() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))

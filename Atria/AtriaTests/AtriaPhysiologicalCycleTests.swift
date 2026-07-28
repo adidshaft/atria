@@ -309,6 +309,103 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
         XCTAssertEqual(cycle.boundaryKind, .mainSleep)
     }
 
+    func testLinkedResumedSleepUsesFinalWakeButKeepsOriginalMainAnchor() {
+        let main = sleep(id: "main-fragment",
+                         start: date(1, 23),
+                         end: date(2, 3))
+        let resumed = sleep(id: "resumed-fragment",
+                            start: date(2, 3).addingTimeInterval(30 * 60),
+                            end: date(2, 7),
+                            source: "resumed_sleep")
+
+        let cycle = AtriaPhysiologicalCycle.current(now: date(2, 12),
+                                                    confirmedSleeps: [main, resumed],
+                                                    calendar: calendar)
+        let latest = AtriaPhysiologicalCycle.latestCompletedMainSleep(
+            now: date(2, 12),
+            confirmedSleeps: [main, resumed]
+        )
+
+        XCTAssertEqual(cycle.start, resumed.end)
+        XCTAssertEqual(cycle.anchorSleepID, main.id)
+        XCTAssertEqual(cycle.boundaryKind, .mainSleep)
+        XCTAssertEqual(latest?.id, main.id)
+        XCTAssertEqual(latest?.start, main.start)
+        XCTAssertEqual(latest?.end, resumed.end)
+        XCTAssertEqual(latest?.duration, main.duration + resumed.duration)
+    }
+
+    func testRespiratoryBaselineExcludesCurrentConfirmedMainSleepAndNaps() throws {
+        func night(id: String,
+                   day: Int,
+                   rate: Double,
+                   source: String = "manual_sleep") -> SleepHistorySnapshot.Night {
+            SleepHistorySnapshot.Night(id: id,
+                                       day: date(day, 0),
+                                       start: date(day - 1, 23),
+                                       end: date(day, 7),
+                                       duration: source == "manual_nap" ? 60 * 60 : 8 * 60 * 60,
+                                       restingHR: 50,
+                                       hrv: 60,
+                                       respiratoryRate: rate,
+                                       sleepEfficiency: 0.9,
+                                       confidence: "user",
+                                       source: source,
+                                       confirmed: true,
+                                       stageSegments: [],
+                                       eventTimeZoneIdentifier: "UTC")
+        }
+        let current = night(id: "current", day: 5, rate: 30)
+        let nap = night(id: "nap", day: 4, rate: 40, source: "manual_nap")
+        let prior = (0..<PersonalBaseline.trustedMinimumSamples).map {
+            night(id: "prior-\($0)", day: 4 - $0, rate: 15)
+        }
+        let snapshot = SleepHistorySnapshot(nights: [current, nap] + prior,
+                                            confirmedCount: prior.count + 2,
+                                            candidateCount: 0)
+
+        let baseline = try XCTUnwrap(snapshot.respiratoryBaselineStats)
+        XCTAssertEqual(baseline.count, PersonalBaseline.trustedMinimumSamples)
+        XCTAssertEqual(baseline.mean, 15, accuracy: 0.000_001)
+        XCTAssertEqual(snapshot.respiratoryBaselineCount, PersonalBaseline.trustedMinimumSamples)
+        XCTAssertEqual(snapshot.respiratoryBaselineMean ?? 0, 15, accuracy: 0.000_001)
+    }
+
+    func testRespiratoryCandidateDoesNotEvictLatestPriorConfirmedBaselineNight() throws {
+        func night(id: String,
+                   day: Int,
+                   rate: Double,
+                   confirmed: Bool) -> SleepHistorySnapshot.Night {
+            SleepHistorySnapshot.Night(id: id,
+                                       day: date(day, 0),
+                                       start: date(day - 1, 23),
+                                       end: date(day, 7),
+                                       duration: 8 * 60 * 60,
+                                       restingHR: 50,
+                                       hrv: 60,
+                                       respiratoryRate: rate,
+                                       sleepEfficiency: 0.9,
+                                       confidence: confirmed ? "user" : "candidate",
+                                       source: confirmed ? "manual_sleep" : "sleep_candidate",
+                                       confirmed: confirmed,
+                                       stageSegments: [],
+                                       eventTimeZoneIdentifier: "UTC")
+        }
+        let prior = (0..<PersonalBaseline.trustedMinimumSamples).map {
+            night(id: "prior-\($0)", day: 4 - $0, rate: 15, confirmed: true)
+        }
+        let snapshot = SleepHistorySnapshot(
+            nights: [night(id: "candidate", day: 5, rate: 30, confirmed: false)] + prior,
+            confirmedCount: prior.count,
+            candidateCount: 1
+        )
+
+        let baseline = try XCTUnwrap(snapshot.respiratoryBaselineStats)
+        XCTAssertEqual(baseline.count, PersonalBaseline.trustedMinimumSamples)
+        XCTAssertEqual(baseline.mean, 15, accuracy: 0.000_001)
+        XCTAssertEqual(snapshot.respiratoryBaselineCount, PersonalBaseline.trustedMinimumSamples)
+    }
+
     func testHistoricalStrainCacheBeginsAtWakeNotCivilMidnight() {
         let shiftSleep = sleep(id: "shift",
                                start: date(2, 12),

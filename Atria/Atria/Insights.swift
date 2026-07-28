@@ -91,32 +91,29 @@ struct PersonalBaseline: Codable {
     }
 
     mutating func learn(fromResting resting: Int, hrv: Int, at observedAt: Date = Date(), overnight: Bool = false) {
-        if resting > 0 {
-            restingHR = restingHR.map { current in
-                let step = Self.alpha * (Double(resting) - current)
-                return current + min(max(step, -Self.maxRestingStepBPM), Self.maxRestingStepBPM)
-            } ?? Double(resting)
-        }
-        if hrv > 0 {
-            hrvEMA = hrvEMA.map { current in
-                let step = Self.alpha * (Double(hrv) - current)
-                return current + min(max(step, -Self.maxHRVStepMS), Self.maxHRVStepMS)
-            } ?? Double(hrv)
-        }
         sessions += 1
         updated = observedAt
         if resting > 0 {
-            samples.append(BaselineSample(date: updated ?? observedAt,
+            samples.append(BaselineSample(date: observedAt,
                                           restingHR: Double(resting),
                                           rmssd: hrv > 0 ? Double(hrv) : nil,
                                           overnight: overnight))
+            // Reconnects and segmented saves can produce several qualified
+            // windows on one civil day. A personal baseline is a day-level
+            // signal, so those fragments must not receive extra statistical or
+            // EMA weight. Confirmed-sleep evidence wins over daytime evidence;
+            // within one evidence class the lowest qualified resting window is
+            // the canonical observation.
+            samples = Self.canonicalDailySamples(samples)
             if samples.count > Self.maxSamples {
-                // Day-aware trim: a raw FIFO cut can evict whole old days for a
-                // wearer logging many sessions per day, starving the distinct-day
-                // trust gate. Thin dense days (keep the newest few per day) before
-                // cutting oldest-first.
-                samples = Self.trimmedSamples(samples)
+                samples.removeFirst(samples.count - Self.maxSamples)
             }
+            rebuildLearnedValuesFromCanonicalSamples()
+        } else if hrv > 0 {
+            // HRV without a paired qualified resting observation has no durable
+            // day anchor and must not silently bias the baseline.
+            hrvEMA = Self.ema(values: samples.compactMap(\.rmssd),
+                              maximumStep: Self.maxHRVStepMS)
         }
     }
 
@@ -127,12 +124,12 @@ struct PersonalBaseline: Codable {
     }
     var hrvSampleCount: Int {
         guard hrvQualificationVersion >= Self.currentHRVQualificationVersion else { return 0 }
-        return samples.compactMap(\.lnRMSSD).count
+        return Self.canonicalDailySamples(samples).compactMap(\.lnRMSSD).count
     }
-    var restingSampleCount: Int { samples.count }
+    var restingSampleCount: Int { Self.canonicalDailySamples(samples).count }
 
     func freshSamples(now: Date = Date()) -> [BaselineSample] {
-        samples.filter { sample in
+        Self.canonicalDailySamples(samples).filter { sample in
             let age = now.timeIntervalSince(sample.date)
             return age >= 0 && age <= Self.staleAfter
         }
@@ -156,28 +153,26 @@ struct PersonalBaseline: Codable {
         Set(samples.map { calendar.startOfDay(for: $0.date) }).count
     }
 
-    /// Keep at most `maxSamplesPerDay` newest samples per calendar day, then cap
-    /// to `maxSamples` oldest-first. 4/day × 22+ days fits inside the 90 cap, so
-    /// the distinct-day trust gate can always be satisfied by a real history.
-    private static let maxSamplesPerDay = 4
-
-    private static func trimmedSamples(_ samples: [BaselineSample],
-                                       calendar: Calendar = .current) -> [BaselineSample] {
-        var perDayCounts: [Date: Int] = [:]
-        var thinned: [BaselineSample] = []
-        thinned.reserveCapacity(samples.count)
-        for sample in samples.reversed() {
+    static func canonicalDailySamples(
+        _ samples: [BaselineSample],
+        calendar: Calendar = .current
+    ) -> [BaselineSample] {
+        var byDay: [Date: BaselineSample] = [:]
+        for sample in samples.sorted(by: { $0.date < $1.date }) {
             let day = calendar.startOfDay(for: sample.date)
-            let count = perDayCounts[day, default: 0]
-            guard count < Self.maxSamplesPerDay else { continue }
-            perDayCounts[day] = count + 1
-            thinned.append(sample)
+            guard let existing = byDay[day] else {
+                byDay[day] = sample
+                continue
+            }
+            let existingPriority = existing.isOvernightSample ? 1 : 0
+            let incomingPriority = sample.isOvernightSample ? 1 : 0
+            if incomingPriority > existingPriority
+                || (incomingPriority == existingPriority
+                    && sample.restingHR < existing.restingHR) {
+                byDay[day] = sample
+            }
         }
-        var result = Array(thinned.reversed())
-        if result.count > Self.maxSamples {
-            result.removeFirst(result.count - Self.maxSamples)
-        }
-        return result
+        return byDay.values.sorted { $0.date < $1.date }
     }
 
     /// Fresh HRV samples that came from an overnight/sleep window.
@@ -200,15 +195,10 @@ struct PersonalBaseline: Codable {
     }
 
     /// Display-ready maturity qualifier for the resting baseline, e.g.
-    /// "Learning · 5 of 14 nights". `nil` once the baseline is trusted.
+    /// "Learning · 5 of 14 days". `nil` once the baseline is trusted.
     ///
-    /// Phrasing matches `AtriaTodayScreen.baselineNightsProgress`, which
-    /// renders the same 14-night baseline as "N of 14 nights" on the tiles.
-    /// This read "Learning · day N of 14", so the banner and the tile
-    /// described one baseline two ways — and at the start it said "day 0 of
-    /// 14", which reads as a broken counter rather than a first night that
-    /// has not happened yet. Only the wording changed; the count and the
-    /// trusted threshold are untouched.
+    /// Resting HR can learn from a qualified daytime low-HR window, so the
+    /// maturity unit is days. HRV remains explicitly sleep-window qualified.
     ///
     /// Deliberately mirrors `AtriaFitnessAge`'s "Early estimate · day N of M":
     /// a value is shown from the first day and the qualifier discloses how far
@@ -222,7 +212,7 @@ struct PersonalBaseline: Codable {
     func restingBaselineMaturityQualifierText(now: Date = Date()) -> String? {
         guard !hasTrustedRestingBaseline(now: now) else { return nil }
         let days = min(freshRestingSampleCount(now: now), Self.trustedMinimumSamples)
-        return "Learning · \(days) of \(Self.trustedMinimumSamples) nights"
+        return "Learning · \(days) of \(Self.trustedMinimumSamples) days"
     }
 
     var restingStats: (mean: Double, sd: Double, count: Int)? {
@@ -279,6 +269,22 @@ struct PersonalBaseline: Codable {
         guard values.count > 1 else { return (mean, 0, values.count) }
         let variance = values.reduce(0) { $0 + pow($1 - mean, 2) } / Double(values.count - 1)
         return (mean, sqrt(variance), values.count)
+    }
+
+    private mutating func rebuildLearnedValuesFromCanonicalSamples() {
+        restingHR = Self.ema(values: samples.map(\.restingHR),
+                             maximumStep: Self.maxRestingStepBPM)
+        hrvEMA = Self.ema(values: samples.compactMap(\.rmssd),
+                          maximumStep: Self.maxHRVStepMS)
+    }
+
+    private static func ema(values: [Double], maximumStep: Double) -> Double? {
+        guard var value = values.first else { return nil }
+        for next in values.dropFirst() {
+            let step = alpha * (next - value)
+            value += min(max(step, -maximumStep), maximumStep)
+        }
+        return value
     }
 
     // Persistence

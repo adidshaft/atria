@@ -2051,11 +2051,11 @@ enum AtriaAnalytics {
         private static let overnightPreferredHRVBaseline: PersonalBaseline = {
             var samples: [PersonalBaseline.BaselineSample] = []
             for index in 0..<7 {
-                samples.append(PersonalBaseline.BaselineSample(date: calibrationNow.addingTimeInterval(-Double(index) * 3_600),
+                samples.append(PersonalBaseline.BaselineSample(date: calibrationNow.addingTimeInterval(-Double(index) * 24 * 3_600),
                                                               restingHR: 55, rmssd: 62, overnight: true))
             }
             for index in 0..<6 {
-                samples.append(PersonalBaseline.BaselineSample(date: calibrationNow.addingTimeInterval(-Double(index + 7) * 3_600),
+                samples.append(PersonalBaseline.BaselineSample(date: calibrationNow.addingTimeInterval(-Double(index + 7) * 24 * 3_600),
                                                               restingHR: 58, rmssd: 30, overnight: false))
             }
             return PersonalBaseline(restingHR: 56, hrvEMA: 55, sessions: samples.count, updated: calibrationNow, samples: samples)
@@ -2066,11 +2066,11 @@ enum AtriaAnalytics {
         private static let sparseOvernightHRVBaseline: PersonalBaseline = {
             var samples: [PersonalBaseline.BaselineSample] = []
             for index in 0..<3 {
-                samples.append(PersonalBaseline.BaselineSample(date: calibrationNow.addingTimeInterval(-Double(index) * 3_600),
+                samples.append(PersonalBaseline.BaselineSample(date: calibrationNow.addingTimeInterval(-Double(index) * 24 * 3_600),
                                                               restingHR: 55, rmssd: 62, overnight: true))
             }
             for index in 0..<10 {
-                samples.append(PersonalBaseline.BaselineSample(date: calibrationNow.addingTimeInterval(-Double(index + 3) * 3_600),
+                samples.append(PersonalBaseline.BaselineSample(date: calibrationNow.addingTimeInterval(-Double(index + 3) * 24 * 3_600),
                                                               restingHR: 58, rmssd: 40, overnight: false))
             }
             return PersonalBaseline(restingHR: 57, hrvEMA: 50, sessions: samples.count, updated: calibrationNow, samples: samples)

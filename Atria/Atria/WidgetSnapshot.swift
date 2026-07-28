@@ -459,16 +459,16 @@ enum WidgetSnapshotPublisher {
         let projectedStepDays: [
             AtriaHistoricalDailyConsumerProjection.StepDay
         ]
-        if let strapIdentifier = UserDefaults.standard.string(
-            forKey: AtriaBLEManager.OfflineSyncDefaults
-                .verifiedHistoryPeripheralID
-        ) {
+        let strapIdentifiers =
+            AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers()
+        if !strapIdentifiers.isEmpty {
             projectedStepDays = AtriaWhoop4MotionTickDailyStore.shared
                 .mergingCurrentCycleReceipt(
                     into: store.historySnapshot
                         .verifiedHistoricalStepEvidenceDays,
-                    strapIdentifier: strapIdentifier,
+                    strapIdentifiers: strapIdentifiers,
                     windowStart: savedAggregate.day,
+                    now: now,
                     calendar: calendar
                 )
         } else {
