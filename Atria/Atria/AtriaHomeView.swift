@@ -10028,22 +10028,22 @@ final class AtriaHomeModel {
 
     private static func stressState(ble: AtriaBLEManager, baseline: PersonalBaseline) -> StressState {
         guard let snapshot = ble.hrvSnapshot else {
-            return StressState(value: "Learning",
+            return StressState(value: AtriaCompactMetricPresentation.noValue,
                                detail: "Beat-to-beat window",
                                narrative: "Heart rate is live; stress appears once HRV-grade beat-to-beat windows are ready.")
         }
         guard snapshot.isReady else {
-            return StressState(value: "Learning",
+            return StressState(value: AtriaCompactMetricPresentation.noValue,
                                detail: snapshot.readinessReason,
                                narrative: snapshot.readinessMessage)
         }
         guard snapshot.isLiveStressEligible() else {
-            return StressState(value: "Learning",
+            return StressState(value: AtriaCompactMetricPresentation.noValue,
                                detail: "Current beat-to-beat window",
                                narrative: "Saved HRV remains available for recovery, but live stress waits for a fresh beat-to-beat window.")
         }
         guard let stats = baseline.lnRMSSDStats, stats.count >= 3 else {
-            return StressState(value: "Learning",
+            return StressState(value: AtriaCompactMetricPresentation.noValue,
                                detail: "\(baseline.freshHRVSampleCount())/3 fresh baseline",
                                narrative: "Atria needs a few personal HRV samples before comparing stress to your norm.")
         }
@@ -10087,7 +10087,8 @@ final class AtriaHomeModel {
         } else if let localSource {
             value = "\(localSource.value)"
         } else {
-            value = "Learning"
+            // Deterministic no-value token, matching every other metric value.
+            value = AtriaCompactMetricPresentation.noValue
         }
 
         let detail: String
