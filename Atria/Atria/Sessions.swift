@@ -29922,6 +29922,15 @@ final class SessionStore: ObservableObject {
                                        confirmedSleeps: cachedConfirmedSleeps,
                                        sessionFileURL: url,
                                        prunedShortLongWearFragments: preparation.prunedShortLongWearFragments)
+        // A launch-time history projection may already be deriving from the
+        // intentionally empty pre-load session cache. Exact-history priority
+        // can defer the replacement projection without incrementing its
+        // generation, allowing that stale empty result to publish after the
+        // real sessions land and overwrite valid strain/Recovery rollups.
+        // Invalidate both stages before exposing the loaded session authority;
+        // the normal follow-up persistence below then rebuilds from `merged`.
+        historySnapshotRevision &+= 1
+        dailyRollupPreparationRevision &+= 1
         sessions = merged
         setLatestReferenceValidatedHRVSource(finalPreparation.latestReferenceValidatedHRVSource)
         setLatestLocalRMSSDSource(finalPreparation.latestLocalRMSSDSource)
