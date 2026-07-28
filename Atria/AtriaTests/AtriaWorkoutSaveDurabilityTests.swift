@@ -382,7 +382,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertTrue(branch.contains("flushWorkoutRouteAtBackgroundBoundary()"))
         XCTAssertTrue(source.contains("beginBackgroundTask("))
         XCTAssertTrue(source.contains("workoutRouteRecorder.flushCheckpoint(reason: \"scene_background\")"))
-        XCTAssertTrue(source.contains("endWorkoutRouteBackgroundTaskIfNeeded()"))
+        XCTAssertTrue(source.contains("workoutRouteBackgroundLease.end()"))
 
         let activeWorkoutStart = try XCTUnwrap(branch.range(of: "if workoutSession != nil"))
         let idleStart = try XCTUnwrap(

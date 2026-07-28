@@ -169,8 +169,9 @@ final class AtriaBLEConnectedPeripheralRetainerTests: XCTestCase {
             "didDisconnectPeripheral must release the peripheral it just lost"
         )
         XCTAssertTrue(
-            source.contains("connectedPeripheralRetainer.releaseAll(peripheralID: peripheral.identifier)"),
-            "didFailToConnect must release the peripheral whose connect request ended"
+            source.contains("connectedPeripheralRetainer.releaseAll(")
+                && source.contains("peripheralID: peripheral.identifier"),
+            "didFailToConnect must release the failed peripheral when no synchronous replacement request owns it"
         )
         XCTAssertTrue(source.contains("connectedPeripheralRetainer.releaseEverything()"),
                       "a discarded central must not leave its peripherals held")

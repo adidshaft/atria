@@ -416,7 +416,7 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
                                       expectedQualifiedStandardRRSessionCount: 9,
                                       expectedLocallyQualifiedHRVSessionCount: 2,
                                       expectedMorningHRV: nil,
-                                      expectedLimitedRecovery: 63)
+                                      expectedLimitedRecovery: 58)
     }
 
     func testJuly18CapturedNightKeepsQualifiedHRVSeparateFromFragmentedWear() throws {

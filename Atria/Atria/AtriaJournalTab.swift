@@ -436,7 +436,7 @@ private struct AtriaJournalTypedInsightsSection: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Patterns are learning")
                             .font(.subheadline.weight(.bold))
-                        Text("Keep checking in — patterns need about 2–3 weeks of answers before they mean anything.")
+                        Text("About 2–3 weeks of answers")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

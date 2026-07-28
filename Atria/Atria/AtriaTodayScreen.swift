@@ -1410,14 +1410,17 @@ struct AtriaTodayScreen: View {
         }
         let live = displayHero.hrvValue
         let detail = isPendingHeroValue(live)
-            ? baselineNightsProgress(sessionProjectionStore.state.baseline.freshHRVSampleCount())
+            ? baselineProgress(
+                sessionProjectionStore.state.baseline.freshHRVSampleCount(),
+                unit: "nights"
+            )
             : displayHero.hrvDetail
         return (live, detail)
     }
 
     /// RHR glance carry (mirrors `displaySettledHRV`): pins the tile to the frozen
     /// daily resting HR (`rhr`) the detail sheet reads, not the live value, labeled
-    /// "this morning"/"yesterday". Falls back to the live value + "N of 14 nights"
+    /// "this morning"/"yesterday". Falls back to the live value + "N of 14 days"
     /// progress only when no rollup carries an RHR yet.
     private var displaySettledRHR: (value: String, detail: String) {
         if let entry = dayDescendingRollups.first(where: { $0.rhr != nil }),
@@ -1430,7 +1433,10 @@ struct AtriaTodayScreen: View {
         }
         let live = displayHero.restingHeartRateText
         let detail = isPendingHeroValue(live)
-            ? baselineNightsProgress(sessionProjectionStore.state.baseline.freshRestingSampleCount())
+            ? baselineProgress(
+                sessionProjectionStore.state.baseline.freshRestingSampleCount(),
+                unit: "days"
+            )
             : "bpm"
         return (live, detail)
     }
@@ -2142,10 +2148,10 @@ struct AtriaTodayScreen: View {
             || trimmed == "Learning" || trimmed == "Building" || trimmed == "Preparing"
     }
 
-    /// Honest "N of 14 nights" progress for the 14-night personal baselines
-    /// (HRV/RHR), so a pending tile says how far along detection is.
-    private func baselineNightsProgress(_ samples: Int) -> String {
-        "\(min(samples, PersonalBaseline.trustedMinimumSamples)) of \(PersonalBaseline.trustedMinimumSamples) nights"
+    /// HRV is qualified from confirmed sleep; resting HR may also learn from a
+    /// qualified daytime low-HR window, so their maturity units differ.
+    private func baselineProgress(_ samples: Int, unit: String) -> String {
+        "\(min(samples, PersonalBaseline.trustedMinimumSamples)) of \(PersonalBaseline.trustedMinimumSamples) \(unit)"
     }
 
     private func recoveryState(percent: Int) -> String {

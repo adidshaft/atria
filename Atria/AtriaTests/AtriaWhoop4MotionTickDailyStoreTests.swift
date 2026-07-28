@@ -219,6 +219,154 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         XCTAssertEqual(merged, [exact])
     }
 
+    func testSavedLinkIdentifierPublishesReceiptBeforeHistoryIdentityReturns()
+        throws {
+        let suite = "AtriaWhoop4MotionTickDailyStoreTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+        let start = Date(timeIntervalSince1970: 80_000)
+        defaults.set(
+            strap,
+            forKey: AtriaBLEManager.LinkDefaults.savedPeripheralUUID
+        )
+        XCTAssertTrue(
+            try store.save(
+                makeEvidence(start: start, ticks: 315, steps: 268),
+                strapIdentifier: strap
+            )
+        )
+
+        let identifiers = AtriaWhoop4MotionTickDailyStore
+            .persistedStrapIdentifiers(defaults: defaults)
+        let merged = store.mergingCurrentCycleReceipt(
+            into: [],
+            strapIdentifiers: identifiers,
+            windowStart: start,
+            now: start.addingTimeInterval(360),
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(identifiers, [strap])
+        XCTAssertEqual(merged.first?.knownStepDeltaSum, 268)
+    }
+
+    func testRelaunchReloadsDurableReceiptFromDisk() throws {
+        let strap = UUID().uuidString
+        let start = Date(timeIntervalSince1970: 90_000)
+        let firstProcess =
+            AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        XCTAssertTrue(
+            try firstProcess.save(
+                makeEvidence(start: start, ticks: 315, steps: 268),
+                strapIdentifier: strap
+            )
+        )
+
+        let relaunched =
+            AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let merged = relaunched.mergingCurrentCycleReceipt(
+            into: [],
+            strapIdentifiers: [strap],
+            windowStart: start,
+            now: start.addingTimeInterval(360),
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(merged.first?.knownStepDeltaSum, 268)
+        XCTAssertEqual(merged.first?.state, .missing)
+    }
+
+    func testContainedCurrentCivilDayReceiptIsSafePartialLowerBound() throws {
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 172_800)
+        let receiptStart = cycleStart.addingTimeInterval(3_600)
+        XCTAssertTrue(
+            try store.save(
+                makeEvidence(
+                    start: receiptStart,
+                    ticks: 315,
+                    steps: 268,
+                    capturedAfter: 360,
+                    known: 330
+                ),
+                strapIdentifier: strap
+            )
+        )
+
+        let merged = store.mergingCurrentCycleReceipt(
+            into: [],
+            strapIdentifiers: [strap],
+            windowStart: cycleStart,
+            now: receiptStart.addingTimeInterval(360),
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(merged.first?.dayStart, cycleStart)
+        XCTAssertEqual(merged.first?.knownStepDeltaSum, 268)
+        XCTAssertEqual(merged.first?.state, .missing)
+        XCTAssertEqual(merged.first?.missingCoverageSeconds, 3_600 + 270)
+    }
+
+    func testReceiptBeforeCurrentCycleNeverMasqueradesAsToday() throws {
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+        let oldStart = Date(timeIntervalSince1970: 172_800)
+        let newCycle = oldStart.addingTimeInterval(60)
+        XCTAssertTrue(
+            try store.save(
+                makeEvidence(
+                    start: oldStart,
+                    ticks: 315,
+                    steps: 268,
+                    capturedAfter: 180,
+                    known: 330
+                ),
+                strapIdentifier: strap
+            )
+        )
+
+        let merged = store.mergingCurrentCycleReceipt(
+            into: [],
+            strapIdentifiers: [strap],
+            windowStart: newCycle,
+            now: oldStart.addingTimeInterval(180),
+            calendar: utcCalendar
+        )
+
+        XCTAssertTrue(merged.isEmpty)
+    }
+
+    func testCompleteDurableReceiptPublishesExactCount() throws {
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+        let start = Date(timeIntervalSince1970: 100_000)
+        let complete = HistoricalArchive.MotionTickDayEvidence(
+            windowStart: start,
+            windowEnd: start.addingTimeInterval(600),
+            motionTicks: 320,
+            steps: 271,
+            knownCoverageSeconds: 600,
+            missingCoverageSeconds: 0,
+            decodedRows: 20,
+            capturedThrough: start.addingTimeInterval(600)
+        )
+        XCTAssertTrue(try store.save(complete, strapIdentifier: strap))
+
+        let merged = store.mergingCurrentCycleReceipt(
+            into: [],
+            strapIdentifiers: [strap],
+            windowStart: start,
+            now: start.addingTimeInterval(600),
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(merged.first?.state, .available)
+        XCTAssertEqual(merged.first?.stepCount, 271)
+    }
+
     private func makeEvidence(
         start: Date,
         ticks: Int,

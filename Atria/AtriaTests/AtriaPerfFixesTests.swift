@@ -1636,6 +1636,76 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertEqual(rows[2].sleepRespiratoryRate ?? 0, 14, accuracy: 1e-9)
     }
 
+    func testDailyMetricTrendDoesNotWeightSessionFragments() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let dayTwo = calendar.startOfDay(for: t0)
+        let dayOne = calendar.date(byAdding: .day, value: -1, to: dayTwo)!
+        let metrics = [
+            dailyMetric(day: dayOne, recovery: 40, hrv: 30, restingHR: 70),
+            dailyMetric(day: dayTwo, recovery: 80, hrv: 50, restingHR: 60)
+        ]
+
+        let sixFragmentSummary = SessionStore.dailyMetricTrendSummary(
+            metrics: metrics,
+            rollups: [],
+            days: 7,
+            now: dayTwo.addingTimeInterval(12 * 3_600),
+            diagnosticSessionCount: 6,
+            calendar: calendar
+        )
+        let twoSessionSummary = SessionStore.dailyMetricTrendSummary(
+            metrics: metrics,
+            rollups: [],
+            days: 7,
+            now: dayTwo.addingTimeInterval(12 * 3_600),
+            diagnosticSessionCount: 2,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(sixFragmentSummary.avgRecovery, 60)
+        XCTAssertEqual(sixFragmentSummary.avgRecovery, twoSessionSummary.avgRecovery)
+        XCTAssertEqual(sixFragmentSummary.avgHRV, twoSessionSummary.avgHRV)
+        XCTAssertEqual(sixFragmentSummary.avgRHR, twoSessionSummary.avgRHR)
+        XCTAssertEqual(sixFragmentSummary.coverageDays, 2)
+        XCTAssertEqual(sixFragmentSummary.sessions, 6,
+                       "Session fragments remain diagnostics-only")
+    }
+
+    func testCrossMidnightDailyTrendBelongsToWakeDay() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let wakeDay = calendar.startOfDay(for: t0)
+        let sleep = hrvSession(
+            start: wakeDay.addingTimeInterval(-2 * 3_600),
+            duration: 8 * 3_600,
+            hrv: 48
+        )
+        let attributedDay = SessionStore.morningMetricDay(for: sleep,
+                                                          calendar: calendar)
+        XCTAssertEqual(attributedDay, wakeDay)
+        XCTAssertNotEqual(attributedDay,
+                          calendar.startOfDay(for: sleep.start))
+
+        let summary = SessionStore.dailyMetricTrendSummary(
+            metrics: [
+                dailyMetric(day: attributedDay,
+                            recovery: 72,
+                            hrv: 48,
+                            restingHR: 58)
+            ],
+            rollups: [],
+            days: 1,
+            now: wakeDay.addingTimeInterval(12 * 3_600),
+            diagnosticSessionCount: 1,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(summary.coverageDays, 1)
+        XCTAssertEqual(summary.avgRecovery, 72)
+        XCTAssertEqual(summary.avgHRV, 48)
+    }
+
     func testExerciseCatalogCustomCacheTracksStoredDataChanges() throws {
         let suiteName = "AtriaPerfFixesTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -1691,6 +1761,26 @@ final class AtriaPerfFixesTests: XCTestCase {
                      hrv: hrv,
                      rrPoints: hrv == nil ? nil : qualifiedStandardPoints,
                      hrvReferenceValidated: hrvReferenceValidated)
+    }
+
+    private func dailyMetric(day: Date,
+                             recovery: Int,
+                             hrv: Int,
+                             restingHR: Int) -> SavedDailyMetric {
+        SavedDailyMetric(day: day,
+                         recoveryPercent: recovery,
+                         recoveryConfidence: "local",
+                         hrv: hrv,
+                         restingHR: restingHR,
+                         respiratoryRate: 14,
+                         sleepDuration: 7 * 3_600,
+                         sleepSpan: 8 * 3_600,
+                         sleepStart: day.addingTimeInterval(-8 * 3_600),
+                         sleepEnd: day,
+                         sleepSource: "confirmed",
+                         sleepStageSegments: [],
+                         sleepConsistencyPercent: 85,
+                         strain: 6)
     }
 
     private func localRRSession(hrv: Int?) -> SavedSession {
@@ -1928,6 +2018,45 @@ final class AtriaPerfFixesTests: XCTestCase {
             windowEnd: dayStart.addingTimeInterval(10 * 3600)
         )
         XCTAssertEqual(union, 6 * 3600, accuracy: 1)
+    }
+
+    func testObservedHeartRateWearDoesNotPromoteSparseSessionEnvelope() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let end = start.addingTimeInterval(12 * 3_600)
+        let sparse = SavedSession(
+            id: UUID(),
+            start: start,
+            end: end,
+            label: "Sparse journal",
+            points: stride(from: 0.0, through: 600.0, by: 1.0).map {
+                SavedSession.Point(t: $0, bpm: 80)
+            }
+        )
+        let dense = SavedSession(
+            id: UUID(),
+            start: start,
+            end: end,
+            label: "Dense journal",
+            points: stride(from: 0.0, through: 12 * 3_600.0, by: 10.0).map {
+                SavedSession.Point(t: $0, bpm: 80)
+            }
+        )
+
+        let sparseWear = AtriaHomeModel.observedHeartRateUnionSeconds(
+            sessions: [sparse],
+            windowStart: start,
+            windowEnd: end
+        )
+        let denseWear = AtriaHomeModel.observedHeartRateUnionSeconds(
+            sessions: [dense],
+            windowStart: start,
+            windowEnd: end
+        )
+        XCTAssertLessThan(sparseWear, 11 * 60)
+        // The window is half-open, so the point exactly at `end` is excluded.
+        // Dense ten-second evidence should therefore be within one cadence of
+        // full wear, without fabricating coverage past the final accepted row.
+        XCTAssertEqual(denseWear, 12 * 3_600, accuracy: 10)
     }
 
     func testDayWearCoverageWithholdsJudgementOnAYoungDay() {

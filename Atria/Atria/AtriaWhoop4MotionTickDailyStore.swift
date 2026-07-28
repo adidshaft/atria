@@ -77,6 +77,30 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
             .map(Self.evidence)
     }
 
+    /// Every step surface must resolve the same persisted strap identity.
+    /// History verification is the strongest identity, while the saved link is
+    /// the durable reconnect identity available before/after that verification
+    /// is republished. Both are CoreBluetooth UUIDs for the same physical strap.
+    static func persistedStrapIdentifiers(
+        defaults: UserDefaults = .standard
+    ) -> [String] {
+        [
+            defaults.string(
+                forKey: AtriaBLEManager.OfflineSyncDefaults
+                    .verifiedHistoryPeripheralID
+            ),
+            defaults.string(
+                forKey: AtriaBLEManager.LinkDefaults.savedPeripheralUUID
+            ),
+        ]
+        .compactMap { $0.flatMap(canonicalStrapIdentifier) }
+        .reduce(into: []) { identifiers, identifier in
+            if !identifiers.contains(identifier) {
+                identifiers.append(identifier)
+            }
+        }
+    }
+
     /// Saves only stronger cumulative coverage evidence. Step totals may move
     /// downward when a later, more complete replay correctly rejects motion
     /// that an earlier partial window classified as gait.
@@ -187,11 +211,61 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
         windowStart: Date,
         calendar: Calendar = .current
     ) -> [AtriaHistoricalDailyConsumerProjection.StepDay] {
-        guard let evidence = load(strapIdentifier: strapIdentifier,
-                                  windowStart: windowStart) else {
+        mergingCurrentCycleReceipt(
+            into: projectedDays,
+            strapIdentifiers: [strapIdentifier],
+            windowStart: windowStart,
+            now: Date(),
+            calendar: calendar
+        )
+    }
+
+    /// Resolves the strongest receipt that is safe for the active
+    /// physiological cycle. An exact wake-boundary receipt retains exact-day
+    /// eligibility. A receipt beginning later in the same current civil day is
+    /// only a contained subset, so it is rebased as partial lower-bound
+    /// evidence with the uncovered prefix counted as missing. A receipt that
+    /// begins before the current wake boundary is never admitted because its
+    /// step subtotal may belong to the preceding cycle.
+    func mergingCurrentCycleReceipt(
+        into projectedDays: [AtriaHistoricalDailyConsumerProjection.StepDay],
+        strapIdentifiers: [String],
+        windowStart: Date,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> [AtriaHistoricalDailyConsumerProjection.StepDay] {
+        let identifiers = Set(strapIdentifiers.compactMap(
+            Self.canonicalStrapIdentifier
+        ))
+        guard !identifiers.isEmpty else { return projectedDays }
+        lock.lock()
+        let candidates = loadRecordsLocked().filter {
+            identifiers.contains($0.strapIdentifier)
+                && $0.capturedThrough <= now.addingTimeInterval(5)
+        }
+        lock.unlock()
+
+        let exact = candidates
+            .filter { abs($0.windowStart.timeIntervalSince(windowStart)) < 1 }
+            .max(by: Self.isWeaker)
+        let contained = candidates
+            .filter {
+                $0.windowStart >= windowStart
+                    && calendar.isDate($0.windowStart, inSameDayAs: now)
+                    && calendar.isDate(now, inSameDayAs: $0.capturedThrough)
+            }
+            .max(by: Self.isWeaker)
+        guard let record = exact ?? contained else {
             return projectedDays
         }
-        let receipt = Self.stepDay(evidence: evidence, calendar: calendar)
+        let isExactBoundary =
+            abs(record.windowStart.timeIntervalSince(windowStart)) < 1
+        let receipt = Self.stepDay(
+            evidence: Self.evidence(record),
+            presentationWindowStart: windowStart,
+            forcePartial: !isExactBoundary,
+            calendar: calendar
+        )
         let matching = projectedDays.filter {
             abs($0.dayStart.timeIntervalSince(windowStart)) < 1
         }
@@ -305,6 +379,19 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
     }
 
     private static func isWeaker(
+        _ lhs: Record,
+        _ rhs: Record
+    ) -> Bool {
+        if lhs.knownCoverageSeconds != rhs.knownCoverageSeconds {
+            return lhs.knownCoverageSeconds < rhs.knownCoverageSeconds
+        }
+        if lhs.capturedThrough != rhs.capturedThrough {
+            return lhs.capturedThrough < rhs.capturedThrough
+        }
+        return lhs.decodedRows < rhs.decodedRows
+    }
+
+    private static func isWeaker(
         _ lhs: AtriaHistoricalDailyConsumerProjection.StepDay,
         _ rhs: AtriaHistoricalDailyConsumerProjection.StepDay
     ) -> Bool {
@@ -319,11 +406,21 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
 
     private static func stepDay(
         evidence: HistoricalArchive.MotionTickDayEvidence,
+        presentationWindowStart: Date? = nil,
+        forcePartial: Bool = false,
         calendar: Calendar
     ) -> AtriaHistoricalDailyConsumerProjection.StepDay {
+        let dayStart = presentationWindowStart ?? evidence.windowStart
+        let uncoveredPrefix = max(
+            0,
+            Int(evidence.windowStart.timeIntervalSince(dayStart).rounded(.up))
+        )
+        let isComplete = !forcePartial
+            && evidence.missingCoverageSeconds == 0
+            && evidence.capturedThrough >= evidence.windowEnd
         let components = calendar.dateComponents(
             [.year, .month, .day],
-            from: evidence.windowStart
+            from: dayStart
         )
         return .init(
             localDay: String(
@@ -332,15 +429,16 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
                 components.month ?? 0,
                 components.day ?? 0
             ),
-            dayStart: evidence.windowStart,
+            dayStart: dayStart,
             dayEnd: evidence.capturedThrough,
-            state: .missing,
-            stepCount: nil,
+            state: isComplete ? .available : .missing,
+            stepCount: isComplete ? evidence.steps : nil,
             knownStepDeltaSum: evidence.steps,
             knownEpochCount: evidence.decodedRows > 0 ? 1 : 0,
             rejectedOrUnknownEpochCount: 0,
             knownCoverageSeconds: evidence.knownCoverageSeconds,
-            missingCoverageSeconds: evidence.missingCoverageSeconds
+            missingCoverageSeconds:
+                evidence.missingCoverageSeconds + uncoveredPrefix
         )
     }
 }

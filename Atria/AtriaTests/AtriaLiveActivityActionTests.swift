@@ -629,8 +629,9 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         let coordinator = try String(contentsOf: testsDirectory
             .deletingLastPathComponent()
             .appendingPathComponent("Atria/AtriaLiveActivityCoordinator.swift"), encoding: .utf8)
-        XCTAssertTrue(coordinator.contains("beginBackgroundTask(withName: \"Atria live workout snapshot\")"))
-        XCTAssertTrue(coordinator.contains("endBackgroundTask(backgroundTask)"))
+        XCTAssertTrue(coordinator.contains("withName: \"Atria live workout snapshot\""))
+        XCTAssertTrue(coordinator.contains("endActiveActivityWriteBackgroundTaskIfNeeded()"))
+        XCTAssertTrue(coordinator.contains("endQueuedActivityBackgroundTaskIfNeeded()"))
     }
 
     func testCanonicalTerminalTransitionUpdatesThenDismissesLiveActivityPromptly() throws {

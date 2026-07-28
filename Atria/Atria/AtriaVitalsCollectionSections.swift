@@ -2805,7 +2805,7 @@ enum AtriaExperimentalSensorCopy {
 
     static func skinTemperatureStatus(summary: IMUAuditSummary.SkinTemperatureDeviationSummary,
                                       decoderAvailable: Bool) -> String {
-        guard decoderAvailable else { return "Not available yet" }
+        guard decoderAvailable else { return "Decoder not verified" }
         return summary.detailText
     }
 
@@ -6348,7 +6348,7 @@ private struct AtriaProfileCard: View, Equatable {
                                 value: vo2MaxEstimate.valueText,
                                 state: vo2MaxEstimate.value == nil ? .learning : .estimate,
                                 tint: vo2TrendZone?.tint ?? .orange,
-                                footnote: vo2MaxEstimate.confidence,
+                                footnote: vo2MaxEstimate.compactStatusText,
                                 zone: vo2TrendZone,
                                 targetMetric: .vo2max)
                 AtriaMetricTile(label: "VO2 trend",
@@ -6362,7 +6362,7 @@ private struct AtriaProfileCard: View, Equatable {
                                 value: biologicalAgeSummary.valueText,
                                 state: biologicalAgeSummary.isReady ? .estimate : .learning,
                                 tint: biologicalAgeZone?.tint ?? (biologicalAgeSummary.isReady ? .purple : .orange),
-                                footnote: biologicalAgeSummary.isReady ? biologicalAgeSummary.detailText : "Calibrating 28-day baseline",
+                                footnote: biologicalAgeSummary.compactStatusText,
                                 zone: biologicalAgeZone,
                                 targetMetric: .bioAge)
                 AtriaMetricTile(label: "Top driver",

@@ -96,6 +96,7 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(summary.valueText, "Learning")
         XCTAssertEqual(summary.confidence, "learning")
         XCTAssertEqual(summary.detail, "2/14 RHR")
+        XCTAssertEqual(summary.compactStatusText, "2/14 RHR")
         XCTAssertEqual(summary.trendDetail, "2/14 RHR days.")
         XCTAssertTrue(summary.narrative.localizedCaseInsensitiveContains("trusted resting baseline"))
     }
@@ -1423,13 +1424,13 @@ final class AtriaAnalyticsTests: XCTestCase {
         func baseline(overnightCount: Int) -> PersonalBaseline {
             var samples: [PersonalBaseline.BaselineSample] = []
             for index in 0..<overnightCount {
-                samples.append(PersonalBaseline.BaselineSample(date: now.addingTimeInterval(-Double(index) * 3_600),
+                samples.append(PersonalBaseline.BaselineSample(date: now.addingTimeInterval(-Double(index) * 24 * 3_600),
                                                                restingHR: 55,
                                                                rmssd: 62,
                                                                overnight: true))
             }
             for index in 0..<6 {
-                samples.append(PersonalBaseline.BaselineSample(date: now.addingTimeInterval(-Double(index + overnightCount) * 3_600),
+                samples.append(PersonalBaseline.BaselineSample(date: now.addingTimeInterval(-Double(index + overnightCount) * 24 * 3_600),
                                                                restingHR: 58,
                                                                rmssd: 30,
                                                                overnight: false))

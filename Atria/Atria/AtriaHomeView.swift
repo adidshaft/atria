@@ -5144,6 +5144,7 @@ struct AtriaHomeView: View {
                           homeStatsStore: model.homeStatsStore,
                           profileStore: model.profileStore,
                           profileMetricsStore: model.profileMetricsStore,
+                          stressMonitorStore: model.stressMonitorStore,
                           store: store,
                           ble: ble,
                           horizontalSizeClass: horizontalSizeClass,
@@ -8428,6 +8429,7 @@ final class AtriaHomeModel {
     let homeStatsStore: HomeStatsStore
     let profileStore: ProfileStore
     let profileMetricsStore: ProfileMetricsStore
+    let stressMonitorStore: AtriaStressMonitorStore
     let todaySessionProjectionStore: AtriaTodaySessionProjectionStore
     let activityStore: ActivityStore
 
@@ -8678,11 +8680,23 @@ final class AtriaHomeModel {
                                                        recentRRSamples: initialRRSamples)
         let initialPulseSparkline = Self.makePulseSparklineState(ble: ble)
         let initialCollectionLive = Self.makeCollectionLiveState(ble: ble)
+        let sharedStressStore = AtriaStressMonitorStore()
+        sharedStressStore.update(heartRate: initialPulseLive.heartRate,
+                                 hasContact: initialPulseLive.hasContact,
+                                 recentRRSamples: initialPulseLive.recentRRSamples,
+                                 isRecording: ble.isRecording,
+                                 zoneIndex: initialPulseLive.heartRateZone?.index,
+                                 hrvSnapshot: ble.hrvSnapshot,
+                                 baseline: store.baseline,
+                                 restingMaxHR: (rest: store.baseline.restingInt ?? initialLiveSessionDerived.rest,
+                                               max: store.profile.maxHR),
+                                 hasActiveSleepEvidence: false)
         let initialHero = Self.makeHeroSnapshot(ble: ble,
                                                 store: store,
                                                 live: initialCoreLive,
                                                 savedAggregate: self.savedAggregate,
-                                                deferredDetails: nil)
+                                                deferredDetails: nil,
+                                                stressState: sharedStressStore.state)
         let initialHeroState: HeroSnapshot
         #if DEBUG
         let debugHeroFixture = Self.debugFixtureProvisionalRecoveryHeroSnapshot(arguments: ProcessInfo.processInfo.arguments)
@@ -8715,6 +8729,7 @@ final class AtriaHomeModel {
         self.homeStatsStore = HomeStatsStore(state: initialHomeStats)
         self.profileStore = ProfileStore(profile: store.profile)
         self.profileMetricsStore = ProfileMetricsStore(state: initialProfileMetrics)
+        self.stressMonitorStore = sharedStressStore
         self.todaySessionProjectionStore = AtriaTodaySessionProjectionStore(store: store)
         self.activityStore = ActivityStore(state: Self.makeActivityState(store: store))
         bind()
@@ -8933,6 +8948,30 @@ final class AtriaHomeModel {
             self?.heroRefreshSubject.send(())
         }
         .store(in: &cancellables)
+
+        let stressChanges = Publishers.MergeMany([
+            ble.$heartRate.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$hasContact.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$sessionSampleCount.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$isRecording.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$hrvSnapshot.map { _ in () }.eraseToAnyPublisher(),
+            store.$baseline.map { _ in () }.eraseToAnyPublisher(),
+            store.$profile.map { _ in () }.eraseToAnyPublisher()
+        ])
+        .throttle(for: .seconds(2), scheduler: RunLoop.main, latest: true)
+
+        stressChanges
+            .sink { [weak self] _ in
+                self?.updateSharedStress()
+            }
+            .store(in: &cancellables)
+
+        stressMonitorStore.$state
+            .removeDuplicates()
+            .sink { [weak self] _ in
+                self?.refreshHeroSnapshot()
+            }
+            .store(in: &cancellables)
 
         let collectionLiveChanges = Publishers.MergeMany([
             ble.$isRecording.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
@@ -9303,7 +9342,26 @@ final class AtriaHomeModel {
                                                           store: store,
                                                           live: coreLiveStore.state,
                                                           savedAggregate: savedAggregate,
-                                                          deferredDetails: deferredDetails))
+                                                          deferredDetails: deferredDetails,
+                                                          stressState: stressMonitorStore.state))
+    }
+
+    private func updateSharedStress(now: Date = Date()) {
+        let rest = store.baseline.restingInt ?? liveSessionDerived.rest
+        let maxHR = store.profile.maxHR
+        let heartRate = Self.liveHeartRate(ble: ble)
+        stressMonitorStore.update(heartRate: heartRate,
+                                  hasContact: heartRate > 0,
+                                  recentRRSamples: ble.recentBreathworkRRSamples(),
+                                  isRecording: ble.isRecording,
+                                  zoneIndex: Metrics.heartRateZone(bpm: heartRate,
+                                                                 rest: rest,
+                                                                 max: maxHR)?.index,
+                                  hrvSnapshot: ble.hrvSnapshot,
+                                  baseline: store.baseline,
+                                  restingMaxHR: (rest: rest, max: maxHR),
+                                  hasActiveSleepEvidence: false,
+                                  now: now)
     }
 
     private func publishHeroSnapshotIfNeeded(_ next: HeroSnapshot) {
@@ -9357,14 +9415,16 @@ final class AtriaHomeModel {
                                                      store: self.store,
                                                      live: self.coreLiveStore.state,
                                                      savedAggregate: self.savedAggregate,
-                                                     deferredDetails: details)
+                                                     deferredDetails: details,
+                                                     stressState: self.stressMonitorStore.state)
                 }
                 #else
                 nextHero = Self.makeHeroSnapshot(ble: self.ble,
                                                  store: self.store,
                                                  live: self.coreLiveStore.state,
                                                  savedAggregate: self.savedAggregate,
-                                                 deferredDetails: details)
+                                                 deferredDetails: details,
+                                                 stressState: self.stressMonitorStore.state)
                 #endif
                 self.publishHeroSnapshotIfNeeded(nextHero)
                 self.publishSnapshotIfNeeded(Self.makeSnapshot(store: self.store,
@@ -9518,6 +9578,48 @@ final class AtriaHomeModel {
         return total
     }
 
+    /// Qualified wear is the union of accepted HR continuity, not the envelope
+    /// of a SavedSession. A reconnect journal can span hours while containing
+    /// only minutes of real samples; treating its start/end as continuous wear
+    /// makes sparse daily strain look complete.
+    nonisolated static func observedHeartRateUnionSeconds(
+        sessions: [SavedSession],
+        windowStart: Date,
+        windowEnd: Date
+    ) -> TimeInterval {
+        var intervals: [(start: Date, end: Date)] = []
+        for session in sessions where session.end > windowStart && session.start < windowEnd {
+            let points = AtriaStrengthLog.pointsExcludingIntervals(
+                session.points,
+                sessionStart: session.start,
+                excludedIntervals: session.excludedIntervals
+            )
+            .compactMap { point -> (date: Date, bpm: Int)? in
+                let date = session.start.addingTimeInterval(max(0, point.t))
+                guard date >= windowStart, date < windowEnd,
+                      (35...240).contains(point.bpm) else { return nil }
+                return (date, point.bpm)
+            }
+            .sorted { $0.date < $1.date }
+
+            for point in points {
+                intervals.append((
+                    start: max(windowStart, point.date.addingTimeInterval(-0.5)),
+                    end: min(windowEnd, point.date.addingTimeInterval(0.5))
+                ))
+            }
+            for pair in zip(points, points.dropFirst()) {
+                let gap = pair.1.date.timeIntervalSince(pair.0.date)
+                if gap > 0, gap <= AtriaAnalytics.Strain.maximumLoadEvidenceGap {
+                    intervals.append((start: pair.0.date, end: pair.1.date))
+                }
+            }
+        }
+        return observedWearUnionSeconds(intervals: intervals,
+                                        windowStart: windowStart,
+                                        windowEnd: windowEnd)
+    }
+
     /// Coverage fraction of the physiological day that has HR evidence, or
     /// nil while the day is too young for the fraction to be meaningful.
     nonisolated static func dayWearCoverageFraction(
@@ -9573,15 +9675,15 @@ final class AtriaHomeModel {
         let currentCycleStepDays: [
             AtriaHistoricalDailyConsumerProjection.StepDay
         ]
-        if let strapIdentifier = UserDefaults.standard.string(
-            forKey: AtriaBLEManager.OfflineSyncDefaults
-                .verifiedHistoryPeripheralID
-        ) {
+        let strapIdentifiers =
+            AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers()
+        if !strapIdentifiers.isEmpty {
             currentCycleStepDays = motionTickDailyStore
                 .mergingCurrentCycleReceipt(
                     into: canonicalStepDays,
-                    strapIdentifier: strapIdentifier,
-                    windowStart: savedAggregate.cycleStart
+                    strapIdentifiers: strapIdentifiers,
+                    windowStart: savedAggregate.cycleStart,
+                    now: Date()
                 )
         } else {
             currentCycleStepDays = canonicalStepDays
@@ -9761,7 +9863,8 @@ final class AtriaHomeModel {
                                          store: SessionStore,
                                          live: CoreLiveState,
                                          savedAggregate: SavedAggregate,
-                                         deferredDetails: DeferredDetails?) -> HeroSnapshot {
+                                         deferredDetails: DeferredDetails?,
+                                         stressState: AtriaStressState) -> HeroSnapshot {
         let restingContext = savedAggregate.restingContext
         let rest = restingContext.resolved
         let calendar = Calendar.current
@@ -9807,7 +9910,7 @@ final class AtriaHomeModel {
             && latestSleep.flatMap({ $0.end ?? $0.day }).map {
                 !calendar.isDateInToday($0)
             } == true
-        let stress = stressState(ble: ble, baseline: store.baseline)
+        let stress = AtriaStressPresentation.make(state: stressState)
         let liveTRIMP = live.liveTRIMP
         let totalTRIMP = SessionStore.mergedTodayTRIMP(
             savedToday: savedAggregate.savedTodayTRIMP,
@@ -10005,54 +10108,6 @@ final class AtriaHomeModel {
         let detail: String
         let narrative: String
         let packageText: String
-    }
-
-    private struct StressState {
-        let value: String
-        let detail: String
-        let narrative: String
-    }
-
-    private static func stressState(ble: AtriaBLEManager, baseline: PersonalBaseline) -> StressState {
-        guard let snapshot = ble.hrvSnapshot else {
-            return StressState(value: "Learning",
-                               detail: "Beat-to-beat window",
-                               narrative: "Heart rate is live; stress appears once HRV-grade beat-to-beat windows are ready.")
-        }
-        guard snapshot.isReady else {
-            return StressState(value: "Learning",
-                               detail: snapshot.readinessReason,
-                               narrative: snapshot.readinessMessage)
-        }
-        guard snapshot.isLiveStressEligible() else {
-            return StressState(value: "Learning",
-                               detail: "Current beat-to-beat window",
-                               narrative: "Saved HRV remains available for recovery, but live stress waits for a fresh beat-to-beat window.")
-        }
-        guard let stats = baseline.lnRMSSDStats, stats.count >= 3 else {
-            return StressState(value: "Learning",
-                               detail: "\(baseline.freshHRVSampleCount())/3 fresh baseline",
-                               narrative: "Atria needs a few personal HRV samples before comparing stress to your norm.")
-        }
-
-        let spread = max(stats.sd, 0.15)
-        let z = (stats.mean - snapshot.lnRMSSD) / spread
-        let index: Int
-        if z < 0.5 {
-            index = 0
-        } else if z < 1.0 {
-            index = 1
-        } else if z < 2.0 {
-            index = 2
-        } else {
-            index = 3
-        }
-        let hasTrustedBaseline = stats.count >= PersonalBaseline.trustedMinimumSamples
-        let badge = hasTrustedBaseline ? "personal baseline" : "unverified"
-        let comparisonLabel = hasTrustedBaseline ? "your baseline" : "an early unverified HRV average"
-        return StressState(value: "\(index)/3",
-                           detail: badge,
-                           narrative: String(format: "Live lnRMSSD is %.1f SD from %@.", z, comparisonLabel))
     }
 
     private static func fallbackHeroHRVState(ble: AtriaBLEManager,
@@ -10319,10 +10374,8 @@ final class AtriaHomeModel {
                               baselineSamples: store.baseline.freshHRVSampleCount(),
                               confirmedWorkouts: store.confirmedWorkouts.count,
                               confirmedSleeps: store.confirmedSleeps.count,
-                              savedTodayObservedSeconds: observedWearUnionSeconds(
-                                  intervals: store.sessions
-                                      .filter { $0.end > aggregate.day }
-                                      .map { (start: $0.start, end: $0.end) },
+                              savedTodayObservedSeconds: observedHeartRateUnionSeconds(
+                                  sessions: store.sessions,
                                   windowStart: aggregate.day,
                                   windowEnd: Date()
                               ))

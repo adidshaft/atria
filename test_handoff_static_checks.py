@@ -1420,7 +1420,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaHomeModel.resolvedLiveHeartRate(",
             "AtriaHomeModel.mergedStrapStepResearchCount(",
             "activeSessionID: ble.currentLiveSessionID",
-            "let publishedSteps = strapStepsToday > 0",
+            "let publishedSteps = dailySteps.count",
+            "AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers()",
+            ".mergingCurrentCycleReceipt(",
             "steps: publishedSteps",
             "stepsCapturedAt: stepsCapturedAt",
             "heartRateCapturedAt: liveHeartRateCapturedAt",
@@ -1437,7 +1439,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private let atriaHeartRateFreshness: TimeInterval = 90",
             "private let atriaStaticStepFreshness: TimeInterval = 90",
             "private let atriaLiveActivityStepFreshness: TimeInterval = 15",
-            "capturedAt: s.stepsCapturedAt",
+            "capturedAt: snapshot.stepsCapturedAt",
             "capturedAt: s.heartRateCapturedAt",
             "capturedAt.addingTimeInterval(freshness + 0.001)",
         ]:
@@ -9226,16 +9228,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "acceptedRestingHR: evidence.accepted ? evidence.value : nil",
             "let maximumWindowDays = TrendSummary.Window.allCases.map(\\.rawValue).max() ?? 0",
             "let trendSessions = sessions.filter { $0.start >= oldestCutoff }",
-            "let rows = Self.trendSessionRows(sessions: trendSessions, rest: rest, maxHR: maxHR, calendar: calendar)",
-            "let recentRows = rows.filter { $0.session.start >= cutoff }",
-            "let hrvs = recentRows.compactMap(\\.localRMSSD).filter { $0 > 0 }",
-            "let respiratoryRates = recentRows.compactMap(\\.sleepRespiratoryRate)",
-            "fallbackRMSSD: row.localRMSSD",
-            "respiratoryRate: row.sleepRespiratoryRate",
-            "let validatedHRVs = recentRows.compactMap(\\.referenceValidatedHRV).filter { $0 > 0 }",
-            "let rows = Self.trendSessionRows(sessions: recent, rest: rest, maxHR: maxHR, calendar: calendar)",
-            "let hrvs = rows.compactMap(\\.localRMSSD).filter { $0 > 0 }",
-            "let validatedHRVs = rows.compactMap(\\.referenceValidatedHRV).filter { $0 > 0 }",
+            "nonisolated static func dailyMetricTrendSummary(",
+            "let byDay = Dictionary(",
+            "let recentMetrics = byDay.values.sorted",
+            "let hrvs = recentMetrics.compactMap(\\.hrv).filter { $0 > 0 }",
+            "let respiratoryRates = recentMetrics.compactMap(\\.respiratoryRate).filter { $0 > 0 }",
+            "anomalySource: \"frozen_daily_metrics\"",
+            "return Self.dailyMetricTrendSummary(",
         ]:
             assert_contains(self, sessions, needle)
 
@@ -9434,7 +9433,7 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "AtriaMetricTile(label: \"VO2max\"",
             "state: vo2MaxEstimate.value == nil ? .learning : .estimate",
-            "footnote: vo2MaxEstimate.confidence",
+            "footnote: vo2MaxEstimate.compactStatusText",
             "AtriaMetricTile(label: \"VO2 trend\"",
             "value: vo2MaxEstimate.trendText",
             "footnote: vo2MaxEstimate.trendDetail",
@@ -9722,12 +9721,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "profileMetricsStore: model.profileMetricsStore",
         ]:
             assert_contains(self, home + overview, needle)
-        assert_contains(self, home, "let hasTrustedBaseline = stats.count >= PersonalBaseline.trustedMinimumSamples")
-        assert_contains(self, home, "let badge = hasTrustedBaseline ? \"personal baseline\" : \"unverified\"")
-        assert_contains(self, home, "let comparisonLabel = hasTrustedBaseline ? \"your baseline\" : \"an early unverified HRV average\"")
-        assert_contains(self, home, "String(format: \"Live lnRMSSD is %.1f SD from %@.\", z, comparisonLabel)")
-        assert_not_contains(self, home, "stats.count >= 7 ? \"personal baseline\" : \"unverified\"")
-        assert_not_contains(self, home, "String(format: \"Live lnRMSSD is %.1f SD from your baseline.\", z)")
+        assert_contains(self, home, "let stressMonitorStore: AtriaStressMonitorStore")
+        assert_contains(self, home, "stressState: stressMonitorStore.state")
+        assert_contains(self, home, "let stress = AtriaStressPresentation.make(state: stressState)")
+        assert_not_contains(self, home, "private static func stressState(ble:")
         for needle in [
             r"\(hero.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)",
             r"\(stats.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)",
@@ -9750,7 +9747,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .bioAge: return \"figure.stand.line.dotted.figure.stand\"",
             "case .bioAge:",
             "AtriaGlanceMetricCard(title: \"Fitness age\"",
-            "biologicalAgeSummary.isReady ? biologicalAgeSummary.detailText : \"Calibrating\"",
+            "detail: biologicalAgeSummary.compactStatusText",
             "Calibrating your fitness-age baseline. \\(biologicalAgeSummary.blockerText). \\(biologicalAgeSummary.footnote)",
         ]:
             assert_contains(self, overview, needle)
@@ -10708,29 +10705,19 @@ class HandoffStaticChecks(unittest.TestCase):
         child_source = health[child_start:child_end]
 
         for needle in [
-            "AtriaHealthStressSection(pulseStore: pulseStore,",
-            "baseline: vitalsStore.state.baseline",
-            "maxHeartRate: live.maxHeartRate",
+            "AtriaHealthStressSection(behaviorJournalEntries:",
+            "stressMonitorStore: stressMonitorStore",
         ]:
             assert_contains(self, parent_source, needle)
 
         for needle in [
-            "let pulseStore: AtriaHomeModel.PulseLiveStore",
-            "@StateObject private var stressMonitorStore = AtriaStressMonitorStore()",
+            "@ObservedObject var stressMonitorStore: AtriaStressMonitorStore",
             "@State private var stressStripReduced: [StressStripPoint] = []",
-            "@State private var lastStressInputKey: StressInputKey?",
             "@State private var lastStressEvaluationAt: Date?",
-            "private struct StressInputKey: Equatable",
-            "var isNoSignal: Bool",
             ".onChange(of: isActive, initial: true)",
-            "AtriaVitalsStressActivityObserver {",
-            "private func recomputeStress(force: Bool = false, now: Date = Date())",
-            "let inputChanged = inputKey != lastStressInputKey",
-            "AtriaStressMonitorStore.shouldEvaluateStressInput(force: force,",
-            "lastEvaluatedAt: lastStressEvaluationAt",
-            "lastStressInputKey = inputKey",
+            ".onChange(of: stressMonitorStore.state, initial: true)",
+            "private func publishStressForBreathwork(now: Date = Date())",
             "lastStressEvaluationAt = now",
-            "now: now)",
             ".onChange(of: stressMonitorStore.historyRevision, initial: true)",
             "stressStripReduced = AtriaHealthScreen.reduceStressStrip(stressMonitorStore.history)",
         ]:

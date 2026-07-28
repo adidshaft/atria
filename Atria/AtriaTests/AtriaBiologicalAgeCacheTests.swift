@@ -2,6 +2,25 @@ import XCTest
 @testable import Atria
 
 final class AtriaBiologicalAgeCacheTests: XCTestCase {
+    func testUnavailableFitnessAgeNamesItsFirstRealBlocker() {
+        let summary = BiologicalAgeSummary.building(
+            chronologicalAge: 30,
+            blockers: ["vo2max_learning", "hrv_learning"]
+        )
+
+        XCTAssertFalse(summary.isReady)
+        XCTAssertEqual(summary.valueText, "--")
+        XCTAssertEqual(summary.compactStatusText, "Needs VO₂ max learning")
+    }
+
+    func testRefreshingFitnessAgeHasDeterministicCompactStatus() {
+        let summary = BiologicalAgeSummary.refreshing(chronologicalAge: 30)
+
+        XCTAssertFalse(summary.isReady)
+        XCTAssertTrue(summary.isRefreshing)
+        XCTAssertEqual(summary.compactStatusText, "Updating weekly estimate")
+    }
+
     func testBiologicalAgeCacheFreshnessRequiresWeekProfileSignatureAndReadySummary() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let signature = biologicalAgeSignature()

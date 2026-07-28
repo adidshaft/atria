@@ -168,6 +168,10 @@ final class AtriaStressMonitorTests: XCTestCase {
 
         XCTAssertEqual(state.kind, .active)
         XCTAssertNil(state.level)
+        let presentation = AtriaStressPresentation.make(state: state)
+        XCTAssertEqual(presentation.value, "Active")
+        XCTAssertEqual(presentation.detail, "Paused during activity")
+        XCTAssertTrue(presentation.narrative.contains("pauses during activity"))
     }
 
     func testSuppressedAtZoneTwoOrAbove() {
@@ -228,6 +232,57 @@ final class AtriaStressMonitorTests: XCTestCase {
 
         XCTAssertEqual(state.kind, .noSignal)
         XCTAssertNil(state.level)
+        let presentation = AtriaStressPresentation.make(state: state)
+        XCTAssertEqual(presentation.value, "No signal")
+        XCTAssertEqual(presentation.detail, "Reconnect strap for a live read")
+    }
+
+    func testImmatureBaselinePresentationNeverLeaksNumericStress() {
+        let baseline = makeBaseline(restingMean: 60,
+                                    restingSD: 4,
+                                    dayCount: PersonalBaseline.trustedMinimumSamples - 1)
+        let state = AtriaStressMonitor.score(hrNow: 72,
+                                             hrWindow: [72, 72, 72],
+                                             rrWindowMs: [],
+                                             hrvFallbackRMSSD: nil,
+                                             baseline: baseline,
+                                             restingMaxHR: restingMaxHR,
+                                             workoutActive: false,
+                                             zoneIndex: 0,
+                                             inSleepWindow: false,
+                                             hasContact: true,
+                                             contactAgeSeconds: 300,
+                                             now: now)
+
+        let presentation = AtriaStressPresentation.make(state: state)
+        XCTAssertEqual(state.kind, .calibrating)
+        XCTAssertEqual(presentation.value,
+                       "Calibrating (\(PersonalBaseline.trustedMinimumSamples - 1)/\(PersonalBaseline.trustedMinimumSamples))")
+        XCTAssertEqual(presentation.detail, "Building your personal HR baseline")
+        XCTAssertFalse(presentation.value.contains("/3"))
+    }
+
+    func testMatureRestPresentationIsIdenticalForEverySurfaceConsumer() {
+        let baseline = makeBaseline(restingMean: 60, restingSD: 4)
+        let state = AtriaStressMonitor.score(hrNow: 60,
+                                             hrWindow: [60, 60, 60],
+                                             rrWindowMs: [],
+                                             hrvFallbackRMSSD: nil,
+                                             baseline: baseline,
+                                             restingMaxHR: restingMaxHR,
+                                             workoutActive: false,
+                                             zoneIndex: 0,
+                                             inSleepWindow: false,
+                                             hasContact: true,
+                                             contactAgeSeconds: 300,
+                                             now: now)
+
+        let homeProjection = AtriaStressPresentation.make(state: state)
+        let healthProjection = AtriaStressPresentation.make(state: state)
+        XCTAssertEqual(homeProjection, healthProjection)
+        XCTAssertEqual(homeProjection.value, "Calm")
+        XCTAssertEqual(homeProjection.detail, "HR-only")
+        XCTAssertTrue(homeProjection.narrative.contains("personal baseline"))
     }
 
     func testWarmingUpDuringFirst120SecondsOfContact() {
@@ -248,6 +303,8 @@ final class AtriaStressMonitorTests: XCTestCase {
 
         XCTAssertEqual(state.kind, .warmingUp)
         XCTAssertNil(state.level)
+        XCTAssertEqual(AtriaStressPresentation.make(state: state).detail,
+                       "Collecting 2 min of live signal")
     }
 
     // MARK: Honesty gating

@@ -423,9 +423,10 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             liveCapturedAt: now,
             calendar: calendar
         )
-        XCTAssertEqual(strapValue.count, 612)
-        XCTAssertEqual(strapValue.source, .live)
+        XCTAssertNil(strapValue.count)
+        XCTAssertEqual(strapValue.source, .none)
         XCTAssertFalse(strapValue.isValidated)
+        XCTAssertEqual(strapValue.detailText, "Strap motion is still validating")
 
         let strapWins = WidgetSnapshotPublisher.resolvedDailySteps(
             day: now,
@@ -435,8 +436,8 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             liveCapturedAt: now,
             calendar: calendar
         )
-        XCTAssertEqual(strapWins.count, 4_000)
-        XCTAssertEqual(strapWins.source, .live)
+        XCTAssertNil(strapWins.count)
+        XCTAssertEqual(strapWins.source, .none)
         XCTAssertFalse(strapWins.isValidated)
     }
 
