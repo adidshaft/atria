@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import Atria
 
 /// Contract tests for the deterministic metric presentation model.
@@ -265,7 +266,8 @@ final class AtriaMetricConfidencePresentationTests: XCTestCase {
         usesHRV: Bool? = true,
         hrCoverageFraction: Double? = nil,
         sourceLabel: String = "strap",
-        observedAt: Date? = nil
+        observedAt: Date? = nil,
+        valueStatusTint: Color? = nil
     ) -> AtriaMetricProvenance {
         AtriaMetricProvenance(displayValue: displayValue,
                               level: level,
@@ -273,7 +275,8 @@ final class AtriaMetricConfidencePresentationTests: XCTestCase {
                               usesHRV: usesHRV,
                               hrCoverageFraction: hrCoverageFraction,
                               sourceLabel: sourceLabel,
-                              observedAt: observedAt)
+                              observedAt: observedAt,
+                              valueStatusTint: valueStatusTint)
     }
 
     func testCoverageTextRoundsToWholePercent() {
@@ -318,6 +321,52 @@ final class AtriaMetricConfidencePresentationTests: XCTestCase {
             XCTAssertNotNil(detail.reducedConfidenceReason, "no reason for \(level)")
             XCTAssertNotNil(detail.improvementHint, "no improvement path for \(level)")
         }
+    }
+
+    // MARK: - Status colour
+
+    /// Confidence answers "how far can I trust this", which is a different axis
+    /// from "is this number good". Red belongs to a genuinely poor measured
+    /// value; reusing it for low confidence would read as "your recovery is bad"
+    /// when it means "we are less sure of it".
+    func testConfidenceStatusNeverBorrowsTheRedReservedForPoorValues() {
+        for level in AtriaMetricConfidenceLevel.allCases {
+            XCTAssertNotEqual(level.statusTint, AtriaMetricZoneLevel.red.tint,
+                              "\(level) must not claim the poor-value colour")
+        }
+    }
+
+    func testTrustedConfidenceReadsGreenAndCaveatedReadsAmber() {
+        XCTAssertEqual(AtriaMetricConfidenceLevel.high.statusTint, AtriaMetricZoneLevel.green.tint)
+        XCTAssertEqual(AtriaMetricConfidenceLevel.moderate.statusTint, AtriaMetricZoneLevel.green.tint)
+        XCTAssertEqual(AtriaMetricConfidenceLevel.limited.statusTint, AtriaMetricZoneLevel.yellow.tint)
+        XCTAssertEqual(AtriaMetricConfidenceLevel.provisional.statusTint, AtriaMetricZoneLevel.yellow.tint)
+    }
+
+    /// The documented honesty guard: an ungraded value must stay neutral.
+    /// Painting a colour around a number with no standing asserts one it has not
+    /// earned -- the same reason the recovery hero goes grey around "--".
+    func testAnUngradedValueCarriesNoStatusColour() {
+        XCTAssertNil(provenance(displayValue: AtriaCompactMetricPresentation.noValue).valueStatusTint,
+                     "a value with no grade must render neutral, never green")
+    }
+
+    func testAGradedValueKeepsItsZoneColour() {
+        let graded = provenance(valueStatusTint: AtriaMetricZoneLevel.red.tint)
+
+        XCTAssertEqual(graded.valueStatusTint, AtriaMetricZoneLevel.red.tint,
+                       "a genuinely poor value must still be able to read red")
+    }
+
+    /// Source-text pin: the builders must keep withholding the zone while a
+    /// metric has no standing to be graded.
+    func testBuildersWithholdStatusColourFromUngradedMetrics() throws {
+        let today = try source("Atria/AtriaTodayScreen.swift")
+
+        XCTAssertTrue(today.contains("displayHero.recoveryEstimate.percent == nil"),
+                      "recovery must withhold its zone while there is no score")
+        XCTAssertTrue(today.contains("|| isPendingHeroValue(displayHero.strainValue))"),
+                      "strain must withhold its zone while incomplete or pending")
     }
 
     // MARK: - Wiring

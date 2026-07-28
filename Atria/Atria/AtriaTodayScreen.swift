@@ -1571,7 +1571,13 @@ struct AtriaTodayScreen: View {
                 // real timestamp of the underlying data, not a render time -- it
                 // is also what makes a carried-over score legible, since "prev.
                 // sleep" plus a stamp from yesterday morning explains itself.
-                observedAt: latestDisplaySleep?.end
+                observedAt: latestDisplaySleep?.end,
+                // Recovery's graded zone, from the user's own configured
+                // thresholds. Nil while there is no score, so the row stays
+                // neutral rather than asserting a standing.
+                valueStatusTint: displayHero.recoveryEstimate.percent == nil
+                    ? nil
+                    : ringRecoveryZone?.tint
             )
         case .strain:
             let presentation = AtriaCompactMetricPresentation.strain(
@@ -1592,7 +1598,15 @@ struct AtriaTodayScreen: View {
                 // with `Date()` would report when the sheet was drawn, not when
                 // the data was observed -- a render time dressed as provenance.
                 // Absent means not measured, which is the honest claim.
-                observedAt: nil
+                observedAt: nil,
+                // Strain's graded zone needs a real frozen target to grade
+                // against, and an incomplete or pending day has no standing to
+                // grade at all -- same condition the ring already uses to
+                // withhold its own state tint.
+                valueStatusTint: (dayStrainIsIncomplete
+                                  || isPendingHeroValue(displayHero.strainValue))
+                    ? nil
+                    : ringStrainZone(target: displayHero.guidance.target)?.tint
             )
         default:
             return nil
