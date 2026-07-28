@@ -376,9 +376,9 @@ struct AtriaTodayScreen: View {
 
     private var glanceColumns: [GridItem] {
         if horizontalSizeClass == .regular {
-            return Array(repeating: GridItem(.flexible(), spacing: 10), count: 3)
+            return Array(repeating: GridItem(.flexible(), spacing: AtriaDesignTokens.Spacing.md), count: 3)
         }
-        return Array(repeating: GridItem(.flexible(), spacing: 10), count: 2)
+        return Array(repeating: GridItem(.flexible(), spacing: AtriaDesignTokens.Spacing.md), count: 2)
     }
 
     private var glanceColumnCount: Int {
@@ -596,14 +596,14 @@ struct AtriaTodayScreen: View {
                 Group {
                     if glanceLayoutBars {
                         // Bars layout: one full-width horizontal bar per metric.
-                        VStack(spacing: 10) {
+                        VStack(spacing: AtriaDesignTokens.Spacing.md) {
                             ForEach(glanceMetrics) { metric in
                                 interactiveGlanceTile(for: metric, isBar: true)
                             }
                             glanceAddMetricControl
                         }
                     } else {
-                        LazyVGrid(columns: glanceColumns, spacing: 10) {
+                        LazyVGrid(columns: glanceColumns, spacing: AtriaDesignTokens.Spacing.md) {
                             ForEach(glanceMetrics) { metric in
                                 interactiveGlanceTile(for: metric)
                                     .gridCellColumns(glanceColumnSpan(for: metric))
@@ -2987,20 +2987,27 @@ private struct AtriaTodayGlanceTile: View, Equatable {
     }
 
     private var tileBody: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        // Reading order inside a tile is value -> label -> detail, but the type
+        // scale used to contradict it: the value was .subheadline (15) against a
+        // .caption (12) label, both .bold, so a 2-up grid of eight tiles read as
+        // one flat field of text with nothing to scan. The value is the only
+        // thing a glance is for, so it now takes .title3 while the label drops to
+        // .semibold and recedes. Tile height stays put -- the stack gap tightens
+        // from an off-scale 7 to Spacing.xs, paying for the larger number.
+        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.xs) {
             Image(systemName: item.systemImage)
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(item.tint)
                 .frame(width: 24, height: 24)
             Text(item.value)
-                .font(.subheadline.weight(.bold))
+                .font(.title3.weight(.bold))
                 .monospacedDigit()
                 .contentTransition(reduceMotion ? .identity : .numericText())
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
             Text(item.title)
-                .font(.caption.weight(.bold))
+                .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             if !item.detail.isEmpty && item.layoutSize != .wideShort {
@@ -3012,7 +3019,7 @@ private struct AtriaTodayGlanceTile: View, Equatable {
             }
         }
         .frame(maxWidth: .infinity, minHeight: item.layoutSize.minHeight, alignment: .leading)
-        .padding(10)
+        .padding(AtriaDesignTokens.Spacing.md)
         // Consistency (2026-07-05): route the glance tile's corner radius through the
         // shared chip token instead of a hardcoded 8, so the deck's dominant card
         // shares one radius scale (chip < tile < card).
