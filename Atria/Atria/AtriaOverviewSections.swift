@@ -8336,6 +8336,14 @@ struct AtriaMetricDetailSheet: View {
     /// Everything the compact card could not say. Rows appear only when the
     /// underlying measurement exists -- an absent row means "not measured at
     /// this scope", which is why nothing here renders a zero as a stand-in.
+    ///
+    /// Passed into the template's content slot rather than appended after the
+    /// template. Appending put it below `revealAffordance`, so the card that
+    /// explains the number was orphaned underneath the "Show details" toggle at
+    /// the very bottom of the sheet. Note the template renders `chart` BEFORE
+    /// `betweenHeroAndContributors` despite that property's name, so the content
+    /// slot is the earliest place a caller can inject without changing the
+    /// template's generic signature at all eight metric call sites.
     private func provenanceCard(_ provenance: AtriaMetricProvenance) -> some View {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.md) {
             Text("How this number was measured")
@@ -8489,14 +8497,6 @@ struct AtriaMetricDetailSheet: View {
                 } else {
                     detailTemplate
                 }
-
-                // Sits directly below the hero score, so the number comes first
-                // and its provenance second -- the compact card carries only a
-                // short marker, and this is where that marker is cashed out into
-                // the measurements behind it.
-                if let provenance {
-                    provenanceCard(provenance)
-                }
             }
             .padding(18)
         }
@@ -8602,6 +8602,9 @@ struct AtriaMetricDetailSheet: View {
                                       tint: recoveryHeroRawPercent.map { Metrics.recoveryColor(Int($0.rounded())) } ?? Metrics.electricGreen,
                                       heroStyle: .recoveryRing(score: recoveryHeroRawPercent,
                                                                baselineComparison: recoveryBaselineComparisonText)) {
+                if let provenance {
+                    provenanceCard(provenance)
+                }
                 contributorCard
                 behaviorsMoveYouCard
             } contributors: {
@@ -8759,6 +8762,9 @@ struct AtriaMetricDetailSheet: View {
                                       tint: Metrics.electricStrain,
                                       heroStyle: .strain(score: strainHeroRawValue,
                                                          target: guidance.target)) {
+                if let provenance {
+                    provenanceCard(provenance)
+                }
                 strainWorkoutSection
                 strainZoneHistogramCard
                 strainActivityMixCard
