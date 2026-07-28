@@ -7675,13 +7675,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return false
         }
         // Aged automatic retries can carry `force`, so force alone must not
-        // bypass this gate. Preserve the durable request and the live radio
-        // while iOS reports serious/critical pressure; the governor schedules
-        // the retained range-loss recovery when pressure returns to fair or
-        // nominal. Never abort a transaction already in progress here.
+        // bypass this gate. A durable post-workout motion-bank ticket is also
+        // automatic: unlike an attended user/research command, it must wait
+        // through serious/critical pressure. Physical locked-phone acceptance
+        // on 2026-07-28 showed that admitting this ticket under `.serious`
+        // stranded the transport before its first stream-5 frame. Preserve the
+        // durable request and live radio until pressure recovers. Never abort a
+        // transaction already in progress here.
         if Self.shouldDeferAutomaticOfflineSyncForThermalPressure(
             thermalPressure: powerThermalGovernor.shouldDeferNonEssentialAnalysis,
-            explicitUserRequest: explicitHistoricalRequest
+            explicitUserRequest: explicitUserRequest || explicitResearchRequest
         ), !offlineHistoricalSyncInProgress {
             retainPendingOfflineHistoricalSyncRequest(
                 reason: reason,
@@ -21179,10 +21182,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
             guard now.timeIntervalSince(lastAttemptAt) >= delay else { return }
         }
-        _ = AtriaWhoop4MotionBankCoverageLedger.markOffloadAttempt(
-            id: ticket.id,
-            at: now
-        )
         let started = requestOfflineHistoricalSyncIfNeeded(
             reason: reason,
             force: true,
@@ -21190,13 +21189,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             explicitResearchRequest: false,
             explicitPostWorkoutBankRequest: true
         )
+        if started {
+            _ = AtriaWhoop4MotionBankCoverageLedger.markOffloadAttempt(
+                id: ticket.id,
+                at: now
+            )
+        }
         AtriaDebugLog(
             "ATRIADBG workout_motion_bank_offload status=%@ ticket=%@ start=%.3f end=%.3f attempt=%d reason=%@ action=async_exact_window_drain",
             started ? "started" : "retained",
             ticket.id,
             ticket.start.timeIntervalSince1970,
             ticket.end.timeIntervalSince1970,
-            ticket.attempts + 1,
+            ticket.attempts + (started ? 1 : 0),
             reason
         )
     }

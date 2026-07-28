@@ -2596,6 +2596,16 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), "an explicit user/research request remains authoritative")
     }
 
+    func testPostWorkoutHistoryCannotBypassSeriousThermalPressure() throws {
+        let source = try leaseManagerSource()
+        XCTAssertTrue(source.contains(
+            "explicitUserRequest: explicitUserRequest || explicitResearchRequest"
+        ), "only attended user/research authority may bypass thermal deferral")
+        XCTAssertFalse(source.contains(
+            "explicitUserRequest: explicitHistoricalRequest\n        ), !offlineHistoricalSyncInProgress"
+        ), "automatic post-workout bank recovery must not inherit attended authority")
+    }
+
     func testHistoricalSyncWaitsForCanonicalArchiveWarmup() {
         XCTAssertTrue(
             AtriaBLEManager.shouldDeferHistoricalSyncUntilArchiveWarmReady(
@@ -8270,6 +8280,18 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(body.contains(
             "AtriaPendingWorkoutIntent.isActiveForBLEContinuity()"
         ))
+        let request = try XCTUnwrap(body.range(
+            of: "let started = requestOfflineHistoricalSyncIfNeeded("
+        ))
+        let attempt = try XCTUnwrap(body.range(
+            of: "AtriaWhoop4MotionBankCoverageLedger.markOffloadAttempt("
+        ))
+        XCTAssertLessThan(
+            request.lowerBound,
+            attempt.lowerBound,
+            "a thermally deferred/non-admitted request must not consume a retry"
+        )
+        XCTAssertTrue(body.contains("if started {"))
     }
 
     func testAllDayMotionWantsHoldUsesProvenBatteryPolicyWithResumeHysteresis() {

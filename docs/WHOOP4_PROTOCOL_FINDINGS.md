@@ -2099,12 +2099,46 @@ POSITIVE STILL REQUIRED**
 - **TEST evidence:** 428/428 BLE cadence, historical policy, motion-bank
   ledger, daily receipt, strap-step ledger, and strap-step model tests pass in
   `Test-AtriaTests-2026.07.28_06-46-45-+0530.xcresult`.
-- **Acceptance status:** both physical failure modes reproduced and focused
-  code regression PASS; physical callback-bound release and automatic live
-  restoration are pending one launch of the already-installed signed build.
+- **Acceptance status:** foreground callback-bound release and automatic live
+  restoration physically PASS. The installed build persisted
+  `released_for_live_heart_rate`, entered its five-minute live-first cooldown,
+  and accepted 45 additional HR samples in 27 seconds without resolving the
+  pending history ticket. Locked/background acceptance exposed the separate
+  pre-first-frame thermal admission failure documented below and therefore
+  remains open.
 - **Evidence:**
   `evidence/2026-07-28-current-metric-audit/runtime/` and
-  `evidence/2026-07-28-current-metric-audit/live-stall-check/`.
+  `evidence/2026-07-28-current-metric-audit/live-stall-check/`, plus
+  `evidence/2026-07-28-connected-slice-physical/callback-final-baseline/`
+  and
+  `evidence/2026-07-28-connected-slice-physical/callback-final-live-soak/`.
+
+#### 2026-07-28 — locked post-workout history could bypass thermal admission
+
+- **PHYSICAL failure:** after the foreground slice release and its five-minute
+  live-first cooldown, the phone remained locked while iOS reported serious
+  thermal pressure. A pending post-workout motion-bank request nevertheless
+  advanced its attempt counter and acquired the background history lease. The
+  process suspended before receiving its first stream-5 row; accepted HR and
+  the active journal then stopped advancing, and neither the frame-driven slice
+  release nor its first-frame Swift watchdog could execute.
+- **CODE diagnosis:** `explicitPostWorkoutBankRequest` was included in
+  `explicitHistoricalRequest`, and that aggregate was passed to the thermal
+  helper as if it were an attended user/research command. The offload caller
+  also called `markOffloadAttempt` before knowing whether history admission had
+  succeeded.
+- **CODE correction:** only an attended explicit user or research request may
+  bypass serious/critical thermal deferral. A post-workout bank ticket now
+  remains durable and leaves the live radio untouched until pressure recovers.
+  Its attempt counter advances only after
+  `requestOfflineHistoricalSyncIfNeeded` returns true.
+- **Acceptance status:** focused regression PASS; locked physical acceptance
+  pending installation and rerun. This is not yet a reliability claim.
+- **Evidence:**
+  `evidence/2026-07-28-connected-slice-physical/locked-cooldown-expiry/`,
+  `evidence/2026-07-28-connected-slice-physical/locked-post-cooldown-45s/`,
+  and
+  `evidence/2026-07-28-connected-slice-physical/locked-history-first-frame/`.
 
 ## Notebook maintenance rules
 
