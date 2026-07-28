@@ -367,6 +367,39 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         XCTAssertEqual(merged.first?.stepCount, 271)
     }
 
+    func testVerifiedOffloadRefreshBypassesUnrelatedHistoryPriorityFence() throws {
+        let testsURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let sessions = try String(
+            contentsOf: testsURL.deletingLastPathComponent()
+                .appendingPathComponent("Atria/Sessions.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(sessions.range(
+            of: "private func refreshCurrentCycleStrapStepReceipt"
+        ))
+        let end = try XCTUnwrap(sessions.range(
+            of: "/// Loads one older verified canonical page",
+            range: start.upperBound..<sessions.endIndex
+        ))
+        let body = String(sessions[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains(
+            "HistoricalArchive.motionTickDayEvidence("
+        ))
+        XCTAssertTrue(body.contains(
+            "AtriaWhoop4MotionTickDailyStore.shared.save("
+        ))
+        XCTAssertFalse(body.contains(
+            "exactRecoveryProjectionOwnsArchivePriority"
+        ))
+        XCTAssertTrue(sessions.contains(
+            "reason: \"verified_bank_offload\""
+        ))
+        XCTAssertTrue(sessions.contains(
+            "reason: \"session_store_init\""
+        ))
+    }
+
     private func makeEvidence(
         start: Date,
         ticks: Int,
