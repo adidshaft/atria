@@ -327,6 +327,11 @@ struct AtriaVitalsTabContent: View {
                                    sleepHistoryRevision: vitals.sleepHistorySnapshotRevision,
                                    guidance: healthMonitorGuidance,
                                    recoveryEstimate: healthMonitorRecoveryEstimate,
+                                   currentCycleAuthority:
+                                    AtriaHealthMetricAuthority.currentCycleProjection(
+                                        hero: heroStore.state,
+                                        sleepHistory: vitals.sleepHistorySnapshot
+                                    ),
                                    sleepGoalHours: sleepGoalHours,
                                    sleepBaseNeedHours: sleepBaseNeedHours,
                                    skinTemperatureDeviation: vitals.skinTemperatureDeviationSummary)

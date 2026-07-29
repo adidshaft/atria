@@ -16639,6 +16639,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     /// Connect and start service discovery on a peripheral we found or retrieved.
     fileprivate func attach(to p: CBPeripheral, name: String) {
+        if p.state == .connected,
+           connectedPeripheralRetainer.admitConnected(p)
+            == .retainPassiveDuplicate {
+            AtriaDebugLog(
+                "ATRIADBG ble_scan status=attach_ignored reason=connected_same_uuid_duplicate action=retain_without_cancel"
+            )
+            return
+        }
         scanRetryTask?.cancel()
         scanWideningTask?.cancel()
         scanRetryCount = 0
@@ -16836,6 +16844,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               let uuid = UUID(uuidString: uuidString),
               let saved = central.retrievePeripherals(withIdentifiers: [uuid]).first else {
             return false
+        }
+        if saved.state == .connected,
+           connectedPeripheralRetainer.admitConnected(saved)
+            == .retainPassiveDuplicate {
+            AtriaDebugLog(
+                "ATRIADBG ble_link status=reconnect_known reason=%@ action=ignore_connected_same_uuid_duplicate",
+                reason
+            )
+            return true
         }
         saved.delegate = self
         self.peripheral = saved
@@ -21586,6 +21603,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         attempts == 0 || applicationIsActive
     }
 
+    /// Selects the ticket that a new history generation will own.
+    ///
+    /// An active binding is generation authority only while that generation is
+    /// running. Once transport is idle, retaining an already-attempted binding
+    /// ahead of a distinct zero-attempt ticket can starve newer durably banked
+    /// motion forever. Rotate only that demonstrated case. An unattempted
+    /// binding, a binding that is already the ledger's next choice, or a queue
+    /// containing only retries keeps the existing binding.
+    nonisolated static func historicalMotionBankOffloadTicketForNewGeneration(
+        bound: AtriaWhoop4MotionBankCoverageLedger.OffloadTicket?,
+        next: AtriaWhoop4MotionBankCoverageLedger.OffloadTicket?
+    ) -> AtriaWhoop4MotionBankCoverageLedger.OffloadTicket? {
+        if let bound,
+           let next,
+           bound.id != next.id,
+           bound.attempts > 0,
+           next.attempts == 0 {
+            return next
+        }
+        return bound ?? next
+    }
+
     @discardableResult
     private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         reason: String
@@ -21618,18 +21657,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             } == true
         let ticket = connectedPeripheral.flatMap { peripheral in
             let strapIdentifier = peripheral.identifier.uuidString
-            if let boundID = UserDefaults.standard.string(
+            let bound = UserDefaults.standard.string(
                 forKey: Self.workoutHistoricalMotionBankActiveTicketIDKey
-            ),
-               let bound = AtriaWhoop4MotionBankCoverageLedger
+            ).flatMap { boundID in
+                AtriaWhoop4MotionBankCoverageLedger
                 .pendingOffload(
                     id: boundID,
                     strapIdentifier: strapIdentifier
-                ) {
-                return bound
+                )
             }
-            return AtriaWhoop4MotionBankCoverageLedger.nextPendingOffload(
+            let next = AtriaWhoop4MotionBankCoverageLedger.nextPendingOffload(
                 strapIdentifier: strapIdentifier
+            )
+            return Self.historicalMotionBankOffloadTicketForNewGeneration(
+                bound: bound,
+                next: next
             )
         }
         guard Self.historicalMotionBankOffloadEligible(
@@ -33174,10 +33216,29 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
 
     nonisolated static func canonicalRestoredPeripheralIndex(
         identifiers: [UUID],
+        states: [CBPeripheralState],
         savedPeripheralIdentifier: UUID?
     ) -> Int? {
+        guard identifiers.count == states.count else { return nil }
         if let savedPeripheralIdentifier {
-            return identifiers.firstIndex(of: savedPeripheralIdentifier)
+            let matching = identifiers.indices.filter {
+                identifiers[$0] == savedPeripheralIdentifier
+            }
+            return matching.min { lhs, rhs in
+                func restorationRank(_ state: CBPeripheralState) -> Int {
+                    switch state {
+                    case .connected:
+                        return 0
+                    case .connecting:
+                        return 1
+                    default:
+                        return 2
+                    }
+                }
+                let lhsRank = restorationRank(states[lhs])
+                let rhsRank = restorationRank(states[rhs])
+                return lhsRank == rhsRank ? lhs < rhs : lhsRank < rhsRank
+            }
         }
         return identifiers.count == 1 ? 0 : nil
     }
@@ -33190,13 +33251,12 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             .flatMap(UUID.init(uuidString:))
         guard let canonicalIndex = Self.canonicalRestoredPeripheralIndex(
             identifiers: restored.map(\.identifier),
+            states: restored.map(\.state),
             savedPeripheralIdentifier: savedPeripheralIdentifier
         ) else {
             for candidate in restored {
                 candidate.delegate = nil
-                connectedPeripheralRetainer.releaseAll(
-                    peripheralID: candidate.identifier
-                )
+                connectedPeripheralRetainer.release(candidate)
                 if candidate.state == .connected || candidate.state == .connecting {
                     central.cancelPeripheralConnection(candidate)
                 }
@@ -33208,19 +33268,50 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             return
         }
         let restoredPeripheral = restored[canonicalIndex]
+        // A connected restoration does not emit `didConnect`, so it must claim
+        // canonical object identity on the delegate queue before epoch,
+        // delegate, discovery, or MainActor state is touched. If another
+        // object-distinct representation already owns this saved UUID, retain
+        // the restored object as passive and leave the live owner undisturbed.
+        let restoredConnectedAdmission:
+            AtriaBLEConnectedPeripheralRetainer.ConnectedAdmission?
+        if restoredPeripheral.state == .connected {
+            restoredConnectedAdmission =
+                connectedPeripheralRetainer.admitConnected(restoredPeripheral)
+        } else {
+            connectedPeripheralRetainer.retain(restoredPeripheral)
+            restoredConnectedAdmission = nil
+        }
         for (index, candidate) in restored.enumerated() where index != canonicalIndex {
             candidate.delegate = nil
-            connectedPeripheralRetainer.releaseAll(
-                peripheralID: candidate.identifier
-            )
-            if candidate.state == .connected || candidate.state == .connecting {
-                central.cancelPeripheralConnection(candidate)
+            if candidate.identifier == restoredPeripheral.identifier {
+                // Object-distinct twins can represent one physical BLE link.
+                // Cancelling either representation can tear down both; fence
+                // the non-owning object until its own terminal callback.
+                connectedPeripheralRetainer.retainPassiveDuplicate(candidate)
+                AtriaDebugLog(
+                    "ATRIADBG ble_restore status=retained_same_uuid_duplicate peripheral=%@ canonical=%@ action=passive_no_cancel",
+                    candidate.identifier.uuidString,
+                    restoredPeripheral.identifier.uuidString
+                )
+            } else {
+                connectedPeripheralRetainer.release(candidate)
+                if candidate.state == .connected || candidate.state == .connecting {
+                    central.cancelPeripheralConnection(candidate)
+                }
+                AtriaDebugLog(
+                    "ATRIADBG ble_restore status=discarded_noncanonical peripheral=%@ canonical=%@",
+                    candidate.identifier.uuidString,
+                    restoredPeripheral.identifier.uuidString
+                )
             }
+        }
+        if restoredConnectedAdmission == .retainPassiveDuplicate {
             AtriaDebugLog(
-                "ATRIADBG ble_restore status=discarded_noncanonical peripheral=%@ canonical=%@",
-                candidate.identifier.uuidString,
+                "ATRIADBG ble_restore status=duplicate_connected_ignored reason=canonical_same_uuid_owner_exists action=retain_without_cancel_no_shared_state_mutation peripheral=%@",
                 restoredPeripheral.identifier.uuidString
             )
+            return
         }
         let restorationAt = Date()
         let persistedLongWear = UserDefaults.standard.bool(forKey: LongWearDefaults.enabled)
@@ -33415,6 +33506,21 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
     }
 
     nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        // `didConnect` can arrive late for an object-distinct copy of the same
+        // physical strap. Retain the callback object first: releasing a
+        // connected duplicate can force CoreBluetooth to tear down the shared
+        // underlying link. A merely connecting twin does not block this
+        // successful object. A fully connected twin keeps ownership, while the
+        // duplicate remains retained until a terminal callback or central
+        // teardown; no cancel, delegate mutation, epoch change, or discovery is
+        // safe or necessary on this duplicate edge.
+        let connectedCallbackAdmission =
+            connectedPeripheralRetainer.admitConnected(peripheral)
+        if connectedCallbackAdmission == .retainPassiveDuplicate {
+            AtriaDebugLog("ATRIADBG ble_epoch status=duplicate_connect_ignored reason=connected_same_uuid_twin action=retain_without_cancel_no_shared_state_mutation peripheral=%@",
+                          peripheral.identifier.uuidString)
+            return
+        }
         proprietaryFrameReassembler.reset()
         let callbackEpoch = bleCallbackEpochFence.activate(
             peripheralID: peripheral.identifier
@@ -33718,8 +33824,18 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
 
     nonisolated func centralManager(_ central: CBCentralManager,
                         didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        let terminalAdmission =
+            connectedPeripheralRetainer.beginTerminalCallback(peripheral)
+        if terminalAdmission == .ignorePassiveDuplicate {
+            peripheral.delegate = nil
+            connectedPeripheralRetainer.release(peripheral)
+            AtriaDebugLog("ATRIADBG ble_epoch status=stale_terminal_callback_ignored callback=did_disconnect reason=active_same_uuid_twin peripheral=%@",
+                          peripheral.identifier.uuidString)
+            return
+        }
         proprietaryFrameReassembler.reset()
-        bleCallbackEpochFence.invalidate(ifMatching: peripheral.identifier)
+        let terminalCallbackEpoch =
+            bleCallbackEpochFence.invalidate(ifMatching: peripheral.identifier)
         // The link is already down, so releasing here cannot tear one down.
         // The fast lane below re-retains whatever it re-issues a connect on,
         // and every other connect path retains at its own call site. Ordering
@@ -33756,9 +33872,16 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                           peripheral.state.rawValue)
         }
         Task { @MainActor in
-            guard self.peripheral?.identifier == peripheral.identifier else {
-                AtriaDebugLog("ATRIADBG ble_epoch status=stale_disconnect_ignored peripheral=%@",
-                              peripheral.identifier.uuidString)
+            guard Self.acceptsDisconnectCallbackFollowup(
+                trackedPeripheralIsDisconnectedInstance:
+                    self.peripheral === peripheral,
+                terminalEpochIsCurrent:
+                    self.bleCallbackEpochFence.epoch == terminalCallbackEpoch
+            ) else {
+                AtriaDebugLog("ATRIADBG ble_epoch status=stale_disconnect_ignored peripheral=%@ terminal_epoch=%llu current_epoch=%llu",
+                              peripheral.identifier.uuidString,
+                              terminalCallbackEpoch,
+                              self.bleCallbackEpochFence.epoch)
                 return
             }
             // This is the natural boundary which may later permit an ordinary
@@ -34297,6 +34420,16 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
     nonisolated func centralManager(_ central: CBCentralManager,
                         didFailToConnect peripheral: CBPeripheral,
                         error: Error?) {
+        let terminalAdmission =
+            connectedPeripheralRetainer.beginTerminalCallback(peripheral)
+        if terminalAdmission == .ignorePassiveDuplicate {
+            peripheral.delegate = nil
+            connectedPeripheralRetainer.release(peripheral)
+            AtriaDebugLog("ATRIADBG ble_epoch status=stale_terminal_callback_ignored callback=did_fail_to_connect reason=active_same_uuid_twin peripheral=%@",
+                          peripheral.identifier.uuidString)
+            return
+        }
+        let failedCallbackEpoch = bleCallbackEpochFence.epoch
         proprietaryFrameReassembler.reset()
         let savedPeripheralIdentifier = UserDefaults.standard
             .string(forKey: LinkDefaults.savedPeripheralUUID)
@@ -34328,16 +34461,18 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             )
         } else {
             // No replacement request owns this object. It is now safe to
-            // release the failed CoreBluetooth instance.
-            connectedPeripheralRetainer.releaseAll(
-                peripheralID: peripheral.identifier
-            )
+            // release this exact failed CoreBluetooth instance. A different
+            // same-UUID object may already own the live link.
+            connectedPeripheralRetainer.release(peripheral)
         }
         Task { @MainActor in
             guard Self.acceptsFailedConnectCallback(
-                trackedPeripheralIdentifier: self.peripheral?.identifier,
-                failedPeripheralIdentifier: peripheral.identifier,
-                synchronousReconnectIssued: synchronousReconnectIssued
+                trackedPeripheralIsFailedInstance:
+                    self.peripheral === peripheral,
+                trackedPeripheralIsAbsent: self.peripheral == nil,
+                synchronousReconnectIssued: synchronousReconnectIssued,
+                callbackEpochIsCurrent:
+                    self.bleCallbackEpochFence.epoch == failedCallbackEpoch
             ) else {
                 AtriaDebugLog("ATRIADBG ble_epoch status=stale_connect_failure_ignored peripheral=%@",
                               peripheral.identifier.uuidString)

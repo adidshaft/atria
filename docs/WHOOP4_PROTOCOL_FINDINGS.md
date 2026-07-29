@@ -3286,3 +3286,78 @@ POSITIVE STILL REQUIRED**
 - **Acceptance:** the controlled Gate 2 exact-recovery test is sealed. Evidence
   is under `/tmp/atria-gate2-exact-release-374ace35/evidence/`, including the
   pre/post ledger, receipt set, install/launch records, and physical UI state.
+
+### 2026-07-30 — all-day motion capture, offload, and receipt-lag audit
+
+- Preserved physical evidence under `/tmp/atria-device-truth.ZWnhlq/` separates
+  three different progress boundaries. The compact v24 shard contains 20,389
+  rows through July 29 23:57:24 IST and was durably modified at 01:49:51. The
+  current-cycle v15 receipt was older: 613 strap-only steps, 11,108 qualified
+  seconds, 29,004 missing seconds, and `capturedThrough` 23:45:49. The bank
+  coverage ledger was newer than both, with closed intervals through 02:01:39
+  and a new open interval from 02:02:07.
+- Therefore the 613 receipt is an honest partial lower bound, not an all-day
+  count. No phone steps, extrapolation, or synthetic coverage may be used to
+  turn it into a day total.
+- The receipt delay after a compact `fsync` is a local scheduling issue:
+  current-cycle compact projection shared the serial lifetime-archive consumer
+  queue. A dedicated serial utility lane can publish the bounded compact shard
+  immediately; the rare legacy JSONL fallback must remain serialized on the
+  archive-consumer queue.
+- That publication repair does not solve capture/offload completeness. The
+  production hourly checkpoint closes `69/01` before the history drain and
+  ordinarily reopens it only after terminal live-HR restoration. Physical bank
+  gaps align with these transactions, including 23:45:48–23:55:05 and
+  01:17:52–01:50:28. The existing rearm-after-`historyStart` path is
+  launch-argument gated and explicitly unqualified; it must pass a physical
+  coexistence test before production use.
+- The ledger retained 39 pending offloads. Its persisted active binding still
+  named the July 29 16:20:35–16:21:38 ticket after two attempts, while newer
+  intervals remained at zero attempts. The transport scheduler intentionally
+  prefers this binding over `nextPendingOffload`; if the strap can no longer
+  serve that old exact window, the binding can starve newer tickets even though
+  they remain durably and honestly recorded.
+- The narrow scheduler repair rotates that binding only when transport is idle
+  and a new generation is about to start: a distinct zero-attempt ledger choice
+  supersedes an already-attempted binding. An unattempted binding, a binding
+  that is already the ledger choice, and queues containing only retries retain
+  the binding. Terminal coverage evaluation remains bound-first, so a running
+  generation is still verified against the exact ticket it requested. The
+  focused ledger/policy suite passes 25/25 in
+  `/tmp/atria-step-ticket-selector-v2.xcresult`.
+- Required physical acceptance is one fresh hourly bank/checkpoint transaction:
+  preserve live HR, prove any rearm occurs only after accepted `historyStart`,
+  show compact v24 time reaches within three seconds of the closed interval
+  end, show the current ticket resolves or advances without dropping unresolved
+  evidence, and show the current-cycle receipt increases from that same durable
+  compact generation. Until then, all-day strap steps remain partial.
+
+### 2026-07-30 — same-UUID CoreBluetooth identity and restoration ordering
+
+- iOS can expose object-distinct `CBPeripheral` instances with the same saved
+  strap UUID. UUID equality is therefore device identity, not connection-owner
+  identity. Letting both successful callbacks mutate the manager can reset the
+  active epoch twice; releasing or cancelling either connected representation
+  can also tear down their shared physical link.
+- Connection ownership is now admitted atomically by exact object identity.
+  One object is canonical; a second connected representation is retained as a
+  passive duplicate without cancellation or shared-state mutation. Terminal
+  callbacks from that passive object are ignored in either delivery order,
+  including when CoreBluetooth marks both objects disconnected before
+  delivering either callback.
+- A connected state-restoration object does not emit `didConnect`. It must
+  therefore claim canonical identity before epoch activation, delegate
+  assignment, or HR discovery. When restoration contains same-UUID twins, the
+  selector prefers `.connected`, then `.connecting`, then the first remaining
+  representation; choosing a disconnected first entry can strand the actual
+  live link forever because its connected twin will not produce a later
+  callback.
+- Queued terminal bookkeeping is fenced by exact peripheral object and the
+  captured connection epoch. A delayed disconnect/failure from an old object
+  cannot overwrite a newer accepted owner merely because both share a UUID.
+- This is an app/CoreBluetooth ownership repair, not a WHOOP command or timing
+  change. No pairing, history cursor, proprietary write, or motion profile is
+  altered. Current executable regression evidence is 399/399 BLE recovery and
+  identity tests in `/tmp/atria-ble-release-blockers-20260730.xcresult`, plus
+  184/184 static release checks. Physical in-place Release verification remains
+  required before claiming the installed binary contains the repair.

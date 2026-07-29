@@ -6742,6 +6742,16 @@ final class SessionStore: ObservableObject {
     /// stronger re-decode—not launch-time publication.
     private static let workoutStepEvidenceQueue =
         HistoricalArchive.consumerProjectionQueue
+    /// Current-cycle publication normally reads only the bounded compact v24
+    /// shard. Keeping that small receipt refresh behind lifetime archive
+    /// projections made a durably appended step subtotal remain stale on Home
+    /// for minutes. Give the compact path its own serial utility lane; the rare
+    /// legacy JSONL fallback below still synchronizes through the shared
+    /// archive-consumer queue.
+    private static let currentCycleStepReceiptQueue = DispatchQueue(
+        label: "com.adidshaft.atria.current-cycle-step-receipt",
+        qos: .utility
+    )
     nonisolated private static let workoutStepNegativeAttemptsKey =
         "atria.confirmedWorkoutSteps.negativeAttempts.v1"
     nonisolated private static let maximumWorkoutStepNegativeAttempts = 64
@@ -7215,7 +7225,7 @@ final class SessionStore: ObservableObject {
             )
             return
         }
-        Self.workoutStepEvidenceQueue.async { [weak self] in
+        Self.currentCycleStepReceiptQueue.async { [weak self] in
             let fingerprintBefore =
                 HistoricalArchive.consumerSourceFingerprint()
             let compactFingerprintBefore =
@@ -7266,15 +7276,19 @@ final class SessionStore: ObservableObject {
             } else if applicationIsActive {
                 // Migration/failure fallback for installations whose retained
                 // rows predate the compact shard. Locked/background hourly
-                // publication never scans the canonical JSONL archive.
-                read = HistoricalArchive.motionTickDayEvidenceRead(
-                    start: cycleStart,
-                    end: now,
-                    bankCoverage: coverage,
-                    strapIdentifier: strapIdentifier,
-                    compactMigrationStore:
-                        AtriaWhoop4MotionTickCompactStore.shared
-                )
+                // publication never scans the canonical JSONL archive. The
+                // fallback remains on the one archive-consumer lane so this
+                // dedicated compact queue cannot multiply heavyweight scans.
+                read = Self.historySnapshotProjectionQueue.sync {
+                    HistoricalArchive.motionTickDayEvidenceRead(
+                        start: cycleStart,
+                        end: now,
+                        bankCoverage: coverage,
+                        strapIdentifier: strapIdentifier,
+                        compactMigrationStore:
+                            AtriaWhoop4MotionTickCompactStore.shared
+                    )
+                }
                 readUsedCompactSource = false
             } else {
                 read = compactRead

@@ -304,6 +304,11 @@ struct AtriaTodayScreen: View {
                                        sleepHistoryRevision: sessionProjectionStore.state.sleepHistorySnapshotRevision,
                                        guidance: displayHero.guidance,
                                        recoveryEstimate: displayHero.recoveryEstimate,
+                                       currentCycleAuthority:
+                                        AtriaHealthMetricAuthority.currentCycleProjection(
+                                            hero: displayHero,
+                                            sleepHistory: sessionProjectionStore.state.sleepHistorySnapshot
+                                        ),
                                        sleepGoalHours: sleepGoalHours,
                                        sleepBaseNeedHours: sleepBaseNeedHours,
                                        hrZoneMinutes: displayHero.hrZoneMinutes,

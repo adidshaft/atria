@@ -206,6 +206,36 @@ enum AtriaHealthMetricAuthority {
         let restingHeartRateText: String
         let hrvValue: String
         let hrvDetail: String
+        let strain: Double?
+        let strainDetail: String
+        let strainIsPartial: Bool
+        let wearCoverageFraction: Double?
+        let cycleStart: Date?
+        let projectedAt: Date?
+
+        init(recoveryPercent: Int?,
+             recoveryDetail: String,
+             restingHeartRateText: String,
+             hrvValue: String,
+             hrvDetail: String,
+             strain: Double? = nil,
+             strainDetail: String = "",
+             strainIsPartial: Bool = false,
+             wearCoverageFraction: Double? = nil,
+             cycleStart: Date? = nil,
+             projectedAt: Date? = nil) {
+            self.recoveryPercent = recoveryPercent
+            self.recoveryDetail = recoveryDetail
+            self.restingHeartRateText = restingHeartRateText
+            self.hrvValue = hrvValue
+            self.hrvDetail = hrvDetail
+            self.strain = strain
+            self.strainDetail = strainDetail
+            self.strainIsPartial = strainIsPartial
+            self.wearCoverageFraction = wearCoverageFraction
+            self.cycleStart = cycleStart
+            self.projectedAt = projectedAt
+        }
     }
 
     struct Projection: Equatable {
@@ -218,9 +248,18 @@ enum AtriaHealthMetricAuthority {
         let hrvMS: Int?
         let hrvValue: String
         let hrvDetail: String
+        let strain: Double?
+        let strainDetail: String
+        let strainIsPartial: Bool
+        let wearCoverageFraction: Double?
+        let cycleStart: Date?
+        let projectedAt: Date?
 
         var hasEvidence: Bool {
-            recoveryPercent != nil || restingHeartRate != nil || hrvMS != nil
+            recoveryPercent != nil
+                || restingHeartRate != nil
+                || hrvMS != nil
+                || strain != nil
         }
     }
 
@@ -252,7 +291,13 @@ enum AtriaHealthMetricAuthority {
                 hrvDetail: normalizedHRV == AtriaCompactMetricPresentation.noValue
                     ? specificDetail(current.hrvDetail,
                                      fallback: "Needs quiet rest or sleep")
-                    : current.hrvDetail
+                    : current.hrvDetail,
+                strain: current.strain,
+                strainDetail: current.strainDetail,
+                strainIsPartial: current.strainIsPartial,
+                wearCoverageFraction: current.wearCoverageFraction,
+                cycleStart: current.cycleStart,
+                projectedAt: current.projectedAt
             )
         case .datedHistory(let rollup):
             let hrvMS = rollup.lnRMSSD.map { Int(exp($0).rounded()) }
@@ -277,9 +322,107 @@ enum AtriaHealthMetricAuthority {
                 hrvDetail: AtriaHealthMetricEvidencePresentation.hrvDetail(
                     rollup: rollup,
                     liveValueAvailable: false
-                )
+                ),
+                strain: rollup.strain,
+                strainDetail: "dated history",
+                strainIsPartial: false,
+                wearCoverageFraction: nil,
+                cycleStart: rollup.day,
+                projectedAt: nil
             )
         }
+    }
+
+    /// Builds the one wake-to-wake authority shared by Today, Health, Vitals,
+    /// Overview, widgets, and metric detail. A civil rollup remains valid history,
+    /// but it must not replace these current-cycle values after midnight.
+    static func currentCycleProjection(
+        hero: AtriaHomeModel.HeroSnapshot,
+        sleepHistory: SleepHistorySnapshot,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Projection {
+        let physiologicalDay = AtriaPhysiologicalDay.current(
+            now: now,
+            sleepHistory: sleepHistory,
+            calendar: calendar
+        )
+        return resolve(.currentCycle(.init(
+            recoveryPercent: hero.recoveryEstimate.percent,
+            recoveryDetail: hero.recoveryDetail,
+            restingHeartRateText: hero.restingHeartRateText,
+            hrvValue: hero.hrvValue,
+            hrvDetail: hero.hrvDetail,
+            strain: hero.strain,
+            strainDetail: hero.strainConfidence,
+            strainIsPartial:
+                hero.strainConfidence.localizedCaseInsensitiveContains("partial"),
+            wearCoverageFraction: hero.dayWearCoverageFraction,
+            cycleStart: physiologicalDay.start,
+            // The projection participates in the metric-chart cache key. Use
+            // the stable civil-day anchor rather than the render instant so
+            // unchanged metric evidence does not invalidate that cache on
+            // every SwiftUI body evaluation. It still advances at midnight,
+            // which is exactly when D/W/M period membership can change.
+            projectedAt: calendar.startOfDay(for: now)
+        )))
+    }
+
+    /// Pure selector used by metric detail. The current wake-to-wake authority
+    /// replaces a stale civil row only while the user is viewing the period that
+    /// contains the live projection. Navigating to an older day/week/month keeps
+    /// the explicitly dated historical values untouched.
+    struct DetailProjection: Equatable {
+        let recoveryPercent: Int?
+        let strain: Double?
+        let usesCurrentCycle: Bool
+    }
+
+    /// A partial cumulative strain is useful as a Day lower bound, but it is
+    /// not an exact sample and must never enter Day/Week/Month chart averages.
+    struct StrainTrendTruth: Equatable {
+        let heroLowerBound: Double?
+        let exactTrendValue: Double?
+        let isPartial: Bool
+    }
+
+    static func strainTrendTruth(
+        _ currentCycle: Projection?
+    ) -> StrainTrendTruth {
+        let isPartial = currentCycle?.strainIsPartial == true
+        return StrainTrendTruth(
+            heroLowerBound: currentCycle?.strain,
+            exactTrendValue: isPartial ? nil : currentCycle?.strain,
+            isPartial: isPartial
+        )
+    }
+
+    static func detailProjection(
+        currentCycle: Projection?,
+        historicalRecoveryPercent: Int?,
+        historicalStrain: Double?,
+        range: AtriaTrendRange,
+        periodAnchor: Date,
+        calendar: Calendar = .current
+    ) -> DetailProjection {
+        guard let currentCycle,
+              let currentDisplayAnchor =
+                currentCycle.cycleStart ?? currentCycle.projectedAt,
+              range.periodInterval(
+                containing: periodAnchor,
+                calendar: calendar
+              ).contains(currentDisplayAnchor) else {
+            return DetailProjection(
+                recoveryPercent: historicalRecoveryPercent,
+                strain: historicalStrain,
+                usesCurrentCycle: false
+            )
+        }
+        return DetailProjection(
+            recoveryPercent: currentCycle.recoveryPercent,
+            strain: currentCycle.strain,
+            usesCurrentCycle: true
+        )
     }
 
     /// Normalises an absent metric onto the deterministic no-value token.
@@ -624,6 +767,11 @@ struct AtriaHealthScreen: View {
                                    sleepHistoryRevision: vitals.sleepHistorySnapshotRevision,
                                    guidance: heroStore.state.guidance,
                                    recoveryEstimate: heroStore.state.recoveryEstimate,
+                                   currentCycleAuthority:
+                                    AtriaHealthMetricAuthority.currentCycleProjection(
+                                        hero: heroStore.state,
+                                        sleepHistory: vitals.sleepHistorySnapshot
+                                    ),
                                    sleepGoalHours: sleepGoalHours,
                                    sleepBaseNeedHours: sleepBaseNeedHours,
                                    hrZoneMinutes: heroStore.state.hrZoneMinutes,

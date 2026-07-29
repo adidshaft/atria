@@ -129,6 +129,35 @@ final class AtriaMetricChartPreparationTests: XCTestCase {
         XCTAssertNil(prepared.companionPointIndex(at: 1, on: date(day: 2)))
     }
 
+    func testDynamicCompanionSignatureTracksPresenceAndDayButNotValue() {
+        let day29 = date(day: 29)
+        let day30 = date(day: 30)
+        let absent = AtriaMetricChartDynamicCompanionSignature(
+            companionPoints: [[]],
+            currentCycleDisplayAnchor: day29,
+            calendar: calendar
+        )
+        let present = AtriaMetricChartDynamicCompanionSignature(
+            companionPoints: [[point(day: 29, value: 46)]],
+            currentCycleDisplayAnchor: day29,
+            calendar: calendar
+        )
+        let sameDayNewValue = AtriaMetricChartDynamicCompanionSignature(
+            companionPoints: [[point(day: 29, value: 59)]],
+            currentCycleDisplayAnchor: day29,
+            calendar: calendar
+        )
+        let nextDay = AtriaMetricChartDynamicCompanionSignature(
+            companionPoints: [[point(day: 30, value: 59)]],
+            currentCycleDisplayAnchor: day30,
+            calendar: calendar
+        )
+
+        XCTAssertNotEqual(absent, present)
+        XCTAssertEqual(present, sameDayNewValue)
+        XCTAssertNotEqual(present, nextDay)
+    }
+
     func testEmptyPreparationUsesStableFallbacks() {
         let prepared = makePrepared(points: [])
         XCTAssertEqual(prepared.domain, 0...1)
