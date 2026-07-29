@@ -2379,6 +2379,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var workoutHistoricalMotionBankOffloadEvaluationDeferredUntilForeground = false
     private var workoutHistoricalMotionBankOffloadRetryTask: Task<Void, Never>?
     private var terminalConsumerDependencyRetryTask: Task<Void, Never>?
+    private var terminalCatalogMaterializationRetryTask: Task<Void, Never>?
     private var motionCompactStoreObserver: NSObjectProtocol?
     nonisolated private static let workoutHistoricalMotionBankEnabledKey =
         "atria.workoutHistoricalMotionBank.enabled"
@@ -28373,6 +28374,101 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     )
                 }
 
+                // Older day/size rotations could seal immutable payloads with
+                // only bytes + digest. Terminal projection must not skip those
+                // unknown time ranges, but scanning every legacy chunk in one
+                // foreground lease has previously exhausted iOS CPU budgets.
+                // Materialize exactly one source on the archive queue, retain
+                // raw, then yield through the main actor before continuing.
+                let catalogMaterialization = try HistoricalArchive
+                    .materializeNextSealedCatalogDependency(
+                        now: Date(timeIntervalSince1970:
+                            publication.completedAtUnix)
+                    )
+                if !catalogMaterialization.isComplete {
+                    AtriaDebugLog(
+                        "ATRIADBG historical_catalog_materialization status=progress generation=%llu chunk=%@ remaining=%d action=yield_preserve_live_raw",
+                        transportGeneration,
+                        catalogMaterialization.materializedChunkID ?? "none",
+                        catalogMaterialization.remainingChunkCount
+                    )
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        self.finishHistoricalConsumerMaterialization(
+                            reason: "sealed_catalog_materialization_progress"
+                        )
+                        self.scheduleTerminalCatalogMaterializationRetry()
+                    }
+                    return
+                }
+
+                // A crash/relaunch can leave the completion checkpoint bound to
+                // the pre-materialization catalog. Republish the same immutable
+                // terminal request/cursor facts against the advanced verified
+                // snapshots. No range or transport authority is widened.
+                if publication.status == .completionPublished {
+                    let refreshed = try HistoricalArchive
+                        .publishTerminalCompletionAfterDrain(
+                            seal: seal,
+                            terminalBatchNumber: publication.terminalBatchNumber,
+                            durableSequence: publication.durableSequence,
+                            requestedStart: Date(timeIntervalSince1970:
+                                authority.gap.startUnix),
+                            requestedEnd: Date(timeIntervalSince1970:
+                                authority.gap.endUnix),
+                            completedAt: Date(timeIntervalSince1970:
+                                publication.completedAtUnix)
+                        )
+                    let scanSource = seal.aggregateBuild.aggregate.source
+                    _ = try fullScanCompletionStore.recordCompletion(.init(
+                        version: AtriaHistoricalFullScanCompletionStore.Record
+                            .currentVersion,
+                        generation: refreshed.completion.record.generation,
+                        transportGeneration: authority.attempt.transportGeneration,
+                        transportNonce: authority.attempt.transportNonce,
+                        peripheralIdentifier: authority.attempt.peripheralIdentifier,
+                        strapIdentity: authority.attempt.strapIdentity,
+                        cursorWatermark: Date(timeIntervalSince1970: TimeInterval(
+                            authority.attempt.transportAuthority.clockWallUnix
+                        )),
+                        terminalAt: Date(timeIntervalSince1970:
+                            publication.completedAtUnix),
+                        sourceChunkID: scanSource.chunkID,
+                        sourceRawSHA256: scanSource.rawSHA256,
+                        sourceFirstTimestamp: scanSource.firstTimestamp,
+                        sourceLastTimestamp: scanSource.lastTimestamp,
+                        observedArchiveFirstTimestamp: HistoricalArchive
+                            .earliestCommittedAggregateTimestamp()
+                            ?? scanSource.firstTimestamp,
+                        catalogGeneration: refreshed.completion.record.catalogGeneration,
+                        catalogSnapshotSHA256: refreshed.completion.record
+                            .catalogSnapshotSHA256,
+                        aggregateSnapshotSHA256: refreshed.completion.record
+                            .aggregateSnapshotSHA256
+                    ))
+                    let refreshedEvidence =
+                        AtriaBLEHistoryTerminalPublicationStore.CompletionEvidence(
+                            generation: refreshed.completion.record.generation,
+                            catalogGeneration: refreshed.completion.record
+                                .catalogGeneration,
+                            catalogSnapshotSHA256: refreshed.completion.record
+                                .catalogSnapshotSHA256,
+                            aggregateSnapshotSHA256: refreshed.completion.record
+                                .aggregateSnapshotSHA256
+                        )
+                    if publication.completion != refreshedEvidence {
+                        current = try coverageStore.refreshCompletionPublished(
+                            identity: identity,
+                            evidence: refreshedEvidence
+                        )
+                    }
+                    guard let updated = current?.publication else {
+                        throw AtriaBLEHistoryTerminalMaterializationError
+                            .publicationCheckpointMissing
+                    }
+                    publication = updated
+                }
+
                 if current?.status == .historyComplete {
                     guard let admissionLedger else {
                         throw AtriaBLEHistoryTerminalMaterializationError
@@ -29421,6 +29517,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             self.terminalConsumerDependencyRetryTask = nil
             self.resumePendingFullDrainPublicationIfNeeded(
                 reason: "terminal_dependency_retry"
+            )
+        }
+    }
+
+    private func scheduleTerminalCatalogMaterializationRetry() {
+        terminalCatalogMaterializationRetryTask?.cancel()
+        terminalCatalogMaterializationRetryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled, let self else { return }
+            self.terminalCatalogMaterializationRetryTask = nil
+            self.resumePendingFullDrainPublicationIfNeeded(
+                reason: "sealed_catalog_materialization_retry"
             )
         }
     }
@@ -32822,6 +32930,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     deinit {
         terminalConsumerDependencyRetryTask?.cancel()
+        terminalCatalogMaterializationRetryTask?.cancel()
         if let motionCompactStoreObserver {
             NotificationCenter.default.removeObserver(
                 motionCompactStoreObserver

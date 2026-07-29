@@ -3030,6 +3030,42 @@ POSITIVE STILL REQUIRED**
   the post-scan active-catalog advance. Physical consumer settlement remains
   pending installation of this repair; durable raw history is preserved.
 
+#### 2026-07-29 — legacy sealed chunks require bounded metadata materialization
+
+- **Physical follow-up:** installing the timestamp/catalog repair preserved
+  pairing, live HR, the terminal journal, and the exact aggregate snapshot,
+  but consumer settlement still failed closed at
+  `terminal_archive_failed`. The device catalog contains a legacy backlog of
+  non-empty sealed JSONL chunks whose immutable byte count/digest exists but
+  whose decoded row count and timestamp bounds were never published. They
+  cannot be excluded from a historical proof: replayed rows mean file creation
+  time is not evidence of physiological time.
+- **Lifecycle cause:** normal day/size rotation sealed older chunks without the
+  canonical aggregate builder metadata used by terminal rotation. Retention
+  convergence only visited policy-eligible chunks, so recent unknown-bound
+  sources could block terminal projection indefinitely. The compact motion
+  store cannot repair this authority because it omits canonical HR, RR, and
+  unknown-row parity.
+- **Repair:** the archive queue now materializes at most one non-empty sealed
+  source per invocation, using the canonical builder and a stable
+  `sealedAt ?? createdAt` aggregate identity. Exact catalog metadata and a
+  parity-verified shadow aggregate are published durably; raw JSONL deletion is
+  impossible. The queue then yields for 250 ms before resuming. Candidate
+  discovery does not rehash the approximately 852 MB lifetime archive on every
+  retry; only the selected source is decoded/hashed, while the final terminal
+  proof retains full catalog and aggregate verification.
+- **Crash behavior:** a retry after metadata publication, aggregate
+  publication, or final materialization converges from durable identities
+  without widening the requested range, cursor, transport generation, or
+  strap authority. Conflicting metadata, malformed raw, missing raw, or
+  rejected manifests fail closed and leave the gap visible.
+- **Regression evidence:** 79 related catalog, materializer, completion-store,
+  proof-factory, and consumer-projection tests pass with zero failures in
+  `/tmp/atria-sealed-materializer-related-v2.xcresult`; all 184 static checks
+  pass. Physical backlog convergence and terminal consumer settlement remain
+  pending the signed Release installation, so this is not yet a physical
+  historical-recovery pass.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.

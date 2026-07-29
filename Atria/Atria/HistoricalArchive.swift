@@ -771,6 +771,25 @@ enum HistoricalArchive {
                      aggregateBuild: build)
     }
 
+    /// Converges one immutable sealed payload toward the complete catalog +
+    /// shadow-aggregate authority required by terminal consumer projection.
+    /// The caller must yield between reports; this method never retires raw.
+    static func materializeNextSealedCatalogDependency(
+        now: Date = Date()
+    ) throws -> AtriaHistoricalSealedCatalogMaterializer.Report {
+        try AtriaHistoricalSealedCatalogMaterializer.materializeNext(
+            catalogStore: try catalogStoreLocked(),
+            archiveRoot: archiveDirectory,
+            aggregateDirectoryURL: archiveDirectory.appendingPathComponent(
+                "aggregates-v2", isDirectory: true
+            ),
+            manifestDirectoryURL: archiveDirectory.appendingPathComponent(
+                "retention-manifests-v2", isDirectory: true
+            ),
+            now: now
+        )
+    }
+
     /// Read-only identifier used to stage the crash journal before the catalog
     /// seal changes the active chunk. The seal rechecks this exact ID.
     static func terminalCatalogCandidateChunkID() throws -> String {
@@ -5201,7 +5220,8 @@ enum HistoricalArchive {
                 let sourceURL = archiveDirectory.appendingPathComponent(chunk.relativePath)
                 let build = try AtriaHistoricalAggregateBuilder.build(sourceURL: sourceURL,
                                                                       chunkID: chunk.id,
-                                                                      createdAt: now)
+                                                                      createdAt: chunk.sealedAt
+                                                                        ?? chunk.createdAt)
                 // Catalog recovery intentionally registers legacy JSONL with nil
                 // decoded bounds. Persist the builder's exact digest/count/time
                 // identity before publishing its aggregate; otherwise legacy
