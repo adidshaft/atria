@@ -6457,6 +6457,13 @@ final class SessionStore: ObservableObject {
     #endif
     private var pendingSessionSaveWorkItem: DispatchWorkItem?
     private var pendingDailyMetricSaveWorkItem: DispatchWorkItem?
+    /// Revision owned by the ordinary coalesced daily-metric writer.
+    ///
+    /// Archive publication can refresh faster than the former 350 ms debounce.
+    /// Cancelling and replacing that write forever let `daily-rollups.json`
+    /// advance while `daily-metrics.json` stayed minutes behind. Keep the first
+    /// bounded write and follow it immediately with the newest revision.
+    private var pendingDailyMetricPersistRevision: Int?
     /// A BLE restoration boundary may arrive while iOS grants only a ten-second
     /// background scene-update window. The canonical session is flushed first;
     /// baseline, sleep, trend, and dashboard projections resume off-main after
@@ -8711,6 +8718,7 @@ final class SessionStore: ObservableObject {
         // rollback and re-apply a fragment of the failed generation.
         pendingDailyMetricSaveWorkItem?.cancel()
         pendingDailyMetricSaveWorkItem = nil
+        pendingDailyMetricPersistRevision = nil
         pendingConfirmedWorkoutRehydrationWorkItem?.cancel()
         pendingConfirmedWorkoutRehydrationWorkItem = nil
         pendingWorkoutStepEvidenceWorkItem?.cancel()
@@ -13131,13 +13139,66 @@ final class SessionStore: ObservableObject {
                 || recoveredDataMutationTransaction.rollbackOperationCount == 0 else { return }
         let snapshot = dailyMetricHistory
         let sourceURL = dailyMetricsURL
+        let revision = dailyMetricHistoryRevision
 
+        if let pending = pendingDailyMetricSaveWorkItem,
+           pendingDailyMetricPersistRevision != nil,
+           Self.shouldKeepPendingDailyMetricPersist(
+               pendingIsCancelled: pending.isCancelled,
+               requestedDelay: delay
+           ) {
+            AtriaDebugLog(
+                "ATRIADBG daily_metric_history_save status=coalesced op=%@ pending_revision=%d newest_revision=%d",
+                reason,
+                pendingDailyMetricPersistRevision ?? -1,
+                revision
+            )
+            return
+        }
         pendingDailyMetricSaveWorkItem?.cancel()
-        let workItem = DispatchWorkItem {
-            Self.persistDailyMetricsSnapshot(snapshot, to: sourceURL, reason: reason)
+        pendingDailyMetricPersistRevision = revision
+        let workItem = DispatchWorkItem { [weak self] in
+            let succeeded = Self.persistDailyMetricsSnapshot(
+                snapshot,
+                to: sourceURL,
+                reason: reason
+            )
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      self.pendingDailyMetricPersistRevision == revision else {
+                    return
+                }
+                self.pendingDailyMetricSaveWorkItem = nil
+                self.pendingDailyMetricPersistRevision = nil
+                if Self.dailyMetricPersistNeedsCatchUp(
+                    completedRevision: revision,
+                    currentRevision: self.dailyMetricHistoryRevision,
+                    writeSucceeded: succeeded
+                ) {
+                    self.scheduleDailyMetricPersist(
+                        reason: "coalesced_after_\(reason)",
+                        delay: 0
+                    )
+                }
+            }
         }
         pendingDailyMetricSaveWorkItem = workItem
         persistenceQueue.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    nonisolated static func shouldKeepPendingDailyMetricPersist(
+        pendingIsCancelled: Bool,
+        requestedDelay: TimeInterval
+    ) -> Bool {
+        !pendingIsCancelled && requestedDelay > 0
+    }
+
+    nonisolated static func dailyMetricPersistNeedsCatchUp(
+        completedRevision: Int,
+        currentRevision: Int,
+        writeSucceeded: Bool
+    ) -> Bool {
+        writeSucceeded && completedRevision != currentRevision
     }
 
     func requestPersistenceFlush(reason: String) {
@@ -29033,6 +29094,8 @@ final class SessionStore: ObservableObject {
         sessionBackupStatusGeneration &+= 1
         pendingSessionSaveWorkItem?.cancel()
         pendingDailyMetricSaveWorkItem?.cancel()
+        pendingDailyMetricSaveWorkItem = nil
+        pendingDailyMetricPersistRevision = nil
         await dailyRollupStore.beginPersistenceFence()
         await withCheckedContinuation { continuation in
             persistenceQueue.async { continuation.resume() }
@@ -30882,6 +30945,7 @@ final class SessionStore: ObservableObject {
         let expectedSleepRevision = confirmedSleepsRevision
 
         pendingDailyMetricSaveWorkItem?.cancel()
+        pendingDailyMetricPersistRevision = nil
         let metricURL = dailyMetricsURL
         let metricSnapshot = metrics
         var metricWriteFinished = false

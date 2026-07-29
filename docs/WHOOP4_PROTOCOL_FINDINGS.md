@@ -2,7 +2,7 @@
 
 This is Atria's living, append-only notebook for WHOOP 4.0 ("Harvard") protocol work. It records the wire protocol, physical strap behaviour, failed approaches, and the evidence behind conclusions. New experiments must be appended to the experiment log even when they fail.
 
-Last updated: 2026-07-28 (Asia/Kolkata)
+Last updated: 2026-07-29 (Asia/Kolkata)
 
 ## Evidence labels
 
@@ -12,6 +12,41 @@ Last updated: 2026-07-28 (Asia/Kolkata)
 - **HYPOTHESIS** — plausible interpretation that still needs a controlled physical test.
 
 No inference, archived row, unit test, or code structure is promoted to a physical pass.
+
+## 2026-07-29 — retained R10 motion qualifies the current sleep window
+
+**PHYSICAL INPUT + CODE**
+
+- The physical session store contains a 22:52–06:13 current-night aggregate
+  with 20,977 seconds of credited HR/RR evidence. Without motion input it is
+  correctly withheld rather than auto-confirmed.
+- Either of the two retained R10 raw segments overlapping that night
+  independently changes the same candidate from
+  `sleep_motion_unvalidated_no_historical_gravity` to
+  `historical_gravity_low_motion_validated`.
+- The strap evidence is therefore present; the remaining acceptance is whether
+  the installed Release consumes it on foreground, publishes the sleep, and
+  recomputes Recovery. No physical UI pass is claimed while the iPhone remains
+  locked.
+- **Evidence:** `evidence/2026-07-29-metric-truth-audit/acceptance.md`.
+
+## 2026-07-29 — daily strain stores cannot diverge under refresh churn
+
+**PHYSICAL FAILURE + CODE**
+
+- The physical July 28 stores disagreed: `daily-metrics.json` contained strain
+  0.09 while `daily-rollups.json` contained 6.52 for the same physiological
+  day.
+- Daily metrics used a sliding 350 ms debounce. Continuous archive refreshes
+  repeatedly cancelled that write, while rollup persistence continued, so the
+  two authorities could remain minutes apart.
+- The daily-metric writer now preserves the first bounded write and follows it
+  immediately with the newest revision. Explicit zero-delay durability writes
+  still supersede pending delayed work.
+- Strain, metric-truth, and experimental-sensor suites pass, as does the static
+  gate (184/184). Physical file convergence remains pending the next unlocked
+  Release run.
+- **Evidence:** `evidence/2026-07-29-metric-truth-audit/acceptance.md`.
 
 ## 2026-07-28 — exact-window sleep respiration survives confirmation
 

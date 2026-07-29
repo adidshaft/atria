@@ -425,6 +425,25 @@ private struct AtriaSleepReviewSheetRoute: Identifiable {
     let night: SleepHistorySnapshot.Night?
 }
 
+/// Qualification gate for the daily share card.
+///
+/// A lower-bound strain (for example, "≥ 4.2" from partial-day wear) is still
+/// useful evidence and remains visible as text, but it must not receive a full
+/// progress fill, target marker, or target-zone colour. Those decorations
+/// imply that the complete physiological day was observed.
+enum AtriaDailyShareMetricTruth {
+    static func strainIsQualified(value: String,
+                                  confidence: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !AtriaCompactMetricPresentation.isPendingValue(trimmed) else {
+            return false
+        }
+        return !trimmed.hasPrefix("≥")
+            && !confidence.localizedCaseInsensitiveContains("partial")
+    }
+}
+
 struct AtriaHomeView: View {
     private static let connectionDiagnosisPersistenceDelay: TimeInterval = 15
     private static let strainTargetGuidanceRefreshInterval: TimeInterval = 10 * 60
@@ -4687,19 +4706,22 @@ struct AtriaHomeView: View {
         let strainGreenBand = (defaults.object(forKey: "atria.target.strain.greenBand") as? Double) ?? 1.5
         let strainYellowBand = (defaults.object(forKey: "atria.target.strain.yellowBand") as? Double) ?? 3.0
         let strainValue = pendingShareValue(hero.strainValue)
-        let strainIsPending = strainValue.isEmpty
+        let strainIsQualified = AtriaDailyShareMetricTruth.strainIsQualified(
+            value: strainValue,
+            confidence: hero.strainConfidence
+        )
         let strainFill = AtriaRingMetricProjection.strainFill(strain: hero.strain,
-                                                              isPending: strainIsPending)
-        let strainProgress = strainIsPending ? nil : AtriaRingMetricProjection.strainTargetProgress(
+                                                              isPending: !strainIsQualified)
+        let strainProgress = strainIsQualified ? AtriaRingMetricProjection.strainTargetProgress(
             strain: hero.strain,
             target: hero.guidance.target
-        )
-        let strainZone = strainIsPending ? nil : Metrics.strainZone(
+        ) : nil
+        let strainZone = strainIsQualified ? Metrics.strainZone(
             strain: hero.strain,
             target: hero.guidance.target,
             greenBand: strainGreenBand,
             yellowBand: strainYellowBand
-        )
+        ) : nil
         let recoveryValue = recoveryPercent.map { "\($0)%" } ?? ""
         let stats = [
             AtriaShareSnapshot.Stat(id: "recovery",
@@ -4753,7 +4775,9 @@ struct AtriaHomeView: View {
                                                                   ),
                                                                   fill: strainFill,
                                                                   stateTintHex: strainZone.map { AtriaRingMetricProjection.zoneTintHex($0.level) },
-                                                                  targetFraction: strainIsPending ? nil : AtriaRingMetricProjection.strainTargetFraction(hero.guidance.target)),
+                                                                  targetFraction: strainIsQualified
+                                                                    ? AtriaRingMetricProjection.strainTargetFraction(hero.guidance.target)
+                                                                    : nil),
                                   stats: stats)
     }
 
