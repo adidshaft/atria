@@ -183,7 +183,7 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(mainSleep))
     }
 
-    func testValidatedRestlessOvernightFragmentsSurviveLowBaselineAdmission() throws {
+    func testPhysicalRestlessOvernightFragmentsSurviveBeforeMotionProjection() throws {
         // Physical July 29 shape: the trusted long-term resting baseline was
         // 56 bpm, while two real low-motion sleep fragments averaged 77–78.
         // The former early filter discarded those fragments before the R10
@@ -191,7 +191,7 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         // "fragmented below minimum."
         func restlessSession(start: Date, end: Date, base: Int) -> SavedSession {
             let duration = end.timeIntervalSince(start)
-            let points = stride(from: 0.0, to: duration, by: 60.0)
+            let points = stride(from: 0.0, to: duration, by: 1.5)
                 .enumerated()
                 .map { index, offset -> SavedSession.Point in
                     let bpm: Int
@@ -212,10 +212,17 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
                 end: end,
                 label: "Validated restless overnight fragment",
                 points: points,
+                rrPoints: points.map {
+                    SavedSession.RRPoint(
+                        t: $0.t,
+                        ms: Int((60_000.0 / Double($0.bpm)).rounded()),
+                        source: .standardHeartRateMeasurement2A37
+                    )
+                },
                 eventTimeZoneIdentifier: "Asia/Kolkata"
             )
-            value.motionEvidenceValidated = true
-            value.motionEvidenceSource = "validated_strap_stillness"
+            value.motionEvidenceValidated = false
+            value.motionEvidenceSource = "unavailable"
             return value
         }
 
@@ -224,24 +231,20 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
             end: date(2032, 1, 2, 1, 16, timeZoneIdentifier: "Asia/Kolkata"),
             base: 74
         )
-        let second = session(
+        let second = restlessSession(
             start: date(2032, 1, 2, 1, 31, timeZoneIdentifier: "Asia/Kolkata"),
             end: date(2032, 1, 2, 2, 52, timeZoneIdentifier: "Asia/Kolkata"),
-            bpm: 71,
-            eventTimeZoneIdentifier: "Asia/Kolkata",
-            motionValidated: true
+            base: 71
         )
         let third = restlessSession(
             start: date(2032, 1, 2, 3, 14, timeZoneIdentifier: "Asia/Kolkata"),
             end: date(2032, 1, 2, 4, 46, timeZoneIdentifier: "Asia/Kolkata"),
             base: 76
         )
-        let final = session(
+        let final = restlessSession(
             start: date(2032, 1, 2, 5, 41, timeZoneIdentifier: "Asia/Kolkata"),
             end: date(2032, 1, 2, 6, 14, timeZoneIdentifier: "Asia/Kolkata"),
-            bpm: 65,
-            eventTimeZoneIdentifier: "Asia/Kolkata",
-            motionValidated: true
+            base: 65
         )
 
         let result = SessionStore.aggregateSleepCandidates(
@@ -256,7 +259,8 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         })
 
         XCTAssertEqual(candidate.sessions, 4)
-        XCTAssertTrue(candidate.motionEvidenceValidated)
+        XCTAssertFalse(candidate.motionEvidenceValidated)
+        XCTAssertTrue(SessionStore.isHighSpecificityFragmentedHROnlyMainSleepCandidate(candidate))
         XCTAssertTrue(SessionStore.isAutoConfirmableMainSleepCandidate(
             candidate,
             baselineRestingIsTrusted: true
