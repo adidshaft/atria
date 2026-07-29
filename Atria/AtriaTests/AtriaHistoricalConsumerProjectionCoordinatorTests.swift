@@ -178,6 +178,104 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
         ))
     }
 
+    func testLaterFullScanResumesSubsecondDependencyAfterCatalogRoundTrip() throws {
+        let settlement = try makeLaterFullScanFixture(coversRequiredEnd: true)
+        // The terminal journal can retain the raw row's sub-second precision,
+        // while the catalog/aggregate reload uses ISO-8601 whole seconds.
+        let dependency = AtriaHistoricalFullDrainCoverageStore.PendingConsumerDependency(
+            requiredStartUnix: settlement.requiredStart.timeIntervalSince1970,
+            requiredEndUnix: settlement.requiredEnd.timeIntervalSince1970 + 0.322_021_5,
+            sourceChunkID: settlement.fixture.aggregate.source.chunkID,
+            sourceRawSHA256: settlement.fixture.aggregate.source.rawSHA256
+        )
+        let checkpointed = try JSONDecoder().decode(
+            AtriaHistoricalFullDrainCoverageStore.PendingConsumerDependency.self,
+            from: JSONEncoder().encode(dependency)
+        )
+
+        let report = try AtriaHistoricalConsumerProjectionCoordinator(
+            completionStore: settlement.fixture.completionStore,
+            receiptLedger: settlement.fixture.ledger
+        ).publishReceiptSetUsingFullScan(
+            for: checkpointed.sourceChunkID,
+            expectedRawSHA256: checkpointed.sourceRawSHA256,
+            requiredStart: Date(timeIntervalSince1970:
+                checkpointed.requiredStartUnix),
+            requiredEnd: Date(timeIntervalSince1970:
+                checkpointed.requiredEndUnix),
+            fullScanStore: settlement.scanStore,
+            catalogStore: settlement.fixture.catalogStore,
+            aggregateSnapshot: settlement.snapshot,
+            configuration: configuration()
+        )
+
+        XCTAssertTrue(report.hasCompleteConsumerCoverage)
+        XCTAssertEqual(report.published.count, 5)
+        XCTAssertTrue(report.published.allSatisfy {
+            $0.receipt.completionWatermark == settlement.requiredEnd
+        })
+    }
+
+    func testLaterFullScanRejectsDependencyFromDifferentPersistedSecond() throws {
+        let settlement = try makeLaterFullScanFixture(coversRequiredEnd: true)
+
+        XCTAssertThrowsError(try AtriaHistoricalConsumerProjectionCoordinator(
+            completionStore: settlement.fixture.completionStore,
+            receiptLedger: settlement.fixture.ledger
+        ).publishReceiptSetUsingFullScan(
+            for: settlement.fixture.aggregate.source.chunkID,
+            expectedRawSHA256: settlement.fixture.aggregate.source.rawSHA256,
+            requiredStart: settlement.requiredStart,
+            requiredEnd: settlement.requiredEnd.addingTimeInterval(1.001),
+            fullScanStore: settlement.scanStore,
+            catalogStore: settlement.fixture.catalogStore,
+            aggregateSnapshot: settlement.snapshot,
+            configuration: configuration()
+        )) { error in
+            XCTAssertEqual(
+                error as? AtriaHistoricalConsumerProjectionCoordinator.CoordinatorError,
+                .pendingDependencyMismatch
+            )
+        }
+    }
+
+    func testLaterFullScanSurvivesActiveCatalogByteAdvance() throws {
+        let settlement = try makeLaterFullScanFixture(coversRequiredEnd: true)
+        let generationAtScan = try settlement.fixture.catalogStore.snapshot().generation
+        let active = try settlement.fixture.catalogStore.activeChunkDescriptor()
+        try Data("post-scan-live-row\n".utf8).write(to: active.fileURL)
+
+        // Relaunch reconciliation advances only the active raw byte count. The
+        // committed aggregate snapshot covered by the scan remains identical.
+        let relaunchedCatalogStore = AtriaHistoricalArchiveCatalogStore(
+            rootURL: settlement.fixture.root,
+            maximumActiveBytes: 1024,
+            calendar: utcCalendar()
+        )
+        let relaunchedCatalog = try relaunchedCatalogStore.loadOrRecover(
+            discoveredLegacyURLs: [],
+            now: settlement.requiredEnd.addingTimeInterval(10)
+        )
+        XCTAssertGreaterThan(relaunchedCatalog.generation, generationAtScan)
+
+        let report = try AtriaHistoricalConsumerProjectionCoordinator(
+            completionStore: settlement.fixture.completionStore,
+            receiptLedger: settlement.fixture.ledger
+        ).publishReceiptSetUsingFullScan(
+            for: settlement.fixture.aggregate.source.chunkID,
+            expectedRawSHA256: settlement.fixture.aggregate.source.rawSHA256,
+            requiredStart: settlement.requiredStart,
+            requiredEnd: settlement.requiredEnd,
+            fullScanStore: settlement.scanStore,
+            catalogStore: relaunchedCatalogStore,
+            aggregateSnapshot: settlement.snapshot,
+            configuration: configuration()
+        )
+
+        XCTAssertTrue(report.hasCompleteConsumerCoverage)
+        XCTAssertEqual(report.published.count, 5)
+    }
+
     func testCrashAfterDurableReceiptPrefixResumesWithoutNewRawChunk() throws {
         let fixture = try makeFixture()
         var receiptCheckpoints = 0

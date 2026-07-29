@@ -160,8 +160,20 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
             for: source,
             dailyConfiguration: configuration.daily
         )
-        guard canonicalRange.lowerBound == requiredStart,
-              canonicalRange.upperBound == requiredEnd else {
+        // `PendingConsumerDependency` can be checkpointed from the in-memory
+        // terminal aggregate before its ISO-8601 catalog representation is
+        // reloaded. Catalog dates persist at whole-second precision, while a
+        // WHOOP row can retain sub-second precision. Treat only bounds within
+        // the same persisted second as the same immutable dependency. A real
+        // algorithm/time-zone/range change still fails closed.
+        guard Self.persistedDependencyBoundMatches(
+                canonical: canonicalRange.lowerBound,
+                checkpointed: requiredStart
+              ),
+              Self.persistedDependencyBoundMatches(
+                canonical: canonicalRange.upperBound,
+                checkpointed: requiredEnd
+              ) else {
             throw CoordinatorError.pendingDependencyMismatch
         }
         let scan = try fullScanStore.loadLatest()
@@ -171,8 +183,8 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
             catalogStore: catalogStore,
             aggregateSnapshot: aggregateSnapshot,
             scan: scan,
-            requestedStart: requiredStart,
-            requestedEnd: requiredEnd
+            requestedStart: canonicalRange.lowerBound,
+            requestedEnd: canonicalRange.upperBound
         )
         guard prepared.completionGeneration == scan.generation else {
             throw CoordinatorError.completionChangedDuringPublication
@@ -322,6 +334,16 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
         )
         guard end > start else { throw CoordinatorError.invalidRequiredRange }
         return start...end
+    }
+
+    private static func persistedDependencyBoundMatches(
+        canonical: Date,
+        checkpointed: Date
+    ) -> Bool {
+        HistoricalArchive.catalogTimestampMatches(
+            raw: checkpointed,
+            catalog: canonical
+        )
     }
 
     private func requiredRange(
