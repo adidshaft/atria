@@ -28235,10 +28235,97 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historicalArchiveQueue.async { [weak self] in
             do {
                 guard let self else { return }
+                // Repair legacy sealed sources before either the original
+                // terminal path or the later full-scan dependency path reads
+                // the catalog. `gapResolvedConsumersPending` used to branch
+                // around this repair entirely and retry the same incomplete
+                // proof forever.
+                let stableMaterializationDate = Date(
+                    timeIntervalSince1970:
+                        authority.publication?.completedAtUnix
+                        ?? authority.historyComplete?.receivedAtUnix
+                        ?? authority.gap.endUnix
+                )
+                let catalogMaterialization = try HistoricalArchive
+                    .materializeNextSealedCatalogDependency(
+                        now: stableMaterializationDate
+                    )
+                if !catalogMaterialization.isComplete {
+                    AtriaDebugLog(
+                        "ATRIADBG historical_catalog_materialization status=progress generation=%llu chunk=%@ remaining=%d action=yield_preserve_live_raw",
+                        transportGeneration,
+                        catalogMaterialization.materializedChunkID ?? "none",
+                        catalogMaterialization.remainingChunkCount
+                    )
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        self.finishHistoricalConsumerMaterialization(
+                            reason: "sealed_catalog_materialization_progress"
+                        )
+                        self.scheduleTerminalCatalogMaterializationRetry()
+                    }
+                    return
+                }
+
                 if authority.status == .gapResolvedConsumersPending {
                     guard let dependency = authority.pendingConsumerDependency else {
                         throw AtriaBLEHistoryTerminalMaterializationError
                             .pendingConsumerDependencyMissing
+                    }
+                    let previousFullScan = try fullScanCompletionStore.loadLatest()
+                    let refreshedSnapshot = try HistoricalArchive
+                        .currentFullScanSnapshotEvidence(
+                            sourceChunkID: previousFullScan.sourceChunkID,
+                            sourceRawSHA256: previousFullScan.sourceRawSHA256
+                        )
+                    let fullScanSnapshotChanged =
+                        previousFullScan.catalogGeneration
+                            != refreshedSnapshot.catalogGeneration
+                        || previousFullScan.catalogSnapshotSHA256
+                            != refreshedSnapshot.catalogSnapshotSHA256
+                        || previousFullScan.aggregateSnapshotSHA256
+                            != refreshedSnapshot.aggregateSnapshotSHA256
+                        || !HistoricalArchive.catalogTimestampMatches(
+                            raw: refreshedSnapshot.observedArchiveFirstTimestamp,
+                            catalog: previousFullScan
+                                .observedArchiveFirstTimestamp
+                        )
+                    if fullScanSnapshotChanged {
+                        guard previousFullScan.generation < UInt64.max,
+                              refreshedSnapshot.catalogGeneration
+                                > previousFullScan.catalogGeneration else {
+                            throw AtriaBLEHistoryTerminalMaterializationError
+                                .publicationCheckpointMissing
+                        }
+                        _ = try fullScanCompletionStore.recordCompletion(.init(
+                            version: AtriaHistoricalFullScanCompletionStore
+                                .Record.currentVersion,
+                            generation: previousFullScan.generation + 1,
+                            transportGeneration:
+                                previousFullScan.transportGeneration,
+                            transportNonce: previousFullScan.transportNonce,
+                            peripheralIdentifier:
+                                previousFullScan.peripheralIdentifier,
+                            strapIdentity: previousFullScan.strapIdentity,
+                            cursorWatermark: previousFullScan.cursorWatermark,
+                            terminalAt: previousFullScan.terminalAt,
+                            sourceChunkID: previousFullScan.sourceChunkID,
+                            sourceRawSHA256:
+                                previousFullScan.sourceRawSHA256,
+                            sourceFirstTimestamp:
+                                previousFullScan.sourceFirstTimestamp,
+                            sourceLastTimestamp:
+                                previousFullScan.sourceLastTimestamp,
+                            observedArchiveFirstTimestamp:
+                                refreshedSnapshot
+                                    .observedArchiveFirstTimestamp,
+                            catalogGeneration:
+                                refreshedSnapshot.catalogGeneration,
+                            catalogSnapshotSHA256:
+                                refreshedSnapshot.catalogSnapshotSHA256,
+                            aggregateSnapshotSHA256:
+                                refreshedSnapshot.aggregateSnapshotSHA256
+                        ))
                     }
                     let report = try HistoricalArchive
                         .publishPendingConsumersUsingLatestFullScan(
@@ -28372,34 +28459,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         checkpoint: publication,
                         generation: transportGeneration
                     )
-                }
-
-                // Older day/size rotations could seal immutable payloads with
-                // only bytes + digest. Terminal projection must not skip those
-                // unknown time ranges, but scanning every legacy chunk in one
-                // foreground lease has previously exhausted iOS CPU budgets.
-                // Materialize exactly one source on the archive queue, retain
-                // raw, then yield through the main actor before continuing.
-                let catalogMaterialization = try HistoricalArchive
-                    .materializeNextSealedCatalogDependency(
-                        now: Date(timeIntervalSince1970:
-                            publication.completedAtUnix)
-                    )
-                if !catalogMaterialization.isComplete {
-                    AtriaDebugLog(
-                        "ATRIADBG historical_catalog_materialization status=progress generation=%llu chunk=%@ remaining=%d action=yield_preserve_live_raw",
-                        transportGeneration,
-                        catalogMaterialization.materializedChunkID ?? "none",
-                        catalogMaterialization.remainingChunkCount
-                    )
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        self.finishHistoricalConsumerMaterialization(
-                            reason: "sealed_catalog_materialization_progress"
-                        )
-                        self.scheduleTerminalCatalogMaterializationRetry()
-                    }
-                    return
                 }
 
                 // A crash/relaunch can leave the completion checkpoint bound to

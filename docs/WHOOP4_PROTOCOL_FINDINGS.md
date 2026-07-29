@@ -3059,9 +3059,18 @@ POSITIVE STILL REQUIRED**
   without widening the requested range, cursor, transport generation, or
   strap authority. Conflicting metadata, malformed raw, missing raw, or
   rejected manifests fail closed and leave the gap visible.
+- **First physical integration correction:** the initial signed build invoked
+  the materializer only after the normal terminal-publication setup. The
+  device authority had already advanced to `gapResolvedConsumersPending`, whose
+  resume branch returned earlier, so its 19 non-empty unknown-bound chunks
+  never entered the repair queue. Live HR stayed responsive and raw remained
+  intact, but catalog generation 400 and the backlog were unchanged. The queue
+  now runs before both terminal branches. After its final chunk, the existing
+  full-scan transport/cursor/source identity is retained while only its derived
+  catalog and aggregate snapshot evidence advances to a new durable generation.
 - **Regression evidence:** 79 related catalog, materializer, completion-store,
   proof-factory, and consumer-projection tests pass with zero failures in
-  `/tmp/atria-sealed-materializer-related-v2.xcresult`; all 184 static checks
+  `/tmp/atria-sealed-materializer-related-v3.xcresult`; all 184 static checks
   pass. Physical backlog convergence and terminal consumer settlement remain
   pending the signed Release installation, so this is not yet a physical
   historical-recovery pass.
