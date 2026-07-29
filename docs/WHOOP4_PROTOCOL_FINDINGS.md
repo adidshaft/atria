@@ -2998,6 +2998,38 @@ POSITIVE STILL REQUIRED**
   recovery. Whole-day step quantity remains open and no phone fallback,
   estimate, or extrapolation is admitted.
 
+#### 2026-07-29 — terminal consumer projection survives durable timestamp and live-catalog round trips
+
+- **Physical failure:** the exact signed Release preserved the app container,
+  pairing, live HR, 10,347 compact motion rows, and the fsynced full-drain
+  authority, but Home truthfully remained at `Missed data needs review`.
+  The terminal authority was parked at
+  `gapResolvedConsumersPending`. Its immutable source identity was
+  `faddb341-44bd-4950-b7bb-9c1fe108d042` /
+  `079c11611d1fe6f3d61239498a6a9eec482833ee453f0c316ab4a5e7d72bfc13`.
+- **Exact cause:** the in-memory dependency checkpoint retained a terminal
+  bound of `1785104606.3220215`, while the same sealed source reloaded through
+  Foundation's ISO-8601 catalog representation at whole-second precision
+  (`2026-07-26T18:23:26Z`). Exact `Date` equality therefore rejected the same
+  immutable dependency after relaunch. The later exhaustive scan was also
+  catalog generation 397 while live capture had already opened the next
+  unbounded active chunk at generation 398; its committed aggregate snapshot
+  remained unchanged and scan-bound.
+- **Repair:** dependency bounds compare only at the catalog's documented
+  persisted-second precision, then publication uses the canonical reloaded
+  bounds. A different persisted second still fails closed. A later catalog
+  generation is accepted only while the scan's aggregate digest remains exact,
+  every relevant immutable chunk is revalidated against disk, and any
+  unbounded active chunk was created strictly after the closed requested
+  interval. Source IDs, raw SHA-256 identities, cursor coverage, and aggregate
+  proof are not weakened.
+- **Regression evidence:** 44 projection/factory/retention tests pass with zero
+  failures in
+  `/tmp/atria-terminal-projection-fix-related.xcresult`, including the physical
+  `.3220215` round trip, rejection across a different persisted second, and
+  the post-scan active-catalog advance. Physical consumer settlement remains
+  pending installation of this repair; durable raw history is preserved.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.

@@ -390,15 +390,25 @@ struct AtriaHistoricalActivityInspectionProofFactory {
         }) else {
             throw FactoryError.aggregateCatalogMismatch(scan.sourceChunkID)
         }
-        guard scan.catalogGeneration == catalog.generation else {
+        guard scan.catalogGeneration <= catalog.generation else {
             throw FactoryError.staleCompletionGeneration
         }
         guard scan.observedArchiveFirstTimestamp <= requestedStart,
               scan.cursorWatermark >= requestedEnd else {
             throw FactoryError.completionCoverageMismatch
         }
-        guard scan.catalogSnapshotSHA256
-                == AtriaHistoricalDrainCompletionGenerationStore.sha256(catalogData) else {
+        let currentCatalogSHA256 =
+            AtriaHistoricalDrainCompletionGenerationStore.sha256(catalogData)
+        // Live capture can append to the sole active raw chunk immediately
+        // after the full-scan terminal record is fsynced. That advances the
+        // catalog generation/byte count without changing any committed
+        // aggregate used by the historical consumers. At the same generation,
+        // the catalog digest must remain exact. Across a monotonic later
+        // generation, the aggregate snapshot below remains the immutable
+        // dependency authority and `prepareVerified` revalidates every
+        // relevant catalog chunk against that snapshot and the filesystem.
+        guard scan.catalogGeneration < catalog.generation
+                || scan.catalogSnapshotSHA256 == currentCatalogSHA256 else {
             throw FactoryError.catalogSnapshotMismatch
         }
         guard scan.aggregateSnapshotSHA256
@@ -432,6 +442,14 @@ struct AtriaHistoricalActivityInspectionProofFactory {
             let hasPayload = chunk.byteCount > 0 || (chunk.rowCount ?? 0) > 0
             guard hasPayload else { return nil }
             guard let first = chunk.firstTimestamp, let last = chunk.lastTimestamp else {
+                // The catalog intentionally does not publish time bounds for
+                // its mutable active chunk. Live capture may append there
+                // immediately after a terminal scan. It cannot be a dependency
+                // of an already-closed requested interval when the chunk
+                // itself was created strictly after that interval ended.
+                if chunk.state == .active, chunk.createdAt > requestedEnd {
+                    return nil
+                }
                 throw FactoryError.unknownCatalogTimeBounds(chunk.id)
             }
             guard let rows = chunk.rowCount,
