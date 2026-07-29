@@ -2592,6 +2592,17 @@ POSITIVE STILL REQUIRED**
   or profile input invalidates it. Equal sample/coverage evidence may now repair
   missing strain, zone, and energy fields instead of being rejected solely
   because the sample count did not increase.
+- **Repeated current-cycle step scan correction:** the durable daily receipt
+  was correctly available at launch, but foreground initialization still
+  reopened the retained motion archive even when neither raw sources nor 0x69
+  bank authority had changed. The daily decoder now distinguishes a complete
+  no-evidence read from an incomplete read. A durable attempt digest keys the
+  exact physiological wake boundary, canonical strap, v15 cadence model,
+  catalog/source fingerprint, closed bank intervals, and open-bank start.
+  Advancing wall clock alone does not invalidate it; a raw append/replacement,
+  bank close/reopen, strap change, cycle change, or algorithm change does.
+  Complete stable reads cache; incomplete or concurrently changing reads retry.
+  Skipping still publishes the existing durable receipt to Home and widgets.
 
 ## Notebook maintenance rules
 

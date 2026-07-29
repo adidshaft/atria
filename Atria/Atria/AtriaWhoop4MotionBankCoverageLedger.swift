@@ -17,6 +17,23 @@ enum AtriaWhoop4MotionBankCoverageLedger {
         let end: Date?
     }
 
+    /// Stable identity of the coverage facts that can change daily projection.
+    /// The open interval contributes its start but deliberately not `now`: wall
+    /// clock advancement without a new raw source is not new motion evidence.
+    struct ProjectionAuthority: Codable, Equatable, Sendable {
+        let algorithmVersion: String
+        let strapIdentifier: String
+        let closed: [Interval]
+        let openStart: Date?
+
+        var stableIdentifier: String? {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            encoder.dateEncodingStrategy = .millisecondsSince1970
+            return try? encoder.encode(self).base64EncodedString()
+        }
+    }
+
     struct OffloadTicket: Codable, Equatable, Sendable {
         let id: String
         let strapIdentifier: String
@@ -231,6 +248,33 @@ enum AtriaWhoop4MotionBankCoverageLedger {
             }
         }
         return mergeIntervals(values)
+    }
+
+    static func projectionAuthority(
+        intersecting window: DateInterval,
+        strapIdentifier: String,
+        defaults: UserDefaults = .standard
+    ) -> ProjectionAuthority? {
+        guard window.end > window.start,
+              !strapIdentifier.isEmpty else { return nil }
+        let state = load(defaults: defaults)
+        guard state.strapIdentifier == strapIdentifier else { return nil }
+        let closed = mergeIntervals(state.closed.compactMap { item in
+            guard let end = item.end else { return nil }
+            return intersection(.init(start: item.start, end: end), window)
+        }).map {
+            Interval(start: $0.start, end: $0.end)
+        }
+        let openStart = state.openStart.flatMap { start -> Date? in
+            guard start < window.end else { return nil }
+            return max(start, window.start)
+        }
+        return .init(
+            algorithmVersion: algorithmVersion,
+            strapIdentifier: strapIdentifier,
+            closed: closed,
+            openStart: openStart
+        )
     }
 
     static func reset(defaults: UserDefaults = .standard) {

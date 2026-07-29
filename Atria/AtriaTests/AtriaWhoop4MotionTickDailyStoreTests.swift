@@ -37,6 +37,62 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         )
     }
 
+    func testCurrentCycleAttemptSignatureInvalidatesForEvidenceAuthority() throws {
+        let start = Date(timeIntervalSince1970: 9_000)
+        let strap = "strap-a"
+        let authority = AtriaWhoop4MotionBankCoverageLedger
+            .ProjectionAuthority(
+                algorithmVersion:
+                    AtriaWhoop4MotionBankCoverageLedger.algorithmVersion,
+                strapIdentifier: strap,
+                closed: [],
+                openStart: start
+            )
+        let source = HistoricalArchive.makeConsumerSourceFingerprint(
+            catalogGeneration: 1,
+            descriptors: []
+        )
+        let base = try XCTUnwrap(
+            SessionStore.currentCycleStepReceiptAttemptSignature(
+                strapIdentifier: strap,
+                cycleStart: start,
+                coverageAuthority: authority,
+                sourceFingerprint: source
+            )
+        )
+        XCTAssertEqual(
+            base,
+            SessionStore.currentCycleStepReceiptAttemptSignature(
+                strapIdentifier: strap,
+                cycleStart: start,
+                coverageAuthority: authority,
+                sourceFingerprint: source
+            )
+        )
+        XCTAssertNotEqual(
+            base,
+            SessionStore.currentCycleStepReceiptAttemptSignature(
+                strapIdentifier: strap,
+                cycleStart: start.addingTimeInterval(1),
+                coverageAuthority: authority,
+                sourceFingerprint: source
+            )
+        )
+        XCTAssertNotEqual(
+            base,
+            SessionStore.currentCycleStepReceiptAttemptSignature(
+                strapIdentifier: strap,
+                cycleStart: start,
+                coverageAuthority: authority,
+                sourceFingerprint:
+                    HistoricalArchive.makeConsumerSourceFingerprint(
+                        catalogGeneration: 2,
+                        descriptors: []
+                    )
+            )
+        )
+    }
+
     func testOlderOrWeakerReplayCannotReplaceReceipt() throws {
         let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
         let strap = UUID().uuidString
@@ -459,7 +515,7 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         ))
         let body = String(sessions[start.lowerBound..<end.lowerBound])
         XCTAssertTrue(body.contains(
-            "HistoricalArchive.motionTickDayEvidence("
+            "HistoricalArchive.motionTickDayEvidenceRead("
         ))
         XCTAssertTrue(body.contains(
             "AtriaWhoop4MotionTickDailyStore.shared.save("
