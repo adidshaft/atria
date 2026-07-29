@@ -154,4 +154,45 @@ final class AtriaBaselineEvidenceTests: XCTestCase {
         )
     }
 
+    func testNearTrustedFragmentedSleepBridgeNeedsThirteenTotalAndSevenFreshDays() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func baseline(total: Int, fresh: Int, updated: Date? = nil) -> PersonalBaseline {
+            let freshSamples = (0..<fresh).map { index in
+                PersonalBaseline.BaselineSample(
+                    date: now.addingTimeInterval(-Double(index) * 86_400),
+                    restingHR: 56,
+                    rmssd: nil,
+                    overnight: false
+                )
+            }
+            let olderSamples = (fresh..<total).map { index in
+                PersonalBaseline.BaselineSample(
+                    date: now.addingTimeInterval(-Double(22 + index - fresh) * 86_400),
+                    restingHR: 56,
+                    rmssd: nil,
+                    overnight: false
+                )
+            }
+            return PersonalBaseline(
+                restingHR: 56,
+                sessions: total,
+                updated: updated ?? now,
+                samples: freshSamples + olderSamples
+            )
+        }
+
+        let physicalShape = baseline(total: 13, fresh: 11)
+        XCTAssertFalse(physicalShape.hasTrustedRestingBaseline(now: now))
+        XCTAssertTrue(physicalShape.hasNearTrustedRestingBaselineForFragmentedSleep(now: now))
+        XCTAssertFalse(baseline(total: 12, fresh: 11)
+            .hasNearTrustedRestingBaselineForFragmentedSleep(now: now))
+        XCTAssertFalse(baseline(total: 13, fresh: 6)
+            .hasNearTrustedRestingBaselineForFragmentedSleep(now: now))
+        XCTAssertFalse(baseline(
+            total: 13,
+            fresh: 11,
+            updated: now.addingTimeInterval(-(PersonalBaseline.staleAfter + 1))
+        ).hasNearTrustedRestingBaselineForFragmentedSleep(now: now))
+    }
+
 }
