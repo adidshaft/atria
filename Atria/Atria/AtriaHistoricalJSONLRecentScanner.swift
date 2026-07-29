@@ -145,13 +145,23 @@ struct AtriaHistoricalJSONLRecentScanner {
                                                 offsetBy: precedingByteCount)
                     while scanIndex < carry.endIndex {
                         if carry[scanIndex] == 0x0A {
-                            let line = Data(carry[lineStart..<scanIndex])
-                            lineStart = carry.index(after: scanIndex)
-                            if !line.isEmpty {
-                                statistics.lineCount += 1
-                                if timestamp(in: line).map({ $0 >= cutoff }) ?? false {
-                                    statistics.candidateLineCount += 1
-                                    consumeCandidate(line)
+                            // Foundation's Data/JSON decoder temporaries are
+                            // Objective-C backed on device. A lifetime scan can
+                            // process hundreds of thousands of rows on one
+                            // utility-queue turn; without a local pool those
+                            // temporaries survive until the entire file closes
+                            // and have physically driven Atria above 2 GB.
+                            // Drain at each complete line while keeping the
+                            // canonical bytes and candidate semantics intact.
+                            autoreleasepool {
+                                let line = Data(carry[lineStart..<scanIndex])
+                                lineStart = carry.index(after: scanIndex)
+                                if !line.isEmpty {
+                                    statistics.lineCount += 1
+                                    if timestamp(in: line).map({ $0 >= cutoff }) ?? false {
+                                        statistics.candidateLineCount += 1
+                                        consumeCandidate(line)
+                                    }
                                 }
                             }
                         }
