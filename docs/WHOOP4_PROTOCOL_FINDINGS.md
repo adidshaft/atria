@@ -3169,3 +3169,44 @@ POSITIVE STILL REQUIRED**
 - **Evidence:** `/tmp/atria-physical-motion-parity-final.xcresult`,
   `/tmp/atria-motion-parity-self-contained.xcresult`, and
   `/tmp/atria-history-repair-optimized-640b4191/evidence/`.
+
+### 2026-07-30 — recovered consumers must retain archive-lane priority until final resolution
+
+- The exact signed `1b4f7941` Release completed the physical retained-shadow
+  repair without deleting or replacing the app container. Sealed-catalog
+  generation advanced from 415 to 421, and all six formerly incomplete sources
+  published exact aggregate/manifest pairs. Full-scan generation advanced from
+  58 to 59 with cursor watermark `2026-07-29T15:46:19Z`.
+- The terminal source remained
+  `faddb341-44bd-4950-b7bb-9c1fe108d042` /
+  `079c11611d1fe6f3d61239498a6a9eec482833ee453f0c316ab4a5e7d72bfc13`.
+  Five durable, hash-verified consumer artifacts and receipts were published
+  atomically for `activity`, `dailyMetrics`, `sleep`, `steps`, and `workout`.
+  The known outage `1785089755.0042071`–`1785089883.944051` remained covered
+  at 129/129 one-second buckets, 100% density, one-second maximum gap, and
+  one-second p95 gap.
+- Protocol wording correction: WHOOP 4 receives the full-history serve command
+  `16/00`; Atria does not send the strap an exact time range. The exact missing
+  interval is bound to that durable full drain and independently revalidated
+  against decoded timestamps before resolution.
+- Final publication still failed closed at
+  `gapResolvedConsumersPending` / `pending_consumers_fence_failed`. Raw history,
+  the five receipts, the consumer set, and the current pointer were retained;
+  no false success was recorded.
+- The demonstrated scheduling defect was that
+  `exactRecoveryProjectionOwnsArchivePriority` released the shared serial
+  archive lane at `gapResolvedConsumersPending`. Ordinary archive compaction
+  could therefore enter ahead of the recovered projection after its finite
+  no-progress lease had already started. The approximately 189-second physical
+  delay matches two 90-second projection leases rather than missing history or
+  consumer decoding failure.
+- The narrow repair keeps recovery priority through
+  `gapResolvedConsumersPending` and `consumersCommitted`, releasing it only at
+  terminal `resolved`. It does not increase a timeout, weaken the publication
+  fence, retry in a hot loop, move work to the main actor, or change protocol
+  commands.
+- Regression evidence: the complete
+  `AtriaHistoricalFullDrainCoverageAuthorityTests` class passes 40/40 in
+  `/tmp/atria-gate2-priority-fix-v5.xcresult`; all 184 static checks pass.
+  Physical convergence to `resolved` and one idempotent relaunch of the signed
+  repair remain required before Gate 2 is called passed.

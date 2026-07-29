@@ -3805,9 +3805,13 @@ enum HistoricalArchive {
         do {
             guard let status = try store.load()?.status else { return false }
             switch status {
-            case .draining, .historyComplete, .coverageProven, .consumersCommitted:
+            case .draining,
+                 .historyComplete,
+                 .coverageProven,
+                 .gapResolvedConsumersPending,
+                 .consumersCommitted:
                 return true
-            case .gapResolvedConsumersPending, .resolved:
+            case .resolved:
                 return false
             }
         } catch {
