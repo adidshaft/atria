@@ -60,7 +60,7 @@ final class AtriaHistoricalAggregateBuilderTests: XCTestCase {
                           AtriaHistoricalAggregateBuilder.semanticParityReceipt(for: second))
     }
 
-    func testFileBuilderFailsClosedOnUnknownRow() throws {
+    func testFileBuilderFailsClosedWhenSourceHasNoDecodableRows() throws {
         let root = try temporaryDirectory()
         let url = root.appendingPathComponent("sealed.jsonl")
         try Data("{\"unknown\":true}\n".utf8).write(to: url)
@@ -71,8 +71,33 @@ final class AtriaHistoricalAggregateBuilderTests: XCTestCase {
             createdAt: Date()
         )) { error in
             XCTAssertEqual(error as? AtriaHistoricalAggregateBuilder.BuildError,
-                           .undecodableRows(1))
+                           .emptySource)
         }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testFileBuilderIndexesDecodedRowsButBlocksRetirementWhenUnknownRowsRemainRaw() throws {
+        let root = try temporaryDirectory()
+        let url = root.appendingPathComponent("sealed.jsonl")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var file = try encoder.encode(record(unix: 1_800_000_000, heartRate: 70))
+        file.append(0x0a)
+        file.append(Data("{\"schema\":3,\"source\":\"0x2f\",\"metricUsable\":false}\n".utf8))
+        try file.write(to: url)
+
+        let aggregate = try AtriaHistoricalAggregateBuilder.build(
+            sourceURL: url,
+            chunkID: "mixed-known-unknown",
+            createdAt: Date(timeIntervalSince1970: 1_800_000_001)
+        ).aggregate
+
+        XCTAssertEqual(aggregate.source.rawRowCount, 2)
+        XCTAssertEqual(aggregate.parity.rawRows, 2)
+        XCTAssertEqual(aggregate.parity.decodedRows, 1)
+        XCTAssertEqual(aggregate.parity.undecodableRowsRetainedRaw, 1)
+        XCTAssertFalse(aggregate.authorizesRawRetirement)
+        XCTAssertNoThrow(try aggregate.validateForCommit())
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
     }
 

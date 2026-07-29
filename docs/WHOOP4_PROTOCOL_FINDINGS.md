@@ -3083,3 +3083,18 @@ POSITIVE STILL REQUIRED**
 4. Keep observation separate from interpretation.
 5. Never overwrite an earlier conclusion silently; append a correction with the evidence that changed it.
 6. Never call a protocol behavior reliable until the relevant physical acceptance test passes.
+### 2026-07-29 — legacy rejection envelopes are valid residual raw, not corrupt history
+
+- Physical chunk `42a083d4-3b1a-44c4-ab1a-e95618a618e5` contains 25,609 valid JSONL
+  rows: 25,603 canonical `HistoricalArchive.Record` values and six intentionally
+  fail-closed decoder rejection envelopes (`metricUsable=false`, with the original
+  payload and rejection reason retained).
+- Treating any undecodable envelope as a fatal aggregate-build error prevented
+  sealed-catalog convergence even though the usable rows and exact raw payload
+  were intact.
+- Aggregate parity now records both decoded and retained-raw row counts. The
+  immutable source remains present, and any nonzero retained-raw count makes
+  `authorizesRawRetirement` false regardless of consumer receipts.
+- A source containing no decodable records still fails closed. Torn JSON still
+  fails closed. No rejected payload is synthesized, discarded, or counted as a
+  metric.
