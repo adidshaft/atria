@@ -45,29 +45,25 @@ enum AtriaHistoricalSealedCatalogMaterializer {
         // once per bounded retry and defeat the execution budget.
         let catalog = try catalogStore.snapshot()
         try catalog.validate()
-        var snapshot = AtriaHistoricalAggregateReader(
+        let candidates = lightweightCandidates(
+            catalog: catalog,
             aggregateDirectoryURL: aggregateDirectoryURL,
             manifestDirectoryURL: manifestDirectoryURL
-        ).load()
-        try validate(snapshot)
-
-        let aggregateByID = try aggregatesByID(snapshot.aggregates)
-        let candidates = catalog.chunks
-            .filter { chunk in
-                chunk.state == .sealed
-                    && chunk.byteCount > 0
-                    && !isComplete(chunk: chunk, aggregate: aggregateByID[chunk.id])
-            }
-            .sorted {
-                if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
-                return $0.id < $1.id
-            }
+        )
         guard let chunk = candidates.first else {
+            // Pay the global verification cost exactly once, only at the
+            // transition to complete. Until then each bounded turn touches
+            // just one source and one committed artifact pair.
+            let verified = try fullyVerifiedAggregateSnapshot(
+                catalog: catalog,
+                aggregateDirectoryURL: aggregateDirectoryURL,
+                manifestDirectoryURL: manifestDirectoryURL
+            )
             return .init(
                 materializedChunkID: nil,
                 remainingChunkCount: 0,
                 catalogGeneration: catalog.generation,
-                aggregateCount: snapshot.aggregates.count
+                aggregateCount: verified.count
             )
         }
 
@@ -75,8 +71,12 @@ enum AtriaHistoricalSealedCatalogMaterializer {
         guard FileManager.default.fileExists(atPath: sourceURL.path) else {
             throw MaterializationError.rawSourceWasNotRetained(chunk.id)
         }
-        let existingAggregate = aggregateByID[chunk.id]
-        let build = try AtriaHistoricalAggregateBuilder.build(
+        let existingAggregate = try existingAggregateHint(
+            chunkID: chunk.id,
+            aggregateDirectoryURL: aggregateDirectoryURL
+        )
+        let proof = try AtriaHistoricalAggregateBuilder
+            .buildRetainedRawShadowProof(
             sourceURL: sourceURL,
             chunkID: chunk.id,
             // Aggregate identity must survive a crash/retry at a later wall
@@ -86,13 +86,7 @@ enum AtriaHistoricalSealedCatalogMaterializer {
                 ?? chunk.createdAt
         )
         if let existingAggregate {
-            guard existingAggregate == build.aggregate,
-                  try AtriaHistoricalAggregateBuilder.verify(
-                    sourceURL: sourceURL,
-                    aggregate: existingAggregate,
-                    semanticParityReceipt: AtriaHistoricalAggregateBuilder
-                        .semanticParityReceipt(for: existingAggregate)
-                  ) else {
+            guard existingAggregate == proof.aggregate else {
                 throw MaterializationError.aggregateIdentityConflict(chunk.id)
             }
         }
@@ -100,30 +94,30 @@ enum AtriaHistoricalSealedCatalogMaterializer {
         if !hasCompleteMetadata(chunk) {
             try catalogStore.recordSealedMetadata(
                 chunkID: chunk.id,
-                rowCount: build.aggregate.source.rawRowCount,
-                firstTimestamp: build.aggregate.source.firstTimestamp,
-                lastTimestamp: build.aggregate.source.lastTimestamp,
-                contentSHA256: build.aggregate.source.rawSHA256
+                rowCount: proof.aggregate.source.rawRowCount,
+                firstTimestamp: proof.aggregate.source.firstTimestamp,
+                lastTimestamp: proof.aggregate.source.lastTimestamp,
+                contentSHA256: proof.aggregate.source.rawSHA256
             )
             try checkpoint(.metadataPublished(chunk.id))
         }
 
-        if existingAggregate == nil {
-            let result = try AtriaHistoricalRetentionTransaction(
-                now: { now },
-                semanticVerifier: AtriaHistoricalAggregateBuilder.verify
-            ).commit(.init(
+        let result = try AtriaHistoricalRetentionTransaction(
+            now: { now },
+            // Retained-shadow publication uses its typed proof seam below.
+            // This generic verifier remains the irreversible-path default.
+            semanticVerifier: AtriaHistoricalAggregateBuilder.verify
+        ).commitRetainedRawShadow(.init(
                 transactionID: chunk.id,
                 sourceURL: sourceURL,
                 aggregateDirectoryURL: aggregateDirectoryURL,
                 manifestDirectoryURL: manifestDirectoryURL,
-                aggregate: build.aggregate,
-                semanticParityReceipt: build.semanticParityReceipt,
-                deleteSourceAfterCommit: false
+                proof: proof
             ))
-            guard !result.sourceDeleted else {
-                throw MaterializationError.rawSourceWasNotRetained(chunk.id)
-            }
+        guard !result.sourceDeleted else {
+            throw MaterializationError.rawSourceWasNotRetained(chunk.id)
+        }
+        if !result.reusedCommittedTransaction {
             try checkpoint(.aggregatePublished(chunk.id))
         }
         guard FileManager.default.fileExists(atPath: sourceURL.path) else {
@@ -131,37 +125,147 @@ enum AtriaHistoricalSealedCatalogMaterializer {
         }
 
         let verifiedCatalog = try catalogStore.snapshot()
-        snapshot = AtriaHistoricalAggregateReader(
-            aggregateDirectoryURL: aggregateDirectoryURL,
-            manifestDirectoryURL: manifestDirectoryURL
-        ).load()
-        try validate(snapshot)
-        let verifiedByID = try aggregatesByID(snapshot.aggregates)
         guard let repairedChunk = verifiedCatalog.chunks.first(where: {
             $0.id == chunk.id
         }),
-        let repairedAggregate = verifiedByID[chunk.id],
-        isComplete(chunk: repairedChunk, aggregate: repairedAggregate),
-        try AtriaHistoricalAggregateBuilder.verify(
-            sourceURL: sourceURL,
-            aggregate: repairedAggregate,
-            semanticParityReceipt: AtriaHistoricalAggregateBuilder
-                .semanticParityReceipt(for: repairedAggregate)
-        ) else {
+        isComplete(chunk: repairedChunk, aggregate: proof.aggregate) else {
             throw MaterializationError.repairedChunkUnavailable(chunk.id)
         }
         try checkpoint(.chunkVerified(chunk.id))
 
-        let remaining = verifiedCatalog.chunks.filter {
-            $0.state == .sealed
-                && $0.byteCount > 0
-                && !isComplete(chunk: $0, aggregate: verifiedByID[$0.id])
-        }.count
+        let remaining = lightweightCandidates(
+            catalog: verifiedCatalog,
+            aggregateDirectoryURL: aggregateDirectoryURL,
+            manifestDirectoryURL: manifestDirectoryURL
+        )
+        let aggregateCount: Int
+        if remaining.isEmpty {
+            aggregateCount = try fullyVerifiedAggregateSnapshot(
+                catalog: verifiedCatalog,
+                aggregateDirectoryURL: aggregateDirectoryURL,
+                manifestDirectoryURL: manifestDirectoryURL
+            ).count
+        } else {
+            aggregateCount = committedArtifactPairCount(
+                catalog: verifiedCatalog,
+                aggregateDirectoryURL: aggregateDirectoryURL,
+                manifestDirectoryURL: manifestDirectoryURL
+            )
+        }
         return .init(
             materializedChunkID: chunk.id,
-            remainingChunkCount: remaining,
+            remainingChunkCount: remaining.count,
             catalogGeneration: verifiedCatalog.generation,
-            aggregateCount: snapshot.aggregates.count
+            aggregateCount: aggregateCount
+        )
+    }
+
+    private static func lightweightCandidates(
+        catalog: AtriaHistoricalArchiveCatalog,
+        aggregateDirectoryURL: URL,
+        manifestDirectoryURL: URL
+    ) -> [AtriaHistoricalArchiveCatalog.RawChunk] {
+        catalog.chunks
+            .filter { chunk in
+                guard chunk.state == .sealed, chunk.byteCount > 0 else {
+                    return false
+                }
+                let artifacts = artifactURLs(
+                    chunkID: chunk.id,
+                    aggregateDirectoryURL: aggregateDirectoryURL,
+                    manifestDirectoryURL: manifestDirectoryURL
+                )
+                return !hasCompleteMetadata(chunk)
+                    || !FileManager.default.fileExists(
+                        atPath: artifacts.aggregate.path
+                    )
+                    || !FileManager.default.fileExists(
+                        atPath: artifacts.manifest.path
+                    )
+            }
+            .sorted {
+                if $0.createdAt != $1.createdAt {
+                    return $0.createdAt < $1.createdAt
+                }
+                return $0.id < $1.id
+            }
+    }
+
+    private static func existingAggregateHint(
+        chunkID: String,
+        aggregateDirectoryURL: URL
+    ) throws -> AtriaHistoricalAggregateChunk? {
+        let url = aggregateDirectoryURL.appendingPathComponent(
+            "aggregate-\(chunkID).json"
+        )
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return nil
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let aggregate = try decoder.decode(
+            AtriaHistoricalAggregateChunk.self,
+            from: Data(contentsOf: url)
+        )
+        try aggregate.validateForCommit()
+        guard aggregate.source.chunkID == chunkID else {
+            throw MaterializationError.aggregateIdentityConflict(chunkID)
+        }
+        return aggregate
+    }
+
+    private static func fullyVerifiedAggregateSnapshot(
+        catalog: AtriaHistoricalArchiveCatalog,
+        aggregateDirectoryURL: URL,
+        manifestDirectoryURL: URL
+    ) throws -> [String: AtriaHistoricalAggregateChunk] {
+        let snapshot = AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: aggregateDirectoryURL,
+            manifestDirectoryURL: manifestDirectoryURL
+        ).load()
+        try validate(snapshot)
+        let aggregateByID = try aggregatesByID(snapshot.aggregates)
+        if let incomplete = catalog.chunks
+            .filter({ $0.state == .sealed && $0.byteCount > 0 })
+            .first(where: {
+                !isComplete(chunk: $0, aggregate: aggregateByID[$0.id])
+            }) {
+            throw MaterializationError.repairedChunkUnavailable(incomplete.id)
+        }
+        return aggregateByID
+    }
+
+    private static func committedArtifactPairCount(
+        catalog: AtriaHistoricalArchiveCatalog,
+        aggregateDirectoryURL: URL,
+        manifestDirectoryURL: URL
+    ) -> Int {
+        catalog.chunks.filter { chunk in
+            guard chunk.state == .sealed, chunk.byteCount > 0 else {
+                return false
+            }
+            let artifacts = artifactURLs(
+                chunkID: chunk.id,
+                aggregateDirectoryURL: aggregateDirectoryURL,
+                manifestDirectoryURL: manifestDirectoryURL
+            )
+            return FileManager.default.fileExists(atPath: artifacts.aggregate.path)
+                && FileManager.default.fileExists(atPath: artifacts.manifest.path)
+        }.count
+    }
+
+    private static func artifactURLs(
+        chunkID: String,
+        aggregateDirectoryURL: URL,
+        manifestDirectoryURL: URL
+    ) -> (aggregate: URL, manifest: URL) {
+        (
+            aggregateDirectoryURL.appendingPathComponent(
+                "aggregate-\(chunkID).json"
+            ),
+            manifestDirectoryURL.appendingPathComponent(
+                "manifest-\(chunkID).json"
+            )
         )
     }
 
