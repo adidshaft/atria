@@ -72,8 +72,29 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         ), "terminal publication cannot start without durable admission identity")
         XCTAssertTrue(resume.contains("preparing_terminal_admission_ledger"))
         XCTAssertTrue(manager.contains(
-            "terminal_materialization_finished_\\(reason)"
-        ), "a request deferred by terminal publication must be re-armed on release")
+            "action=retain_terminal_journal_preserve_live_no_ble_rearm"
+        ), "terminal consumer publication must not reclaim BLE after a local projection failure")
+        let materializationFinishStart = try XCTUnwrap(manager.range(
+            of: "private func finishHistoricalConsumerMaterialization("
+        )?.lowerBound)
+        let materializationFinishEnd = try XCTUnwrap(manager.range(
+            of: "private func schedulePendingConsumerFollowupScanMaterialization(",
+            range: materializationFinishStart..<manager.endIndex
+        )?.lowerBound)
+        let materializationFinish = String(
+            manager[materializationFinishStart..<materializationFinishEnd]
+        )
+        let terminalStop = try XCTUnwrap(materializationFinish.range(
+            of: "action=retain_terminal_journal_preserve_live_no_ble_rearm"
+        ))
+        let transportRearm = try XCTUnwrap(materializationFinish.range(
+            of: "reason: \"terminal_materialization_finished_\\(reason)\""
+        ))
+        XCTAssertLessThan(
+            terminalStop.lowerBound,
+            transportRearm.lowerBound,
+            "the durable terminal-authority return must precede normal newer-gap transport scheduling"
+        )
 
         let selectionStart = try XCTUnwrap(manager.range(
             of: "let persistedFullDrainAuthority = try?"
@@ -111,6 +132,17 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         )
         XCTAssertTrue(request.contains("preparing_durable_history_ledger"))
         XCTAssertTrue(request.contains("retainPendingOfflineHistoricalSyncRequest("))
+        let terminalFence = try XCTUnwrap(request.range(
+            of: "terminal_consumer_materialization"
+        ))
+        XCTAssertLessThan(
+            terminalFence.lowerBound,
+            readiness.lowerBound,
+            "a terminal durable journal must be diverted to local publication before transport admission"
+        )
+        XCTAssertTrue(request.contains(
+            "action=preserve_live_resume_local_publication"
+        ))
     }
 
     func testNoRowsFingerprintSuppressesOnlyAutomaticRetryForUnchangedGap() {

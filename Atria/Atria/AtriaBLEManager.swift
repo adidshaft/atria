@@ -7641,6 +7641,48 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 return false
             }
         }
+        // A terminal full-drain journal is no longer a BLE problem. Its raw
+        // rows and coverage proof are already durable; only local consumer
+        // projection/publication remains. Re-entering the normal recovery
+        // path here used to age into a fresh-owner cutover, disconnect a
+        // healthy live link, and create another gap while trying to settle the
+        // previous one. Keep the radio with live HR and resume the fsynced
+        // journal locally instead.
+        if let authority = try? historicalFullDrainCoverageStore.load() {
+            switch authority.status {
+            case .historyComplete, .coverageProven,
+                 .gapResolvedConsumersPending, .consumersCommitted:
+                defaults.set(
+                    "terminal_consumer_materialization",
+                    forKey: OfflineSyncDefaults.lastStatus
+                )
+                defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+                AtriaDebugLog(
+                    "ATRIADBG offline_sync status=terminal_consumer_materialization reason=%@ stage=%@ action=preserve_live_resume_local_publication",
+                    reason,
+                    authority.status.rawValue
+                )
+                resumePendingFullDrainPublicationIfNeeded(
+                    reason: "transport_request_\(reason)"
+                )
+                return false
+            case .draining:
+                guard Self.isPersistedDrainAuthorityResumeReason(reason) else {
+                    defaults.set(
+                        "deferred_existing_drain_authority",
+                        forKey: OfflineSyncDefaults.lastStatus
+                    )
+                    defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+                    AtriaDebugLog(
+                        "ATRIADBG offline_sync status=deferred_existing_drain_authority reason=%@ action=preserve_live_wait_for_exact_persisted_resume",
+                        reason
+                    )
+                    return false
+                }
+            case .resolved:
+                break
+            }
+        }
         if Self.shouldDeferHistoricalSyncUntilArchiveWarmReady(
             warmState: historicalArchiveWarmState,
             syncInProgress: offlineHistoricalSyncInProgress
@@ -28151,6 +28193,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 forKey: OfflineSyncDefaults.rangeLossBackfillPending
               ),
               !offlineHistoricalSyncInProgress else { return }
+        if let authority = try? historicalFullDrainCoverageStore.load(),
+           authority.status == .historyComplete
+            || authority.status == .coverageProven
+            || authority.status == .gapResolvedConsumersPending
+            || authority.status == .consumersCommitted {
+            UserDefaults.standard.set(
+                "terminal_consumer_materialization_deferred",
+                forKey: OfflineSyncDefaults.lastStatus
+            )
+            UserDefaults.standard.set(
+                reason,
+                forKey: OfflineSyncDefaults.lastReason
+            )
+            AtriaDebugLog(
+                "ATRIADBG historical_full_drain_publish status=deferred stage=%@ reason=%@ action=retain_terminal_journal_preserve_live_no_ble_rearm",
+                authority.status.rawValue,
+                reason
+            )
+            return
+        }
         scheduleRangeLossBackfillIfNeeded(
             reason: "terminal_materialization_finished_\(reason)"
         )

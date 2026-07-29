@@ -2504,6 +2504,37 @@ POSITIVE STILL REQUIRED**
   The reduced fixture contains only the named acceptance windows; it cannot be
   used to claim whole-day accuracy.
 
+#### 2026-07-29 — physical v15 receipt and terminal-publication radio fence
+
+- **Physical receipt:** the installed iPhone container holds one current-cycle
+  `whoop4-impact-gait-ensemble-v15` receipt with 68,145 decoded strap rows,
+  8,672 admitted motion ticks, 5,546 strap-only steps, 63,149 known seconds,
+  and 5,192 missing seconds. Coverage is 92.40%, so the only truthful product
+  presentation is `≥5,546 · Partial`; it is not an exact all-day count.
+- **UI fault:** the receipt and widget projection were correct, but Home used
+  nested vertical lazy content owners. The lower At-a-glance cards could remain
+  physically unrealized and scrolling stopped above Strap steps. Home now has
+  one lazy vertical owner; the outer tab wrapper is eager.
+- **Retry-storm observation:** the physical install had accumulated 1,189
+  history attempts while a durable full-drain authority was already
+  `gapResolvedConsumersPending` with `completionPublished`. Recovered workout
+  refreshes repeatedly re-set the pending bit; terminal materialization then
+  re-armed BLE, aged into `explicit_history_fresh_owner_cutover`, disconnected
+  a healthy live link, and created a new gap.
+- **Protocol consequence:** once an authority reaches `historyComplete`,
+  `coverageProven`, `gapResolvedConsumersPending`, or `consumersCommitted`,
+  its remaining work is local durable publication, not another WHOOP command.
+  Those states now preserve the current live owner and resume local
+  materialization without a BLE cutover. A `.draining` authority permits only
+  its exact persisted-resume lane.
+- **Physical post-install soak:** accepted strap samples continued while the
+  history attempt counter remained exactly 1,189 and the status settled at
+  `terminal_consumer_materialization`. No Bluetooth toggle, re-pair, data
+  deletion, or phone-step fallback was used.
+- **Evidence:** `evidence/2026-07-29-terminal-radio-fence/` contains the pulled
+  before/after preferences, current v15 receipt, and terminal authority
+  snapshot.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.
