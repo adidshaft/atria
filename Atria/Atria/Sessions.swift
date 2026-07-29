@@ -10618,6 +10618,7 @@ final class SessionStore: ObservableObject {
                                             calendar: eventCalendar) >= 0.60
         }
         return isUnambiguousHROnlyMainSleepCandidate(candidate)
+            || isHighSpecificityFragmentedHROnlyMainSleepCandidate(candidate)
             || isDegradedHROnlyOvernightSleepCandidate(candidate)
     }
 
@@ -21522,7 +21523,47 @@ final class SessionStore: ObservableObject {
         baselineRestingIsTrusted: Bool
     ) -> Bool {
         isStrongAutoConfirmableSleepCandidate(candidate)
-            || (baselineRestingIsTrusted && isUnambiguousHROnlyMainSleepCandidate(candidate))
+            || (baselineRestingIsTrusted
+                && (isUnambiguousHROnlyMainSleepCandidate(candidate)
+                    || isHighSpecificityFragmentedHROnlyMainSleepCandidate(candidate)))
+    }
+
+    /// A long, densely observed main-sleep window may be split into several
+    /// saved journals before recovered R10 stillness is projected back into the
+    /// sessions. Do not make the physiological day wait on that asynchronous
+    /// projection when the independent HR shape is unusually specific. This is
+    /// deliberately narrower than the motion-backed gate: it needs a trusted
+    /// personal baseline, at least three fragments, five observed hours, high
+    /// temporal coverage, a real low-HR tail near baseline, and bounded robust
+    /// whole-night physiology. Short quiet-awake windows and daytime naps cannot
+    /// enter this path.
+    nonisolated static func isHighSpecificityFragmentedHROnlyMainSleepCandidate(
+        _ candidate: AggregateSleepCandidate,
+        calendar: Calendar = .current
+    ) -> Bool {
+        guard candidate.kind != "nap_candidate",
+              candidate.kind != "resumed_sleep_candidate",
+              candidate.sessions >= 3,
+              candidate.duration >= AggregateSleepCandidate.minimumAutoConfirmMainSleepDuration,
+              candidate.span <= candidate.duration * 1.35,
+              candidate.span <= AggregateSleepCandidate.maximumAutoConfirmMainSleepSpan,
+              candidate.maxGap <= 60 * 60,
+              candidate.hrObservedCoverageFraction >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction,
+              candidate.maximumHRSampleGap <= 60 * 60,
+              candidate.restingHR <= candidate.baselineRestingHR + 12,
+              candidate.avgHR <= candidate.baselineRestingHR + 25,
+              candidate.hrStandardDeviation <= 15,
+              candidate.medianHR <= candidate.baselineRestingHR + 22,
+              candidate.hrP90 <= candidate.baselineRestingHR + 40,
+              candidate.elevatedSampleFraction < 0.20,
+              candidate.elevatedSampleFraction * candidate.duration < 45 * 60 else {
+            return false
+        }
+        let eventCalendar = EventCivilTime.eventCalendar(
+            timeZoneIdentifier: candidate.eventTimeZoneIdentifier,
+            fallback: calendar
+        )
+        return mainSleepAutoConfirmWindowReady(candidate, calendar: eventCalendar)
     }
 
     nonisolated static func isUnambiguousHROnlyMainSleepCandidate(_ candidate: AggregateSleepCandidate,
@@ -25519,6 +25560,31 @@ final class SessionStore: ObservableObject {
                     && maxGap <= 60
                     && avg <= rest + 12
                     && hrStandardDeviation <= 9.5
+                // A physical night can be split by journal/reconnect seams
+                // before asynchronous R10 motion projection reaches the saved
+                // sessions. Preserve only the long, dense, multi-fragment shape
+                // that the trusted-baseline auto-confirm predicate can
+                // independently verify. RR density is required here even though
+                // it is not a presentation field on AggregateSleepCandidate.
+                let highSpecificityFragmentedHROnlyMainSleepReady = !napCandidateReady
+                    && cluster.count >= 3
+                    && totalDuration >= AggregateSleepCandidate.minimumAutoConfirmMainSleepDuration
+                    && span <= totalDuration * 1.35
+                    && span <= AggregateSleepCandidate.maximumAutoConfirmMainSleepSpan
+                    && maxGap <= 60 * 60
+                    && hrObservedCoverageFraction >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction
+                    && maximumHRSampleGap <= 60 * 60
+                    && rrSampleCoverageFraction >= 0.60
+                    && resting <= rest + 12
+                    && avg <= rest + 25
+                    && hrStandardDeviation <= 15
+                    && medianHR <= rest + 22
+                    && hrP90 <= rest + 40
+                    && elevatedSampleFraction < 0.20
+                    && elevatedSampleFraction * totalDuration < 45 * 60
+                    && Self.sleepCoreOverlapFraction(start: start,
+                                                     end: end,
+                                                     calendar: eventCalendar) >= 0.60
                 // Reconnect-fragmented nights can still be offered for review
                 // when robust HR statistics and sleep-core overlap are unusually
                 // specific. This preserves split/resumed sleep clustering while
@@ -25539,6 +25605,7 @@ final class SessionStore: ObservableObject {
                 guard napCandidateReady
                         || motionValidatedMainSleepReady
                         || stableHROnlyMainSleepReady
+                        || highSpecificityFragmentedHROnlyMainSleepReady
                         || degradedHROnlyMainSleepReviewReady
                         || denseMorningHROnlyReviewReady
                         || denseLongHROnlyReviewReady else {

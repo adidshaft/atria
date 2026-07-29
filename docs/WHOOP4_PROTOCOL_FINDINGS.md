@@ -2669,6 +2669,32 @@ POSITIVE STILL REQUIRED**
   the retained night and publish its dependent metrics on the physical iPhone
   before this observation is called physically closed.
 
+#### 2026-07-29 — correction: saved-session motion projection can lag the archive
+
+- **Physical correction:** the raw archive does validate low motion for the
+  22:52–06:14 night, but the four canonical saved sessions still carried
+  `motionEvidenceValidated=false` / `motionEvidenceSource=unavailable`.
+  Bounded launch settlement therefore produced zero candidates while the
+  terminal recovered-data projection remained pending and later timed out.
+  The earlier reduced fixture incorrectly embedded already-projected motion and
+  did not reproduce this state.
+- **Repair:** a separate trusted-baseline path now preserves only a
+  high-specificity pre-projection shape: at least three fragments, five
+  observed hours, at least 80% temporal-bin coverage, at most a one-hour seam,
+  span no more than 1.35× observed duration, dense RR at construction, a P05
+  tail within 12 bpm of baseline, and bounded average/SD/median/P90/elevated
+  physiology with majority sleep-core overlap. It is unavailable to naps,
+  resumed-sleep candidates, short quiet-awake windows, uniformly elevated
+  activity, and untrusted baselines.
+- **Regression evidence:** the physical-shape fixture now deliberately carries
+  no projected motion while retaining dense HR/RR, and passes the new
+  high-specificity gate. The complete sleep audit class remains 45/45 green,
+  including the reported quiet-awake, sustained-awake-tail, shifted-window,
+  sparse-burst, false-nap, and fragmented non-core controls. Static release
+  checks remain 184/184 green.
+- **Acceptance status:** physical Release verification remains required; no
+  on-device sleep/recovery claim is made by these tests alone.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.
