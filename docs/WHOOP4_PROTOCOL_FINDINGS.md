@@ -3210,3 +3210,43 @@ POSITIVE STILL REQUIRED**
   `/tmp/atria-gate2-priority-fix-v5.xcresult`; all 184 static checks pass.
   Physical convergence to `resolved` and one idempotent relaunch of the signed
   repair remain required before Gate 2 is called passed.
+
+### 2026-07-30 — exact consumer settlement must suppress ordinary recovered-data tickets
+
+- The exact signed `fb9dfb96` Release proved that retaining archive-lane
+  priority through consumer settlement fixed the compaction competitor. It
+  resumed the existing durable authority, published new `activity` and
+  `workout` artifacts, reused the still-valid `dailyMetrics`, `steps`, and
+  `sleep` artifacts, and atomically advanced the current five-receipt set.
+  Pointer, receipt, artifact, byte-count, source-chunk, and raw-SHA checks all
+  passed. Live HR remained connected and responsive.
+- The authority nevertheless remained
+  `gapResolvedConsumersPending`. The app-facing publication fence failed about
+  135 seconds after the current receipt set committed. Every consumer guard
+  before `requestAndAwaitRecoveredDataPublication` had passed, and
+  `recordCommittedConsumers` was never reached.
+- The remaining competitor was inside `SessionStore`: ordinary
+  `archive_did_update`, deferred-session-load, or foreground recovery requests
+  could create a recovered-data coordinator ticket while exact authority owned
+  the same serial projection lane. The explicit terminal request then became a
+  trailing ticket. Timing out the first logical ticket does not cancel its
+  already-running serial work item, so the terminal fence could consume its own
+  finite lease while waiting behind work that could not authorize terminal
+  settlement.
+- Ordinary recovered-data requests now coalesce while exact authority owns
+  priority. Only the explicit completion-fenced terminal request may enter; it
+  reads the newest durable archive revision and therefore subsumes those
+  duplicates. No timeout was increased, no running work moved to the main
+  actor, and no BLE command, coverage rule, or receipt validation changed.
+- The observed `0.3220215`-second difference between the in-memory dependency
+  endpoint and receipt endpoint is not this fence failure. Catalog dates are
+  deliberately persisted at whole-second ISO-8601 precision; the coordinator
+  canonicalizes to that persisted range, accepts only the same persisted
+  second, and rejects the next second. Neither the SessionStore fence nor
+  consumer commit compares those two representations directly.
+- Regression evidence: scheduler, coordinator, and full-drain authority tests
+  pass 52/52 in `/tmp/atria-gate2-ordinary-deferral-v3.xcresult`; the dedicated
+  persisted-bound audit passes in
+  `/tmp/atria-dependency-bound-audit-v2.xcresult`. Physical convergence to
+  `resolved`, revalidation of the original 129/129 recovered buckets, and one
+  idempotent relaunch remain mandatory before Gate 2 is called passed.

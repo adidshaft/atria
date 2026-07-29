@@ -49,6 +49,30 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
         ))
     }
 
+    func testOnlyExplicitExactPublicationCanRequestRecoveredRecomputationWhileAuthorityOwnsPriority() {
+        XCTAssertTrue(
+            SessionStore.shouldDeferRecoveredDataRecomputationForExactRecovery(
+                exactRecoveryOwnsPriority: true,
+                isExactRecoveryPublication: false
+            ),
+            "ordinary archive and launch requests must not create an older projection ticket"
+        )
+        XCTAssertFalse(
+            SessionStore.shouldDeferRecoveredDataRecomputationForExactRecovery(
+                exactRecoveryOwnsPriority: true,
+                isExactRecoveryPublication: true
+            ),
+            "the completion-fenced terminal request must retain access to the archive lane"
+        )
+        XCTAssertFalse(
+            SessionStore.shouldDeferRecoveredDataRecomputationForExactRecovery(
+                exactRecoveryOwnsPriority: false,
+                isExactRecoveryPublication: false
+            ),
+            "ordinary projection resumes after the terminal authority resolves"
+        )
+    }
+
     func testDenseDecodedTimestampsProduceRevalidatablePerCadenceProof() throws {
         let stores = durableStores(sequence: 10, fsyncedAt: start + 110)
         let proof = try Policy.evaluate(

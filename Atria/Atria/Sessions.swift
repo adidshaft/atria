@@ -8670,6 +8670,24 @@ final class SessionStore: ObservableObject {
         historyTransportOwnsLink || (!onboardingComplete && !allowsIncompleteOnboarding)
     }
 
+    /// A durable exact-recovery authority owns the shared archive projection
+    /// lane until its app-facing publication fence commits. Ordinary archive
+    /// notifications and launch hydration may arrive while that authority is
+    /// pending; admitting either one here creates an older projection ticket
+    /// ahead of the required terminal ticket. The coordinator then correctly
+    /// queues the terminal request as trailing, but its finite lease can expire
+    /// while the older serial work item is still scanning.
+    ///
+    /// Only the explicit completion-fenced request may enter during this
+    /// interval. It already projects the newest durable archive generation, so
+    /// suppressing ordinary duplicates loses no input.
+    nonisolated static func shouldDeferRecoveredDataRecomputationForExactRecovery(
+        exactRecoveryOwnsPriority: Bool,
+        isExactRecoveryPublication: Bool
+    ) -> Bool {
+        exactRecoveryOwnsPriority && !isExactRecoveryPublication
+    }
+
     func installRecoveredDataRecomputationDeferralProvider(
         _ provider: @escaping () -> Bool
     ) {
@@ -8691,9 +8709,22 @@ final class SessionStore: ObservableObject {
     @discardableResult
     private func requestRecoveredDataRecomputation(
         reason: String,
-        allowsIncompleteOnboarding: Bool = false
+        allowsIncompleteOnboarding: Bool = false,
+        isExactRecoveryPublication: Bool = false
     ) -> Bool {
         guard !restoreInitializationBlocked else { return false }
+        if Self.shouldDeferRecoveredDataRecomputationForExactRecovery(
+            exactRecoveryOwnsPriority:
+                HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority(),
+            isExactRecoveryPublication: isExactRecoveryPublication
+        ) {
+            deferredRecoveredDataRecomputationReason = reason
+            AtriaDebugLog(
+                "ATRIADBG recovered_projection status=deferred reason=%@ exact_recovery_priority=1 action=coalesce_until_required_publication",
+                reason
+            )
+            return false
+        }
         if !allowsIncompleteOnboarding,
            !Self.shouldStartAutomaticArchiveProjection(
                 applicationIsActive:
@@ -9035,7 +9066,8 @@ final class SessionStore: ObservableObject {
         let priorRevision = recoveredDataPublicationFence.archiveRevision
         guard requestRecoveredDataRecomputation(
             reason: reason,
-            allowsIncompleteOnboarding: true
+            allowsIncompleteOnboarding: true,
+            isExactRecoveryPublication: true
         ) else { return false }
         return await awaitRecoveredDataPublication(after: priorRevision,
                                                    timeout: timeout)
