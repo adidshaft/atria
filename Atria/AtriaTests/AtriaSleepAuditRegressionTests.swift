@@ -265,6 +265,11 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
             candidate,
             baselineRestingIsTrusted: true
         ))
+        XCTAssertTrue(SessionStore.isAutoConfirmableMainSleepCandidate(
+            candidate,
+            baselineRestingIsTrusted: false,
+            baselineRestingIsNearTrusted: true
+        ), "a 13-day near-trusted baseline may admit only this strict fragmented-HR tier")
     }
 
     func testPhysicalMorningShapeQueuesSeparateResumedSleepAfterMainSettlement() throws {

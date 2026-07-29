@@ -239,6 +239,17 @@ struct PersonalBaseline: Codable {
         freshRestingSampleCount(now: now) >= Self.trustedMinimumSamples && !isStale(now: now)
     }
 
+    /// A deliberately narrow bridge for high-specificity, fragmented main
+    /// sleep only. Requiring the full 14-day baseline can strand a physiologically
+    /// unambiguous night at review when the wearer is exactly one qualified day
+    /// short. This does not make the baseline trusted for recovery, stress, or
+    /// any other metric; it only supplies enough personal resting provenance
+    /// for the stricter multi-fragment HR-only sleep gate.
+    func hasNearTrustedRestingBaselineForFragmentedSleep(now: Date = Date()) -> Bool {
+        freshRestingSampleCount(now: now) >= Self.trustedMinimumSamples - 1
+            && !isStale(now: now)
+    }
+
     func hasTrustedHRVBaseline(now: Date = Date()) -> Bool {
         freshHRVSampleCount(now: now) >= Self.trustedMinimumSamples && !isStale(now: now)
     }

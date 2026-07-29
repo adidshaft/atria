@@ -5541,6 +5541,7 @@ final class SessionStore: ObservableObject {
         let confirmedSleepsRevision: Int
         let restingHR: Int
         let baselineRestingIsTrusted: Bool
+        let baselineRestingIsNearTrusted: Bool
         let maxHR: Int
     }
 
@@ -20704,10 +20705,13 @@ final class SessionStore: ObservableObject {
         let rest = baseline.restingInt ?? 60
         let baselineRestingIsTrusted = baseline.restingInt != nil
             && baseline.hasTrustedRestingBaseline(now: now)
+        let baselineRestingIsNearTrusted = baseline.restingInt != nil
+            && baseline.hasNearTrustedRestingBaselineForFragmentedSleep(now: now)
         let maxHR = profile.maxHR
         let fingerprint = foregroundSleepSettlementFingerprint(
             rest: rest,
             baselineRestingIsTrusted: baselineRestingIsTrusted,
+            baselineRestingIsNearTrusted: baselineRestingIsNearTrusted,
             maxHR: maxHR
         )
         let canonicalSessions = cachedCanonicalSessions
@@ -20745,6 +20749,8 @@ final class SessionStore: ObservableObject {
                         rest: self.baseline.restingInt ?? 60,
                         baselineRestingIsTrusted: self.baseline.restingInt != nil
                             && self.baseline.hasTrustedRestingBaseline(now: Date()),
+                        baselineRestingIsNearTrusted: self.baseline.restingInt != nil
+                            && self.baseline.hasNearTrustedRestingBaselineForFragmentedSleep(now: Date()),
                         maxHR: self.profile.maxHR
                     )
                 ) else {
@@ -20825,6 +20831,7 @@ final class SessionStore: ObservableObject {
     private func foregroundSleepSettlementFingerprint(
         rest: Int,
         baselineRestingIsTrusted: Bool,
+        baselineRestingIsNearTrusted: Bool,
         maxHR: Int
     ) -> ForegroundSleepSettlementFingerprint {
         ForegroundSleepSettlementFingerprint(
@@ -20832,6 +20839,7 @@ final class SessionStore: ObservableObject {
             confirmedSleepsRevision: confirmedSleepsRevision,
             restingHR: rest,
             baselineRestingIsTrusted: baselineRestingIsTrusted,
+            baselineRestingIsNearTrusted: baselineRestingIsNearTrusted,
             maxHR: maxHR
         )
     }
@@ -20873,7 +20881,8 @@ final class SessionStore: ObservableObject {
         ).filter {
             isAutoConfirmableMainSleepCandidate(
                 $0,
-                baselineRestingIsTrusted: fingerprint.baselineRestingIsTrusted
+                baselineRestingIsTrusted: fingerprint.baselineRestingIsTrusted,
+                baselineRestingIsNearTrusted: fingerprint.baselineRestingIsNearTrusted
             )
         }
         let wakeBoundary = prepareWakeBoundarySleep(
@@ -20882,7 +20891,8 @@ final class SessionStore: ObservableObject {
             maxHR: maxHR,
             now: now,
             learnedWindow: learnedWindow,
-            baselineRestingIsTrusted: fingerprint.baselineRestingIsTrusted
+            baselineRestingIsTrusted: fingerprint.baselineRestingIsTrusted,
+            baselineRestingIsNearTrusted: fingerprint.baselineRestingIsNearTrusted
         )
         return ForegroundSleepSettlementProposal(
             fingerprint: fingerprint,
@@ -20905,6 +20915,8 @@ final class SessionStore: ObservableObject {
         let now = evaluationNow
         let baselineRestingIsTrusted = baseline.restingInt != nil
             && baseline.hasTrustedRestingBaseline(now: now)
+        let baselineRestingIsNearTrusted = baseline.restingInt != nil
+            && baseline.hasNearTrustedRestingBaselineForFragmentedSleep(now: now)
         let candidatePool = precomputedStrongCandidates ?? Self.aggregateSleepCandidates(
             in: sourceSessions ?? canonicalSessions(includeActiveJournal: true),
             rest: rest,
@@ -20915,7 +20927,8 @@ final class SessionStore: ObservableObject {
         let strongCandidates = candidatePool.filter {
             Self.isAutoConfirmableMainSleepCandidate(
                 $0,
-                baselineRestingIsTrusted: baselineRestingIsTrusted
+                baselineRestingIsTrusted: baselineRestingIsTrusted,
+                baselineRestingIsNearTrusted: baselineRestingIsNearTrusted
             )
         }
         let candidates = strongCandidates.filter {
@@ -21256,7 +21269,8 @@ final class SessionStore: ObservableObject {
         maxHR: Int,
         now: Date,
         learnedWindow: (start: Int, end: Int)?,
-        baselineRestingIsTrusted: Bool
+        baselineRestingIsTrusted: Bool,
+        baselineRestingIsNearTrusted: Bool = false
     ) -> ForegroundSleepSettlementProposal.WakeBoundary {
         let calendar = Calendar.current
         let windowStart = learnedWindow?.start ?? WakeBoundaryDefaults.fallbackWindowStartMin
@@ -21316,7 +21330,8 @@ final class SessionStore: ObservableObject {
                                                          now: now),
               isAutoConfirmableMainSleepCandidate(
                 candidate,
-                baselineRestingIsTrusted: baselineRestingIsTrusted
+                baselineRestingIsTrusted: baselineRestingIsTrusted,
+                baselineRestingIsNearTrusted: baselineRestingIsNearTrusted
               ) else {
             return .init(candidate: nil,
                          blocker: "candidate_did_not_clear_gates",
@@ -21372,9 +21387,12 @@ final class SessionStore: ObservableObject {
 
         let baselineRestingIsTrusted = baseline.restingInt != nil
             && baseline.hasTrustedRestingBaseline(now: Date())
+        let baselineRestingIsNearTrusted = baseline.restingInt != nil
+            && baseline.hasNearTrustedRestingBaselineForFragmentedSleep(now: Date())
         guard Self.isAutoConfirmableMainSleepCandidate(
             candidate,
-            baselineRestingIsTrusted: baselineRestingIsTrusted
+            baselineRestingIsTrusted: baselineRestingIsTrusted,
+            baselineRestingIsNearTrusted: baselineRestingIsNearTrusted
         ) else {
             DetectionEventLog.append(DetectionEvent(
                 kind: "sleepCandidateSkipped",
@@ -21520,12 +21538,14 @@ final class SessionStore: ObservableObject {
 
     nonisolated static func isAutoConfirmableMainSleepCandidate(
         _ candidate: AggregateSleepCandidate,
-        baselineRestingIsTrusted: Bool
+        baselineRestingIsTrusted: Bool,
+        baselineRestingIsNearTrusted: Bool = false
     ) -> Bool {
         isStrongAutoConfirmableSleepCandidate(candidate)
             || (baselineRestingIsTrusted
-                && (isUnambiguousHROnlyMainSleepCandidate(candidate)
-                    || isHighSpecificityFragmentedHROnlyMainSleepCandidate(candidate)))
+                && isUnambiguousHROnlyMainSleepCandidate(candidate))
+            || ((baselineRestingIsTrusted || baselineRestingIsNearTrusted)
+                && isHighSpecificityFragmentedHROnlyMainSleepCandidate(candidate))
     }
 
     /// A long, densely observed main-sleep window may be split into several
