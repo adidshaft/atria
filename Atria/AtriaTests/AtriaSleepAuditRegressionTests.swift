@@ -183,6 +183,86 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(mainSleep))
     }
 
+    func testValidatedRestlessOvernightFragmentsSurviveLowBaselineAdmission() throws {
+        // Physical July 29 shape: the trusted long-term resting baseline was
+        // 56 bpm, while two real low-motion sleep fragments averaged 77–78.
+        // The former early filter discarded those fragments before the R10
+        // stillness evidence could be evaluated, collapsing a 7h21m night into
+        // "fragmented below minimum."
+        func restlessSession(start: Date, end: Date, base: Int) -> SavedSession {
+            let duration = end.timeIntervalSince(start)
+            let points = stride(from: 0.0, to: duration, by: 60.0)
+                .enumerated()
+                .map { index, offset -> SavedSession.Point in
+                    let bpm: Int
+                    if index.isMultiple(of: 20) {
+                        bpm = 100
+                    } else if index.isMultiple(of: 5) {
+                        bpm = 88
+                    } else if index.isMultiple(of: 11) {
+                        bpm = 65
+                    } else {
+                        bpm = base
+                    }
+                    return SavedSession.Point(t: offset, bpm: bpm)
+                }
+            var value = SavedSession(
+                id: UUID(),
+                start: start,
+                end: end,
+                label: "Validated restless overnight fragment",
+                points: points,
+                eventTimeZoneIdentifier: "Asia/Kolkata"
+            )
+            value.motionEvidenceValidated = true
+            value.motionEvidenceSource = "validated_strap_stillness"
+            return value
+        }
+
+        let first = restlessSession(
+            start: date(2032, 1, 1, 22, 52, timeZoneIdentifier: "Asia/Kolkata"),
+            end: date(2032, 1, 2, 1, 16, timeZoneIdentifier: "Asia/Kolkata"),
+            base: 74
+        )
+        let second = session(
+            start: date(2032, 1, 2, 1, 31, timeZoneIdentifier: "Asia/Kolkata"),
+            end: date(2032, 1, 2, 2, 52, timeZoneIdentifier: "Asia/Kolkata"),
+            bpm: 71,
+            eventTimeZoneIdentifier: "Asia/Kolkata",
+            motionValidated: true
+        )
+        let third = restlessSession(
+            start: date(2032, 1, 2, 3, 14, timeZoneIdentifier: "Asia/Kolkata"),
+            end: date(2032, 1, 2, 4, 46, timeZoneIdentifier: "Asia/Kolkata"),
+            base: 76
+        )
+        let final = session(
+            start: date(2032, 1, 2, 5, 41, timeZoneIdentifier: "Asia/Kolkata"),
+            end: date(2032, 1, 2, 6, 14, timeZoneIdentifier: "Asia/Kolkata"),
+            bpm: 65,
+            eventTimeZoneIdentifier: "Asia/Kolkata",
+            motionValidated: true
+        )
+
+        let result = SessionStore.aggregateSleepCandidates(
+            in: [first, second, third, final],
+            rest: 56,
+            maxHR: 190,
+            calendar: Self.indiaCalendar,
+            historicalMotionPolicy: .sessionOnly
+        )
+        let candidate = try XCTUnwrap(result.first {
+            $0.start == first.start && $0.end == final.end
+        })
+
+        XCTAssertEqual(candidate.sessions, 4)
+        XCTAssertTrue(candidate.motionEvidenceValidated)
+        XCTAssertTrue(SessionStore.isAutoConfirmableMainSleepCandidate(
+            candidate,
+            baselineRestingIsTrusted: true
+        ))
+    }
+
     func testPhysicalMorningShapeQueuesSeparateResumedSleepAfterMainSettlement() throws {
         let first = denseHRRRSession(
             start: date(2032, 1, 2, 0, 45, timeZoneIdentifier: "Asia/Kolkata"),

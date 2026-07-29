@@ -21496,13 +21496,16 @@ final class SessionStore: ObservableObject {
             return false
         }
         // Validated low motion is necessary but not sufficient: a motionless
-        // awake window can still pass it. Require the same robust HR shape used
-        // by the degraded review tier, plus a bounded total elevated duration,
-        // before automatic confirmation can move the physiological day.
-        guard candidate.medianHR <= candidate.baselineRestingHR + 10,
-              candidate.hrP90 <= candidate.baselineRestingHR + 22,
-              candidate.elevatedSampleFraction < 0.10,
-              candidate.elevatedSampleFraction * candidate.duration < 20 * 60 else {
+        // awake window can still pass it. Use a deliberately wider whole-night
+        // HR envelope than the HR-only tier (restless sleep can sit above the
+        // long-term baseline), but retain robust distribution and total
+        // elevated-duration bounds before advancing the physiological day.
+        guard candidate.avgHR <= candidate.baselineRestingHR + 25,
+              candidate.hrStandardDeviation <= 15,
+              candidate.medianHR <= candidate.baselineRestingHR + 22,
+              candidate.hrP90 <= candidate.baselineRestingHR + 40,
+              candidate.elevatedSampleFraction < 0.20,
+              candidate.elevatedSampleFraction * candidate.duration < 45 * 60 else {
             return false
         }
         return candidate.maxGap <= 2 * 60 * 60
@@ -25219,6 +25222,7 @@ final class SessionStore: ObservableObject {
             // low-HR sleep fragment before the cluster-level median/P90 and
             // elevated-fraction checks ever had a chance to evaluate it.
             let sessionHR = session.bpms
+            let sessionP05 = Self.percentileHR(0.05, values: sessionHR)
             let sessionP90 = Self.percentileHR(0.90, values: sessionHR)
             let elevatedFraction = Double(sessionHR.filter { $0 >= rest + 35 }.count)
                 / Double(max(1, sessionHR.count))
@@ -25237,6 +25241,22 @@ final class SessionStore: ObservableObject {
             let lowHR = session.avg <= rest + 18
                 && sessionP90 <= rest + 35
                 && elevatedFraction <= 0.12
+            // Motion is resolved only after the eligible fragments have been
+            // clustered, so this first pass must not discard an otherwise
+            // plausible overnight fragment solely because a poor/restless
+            // night sits modestly above the long-term resting baseline. The
+            // candidate still cannot become sleep unless the whole cluster
+            // later proves validated low motion and clears the bounded robust
+            // HR gate below. Keep this admission path overnight-only so it
+            // cannot revive the daytime quiet-awake/false-nap failure.
+            let motionEligibleOvernightFragment = overnight
+                // Anchor the allowance to a real low-HR tail that remains
+                // close to the trusted baseline. A uniformly elevated active
+                // interval cannot define its own convenient sleep baseline.
+                && sessionP05 <= rest + 12
+                && session.avg <= sessionP05 + 15
+                && sessionP90 <= sessionP05 + 30
+                && elevatedFraction <= 0.18
             let longOvernightReviewLike = overnight
                 && session.duration >= AggregateSleepCandidate.strictMinimumDuration
                 && session.avg <= rest + 22
@@ -25265,6 +25285,7 @@ final class SessionStore: ObservableObject {
                 && Double(session.rrPoints?.count ?? 0) / max(1, session.duration) >= 0.60
             let notWorkout = !session.workoutReadiness(rest: rest, maxHR: maxHR).ready
             return ((overnight && lowHR)
+                || motionEligibleOvernightFragment
                 || longOvernightReviewLike
                 || longStableHROnlyMainSleepLike
                 || denseLongHROnlyReviewFragment
