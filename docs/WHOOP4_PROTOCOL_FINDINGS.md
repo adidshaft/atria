@@ -2570,6 +2570,16 @@ POSITIVE STILL REQUIRED**
   lifetime during the deferred foreground projection. Scanner and sealed-file
   compatibility tests pass 16/16. Physical peak-memory evidence remains
   required before claiming the memory fault closed.
+- **Repeated negative workout scan correction:** the oldest unresolved walking
+  workout previously re-read the retained archive on every process launch even
+  when the archive had not changed, and it starved later walks. A bounded,
+  durable negative receipt now keys the exact workout window, canonical strap,
+  v15 algorithm, catalog generation, and every readable source's canonical
+  path, byte size, millisecond mtime, and filesystem resource identity. A
+  negative is stored only when the scanner explicitly reports a complete read
+  and the complete source fingerprint is identical before and after the scan.
+  Incomplete reads and concurrent append/replacement/truncation/removal always
+  fail open and retry; qualified evidence keeps its existing publication path.
 
 ## Notebook maintenance rules
 

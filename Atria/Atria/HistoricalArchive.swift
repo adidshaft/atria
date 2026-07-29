@@ -319,6 +319,39 @@ enum HistoricalArchive {
         let scannedByteCount: Int
     }
 
+    /// Cheap, read-only identity of every raw source a consumer scan can read.
+    /// It deliberately uses filesystem identity/size/mtime plus the catalog
+    /// generation; hashing sealed archives here would recreate the very
+    /// lifetime read this token is intended to suppress.
+    struct ConsumerSourceFingerprint: Codable, Equatable, Sendable {
+        struct Source: Codable, Equatable, Sendable {
+            let path: String
+            let size: UInt64
+            let modificationTimeMilliseconds: Int64
+            let resourceIdentifier: String?
+        }
+
+        let catalogGeneration: UInt64?
+        let sources: [Source]
+
+        var stableIdentifier: String? {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            return try? encoder.encode(self).base64EncodedString()
+        }
+    }
+
+    enum MotionTickWindowRead: Equatable, Sendable {
+        case qualified(MotionTickWindow)
+        case completeNoQualifiedEvidence
+        case incomplete
+
+        var evidence: MotionTickWindow? {
+            guard case .qualified(let value) = self else { return nil }
+            return value
+        }
+    }
+
     struct DurableAppendResult {
         let url: URL
         let inserted: Bool
@@ -2127,9 +2160,25 @@ enum HistoricalArchive {
         end: Date,
         strapIdentifier: String
     ) -> MotionTickWindow? {
+        motionTickWindowRead(
+            start: start,
+            end: end,
+            strapIdentifier: strapIdentifier
+        ).evidence
+    }
+
+    /// Same publication semantics as `motionTickWindow`, while preserving the
+    /// distinction required by durable negative caching: only a stable,
+    /// complete read may prove that this exact source generation has no
+    /// qualified gait window.
+    static func motionTickWindowRead(
+        start: Date,
+        end: Date,
+        strapIdentifier: String
+    ) -> MotionTickWindowRead {
         precondition(!Thread.isMainThread,
                      "Historical motion-tick decoding must run off the main thread")
-        guard end > start, !strapIdentifier.isEmpty else { return nil }
+        guard end > start, !strapIdentifier.isEmpty else { return .incomplete }
         let boundaryTolerance: TimeInterval = 3
         let maximumClockOffset =
             AtriaWhoop4ProductionHistoryBootstrapPolicy.maximumClockDrift
@@ -2223,7 +2272,8 @@ enum HistoricalArchive {
         // it returned is durable. Do not discard those rows: the alignment
         // gate below still requires both workout boundaries and >=90% exact
         // temporal coverage before any step result can be published.
-        _ = scan.complete
+        let rejected: MotionTickWindowRead =
+            scan.complete ? .completeNoQualifiedEvidence : .incomplete
         AtriaDebugLog(
             "ATRIADBG motion_tick_window status=scanned sources=%d files=%d bytes=%d lines=%d candidates=%d complete=%d endpoints=%d",
             descriptors.count,
@@ -2236,7 +2286,7 @@ enum HistoricalArchive {
         )
         guard endpoints.count >= 2 else {
             AtriaDebugLog("ATRIADBG motion_tick_window status=rejected reason=insufficient_endpoints")
-            return nil
+            return rejected
         }
         let points = endpoints.values.sorted {
             if $0.timestamp != $1.timestamp {
@@ -2258,7 +2308,7 @@ enum HistoricalArchive {
                 points.count,
                 Set(clockOffsetByPayload.values).count
             )
-            return nil
+            return rejected
         }
         let delta = selected.last.tick >= selected.first.tick
             ? selected.last.tick - selected.first.tick
@@ -2266,21 +2316,23 @@ enum HistoricalArchive {
         guard Double(delta) <= max(
             12,
             (selected.last.timestamp - selected.first.timestamp) * 12
-        ) else { return nil }
-        return .init(startTick: selected.first.tick,
-                     endTick: selected.last.tick,
-                     delta: delta,
-                     steps: selected.estimate.steps,
-                     startCapturedAt: Date(
-                        timeIntervalSince1970: selected.first.timestamp
-                            + Double(selected.clockOffsetSeconds)
-                     ),
-                     endCapturedAt: Date(
-                        timeIntervalSince1970: selected.last.timestamp
-                            + Double(selected.clockOffsetSeconds)
-                     ),
-                     coverageFraction: selected.coverageFraction,
-                     decodedRows: selected.decodedRows)
+        ) else { return rejected }
+        return .qualified(
+            .init(startTick: selected.first.tick,
+                  endTick: selected.last.tick,
+                  delta: delta,
+                  steps: selected.estimate.steps,
+                  startCapturedAt: Date(
+                    timeIntervalSince1970: selected.first.timestamp
+                        + Double(selected.clockOffsetSeconds)
+                  ),
+                  endCapturedAt: Date(
+                    timeIntervalSince1970: selected.last.timestamp
+                        + Double(selected.clockOffsetSeconds)
+                  ),
+                  coverageFraction: selected.coverageFraction,
+                  decodedRows: selected.decodedRows)
+        )
     }
 
     /// Produces a deduplicated, strap-only subtotal for the active
@@ -3787,6 +3839,53 @@ enum HistoricalArchive {
             seen.insert(url.path)
             return true
         }
+    }
+
+    /// Returns a filesystem-metadata token for the exact source set used by
+    /// heavyweight archive consumers. This performs directory enumeration and
+    /// stat calls only; it never opens, hashes, decodes, compacts, or mutates a
+    /// history source.
+    static func consumerSourceFingerprint() -> ConsumerSourceFingerprint {
+        let descriptors = AtriaHistoricalJSONLRecentScanner.descriptors(
+            for: recentReadableFileURLs()
+        )
+        let catalogGeneration = (try? catalogStoreLocked())
+            .flatMap { try? $0.snapshot().generation }
+        return makeConsumerSourceFingerprint(
+            catalogGeneration: catalogGeneration,
+            descriptors: descriptors
+        )
+    }
+
+    static func makeConsumerSourceFingerprint(
+        catalogGeneration: UInt64?,
+        descriptors: [AtriaHistoricalJSONLRecentScanner.FileDescriptor]
+    ) -> ConsumerSourceFingerprint {
+        .init(
+            catalogGeneration: catalogGeneration,
+            sources: descriptors
+                .map {
+                    ConsumerSourceFingerprint.Source(
+                        path: $0.url.standardizedFileURL.path,
+                        size: $0.size,
+                        modificationTimeMilliseconds: Int64(
+                            ($0.modificationTime * 1_000).rounded()
+                        ),
+                        resourceIdentifier: $0.resourceIdentifier
+                    )
+                }
+                .sorted { lhs, rhs in
+                    if lhs.path != rhs.path { return lhs.path < rhs.path }
+                    if lhs.size != rhs.size { return lhs.size < rhs.size }
+                    if lhs.modificationTimeMilliseconds
+                        != rhs.modificationTimeMilliseconds {
+                        return lhs.modificationTimeMilliseconds
+                            < rhs.modificationTimeMilliseconds
+                    }
+                    return (lhs.resourceIdentifier ?? "")
+                        < (rhs.resourceIdentifier ?? "")
+                }
+        )
     }
 
     /// Narrows the recovered projection to raw chunks that can still overlap

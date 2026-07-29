@@ -14,6 +14,87 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertTrue(value, message(), file: file, line: line)
     }
 
+    func testWorkoutStepNegativeCacheInvalidatesForArchiveWindowAndStrap() {
+        XCTAssertFalse(SessionStore.shouldScanWorkoutStepEvidence(
+            cachedFingerprint: "archive-v1",
+            currentFingerprint: "archive-v1"
+        ))
+        XCTAssertTrue(SessionStore.shouldScanWorkoutStepEvidence(
+            cachedFingerprint: "archive-v1",
+            currentFingerprint: "archive-v2"
+        ))
+        XCTAssertTrue(SessionStore.shouldScanWorkoutStepEvidence(
+            cachedFingerprint: nil,
+            currentFingerprint: "archive-v1"
+        ))
+        XCTAssertTrue(SessionStore.shouldScanWorkoutStepEvidence(
+            cachedFingerprint: "archive-v1",
+            currentFingerprint: nil
+        ), "an unavailable source token must fail open and never suppress a scan")
+
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        let base = SessionStore.workoutStepNegativeAttemptKey(
+            workoutID: "walk",
+            start: start,
+            end: start.addingTimeInterval(90),
+            strapIdentifier: "strap-a"
+        )
+        XCTAssertNotEqual(
+            base,
+            SessionStore.workoutStepNegativeAttemptKey(
+                workoutID: "walk",
+                start: start.addingTimeInterval(1),
+                end: start.addingTimeInterval(90),
+                strapIdentifier: "strap-a"
+            )
+        )
+        XCTAssertNotEqual(
+            base,
+            SessionStore.workoutStepNegativeAttemptKey(
+                workoutID: "walk",
+                start: start,
+                end: start.addingTimeInterval(91),
+                strapIdentifier: "strap-a"
+            )
+        )
+        XCTAssertNotEqual(
+            base,
+            SessionStore.workoutStepNegativeAttemptKey(
+                workoutID: "walk",
+                start: start,
+                end: start.addingTimeInterval(90),
+                strapIdentifier: "strap-b"
+            )
+        )
+        XCTAssertTrue(base.contains(
+            AtriaWhoop4GravityCadenceStepModel.algorithmVersion
+        ))
+
+        let fingerprint = HistoricalArchive.makeConsumerSourceFingerprint(
+            catalogGeneration: 1,
+            descriptors: []
+        )
+        let advanced = HistoricalArchive.makeConsumerSourceFingerprint(
+            catalogGeneration: 2,
+            descriptors: []
+        )
+        XCTAssertTrue(SessionStore.shouldCacheWorkoutStepNegative(
+            read: .completeNoQualifiedEvidence,
+            fingerprintBefore: fingerprint,
+            fingerprintAfter: fingerprint
+        ))
+        XCTAssertFalse(SessionStore.shouldCacheWorkoutStepNegative(
+            read: .incomplete,
+            fingerprintBefore: fingerprint,
+            fingerprintAfter: fingerprint
+        ), "an interrupted or concurrently growing scan is never conclusive")
+        XCTAssertFalse(SessionStore.shouldCacheWorkoutStepNegative(
+            read: .completeNoQualifiedEvidence,
+            fingerprintBefore: fingerprint,
+            fingerprintAfter: advanced
+        ), "archive advancement during the scan invalidates its negative result")
+    }
+
     func testCandidateBackedSaveSettlesOriginalWindowWhileManualAddKeepsReAddSemantics() async throws {
         let originalDismissals = AtriaDismissedWorkoutCandidateStore.load()
         let store = SessionStore()

@@ -6660,6 +6660,9 @@ final class SessionStore: ObservableObject {
     /// stronger re-decode—not launch-time publication.
     private static let workoutStepEvidenceQueue =
         HistoricalArchive.consumerProjectionQueue
+    nonisolated private static let workoutStepNegativeAttemptsKey =
+        "atria.confirmedWorkoutSteps.negativeAttempts.v1"
+    nonisolated private static let maximumWorkoutStepNegativeAttempts = 64
     private var pendingWorkoutStepEvidenceWorkItem: DispatchWorkItem?
     private var workoutStepEvidenceGeneration = 0
     private var currentCycleStepReceiptGeneration = 0
@@ -9347,7 +9350,7 @@ final class SessionStore: ObservableObject {
         }
         workoutStepEvidenceDeferredUntilForeground = false
         guard pendingWorkoutStepEvidenceWorkItem == nil else { return }
-        let originals = Array(cachedConfirmedWorkouts.filter {
+        let originals = cachedConfirmedWorkouts.filter {
             ($0.workoutSteps == nil
                 || $0.workoutStepsAreEstimated == true)
                 && AtriaWorkoutActivityType.resolved(
@@ -9355,7 +9358,7 @@ final class SessionStore: ObservableObject {
                     subtype: $0.activitySubtype,
                     label: $0.label
                 ) == .walking
-        }.prefix(1))
+        }
         guard !originals.isEmpty,
               let strapIdentifier = UserDefaults.standard.string(
                 forKey: AtriaBLEManager.OfflineSyncDefaults
@@ -9365,14 +9368,37 @@ final class SessionStore: ObservableObject {
         let generation = workoutStepEvidenceGeneration
         let workItem = DispatchWorkItem { [weak self, originals,
                                            strapIdentifier, reason] in
-            let replacements = originals.compactMap {
-                old -> (UserConfirmedWorkout, UserConfirmedWorkout)? in
-                guard let tickWindow = HistoricalArchive.motionTickWindow(
+            let fingerprintBefore =
+                HistoricalArchive.consumerSourceFingerprint()
+            let fingerprintIdentifier =
+                fingerprintBefore.stableIdentifier
+            let cachedNegatives =
+                Self.readWorkoutStepNegativeAttempts()
+            let eligible = originals.first { workout in
+                let key = Self.workoutStepNegativeAttemptKey(
+                    workout: workout,
+                    strapIdentifier: strapIdentifier
+                )
+                return Self.shouldScanWorkoutStepEvidence(
+                    cachedFingerprint: cachedNegatives[key],
+                    currentFingerprint: fingerprintIdentifier
+                )
+            }
+
+            var attempted = 0
+            var cacheRecorded = false
+            var replacements:
+                [(UserConfirmedWorkout, UserConfirmedWorkout)] = []
+            if let old = eligible {
+                attempted = 1
+                let read = HistoricalArchive.motionTickWindowRead(
                     start: old.start,
                     end: old.end,
                     strapIdentifier: strapIdentifier
-                ) else { return nil }
-                let replacement =
+                )
+                switch read {
+                case .qualified(let tickWindow):
+                    let replacement =
                     SessionStore.workoutByMergingUserEditsAndStepEvidence(
                         old,
                         activityLabel: nil,
@@ -9385,9 +9411,31 @@ final class SessionStore: ObservableObject {
                         workoutStepsAreEstimated: true,
                         workoutStepsCapturedAt: tickWindow.endCapturedAt
                     )
-                return (old, replacement)
+                    replacements = [(old, replacement)]
+                case .completeNoQualifiedEvidence:
+                    let fingerprintAfter =
+                        HistoricalArchive.consumerSourceFingerprint()
+                    if Self.shouldCacheWorkoutStepNegative(
+                        read: read,
+                        fingerprintBefore: fingerprintBefore,
+                        fingerprintAfter: fingerprintAfter
+                    ),
+                       let fingerprintIdentifier {
+                        Self.recordWorkoutStepNegativeAttempt(
+                            key: Self.workoutStepNegativeAttemptKey(
+                                workout: old,
+                                strapIdentifier: strapIdentifier
+                            ),
+                            fingerprint: fingerprintIdentifier
+                        )
+                        cacheRecorded = true
+                    }
+                case .incomplete:
+                    break
+                }
             }
-            Task { @MainActor [weak self, replacements, reason] in
+            Task { @MainActor [weak self, replacements, reason,
+                               attempted, cacheRecorded] in
                 guard let self,
                       generation == self.workoutStepEvidenceGeneration else {
                     return
@@ -9409,9 +9457,13 @@ final class SessionStore: ObservableObject {
                 }
                 guard applied > 0 else {
                     AtriaDebugLog(
-                        "ATRIADBG confirmed_workout_steps status=no_qualified_window reason=%@ attempted=%d",
+                        "ATRIADBG confirmed_workout_steps status=%@ reason=%@ attempted=%d cached_negative=%d",
+                        attempted == 0
+                            ? "unchanged_negative_skipped"
+                            : "no_qualified_window",
                         reason,
-                        originals.count
+                        attempted,
+                        cacheRecorded ? 1 : 0
                     )
                     return
                 }
@@ -9426,6 +9478,89 @@ final class SessionStore: ObservableObject {
         }
         pendingWorkoutStepEvidenceWorkItem = workItem
         Self.workoutStepEvidenceQueue.async(execute: workItem)
+    }
+
+    nonisolated static func workoutStepNegativeAttemptKey(
+        workout: UserConfirmedWorkout,
+        strapIdentifier: String
+    ) -> String {
+        workoutStepNegativeAttemptKey(
+            workoutID: workout.id,
+            start: workout.start,
+            end: workout.end,
+            strapIdentifier: strapIdentifier
+        )
+    }
+
+    nonisolated static func workoutStepNegativeAttemptKey(
+        workoutID: String,
+        start: Date,
+        end: Date,
+        strapIdentifier: String
+    ) -> String {
+        [
+            workoutID,
+            String(Int64(
+                (start.timeIntervalSince1970 * 1_000).rounded()
+            )),
+            String(Int64(
+                (end.timeIntervalSince1970 * 1_000).rounded()
+            )),
+            strapIdentifier.uppercased(),
+            AtriaWhoop4GravityCadenceStepModel.algorithmVersion,
+        ].joined(separator: "|")
+    }
+
+    nonisolated static func shouldScanWorkoutStepEvidence(
+        cachedFingerprint: String?,
+        currentFingerprint: String?
+    ) -> Bool {
+        guard let currentFingerprint else { return true }
+        return cachedFingerprint != currentFingerprint
+    }
+
+    nonisolated static func shouldCacheWorkoutStepNegative(
+        read: HistoricalArchive.MotionTickWindowRead,
+        fingerprintBefore: HistoricalArchive.ConsumerSourceFingerprint,
+        fingerprintAfter: HistoricalArchive.ConsumerSourceFingerprint
+    ) -> Bool {
+        read == .completeNoQualifiedEvidence
+            && fingerprintBefore == fingerprintAfter
+    }
+
+    nonisolated private static func readWorkoutStepNegativeAttempts(
+        defaults: UserDefaults = .standard
+    ) -> [String: String] {
+        guard let data = defaults.data(
+            forKey: workoutStepNegativeAttemptsKey
+        ) else { return [:] }
+        return (try? JSONDecoder().decode(
+            [String: String].self,
+            from: data
+        )) ?? [:]
+    }
+
+    nonisolated private static func recordWorkoutStepNegativeAttempt(
+        key: String,
+        fingerprint: String,
+        defaults: UserDefaults = .standard
+    ) {
+        var values = readWorkoutStepNegativeAttempts(defaults: defaults)
+        values[key] = fingerprint
+        if values.count > maximumWorkoutStepNegativeAttempts {
+            let retainedOtherKeys = values.keys
+                .filter { $0 != key }
+                .sorted()
+                .suffix(maximumWorkoutStepNegativeAttempts - 1)
+            values = Dictionary(
+                uniqueKeysWithValues:
+                    retainedOtherKeys.compactMap { candidate in
+                        values[candidate].map { (candidate, $0) }
+                    } + [(key, fingerprint)]
+            )
+        }
+        guard let data = try? JSONEncoder().encode(values) else { return }
+        defaults.set(data, forKey: workoutStepNegativeAttemptsKey)
     }
 
     func resumeDeferredForegroundArchiveWork(reason: String) {
