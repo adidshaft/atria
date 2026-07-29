@@ -28872,6 +28872,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     self.scheduleTerminalConsumerDependencyRetry()
                 }
             } catch {
+                UserDefaults.standard.set(
+                    String(reflecting: error),
+                    forKey: "atria.offlineSync.terminalArchiveFailureDiagnostic.v1"
+                )
+                UserDefaults.standard.set(
+                    Date(),
+                    forKey: "atria.offlineSync.terminalArchiveFailureAt.v1"
+                )
                 AtriaDebugLog("ATRIADBG historical_full_drain_publish status=deferred generation=%llu reason=%@ gap_retained=1",
                               transportGeneration,
                               String(describing: error))
