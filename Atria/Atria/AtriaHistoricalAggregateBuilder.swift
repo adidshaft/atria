@@ -2,8 +2,9 @@ import CryptoKit
 import Foundation
 
 /// Canonical raw-to-aggregate projection for immutable history chunks.
-/// Unknown rows fail closed; callers must retain them in a separate residual
-/// raw artifact before any source deletion can be authorized.
+/// Decodable rows become canonical aggregate facts. Unknown legacy envelopes
+/// remain counted in parity and require the immutable source to stay on disk;
+/// an aggregate containing any such row can never authorize raw retirement.
 enum AtriaHistoricalAggregateBuilder {
     enum BuildError: Error, Equatable {
         case sourceMissing
@@ -41,7 +42,6 @@ enum AtriaHistoricalAggregateBuilder {
         guard FileManager.default.fileExists(atPath: sourceURL.path) else { throw BuildError.sourceMissing }
         let identity = try AtriaHistoricalJSONLInput.identity(at: sourceURL)
         let scan = try decodeRecords(at: sourceURL)
-        guard scan.undecodableRows == 0 else { throw BuildError.undecodableRows(scan.undecodableRows) }
         guard !scan.records.isEmpty else { throw BuildError.emptySource }
         let timestamps = scan.records.compactMap(effectiveTimestamp)
         guard let first = timestamps.min(), let last = timestamps.max() else {
@@ -60,7 +60,8 @@ enum AtriaHistoricalAggregateBuilder {
         let aggregate = try build(records: scan.records,
                                   source: source,
                                   createdAt: createdAt,
-                                  materializedProjections: materializedProjections)
+                                  materializedProjections: materializedProjections,
+                                  undecodableRowsRetainedRaw: scan.undecodableRows)
         return FileBuildResult(aggregate: aggregate,
                                semanticParityReceipt: semanticParityReceipt(for: aggregate))
     }
@@ -68,9 +69,14 @@ enum AtriaHistoricalAggregateBuilder {
     static func build(records: [HistoricalArchive.Record],
                       source: AtriaHistoricalAggregateChunk.Source,
                       createdAt: Date,
-                      materializedProjections: [AtriaHistoricalAggregateChunk.MaterializedProjection] = []) throws -> AtriaHistoricalAggregateChunk {
-        guard records.count == source.rawRowCount else {
-            throw BuildError.rowCountMismatch(expected: source.rawRowCount, actual: records.count)
+                      materializedProjections: [AtriaHistoricalAggregateChunk.MaterializedProjection] = [],
+                      undecodableRowsRetainedRaw: Int = 0) throws -> AtriaHistoricalAggregateChunk {
+        guard undecodableRowsRetainedRaw >= 0,
+              records.count + undecodableRowsRetainedRaw == source.rawRowCount else {
+            throw BuildError.rowCountMismatch(
+                expected: source.rawRowCount,
+                actual: records.count + max(0, undecodableRowsRetainedRaw)
+            )
         }
         let hrMinutes = buildHeartRateMinutes(records: records)
         let rrEpochs = buildRREpochs(records: records)
@@ -91,9 +97,9 @@ enum AtriaHistoricalAggregateBuilder {
             rrEpochs: rrEpochs,
             motionEpochs: motionEpochs,
             materializedProjections: materializedProjections,
-            parity: .init(rawRows: records.count,
+            parity: .init(rawRows: source.rawRowCount,
                           decodedRows: records.count,
-                          undecodableRowsRetainedRaw: 0,
+                          undecodableRowsRetainedRaw: undecodableRowsRetainedRaw,
                           metricUsableRows: metricUsable,
                           heartRateSamples: hrCount,
                           heartRateSumBPM: hrSum,

@@ -140,6 +140,10 @@ struct AtriaHistoricalAggregateChunk: Codable, Equatable, Sendable {
     /// versioned receipt spanning the complete source interval. A receipt may
     /// prove an empty result, but omission is never interpreted as empty.
     var authorizesRawRetirement: Bool {
+        // An aggregate can safely index the decoded portion of a legacy source
+        // while the immutable source retains rows from an older/unknown
+        // envelope. It must never authorize deleting that sole residual copy.
+        guard parity.undecodableRowsRetainedRaw == 0 else { return false }
         guard materializedProjections.count == Self.rawRetirementRequiredProjectionKinds.count else {
             return false
         }
@@ -181,13 +185,6 @@ struct AtriaHistoricalAggregateChunk: Codable, Equatable, Sendable {
               parity.decodedRows + parity.undecodableRowsRetainedRaw == parity.rawRows else {
             throw ValidationError.rawRowMismatch
         }
-        // Unknown rows must exist in a separately durable residual-raw artifact.
-        // This aggregate format has no opaque payload field, so it cannot by
-        // itself authorize deleting a source that contained unknown rows.
-        guard parity.undecodableRowsRetainedRaw == 0 else {
-            throw ValidationError.undecodableRowsNotRetained
-        }
-
         let hrCount = heartRateMinutes.reduce(0) { $0 + $1.sampleCount }
         let hrSum = heartRateMinutes.reduce(Int64(0)) { $0 + $1.sumBPM }
         guard hrCount == parity.heartRateSamples,

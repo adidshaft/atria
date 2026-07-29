@@ -174,8 +174,8 @@ final class AtriaHistoricalRetentionTransactionTests: XCTestCase {
         )
 
         XCTAssertThrowsError(try transaction.commit(fixture.request(deleteSource: true))) { error in
-            XCTAssertEqual(error as? AtriaHistoricalAggregateChunk.ValidationError,
-                           .undecodableRowsNotRetained)
+            XCTAssertEqual(error as? AtriaHistoricalRetentionTransaction.TransactionError,
+                           .rawRetirementNotAuthorized)
         }
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.source.path))
     }
