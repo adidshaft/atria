@@ -52,6 +52,7 @@ final class AtriaTodayTileLogicTests: XCTestCase {
     // MARK: zoneTint bands
 
     func testSleepZoneBands() {
+        XCTAssertEqual(AtriaTriRing.zoneTint(.sleep, percent: 69.9), Metrics.electricRed)
         XCTAssertEqual(AtriaTriRing.zoneTint(.sleep, percent: 70), Metrics.electricYellow)
         XCTAssertEqual(AtriaTriRing.zoneTint(.sleep, percent: 84.9), Metrics.electricYellow)
         XCTAssertEqual(AtriaTriRing.zoneTint(.sleep, percent: 85), Metrics.electricGreen)
@@ -108,6 +109,9 @@ final class AtriaTodayTileLogicTests: XCTestCase {
         XCTAssertEqual(AtriaRingMetricProjection.zoneTintHex(nil),
                        AtriaRingMetricProjection.neutralTintHex)
         XCTAssertEqual(AtriaRingMetricProjection.zoneTintHex(.red), "#ff4f7b")
+        XCTAssertEqual(AtriaRingMetricProjection.sleepStateTintHex(percent: 69.9), "#ff4f7b")
+        XCTAssertEqual(AtriaRingMetricProjection.sleepStateTintHex(percent: 70), "#f5d142")
+        XCTAssertEqual(AtriaRingMetricProjection.sleepStateTintHex(percent: 85), "#42f59b")
     }
 
     func testMeasuredStrainKeepsIdentityColorUntilRecoveryProvidesTarget() {

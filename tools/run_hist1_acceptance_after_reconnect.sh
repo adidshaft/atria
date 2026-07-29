@@ -286,6 +286,7 @@ done
 ./pull_atria_state.sh \
   --device "$device_id" \
   --bundle-id "$bundle_id" \
+  --full-archive \
   --installed-provenance-only \
   --evidence-dir "$evidence_dir"
 

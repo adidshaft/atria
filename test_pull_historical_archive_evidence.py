@@ -122,7 +122,7 @@ exit 2
         FAKE_PARTIAL_SEGMENT_COPY="1" if simulate_partial_segment_copy else "0",
     )
     result = subprocess.run(
-        [str(PULL), "--device", "fake-device", "--runtime-only", "--evidence-dir", str(evidence)],
+        [str(PULL), "--device", "fake-device", "--evidence-dir", str(evidence)],
         cwd=ROOT,
         env=environment,
         capture_output=True,
@@ -415,7 +415,8 @@ exit 2
                 FAKE_INSTALLED_METADATA=str(installed_metadata),
             )
             result = subprocess.run(
-                [str(PULL), "--device", "fake-device", "--evidence-dir", str(evidence)],
+                [str(PULL), "--device", "fake-device", "--full-archive",
+                 "--evidence-dir", str(evidence)],
                 cwd=ROOT,
                 env=environment,
                 capture_output=True,
@@ -449,7 +450,8 @@ exit 2
 
             evidence_two = root / "evidence-two"
             second = subprocess.run(
-                [str(PULL), "--device", "fake-device", "--evidence-dir", str(evidence_two)],
+                [str(PULL), "--device", "fake-device", "--full-archive",
+                 "--evidence-dir", str(evidence_two)],
                 cwd=ROOT,
                 env=environment,
                 capture_output=True,

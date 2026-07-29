@@ -2372,7 +2372,8 @@ enum HistoricalArchive {
         start: Date,
         end: Date,
         bankCoverage: [DateInterval],
-        strapIdentifier: String
+        strapIdentifier: String,
+        compactMigrationStore: AtriaWhoop4MotionTickCompactStore? = nil
     ) -> MotionTickDayEvidenceRead {
         precondition(!Thread.isMainThread,
                      "Historical motion-tick daily decoding must run off the main thread")
@@ -2491,6 +2492,50 @@ enum HistoricalArchive {
             clockOffsetByPayload[payloadHex] = accepted.clockOffsetSeconds
         }
         guard scan.complete else { return .incomplete }
+        if let compactMigrationStore {
+            let migrationPoints = rows.compactMap {
+                payloadHex,
+                pair -> AtriaWhoop4MotionTickCompactStore.MigrationPoint? in
+                guard let clockOffset = clockOffsetByPayload[payloadHex],
+                      let rawPayload = bytes(fromHex: payloadHex) else {
+                    return nil
+                }
+                return .init(
+                    timestamp: pair.counter.timestamp
+                        + TimeInterval(clockOffset),
+                    flash: pair.counter.flash,
+                    tick: pair.counter.tick,
+                    gravityX: pair.cadence.gravityX,
+                    gravityY: pair.cadence.gravityY,
+                    gravityZ: pair.cadence.gravityZ,
+                    unknownMotionScalar32:
+                        pair.cadence.unknownMotionScalar32,
+                    rawPayload: rawPayload
+                )
+            }
+            do {
+                let migrated = try compactMigrationStore.appendMigrated(
+                    migrationPoints,
+                    strapIdentifier: strapIdentifier
+                )
+                try compactMigrationStore.synchronize()
+                AtriaDebugLog(
+                    "ATRIADBG whoop4_motion_compact status=canonical_migration_complete inspected=%d appended=%d strap=%@",
+                    migrationPoints.count,
+                    migrated,
+                    strapIdentifier
+                )
+            } catch {
+                // The canonical scan remains the authority for this read.
+                // Migration failure only keeps the next background projection
+                // partial; it must never discard a valid canonical result.
+                AtriaDebugLog(
+                    "ATRIADBG whoop4_motion_compact status=canonical_migration_failed inspected=%d error=%@ action=retain_canonical_read",
+                    migrationPoints.count,
+                    String(describing: error)
+                )
+            }
+        }
         guard rows.count >= 2 else {
             return .completeNoQualifiedEvidence
         }

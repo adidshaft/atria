@@ -382,7 +382,11 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
     }
 
     func discardDurableCheckpoint() {
-        Self.checkpointQueue.sync {
+        // Clearing is ordered behind every already-enqueued checkpoint write,
+        // but it must never make a Start/End/cancel action synchronously wait
+        // for that utility queue. In particular, a finalized checkpoint can
+        // be a full journal rewrite containing every route point.
+        Self.checkpointQueue.async {
             AtriaActiveWorkoutRouteCheckpointStore.clear()
         }
     }

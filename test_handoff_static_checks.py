@@ -326,7 +326,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "let debt = sleepHistory.sleepDebtText(goalHours: sleepGoalHours)",
             'return debt == "--" ? "Building" : debt',
             "private var sleepPlanTargetHours: Double",
-            "sleepHistory.sleepNeedHours(for: latest, baseNeedHours: sleepBaseNeedHours)",
+            "sleepHistory.sleepNeedHours(",
+            "yesterdayStrain: yesterdayStrainForLatestSleep",
             "sleepHistory.sleepBudgetDebtHours(baseNeedHours: sleepBaseNeedHours)",
             "private var sleepPlanProgress: Double",
             "private var sleepPlanStatusText: String",
@@ -4351,7 +4352,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "var emptyEvidenceValue: String",
             'return "Confirmed sleep or nap saved locally."',
             "var emptyEvidenceFootnote: String",
-            "sleepEfficiency: Self.efficiency(duration: sleep.duration,",
+            "let effectiveDuration = sleep.effectiveSleepDuration",
+            "sleepEfficiency: Self.efficiency(duration: effectiveDuration,",
             "span: sleep.span,",
             "source: sleep.source)",
             "start: sleep.start",
@@ -4441,9 +4443,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "commitPreparedWakeBoundarySleepIfUseful(",
             "private func autoConfirmStrongSleepCandidates(reason: String,\n                                                   limit: Int = 2,\n                                                   sourceSessions: [SavedSession]? = nil,\n                                                   precomputedStrongCandidates: [AggregateSleepCandidate]? = nil,",
             ".filter(Self.isAutoConfirmableMainSleepCandidate)",
-            # 2026-07-18: automatic persistence accepts validated motion or the
-            # narrow physiological HR-only main-sleep gate; degraded stays review-only.
-            "let classification = Self.autoSleepClassification(for: candidate)",
+            # 2026-07-29: automatic persistence accepts only an explicitly
+            # baseline-aware auto classification. A review source/low
+            # confidence can never be encoded by the automatic save builder.
+            "guard classification.allowsAutomaticPersistence else {",
+            'precondition(classification.allowsAutomaticPersistence,\n                     "Review-only sleep classification cannot build an automatic persisted sleep")',
             "confidence: classification.confidence,",
             "nonisolated static func isStrongAutoConfirmableSleepCandidate(_ candidate: AggregateSleepCandidate) -> Bool",
             "candidate.motionEvidenceValidated,",
@@ -4529,7 +4533,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "let stageEvidence: SleepStageEvidence",
             "let stageDurationsByStage: [SleepStageKind: TimeInterval]",
             "Self.stageEvidence(source: source,",
-            "self.displayStageSegments = evidence == .none || !stagesPassIntegrity",
+            "AtriaSleepStageIntegrity.reconcilesForPresentation(",
+            "effectiveSleepDuration: duration",
+            "self.displayStageSegments = evidence == .none",
             "private static func stageEvidence(source: String,",
             "if source == \"validated_sleep_stages\"",
             "return .sensorResearch",
@@ -4628,7 +4634,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "arguments[valueIndex] == \"sleep-history-context-lens\"",
             "debug-ui-fixture-sleep-history-context-lens-\\(index)",
             "return SleepHistorySnapshot(nights: nights, confirmedCount: max(0, nights.count - 1), candidateCount: 1)",
-            "guard let averageHours = recentSleepAverageDurationHours, recentSleepRecordCount > 0 else { return nil }",
+            "let records = Self.recentSleepNights(nights).prefix(7)",
+            "return AtriaSleepBudget.sleepDebt(nights: Array(oldestFirst))",
+            '"Weighted 7-night shortfall vs',
             "!latest.displayStageSegments.isEmpty",
             "private var heatStripNights: [SleepHistorySnapshot.Night]",
             "Array(snapshot.nights.prefix(84).reversed())",
@@ -13641,7 +13649,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "Green within +/-",
         ]:
             assert_not_contains(self, wrapper_body, forbidden)
-        self.assertEqual(wrapper_body.count("AtriaAnalytics.TargetZones."), 13)
+        self.assertEqual(wrapper_body.count("AtriaAnalytics.TargetZones."), 14)
 
         for needle in [
             "enum TargetZones",
@@ -13881,7 +13889,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "baselineTarget: baselineTarget",
             "greenDelta: restingGreenDelta",
             "yellowDelta: restingYellowDelta",
-            "return Metrics.sleepDurationZone(latest.durationHours, goalHours: sleepGoalHours)",
+            "return Metrics.sleepPerformanceZone(currentSleepPerformancePercent,",
+            "neededHours: currentSleepNeedHours)",
             # 2026-07-12: zone color uses the same main night as the metric.
             "Metrics.sleepEfficiencyZone(currentMainSleep?.sleepEfficiency,",
             "greenLower: sleepEfficiencyGreenLower",

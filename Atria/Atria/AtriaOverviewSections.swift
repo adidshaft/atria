@@ -3453,7 +3453,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                            tint: performanceTint ?? sleepGlanceZone?.tint ?? .secondary,
                            fill: sleepFocusProgress,
                            stateTint: performanceTint ?? sleepGlanceZone?.tint,
-                           targetFraction: sleepGoalHours.isFinite && sleepGoalHours > 0 ? 1.0 : nil)
+                           targetFraction: currentSleepNeedHours != nil ? 1.0 : nil)
     }
 
     private var triRingRecoveryMetric: AtriaTriRingMetric {
@@ -3565,26 +3565,44 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var sleepFocusProgress: Double? {
-        guard let latest = currentMainSleep,
-              latest.confirmed,
-              latest.isNapEvidence != true,
-              sleepGoalHours.isFinite,
-              sleepGoalHours > 0 else { return nil }
-        return min(max(latest.durationHours / sleepGoalHours, 0), 1)
+        currentSleepPerformancePercent.map {
+            min(max(Double($0) / 100.0, 0), 1)
+        }
     }
 
-    /// Prefer the saved, dynamic percent-of-need score that the Today screen
-    /// and sleep-performance card already display. Grading the same night here
-    /// against the static sleep goal could leave a 99% night yellow.
+    /// Recompute from the current canonical sleep projection. Confirmation can
+    /// link a resumed segment immediately, while the persisted daily rollup is
+    /// deliberately refreshed in the background. Preferring that older row
+    /// made the duration jump at once while the ring retained the previous
+    /// night's fill/color until the derived refresh completed.
     private var currentSleepPerformancePercent: Int? {
         guard let latest = currentMainSleep, latest.confirmed else { return nil }
-        if let saved = dailyRollupHistory.first(where: {
-            Calendar.current.isDate($0.day, inSameDayAs: latest.day)
-        })?.sleepPerformance {
-            return saved
-        }
         return sleepHistory.sleepPerformancePercent(for: latest,
-                                                     baseNeedHours: sleepBaseNeedHours)
+                                                     baseNeedHours: sleepBaseNeedHours,
+                                                     yesterdayStrain: yesterdayStrainForCurrentSleep)
+    }
+
+    private var currentSleepNeedHours: Double? {
+        guard let latest = currentMainSleep, latest.confirmed else { return nil }
+        return sleepHistory.sleepNeedHours(for: latest,
+                                           baseNeedHours: sleepBaseNeedHours,
+                                           yesterdayStrain: yesterdayStrainForCurrentSleep)
+    }
+
+    /// Same previous-civil-day input used by the rollup and Today projections.
+    /// Sleep Need is dynamic; dropping this term only on Overview made its
+    /// percent disagree after a high-strain day.
+    private var yesterdayStrainForCurrentSleep: Double? {
+        guard let latest = currentMainSleep else { return nil }
+        let calendar = Calendar.current
+        guard let priorDay = calendar.date(byAdding: .day,
+                                           value: -1,
+                                           to: calendar.startOfDay(for: latest.day)) else {
+            return nil
+        }
+        return dailyRollupHistory.first {
+            calendar.isDate($0.day, inSameDayAs: priorDay)
+        }?.strain
     }
 
     private func glanceRows(sizeOverrides: [String: AtriaGlanceGridSize]) -> [[AtriaTodayMetric]] {
@@ -4154,6 +4172,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private var sleepGlanceDetailText: String {
         if let latest = currentDisplaySleep {
             if latest.confirmed {
+                if let performance = currentSleepPerformancePercent,
+                   let need = currentSleepNeedHours {
+                    return "\(performance)% of \(AtriaMetricFormat.sleepHours(need)) need"
+                }
                 return "Last"
             }
             return latest.isNapEvidence ? "Review nap" : "Review sleep"
@@ -4503,8 +4525,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         guard let latest = currentMainSleep,
               latest.confirmed,
               latest.isNapEvidence != true else { return nil }
-        // Metrics.sleepDurationZone(sleepHistory.latest?.durationHours, goalHours: sleepGoalHours)
-        return Metrics.sleepDurationZone(latest.durationHours, goalHours: sleepGoalHours)
+        return Metrics.sleepPerformanceZone(currentSleepPerformancePercent,
+                                            neededHours: currentSleepNeedHours)
     }
 
     private var stepsZone: AtriaMetricZone? {
@@ -7655,13 +7677,30 @@ struct AtriaOverviewGuidanceSection: View, Equatable {
 
     private var sleepPlanTargetHours: Double {
         if let latest = sleepHistory.latestMainSleep, latest.confirmed {
-            return sleepHistory.sleepNeedHours(for: latest, baseNeedHours: sleepBaseNeedHours)
+            return sleepHistory.sleepNeedHours(
+                for: latest,
+                baseNeedHours: sleepBaseNeedHours,
+                yesterdayStrain: yesterdayStrainForLatestSleep
+            )
         }
         let debt = sleepHistory.sleepBudgetDebtHours(baseNeedHours: sleepBaseNeedHours)
         return AtriaSleepBudget.sleepNeed(baseHours: sleepBaseNeedHours,
                                           yesterdayStrain: nil,
                                           debtHours: debt,
                                           sameDayNapHours: 0)
+    }
+
+    private var yesterdayStrainForLatestSleep: Double? {
+        guard let latest = sleepHistory.latestMainSleep else { return nil }
+        let calendar = Calendar.current
+        guard let priorDay = calendar.date(
+            byAdding: .day,
+            value: -1,
+            to: calendar.startOfDay(for: latest.day)
+        ) else { return nil }
+        return dailyRollupHistory.first {
+            calendar.isDate($0.day, inSameDayAs: priorDay)
+        }?.strain
     }
 
     private var sleepPlanTargetText: String {
@@ -9510,7 +9549,11 @@ struct AtriaMetricDetailSheet: View {
     private var sleepHeroState: String {
         // canonical not-ready word (was "Building"), consistent with the other metric hero states
         guard let latest = sleepHistory.latestMainSleep, latest.confirmed else { return "Learning" }
-        let performance = sleepHistory.sleepPerformancePercent(for: latest, baseNeedHours: sleepBaseNeedHours)
+        let performance = sleepHistory.sleepPerformancePercent(
+            for: latest,
+            baseNeedHours: sleepBaseNeedHours,
+            yesterdayStrain: yesterdayStrainForLatestNight
+        )
         return "\(performance)% of need"
     }
 
@@ -10543,8 +10586,11 @@ enum AtriaRecoveryBaselineComparison {
         guard !baselineValues.isEmpty else { return nil }
         let average = baselineValues.reduce(0, +) / Double(baselineValues.count)
         let delta = Int((score - average).rounded())
-        if delta == 0 { return "At your 30-day average" }
-        return "\(delta > 0 ? "+" : "")\(delta)% vs your 30-day average"
+        let baselineLabel = baselineValues.count >= 30
+            ? "your 30-day average"
+            : "your recent average"
+        if delta == 0 { return "At \(baselineLabel)" }
+        return "\(delta > 0 ? "+" : "")\(delta)% vs \(baselineLabel)"
     }
 }
 
@@ -10659,7 +10705,7 @@ private struct AtriaRecoveryScoreHero: View {
                     .padding(.horizontal, 11).padding(.vertical, 6)
                     .background(tint.opacity(0.12), in: Capsule(style: .continuous))
             } else {
-                Text("Your 30-day comparison is still building")
+                Text("Your recovery comparison is still building")
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             }
         }

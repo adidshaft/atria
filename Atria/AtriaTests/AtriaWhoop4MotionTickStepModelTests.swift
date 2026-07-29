@@ -898,6 +898,39 @@ final class AtriaWhoop4MotionTickStepModelTests: XCTestCase {
         }
     }
 
+    func testPreservedAutonomousDayBoutDoesNotRegressToShortBurstOnly()
+        throws {
+        let raw =
+            "Atria/AtriaTests/Fixtures/"
+            + "whoop4-v15-autonomous-day-bout.jsonl"
+        let points = try physicalV24Points(
+            relativePath: raw,
+            wallStart: 1_785_254_526.146778,
+            wallEnd: 1_785_254_826.146778,
+            useCorrectedTimestamp: true
+        )
+
+        XCTAssertEqual(points.count, 313)
+        let bouts = AtriaWhoop4GravityCadenceStepModel
+            .autonomousGaitBoutEstimates(points: points)
+        XCTAssertEqual(bouts.count, 1)
+        XCTAssertEqual(bouts.first?.steps, 177)
+
+        let estimate = try XCTUnwrap(
+            AtriaWhoop4GravityCadenceStepModel
+                .estimateCoveredActivityFragments([points])
+        )
+        XCTAssertEqual(estimate.steps, 177)
+        XCTAssertEqual(estimate.motionTicks, 156)
+        XCTAssertEqual(estimate.unresolvedMotionSeconds, 60.5625, accuracy: 0.001)
+        XCTAssertGreaterThan(
+            estimate.steps,
+            100,
+            "the firmware's ordinary batched-counter pauses must not collapse "
+                + "a real autonomous gait bout back to the v14 short-burst subtotal"
+        )
+    }
+
     private func cadencePoints(
         count: Int,
         duration: TimeInterval,

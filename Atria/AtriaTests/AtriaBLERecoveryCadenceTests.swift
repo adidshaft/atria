@@ -3754,7 +3754,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let automatic = AtriaBLEManager.PendingOfflineHistoricalSyncRequest(
             reason: "range_loss_retry",
             force: false,
-            explicitRequest: false
+            explicitRequest: false,
+            explicitPostWorkoutBankRequest: false
         )
         let upgraded = AtriaBLEManager.coalescedPendingOfflineHistoricalSyncRequest(
             existing: automatic,
@@ -3766,6 +3767,27 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertEqual(upgraded.reason, "physical_fixture")
         XCTAssertTrue(upgraded.force)
         XCTAssertTrue(upgraded.explicitRequest)
+    }
+
+    func testMotionBankAuthoritySurvivesFreshOwnerRequestCoalescing() {
+        let bank = AtriaBLEManager
+            .coalescedPendingOfflineHistoricalSyncRequest(
+                existing: nil,
+                reason: "fresh_accepted_hr",
+                force: false,
+                explicitRequest: false,
+                explicitPostWorkoutBankRequest: true
+            )
+        let retained = AtriaBLEManager
+            .coalescedPendingOfflineHistoricalSyncRequest(
+                existing: bank,
+                reason: "did_disconnect",
+                force: false,
+                explicitRequest: false
+            )
+
+        XCTAssertTrue(retained.explicitPostWorkoutBankRequest)
+        XCTAssertFalse(retained.explicitRequest)
     }
 
     func testFreshHistoryOwnerCutoverRequiresConnectedExplicitForce() {
@@ -4185,10 +4207,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             nowUnix: now,
             cooldown: 300
         ))
-        // A PRODUCTIVE prior attempt is exempt from the cooldown: the strap
-        // provably serves rows, and throttling it capped recovery at ~73 days
-        // for a 14-day ring (measured 2026-07-24, 350 rows/30min).
-        XCTAssertTrue(AtriaBLEManager.shouldReacquireInterruptedFullDrain(
+        // Productive rows are already durable progress. They do not exempt an
+        // autonomous drain from the cooldown, because immediate reacquisition
+        // starves accepted live HR and motion-bank capture.
+        XCTAssertFalse(AtriaBLEManager.shouldReacquireInterruptedFullDrain(
             stableLiveSeconds: 90,
             requiredStableLiveSeconds: 60,
             activeExplicitWorkout: false,
@@ -4201,7 +4223,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             nowUnix: now,
             cooldown: 300
         ))
-        // Productivity never overrides the stability window itself.
+        // Productivity also never overrides the stability window itself.
         XCTAssertFalse(AtriaBLEManager.shouldReacquireInterruptedFullDrain(
             stableLiveSeconds: 30,
             requiredStableLiveSeconds: 60,
@@ -4262,6 +4284,25 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             freshOwnerBoundaryFailureLatched: true,
             gapFingerprint: "gap-a"
         ), "a failed durable boundary must not restart from accepted-HR callbacks")
+    }
+
+    func testOldRangeLossGapRetainsFullRetryCadence() {
+        XCTAssertEqual(
+            AtriaBLEManager.rangeLossBackfillRetryDelay(
+                pendingAge: 90,
+                readyForceInterval: 90,
+                retryInterval: 600
+            ),
+            600
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.rangeLossBackfillRetryDelay(
+                pendingAge: 30,
+                readyForceInterval: 90,
+                retryInterval: 600
+            ),
+            60
+        )
     }
 
     func testPersistedInterruptedDrainUsesDurableAuthorityAndFreshHRPath() throws {
@@ -8280,6 +8321,117 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
     }
 
+    func testPendingOffloadDefersBackgroundBankRearmWithoutBlockingManualWorkout() {
+        XCTAssertFalse(
+            AtriaBLEManager.historicalMotionBankArmEligible(
+                manualWorkoutActive: false,
+                hasPendingOffload: true,
+                offloadCooldownActive: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.historicalMotionBankArmEligible(
+                manualWorkoutActive: false,
+                hasPendingOffload: false,
+                offloadCooldownActive: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.historicalMotionBankArmEligible(
+                manualWorkoutActive: true,
+                hasPendingOffload: true,
+                offloadCooldownActive: false
+            ),
+            "An explicit workout must outrank background ticket maintenance"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.historicalMotionBankArmEligible(
+                manualWorkoutActive: false,
+                hasPendingOffload: true,
+                offloadCooldownActive: true
+            ),
+            "after one bounded offload, ongoing all-day capture must resume while the backlog waits"
+        )
+    }
+
+    func testHistoricalMotionBankOffloadsAtMostOncePerFifteenMinutes() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        XCTAssertTrue(
+            AtriaBLEManager.historicalMotionBankOffloadCadenceEligible(
+                now: now,
+                lastStartedAt: nil
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.historicalMotionBankOffloadCadenceEligible(
+                now: now,
+                lastStartedAt: now.addingTimeInterval(-14 * 60)
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.historicalMotionBankOffloadCadenceEligible(
+                now: now,
+                lastStartedAt: now.addingTimeInterval(-15 * 60)
+            )
+        )
+    }
+
+    func testHistoricalRecoverySavedCountIsCumulativeAcrossTransportGenerations() {
+        let episodeStartRows = 0
+        let firstGenerationTotal = 1_652
+        let secondGenerationRows = 1_052
+        let secondGenerationTotal =
+            firstGenerationTotal + secondGenerationRows
+
+        XCTAssertTrue(
+            AtriaBLEManager.continuesHistoricalRecoveryEpisode(
+                .syncing(savedRecords: firstGenerationTotal)
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.continuesHistoricalRecoveryEpisode(
+                .partial(savedRecords: firstGenerationTotal)
+            )
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.historicalRecoveryEpisodeSavedRecords(
+                totalRows: secondGenerationTotal,
+                episodeStartRows: episodeStartRows
+            ),
+            2_704,
+            "a successor slice must add to the visible recovery count, not replace 1,652 with its 1,052-row generation delta"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.continuesHistoricalRecoveryEpisode(.verified)
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.continuesHistoricalRecoveryEpisode(.idle)
+        )
+    }
+
+    func testMotionBankCadenceIsReservedBeforeAnAsyncTransportRequest() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded"
+        ))
+        let tail = source[start.lowerBound...]
+        let end = try XCTUnwrap(tail.range(
+            of: "/// Builds one replacement ticket"
+        ))
+        let body = String(tail[..<end.lowerBound])
+        let reservation = try XCTUnwrap(body.range(
+            of: "workoutHistoricalMotionBankLastOffloadStartedAtKey"
+        ))
+        let request = try XCTUnwrap(body.range(
+            of: "requestOfflineHistoricalSyncIfNeeded("
+        ))
+        XCTAssertLessThan(
+            reservation.lowerBound,
+            request.lowerBound,
+            "retained async requests must reserve their cooldown before a later reconnect can execute them"
+        )
+    }
+
     func testAsyncOffloadStillYieldsToEveryRealBlocker() {
         for blockers in [
             (true, false, false, false, true, true),
@@ -8948,6 +9100,34 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             "beginProtectedR10V8WorkoutCutoverIfNeeded("
         ))
         XCTAssertTrue(body.contains("armWorkoutHistoricalMotionBankIfPossible"))
+    }
+
+    func testHistoryTerminalRestorationDeterministicallyRearmsAllDayMotionBank() throws {
+        // A physical current-day receipt remained at 7.6% coverage after a
+        // successful terminal history attempt because the bank persisted
+        // `prearmRequested=true` but `enabled=false`. Re-arming cannot depend
+        // solely on a later HR callback: this finalizer is the exact boundary
+        // where history ownership has ended and fresh live HR is proven.
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func finalizeOfflineHistoricalSyncAfterLiveRestoration("
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "private func emitHistoricalGapCoverageEvidence(",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        let evaluation = try XCTUnwrap(body.range(
+            of: "evaluatePendingWorkoutHistoricalMotionBankOffload("
+        ))
+        let rearm = try XCTUnwrap(body.range(
+            of: "armWorkoutHistoricalMotionBankIfPossible("
+        ))
+        XCTAssertLessThan(evaluation.lowerBound, rearm.lowerBound)
+        XCTAssertTrue(body.contains("if terminalAndLiveRestored"))
+        XCTAssertTrue(body.contains(
+            "reason: \"history_terminal_live_restored_\\(reason)\""
+        ))
     }
 
     func testWorkoutCutoverReusesEstablishedCentralAfterPhysicalDisconnect() throws {

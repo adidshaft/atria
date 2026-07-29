@@ -630,7 +630,7 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         ), 0)
     }
 
-    func testLiveStrainPatchRetainsPartialLowerBoundUntilEvidenceBecomesComplete() {
+    func testLiveStrainPatchCannotUpgradePartialCoverageFromValueAlone() {
         let now = Date(timeIntervalSince1970: 80_000)
         var current = deliverySnapshot(steps: nil,
                                        stepsCapturedAt: nil,
@@ -657,8 +657,24 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         }
 
         XCTAssertEqual(patch(strain: 0.8).strainDetail, "Partial · sparse HR")
-        XCTAssertEqual(patch(strain: 1.2).strainDetail, "Current cycle",
-                       "a completed aggregate must not retain a stale partial qualifier")
+        XCTAssertEqual(patch(strain: 1.2).strainDetail, "Partial · sparse HR",
+                       "a larger live value is not proof that sparse day coverage became complete")
+        XCTAssertEqual(
+            WidgetSnapshotPublisher.mergedLiveStrainDetail(
+                previous: "Partial · 21% wear",
+                next: "local"
+            ),
+            "Partial · 21% wear",
+            "a pulse patch cannot upgrade partial all-day authority even when its caller supplies an exact label"
+        )
+        XCTAssertEqual(
+            WidgetSnapshotPublisher.mergedLiveStrainDetail(
+                previous: "Current cycle",
+                next: "local · partial-day wear"
+            ),
+            "local · partial-day wear",
+            "a pulse patch may conservatively downgrade authority"
+        )
     }
 
     func testIndependentBatteryAndStrainClocksTriggerTrailingReload() {
@@ -769,12 +785,16 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("Atria/WidgetSnapshot.swift")
         let source = try String(contentsOf: url, encoding: .utf8)
+        let confidence = try XCTUnwrap(source.range(
+            of: "var strainConfidence = AtriaHomeModel.strainConfidence("
+        ))
         let gate = try XCTUnwrap(source.range(
-            of: "let strainIsCredible = rest != nil && store.profile.maxHR > (rest ?? 60)"
+            of: "let strainIsCredible =\n            !strainConfidence.localizedCaseInsensitiveContains(\"learning\")"
         ))
         let captured = try XCTUnwrap(source.range(
             of: "strainCapturedAt: strainIsCredible ? now : nil"
         ))
+        XCTAssertLessThan(confidence.lowerBound, gate.lowerBound)
         XCTAssertLessThan(gate.lowerBound, captured.lowerBound)
         // All three clock fields gate together: the widget's freshness guard
         // requires the full set, so a partial gate would leak a confident 0.0.
@@ -817,7 +837,9 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
 
         XCTAssertTrue(publisher.contains("sleepHours: latestDisplaySleep?.durationHours"))
         XCTAssertTrue(publisher.contains("? \"Review nap\" : \"Review sleep\""))
-        XCTAssertTrue(publisher.contains("strainIsPartial ? \"Partial · sparse HR\" : \"Current cycle\""))
+        XCTAssertTrue(publisher.contains("strainConfidence.localizedCaseInsensitiveContains(\"partial\")"))
+        XCTAssertTrue(publisher.contains("\"Partial · \\(Int(($0 * 100).rounded()))% wear\""))
+        XCTAssertTrue(publisher.contains("?? \"Partial · sparse HR\""))
         XCTAssertTrue(widget.contains("snapshot.strainDetail ?? \"Updated"))
         XCTAssertTrue(widget.contains("? \"≥ \\(numeric)\""))
         XCTAssertTrue(widget.contains("sleepDetail.localizedCaseInsensitiveContains(\"review\")"))

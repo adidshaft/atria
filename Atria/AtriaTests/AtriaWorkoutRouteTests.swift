@@ -104,6 +104,47 @@ final class AtriaWorkoutRouteTests: XCTestCase {
                       "Strength and non-route workout behavior must remain intact")
     }
 
+    func testLiveRouteSnapshotHasBoundedPixelsAndRendersOffMainActor() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaLiveWorkoutView.swift"), encoding: .utf8)
+        let storeStart = try XCTUnwrap(
+            source.range(of: "private final class AtriaLiveWorkoutMapSnapshotStore")
+        )
+        let storeEnd = try XCTUnwrap(
+            source.range(of: "private struct AtriaLiveWorkoutRouteCard",
+                         range: storeStart.upperBound..<source.endIndex)
+        )
+        let store = String(source[storeStart.lowerBound..<storeEnd.lowerBound])
+
+        XCTAssertTrue(store.contains("liveSnapshotSize = CGSize(width: 390, height: 560)"))
+        XCTAssertTrue(store.contains("liveSnapshotScale: CGFloat = 2"))
+        XCTAssertTrue(store.contains("maximumLiveSnapshotPixelCount"))
+        XCTAssertTrue(store.contains("renderQueue.async"))
+        XCTAssertTrue(store.contains("await Self.renderOffMain("))
+        XCTAssertTrue(store.contains("snapshotter?.cancel()"))
+        XCTAssertTrue(store.contains("generation == renderGeneration"))
+        XCTAssertFalse(store.contains("CGSize(width: 780, height: 1_120)"))
+        XCTAssertFalse(store.contains("options.scale = 3"))
+    }
+
+    func testRouteCheckpointDiscardNeverSynchronouslyWaitsOnIOQueue() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaWorkoutRoute.swift"), encoding: .utf8)
+        let discardStart = try XCTUnwrap(
+            source.range(of: "func discardDurableCheckpoint()")
+        )
+        let discardEnd = try XCTUnwrap(
+            source.range(of: "func finalizedDraft(",
+                         range: discardStart.upperBound..<source.endIndex)
+        )
+        let discard = String(source[discardStart.lowerBound..<discardEnd.lowerBound])
+
+        XCTAssertTrue(discard.contains("checkpointQueue.async"))
+        XCTAssertFalse(discard.contains("checkpointQueue.sync"))
+    }
+
     func testRouteHUDKeepsThreeDigitHeartRateOnOneLineAndExposesEveryLiveMetric() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()

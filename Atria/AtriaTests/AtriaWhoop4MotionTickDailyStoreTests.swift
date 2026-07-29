@@ -57,7 +57,8 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
                 strapIdentifier: strap,
                 cycleStart: start,
                 coverageAuthority: authority,
-                sourceFingerprint: source
+                sourceFingerprint: source,
+                compactSourceIdentifier: "compact-1"
             )
         )
         XCTAssertEqual(
@@ -66,7 +67,8 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
                 strapIdentifier: strap,
                 cycleStart: start,
                 coverageAuthority: authority,
-                sourceFingerprint: source
+                sourceFingerprint: source,
+                compactSourceIdentifier: "compact-1"
             )
         )
         XCTAssertNotEqual(
@@ -75,7 +77,8 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
                 strapIdentifier: strap,
                 cycleStart: start.addingTimeInterval(1),
                 coverageAuthority: authority,
-                sourceFingerprint: source
+                sourceFingerprint: source,
+                compactSourceIdentifier: "compact-1"
             )
         )
         XCTAssertNotEqual(
@@ -88,7 +91,18 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
                     HistoricalArchive.makeConsumerSourceFingerprint(
                         catalogGeneration: 2,
                         descriptors: []
-                    )
+                    ),
+                compactSourceIdentifier: "compact-1"
+            )
+        )
+        XCTAssertNotEqual(
+            base,
+            SessionStore.currentCycleStepReceiptAttemptSignature(
+                strapIdentifier: strap,
+                cycleStart: start,
+                coverageAuthority: authority,
+                sourceFingerprint: source,
+                compactSourceIdentifier: "compact-2"
             )
         )
     }
@@ -308,6 +322,31 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         XCTAssertEqual(merged.first?.knownStepDeltaSum, 268)
     }
 
+    func testCurrentSavedLinkReplacesFormerVerifiedHistoryIdentity() throws {
+        let suite = "AtriaWhoop4MotionTickDailyStoreTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let formerStrap = UUID().uuidString
+        let currentStrap = UUID().uuidString
+        defaults.set(
+            formerStrap,
+            forKey: AtriaBLEManager.OfflineSyncDefaults
+                .verifiedHistoryPeripheralID
+        )
+        defaults.set(
+            currentStrap,
+            forKey: AtriaBLEManager.LinkDefaults.savedPeripheralUUID
+        )
+
+        XCTAssertEqual(
+            AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers(
+                defaults: defaults
+            ),
+            [currentStrap],
+            "a former strap must not contribute to the current cycle"
+        )
+    }
+
     func testRelaunchReloadsDurableReceiptFromDisk() throws {
         let strap = UUID().uuidString
         let start = Date(timeIntervalSince1970: 90_000)
@@ -364,6 +403,44 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         XCTAssertEqual(merged.first?.knownStepDeltaSum, 268)
         XCTAssertEqual(merged.first?.state, .missing)
         XCTAssertEqual(merged.first?.missingCoverageSeconds, 3_600 + 270)
+    }
+
+    func testContainedReceiptRemainsCurrentAcrossCivilMidnight() throws {
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+        // Wake at 20:00 UTC, first verified bank starts at 21:00, and the
+        // active physiological cycle remains open after civil midnight.
+        let cycleStart = Date(timeIntervalSince1970: 20 * 3_600)
+        let receiptStart = cycleStart.addingTimeInterval(3_600)
+        let afterMidnight = Date(timeIntervalSince1970: 24 * 3_600 + 600)
+        XCTAssertTrue(
+            try store.save(
+                .init(
+                    windowStart: receiptStart,
+                    windowEnd: afterMidnight,
+                    motionTicks: 315,
+                    steps: 268,
+                    knownCoverageSeconds: 3_600,
+                    missingCoverageSeconds: 7_800,
+                    decodedRows: 3_600,
+                    capturedThrough: afterMidnight
+                ),
+                strapIdentifier: strap
+            )
+        )
+
+        let merged = store.mergingCurrentCycleReceipt(
+            into: [],
+            strapIdentifiers: [strap],
+            windowStart: cycleStart,
+            now: afterMidnight,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(merged.first?.dayStart, cycleStart)
+        XCTAssertEqual(merged.first?.knownStepDeltaSum, 268)
+        XCTAssertEqual(merged.first?.state, .missing)
+        XCTAssertEqual(merged.first?.missingCoverageSeconds, 3_600 + 7_800)
     }
 
     func testReceiptBeforeCurrentCycleNeverMasqueradesAsToday() throws {
@@ -506,6 +583,11 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
                 .appendingPathComponent("Atria/Sessions.swift"),
             encoding: .utf8
         )
+        let ble = try String(
+            contentsOf: testsURL.deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaBLEManager.swift"),
+            encoding: .utf8
+        )
         let start = try XCTUnwrap(sessions.range(
             of: "private func refreshCurrentCycleStrapStepReceipt"
         ))
@@ -529,6 +611,18 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         XCTAssertTrue(sessions.contains(
             "reason: \"session_store_init\""
         ))
+        XCTAssertTrue(sessions.contains(
+            "reason: \"compact_generation_durable\""
+        ), "partial durable compact progress must refresh the daily receipt")
+        XCTAssertTrue(sessions.contains(
+            ".didSynchronizeNotification"
+        ))
+        XCTAssertTrue(ble.contains(
+            "reason: \"compact_generation_durable\""
+        ))
+        XCTAssertTrue(ble.contains(
+            "allowRetry: false"
+        ), "post-fsync ticket verification must not start another BLE drain")
         XCTAssertTrue(body.contains(
             "if !changed"
         ))

@@ -148,17 +148,29 @@ final class AtriaBLEConnectedPeripheralRetainerTests: XCTestCase {
         var unguarded: [Int] = []
         for (index, line) in lines.enumerated() {
             let text = line.trimmingCharacters(in: .whitespaces)
-            guard text.hasPrefix("central.connect(") || text.hasPrefix("self.central.connect(")
+            guard text.hasPrefix("central.connect(")
+                    || text.hasPrefix("self.central.connect(")
+                    || text.hasPrefix("callbackCentral.connect(")
             else { continue }
-            let previous = index > 0
-                ? lines[index - 1].trimmingCharacters(in: .whitespaces)
-                : ""
-            if !previous.contains("connectedPeripheralRetainer.retain(") {
+            guard let open = text.firstIndex(of: "("),
+                  let comma = text[open...].firstIndex(of: ",") else {
+                unguarded.append(index + 1)
+                continue
+            }
+            let argument = text[text.index(after: open)..<comma]
+                .trimmingCharacters(in: .whitespaces)
+            let guardWindowStart = max(0, index - 24)
+            let guardWindow = lines[guardWindowStart..<index].joined(
+                separator: "\n"
+            )
+            if !guardWindow.contains(
+                "connectedPeripheralRetainer.retain(\(argument))"
+            ) {
                 unguarded.append(index + 1)
             }
         }
         XCTAssertTrue(unguarded.isEmpty,
-                      "central.connect without an adjacent retain at line(s) \(unguarded); "
+                      "CoreBluetooth connect without an adjacent retain at line(s) \(unguarded); "
                         + "an unreferenced connected peripheral is force-disconnected by CoreBluetooth")
     }
 

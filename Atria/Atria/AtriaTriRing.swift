@@ -96,7 +96,8 @@ enum AtriaRingMetricProjection {
     static func sleepStateTintHex(percent: Double?) -> String? {
         guard let percent, percent.isFinite else { return nil }
         switch percent {
-        case ..<85: return "#f5d142"
+        case ..<70: return "#ff4f7b"
+        case 70..<85: return "#f5d142"
         case 85...110: return "#42f59b"
         default: return "#0093e7"
         }
@@ -315,7 +316,8 @@ struct AtriaTriRing: View, Equatable {
         switch metric {
         case .sleep:
             switch percent {
-            case ..<85: return Metrics.electricYellow
+            case ..<70: return Metrics.electricRed
+            case 70..<85: return Metrics.electricYellow
             case 85...110: return Metrics.electricGreen
             default: return Metrics.electricStrain // oversleep: cool blue-ish, not a warning color
             }

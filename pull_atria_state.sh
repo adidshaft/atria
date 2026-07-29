@@ -4,23 +4,29 @@ set -euo pipefail
 device_id=${ATRIA_DEVICE_ID:-${WHOOP_DEVICE_ID:-}}
 bundle_id=${ATRIA_BUNDLE_ID:-${WHOOP_BUNDLE_ID:-com.adidshaft.atria}}
 evidence_dir=""
-runtime_only=0
+runtime_only=1
+pull_profile_flag=""
 installed_provenance_only=0
 devicectl_cmd=()
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./pull_atria_state.sh [--device DEVICE_ID] [--bundle-id BUNDLE_ID] [--runtime-only] [--installed-provenance-only] --evidence-dir DIR
+  ./pull_atria_state.sh [--device DEVICE_ID] [--bundle-id BUNDLE_ID] [--runtime-only|--full-archive] [--installed-provenance-only] --evidence-dir DIR
 
 Copies Atria's current on-device state without building, installing, launching,
 or terminating the app. This is for long-wear evidence pulls where preserving the
 running BLE session matters.
 
-Use --runtime-only for a small, non-disruptive checkpoint of sessions, the
-active journal, preferences, provenance, and authoritative runtime state. It
-intentionally skips the large historical archive, sensor captures, and step
-calibration archive. A later full pull remains required for archive acceptance.
+Runtime-only is the default: a small, non-disruptive checkpoint of sessions,
+the active journal, preferences, provenance, and authoritative runtime state.
+It intentionally skips the large historical archive, sensor captures, and
+step calibration archive.
+
+Use --full-archive only for an explicit archive-acceptance checkpoint. It copies
+the growing historical archive, identity index, sensor captures, and step
+calibration archive, so making it opt-in prevents ordinary checks from creating
+multi-gigabyte duplicate evidence trees.
 
 Use --installed-provenance-only when proving an already-running installed build
 after the worktree has legitimately advanced. Installed binding/integrity still
@@ -64,7 +70,21 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --runtime-only)
+      if [[ "$pull_profile_flag" == "full_archive" ]]; then
+        printf '%s\n' '--runtime-only and --full-archive are mutually exclusive.' >&2
+        exit 2
+      fi
       runtime_only=1
+      pull_profile_flag="runtime_only"
+      shift
+      ;;
+    --full-archive)
+      if [[ "$pull_profile_flag" == "runtime_only" ]]; then
+        printf '%s\n' '--runtime-only and --full-archive are mutually exclusive.' >&2
+        exit 2
+      fi
+      runtime_only=0
+      pull_profile_flag="full_archive"
       shift
       ;;
     --installed-provenance-only)
@@ -477,6 +497,9 @@ copy_from_container "Library/Application Support/atria-strap-step-ledger.json" \
 copy_from_container "Library/Application Support/Atria/verified-step-evidence-v1/whoop4-motion-tick-days-v1.json" \
   "$runtime_state_dir/whoop4-motion-tick-days-v1.json" \
   "whoop4_motion_tick_days" || true
+copy_from_container "Library/Application Support/Atria/whoop4-motion-compact-v1" \
+  "$runtime_state_dir/whoop4-motion-compact-v1" \
+  "whoop4_motion_compact_store" || true
 copy_from_container "Documents/atria-workout-routes" \
   "$runtime_state_dir/atria-workout-routes" \
   "workout_routes" || true

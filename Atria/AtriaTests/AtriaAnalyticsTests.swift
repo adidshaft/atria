@@ -1623,6 +1623,17 @@ final class AtriaAnalyticsTests: XCTestCase {
                        accuracy: 0.0001)
     }
 
+    func testSleepPerformanceZoneUsesAdaptiveNeedBands() throws {
+        let low = try XCTUnwrap(Metrics.sleepPerformanceZone(69, neededHours: 10))
+        XCTAssertEqual(low.level, .red)
+        XCTAssertTrue(low.current.contains("10 h"))
+        XCTAssertEqual(Metrics.sleepPerformanceZone(70)?.level, .yellow)
+        XCTAssertEqual(Metrics.sleepPerformanceZone(84)?.level, .yellow)
+        XCTAssertEqual(Metrics.sleepPerformanceZone(85)?.level, .green)
+        XCTAssertEqual(Metrics.sleepPerformanceZone(100)?.level, .green)
+        XCTAssertNil(Metrics.sleepPerformanceZone(nil))
+    }
+
     func testNapRecoveryLiftNeverLowersMorningRecovery() {
         let lowerNap = AtriaNapRecovery.adjustedRecovery(morningRecovery: 70,
                                                          morningLnRMSSD: log(60),
@@ -2487,7 +2498,7 @@ final class AtriaAnalyticsTests: XCTestCase {
         ), "needs qualified sleep")
         XCTAssertEqual(AtriaHealthMetricEvidencePresentation.settledRestingHeartRateDetail(
             rollup: rollup,
-            isToday: true
+            now: day
         ), "wear estimate")
     }
 
@@ -2516,12 +2527,41 @@ final class AtriaAnalyticsTests: XCTestCase {
         ), "sleep average")
         XCTAssertEqual(AtriaHealthMetricEvidencePresentation.settledRestingHeartRateDetail(
             rollup: rollup,
-            isToday: true
+            now: rollup.day
         ), "this morning")
+        let tomorrow = rollup.day.addingTimeInterval(24 * 60 * 60)
         XCTAssertEqual(AtriaHealthMetricEvidencePresentation.settledHRVDetail(
             rollup: rollup,
-            isToday: false
+            now: tomorrow
         ), "yesterday")
+    }
+
+    func testHealthMetricEvidenceDoesNotCallOlderSavedMorningYesterday() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        let now = calendar.date(from: DateComponents(year: 2026,
+                                                     month: 7,
+                                                     day: 29,
+                                                     hour: 16))!
+        let saved = calendar.date(from: DateComponents(year: 2026,
+                                                       month: 7,
+                                                       day: 20))!
+        let rollup = DailyRollupStoreEntry(day: saved,
+                                          lnRMSSD: log(48),
+                                          rhr: 57,
+                                          sleepSeconds: 7.16 * 3_600,
+                                          calendar: calendar)
+
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.settledHRVDetail(
+            rollup: rollup,
+            now: now,
+            calendar: calendar
+        ), "9d ago")
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.settledRestingHeartRateDetail(
+            rollup: rollup,
+            now: now,
+            calendar: calendar
+        ), "9d ago")
     }
 
     func testSleepRespiratoryRateUsesEarlierRRWindowsWhenTailIsSparse() {

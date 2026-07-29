@@ -204,6 +204,23 @@ enum AtriaWhoop4HistoryArchivePipeline {
                     identity: identity,
                     generation: generation
                 )
+                do {
+                    _ = try AtriaWhoop4MotionTickCompactStore.shared.append(
+                        record: record,
+                        rawPayload: computation.rawPayload,
+                        strapIdentifier: strapIdentifier
+                    )
+                } catch {
+                    // The compact shard is a rebuildable projection cache. Raw
+                    // archive admission remains successful, while the exact
+                    // bank ticket stays unresolved until compact publication
+                    // succeeds or the foreground legacy scan rebuilds it.
+                    AtriaDebugLog(
+                        "ATRIADBG whoop4_motion_compact status=append_failed generation=%llu error=%@ action=retain_raw_ticket_unresolved",
+                        generation,
+                        String(describing: error)
+                    )
+                }
                 return PersistenceResult(
                     succeeded: true,
                     inserted: append.inserted,

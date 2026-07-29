@@ -1234,14 +1234,14 @@ struct AtriaTodayScreen: View {
     /// owns Recovery and sleep-need math. Keeping the two projections separate
     /// lets a first-night candidate show its measured duration immediately
     /// without silently promoting it into physiological truth.
-    /// Inputs for the wake-settlement row. The night snapshot carries no save
-    /// timestamp, so the model falls back to the night's end rather than
-    /// inventing one.
+    /// Inputs for the wake-settlement row. Confirmed projections carry their
+    /// durable save timestamp so freshness describes the save, not the wake.
     private var sleepSettlementRow: some View {
         let night = latestDisplaySleep
         let isConfirmed = night?.confirmed == true
         return AtriaTodaySleepSettlementRow(
             confirmedSleepEnd: isConfirmed ? night?.end : nil,
+            confirmedSleepSavedAt: isConfirmed ? night?.savedAt : nil,
             candidateEnd: isConfirmed ? nil : night?.end
         )
     }
@@ -1496,8 +1496,7 @@ struct AtriaTodayScreen: View {
            let lnRMSSD = entry.lnRMSSD {
             let ms = Int(exp(lnRMSSD).rounded())
             let label = AtriaHealthMetricEvidencePresentation.settledHRVDetail(
-                rollup: entry,
-                isToday: Calendar.current.isDateInToday(entry.day)
+                rollup: entry
             )
             return ("\(ms)", label)
         }
@@ -1519,8 +1518,7 @@ struct AtriaTodayScreen: View {
         if let entry = dayDescendingRollups.first(where: { $0.rhr != nil }),
            let rhr = entry.rhr {
             let label = AtriaHealthMetricEvidencePresentation.settledRestingHeartRateDetail(
-                rollup: entry,
-                isToday: Calendar.current.isDateInToday(entry.day)
+                rollup: entry
             )
             return ("\(rhr)", label)
         }
@@ -1860,8 +1858,8 @@ struct AtriaTodayScreen: View {
                   let previous = previousRollup?.recovery else { return nil }
             return Self.deltaText(current - previous, unit: "%")
         case .sleep:
-            guard let current = latestRollup?.sleepPerformance,
-                  let previous = previousRollup?.sleepPerformance else { return nil }
+            guard let current = sleepPerformancePercent,
+                  let previous = previousSleepPerformancePercent else { return nil }
             return Self.deltaText(current - previous, unit: "%")
         case .strain:
             guard let previous = previousRollup?.strain else { return nil }
@@ -1869,6 +1867,18 @@ struct AtriaTodayScreen: View {
             guard abs(delta) >= 0.05 else { return "Flat vs yesterday" }
             return String(format: "%@%.1f vs yesterday", delta > 0 ? "+" : "-", abs(delta))
         }
+    }
+
+    /// Sleep may update immediately after a resumed segment is confirmed while
+    /// the current civil-day rollup is still settling. Compare the fresh
+    /// canonical percent with the rollup belonging to the preceding sleep day,
+    /// rather than assuming array index 1 is yesterday.
+    private var previousSleepPerformancePercent: Int? {
+        guard let latestSleep else { return nil }
+        return AtriaTodaySleepDeltaAuthority.previousPerformance(
+            before: latestSleep.day,
+            rollups: dayDescendingRollups
+        )
     }
 
     private static func deltaText(_ delta: Int, unit: String) -> String {
@@ -2487,6 +2497,23 @@ private struct AtriaTodaySleepNeedSnapshot: Equatable {
     let performancePercent: Int?
 }
 
+enum AtriaTodaySleepDeltaAuthority {
+    nonisolated static func previousPerformance(
+        before currentSleepDay: Date,
+        rollups: [DailyRollupStoreEntry],
+        calendar: Calendar = .current
+    ) -> Int? {
+        guard let priorDay = calendar.date(
+            byAdding: .day,
+            value: -1,
+            to: calendar.startOfDay(for: currentSleepDay)
+        ) else { return nil }
+        return rollups.first {
+            calendar.isDate($0.day, inSameDayAs: priorDay)
+        }?.sleepPerformance
+    }
+}
+
 /// Isolates the Apple-Fitness-style hero scroll-shrink consumer (scale +
 /// opacity applied to the ring hero content) in its own `View` so that
 /// scroll-driven `heroShrinkProgress` writes only force *this* small view's
@@ -2674,6 +2701,7 @@ private struct AtriaTodayAddMetricsSheet: View {
 /// Today deck.
 private struct AtriaTodaySleepSettlementRow: View {
     let confirmedSleepEnd: Date?
+    let confirmedSleepSavedAt: Date?
     let candidateEnd: Date?
 
     @Environment(\.scenePhase) private var scenePhase
@@ -2684,7 +2712,7 @@ private struct AtriaTodaySleepSettlementRow: View {
     var body: some View {
         let state = AtriaSleepSettlementPresentation.state(
             confirmedSleepEnd: confirmedSleepEnd,
-            confirmedSleepSavedAt: nil,
+            confirmedSleepSavedAt: confirmedSleepSavedAt,
             candidateEnd: candidateEnd,
             now: now
         )
