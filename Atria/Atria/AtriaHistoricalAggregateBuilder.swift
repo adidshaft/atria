@@ -378,9 +378,44 @@ enum AtriaHistoricalAggregateBuilder {
                             && record.clockCorrectedUnix7 != nil,
                          gravityValidated: record.gravityValidated)
         }
-        return AtriaRecoveredMotionProjection.epochFeatures(samples: samples,
-                                                            start: start,
-                                                            end: end).map { epoch in
+        var projected = AtriaRecoveredMotionProjection.epochFeatures(
+            samples: samples,
+            start: start,
+            end: end
+        )
+        var coalescedTerminal = false
+        if let terminal = projected.last,
+           wholeSecond(terminal.start) == wholeSecond(terminal.end) {
+            // Foundation's canonical ISO-8601 persistence drops fractional
+            // seconds. A sub-second terminal bucket would therefore decode as
+            // a zero-duration, invalid epoch. Preserve the exact source end
+            // and every source row by recomputing the previous bucket plus the
+            // tail as one bounded terminal epoch. No future time is invented.
+            if projected.count >= 2 {
+                let mergedStart = projected[projected.count - 2].start
+                let mergedDuration = end.timeIntervalSince(mergedStart)
+                let mergedSamples = samples.filter {
+                    $0.timestamp >= mergedStart && $0.timestamp <= end
+                }
+                let merged = AtriaRecoveredMotionProjection.epochFeatures(
+                    samples: mergedSamples,
+                    start: mergedStart,
+                    end: end,
+                    epochDuration: mergedDuration
+                )
+                if let terminal = merged.first, merged.count == 1 {
+                    projected.removeLast(2)
+                    projected.append(terminal)
+                    coalescedTerminal = true
+                }
+            } else {
+                // A source shorter than one persisted second cannot carry a
+                // truthful bounded motion interval in schema v2. The retained
+                // raw remains authoritative; do not invent an interval.
+                projected.removeAll()
+            }
+        }
+        return projected.enumerated().map { index, epoch in
             .init(start: epoch.start,
                   end: epoch.end,
                   rows: epoch.rows,
@@ -397,9 +432,15 @@ enum AtriaHistoricalAggregateBuilder {
                   lowMotionQualified: epoch.lowMotionQualified,
                   sleepStage: nil,
                   sleepStageConfidence: nil,
-                  algorithmVersion: "recovered-motion-epoch-v1",
+                  algorithmVersion: coalescedTerminal && index == projected.count - 1
+                    ? "recovered-motion-epoch-v2"
+                    : "recovered-motion-epoch-v1",
                   provenance: AtriaRecoveredMotionProjection.source)
         }
+    }
+
+    private static func wholeSecond(_ date: Date) -> TimeInterval {
+        floor(date.timeIntervalSince1970)
     }
 
     private static func effectiveTimestamp(_ record: HistoricalArchive.Record) -> Date? {

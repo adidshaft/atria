@@ -2,7 +2,7 @@
 
 This is Atria's living, append-only notebook for WHOOP 4.0 ("Harvard") protocol work. It records the wire protocol, physical strap behaviour, failed approaches, and the evidence behind conclusions. New experiments must be appended to the experiment log even when they fail.
 
-Last updated: 2026-07-29 (Asia/Kolkata)
+Last updated: 2026-07-30 (Asia/Kolkata)
 
 ## Evidence labels
 
@@ -3133,3 +3133,39 @@ POSITIVE STILL REQUIRED**
 - The exact stalled 33.55 MB source completed the optimized materializer in
   3.129 seconds on the iPhone 17 Pro simulator. Physical-device convergence and
   terminal consumer settlement remain required before this is a gate pass.
+
+### 2026-07-30 — whole-second persistence must not collapse a terminal motion epoch
+
+- The optimized physical build selected sealed chunk
+  `10891f58-cf5a-4f49-9bd5-0b2c0cdb1b85` first. Its retained source is intact:
+  33,555,020 bytes, SHA-256
+  `442a28b157b19e8f45c0d892f0a7ddab32db119bd9350bc494399830758dbfb9`,
+  and 23,346/23,346 rows decode canonically.
+- The in-memory aggregate was internally exact: 23,346 motion rows, of which
+  23,326 were validated and 20 rejected. The failure occurred only during the
+  required durable round trip. Its final one-row motion epoch spanned
+  `17:14:03.335938`–`17:14:03.762207` UTC; Foundation's whole-second ISO-8601
+  encoding persisted both bounds as `17:14:03Z`. Strict reload validation then
+  correctly rejected the zero-duration epoch as `motionParityMismatch`.
+- This was not corrupt motion, lost raw history, or a numerical parity
+  mismatch. The temporary transaction failed before aggregate or manifest
+  publication, the full-drain authority remained
+  `gapResolvedConsumersPending`, no consumer receipt was published, and raw
+  history remained authoritative.
+- Only a terminal epoch whose persisted bounds would collapse is changed. Its
+  preceding epoch and real sub-second tail are reprojected as one source-bounded
+  terminal epoch. The exact source end and every row are retained, no future
+  coverage is invented, earlier epochs remain version 1, and only the merged
+  terminal epoch is labeled `recovered-motion-epoch-v2`.
+- A source wholly shorter than one persistable second publishes no motion epoch
+  and retains raw authority rather than inventing an interval. Validation is
+  not weakened and raw deletion remains impossible on this path.
+- The exact 33.55 MB source now completes the full retained-shadow transaction
+  locally in 2.445 seconds with 725 durable epochs and all
+  23,346/23,326/20 total/validated/rejected rows preserved. The self-contained
+  aggregate-builder suite passes 9/9. Physical iPhone backlog convergence and
+  terminal settlement are still required before this correction is promoted
+  to a physical Gate 2 pass.
+- **Evidence:** `/tmp/atria-physical-motion-parity-final.xcresult`,
+  `/tmp/atria-motion-parity-self-contained.xcresult`, and
+  `/tmp/atria-history-repair-optimized-640b4191/evidence/`.

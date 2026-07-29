@@ -116,6 +116,119 @@ final class AtriaHistoricalAggregateBuilderTests: XCTestCase {
         }
     }
 
+    func testSubsecondTerminalMotionEpochSurvivesRetentionRoundTrip() throws {
+        let root = try temporaryDirectory()
+        let sourceURL = root.appendingPathComponent("subsecond-terminal.jsonl")
+        let base: UInt32 = 1_800_000_000
+        let records = [
+            record(unix: base, subsec: 11_000, heartRate: 70),
+            record(unix: base + 30, subsec: 25_000, heartRate: 71),
+        ]
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var sourceData = Data()
+        for record in records {
+            sourceData.append(try encoder.encode(record))
+            sourceData.append(0x0a)
+        }
+        try sourceData.write(to: sourceURL)
+
+        let proof = try AtriaHistoricalAggregateBuilder
+            .buildRetainedRawShadowProof(
+                sourceURL: sourceURL,
+                chunkID: "subsecond-terminal",
+                createdAt: Date(timeIntervalSince1970: TimeInterval(base + 31))
+            )
+        let terminal = try XCTUnwrap(proof.aggregate.motionEpochs.last)
+        XCTAssertEqual(terminal.rows, 2)
+        XCTAssertEqual(
+            terminal.end.timeIntervalSince1970,
+            TimeInterval(base + 30) + TimeInterval(25_000) / 32_768,
+            accuracy: 0.000_001
+        )
+        XCTAssertLessThanOrEqual(
+            terminal.end,
+            proof.aggregate.source.lastTimestamp
+        )
+        XCTAssertEqual(terminal.algorithmVersion, "recovered-motion-epoch-v2")
+
+        let result = try AtriaHistoricalRetentionTransaction(
+            semanticVerifier: AtriaHistoricalAggregateBuilder.verify
+        ).commitRetainedRawShadow(.init(
+            transactionID: "subsecond-terminal",
+            sourceURL: sourceURL,
+            aggregateDirectoryURL: root.appendingPathComponent("aggregates"),
+            manifestDirectoryURL: root.appendingPathComponent("manifests"),
+            proof: proof
+        ))
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let persisted = try decoder.decode(
+            AtriaHistoricalAggregateChunk.self,
+            from: Data(contentsOf: result.aggregateURL)
+        )
+        let persistedTerminal = try XCTUnwrap(persisted.motionEpochs.last)
+        XCTAssertGreaterThan(persistedTerminal.end, persistedTerminal.start)
+        XCTAssertLessThanOrEqual(
+            persistedTerminal.end,
+            persisted.source.lastTimestamp
+        )
+        XCTAssertEqual(persistedTerminal.rows, 2)
+        XCTAssertNoThrow(try persisted.validateForCommit())
+        XCTAssertFalse(result.sourceDeleted)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sourceURL.path))
+    }
+
+    func testSubsecondOnlyMotionSourceFailsClosedWithRawRetained() throws {
+        let root = try temporaryDirectory()
+        let sourceURL = root.appendingPathComponent("subsecond-only.jsonl")
+        let base: UInt32 = 1_800_000_000
+        let records = [
+            record(unix: base, subsec: 11_000, heartRate: 70),
+            record(unix: base, subsec: 15_000, heartRate: 71),
+        ]
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var sourceData = Data()
+        for record in records {
+            sourceData.append(try encoder.encode(record))
+            sourceData.append(0x0a)
+        }
+        try sourceData.write(to: sourceURL)
+
+        let proof = try AtriaHistoricalAggregateBuilder
+            .buildRetainedRawShadowProof(
+                sourceURL: sourceURL,
+                chunkID: "subsecond-only",
+                createdAt: Date(timeIntervalSince1970: TimeInterval(base + 1))
+            )
+        XCTAssertTrue(proof.aggregate.motionEpochs.isEmpty)
+        XCTAssertEqual(proof.aggregate.parity.motionEpochs, 0)
+        XCTAssertEqual(proof.aggregate.parity.validatedGravityRows, 0)
+
+        let result = try AtriaHistoricalRetentionTransaction(
+            semanticVerifier: AtriaHistoricalAggregateBuilder.verify
+        ).commitRetainedRawShadow(.init(
+            transactionID: "subsecond-only",
+            sourceURL: sourceURL,
+            aggregateDirectoryURL: root.appendingPathComponent("aggregates"),
+            manifestDirectoryURL: root.appendingPathComponent("manifests"),
+            proof: proof
+        ))
+
+        XCTAssertFalse(result.sourceDeleted)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sourceURL.path))
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let persisted = try decoder.decode(
+            AtriaHistoricalAggregateChunk.self,
+            from: Data(contentsOf: result.aggregateURL)
+        )
+        XCTAssertTrue(persisted.motionEpochs.isEmpty)
+        XCTAssertNoThrow(try persisted.validateForCommit())
+    }
+
     func testTerminalMetricTimestampFallbackRequiresObservationInsideExactAttempt() throws {
         let root = try temporaryDirectory()
         let url = root.appendingPathComponent("sealed.jsonl")
@@ -194,7 +307,11 @@ final class AtriaHistoricalAggregateBuilderTests: XCTestCase {
                      validatedLayouts: [HistoricalArchive.layoutVersion])
     }
 
-    private func record(unix: UInt32, heartRate: Int) -> HistoricalArchive.Record {
+    private func record(
+        unix: UInt32,
+        subsec: UInt16 = 0,
+        heartRate: Int
+    ) -> HistoricalArchive.Record {
         HistoricalArchive.Record(schema: HistoricalArchive.schema,
                                  capturedAt: Date(timeIntervalSince1970: TimeInterval(unix)),
                                  source: "0x2f",
@@ -202,7 +319,7 @@ final class AtriaHistoricalAggregateBuilderTests: XCTestCase {
                                  sequence: 24,
                                  command: 0x2f,
                                  unix7: unix,
-                                 subsec11: 0,
+                                 subsec11: subsec,
                                  flash13: unix,
                                  payloadLength: 1,
                                  whoofHR17: heartRate,
