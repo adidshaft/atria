@@ -3098,3 +3098,38 @@ POSITIVE STILL REQUIRED**
 - A source containing no decodable records still fails closed. Torn JSON still
   fails closed. No rejected payload is synthesized, discarded, or counted as a
   metric.
+### 2026-07-29 — retained-raw repair must be single-projection and execution-budget bounded
+
+- Physical candidate `e79b05d7` durably advanced the sealed catalog from
+  generation 400/19 incomplete chunks to generation 414/5 incomplete chunks
+  while live HR stayed responsive. It then remained in
+  `materializing=1` for more than six minutes before publishing metadata for
+  chunk `656d693b-d1d3-4ef8-9c18-51401206d1ae`.
+- That exact source is intact: 33,554,891 bytes, SHA-256
+  `10c9f567...7737de`, 23,320 valid JSON rows, zero malformed rows, and a
+  monotonic 03:10:06–04:24:46 UTC capture span. This rules out malformed input
+  as the demonstrated stall cause.
+- The old retained-shadow path decoded/projected each raw source as many as
+  three times and reloaded the global aggregate catalog again after commit.
+  Older device resource reports show the practical risk: about 92% average CPU
+  over 157 seconds, a fatal 60-second background CPU-budget event, and excessive
+  disk-write accounting. Those reports are supporting evidence from older
+  binaries, not proof that the current PID was killed.
+- The bounded replacement uses a typed proof emitted only by the canonical raw
+  builder. It seals source identity before and after one decode/projection,
+  publishes through a deletion-impossible retained-shadow transaction, verifies
+  durable aggregate/manifest bytes, and rechecks raw identity without another
+  semantic rebuild. The irreversible raw-retirement path keeps its full
+  verifier and consumer gates.
+- Backlog turns select from catalog metadata plus the selected artifact pair;
+  they do not decode every previously committed aggregate. One global,
+  fail-closed manifest/aggregate validation runs only when the lightweight
+  backlog reaches zero, so corrupt unrelated artifacts can never produce a
+  false completion.
+- Compressed sealed sources are bound to their decoded logical JSONL identity
+  (digest and byte count), not their smaller physical DEFLATE file size. This
+  keeps plain and compressed sources equivalent without weakening raw-retirement
+  checks.
+- The exact stalled 33.55 MB source completed the optimized materializer in
+  3.129 seconds on the iPhone 17 Pro simulator. Physical-device convergence and
+  terminal consumer settlement remain required before this is a gate pass.

@@ -113,6 +113,153 @@ final class AtriaHistoricalSealedCatalogMaterializerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sources[0].path))
     }
 
+    func testCrashAfterAggregatePublicationRetriesCommittedShadowIdempotently() async throws {
+        let fixture = try legacyFixture(
+            rowsBySource: [[
+                record(unix: 1_800_000_000),
+                record(unix: 1_800_000_001),
+            ]]
+        )
+        enum Injected: Error { case crash }
+
+        do {
+            _ = try await Task.detached {
+                try AtriaHistoricalSealedCatalogMaterializer.materializeNext(
+                    catalogStore: fixture.store,
+                    archiveRoot: fixture.root,
+                    aggregateDirectoryURL: fixture.aggregates,
+                    manifestDirectoryURL: fixture.manifests,
+                    now: Date(timeIntervalSince1970: 2_100),
+                    checkpoint: {
+                        if $0 == .aggregatePublished("legacy-legacy-a") {
+                            throw Injected.crash
+                        }
+                    }
+                )
+            }.value
+            XCTFail("expected injected crash")
+        } catch Injected.crash {}
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sources[0].path))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: fixture.manifests
+                .appendingPathComponent("manifest-legacy-legacy-a.json").path
+        ))
+
+        let retry = try await materializeNext(
+            fixture,
+            now: Date(timeIntervalSince1970: 99_000)
+        )
+        XCTAssertNil(retry.materializedChunkID)
+        XCTAssertTrue(retry.isComplete)
+        XCTAssertEqual(retry.aggregateCount, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sources[0].path))
+    }
+
+    func testConsecutiveMixedLegacyChunksConvergeWhileEveryRawStaysAuthoritative() async throws {
+        let root = try temporaryDirectory()
+        let sources = [
+            root.appendingPathComponent("mixed-a.jsonl"),
+            root.appendingPathComponent("mixed-b.jsonl"),
+        ]
+        try writeMixed(
+            [record(unix: 1_800_000_000)],
+            unknownRows: 2,
+            to: sources[0]
+        )
+        try writeMixed(
+            [record(unix: 1_800_000_100), record(unix: 1_800_000_101)],
+            unknownRows: 1,
+            to: sources[1]
+        )
+        let rawBefore = try sources.map { try Data(contentsOf: $0) }
+        let ids = IdentifierSource(["legacy-a", "legacy-b", "active-a"])
+        let store = AtriaHistoricalArchiveCatalogStore(
+            rootURL: root,
+            makeIdentifier: ids.next
+        )
+        _ = try store.loadOrRecover(
+            discoveredLegacyURLs: sources,
+            now: Date(timeIntervalSince1970: 2_000)
+        )
+        let fixture = Fixture(
+            root: root,
+            store: store,
+            sources: sources,
+            aggregates: root.appendingPathComponent("aggregates-v2"),
+            manifests: root.appendingPathComponent("retention-manifests-v2")
+        )
+
+        let first = try await materializeNext(
+            fixture,
+            now: Date(timeIntervalSince1970: 3_000)
+        )
+        XCTAssertEqual(first.materializedChunkID, "legacy-legacy-a")
+        XCTAssertEqual(first.remainingChunkCount, 1)
+        let second = try await materializeNext(
+            fixture,
+            now: Date(timeIntervalSince1970: 4_000)
+        )
+        XCTAssertEqual(second.materializedChunkID, "legacy-legacy-b")
+        XCTAssertTrue(second.isComplete)
+
+        let aggregates = AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: fixture.aggregates,
+            manifestDirectoryURL: fixture.manifests
+        ).load().aggregates.sorted {
+            $0.source.chunkID < $1.source.chunkID
+        }
+        XCTAssertEqual(
+            aggregates.map(\.parity.undecodableRowsRetainedRaw),
+            [2, 1]
+        )
+        XCTAssertEqual(try sources.map { try Data(contentsOf: $0) }, rawBefore)
+        XCTAssertTrue(aggregates.allSatisfy { !$0.authorizesRawRetirement })
+    }
+
+    func testBacklogDefersUnrelatedGlobalReaderFailureButCompletionFailsClosed() async throws {
+        let fixture = try legacyFixture(
+            rowsBySource: [
+                [record(unix: 1_800_000_000)],
+                [record(unix: 1_800_000_100)],
+            ]
+        )
+        try FileManager.default.createDirectory(
+            at: fixture.manifests,
+            withIntermediateDirectories: true
+        )
+        let corruptManifest = fixture.manifests
+            .appendingPathComponent("manifest-unrelated-corrupt.json")
+        try Data("{\"not\":\"a committed manifest\"}".utf8).write(
+            to: corruptManifest
+        )
+
+        // A pending backlog turn must touch only its selected source/artifacts.
+        // An unrelated committed-catalog audit cannot multiply every turn into
+        // an O(total archive) read.
+        let first = try await materializeNext(
+            fixture,
+            now: Date(timeIntervalSince1970: 3_000)
+        )
+        XCTAssertEqual(first.materializedChunkID, "legacy-legacy-a")
+        XCTAssertEqual(first.remainingChunkCount, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sources[0].path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sources[1].path))
+
+        // The last bounded turn is not allowed to report complete until one
+        // global reader pass validates every committed manifest.
+        do {
+            _ = try await materializeNext(
+                fixture,
+                now: Date(timeIntervalSince1970: 4_000)
+            )
+            XCTFail("completion must fail closed on the corrupt manifest")
+        } catch AtriaHistoricalSealedCatalogMaterializer
+            .MaterializationError.rejectedAggregateCatalog {}
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sources[0].path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sources[1].path))
+    }
+
     func testDigestOnlySizeRotationAndOneRowSourceBecomeComplete() async throws {
         let root = try temporaryDirectory()
         let aggregates = root.appendingPathComponent("aggregates-v2")
@@ -155,6 +302,69 @@ final class AtriaHistoricalSealedCatalogMaterializerTests: XCTestCase {
         XCTAssertEqual(complete.rowCount, 1)
         XCTAssertEqual(complete.firstTimestamp, complete.lastTimestamp)
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+    }
+
+    func testCompressedLogicalRawSourceMaterializesAndRemainsAuthoritative() async throws {
+        let fixture = try legacyFixture(
+            rowsBySource: [[
+                record(unix: 1_800_000_000),
+                record(unix: 1_800_000_001),
+            ]]
+        )
+        let chunkID = "legacy-legacy-a"
+        let source = fixture.sources[0]
+        let build = try AtriaHistoricalAggregateBuilder.build(
+            sourceURL: source,
+            chunkID: chunkID,
+            createdAt: Date(timeIntervalSince1970: 2_000)
+        )
+        try fixture.store.recordSealedMetadata(
+            chunkID: chunkID,
+            rowCount: build.aggregate.source.rawRowCount,
+            firstTimestamp: build.aggregate.source.firstTimestamp,
+            lastTimestamp: build.aggregate.source.lastTimestamp,
+            contentSHA256: build.aggregate.source.rawSHA256
+        )
+        let active = try fixture.store.activeChunkDescriptor().fileURL
+        let compressed = try AtriaHistoricalSealedJSONLCompression().commit(
+            chunkID: chunkID,
+            sourceURL: source,
+            archiveRootURL: fixture.root,
+            activeSourceURL: active
+        )
+        try fixture.store.recordCompressedStorage(
+            chunkID: chunkID,
+            manifestURL: compressed.manifestURL,
+            artifactURL: compressed.artifactURL
+        )
+
+        let catalogChunk = try XCTUnwrap(
+            try fixture.store.snapshot().chunks.first { $0.id == chunkID }
+        )
+        XCTAssertNotNil(catalogChunk.compressedStorage)
+        XCTAssertNotEqual(catalogChunk.byteCount, catalogChunk.storedByteCount)
+
+        let report = try await materializeNext(
+            fixture,
+            now: Date(timeIntervalSince1970: 3_000)
+        )
+
+        XCTAssertEqual(report.materializedChunkID, chunkID)
+        XCTAssertTrue(report.isComplete)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: compressed.artifactURL.path)
+        )
+        let aggregate = try XCTUnwrap(
+            AtriaHistoricalAggregateReader(
+                aggregateDirectoryURL: fixture.aggregates,
+                manifestDirectoryURL: fixture.manifests
+            ).load().aggregates.first
+        )
+        XCTAssertEqual(aggregate.source.rawSHA256, compressed.manifest.decodedSHA256)
+        XCTAssertEqual(
+            aggregate.source.rawByteCount,
+            compressed.manifest.decodedByteCount
+        )
     }
 
     func testMalformedSelectedSourceFailsWithoutCatalogOrRawMutation() async throws {
@@ -251,6 +461,28 @@ final class AtriaHistoricalSealedCatalogMaterializerTests: XCTestCase {
         for record in records {
             data.append(try encoder.encode(record))
             data.append(0x0a)
+        }
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: url)
+    }
+
+    private func writeMixed(
+        _ records: [HistoricalArchive.Record],
+        unknownRows: Int,
+        to url: URL
+    ) throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var data = Data()
+        for record in records {
+            data.append(try encoder.encode(record))
+            data.append(0x0a)
+        }
+        for index in 0..<unknownRows {
+            data.append(Data("{\"legacyEnvelope\":\(index)}\n".utf8))
         }
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),

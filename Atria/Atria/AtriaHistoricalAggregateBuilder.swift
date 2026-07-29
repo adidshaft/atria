@@ -13,11 +13,37 @@ enum AtriaHistoricalAggregateBuilder {
         case undecodableRows(Int)
         case rowCountMismatch(expected: Int, actual: Int)
         case invalidTimestamp
+        case sourceChangedDuringProjection
     }
 
     struct FileBuildResult {
         let aggregate: AtriaHistoricalAggregateChunk
         let semanticParityReceipt: String
+    }
+
+    /// Capability proving that one immutable retained raw source produced this
+    /// exact canonical aggregate. The initializer is intentionally private:
+    /// callers cannot turn an aggregate's self-hash into raw-semantic proof.
+    ///
+    /// This proof is only eligible for shadow publication where raw remains
+    /// authoritative. Irreversible retirement continues to rebuild from raw.
+    struct RetainedRawShadowProof {
+        let aggregate: AtriaHistoricalAggregateChunk
+        let semanticParityReceipt: String
+        let sourceIdentity: AtriaHistoricalJSONLInput.Identity
+        fileprivate let seal: String
+
+        fileprivate init(
+            aggregate: AtriaHistoricalAggregateChunk,
+            semanticParityReceipt: String,
+            sourceIdentity: AtriaHistoricalJSONLInput.Identity,
+            seal: String
+        ) {
+            self.aggregate = aggregate
+            self.semanticParityReceipt = semanticParityReceipt
+            self.sourceIdentity = sourceIdentity
+            self.seal = seal
+        }
     }
 
     private struct HRPoint {
@@ -41,6 +67,74 @@ enum AtriaHistoricalAggregateBuilder {
                       materializedProjections: [AtriaHistoricalAggregateChunk.MaterializedProjection] = []) throws -> FileBuildResult {
         guard FileManager.default.fileExists(atPath: sourceURL.path) else { throw BuildError.sourceMissing }
         let identity = try AtriaHistoricalJSONLInput.identity(at: sourceURL)
+        return try build(
+            sourceURL: sourceURL,
+            chunkID: chunkID,
+            createdAt: createdAt,
+            materializedProjections: materializedProjections,
+            identity: identity
+        )
+    }
+
+    /// Builds canonical shadow facts once and seals the source identity on both
+    /// sides of that projection. Hash-only passes are intentionally cheaper
+    /// than repeating JSON decode, RR projection, and motion projection.
+    static func buildRetainedRawShadowProof(
+        sourceURL: URL,
+        chunkID: String,
+        createdAt: Date,
+        materializedProjections: [AtriaHistoricalAggregateChunk.MaterializedProjection] = []
+    ) throws -> RetainedRawShadowProof {
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            throw BuildError.sourceMissing
+        }
+        let before = try AtriaHistoricalJSONLInput.identity(at: sourceURL)
+        let result = try build(
+            sourceURL: sourceURL,
+            chunkID: chunkID,
+            createdAt: createdAt,
+            materializedProjections: materializedProjections,
+            identity: before
+        )
+        let after = try AtriaHistoricalJSONLInput.identity(at: sourceURL)
+        guard before == after,
+              result.aggregate.source.rawSHA256 == after.sha256,
+              result.aggregate.source.rawByteCount == after.byteCount else {
+            throw BuildError.sourceChangedDuringProjection
+        }
+        return .init(
+            aggregate: result.aggregate,
+            semanticParityReceipt: result.semanticParityReceipt,
+            sourceIdentity: after,
+            seal: retainedRawShadowSeal(
+                aggregate: result.aggregate,
+                semanticParityReceipt: result.semanticParityReceipt,
+                sourceIdentity: after
+            )
+        )
+    }
+
+    static func validateRetainedRawShadowProof(
+        _ proof: RetainedRawShadowProof
+    ) -> Bool {
+        proof.aggregate.source.rawSHA256 == proof.sourceIdentity.sha256
+            && proof.aggregate.source.rawByteCount == proof.sourceIdentity.byteCount
+            && semanticParityReceipt(for: proof.aggregate)
+                == proof.semanticParityReceipt
+            && retainedRawShadowSeal(
+                aggregate: proof.aggregate,
+                semanticParityReceipt: proof.semanticParityReceipt,
+                sourceIdentity: proof.sourceIdentity
+            ) == proof.seal
+    }
+
+    private static func build(
+        sourceURL: URL,
+        chunkID: String,
+        createdAt: Date,
+        materializedProjections: [AtriaHistoricalAggregateChunk.MaterializedProjection],
+        identity: AtriaHistoricalJSONLInput.Identity
+    ) throws -> FileBuildResult {
         let scan = try decodeRecords(at: sourceURL)
         guard !scan.records.isEmpty else { throw BuildError.emptySource }
         let timestamps = scan.records.compactMap(effectiveTimestamp)
@@ -137,6 +231,24 @@ enum AtriaHistoricalAggregateBuilder {
         let content = (try? encoder.encode(aggregate)) ?? Data()
         let digest = SHA256.hash(data: content).map { String(format: "%02x", $0) }.joined()
         return "historical-semantic-parity-v2-\(digest)"
+    }
+
+    private static func retainedRawShadowSeal(
+        aggregate: AtriaHistoricalAggregateChunk,
+        semanticParityReceipt: String,
+        sourceIdentity: AtriaHistoricalJSONLInput.Identity
+    ) -> String {
+        let content = [
+            "historical-retained-raw-shadow-v1",
+            sourceIdentity.sha256,
+            String(sourceIdentity.byteCount),
+            aggregate.source.chunkID,
+            semanticParityReceipt,
+        ].joined(separator: "|")
+        let digest = SHA256.hash(data: Data(content.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "historical-retained-raw-shadow-proof-v1-\(digest)"
     }
 
     private static func buildHeartRateMinutes(

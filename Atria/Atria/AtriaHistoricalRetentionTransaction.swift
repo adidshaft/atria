@@ -44,6 +44,17 @@ struct AtriaHistoricalRetentionTransaction {
         let deleteSourceAfterCommit: Bool
     }
 
+    /// Separate API surface for a canonical shadow aggregate whose immutable
+    /// raw source remains authoritative. There is deliberately no deletion
+    /// flag here, so this cheaper proof can never authorize raw retirement.
+    struct RetainedRawShadowRequest {
+        let transactionID: String
+        let sourceURL: URL
+        let aggregateDirectoryURL: URL
+        let manifestDirectoryURL: URL
+        let proof: AtriaHistoricalAggregateBuilder.RetainedRawShadowProof
+    }
+
     struct Result: Equatable {
         let manifestURL: URL
         let aggregateURL: URL
@@ -113,6 +124,50 @@ struct AtriaHistoricalRetentionTransaction {
     }
 
     func commit(_ request: Request) throws -> Result {
+        try commit(request, semanticVerification: semanticVerifier)
+    }
+
+    func commitRetainedRawShadow(
+        _ shadow: RetainedRawShadowRequest
+    ) throws -> Result {
+        guard AtriaHistoricalAggregateBuilder.validateRetainedRawShadowProof(
+            shadow.proof
+        ) else {
+            throw TransactionError.verificationFailed
+        }
+        let request = Request(
+            transactionID: shadow.transactionID,
+            sourceURL: shadow.sourceURL,
+            aggregateDirectoryURL: shadow.aggregateDirectoryURL,
+            manifestDirectoryURL: shadow.manifestDirectoryURL,
+            aggregate: shadow.proof.aggregate,
+            semanticParityReceipt: shadow.proof.semanticParityReceipt,
+            deleteSourceAfterCommit: false
+        )
+        let result = try commit(
+            request,
+            semanticVerification: { _, aggregate, receipt in
+                aggregate == shadow.proof.aggregate
+                    && receipt == shadow.proof.semanticParityReceipt
+                    && AtriaHistoricalAggregateBuilder
+                        .validateRetainedRawShadowProof(shadow.proof)
+            }
+        )
+        // The generic transaction already checks identity before publication
+        // and again before its commit marker. Seal the shadow API return as
+        // well, including committed-retry paths that find a prior manifest.
+        guard try AtriaHistoricalJSONLInput.identity(at: shadow.sourceURL)
+            == shadow.proof.sourceIdentity else {
+            throw TransactionError.sourceDigestMismatch
+        }
+        return result
+    }
+
+    private func commit(
+        _ request: Request,
+        semanticVerification:
+            (URL, AtriaHistoricalAggregateChunk, String) throws -> Bool
+    ) throws -> Result {
         guard Self.validIdentifier(request.transactionID) else {
             throw TransactionError.invalidTransactionID
         }
@@ -130,10 +185,17 @@ struct AtriaHistoricalRetentionTransaction {
             // An already-committed retry is valid even after source retirement.
             return try loadCommittedResult(request, sourceDeleted: true)
         }
-        let values = try request.sourceURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        let values = try request.sourceURL.resourceValues(forKeys: [.isRegularFileKey])
         guard values.isRegularFile == true else { throw TransactionError.sourceIsNotRegularFile }
-        let sourceBytes = UInt64(values.fileSize ?? 0)
-        let sourceDigest = try Self.sha256(of: request.sourceURL)
+        // Aggregate identity is always the canonical decoded JSONL stream.
+        // This is byte-identical to a plain source and transparently inflates
+        // an immutable compressed source. Comparing the physical DEFLATE bytes
+        // with a logical raw receipt would otherwise strand compressed chunks.
+        let sourceIdentity = try AtriaHistoricalJSONLInput.identity(
+            at: request.sourceURL
+        )
+        let sourceBytes = sourceIdentity.byteCount
+        let sourceDigest = sourceIdentity.sha256
         guard sourceDigest == request.aggregate.source.rawSHA256 else {
             throw TransactionError.sourceDigestMismatch
         }
@@ -211,17 +273,25 @@ struct AtriaHistoricalRetentionTransaction {
               try verifyManifest(at: manifestTemporaryURL,
                                  expectedDigest: Self.sha256(of: manifestData),
                                  expected: manifest),
-              try semanticVerifier(request.sourceURL,
-                                   request.aggregate,
-                                   request.semanticParityReceipt) else {
+              try semanticVerification(request.sourceURL,
+                                       request.aggregate,
+                                       request.semanticParityReceipt) else {
             throw TransactionError.verificationFailed
         }
         // Source immutability is checked again after the potentially expensive
         // semantic pass. An append to a supposedly sealed file fails closed.
-        guard try Self.sha256(of: request.sourceURL) == sourceDigest else {
+        guard try AtriaHistoricalJSONLInput.identity(at: request.sourceURL)
+            == sourceIdentity else {
             throw TransactionError.sourceDigestMismatch
         }
         try checkpoint(.temporaryArtifactsVerified)
+        // A checkpoint is an explicit crash/fault-injection seam and may run
+        // arbitrary test or diagnostic work. Re-seal source identity after it
+        // so no artifact can be published from a source changed at that edge.
+        guard try AtriaHistoricalJSONLInput.identity(at: request.sourceURL)
+            == sourceIdentity else {
+            throw TransactionError.sourceDigestMismatch
+        }
 
         try publish(temporaryURL: aggregateTemporaryURL,
                     finalURL: aggregateURL,
@@ -253,7 +323,11 @@ struct AtriaHistoricalRetentionTransaction {
                   try consumerApplicationVerifier(request.aggregate) else {
                 throw TransactionError.rawRetirementNotAuthorized
             }
-            guard try Self.sha256(of: request.sourceURL) == manifest.sourceSHA256 else {
+            let identity = try AtriaHistoricalJSONLInput.identity(
+                at: request.sourceURL
+            )
+            guard identity.sha256 == manifest.sourceSHA256,
+                  identity.byteCount == manifest.sourceByteCount else {
                 throw TransactionError.sourceDigestMismatch
             }
             try fileManager.removeItem(at: request.sourceURL)
@@ -280,7 +354,11 @@ struct AtriaHistoricalRetentionTransaction {
                   try consumerApplicationVerifier(request.aggregate) else {
                 throw TransactionError.rawRetirementNotAuthorized
             }
-            guard try Self.sha256(of: request.sourceURL) == manifest.sourceSHA256 else {
+            let identity = try AtriaHistoricalJSONLInput.identity(
+                at: request.sourceURL
+            )
+            guard identity.sha256 == manifest.sourceSHA256,
+                  identity.byteCount == manifest.sourceByteCount else {
                 throw TransactionError.sourceDigestMismatch
             }
             try fileManager.removeItem(at: request.sourceURL)

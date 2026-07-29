@@ -243,6 +243,156 @@ final class AtriaHistoricalRetentionTransactionTests: XCTestCase {
         XCTAssertEqual(try directoryFiles(fixture.manifests, prefix: "manifest-"), 0)
     }
 
+    func testRetainedRawShadowCommitUsesTypedProofWithoutGenericSemanticRebuild() throws {
+        let fixture = try makeRetainedRawShadowFixture()
+        var genericSemanticVerifierCalls = 0
+        let transaction = AtriaHistoricalRetentionTransaction(
+            now: { self.fixedNow },
+            semanticVerifier: { _, _, _ in
+                genericSemanticVerifierCalls += 1
+                return false
+            }
+        )
+
+        let result = try transaction.commitRetainedRawShadow(fixture.request)
+
+        XCTAssertEqual(genericSemanticVerifierCalls, 0)
+        XCTAssertFalse(result.sourceDeleted)
+        XCTAssertFalse(result.reusedCommittedTransaction)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.source.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.aggregateURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.manifestURL.path))
+    }
+
+    func testRetainedRawShadowRejectsMutationAfterProofWithoutPublishing() throws {
+        let fixture = try makeRetainedRawShadowFixture()
+        let handle = try FileHandle(forWritingTo: fixture.source)
+        _ = try handle.seekToEnd()
+        try handle.write(contentsOf: try encodedRecord(unix: 1_800_000_001))
+        try handle.close()
+
+        XCTAssertThrowsError(
+            try AtriaHistoricalRetentionTransaction(
+                semanticVerifier: { _, _, _ in true }
+            ).commitRetainedRawShadow(fixture.request)
+        ) { error in
+            XCTAssertEqual(
+                error as? AtriaHistoricalRetentionTransaction.TransactionError,
+                .sourceDigestMismatch
+            )
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.source.path))
+        XCTAssertEqual(try directoryFiles(fixture.manifests, prefix: "manifest-"), 0)
+    }
+
+    func testRetainedRawShadowRejectsMutationAfterTemporaryVerification() throws {
+        let fixture = try makeRetainedRawShadowFixture()
+        var mutated = false
+        let transaction = AtriaHistoricalRetentionTransaction(
+            checkpoint: { checkpoint in
+                guard checkpoint == .temporaryArtifactsVerified, !mutated else {
+                    return
+                }
+                mutated = true
+                let handle = try FileHandle(forWritingTo: fixture.source)
+                _ = try handle.seekToEnd()
+                try handle.write(
+                    contentsOf: try self.encodedRecord(unix: 1_800_000_001)
+                )
+                try handle.close()
+            },
+            semanticVerifier: { _, _, _ in true }
+        )
+
+        XCTAssertThrowsError(
+            try transaction.commitRetainedRawShadow(fixture.request)
+        ) { error in
+            XCTAssertEqual(
+                error as? AtriaHistoricalRetentionTransaction.TransactionError,
+                .sourceDigestMismatch
+            )
+        }
+        XCTAssertTrue(mutated)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.source.path))
+        XCTAssertEqual(try directoryFiles(fixture.manifests, prefix: "manifest-"), 0)
+        XCTAssertEqual(try temporaryFileCount(fixture.aggregates), 0)
+        XCTAssertEqual(try temporaryFileCount(fixture.manifests), 0)
+    }
+
+    func testRetainedRawShadowCrashRetriesRemainIdempotentAndKeepRaw() throws {
+        let faultPoints: [AtriaHistoricalRetentionTransaction.Checkpoint] = [
+            .aggregateTemporaryDurable,
+            .manifestTemporaryDurable,
+            .temporaryArtifactsVerified,
+            .aggregatePublished,
+            .manifestPublished,
+        ]
+        enum Injected: Error { case crash }
+
+        for point in faultPoints {
+            let fixture = try makeRetainedRawShadowFixture()
+            let interrupted = AtriaHistoricalRetentionTransaction(
+                checkpoint: {
+                    if $0 == point { throw Injected.crash }
+                },
+                semanticVerifier: { _, _, _ in true }
+            )
+            XCTAssertThrowsError(
+                try interrupted.commitRetainedRawShadow(fixture.request)
+            )
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: fixture.source.path),
+                "raw missing after \(point.rawValue)"
+            )
+
+            let result = try AtriaHistoricalRetentionTransaction(
+                semanticVerifier: { _, _, _ in
+                    XCTFail("typed shadow retry must not call generic verifier")
+                    return false
+                }
+            ).commitRetainedRawShadow(fixture.request)
+
+            XCTAssertFalse(result.sourceDeleted)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.source.path))
+            XCTAssertEqual(
+                try directoryFiles(
+                    fixture.aggregates,
+                    prefix: "aggregate-retained-shadow-test"
+                ),
+                1
+            )
+            XCTAssertEqual(
+                try directoryFiles(
+                    fixture.manifests,
+                    prefix: "manifest-retained-shadow-test"
+                ),
+                1
+            )
+        }
+    }
+
+    func testRetainedRawShadowCommittedArtifactCorruptionFailsClosed() throws {
+        let fixture = try makeRetainedRawShadowFixture()
+        let transaction = AtriaHistoricalRetentionTransaction(
+            semanticVerifier: { _, _, _ in true }
+        )
+        let committed = try transaction.commitRetainedRawShadow(fixture.request)
+        try Data("{\"corrupt\":true}\n".utf8).write(
+            to: committed.aggregateURL,
+            options: .atomic
+        )
+
+        XCTAssertThrowsError(
+            try transaction.commitRetainedRawShadow(fixture.request)
+        ) { error in
+            XCTAssertEqual(
+                error as? AtriaHistoricalRetentionTransaction.TransactionError,
+                .manifestConflict
+            )
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.source.path))
+    }
+
     private struct Fixture {
         let source: URL
         let aggregates: URL
@@ -257,6 +407,23 @@ final class AtriaHistoricalRetentionTransactionTests: XCTestCase {
                   aggregate: aggregate,
                   semanticParityReceipt: "parity-receipt-v1",
                   deleteSourceAfterCommit: deleteSource)
+        }
+    }
+
+    private struct RetainedRawShadowFixture {
+        let source: URL
+        let aggregates: URL
+        let manifests: URL
+        let proof: AtriaHistoricalAggregateBuilder.RetainedRawShadowProof
+
+        var request: AtriaHistoricalRetentionTransaction.RetainedRawShadowRequest {
+            .init(
+                transactionID: "retained-shadow-test",
+                sourceURL: source,
+                aggregateDirectoryURL: aggregates,
+                manifestDirectoryURL: manifests,
+                proof: proof
+            )
         }
     }
 
@@ -281,6 +448,73 @@ final class AtriaHistoricalRetentionTransactionTests: XCTestCase {
                                             decodedRows: 1,
                                             unknownRows: 0,
                                             timestampOffset: timestampOffset))
+    }
+
+    private func makeRetainedRawShadowFixture() throws
+        -> RetainedRawShadowFixture {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "AtriaHistoricalRetentionTransactionShadowTests"
+            )
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+        temporaryDirectories.append(root)
+        let source = root.appendingPathComponent("sealed.jsonl")
+        try encodedRecord(unix: 1_800_000_000).write(to: source)
+        let proof = try AtriaHistoricalAggregateBuilder
+            .buildRetainedRawShadowProof(
+                sourceURL: source,
+                chunkID: "sealed-shadow-test",
+                createdAt: fixedNow
+            )
+        return .init(
+            source: source,
+            aggregates: root.appendingPathComponent("aggregates"),
+            manifests: root.appendingPathComponent("manifests"),
+            proof: proof
+        )
+    }
+
+    private func encodedRecord(unix: UInt32) throws -> Data {
+        let record = HistoricalArchive.Record(
+            schema: HistoricalArchive.schema,
+            capturedAt: Date(timeIntervalSince1970: TimeInterval(unix)),
+            source: "0x2f",
+            layoutVersion: HistoricalArchive.layoutVersion,
+            sequence: 24,
+            command: 0x2f,
+            unix7: unix,
+            subsec11: 0,
+            flash13: unix,
+            payloadLength: 1,
+            whoofHR17: 70,
+            whoofRRNum18: 0,
+            whoofRR19: [],
+            kRR64: [],
+            gravityX36: 0,
+            gravityY40: 0,
+            gravityZ44: 1,
+            gravityMagnitude: 1,
+            gravityValidated: true,
+            candidateRR: [],
+            rawPayloadHex: "00",
+            clockDeviceRef: 1,
+            clockWallRef: 1,
+            clockDriftSeconds: 0,
+            clockCorrectedUnix7: unix,
+            clockCorrectionStatus: "clock_ref_present",
+            currentSessionUsable: true,
+            metricUsable: true,
+            usabilityReason: "test"
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var data = try encoder.encode(record)
+        data.append(0x0a)
+        return data
     }
 
     private func aggregate(source: URL,
