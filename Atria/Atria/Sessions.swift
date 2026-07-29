@@ -6663,6 +6663,10 @@ final class SessionStore: ObservableObject {
     private var pendingWorkoutStepEvidenceWorkItem: DispatchWorkItem?
     private var workoutStepEvidenceGeneration = 0
     private var currentCycleStepReceiptGeneration = 0
+    private var currentCycleStepReceiptDeferredUntilForeground = false
+    private var workoutStepEvidenceDeferredUntilForeground = false
+    private var workoutRehydrationDeferredUntilForeground = false
+    private var archiveCompactionDeferredUntilForeground = false
     private var pendingSleepReadinessRetry: Task<Void, Never>?
     private var pendingSleepSettlementRetry: Task<Void, Never>?
     /// Foreground sleep settlement reads and aggregates the growing live journal
@@ -7085,6 +7089,18 @@ final class SessionStore: ObservableObject {
     /// daily store posts the one lightweight Home/widget invalidation only
     /// after its atomic receipt is durable.
     private func refreshCurrentCycleStrapStepReceipt(reason: String) {
+        guard Self.shouldStartAutomaticArchiveProjection(
+            applicationIsActive:
+                UIApplication.shared.applicationState == .active
+        ) else {
+            currentCycleStepReceiptDeferredUntilForeground = true
+            AtriaDebugLog(
+                "ATRIADBG whoop4_daily_steps status=receipt_refresh_deferred reason=%@ action=preserve_durable_receipt_until_foreground",
+                reason
+            )
+            return
+        }
+        currentCycleStepReceiptDeferredUntilForeground = false
         let identifiers =
             AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers()
         guard let strapIdentifier = identifiers.first else {
@@ -8454,6 +8470,18 @@ final class SessionStore: ObservableObject {
         allowsIncompleteOnboarding: Bool = false
     ) -> Bool {
         guard !restoreInitializationBlocked else { return false }
+        if !allowsIncompleteOnboarding,
+           !Self.shouldStartAutomaticArchiveProjection(
+                applicationIsActive:
+                    UIApplication.shared.applicationState == .active
+           ) {
+            deferredRecoveredDataRecomputationReason = reason
+            AtriaDebugLog(
+                "ATRIADBG recovered_projection status=deferred reason=%@ app_active=0 action=coalesce_until_foreground",
+                reason
+            )
+            return false
+        }
         let historyTransportOwnsLink = recoveredDataRecomputationDeferralProvider?() ?? false
         if Self.shouldDeferAutomaticRecoveredDataRecomputation(
             historyTransportOwnsLink: historyTransportOwnsLink,
@@ -8478,6 +8506,12 @@ final class SessionStore: ObservableObject {
         )
         handleRecoveredDataRecomputeEffects(effects)
         return true
+    }
+
+    nonisolated static func shouldStartAutomaticArchiveProjection(
+        applicationIsActive: Bool
+    ) -> Bool {
+        applicationIsActive
     }
 
     private func beginRecoveredDataMutationTransaction(
@@ -9152,6 +9186,18 @@ final class SessionStore: ObservableObject {
         reason: String,
         completion: ((Bool) -> Void)? = nil
     ) {
+        if completion == nil,
+           !Self.shouldStartAutomaticArchiveProjection(
+                applicationIsActive:
+                    UIApplication.shared.applicationState == .active
+           ) {
+            workoutRehydrationDeferredUntilForeground = true
+            AtriaDebugLog(
+                "ATRIADBG confirmed_workout_rehydration status=deferred reason=%@ app_active=0 action=wait_for_foreground",
+                reason
+            )
+            return
+        }
         if let completion {
             confirmedWorkoutRehydrationCompletions.append(completion)
         }
@@ -9288,6 +9334,18 @@ final class SessionStore: ObservableObject {
     private func scheduleConfirmedWorkoutStepEvidencePublication(
         reason: String
     ) {
+        guard Self.shouldStartAutomaticArchiveProjection(
+            applicationIsActive:
+                UIApplication.shared.applicationState == .active
+        ) else {
+            workoutStepEvidenceDeferredUntilForeground = true
+            AtriaDebugLog(
+                "ATRIADBG confirmed_workout_steps status=deferred reason=%@ app_active=0 action=wait_for_foreground",
+                reason
+            )
+            return
+        }
+        workoutStepEvidenceDeferredUntilForeground = false
         guard pendingWorkoutStepEvidenceWorkItem == nil else { return }
         let originals = Array(cachedConfirmedWorkouts.filter {
             ($0.workoutSteps == nil
@@ -9368,6 +9426,38 @@ final class SessionStore: ObservableObject {
         }
         pendingWorkoutStepEvidenceWorkItem = workItem
         Self.workoutStepEvidenceQueue.async(execute: workItem)
+    }
+
+    func resumeDeferredForegroundArchiveWork(reason: String) {
+        guard Self.shouldStartAutomaticArchiveProjection(
+            applicationIsActive:
+                UIApplication.shared.applicationState == .active
+        ) else { return }
+        if workoutRehydrationDeferredUntilForeground {
+            workoutRehydrationDeferredUntilForeground = false
+            scheduleConfirmedWorkoutArchiveRehydration(
+                reason: "foreground_\(reason)"
+            )
+        }
+        if workoutStepEvidenceDeferredUntilForeground {
+            scheduleConfirmedWorkoutStepEvidencePublication(
+                reason: "foreground_\(reason)"
+            )
+        }
+        if currentCycleStepReceiptDeferredUntilForeground {
+            refreshCurrentCycleStrapStepReceipt(
+                reason: "foreground_\(reason)"
+            )
+        }
+        if archiveCompactionDeferredUntilForeground {
+            archiveCompactionDeferredUntilForeground = false
+            compactHistoricalArchiveIfUseful(
+                reason: "foreground_\(reason)"
+            )
+        }
+        resumeDeferredRecoveredDataRecomputation(
+            reason: "foreground_\(reason)"
+        )
     }
 
     private func finishConfirmedWorkoutRehydrationCompletions(succeeded: Bool) {
@@ -12908,6 +12998,18 @@ final class SessionStore: ObservableObject {
     func compactHistoricalArchiveIfUseful(reason: String,
                                           now: Date = Date(),
                                           bypassDailyLease: Bool = false) {
+        guard Self.shouldStartAutomaticArchiveProjection(
+            applicationIsActive:
+                UIApplication.shared.applicationState == .active
+        ) else {
+            archiveCompactionDeferredUntilForeground = true
+            AtriaDebugLog(
+                "ATRIADBG archive_compaction_driver status=deferred_background reason=%@ action=preserve_archive_until_foreground",
+                reason
+            )
+            return
+        }
+        archiveCompactionDeferredUntilForeground = false
         guard !Self.archiveCompactionInFlight else { return }
         guard !HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority() else {
             AtriaDebugLog(

@@ -2535,6 +2535,34 @@ POSITIVE STILL REQUIRED**
   before/after preferences, current v15 receipt, and terminal authority
   snapshot.
 
+#### 2026-07-29 — background terminal projection CPU termination
+
+- **Physical failure:** after a Bluetooth restoration launch, iOS repeatedly
+  terminated Atria with jetsam code 100. The device's retained
+  `Atria.cpu_resource_fatal` reports show 48 seconds of CPU over 49–59 seconds
+  (82–97% average), above the 80%-over-60-seconds background limit. This was
+  not ordinary suspension and not a WHOOP disconnect.
+- **Hot path:** the sampled stacks converge on the recovered-data publication
+  pipeline: `HistoricalArchive.makeRecoveredDataSnapshot`,
+  `AtriaHistoricalJSONLRecentScanner.scan`,
+  `AtriaHistoricalLiveIdentityLookup.upsert`, recovered workout persistence,
+  aggregate sorting, and terminal consumer projection. A durable
+  `gapResolvedConsumersPending` journal caused that full retained-archive work
+  to resume during CoreBluetooth's short background CPU lease.
+- **Repair:** background restoration now preserves live BLE, canonical raw
+  history persistence, ACK safety, and the already-fsynced terminal journal.
+  It coalesces full terminal materialization, recovered-data projection,
+  confirmed-workout HR/step rescans, current-cycle step receipt reconstruction,
+  archive compaction, and workout motion-bank coverage verification until the
+  app is genuinely active. The durable step receipt and pending motion-bank
+  ticket remain visible/intact; each deferred lane resumes once after the first
+  interactive frame. No strap command, pairing mutation, receipt deletion, or
+  fabricated metric is involved.
+- **Verification:** the focused historical recovery policy suite and static
+  release checks cover the foreground CPU-budget decisions. Physical
+  post-install background CPU soak remains required before this operational
+  repair is called passed.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.

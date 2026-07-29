@@ -71,6 +71,15 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
             "prepareHistoricalAdmissionLedgerIfNeeded("
         ), "terminal publication cannot start without durable admission identity")
         XCTAssertTrue(resume.contains("preparing_terminal_admission_ledger"))
+        XCTAssertTrue(resume.contains(
+            "shouldRunTerminalConsumerMaterialization("
+        ), "background Bluetooth restoration must not start a full archive projection")
+        XCTAssertTrue(resume.contains(
+            "terminal_consumer_materialization_deferred_foreground"
+        ))
+        XCTAssertTrue(resume.contains(
+            "action=preserve_live_wait_for_foreground"
+        ))
         XCTAssertTrue(manager.contains(
             "action=retain_terminal_journal_preserve_live_no_ble_rearm"
         ), "terminal consumer publication must not reclaim BLE after a local projection failure")
@@ -142,6 +151,27 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         )
         XCTAssertTrue(request.contains(
             "action=preserve_live_resume_local_publication"
+        ))
+    }
+
+    func testTerminalConsumerMaterializationUsesForegroundCPUBudget() {
+        XCTAssertTrue(AtriaBLEManager.shouldRunTerminalConsumerMaterialization(
+            applicationIsActive: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldRunTerminalConsumerMaterialization(
+            applicationIsActive: false
+        ))
+        XCTAssertTrue(SessionStore.shouldStartAutomaticArchiveProjection(
+            applicationIsActive: true
+        ))
+        XCTAssertFalse(SessionStore.shouldStartAutomaticArchiveProjection(
+            applicationIsActive: false
+        ))
+        XCTAssertTrue(AtriaBLEManager.shouldRunWorkoutMotionBankCoverageEvaluation(
+            applicationIsActive: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldRunWorkoutMotionBankCoverageEvaluation(
+            applicationIsActive: false
         ))
     }
 
