@@ -626,7 +626,14 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
 
     func testExactGapResolutionCanRemainDurablyPendingForFutureConsumers() throws {
         let root = try temporaryRoot()
-        var store = makeStore(root: root)
+        let authorityDirectory = root.appendingPathComponent(
+            "full-drain-authority-v1",
+            isDirectory: true
+        )
+        var store = Store(
+            directoryURL: authorityDirectory,
+            makeIdentifier: { "authority-a" }
+        )
         _ = try store.arm(gap: gap(), attempt: attempt(), now: date(102))
         let permit = try endAndPermit(store: store, sequence: 5)
         _ = try store.recordMatchingACK(identity: identity(),
@@ -676,8 +683,17 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
         XCTAssertNil(pending.consumerCommit)
         XCTAssertNotNil(pending.resolvedAtUnix)
         XCTAssertEqual(pending.pendingConsumerDependency, dependency)
+        XCTAssertTrue(
+            HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority(
+                archiveRoot: root
+            ),
+            "future-dependent consumers still need the shared archive lane until their publication fence commits"
+        )
 
-        store = makeStore(root: root)
+        store = Store(
+            directoryURL: authorityDirectory,
+            makeIdentifier: { "authority-a" }
+        )
         let restarted = store
         XCTAssertEqual(try restarted.load()?.status, .gapResolvedConsumersPending,
                        "the future-dependent consumer retry must survive restart")
@@ -690,6 +706,12 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
         )
         XCTAssertEqual(completed.status, .resolved)
         XCTAssertNotNil(completed.consumerCommit)
+        XCTAssertFalse(
+            HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority(
+                archiveRoot: root
+            ),
+            "resolved authority must release ordinary archive maintenance"
+        )
     }
 
     func testFullFlowSurvivesRestartsAndResolvesOnlyAtLastDurableStage() throws {
