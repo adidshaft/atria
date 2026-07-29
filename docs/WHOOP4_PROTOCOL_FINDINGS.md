@@ -2700,17 +2700,19 @@ POSITIVE STILL REQUIRED**
 - **Physical observation:** the corrected Release surfaced the retained
   22:52–06:14 aggregate as a 6h16m `Possible sleep`, but logged
   `sleep_auto_confirm ... no_strong_candidate`. The retained personal baseline
-  contains 13 fresh, distinct resting-HR days and is not stale; the ordinary
-  trust threshold is 14 days.
+  contains 13 distinct resting-HR days, 11 within the hard 21-day sample
+  freshness window, and was updated today; the ordinary trust threshold is 14
+  fresh days.
 - **Failure:** the high-specificity pre-motion-projection path required the full
   trusted baseline. A wearer exactly one day short could therefore have a
   dense, five-hour-plus, multi-fragment physiological night pass every signal
   gate but remain review-only. Recovery and the physiological-day boundary
   consequently stayed on the prior night.
-- **Repair:** a non-stale 13-day baseline may admit only the stricter
-  high-specificity fragmented-HR main-sleep tier. It does not become trusted
-  for recovery, stress, HRV, ordinary HR-only sleep, naps, or any other metric;
-  the 14-day trust rule remains unchanged everywhere else.
+- **Repair:** a current 13-day baseline with at least seven fresh qualified
+  days may admit only the stricter high-specificity fragmented-HR main-sleep
+  tier. It does not become trusted for recovery, stress, HRV, ordinary HR-only
+  sleep, naps, or any other metric; the 14-fresh-day trust rule remains
+  unchanged everywhere else.
 - **Regression evidence:** static release checks pass 184/184. The complete
   sleep audit and scene-resume classes pass, including a new assertion that
   the physical fragmented shape is admitted at near-trusted maturity while
