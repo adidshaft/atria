@@ -89,6 +89,53 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
         )
     }
 
+    func testProjectionAuthorityIgnoresWallClockButChangesForCoverageFacts() throws {
+        let start = Date(timeIntervalSince1970: 1_500)
+        AtriaWhoop4MotionBankCoverageLedger.open(
+            at: start,
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        let first = try XCTUnwrap(
+            AtriaWhoop4MotionBankCoverageLedger.projectionAuthority(
+                intersecting: .init(
+                    start: start.addingTimeInterval(-30),
+                    end: start.addingTimeInterval(120)
+                ),
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+        )
+        let laterWallClockWindow = try XCTUnwrap(
+            AtriaWhoop4MotionBankCoverageLedger.projectionAuthority(
+                intersecting: .init(
+                    start: start.addingTimeInterval(-30),
+                    end: start.addingTimeInterval(600)
+                ),
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+        )
+        XCTAssertEqual(first.stableIdentifier, laterWallClockWindow.stableIdentifier)
+
+        AtriaWhoop4MotionBankCoverageLedger.close(
+            at: start.addingTimeInterval(60),
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        let closed = try XCTUnwrap(
+            AtriaWhoop4MotionBankCoverageLedger.projectionAuthority(
+                intersecting: .init(
+                    start: start.addingTimeInterval(-30),
+                    end: start.addingTimeInterval(600)
+                ),
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+        )
+        XCTAssertNotEqual(first.stableIdentifier, closed.stableIdentifier)
+    }
+
     func testClosedAndReopenedCoverageDoesNotFillRealGap() {
         let start = Date(timeIntervalSince1970: 2_000)
         AtriaWhoop4MotionBankCoverageLedger.open(

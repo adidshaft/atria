@@ -352,6 +352,17 @@ enum HistoricalArchive {
         }
     }
 
+    enum MotionTickDayEvidenceRead: Equatable, Sendable {
+        case qualified(MotionTickDayEvidence)
+        case completeNoQualifiedEvidence
+        case incomplete
+
+        var evidence: MotionTickDayEvidence? {
+            guard case .qualified(let value) = self else { return nil }
+            return value
+        }
+    }
+
     struct DurableAppendResult {
         let url: URL
         let inserted: Bool
@@ -2346,11 +2357,28 @@ enum HistoricalArchive {
         bankCoverage: [DateInterval],
         strapIdentifier: String
     ) -> MotionTickDayEvidence? {
+        motionTickDayEvidenceRead(
+            start: start,
+            end: end,
+            bankCoverage: bankCoverage,
+            strapIdentifier: strapIdentifier
+        ).evidence
+    }
+
+    /// Preserves the difference between a complete scan with no qualified
+    /// daily motion and an interrupted/overflowed scan. Only the former may
+    /// suppress an identical future launch attempt.
+    static func motionTickDayEvidenceRead(
+        start: Date,
+        end: Date,
+        bankCoverage: [DateInterval],
+        strapIdentifier: String
+    ) -> MotionTickDayEvidenceRead {
         precondition(!Thread.isMainThread,
                      "Historical motion-tick daily decoding must run off the main thread")
         guard end > start,
               !bankCoverage.isEmpty,
-              !strapIdentifier.isEmpty else { return nil }
+              !strapIdentifier.isEmpty else { return .incomplete }
         let dayWindow = DateInterval(start: start, end: end)
         let intervals = mergedMotionCoverage(bankCoverage.compactMap {
             let clippedStart = max($0.start, dayWindow.start)
@@ -2360,7 +2388,7 @@ enum HistoricalArchive {
                 : nil
         })
         guard let scanStart = intervals.first?.start,
-              let scanEnd = intervals.last?.end else { return nil }
+              let scanEnd = intervals.last?.end else { return .incomplete }
         let tolerance: TimeInterval = 3
         let maximumClockOffset =
             AtriaWhoop4ProductionHistoryBootstrapPolicy.maximumClockDrift
@@ -2462,7 +2490,10 @@ enum HistoricalArchive {
             )
             clockOffsetByPayload[payloadHex] = accepted.clockOffsetSeconds
         }
-        guard scan.complete, rows.count >= 2 else { return nil }
+        guard scan.complete else { return .incomplete }
+        guard rows.count >= 2 else {
+            return .completeNoQualifiedEvidence
+        }
         var clockOffsetSupport: [Int: Int] = [:]
         for payloadHex in rows.keys {
             guard let offset = clockOffsetByPayload[payloadHex] else {
@@ -2587,7 +2618,7 @@ enum HistoricalArchive {
         let knownSeconds = max(0, Int(totalKnownDuration.rounded()))
         guard knownSeconds > 0, totalDecodedRows >= 2,
               let capturedThrough else {
-            return nil
+            return .completeNoQualifiedEvidence
         }
         let totalSeconds = max(0, Int(end.timeIntervalSince(start).rounded()))
         let unresolvedMotionSeconds = max(
@@ -2598,15 +2629,20 @@ enum HistoricalArchive {
             0,
             min(totalSeconds, knownSeconds) - unresolvedMotionSeconds
         )
-        return .init(
-            windowStart: start,
-            windowEnd: end,
-            motionTicks: totalTicks,
-            steps: totalSteps,
-            knownCoverageSeconds: qualifiedStepSeconds,
-            missingCoverageSeconds: max(0, totalSeconds - qualifiedStepSeconds),
-            decodedRows: totalDecodedRows,
-            capturedThrough: min(capturedThrough, end)
+        return .qualified(
+            .init(
+                windowStart: start,
+                windowEnd: end,
+                motionTicks: totalTicks,
+                steps: totalSteps,
+                knownCoverageSeconds: qualifiedStepSeconds,
+                missingCoverageSeconds: max(
+                    0,
+                    totalSeconds - qualifiedStepSeconds
+                ),
+                decodedRows: totalDecodedRows,
+                capturedThrough: min(capturedThrough, end)
+            )
         )
     }
 

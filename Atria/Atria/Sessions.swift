@@ -6677,6 +6677,8 @@ final class SessionStore: ObservableObject {
     nonisolated private static let workoutStepNegativeAttemptsKey =
         "atria.confirmedWorkoutSteps.negativeAttempts.v1"
     nonisolated private static let maximumWorkoutStepNegativeAttempts = 64
+    nonisolated private static let currentCycleStepReceiptAttemptKey =
+        "atria.currentCycleStepReceipt.attempt.v1"
     private var pendingWorkoutStepEvidenceWorkItem: DispatchWorkItem?
     private var workoutStepEvidenceGeneration = 0
     private var currentCycleStepReceiptGeneration = 0
@@ -7140,7 +7142,12 @@ final class SessionStore: ObservableObject {
             strapIdentifier: strapIdentifier,
             now: now
         )
-        guard !coverage.isEmpty else {
+        let coverageAuthority =
+            AtriaWhoop4MotionBankCoverageLedger.projectionAuthority(
+                intersecting: .init(start: cycleStart, end: now),
+                strapIdentifier: strapIdentifier
+            )
+        guard !coverage.isEmpty, let coverageAuthority else {
             AtriaDebugLog(
                 "ATRIADBG whoop4_daily_steps status=receipt_refresh_skipped reason=%@ detail=missing_bank_coverage",
                 reason
@@ -7148,18 +7155,58 @@ final class SessionStore: ObservableObject {
             return
         }
         Self.workoutStepEvidenceQueue.async {
-            let evidence = HistoricalArchive.motionTickDayEvidence(
+            let fingerprintBefore =
+                HistoricalArchive.consumerSourceFingerprint()
+            let attemptSignature =
+                Self.currentCycleStepReceiptAttemptSignature(
+                    strapIdentifier: strapIdentifier,
+                    cycleStart: cycleStart,
+                    coverageAuthority: coverageAuthority,
+                    sourceFingerprint: fingerprintBefore
+                )
+            if let attemptSignature,
+               UserDefaults.standard.string(
+                    forKey: Self.currentCycleStepReceiptAttemptKey
+               ) == attemptSignature {
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(
+                        name: AtriaWhoop4MotionTickDailyStore
+                            .didSaveNotification,
+                        object: nil
+                    )
+                }
+                AtriaDebugLog(
+                    "ATRIADBG whoop4_daily_steps status=receipt_refresh_unchanged_skipped reason=%@ generation=%d coverage_intervals=%d",
+                    reason,
+                    generation,
+                    coverage.count
+                )
+                return
+            }
+            let read = HistoricalArchive.motionTickDayEvidenceRead(
                 start: cycleStart,
                 end: now,
                 bankCoverage: coverage,
                 strapIdentifier: strapIdentifier
             )
-            guard let evidence else {
+            let fingerprintAfter =
+                HistoricalArchive.consumerSourceFingerprint()
+            let stableCompleteRead =
+                fingerprintBefore == fingerprintAfter
+                    && read != .incomplete
+            guard case .qualified(let evidence) = read else {
+                if stableCompleteRead, let attemptSignature {
+                    UserDefaults.standard.set(
+                        attemptSignature,
+                        forKey: Self.currentCycleStepReceiptAttemptKey
+                    )
+                }
                 AtriaDebugLog(
-                    "ATRIADBG whoop4_daily_steps status=receipt_refresh_missing reason=%@ generation=%d coverage_intervals=%d",
+                    "ATRIADBG whoop4_daily_steps status=receipt_refresh_missing reason=%@ generation=%d coverage_intervals=%d complete=%d",
                     reason,
                     generation,
-                    coverage.count
+                    coverage.count,
+                    stableCompleteRead ? 1 : 0
                 )
                 return
             }
@@ -7168,6 +7215,12 @@ final class SessionStore: ObservableObject {
                     evidence,
                     strapIdentifier: strapIdentifier
                 )
+                if stableCompleteRead, let attemptSignature {
+                    UserDefaults.standard.set(
+                        attemptSignature,
+                        forKey: Self.currentCycleStepReceiptAttemptKey
+                    )
+                }
                 // On relaunch the strongest receipt may already be durable.
                 // `save` correctly performs no write in that case, but Home
                 // can have rendered before CoreBluetooth republished the saved
@@ -7200,6 +7253,34 @@ final class SessionStore: ObservableObject {
                 )
             }
         }
+    }
+
+    nonisolated static func currentCycleStepReceiptAttemptSignature(
+        strapIdentifier: String,
+        cycleStart: Date,
+        coverageAuthority:
+            AtriaWhoop4MotionBankCoverageLedger.ProjectionAuthority,
+        sourceFingerprint: HistoricalArchive.ConsumerSourceFingerprint
+    ) -> String? {
+        guard !strapIdentifier.isEmpty,
+              let coverageIdentifier =
+                coverageAuthority.stableIdentifier,
+              let sourceIdentifier =
+                sourceFingerprint.stableIdentifier else {
+            return nil
+        }
+        let value = [
+            AtriaWhoop4GravityCadenceStepModel.algorithmVersion,
+            strapIdentifier.uppercased(),
+            String(Int64(
+                (cycleStart.timeIntervalSince1970 * 1_000).rounded()
+            )),
+            coverageIdentifier,
+            sourceIdentifier,
+        ].joined(separator: "|")
+        return SHA256.hash(data: Data(value.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 
     /// Loads one older verified canonical page only when a history surface asks
