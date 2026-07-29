@@ -2695,6 +2695,31 @@ POSITIVE STILL REQUIRED**
 - **Acceptance status:** physical Release verification remains required; no
   on-device sleep/recovery claim is made by these tests alone.
 
+#### 2026-07-29 — 13-day baseline stranded the strict physical night at review
+
+- **Physical observation:** the corrected Release surfaced the retained
+  22:52–06:14 aggregate as a 6h16m `Possible sleep`, but logged
+  `sleep_auto_confirm ... no_strong_candidate`. The retained personal baseline
+  contains 13 fresh, distinct resting-HR days and is not stale; the ordinary
+  trust threshold is 14 days.
+- **Failure:** the high-specificity pre-motion-projection path required the full
+  trusted baseline. A wearer exactly one day short could therefore have a
+  dense, five-hour-plus, multi-fragment physiological night pass every signal
+  gate but remain review-only. Recovery and the physiological-day boundary
+  consequently stayed on the prior night.
+- **Repair:** a non-stale 13-day baseline may admit only the stricter
+  high-specificity fragmented-HR main-sleep tier. It does not become trusted
+  for recovery, stress, HRV, ordinary HR-only sleep, naps, or any other metric;
+  the 14-day trust rule remains unchanged everywhere else.
+- **Regression evidence:** static release checks pass 184/184. The complete
+  sleep audit and scene-resume classes pass, including a new assertion that
+  the physical fragmented shape is admitted at near-trusted maturity while
+  existing untrusted, daytime, sparse, elevated, and quiet-awake controls
+  remain rejected.
+- **Acceptance status:** physical Release verification remains required. The
+  night must persist automatically and publish its dependent day metrics
+  before this failure is closed.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.

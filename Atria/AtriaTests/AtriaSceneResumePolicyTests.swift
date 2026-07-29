@@ -143,6 +143,7 @@ final class AtriaSceneResumePolicyTests: XCTestCase {
             confirmedSleepsRevision: 4,
             restingHR: 58,
             baselineRestingIsTrusted: true,
+            baselineRestingIsNearTrusted: true,
             maxHR: 190
         )
 
@@ -166,6 +167,7 @@ final class AtriaSceneResumePolicyTests: XCTestCase {
                                       confirmedSleepsRevision: 4,
                                       restingHR: 58,
                                       baselineRestingIsTrusted: true,
+                                      baselineRestingIsNearTrusted: true,
                                       maxHR: 190)
         ))
         XCTAssertFalse(SessionStore.shouldCommitForegroundSleepSettlement(
@@ -176,6 +178,7 @@ final class AtriaSceneResumePolicyTests: XCTestCase {
                                       confirmedSleepsRevision: 4,
                                       restingHR: 58,
                                       baselineRestingIsTrusted: false,
+                                      baselineRestingIsNearTrusted: true,
                                       maxHR: 190)
         ), "baseline trust is part of the mutation identity even when its numeric value is unchanged")
     }
@@ -190,6 +193,7 @@ final class AtriaSceneResumePolicyTests: XCTestCase {
                 confirmedSleepsRevision: 2,
                 restingHR: 60,
                 baselineRestingIsTrusted: false,
+                baselineRestingIsNearTrusted: false,
                 maxHR: 190
             )
             let activeJournal = SavedSession(
