@@ -2562,6 +2562,14 @@ POSITIVE STILL REQUIRED**
   release checks cover the foreground CPU-budget decisions. Physical
   post-install background CPU soak remains required before this operational
   repair is called passed.
+- **Scanner memory correction:** the physical reports also sampled the
+  streaming JSONL reader retaining Foundation `Data`/decoder temporaries for
+  an entire lifetime-file pass. Each complete JSONL row now has an explicit
+  autorelease boundary. This does not change row admission, timestamps,
+  candidate bytes, ACK authority, or metric math; it bounds temporary object
+  lifetime during the deferred foreground projection. Scanner and sealed-file
+  compatibility tests pass 16/16. Physical peak-memory evidence remains
+  required before claiming the memory fault closed.
 
 ## Notebook maintenance rules
 
