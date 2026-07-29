@@ -764,6 +764,34 @@ final class AtriaHistoricalFullDrainCoverageStore: @unchecked Sendable {
         }
     }
 
+    /// Rebinds an already-published terminal transport to a strictly newer
+    /// catalog/aggregate snapshot after bounded legacy-chunk materialization.
+    /// Gap, cursor, raw seal, request times, and BLE authority are immutable;
+    /// this only advances the derived snapshot evidence used by consumers.
+    func refreshCompletionPublished(
+        identity: EventIdentity,
+        evidence: AtriaBLEHistoryTerminalPublicationStore.CompletionEvidence
+    ) throws -> Authority {
+        try mutatePublication(identity: identity,
+                              allowed: [.completionPublished]) { publication in
+            guard publication.rawSeal != nil,
+                  let existing = publication.completion else {
+                throw StoreError.consumerReceiptConflict
+            }
+            if existing == evidence { return }
+            guard evidence.generation > existing.generation,
+                  evidence.catalogGeneration > existing.catalogGeneration,
+                  evidence.catalogSnapshotSHA256 != existing.catalogSnapshotSHA256
+                    || evidence.aggregateSnapshotSHA256
+                        != existing.aggregateSnapshotSHA256 else {
+                throw StoreError.consumerReceiptConflict
+            }
+            publication.completion = evidence
+            publication.projections = nil
+            publication.status = .completionPublished
+        }
+    }
+
     func recordProjectionsPublished(
         identity: EventIdentity,
         evidence: AtriaBLEHistoryTerminalPublicationStore.ProjectionEvidence

@@ -473,7 +473,7 @@ final class AtriaHistoricalArchiveCatalogStore {
         defer { lock.unlock() }
         let lowercaseHex = CharacterSet(charactersIn: "0123456789abcdef")
         guard rowCount > 0,
-              lastTimestamp > firstTimestamp,
+              lastTimestamp >= firstTimestamp,
               contentSHA256.count == 64,
               contentSHA256.unicodeScalars.allSatisfy(lowercaseHex.contains) else {
             throw StoreError.invalidSealedMetadata
@@ -516,8 +516,8 @@ final class AtriaHistoricalArchiveCatalogStore {
         lock.lock()
         defer { lock.unlock() }
         let lowercaseHex = CharacterSet(charactersIn: "0123456789abcdef")
-        guard rowCount >= 0,
-              lastTimestamp > firstTimestamp,
+        guard rowCount > 0,
+              lastTimestamp >= firstTimestamp,
               contentSHA256.count == 64,
               contentSHA256.unicodeScalars.allSatisfy(lowercaseHex.contains) else {
             throw StoreError.invalidSealedMetadata
@@ -532,22 +532,18 @@ final class AtriaHistoricalArchiveCatalogStore {
               try AtriaHistoricalRetentionTransaction.sha256(of: chunkURL) == contentSHA256 else {
             throw StoreError.sealedContentMismatch
         }
-        if let existingRows = value.chunks[index].rowCount,
-           let existingFirst = value.chunks[index].firstTimestamp,
-           let existingLast = value.chunks[index].lastTimestamp,
-           let existingDigest = value.chunks[index].contentSHA256 {
-            guard existingRows == rowCount,
-                  existingFirst == firstTimestamp,
-                  existingLast == lastTimestamp,
-                  existingDigest == contentSHA256 else {
-                throw StoreError.sealedMetadataConflict
-            }
-            return
-        }
-        guard value.chunks[index].rowCount == nil,
-              value.chunks[index].firstTimestamp == nil,
-              value.chunks[index].lastTimestamp == nil else {
+        let existing = value.chunks[index]
+        guard existing.rowCount.map({ $0 == rowCount }) ?? true,
+              existing.firstTimestamp.map({ $0 == firstTimestamp }) ?? true,
+              existing.lastTimestamp.map({ $0 == lastTimestamp }) ?? true,
+              existing.contentSHA256.map({ $0 == contentSHA256 }) ?? true else {
             throw StoreError.sealedMetadataConflict
+        }
+        if existing.rowCount == rowCount,
+           existing.firstTimestamp == firstTimestamp,
+           existing.lastTimestamp == lastTimestamp,
+           existing.contentSHA256 == contentSHA256 {
+            return
         }
         value.chunks[index].rowCount = rowCount
         value.chunks[index].firstTimestamp = firstTimestamp

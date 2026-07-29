@@ -456,7 +456,7 @@ struct AtriaHistoricalActivityInspectionProofFactory {
                   rows >= 0,
                   let digest = chunk.contentSHA256,
                   Self.isSHA256(digest),
-                  last > first else {
+                  last >= first else {
                 throw FactoryError.incompleteCatalogMetadata(chunk.id)
             }
             return chunk

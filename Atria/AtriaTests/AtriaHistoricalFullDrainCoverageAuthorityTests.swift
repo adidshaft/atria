@@ -1054,6 +1054,68 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
             .exactRangeTransportAuthorityAvailable)
     }
 
+    func testCompletionRefreshRequiresStrictlyNewerDerivedSnapshotAndIsIdempotent() throws {
+        let (store, _) = try terminalStore()
+        _ = try store.preparePublication(
+            identity: identity(),
+            chunkID: "chunk-a",
+            terminalBatchNumber: 1,
+            durableSequence: 1,
+            completedAt: date(108)
+        )
+        _ = try store.recordRawSeal(
+            identity: identity(),
+            evidence: .init(
+                drainGeneration: 7,
+                contentSHA256: hash("chunk-a"),
+                byteCount: 100,
+                rowCount: 10,
+                firstTimestampUnix: start,
+                lastTimestampUnix: start + 99
+            )
+        )
+        let original = AtriaBLEHistoryTerminalPublicationStore.CompletionEvidence(
+            generation: 1,
+            catalogGeneration: 10,
+            catalogSnapshotSHA256: hash("catalog-old"),
+            aggregateSnapshotSHA256: hash("aggregate-old")
+        )
+        _ = try store.recordCompletionPublished(
+            identity: identity(),
+            evidence: original
+        )
+        let refreshed = AtriaBLEHistoryTerminalPublicationStore.CompletionEvidence(
+            generation: 2,
+            catalogGeneration: 11,
+            catalogSnapshotSHA256: hash("catalog-new"),
+            aggregateSnapshotSHA256: hash("aggregate-new")
+        )
+
+        let first = try store.refreshCompletionPublished(
+            identity: identity(),
+            evidence: refreshed
+        )
+        XCTAssertEqual(first.publication?.completion, refreshed)
+        XCTAssertEqual(first.publication?.status, .completionPublished)
+        XCTAssertNil(first.publication?.projections)
+        XCTAssertEqual(
+            try store.refreshCompletionPublished(
+                identity: identity(),
+                evidence: refreshed
+            ).publication?.completion,
+            refreshed
+        )
+        XCTAssertThrowsError(try store.refreshCompletionPublished(
+            identity: identity(),
+            evidence: original
+        )) {
+            XCTAssertEqual(
+                $0 as? Store.StoreError,
+                .consumerReceiptConflict
+            )
+        }
+    }
+
     private func terminalStore() throws -> (Store, Policy.DurableStorePair) {
         let store = try armedStore()
         let permit = try endAndPermit(store: store, sequence: 5)
