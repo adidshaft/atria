@@ -3250,3 +3250,39 @@ POSITIVE STILL REQUIRED**
   `/tmp/atria-dependency-bound-audit-v2.xcresult`. Physical convergence to
   `resolved`, revalidation of the original 129/129 recovered buckets, and one
   idempotent relaunch remain mandatory before Gate 2 is called passed.
+
+### 2026-07-30 — Gate 2 terminal consumer settlement and relaunch seal
+
+- The original controlled gap
+  `37b98471-a122-48d7-8365-4403cd74bc8d` is no longer present in the valid
+  durable gap ledger. Its final proof remains 129/129 one-second buckets,
+  100% density, one-second maximum gap, and one-second p95 gap.
+- The full-drain authority store admits a different gap identifier only after
+  the preceding authority is terminal `resolved` (or while retrying the same
+  still-draining gap). The physical phone subsequently armed authority
+  `cf4a3474-d8ac-446d-94c3-80b96665d36f` for a different gap. Together with
+  the missing original ledger row, this proves the original authority crossed
+  consumer commit and terminal resolution; it was not merely hidden at
+  `gapResolvedConsumersPending`.
+- The active five-consumer pointer still selects set SHA-256
+  `d75596f71625f8123d44ae6927dcd559ad643be7a4f3750137cf2290e5ad408d`.
+  After an in-place Release install and relaunch, that set, all five receipt
+  SHA-256 values, all five artifact SHA-256 values, and every artifact byte
+  count revalidated exactly. The sealed source remains
+  `faddb341-44bd-4950-b7bb-9c1fe108d042` /
+  `079c11611d1fe6f3d61239498a6a9eec482833ee453f0c316ab4a5e7d72bfc13`.
+- Signed Release `374ace35` (version 1.0 build 3, executable SHA-256
+  `758cc6a2283f9a094905eea3aa3d898123c4164ee6a86b593b1e5a69b6889152`)
+  was installed without uninstalling or changing Bluetooth pairing. The same
+  data container retained the ledger and receipts. The physical UI remained
+  responsive and live strap HR advanced from 67 to 76 BPM after relaunch.
+- A separate pre-existing 6.1-hour ledger gap remains honestly visible as
+  `Missed data needs review`; it does not invalidate the controlled Gate 2
+  pass or masquerade as recovered. An attended full-drain attempt for that
+  separate gap durably admitted and ACKed 171 50-row boundaries before the
+  in-place install. Production policy released only its interrupted transport
+  authority on relaunch, retaining both the gap and every fsynced row rather
+  than pretending an unproven flash seek could resume.
+- **Acceptance:** the controlled Gate 2 exact-recovery test is sealed. Evidence
+  is under `/tmp/atria-gate2-exact-release-374ace35/evidence/`, including the
+  pre/post ledger, receipt set, install/launch records, and physical UI state.
