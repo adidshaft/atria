@@ -4,6 +4,16 @@ import CryptoKit
 import Combine
 import Darwin
 
+private struct ConfirmedWorkoutHRRehydrationAttemptPayload: Encodable {
+    let algorithmVersion: String
+    let workouts: [UserConfirmedWorkout]
+    let sessions: [SavedSession]
+    let restingHR: Int
+    let maxHR: Int
+    let profile: AthleteProfile
+    let sourceFingerprint: HistoricalArchive.ConsumerSourceFingerprint
+}
+
 struct EventCivilTime {
     static func eventCalendar(timeZoneIdentifier: String?, fallback: Calendar) -> Calendar {
         guard let timeZoneIdentifier,
@@ -6654,6 +6664,10 @@ final class SessionStore: ObservableObject {
     private var confirmedWorkoutRehydrationRescheduleRequested = false
     private var confirmedWorkoutRehydrationGeneration = 0
     private var confirmedWorkoutRehydrationCompletions: [(Bool) -> Void] = []
+    nonisolated private static let workoutHRRehydrationAttemptKey =
+        "atria.confirmedWorkoutHR.rehydrationAttempt.v1"
+    nonisolated private static let workoutHRRehydrationAlgorithmVersion =
+        "confirmed-workout-hr-rehydration-v1"
     /// Receipt decoding shares the archive-consumer lane so a step refresh
     /// cannot multiply memory/CPU with broader history reads. Home loads the
     /// already-durable receipt directly, so this serialization delays only a
@@ -9229,6 +9243,48 @@ final class SessionStore: ObservableObject {
             let heartRateOriginals = originals.filter(
                 Self.confirmedWorkoutNeedsHeartRateArchiveRehydration
             )
+            let fingerprintBefore =
+                HistoricalArchive.consumerSourceFingerprint()
+            let attemptSignature =
+                Self.confirmedWorkoutHRRehydrationAttemptSignature(
+                    workouts: heartRateOriginals,
+                    sessions: sourceSessions,
+                    rest: currentRest,
+                    maxHR: currentMaxHR,
+                    profile: currentProfile,
+                    sourceFingerprint: fingerprintBefore
+                )
+            if let attemptSignature,
+               UserDefaults.standard.string(
+                    forKey: Self.workoutHRRehydrationAttemptKey
+               ) == attemptSignature {
+                Task { @MainActor [weak self, reason] in
+                    guard let self,
+                          generation
+                            == self.confirmedWorkoutRehydrationGeneration else {
+                        return
+                    }
+                    self.pendingConfirmedWorkoutRehydrationWorkItem = nil
+                    let needsTrailingRefresh =
+                        self.confirmedWorkoutRehydrationRescheduleRequested
+                    self.confirmedWorkoutRehydrationRescheduleRequested = false
+                    AtriaDebugLog(
+                        "ATRIADBG confirmed_workout_rehydration status=unchanged_attempt_skipped reason=%@ generation=%d",
+                        reason,
+                        generation
+                    )
+                    if needsTrailingRefresh {
+                        self.scheduleConfirmedWorkoutArchiveRehydration(
+                            reason: "archive_trailing_refresh"
+                        )
+                    } else {
+                        self.finishConfirmedWorkoutRehydrationCompletions(
+                            succeeded: true
+                        )
+                    }
+                }
+                return
+            }
             let archiveHeartRateWindow: HistoricalArchive.HeartRateWindowRead?
             if let union = Self.confirmedWorkoutArchiveUnionWindow(
                 heartRateOriginals
@@ -9274,8 +9330,17 @@ final class SessionStore: ObservableObject {
                 }
                 return replacement == old ? nil : (old, replacement)
             }
+            let fingerprintAfter =
+                HistoricalArchive.consumerSourceFingerprint()
+            let completedNegativeSignature =
+                archiveHeartRateWindow != nil
+                    && replacements.isEmpty
+                    && fingerprintBefore == fingerprintAfter
+                ? attemptSignature
+                : nil
 
-            Task { @MainActor [weak self, replacements, reason] in
+            Task { @MainActor [weak self, replacements, reason,
+                               completedNegativeSignature] in
                 guard let self else { return }
                 guard generation == self.confirmedWorkoutRehydrationGeneration else {
                     self.finishConfirmedWorkoutRehydrationCompletions(succeeded: false)
@@ -9316,6 +9381,17 @@ final class SessionStore: ObservableObject {
                         AtriaDebugLog("ATRIADBG confirmed_workout_rehydration status=applied reason=%@ workouts=%d generation=%d",
                                       reason, applied, generation)
                     }
+                }
+                if applied == 0, let completedNegativeSignature {
+                    UserDefaults.standard.set(
+                        completedNegativeSignature,
+                        forKey: Self.workoutHRRehydrationAttemptKey
+                    )
+                    AtriaDebugLog(
+                        "ATRIADBG confirmed_workout_rehydration status=complete_no_stronger_evidence_cached reason=%@ generation=%d",
+                        reason,
+                        generation
+                    )
                 }
                 if needsTrailingRefresh {
                     self.scheduleConfirmedWorkoutArchiveRehydration(reason: "archive_trailing_refresh")
@@ -19176,6 +19252,51 @@ final class SessionStore: ObservableObject {
         return DateInterval(start: start, end: end)
     }
 
+    /// Durable identity of every input that can change confirmed-workout HR
+    /// repair. Hashing the bounded overlapping sessions is much cheaper than
+    /// reopening the retained raw archive, while still invalidating for a
+    /// changed workout, canonical HR point, profile, resting/max HR, archive
+    /// generation, append, truncation, replacement, addition, or removal.
+    nonisolated static func confirmedWorkoutHRRehydrationAttemptSignature(
+        workouts: [UserConfirmedWorkout],
+        sessions: [SavedSession],
+        rest: Int,
+        maxHR: Int,
+        profile: AthleteProfile,
+        sourceFingerprint: HistoricalArchive.ConsumerSourceFingerprint
+    ) -> String? {
+        guard let union = confirmedWorkoutArchiveUnionWindow(workouts) else {
+            return nil
+        }
+        let relevantSessions = sessions.filter {
+            $0.end >= union.start && $0.start <= union.end
+        }
+        let payload = ConfirmedWorkoutHRRehydrationAttemptPayload(
+            algorithmVersion: workoutHRRehydrationAlgorithmVersion,
+            workouts: workouts.sorted {
+                if $0.start != $1.start { return $0.start < $1.start }
+                if $0.end != $1.end { return $0.end < $1.end }
+                return $0.id < $1.id
+            },
+            sessions: relevantSessions.sorted {
+                if $0.start != $1.start { return $0.start < $1.start }
+                if $0.end != $1.end { return $0.end < $1.end }
+                return $0.id.uuidString < $1.id.uuidString
+            },
+            restingHR: rest,
+            maxHR: maxHR,
+            profile: profile,
+            sourceFingerprint: sourceFingerprint
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        guard let data = try? encoder.encode(payload) else { return nil }
+        return SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
     nonisolated static func confirmedWorkoutNeedsHeartRateArchiveRehydration(
         _ workout: UserConfirmedWorkout
     ) -> Bool {
@@ -19207,6 +19328,10 @@ final class SessionStore: ObservableObject {
         return candidate.streamCoveragePercent > current.streamCoveragePercent
             || candidate.observedDuration > current.observedDuration + 0.001
             || candidate.samples > current.samples
+            || (current.strain == nil && candidate.strain != nil)
+            || (current.zoneSeconds == nil && candidate.zoneSeconds != nil)
+            || (current.activeEnergyKilocalories == nil
+                && candidate.activeEnergyKilocalories != nil)
             || (current.workoutSteps == nil
                 && candidate.workoutSteps != nil)
             || (current.workoutStepsAreEstimated == true

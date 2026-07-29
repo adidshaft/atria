@@ -2580,6 +2580,18 @@ POSITIVE STILL REQUIRED**
   and the complete source fingerprint is identical before and after the scan.
   Incomplete reads and concurrent append/replacement/truncation/removal always
   fail open and retry; qualified evidence keeps its existing publication path.
+- **Repeated partial-workout HR scan correction:** a workout can truthfully
+  remain below 100% HR coverage forever. That state previously reopened the
+  full retained archive on every launch even after a complete read proved no
+  stronger HR evidence existed. A single durable attempt digest now covers the
+  exact eligible workout records, overlapping canonical sessions and HR
+  points, resting/max HR, athlete profile, rehydration algorithm, catalog
+  generation, and readable archive-source fingerprint. It is stored only after
+  a complete HR scan returns no stronger replacement and the archive
+  fingerprint remains unchanged. Any new row/source, changed workout/session,
+  or profile input invalidates it. Equal sample/coverage evidence may now repair
+  missing strain, zone, and energy fields instead of being rejected solely
+  because the sample count did not increase.
 
 ## Notebook maintenance rules
 

@@ -95,6 +95,148 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         ), "archive advancement during the scan invalidates its negative result")
     }
 
+    func testWorkoutHRRehydrationAttemptSignatureInvalidatesForEveryInput() throws {
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        let workout = sparseConfirmedWorkout(
+            start: start,
+            end: start.addingTimeInterval(900),
+            samples: 30,
+            coverage: 20
+        )
+        let sessionID = try XCTUnwrap(
+            UUID(uuidString: "00000000-0000-0000-0000-000000000123")
+        )
+        let session = SavedSession(
+            id: sessionID,
+            start: start,
+            end: start.addingTimeInterval(900),
+            label: "Walk",
+            points: [
+                .init(t: 0, bpm: 90),
+                .init(t: 10, bpm: 100),
+            ]
+        )
+        let fingerprint = HistoricalArchive.makeConsumerSourceFingerprint(
+            catalogGeneration: 1,
+            descriptors: []
+        )
+        let base = try XCTUnwrap(
+            SessionStore.confirmedWorkoutHRRehydrationAttemptSignature(
+                workouts: [workout],
+                sessions: [session],
+                rest: 60,
+                maxHR: 190,
+                profile: testAthleteProfile,
+                sourceFingerprint: fingerprint
+            )
+        )
+        XCTAssertEqual(
+            base,
+            SessionStore.confirmedWorkoutHRRehydrationAttemptSignature(
+                workouts: [workout],
+                sessions: [session],
+                rest: 60,
+                maxHR: 190,
+                profile: testAthleteProfile,
+                sourceFingerprint: fingerprint
+            )
+        )
+
+        let changedSession = SavedSession(
+            id: sessionID,
+            start: session.start,
+            end: session.end,
+            label: session.label,
+            points: [
+                .init(t: 0, bpm: 90),
+                .init(t: 10, bpm: 101),
+            ]
+        )
+        XCTAssertNotEqual(
+            base,
+            SessionStore.confirmedWorkoutHRRehydrationAttemptSignature(
+                workouts: [workout],
+                sessions: [changedSession],
+                rest: 60,
+                maxHR: 190,
+                profile: testAthleteProfile,
+                sourceFingerprint: fingerprint
+            )
+        )
+        XCTAssertNotEqual(
+            base,
+            SessionStore.confirmedWorkoutHRRehydrationAttemptSignature(
+                workouts: [sparseConfirmedWorkout(
+                    start: start,
+                    end: start.addingTimeInterval(901),
+                    samples: 30,
+                    coverage: 20
+                )],
+                sessions: [session],
+                rest: 60,
+                maxHR: 190,
+                profile: testAthleteProfile,
+                sourceFingerprint: fingerprint
+            )
+        )
+        var changedProfile = testAthleteProfile
+        changedProfile.weightKg += 1
+        XCTAssertNotEqual(
+            base,
+            SessionStore.confirmedWorkoutHRRehydrationAttemptSignature(
+                workouts: [workout],
+                sessions: [session],
+                rest: 60,
+                maxHR: 190,
+                profile: changedProfile,
+                sourceFingerprint: fingerprint
+            )
+        )
+        XCTAssertNotEqual(
+            base,
+            SessionStore.confirmedWorkoutHRRehydrationAttemptSignature(
+                workouts: [workout],
+                sessions: [session],
+                rest: 60,
+                maxHR: 190,
+                profile: testAthleteProfile,
+                sourceFingerprint:
+                    HistoricalArchive.makeConsumerSourceFingerprint(
+                        catalogGeneration: 2,
+                        descriptors: []
+                    )
+            )
+        )
+    }
+
+    func testRecoveredWorkoutEvidenceCanFillDerivedMetricsWithoutMoreSamples() {
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        let complete = sparseConfirmedWorkout(
+            start: start,
+            end: start.addingTimeInterval(900),
+            samples: 900,
+            coverage: 100
+        )
+        var missing = complete
+        missing.strain = nil
+        missing.zoneSeconds = nil
+        missing.activeEnergyKilocalories = nil
+
+        XCTAssertTrue(
+            SessionStore.recoveredWorkoutEvidenceIsStronger(
+                complete,
+                than: missing
+            ),
+            "equal HR evidence must still be allowed to repair missing strain, zones, and energy"
+        )
+        XCTAssertFalse(
+            SessionStore.recoveredWorkoutEvidenceIsStronger(
+                missing,
+                than: complete
+            )
+        )
+    }
+
     func testCandidateBackedSaveSettlesOriginalWindowWhileManualAddKeepsReAddSemantics() async throws {
         let originalDismissals = AtriaDismissedWorkoutCandidateStore.load()
         let store = SessionStore()
