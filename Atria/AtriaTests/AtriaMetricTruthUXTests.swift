@@ -141,4 +141,50 @@ final class AtriaMetricTruthUXTests: XCTestCase {
             "return \"Live connection is active.\""
         ))
     }
+
+    func testPartialDailyStrainKeepsTextButCannotEarnAQualifiedShareRing() {
+        XCTAssertFalse(AtriaDailyShareMetricTruth.strainIsQualified(
+            value: "≥ 4.2",
+            confidence: "local · partial-day wear"
+        ))
+        XCTAssertFalse(AtriaDailyShareMetricTruth.strainIsQualified(
+            value: "4.2",
+            confidence: "provisional · partial sparse HR"
+        ))
+        XCTAssertFalse(AtriaDailyShareMetricTruth.strainIsQualified(
+            value: AtriaCompactMetricPresentation.noValue,
+            confidence: "learning"
+        ))
+        XCTAssertTrue(AtriaDailyShareMetricTruth.strainIsQualified(
+            value: "4.2",
+            confidence: "personal baseline"
+        ))
+    }
+
+    func testUnavailableMetricCardsUseNeutralToneAndSpecificReasons() throws {
+        let overview = try source("AtriaOverviewSections.swift")
+        XCTAssertTrue(overview.contains(
+            "vo2MaxEstimate.value == nil ? .secondary : .blue"
+        ))
+        XCTAssertTrue(overview.contains(
+            "biologicalAgeSummary.isEarlyEstimate"
+        ))
+        XCTAssertTrue(overview.contains(
+            ": .secondary),\n                                  zone: biologicalAgeZone"
+        ))
+        XCTAssertTrue(overview.contains(
+            "decoderAvailable\n                                    ? (skinTemperatureDeviationZone?.tint ?? Metrics.electricRespiratory)\n                                    : .secondary"
+        ))
+        XCTAssertTrue(overview.contains(
+            "hero.recoveryEstimate.percent == nil\n                                        ? AtriaCompactMetricPresentation.noValue"
+        ))
+
+        let health = try source("AtriaHealthScreen.swift")
+        XCTAssertTrue(health.contains(
+            "tint: live.vo2MaxEstimate.value == nil\n                                        ? .secondary"
+        ))
+        XCTAssertTrue(health.contains(
+            "guard summary.isReady else { return .secondary }"
+        ))
+    }
 }

@@ -3860,7 +3860,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .recovery:
             detailButton(.recovery) {
                 AtriaGlanceMetricCard(title: "Recovery",
-                                      value: hero.recoveryEstimate.percent == nil ? "Learning" : hero.recoveryValue,
+                                      value: hero.recoveryEstimate.percent == nil
+                                        ? AtriaCompactMetricPresentation.noValue
+                                        : hero.recoveryValue,
                                       detail: recoveryDetailText,
                                       systemImage: metric.systemImage,
                                       tint: recoveryZone?.tint ?? .secondary,
@@ -4048,7 +4050,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                     ? vo2MaxEstimate.compactStatusText
                                     : vo2MaxDetailText,
                                   systemImage: metric.systemImage,
-                                  tint: vo2TrendZone?.tint ?? (vo2MaxEstimate.value == nil ? .orange : .blue),
+                                  tint: vo2TrendZone?.tint
+                                    ?? (vo2MaxEstimate.value == nil ? .secondary : .blue),
                                   zone: vo2TrendZone,
                                   accessibilityDetail: vo2MaxEstimate.value == nil
                                     ? "VO2max unavailable. \(vo2MaxEstimate.compactStatusText). \(vo2MaxEstimate.narrative)"
@@ -4058,7 +4061,12 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   value: biologicalAgeSummary.valueText,
                                   detail: biologicalAgeSummary.compactStatusText,
                                   systemImage: metric.systemImage,
-                                  tint: biologicalAgeZone?.tint ?? (biologicalAgeSummary.isReady ? (biologicalAgeSummary.ageDelta ?? 0 <= 0 ? .green : .orange) : .orange),
+                                  tint: biologicalAgeZone?.tint
+                                    ?? (biologicalAgeSummary.isReady
+                                        ? (biologicalAgeSummary.isEarlyEstimate
+                                            ? .orange
+                                            : ((biologicalAgeSummary.ageDelta ?? 0) <= 0 ? .green : .orange))
+                                        : .secondary),
                                   zone: biologicalAgeZone,
                                   isLoading: biologicalAgeSummary.isRefreshing,
                                   accessibilityDetail: biologicalAgeSummary.isReady
@@ -4086,7 +4094,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   systemImage: metric.systemImage,
                                   tint: decoderAvailable
                                     ? (skinTemperatureDeviationZone?.tint ?? Metrics.electricRespiratory)
-                                    : .orange,
+                                    : .secondary,
                                   zone: decoderAvailable
                                     ? skinTemperatureDeviationZone
                                     : nil,

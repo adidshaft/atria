@@ -2827,7 +2827,7 @@ enum AtriaExperimentalSensorCopy {
 
     static func skinTemperatureStatus(summary: IMUAuditSummary.SkinTemperatureDeviationSummary,
                                       decoderAvailable: Bool) -> String {
-        guard decoderAvailable else { return "Decoder not verified" }
+        guard decoderAvailable else { return "Not available yet" }
         return summary.detailText
     }
 

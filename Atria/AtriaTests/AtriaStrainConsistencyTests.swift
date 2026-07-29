@@ -17,6 +17,37 @@ final class AtriaStrainConsistencyTests: XCTestCase {
                             biologicalSex: biologicalSex)
     }
 
+    func testDailyMetricPersistenceCannotBeStarvedByRapidArchiveRefreshes() {
+        XCTAssertTrue(SessionStore.shouldKeepPendingDailyMetricPersist(
+            pendingIsCancelled: false,
+            requestedDelay: 0.35
+        ))
+        XCTAssertFalse(SessionStore.shouldKeepPendingDailyMetricPersist(
+            pendingIsCancelled: true,
+            requestedDelay: 0.35
+        ))
+        XCTAssertFalse(SessionStore.shouldKeepPendingDailyMetricPersist(
+            pendingIsCancelled: false,
+            requestedDelay: 0
+        ))
+
+        XCTAssertTrue(SessionStore.dailyMetricPersistNeedsCatchUp(
+            completedRevision: 41,
+            currentRevision: 42,
+            writeSucceeded: true
+        ))
+        XCTAssertFalse(SessionStore.dailyMetricPersistNeedsCatchUp(
+            completedRevision: 42,
+            currentRevision: 42,
+            writeSucceeded: true
+        ))
+        XCTAssertFalse(SessionStore.dailyMetricPersistNeedsCatchUp(
+            completedRevision: 41,
+            currentRevision: 42,
+            writeSucceeded: false
+        ))
+    }
+
     func testQuietAllDayWearDoesNotBecomeTrainingLoad() {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let quiet = workout(start: start, bpm: 84, minutes: 12 * 60)

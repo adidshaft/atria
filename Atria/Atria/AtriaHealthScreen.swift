@@ -883,7 +883,9 @@ struct AtriaHealthScreen: View {
                                      value: live.vo2MaxEstimate.valueText,
                                      detail: live.vo2MaxEstimate.compactStatusText,
                                      systemImage: "lungs.fill",
-                                     tint: Metrics.electricGreen,
+                                     tint: live.vo2MaxEstimate.value == nil
+                                        ? .secondary
+                                        : Metrics.electricGreen,
                                      layout: .compactTile,
                                      onTap: { metricDetail = .vo2max })
                 AtriaHealthMetricRow(title: "Skin temp",
@@ -895,7 +897,10 @@ struct AtriaHealthScreen: View {
                                         summary: vitalsStore.state.skinTemperatureDeviationSummary,
                                         decoderAvailable: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable),
                                      systemImage: "thermometer.variable",
-                                     tint: Metrics.electricRespiratory,
+                                     tint: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
+                                        && vitalsStore.state.skinTemperatureDeviationSummary.isReady
+                                        ? Metrics.electricRespiratory
+                                        : .secondary,
                                      layout: .compactTile,
                                      onTap: { metricDetail = .skinTemperature })
                 AtriaHealthMetricRow(title: "SpO2",
@@ -1695,7 +1700,8 @@ private struct AtriaHealthFitnessAgeCard: View, Equatable {
     /// the early-estimate phase (14–27 days): an early value must never wear
     /// the confident green/amber authority.
     private var tint: Color {
-        guard summary.isReady, !summary.isEarlyEstimate else { return .orange }
+        guard summary.isReady else { return .secondary }
+        guard !summary.isEarlyEstimate else { return .orange }
         return (summary.ageDelta ?? 0) <= 0 ? Metrics.electricGreen : Metrics.electricYellow
     }
 }
