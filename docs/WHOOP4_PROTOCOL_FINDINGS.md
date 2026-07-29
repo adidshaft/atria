@@ -2639,6 +2639,36 @@ POSITIVE STILL REQUIRED**
   Complete stable reads cache; incomplete or concurrently changing reads retry.
   Skipping still publishes the existing durable receipt to Home and widgets.
 
+#### 2026-07-29 — restless split-night admission against a low trusted baseline
+
+- **Physical observation:** the retained iPhone session store contains four
+  motion-validated sleep fragments spanning 22:52:49–06:14:37 IST. Offline
+  replay over the retained WHOOP rows resolves 21,024 seconds of observed sleep
+  across a 26,508-second span. Fragment averages were 77, 71, 78, and 65 bpm;
+  the athlete's trusted long-term resting baseline was 56 bpm.
+- **Failure:** early fragment admission compared each fragment too tightly to
+  the long-term baseline. The 77–78 bpm restless fragments were discarded
+  before their validated R10 stillness could be considered, so the installed
+  app reported `no_strong_candidate` / `sleep_fragmented_below_minimum`,
+  retained yesterday's physiological-day boundary, and consequently withheld
+  dependent sleep/recovery/day metrics.
+- **Repair:** an overnight fragment may now reach cluster evaluation when it
+  has a genuine low-HR tail close to the trusted baseline and a bounded robust
+  HR distribution. It still cannot become sleep without cluster-level
+  validated stillness and the separate whole-night auto-confirm gate. The
+  whole-night gate admits restless sleep with bounded average, deviation,
+  median, P90, elevated fraction, and total elevated duration; it does not
+  apply to daytime nap admission.
+- **Regression evidence:** the complete
+  `AtriaSleepAuditRegressionTests` class passes 45/45 on an erased clean
+  simulator, including the retained physical-shape fixture. Sustained
+  awake-tail, flat-high-HR, quiet-awake, false-nap, and incomplete/silent-tail
+  controls remain rejected. The 184 static release checks also pass.
+- **Acceptance status:** algorithmically proven against the retained physical
+  corpus and negative controls. The replacement Release must still auto-confirm
+  the retained night and publish its dependent metrics on the physical iPhone
+  before this observation is called physically closed.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.
