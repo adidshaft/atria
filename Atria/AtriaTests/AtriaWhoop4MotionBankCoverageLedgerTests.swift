@@ -750,6 +750,84 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
         )
     }
 
+    func testNewGenerationRotatesAttemptedBindingToDistinctUnattemptedTicket() {
+        let bound = offloadTicket(
+            id: "bound",
+            start: 1_000,
+            attempts: 2
+        )
+        let next = offloadTicket(
+            id: "next",
+            start: 2_000,
+            attempts: 0
+        )
+
+        XCTAssertEqual(
+            AtriaBLEManager
+                .historicalMotionBankOffloadTicketForNewGeneration(
+                    bound: bound,
+                    next: next
+                )?.id,
+            next.id
+        )
+    }
+
+    func testNewGenerationPreservesBindingWhenItIsAlreadyNext() {
+        let bound = offloadTicket(
+            id: "same",
+            start: 1_000,
+            attempts: 1
+        )
+
+        XCTAssertEqual(
+            AtriaBLEManager
+                .historicalMotionBankOffloadTicketForNewGeneration(
+                    bound: bound,
+                    next: bound
+                )?.id,
+            bound.id
+        )
+    }
+
+    func testNewGenerationUsesLedgerSelectionWithoutBinding() {
+        let next = offloadTicket(
+            id: "next",
+            start: 2_000,
+            attempts: 0
+        )
+
+        XCTAssertEqual(
+            AtriaBLEManager
+                .historicalMotionBankOffloadTicketForNewGeneration(
+                    bound: nil,
+                    next: next
+                )?.id,
+            next.id
+        )
+    }
+
+    func testNewGenerationPreservesAttemptedBindingWhenNoUnattemptedExists() {
+        let bound = offloadTicket(
+            id: "bound",
+            start: 1_000,
+            attempts: 2
+        )
+        let retry = offloadTicket(
+            id: "retry",
+            start: 2_000,
+            attempts: 1
+        )
+
+        XCTAssertEqual(
+            AtriaBLEManager
+                .historicalMotionBankOffloadTicketForNewGeneration(
+                    bound: bound,
+                    next: retry
+                )?.id,
+            bound.id
+        )
+    }
+
     func testExactWindowCoverageRequiresNinetyPercentAndBoundedHole() {
         let start = Date(timeIntervalSince1970: 6_000)
         XCTAssertTrue(
@@ -771,6 +849,24 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
                 firstCapturedAt: start,
                 capturedThrough: start.addingTimeInterval(90)
             ).satisfiesNinetyPercentExactWindow
+        )
+    }
+
+    private func offloadTicket(
+        id: String,
+        start: TimeInterval,
+        attempts: Int
+    ) -> AtriaWhoop4MotionBankCoverageLedger.OffloadTicket {
+        let start = Date(timeIntervalSince1970: start)
+        return .init(
+            id: id,
+            strapIdentifier: strap,
+            start: start,
+            end: start.addingTimeInterval(90),
+            armedConnectionStartedAt: start,
+            attempts: attempts,
+            lastAttemptAt:
+                attempts > 0 ? start.addingTimeInterval(91) : nil
         )
     }
 }

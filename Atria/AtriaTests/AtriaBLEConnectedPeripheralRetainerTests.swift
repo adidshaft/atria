@@ -104,15 +104,218 @@ final class AtriaBLEConnectedPeripheralRetainerTests: XCTestCase {
         XCTAssertEqual(retainer.count, 1)
     }
 
-    func testFailedConnectReleaseDropsEvenAConnectingInstance() {
+    func testFailedConnectReleaseDropsTheExactConnectingInstance() {
         let retainer = AtriaBLEConnectedPeripheralRetainer()
         let id = UUID()
         let peripheral = StubPeripheral(identifier: id, state: .connecting)
         retainer.retain(peripheral)
 
         XCTAssertEqual(retainer.releaseDisconnected(peripheralID: id), 0)
-        XCTAssertEqual(retainer.releaseAll(peripheralID: id), 1)
+        XCTAssertTrue(retainer.release(peripheral))
         XCTAssertEqual(retainer.count, 0)
+    }
+
+    func testFailedObjectReleasePreservesLiveTwinWithTheSameDeviceIdentifier() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let id = UUID()
+        var failed: StubPeripheral? = StubPeripheral(
+            identifier: id,
+            state: .connecting
+        )
+        weak var observedLive: StubPeripheral?
+
+        retainer.retain(failed!)
+        do {
+            let live = StubPeripheral(identifier: id, state: .connected)
+            observedLive = live
+            retainer.retain(live)
+        }
+        XCTAssertEqual(retainer.retainedCount(peripheralID: id), 2)
+
+        XCTAssertTrue(retainer.release(failed!))
+        failed = nil
+
+        XCTAssertNotNil(
+            observedLive,
+            "releasing a stale same-UUID object must not deallocate the live link owner"
+        )
+        XCTAssertEqual(retainer.retainedCount(peripheralID: id), 1)
+    }
+
+    func testCanonicalAdmissionRetainsButDoesNotPromoteConnectedDuplicate() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let id = UUID()
+        let canonical = StubPeripheral(identifier: id, state: .connected)
+        let duplicate = StubPeripheral(identifier: id, state: .connected)
+
+        XCTAssertEqual(
+            retainer.admitConnected(canonical),
+            .acceptCanonical
+        )
+        XCTAssertEqual(
+            retainer.admitConnected(duplicate),
+            .retainPassiveDuplicate
+        )
+        XCTAssertEqual(
+            retainer.admitConnected(canonical),
+            .acceptCanonical,
+            "a repeated callback for the canonical object remains admissible"
+        )
+        XCTAssertEqual(retainer.retainedCount(peripheralID: id), 2)
+    }
+
+    func testSuccessfulTwinReplacesCanonicalThatIsNoLongerConnected() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let id = UUID()
+        let former = StubPeripheral(identifier: id, state: .connected)
+        let successful = StubPeripheral(identifier: id, state: .connected)
+
+        XCTAssertEqual(retainer.admitConnected(former), .acceptCanonical)
+        former.state = .connecting
+        XCTAssertEqual(
+            retainer.admitConnected(successful),
+            .acceptCanonical,
+            "a merely connecting former owner must not suppress didConnect"
+        )
+    }
+
+    func testPassiveDuplicateTerminalIsIgnoredWhileCanonicalIsActive() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let id = UUID()
+        let canonical = StubPeripheral(identifier: id, state: .connected)
+        let duplicate = StubPeripheral(identifier: id, state: .connected)
+
+        XCTAssertEqual(retainer.admitConnected(canonical), .acceptCanonical)
+        XCTAssertEqual(
+            retainer.admitConnected(duplicate),
+            .retainPassiveDuplicate
+        )
+        duplicate.state = .disconnected
+
+        XCTAssertEqual(
+            retainer.beginTerminalCallback(duplicate),
+            .ignorePassiveDuplicate
+        )
+        XCTAssertTrue(retainer.release(duplicate))
+        XCTAssertEqual(retainer.retainedCount(peripheralID: id), 1)
+    }
+
+    func testPassiveDuplicateTerminalArrivingFirstAfterSharedLinkLossIsIgnored() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let id = UUID()
+        let canonical = StubPeripheral(identifier: id, state: .connected)
+        let duplicate = StubPeripheral(identifier: id, state: .connected)
+
+        XCTAssertEqual(retainer.admitConnected(canonical), .acceptCanonical)
+        XCTAssertEqual(
+            retainer.admitConnected(duplicate),
+            .retainPassiveDuplicate
+        )
+
+        // CoreBluetooth may update both object-distinct representations before
+        // delivering either terminal callback. Callback ordering must not let
+        // the passive representation steal or clear canonical ownership.
+        canonical.state = .disconnected
+        duplicate.state = .disconnected
+        XCTAssertEqual(
+            retainer.beginTerminalCallback(duplicate),
+            .ignorePassiveDuplicate
+        )
+        XCTAssertTrue(retainer.release(duplicate))
+        XCTAssertEqual(
+            retainer.beginTerminalCallback(canonical),
+            .processCanonical
+        )
+    }
+
+    func testCanonicalTerminalProcessesEvenWhilePassiveDuplicateIsActive() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let id = UUID()
+        let canonical = StubPeripheral(identifier: id, state: .connected)
+        let duplicate = StubPeripheral(identifier: id, state: .connected)
+
+        XCTAssertEqual(retainer.admitConnected(canonical), .acceptCanonical)
+        XCTAssertEqual(
+            retainer.admitConnected(duplicate),
+            .retainPassiveDuplicate
+        )
+        canonical.state = .disconnected
+
+        XCTAssertEqual(
+            retainer.beginTerminalCallback(canonical),
+            .processCanonical,
+            "a passive twin must never suppress the manager-owned link's failure"
+        )
+        XCTAssertEqual(
+            retainer.admitConnected(duplicate),
+            .acceptCanonical,
+            "after the canonical terminal boundary a successful twin can claim ownership"
+        )
+    }
+
+    func testPassiveDuplicateTerminalArrivingAfterCanonicalIsStillIgnored() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let id = UUID()
+        let canonical = StubPeripheral(identifier: id, state: .connected)
+        let duplicate = StubPeripheral(identifier: id, state: .connected)
+
+        XCTAssertEqual(retainer.admitConnected(canonical), .acceptCanonical)
+        XCTAssertEqual(
+            retainer.admitConnected(duplicate),
+            .retainPassiveDuplicate
+        )
+        canonical.state = .disconnected
+        duplicate.state = .disconnected
+
+        XCTAssertEqual(
+            retainer.beginTerminalCallback(canonical),
+            .processCanonical
+        )
+        XCTAssertEqual(
+            retainer.releaseDisconnected(peripheralID: id),
+            1,
+            "the canonical object may be released, but the passive twin stays fenced until its callback"
+        )
+        XCTAssertEqual(
+            retainer.beginTerminalCallback(duplicate),
+            .ignorePassiveDuplicate
+        )
+        XCTAssertTrue(retainer.release(duplicate))
+        XCTAssertEqual(retainer.count, 0)
+    }
+
+    func testExplicitRestorationDuplicateFenceIgnoresDisconnectedTwin() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let id = UUID()
+        let canonical = StubPeripheral(identifier: id, state: .connected)
+        let restoredTwin = StubPeripheral(
+            identifier: id,
+            state: .disconnected
+        )
+
+        XCTAssertEqual(retainer.admitConnected(canonical), .acceptCanonical)
+        retainer.retainPassiveDuplicate(restoredTwin)
+        XCTAssertEqual(
+            retainer.beginTerminalCallback(restoredTwin),
+            .ignorePassiveDuplicate
+        )
+        XCTAssertTrue(retainer.release(restoredTwin))
+    }
+
+    func testCanonicalFailureProcessesWhilePassiveTwinIsConnecting() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let id = UUID()
+        let canonical = StubPeripheral(identifier: id, state: .connected)
+        let passive = StubPeripheral(identifier: id, state: .connecting)
+
+        XCTAssertEqual(retainer.admitConnected(canonical), .acceptCanonical)
+        retainer.retain(passive)
+        canonical.state = .disconnected
+
+        XCTAssertEqual(
+            retainer.beginTerminalCallback(canonical),
+            .processCanonical
+        )
     }
 
     func testReleaseEverythingClearsAcrossDevices() {
@@ -181,12 +384,108 @@ final class AtriaBLEConnectedPeripheralRetainerTests: XCTestCase {
             "didDisconnectPeripheral must release the peripheral it just lost"
         )
         XCTAssertTrue(
-            source.contains("connectedPeripheralRetainer.releaseAll(")
-                && source.contains("peripheralID: peripheral.identifier"),
-            "didFailToConnect must release the failed peripheral when no synchronous replacement request owns it"
+            source.contains(
+                "connectedPeripheralRetainer.release(peripheral)"
+            ),
+            "didFailToConnect must release only its exact failed object"
+        )
+        XCTAssertTrue(
+            source.contains("connectedPeripheralRetainer.release(candidate)"),
+            "restoration rejection must release only each exact rejected object"
+        )
+        XCTAssertFalse(
+            source.contains("connectedPeripheralRetainer.releaseAll("),
+            "per-callback UUID-wide release can deallocate a live same-UUID twin"
         )
         XCTAssertTrue(source.contains("connectedPeripheralRetainer.releaseEverything()"),
                       "a discarded central must not leave its peripherals held")
+    }
+
+    func testStaleTwinFencePrecedesSharedTerminalCallbackMutation() throws {
+        let source = try managerSource()
+        let callbacks = [
+            "didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {",
+            "didFailToConnect peripheral: CBPeripheral,"
+        ]
+        let orderedGuardTokens = [
+            "connectedPeripheralRetainer.beginTerminalCallback(peripheral)",
+            "if terminalAdmission == .ignorePassiveDuplicate",
+            "peripheral.delegate = nil",
+            "connectedPeripheralRetainer.release(peripheral)",
+            "AtriaDebugLog(",
+            "return"
+        ]
+
+        for callback in callbacks {
+            let callbackRange = try XCTUnwrap(
+                source.range(of: callback),
+                "missing terminal callback \(callback)"
+            )
+            let firstSharedMutation = try XCTUnwrap(
+                source.range(
+                    of: "proprietaryFrameReassembler.reset()",
+                    range: callbackRange.upperBound..<source.endIndex
+                ),
+                "missing first shared mutation after \(callback)"
+            )
+            let guardPrefix = String(
+                source[callbackRange.upperBound..<firstSharedMutation.lowerBound]
+            )
+            var cursor = guardPrefix.startIndex
+            for token in orderedGuardTokens {
+                let tokenRange = try XCTUnwrap(
+                    guardPrefix.range(
+                        of: token,
+                        range: cursor..<guardPrefix.endIndex
+                    ),
+                    "\(callback) must perform \(token) before shared terminal-state mutation"
+                )
+                cursor = tokenRange.upperBound
+            }
+        }
+    }
+
+    func testConnectedCallbackAdmissionPrecedesEverySharedMutation() throws {
+        let source = try managerSource()
+        let callbackRange = try XCTUnwrap(
+            source.range(
+                of: "didConnect peripheral: CBPeripheral) {"
+            )
+        )
+        let firstSharedMutation = try XCTUnwrap(
+            source.range(
+                of: "proprietaryFrameReassembler.reset()",
+                range: callbackRange.upperBound..<source.endIndex
+            )
+        )
+        let admissionPrefix = String(
+            source[callbackRange.upperBound..<firstSharedMutation.lowerBound]
+        )
+        let orderedTokens = [
+            "connectedPeripheralRetainer.admitConnected(peripheral)",
+            "if connectedCallbackAdmission == .retainPassiveDuplicate",
+            "AtriaDebugLog(",
+            "return"
+        ]
+        var cursor = admissionPrefix.startIndex
+        for token in orderedTokens {
+            let tokenRange = try XCTUnwrap(
+                admissionPrefix.range(
+                    of: token,
+                    range: cursor..<admissionPrefix.endIndex
+                ),
+                "didConnect must perform \(token) before shared-state mutation"
+            )
+            cursor = tokenRange.upperBound
+        }
+        XCTAssertFalse(
+            admissionPrefix.contains("cancelPeripheralConnection"),
+            "duplicate admission must not cancel a potentially shared physical link"
+        )
+        XCTAssertFalse(
+            admissionPrefix.contains("peripheral.delegate = nil"),
+            "duplicate admission must not mutate delegate ownership before identity is settled"
+        )
     }
 
     func testRetainerIsHeldStronglyAndNonisolatedByTheManager() throws {

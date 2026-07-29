@@ -1,4 +1,5 @@
 import XCTest
+import CoreBluetooth
 @testable import Atria
 
 final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
@@ -42,6 +43,7 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
         XCTAssertEqual(
             AtriaBLEManager.canonicalRestoredPeripheralIndex(
                 identifiers: [stale, saved],
+                states: [.connected, .disconnected],
                 savedPeripheralIdentifier: saved
             ),
             1
@@ -49,12 +51,14 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
         XCTAssertNil(
             AtriaBLEManager.canonicalRestoredPeripheralIndex(
                 identifiers: [stale, saved],
+                states: [.connected, .connected],
                 savedPeripheralIdentifier: UUID()
             )
         )
         XCTAssertEqual(
             AtriaBLEManager.canonicalRestoredPeripheralIndex(
                 identifiers: [saved],
+                states: [.connected],
                 savedPeripheralIdentifier: nil
             ),
             0
@@ -62,8 +66,34 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
         XCTAssertNil(
             AtriaBLEManager.canonicalRestoredPeripheralIndex(
                 identifiers: [stale, saved],
+                states: [.connected, .connected],
                 savedPeripheralIdentifier: nil
             )
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.canonicalRestoredPeripheralIndex(
+                identifiers: [saved, saved],
+                states: [.disconnected, .connected],
+                savedPeripheralIdentifier: saved
+            ),
+            1,
+            "an already-connected restored twin must own discovery because it will not emit didConnect"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.canonicalRestoredPeripheralIndex(
+                identifiers: [saved, saved, saved],
+                states: [.disconnected, .connecting, .disconnecting],
+                savedPeripheralIdentifier: saved
+            ),
+            1
+        )
+        XCTAssertNil(
+            AtriaBLEManager.canonicalRestoredPeripheralIndex(
+                identifiers: [saved],
+                states: [],
+                savedPeripheralIdentifier: saved
+            ),
+            "mismatched restoration facts must fail closed"
         )
     }
 
@@ -82,21 +112,73 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
                 peripheralIsDisconnected: true
             )
         )
-        let failed = UUID()
         XCTAssertTrue(
             AtriaBLEManager.acceptsFailedConnectCallback(
-                trackedPeripheralIdentifier: nil,
-                failedPeripheralIdentifier: failed,
-                synchronousReconnectIssued: true
+                trackedPeripheralIsFailedInstance: false,
+                trackedPeripheralIsAbsent: true,
+                synchronousReconnectIssued: true,
+                callbackEpochIsCurrent: true
             ),
             "the callback must survive the pre-MainActor bookkeeping window"
         )
         XCTAssertFalse(
             AtriaBLEManager.acceptsFailedConnectCallback(
-                trackedPeripheralIdentifier: UUID(),
-                failedPeripheralIdentifier: failed,
-                synchronousReconnectIssued: false
+                trackedPeripheralIsFailedInstance: false,
+                trackedPeripheralIsAbsent: true,
+                synchronousReconnectIssued: false,
+                callbackEpochIsCurrent: true
+            ),
+            "a stale object must not be admitted merely because it shares the current strap UUID"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.acceptsFailedConnectCallback(
+                trackedPeripheralIsFailedInstance: true,
+                trackedPeripheralIsAbsent: false,
+                synchronousReconnectIssued: false,
+                callbackEpochIsCurrent: true
+            ),
+            "the currently tracked failed object remains a terminal callback"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.acceptsFailedConnectCallback(
+                trackedPeripheralIsFailedInstance: false,
+                trackedPeripheralIsAbsent: false,
+                synchronousReconnectIssued: true,
+                callbackEpochIsCurrent: true
+            ),
+            "a synchronous retry must not overwrite a distinct tracked owner"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.acceptsFailedConnectCallback(
+                trackedPeripheralIsFailedInstance: true,
+                trackedPeripheralIsAbsent: false,
+                synchronousReconnectIssued: true,
+                callbackEpochIsCurrent: false
+            ),
+            "a newer connected epoch must supersede queued failure bookkeeping"
+        )
+    }
+
+    func testDisconnectFollowupRequiresExactObjectAndUnchangedEpoch() {
+        XCTAssertTrue(
+            AtriaBLEManager.acceptsDisconnectCallbackFollowup(
+                trackedPeripheralIsDisconnectedInstance: true,
+                terminalEpochIsCurrent: true
             )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.acceptsDisconnectCallbackFollowup(
+                trackedPeripheralIsDisconnectedInstance: false,
+                terminalEpochIsCurrent: true
+            ),
+            "a same-UUID object-distinct owner must not be reset"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.acceptsDisconnectCallbackFollowup(
+                trackedPeripheralIsDisconnectedInstance: true,
+                terminalEpochIsCurrent: false
+            ),
+            "a newer didConnect epoch supersedes queued terminal work"
         )
     }
 
@@ -204,12 +286,19 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
             range: restoreStart.upperBound..<source.endIndex
         ))
         let restore = String(source[restoreStart.lowerBound..<restoreEnd.lowerBound])
+        let canonicalAdmission = try XCTUnwrap(
+            restore.range(of: "connectedPeripheralRetainer.admitConnected(restoredPeripheral)")
+        )
+        let epochActivation = try XCTUnwrap(
+            restore.range(of: "bleCallbackEpochFence.activate(")
+        )
         let delegate = try XCTUnwrap(restore.range(of: "restoredPeripheral.delegate = self"))
         let restoreFastLane = try XCTUnwrap(restore.range(
             of: "beginSynchronousHeartRateDiscoveryFastLane(",
             range: delegate.upperBound..<restore.endIndex
         ))
         let restoreMainActor = try XCTUnwrap(restore.range(of: "Task { @MainActor in"))
+        XCTAssertLessThan(canonicalAdmission.lowerBound, epochActivation.lowerBound)
         XCTAssertLessThan(delegate.lowerBound, restoreMainActor.lowerBound)
         XCTAssertLessThan(restoreFastLane.lowerBound, restoreMainActor.lowerBound)
         XCTAssertTrue(restore.contains(
@@ -238,6 +327,41 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
         ))
         XCTAssertLessThan(policy.lowerBound, notify.lowerBound)
         XCTAssertLessThan(policy.lowerBound, discovery.lowerBound)
+    }
+
+    func testQueuedTerminalWorkIsFencedByExactObjectAndConnectionEpoch() throws {
+        let source = try managerSource()
+        let disconnectStart = try XCTUnwrap(source.range(
+            of: "didDisconnectPeripheral peripheral: CBPeripheral"
+        ))
+        let failedStart = try XCTUnwrap(source.range(
+            of: "didFailToConnect peripheral: CBPeripheral",
+            range: disconnectStart.upperBound..<source.endIndex
+        ))
+        let disconnect = String(
+            source[disconnectStart.lowerBound..<failedStart.lowerBound]
+        )
+        XCTAssertTrue(
+            disconnect.contains("Self.acceptsDisconnectCallbackFollowup(")
+        )
+        XCTAssertTrue(disconnect.contains("self.peripheral === peripheral"))
+        XCTAssertTrue(
+            disconnect.contains(
+                "self.bleCallbackEpochFence.epoch == terminalCallbackEpoch"
+            )
+        )
+
+        let failedEnd = try XCTUnwrap(source.range(
+            of: "// MARK: - CBPeripheralDelegate",
+            range: failedStart.upperBound..<source.endIndex
+        ))
+        let failed = String(source[failedStart.lowerBound..<failedEnd.lowerBound])
+        XCTAssertTrue(failed.contains("trackedPeripheralIsAbsent: self.peripheral == nil"))
+        XCTAssertTrue(
+            failed.contains(
+                "self.bleCallbackEpochFence.epoch == failedCallbackEpoch"
+            )
+        )
     }
 
     func testSharedDiscoveryPolicyFailsClosedForHistoryReadOnlyAndDiagnostics() {

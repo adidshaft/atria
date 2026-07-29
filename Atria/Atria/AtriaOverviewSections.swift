@@ -3120,6 +3120,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                    sleepHistoryRevision: sleepHistoryRevision,
                                    guidance: hero.guidance,
                                    recoveryEstimate: debugMetricDetailRecoveryEstimate ?? hero.recoveryEstimate,
+                                   currentCycleAuthority:
+                                    AtriaHealthMetricAuthority.currentCycleProjection(
+                                        hero: hero,
+                                        sleepHistory: sleepHistory
+                                    ),
                                    sleepGoalHours: sleepGoalHours,
                                    sleepBaseNeedHours: sleepBaseNeedHours,
                                    skinTemperatureDeviation: skinTemperatureSummary)
@@ -8512,6 +8517,7 @@ struct AtriaMetricDetailSheet: View {
     let sleepHistoryRevision: Int?
     let guidance: Coach.Guidance
     let recoveryEstimate: Metrics.RecoveryEstimate
+    let currentCycleAuthority: AtriaHealthMetricAuthority.Projection?
     let sleepGoalHours: Double
     let sleepBaseNeedHours: Double
     // Visibility/IA route audit (2026-07-05): live data for the new honest-
@@ -8568,6 +8574,14 @@ struct AtriaMetricDetailSheet: View {
             let range: AtriaTrendRange
             let bucketOverride: AtriaChartBucketOverride
             let showMinMaxBand: Bool
+            /// Only evidence that can alter this metric's current chart point.
+            /// Do not key on the whole Hero authority: unrelated live strain,
+            /// recovery detail, and wear-coverage updates would repeatedly
+            /// rebuild an open chart without changing its plotted data.
+            let currentCycleValue: Double?
+            let currentCycleDisplayDay: Date?
+            let dynamicCompanionSignature:
+                AtriaMetricChartDynamicCompanionSignature
         }
 
         private var entry: (key: Key, value: AtriaMetricChartPreparedData)?
@@ -8592,6 +8606,7 @@ struct AtriaMetricDetailSheet: View {
          sleepHistoryRevision: Int? = nil,
          guidance: Coach.Guidance,
          recoveryEstimate: Metrics.RecoveryEstimate,
+         currentCycleAuthority: AtriaHealthMetricAuthority.Projection? = nil,
          sleepGoalHours: Double,
          sleepBaseNeedHours: Double,
          hrZoneMinutes: TodayHRZoneMinutes = .empty,
@@ -8606,7 +8621,14 @@ struct AtriaMetricDetailSheet: View {
         let resolvedInitialRange: AtriaTrendRange =
             metric == .fitnessAge && initialRange == .day ? .week : initialRange
         _range = State(initialValue: resolvedInitialRange)
-        _periodAnchor = State(initialValue: Date())
+        let currentPeriodAnchor: Date
+        switch metric {
+        case .recovery, .strain:
+            currentPeriodAnchor = currentCycleAuthority?.cycleStart ?? Date()
+        default:
+            currentPeriodAnchor = Date()
+        }
+        _periodAnchor = State(initialValue: currentPeriodAnchor)
         self.initialScrubbedDay = initialScrubbedDay
         _bucketOverride = State(initialValue: initialBucketOverride)
         _showMinMaxBand = State(initialValue: initialShowMinMaxBand)
@@ -8619,6 +8641,7 @@ struct AtriaMetricDetailSheet: View {
         self.sleepHistoryRevision = sleepHistoryRevision
         self.guidance = guidance
         self.recoveryEstimate = recoveryEstimate
+        self.currentCycleAuthority = currentCycleAuthority
         self.sleepGoalHours = sleepGoalHours
         self.sleepBaseNeedHours = sleepBaseNeedHours
         self.hrZoneMinutes = hrZoneMinutes
@@ -8683,7 +8706,18 @@ struct AtriaMetricDetailSheet: View {
             await refreshPreparedHistory()
         }
         .onChange(of: range) { _, _ in
-            periodAnchor = Date()
+            periodAnchor = currentMetricPeriodAnchor
+        }
+        .onChange(of: currentCycleAuthority?.cycleStart) { oldStart, newStart in
+            guard metric == .recovery || metric == .strain,
+                  let oldStart,
+                  range.periodInterval(
+                    containing: periodAnchor,
+                    calendar: preparationBaseInput.calendar
+                  ).contains(oldStart) else {
+                return
+            }
+            periodAnchor = newStart ?? Date()
         }
         .sheet(isPresented: $showingMeaningSheet) {
             AtriaMetricMeaningSheet(metric: metric,
@@ -8800,9 +8834,9 @@ struct AtriaMetricDetailSheet: View {
                     metricChart(title: "Recovery",
                                 unit: "%",
                                 tint: Metrics.electricGreen,
-                                points: displayedPoints(auto: preparedHistory.recovery[range] ?? [], raw: preparedHistory.recoveryRaw[range] ?? []),
-                                summary: preparedHistory.recoverySummary[range],
-                                comparison: preparedHistory.recoveryComparison[range],
+                                points: recoveryDisplayPointsForSelectedPeriod,
+                                summary: recoverySummaryForSelectedPeriod,
+                                comparison: recoveryComparisonForSelectedPeriod,
                                 baselineBand: nil,
                                 accessibilitySummary: "Recovery over \(range.label).",
                                 priorPoints: preparedHistory.recoveryPrior[range] ?? [],
@@ -8837,7 +8871,7 @@ struct AtriaMetricDetailSheet: View {
                                 accessibilitySummary: "HRV over \(range.label) with your baseline band.",
                                 emptyExplanation: "HRV is read from steady overnight wear — each clean night adds a point here.",
                                 priorPoints: preparedHistory.hrvPrior[range] ?? [],
-                                companions: [("That day's recovery", "%", Metrics.electricGreen, preparedHistory.recovery[range] ?? []),
+                                companions: [("That day's recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod),
                                              ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])],
                                 onOpenDay: { day in openHistoryDay(for: day) },
                                 onExpand: { showExpandedChart = true })
@@ -8869,7 +8903,7 @@ struct AtriaMetricDetailSheet: View {
                                 emptyExplanation: "Resting heart rate is read from overnight wear — each night adds a point here.",
                                 priorPoints: preparedHistory.restingHeartRatePrior[range] ?? [],
                                 companions: [("That day's HRV", "ms", Metrics.electricHRV, preparedHistory.hrv[range] ?? []),
-                                             ("Recovery", "%", Metrics.electricGreen, preparedHistory.recovery[range] ?? [])],
+                                             ("Recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod)],
                                 onOpenDay: { day in openHistoryDay(for: day) },
                                 onExpand: { showExpandedChart = true })
                 }
@@ -8900,7 +8934,7 @@ struct AtriaMetricDetailSheet: View {
                                 emptyExplanation: "Respiratory rate is derived from steady overnight wear — each night adds a point here.",
                                 priorPoints: preparedHistory.respiratoryRatePrior[range] ?? [],
                                 companions: [("That day's HRV", "ms", Metrics.electricHRV, preparedHistory.hrv[range] ?? []),
-                                             ("Recovery", "%", Metrics.electricGreen, preparedHistory.recovery[range] ?? [])],
+                                             ("Recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod)],
                                 onOpenDay: { day in openHistoryDay(for: day) },
                                 onExpand: { showExpandedChart = true })
                 }
@@ -8934,7 +8968,7 @@ struct AtriaMetricDetailSheet: View {
                                 baselineBand: nil,
                                 accessibilitySummary: "Sleep duration over \(range.label).",
                                 priorPoints: preparedHistory.sleepPrior[range] ?? [],
-                                companions: [("That day's recovery", "%", Metrics.electricGreen, preparedHistory.recovery[range] ?? []),
+                                companions: [("That day's recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod),
                                              ("HRV", "ms", Metrics.electricHRV, preparedHistory.hrv[range] ?? [])],
                                 onOpenDay: { day in openHistoryDay(for: day) },
                                 onExpand: { showExpandedChart = true })
@@ -8961,13 +8995,13 @@ struct AtriaMetricDetailSheet: View {
                     metricChart(title: "Strain",
                                 unit: "",
                                 tint: Metrics.electricStrain,
-                                points: displayedPoints(auto: preparedHistory.strain[range] ?? [], raw: preparedHistory.strainRaw[range] ?? []),
-                                summary: preparedHistory.strainSummary[range],
-                                comparison: preparedHistory.strainComparison[range],
+                                points: strainDisplayPointsForSelectedPeriod,
+                                summary: strainSummaryForSelectedPeriod,
+                                comparison: strainComparisonForSelectedPeriod,
                                 baselineBand: nil,
                                 accessibilitySummary: "Strain over \(range.label).",
                                 priorPoints: preparedHistory.strainPrior[range] ?? [],
-                                companions: [("That day's recovery", "%", Metrics.electricGreen, preparedHistory.recovery[range] ?? []),
+                                companions: [("That day's recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod),
                                              ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])],
                                 onOpenDay: { day in openHistoryDay(for: day) },
                                 onExpand: { showExpandedChart = true })
@@ -8991,7 +9025,7 @@ struct AtriaMetricDetailSheet: View {
                                 baselineBand: nil,
                                 accessibilitySummary: "Sleep performance, percent of nightly need, over \(range.label).",
                                 companions: [("Sleep duration", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? []),
-                                             ("Recovery", "%", Metrics.electricGreen, preparedHistory.recovery[range] ?? [])],
+                                             ("Recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod)],
                                 onOpenDay: { day in openHistoryDay(for: day) },
                                 onExpand: { showExpandedChart = true })
                 }
@@ -9171,10 +9205,169 @@ struct AtriaMetricDetailSheet: View {
         return latest <= 0 ? Metrics.electricGreen : Metrics.electricYellow
     }
 
+    private var currentCycleDetailProjection: AtriaHealthMetricAuthority.DetailProjection {
+        AtriaHealthMetricAuthority.detailProjection(
+            currentCycle: currentCycleAuthority,
+            historicalRecoveryPercent:
+                preparedHistory.recoverySummary[range].map {
+                    Int($0.latestRaw.rounded())
+                },
+            historicalStrain: preparedHistory.strainSummary[range]?.latestRaw
+                ?? preparedHistory.latestStrain[range],
+            range: range,
+            periodAnchor: periodAnchor,
+            calendar: preparationBaseInput.calendar
+        )
+    }
+
+    private var currentCycleStrainTruth:
+        AtriaHealthMetricAuthority.StrainTrendTruth {
+        AtriaHealthMetricAuthority.strainTrendTruth(currentCycleAuthority)
+    }
+
+    /// Recovery and strain belong to the wake-to-wake cycle's display day,
+    /// which can be yesterday after midnight. Other metric histories retain
+    /// their civil "today" anchor.
+    private var currentMetricPeriodAnchor: Date {
+        switch metric {
+        case .recovery, .strain:
+            return currentCycleAuthority?.cycleStart ?? Date()
+        default:
+            return Date()
+        }
+    }
+
+    private var nextMetricPeriodIsUnavailable: Bool {
+        let calendar = preparationBaseInput.calendar
+        let selected = range.periodInterval(
+            containing: periodAnchor,
+            calendar: calendar
+        )
+        let current = range.periodInterval(
+            containing: currentMetricPeriodAnchor,
+            calendar: calendar
+        )
+        return selected.end >= current.end
+    }
+
+    private func replacingCurrentCyclePoint(
+        in points: [AtriaDetailChartPoint],
+        value: Double?,
+        tint: Color
+    ) -> [AtriaDetailChartPoint] {
+        guard currentCycleDetailProjection.usesCurrentCycle,
+              let currentDisplayAnchor =
+                currentCycleAuthority?.cycleStart
+                    ?? currentCycleAuthority?.projectedAt else {
+            return points
+        }
+        let calendar = preparationBaseInput.calendar
+        let currentDay = calendar.startOfDay(for: currentDisplayAnchor)
+        var result = points.filter {
+            !calendar.isDate($0.day, inSameDayAs: currentDay)
+        }
+        if let value {
+            result.append(AtriaDetailChartPoint(
+                day: currentDay,
+                value: value,
+                tint: tint
+            ))
+        }
+        return result.sorted { $0.day < $1.day }
+    }
+
+    private var recoveryRawPointsForSelectedPeriod: [AtriaDetailChartPoint] {
+        replacingCurrentCyclePoint(
+            in: preparedHistory.recoveryRaw[range] ?? [],
+            value: currentCycleAuthority?.recoveryPercent.map(Double.init),
+            tint: currentCycleAuthority?.recoveryPercent.map {
+                Metrics.recoveryColor($0)
+            } ?? .secondary
+        )
+    }
+
+    private var recoveryDisplayPointsForSelectedPeriod: [AtriaDetailChartPoint] {
+        let auto = replacingCurrentCyclePoint(
+            in: preparedHistory.recovery[range] ?? [],
+            value: currentCycleAuthority?.recoveryPercent.map(Double.init),
+            tint: currentCycleAuthority?.recoveryPercent.map {
+                Metrics.recoveryColor($0)
+            } ?? .secondary
+        )
+        return displayedPoints(
+            auto: auto,
+            raw: recoveryRawPointsForSelectedPeriod
+        )
+    }
+
+    private var recoverySummaryForSelectedPeriod: AtriaDetailPeriodSummary? {
+        guard currentCycleDetailProjection.usesCurrentCycle else {
+            return preparedHistory.recoverySummary[range]
+        }
+        return AtriaDetailPeriodSummary(
+            points: recoveryRawPointsForSelectedPeriod,
+            unit: "%"
+        )
+    }
+
+    private var recoveryComparisonForSelectedPeriod: AtriaDetailComparisonSummary? {
+        guard currentCycleDetailProjection.usesCurrentCycle else {
+            return preparedHistory.recoveryComparison[range]
+        }
+        return AtriaDetailComparisonSummary(
+            current: recoveryRawPointsForSelectedPeriod,
+            prior: preparedHistory.recoveryPrior[range] ?? [],
+            unit: "%"
+        )
+    }
+
+    private var strainRawPointsForSelectedPeriod: [AtriaDetailChartPoint] {
+        replacingCurrentCyclePoint(
+            in: preparedHistory.strainRaw[range] ?? [],
+            value: currentCycleStrainTruth.exactTrendValue,
+            tint: Metrics.electricStrain
+        )
+    }
+
+    private var strainDisplayPointsForSelectedPeriod: [AtriaDetailChartPoint] {
+        let auto = replacingCurrentCyclePoint(
+            in: preparedHistory.strain[range] ?? [],
+            value: currentCycleStrainTruth.exactTrendValue,
+            tint: Metrics.electricStrain
+        )
+        return displayedPoints(
+            auto: auto,
+            raw: strainRawPointsForSelectedPeriod
+        )
+    }
+
+    private var strainSummaryForSelectedPeriod: AtriaDetailPeriodSummary? {
+        guard currentCycleDetailProjection.usesCurrentCycle else {
+            return preparedHistory.strainSummary[range]
+        }
+        return AtriaDetailPeriodSummary(
+            points: strainRawPointsForSelectedPeriod,
+            unit: ""
+        )
+    }
+
+    private var strainComparisonForSelectedPeriod: AtriaDetailComparisonSummary? {
+        guard currentCycleDetailProjection.usesCurrentCycle else {
+            return preparedHistory.strainComparison[range]
+        }
+        return AtriaDetailComparisonSummary(
+            current: strainRawPointsForSelectedPeriod,
+            prior: preparedHistory.strainPrior[range] ?? [],
+            unit: ""
+        )
+    }
+
     private var rangeLens: (summary: AtriaDetailPeriodSummary, comparison: AtriaDetailComparisonSummary?)? {
         switch metric {
         case .recovery:
-            return preparedHistory.recoverySummary[range].map { ($0, preparedHistory.recoveryComparison[range]) }
+            return recoverySummaryForSelectedPeriod.map {
+                ($0, recoveryComparisonForSelectedPeriod)
+            }
         case .hrv:
             return preparedHistory.hrvSummary[range].map { ($0, preparedHistory.hrvComparison[range]) }
         case .restingHeartRate:
@@ -9184,7 +9377,9 @@ struct AtriaMetricDetailSheet: View {
         case .sleep:
             return preparedHistory.sleepSummary[range].map { ($0, preparedHistory.sleepComparison[range]) }
         case .strain:
-            return preparedHistory.strainSummary[range].map { ($0, preparedHistory.strainComparison[range]) }
+            return strainSummaryForSelectedPeriod.map {
+                ($0, strainComparisonForSelectedPeriod)
+            }
         case .sleepPerformance:
             return preparedHistory.sleepPerformanceSummary[range].map { ($0, preparedHistory.sleepPerformanceComparison[range]) }
         case .fitnessAge:
@@ -9230,10 +9425,7 @@ struct AtriaMetricDetailSheet: View {
                     Image(systemName: "chevron.right")
                         .frame(width: 32, height: 32)
                 }
-                .disabled(
-                    range.periodInterval(containing: periodAnchor).end
-                        > Date()
-                )
+                .disabled(nextMetricPeriodIsUnavailable)
                 .accessibilityLabel("Next \(range.narrativeLabel)")
             }
             .buttonStyle(.plain)
@@ -9274,10 +9466,13 @@ struct AtriaMetricDetailSheet: View {
     /// ignored the period and disagreed with the day value shown everywhere else).
     private var recoveryHeroRawPercent: Double? {
         if range == .day {
+            if currentCycleDetailProjection.usesCurrentCycle {
+                return currentCycleDetailProjection.recoveryPercent.map(Double.init)
+            }
             return preparedHistory.recoverySummary[range]?.latestRaw
                 ?? preparedHistory.recoveryRaw[.all]?.last?.value
         }
-        return preparedHistory.recoverySummary[range]?.averageRaw
+        return recoverySummaryForSelectedPeriod?.averageRaw
     }
 
     private var recoveryHeroValue: String {
@@ -9303,6 +9498,7 @@ struct AtriaMetricDetailSheet: View {
 
     private var recoveryHeroUsesPreviousSavedDay: Bool {
         range == .day
+            && !currentCycleDetailProjection.usesCurrentCycle
             && preparedHistory.recoverySummary[.day]?.latestRaw == nil
             && preparedHistory.recoveryRaw[.all]?.last?.value != nil
     }
@@ -9311,7 +9507,9 @@ struct AtriaMetricDetailSheet: View {
         guard let score = recoveryHeroRawPercent else { return nil }
         return AtriaRecoveryBaselineComparison.text(
             score: score,
-            monthValues: (preparedHistory.recoveryRaw[.month] ?? []).map(\.value),
+            monthValues: range == .month
+                ? recoveryRawPointsForSelectedPeriod.map(\.value)
+                : (preparedHistory.recoveryRaw[.month] ?? []).map(\.value),
             excludesLatest: range == .day
         )
     }
@@ -9329,10 +9527,13 @@ struct AtriaMetricDetailSheet: View {
 
     private var strainHeroRawValue: Double? {
         if range == .day {
+            if currentCycleDetailProjection.usesCurrentCycle {
+                return currentCycleStrainTruth.heroLowerBound
+            }
             return preparedHistory.strainSummary[range]?.latestRaw
                 ?? preparedHistory.latestStrain[range]
         }
-        return preparedHistory.strainSummary[range]?.averageRaw
+        return strainSummaryForSelectedPeriod?.averageRaw
     }
 
     private var strainHeroValue: String {
@@ -9344,9 +9545,15 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private var dayStrainMetricsIncomplete: Bool {
+        if range == .day,
+           currentCycleDetailProjection.usesCurrentCycle,
+           currentCycleStrainTruth.isPartial {
+            return true
+        }
         guard range == .day,
               let strain = strainHeroRawValue,
-              let day = (preparedHistory.strainRaw[.day] ?? preparedHistory.strainRaw[.all])?.last?.day else {
+              let day = strainRawPointsForSelectedPeriod.last?.day
+                ?? preparedHistory.strainRaw[.all]?.last?.day else {
             return false
         }
         return AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(day: day,
@@ -9887,12 +10094,36 @@ struct AtriaMetricDetailSheet: View {
                              companions: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] = [],
                              onOpenDay: ((Date) -> Void)? = nil,
                              onExpand: (() -> Void)? = nil) -> some View {
+        let currentCycleDisplayAnchor = currentCycleDetailProjection.usesCurrentCycle
+            ? currentCycleAuthority?.cycleStart
+                ?? currentCycleAuthority?.projectedAt
+            : nil
         let cacheKey = MetricChartPreparedDataCache.Key(
             preparationInput: preparation.valueKey ?? preparationInput,
             metric: metric,
             range: range,
             bucketOverride: bucketOverride,
-            showMinMaxBand: showMinMaxBand
+            showMinMaxBand: showMinMaxBand,
+            currentCycleValue: {
+                guard currentCycleDetailProjection.usesCurrentCycle else {
+                    return nil
+                }
+                switch metric {
+                case .recovery:
+                    return currentCycleAuthority?.recoveryPercent.map(Double.init)
+                case .strain:
+                    return currentCycleStrainTruth.exactTrendValue
+                default:
+                    return nil
+                }
+            }(),
+            currentCycleDisplayDay: currentCycleDisplayAnchor,
+            dynamicCompanionSignature:
+                AtriaMetricChartDynamicCompanionSignature(
+                    companionPoints: companions.map(\.points),
+                    currentCycleDisplayAnchor: currentCycleDisplayAnchor,
+                    calendar: preparationBaseInput.calendar
+                )
         )
         let prepared = metricChartPreparedDataCache.value(for: cacheKey) {
             let visiblePeriod = range.periodInterval(
@@ -9981,7 +10212,7 @@ struct AtriaMetricDetailSheet: View {
         switch metric {
         case .recovery:
             return ("Recovery", "%", Metrics.electricGreen,
-                    displayedPoints(auto: preparedHistory.recovery[range] ?? [], raw: preparedHistory.recoveryRaw[range] ?? []),
+                    recoveryDisplayPointsForSelectedPeriod,
                     preparedHistory.recoveryPrior[range] ?? [], nil)
         case .hrv:
             return ("HRV", "ms", metric.tint,
@@ -10001,7 +10232,7 @@ struct AtriaMetricDetailSheet: View {
                     preparedHistory.sleepPrior[range] ?? [], nil)
         case .strain:
             return ("Strain", "", Metrics.electricStrain,
-                    displayedPoints(auto: preparedHistory.strain[range] ?? [], raw: preparedHistory.strainRaw[range] ?? []),
+                    strainDisplayPointsForSelectedPeriod,
                     preparedHistory.strainPrior[range] ?? [], nil)
         case .sleepPerformance:
             return ("Sleep performance", "%", Metrics.electricSleep,
@@ -10050,14 +10281,14 @@ struct AtriaMetricDetailSheet: View {
             return [("HRV", " ms", Metrics.electricHRV, preparedHistory.hrvRaw[range] ?? []),
                     ("Sleep", " h", Metrics.electricSleep, preparedHistory.sleepRaw[range] ?? [])]
         case .hrv, .restingHeartRate:
-            return [("Recovery", "%", Metrics.electricGreen, preparedHistory.recoveryRaw[range] ?? []),
+            return [("Recovery", "%", Metrics.electricGreen, recoveryRawPointsForSelectedPeriod),
                     ("Sleep", " h", Metrics.electricSleep, preparedHistory.sleepRaw[range] ?? [])]
         case .sleep:
-            return [("Recovery", "%", Metrics.electricGreen, preparedHistory.recoveryRaw[range] ?? []),
-                    ("Strain", "", Metrics.electricStrain, preparedHistory.strainRaw[range] ?? [])]
+            return [("Recovery", "%", Metrics.electricGreen, recoveryRawPointsForSelectedPeriod),
+                    ("Strain", "", Metrics.electricStrain, strainRawPointsForSelectedPeriod)]
         case .respiratoryRate:
             return [("HRV", " ms", Metrics.electricHRV, preparedHistory.hrvRaw[range] ?? []),
-                    ("Recovery", "%", Metrics.electricGreen, preparedHistory.recoveryRaw[range] ?? [])]
+                    ("Recovery", "%", Metrics.electricGreen, recoveryRawPointsForSelectedPeriod)]
         default:
             return []
         }
@@ -10099,6 +10330,30 @@ struct AtriaMetricDetailSheet: View {
 
     private func latestText(value: Double, unit: String) -> String {
         AtriaDetailPeriodSummary.valueText(value, unit: unit)
+    }
+}
+
+/// Cache identity for the only dynamic part of companion lookup indices.
+/// Values are deliberately excluded: scrub callouts receive the fresh series
+/// directly, while the prepared cache only owns each companion's day→index map.
+struct AtriaMetricChartDynamicCompanionSignature: Equatable {
+    let currentPointDays: [Date?]
+
+    init(
+        companionPoints: [[AtriaDetailChartPoint]],
+        currentCycleDisplayAnchor: Date?,
+        calendar: Calendar = .current
+    ) {
+        guard let currentCycleDisplayAnchor else {
+            currentPointDays = Array(repeating: nil, count: companionPoints.count)
+            return
+        }
+        let currentDay = calendar.startOfDay(for: currentCycleDisplayAnchor)
+        currentPointDays = companionPoints.map { points in
+            points.contains {
+                calendar.isDate($0.day, inSameDayAs: currentDay)
+            } ? currentDay : nil
+        }
     }
 }
 

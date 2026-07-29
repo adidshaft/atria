@@ -600,6 +600,12 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             "HistoricalArchive.motionTickDayEvidenceRead("
         ))
         XCTAssertTrue(body.contains(
+            "Self.currentCycleStepReceiptQueue.async"
+        ), "bounded compact receipt work must not wait behind lifetime archive projections")
+        XCTAssertTrue(body.contains(
+            "Self.historySnapshotProjectionQueue.sync"
+        ), "the legacy JSONL fallback must remain serialized with heavyweight archive readers")
+        XCTAssertTrue(body.contains(
             "AtriaWhoop4MotionTickDailyStore.shared.save("
         ))
         XCTAssertFalse(body.contains(
@@ -652,6 +658,9 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         ))
         XCTAssertTrue(sessions.contains(
             "workoutStepEvidenceQueue =\n        HistoricalArchive.consumerProjectionQueue"
+        ))
+        XCTAssertTrue(sessions.contains(
+            "private static let currentCycleStepReceiptQueue = DispatchQueue("
         ))
         XCTAssertTrue(ble.contains(
             "HistoricalArchive.consumerProjectionQueue.async"

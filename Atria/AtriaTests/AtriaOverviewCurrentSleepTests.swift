@@ -211,6 +211,194 @@ final class AtriaOverviewCurrentSleepTests: XCTestCase {
                       "civil rollups remain available only through explicitly dated context")
     }
 
+    func testMetricDetailCurrentPeriodReplacesStaleCivilRecoveryAndStrain() {
+        let now = date(2026, 7, 30, 2, 0)
+        let cycleStart = date(2026, 7, 29, 14, 35)
+        let current = AtriaHealthMetricAuthority.resolve(.currentCycle(.init(
+            recoveryPercent: 46,
+            recoveryDetail: "Limited",
+            restingHeartRateText: "61",
+            hrvValue: "38",
+            hrvDetail: "sleep signal",
+            strain: 3.8536,
+            strainDetail: "local",
+            cycleStart: cycleStart,
+            projectedAt: now
+        )))
+
+        for range in [
+            AtriaTrendRange.day,
+            AtriaTrendRange.week,
+            AtriaTrendRange.month,
+        ] {
+            let projection = AtriaHealthMetricAuthority.detailProjection(
+                currentCycle: current,
+                historicalRecoveryPercent: 38,
+                historicalStrain: 0.7296,
+                range: range,
+                periodAnchor: cycleStart,
+                calendar: calendar
+            )
+            XCTAssertTrue(projection.usesCurrentCycle)
+            XCTAssertEqual(projection.recoveryPercent, 46)
+            XCTAssertEqual(projection.strain ?? -1, 3.8536, accuracy: 0.000_001)
+        }
+    }
+
+    func testMetricDetailAfterMidnightKeysCurrentCycleToWakeDayNotCivilToday() {
+        let now = date(2026, 7, 30, 2, 0)
+        let cycleStart = date(2026, 7, 29, 14, 35)
+        let current = AtriaHealthMetricAuthority.resolve(.currentCycle(.init(
+            recoveryPercent: 46,
+            recoveryDetail: "Limited",
+            restingHeartRateText: "61",
+            hrvValue: "38",
+            hrvDetail: "sleep signal",
+            strain: 3.8536,
+            strainDetail: "local",
+            cycleStart: cycleStart,
+            projectedAt: now
+        )))
+
+        let wakeDay = AtriaHealthMetricAuthority.detailProjection(
+            currentCycle: current,
+            historicalRecoveryPercent: 38,
+            historicalStrain: 0.7296,
+            range: .day,
+            periodAnchor: cycleStart,
+            calendar: calendar
+        )
+        XCTAssertTrue(wakeDay.usesCurrentCycle)
+        XCTAssertEqual(wakeDay.recoveryPercent, 46)
+        XCTAssertEqual(wakeDay.strain ?? -1, 3.8536, accuracy: 0.000_001)
+
+        let nextCivilDay = AtriaHealthMetricAuthority.detailProjection(
+            currentCycle: current,
+            historicalRecoveryPercent: 38,
+            historicalStrain: 0.7296,
+            range: .day,
+            periodAnchor: now,
+            calendar: calendar
+        )
+        XCTAssertFalse(nextCivilDay.usesCurrentCycle)
+        XCTAssertEqual(nextCivilDay.recoveryPercent, 38)
+        XCTAssertEqual(nextCivilDay.strain ?? -1, 0.7296, accuracy: 0.000_001)
+    }
+
+    func testMetricDetailHistoricalNavigationDoesNotUseCurrentCycle() {
+        let now = date(2026, 7, 30, 2, 0)
+        let current = AtriaHealthMetricAuthority.resolve(.currentCycle(.init(
+            recoveryPercent: 46,
+            recoveryDetail: "Limited",
+            restingHeartRateText: "61",
+            hrvValue: "38",
+            hrvDetail: "sleep signal",
+            strain: 3.8536,
+            strainDetail: "local",
+            cycleStart: date(2026, 7, 29, 14, 35),
+            projectedAt: now
+        )))
+        let priorDay = date(2026, 7, 28, 12, 0)
+
+        let projection = AtriaHealthMetricAuthority.detailProjection(
+            currentCycle: current,
+            historicalRecoveryPercent: 61,
+            historicalStrain: 7.2,
+            range: .day,
+            periodAnchor: priorDay,
+            calendar: calendar
+        )
+
+        XCTAssertFalse(projection.usesCurrentCycle)
+        XCTAssertEqual(projection.recoveryPercent, 61)
+        XCTAssertEqual(projection.strain, 7.2)
+    }
+
+    func testMetricDetailCurrentNoValueWithholdsStaleCivilRecovery() {
+        let now = date(2026, 7, 30, 2, 0)
+        let cycleStart = date(2026, 7, 29, 14, 35)
+        let current = AtriaHealthMetricAuthority.resolve(.currentCycle(.init(
+            recoveryPercent: nil,
+            recoveryDetail: "HRV pending",
+            restingHeartRateText: "61",
+            hrvValue: "--",
+            hrvDetail: "HRV settling",
+            strain: 1.4,
+            strainDetail: "partial-day wear",
+            strainIsPartial: true,
+            cycleStart: cycleStart,
+            projectedAt: now
+        )))
+
+        let projection = AtriaHealthMetricAuthority.detailProjection(
+            currentCycle: current,
+            historicalRecoveryPercent: 99,
+            historicalStrain: 0.2,
+            range: .day,
+            periodAnchor: cycleStart,
+            calendar: calendar
+        )
+
+        XCTAssertTrue(projection.usesCurrentCycle)
+        XCTAssertNil(projection.recoveryPercent)
+        XCTAssertEqual(projection.strain, 1.4)
+    }
+
+    func testPartialCurrentCycleStrainRemainsLowerBoundButNotExactTrendData() {
+        let partial = AtriaHealthMetricAuthority.resolve(.currentCycle(.init(
+            recoveryPercent: 46,
+            recoveryDetail: "Limited",
+            restingHeartRateText: "61",
+            hrvValue: "38",
+            hrvDetail: "sleep signal",
+            strain: 3.8,
+            strainDetail: "partial-day wear",
+            strainIsPartial: true
+        )))
+        let truth = AtriaHealthMetricAuthority.strainTrendTruth(partial)
+
+        XCTAssertEqual(truth.heroLowerBound, 3.8)
+        XCTAssertNil(truth.exactTrendValue)
+        XCTAssertTrue(truth.isPartial)
+
+        let settledWeek = [7.0, 8.0]
+            + [truth.exactTrendValue].compactMap { $0 }
+        XCTAssertEqual(
+            settledWeek.reduce(0, +) / Double(settledWeek.count),
+            7.5,
+            accuracy: 0.000_001,
+            "A partial live lower bound must not alter exact W/M aggregates"
+        )
+    }
+
+    func testAllMetricDetailRoutesPassTheSharedCurrentCycleAuthority() throws {
+        let testsURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceRoot = testsURL.deletingLastPathComponent().appendingPathComponent("Atria")
+        for file in [
+            "AtriaTodayScreen.swift",
+            "AtriaHealthScreen.swift",
+            "AtriaVitalsCollectionSections.swift",
+            "AtriaOverviewSections.swift",
+        ] {
+            let source = try String(
+                contentsOf: sourceRoot.appendingPathComponent(file),
+                encoding: .utf8
+            )
+            XCTAssertTrue(source.contains("currentCycleAuthority:"))
+            XCTAssertTrue(source.contains(
+                "AtriaHealthMetricAuthority.currentCycleProjection("
+            ), "\(file) must pass the shared wake-to-wake authority into metric detail")
+        }
+
+        let overview = try String(
+            contentsOf: sourceRoot.appendingPathComponent("AtriaOverviewSections.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(overview.contains(
+            ".disabled(nextMetricPeriodIsUnavailable)"
+        ), "Recovery/strain detail must not navigate past the current physiological day")
+    }
+
     func testFreshCandidateCanDisplayDurationWithoutBecomingCurrentMainSleep() {
         let now = date(2026, 7, 18, 9, 0)
         let start = date(2026, 7, 18, 2, 0)

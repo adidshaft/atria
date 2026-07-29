@@ -96,12 +96,23 @@ extension AtriaBLEManager {
     }
 
     nonisolated static func acceptsFailedConnectCallback(
-        trackedPeripheralIdentifier: UUID?,
-        failedPeripheralIdentifier: UUID,
-        synchronousReconnectIssued: Bool
+        trackedPeripheralIsFailedInstance: Bool,
+        trackedPeripheralIsAbsent: Bool,
+        synchronousReconnectIssued: Bool,
+        callbackEpochIsCurrent: Bool
     ) -> Bool {
-        synchronousReconnectIssued
-            || trackedPeripheralIdentifier == failedPeripheralIdentifier
+        callbackEpochIsCurrent
+            && (
+                trackedPeripheralIsFailedInstance
+                    || (synchronousReconnectIssued && trackedPeripheralIsAbsent)
+            )
+    }
+
+    nonisolated static func acceptsDisconnectCallbackFollowup(
+        trackedPeripheralIsDisconnectedInstance: Bool,
+        terminalEpochIsCurrent: Bool
+    ) -> Bool {
+        trackedPeripheralIsDisconnectedInstance && terminalEpochIsCurrent
     }
 
     enum AutomaticRecoveryIntent: Int, Equatable {

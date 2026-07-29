@@ -53,6 +53,9 @@ final class AtriaStrainDetailPresentationTests: XCTestCase {
                        "partial evidence must not replace a real strain number")
         XCTAssertTrue(valueProjection.contains("dayStrainMetricsIncomplete ? \"≥ \\(value)\" : value"),
                       "partial cumulative strain is an observed lower bound")
+        XCTAssertTrue(overview.contains(
+            "value: currentCycleStrainTruth.exactTrendValue"
+        ), "partial cumulative strain must be withheld from exact chart aggregates")
 
         let todayURL = testsDirectory
             .deletingLastPathComponent()
