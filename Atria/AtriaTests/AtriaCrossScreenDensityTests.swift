@@ -313,6 +313,33 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertTrue(collapse.contains(".glassEffect(.regular"))
     }
 
+    func testDashboardHasOnlyOneLazyVerticalContentOwner() throws {
+        let home = try source("AtriaHomeView.swift")
+        let navigationStart = try XCTUnwrap(
+            home.range(of: "private func tabNavigation<Content: View>")
+        )
+        let navigationEnd = try XCTUnwrap(
+            home.range(
+                of: "private var scrollBottomClearance",
+                range: navigationStart.upperBound..<home.endIndex
+            )
+        )
+        let navigation = String(
+            home[navigationStart.lowerBound..<navigationEnd.lowerBound]
+        )
+        let today = try source("AtriaTodayScreen.swift")
+
+        XCTAssertTrue(navigation.contains("VStack(spacing: 18)"))
+        XCTAssertFalse(
+            navigation.contains("LazyVStack(spacing: 18)"),
+            "The scroll shell must not wrap screen-owned lazy content in a second LazyVStack; nested lazy layout made below-fold Strap steps unreachable on a physical iPhone."
+        )
+        XCTAssertTrue(
+            today.contains("LazyVStack(spacing: 16)"),
+            "Today should retain the one lazy stack that owns its growing section content."
+        )
+    }
+
     func testCompactRingUsesRequestedEmojiAndNumberVocabulary() throws {
         let ring = try source("AtriaTriRing.swift")
 

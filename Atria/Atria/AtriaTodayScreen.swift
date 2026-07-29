@@ -224,10 +224,11 @@ struct AtriaTodayScreen: View {
 
     var body: some View {
         let _ = AtriaBodyEvalProbe.tick("AtriaTodayScreen")
-        // LazyVStack, not VStack (2026-07-08 perf): this whole screen is a single
-        // child of tabNavigation's outer LazyVStack, so an eager VStack here renders
-        // every section (hero, plan, weekly plan, coach, …) synchronously on tab-open
-        // — main-thread jank that grows with data. Lazy renders only what's on screen.
+        // This is the dashboard's one lazy content stack. `tabNavigation`
+        // deliberately uses a small eager wrapper so this stack can extend the
+        // physical ScrollView's full reachable content size; nesting it inside
+        // another LazyVStack made below-the-fold cards unreachable on device.
+        // Lazy rendering remains here, where the section count actually grows.
         LazyVStack(spacing: 16) {
             if debugShowsAICoachOnly {
                 AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in

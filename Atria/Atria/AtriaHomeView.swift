@@ -4250,7 +4250,16 @@ struct AtriaHomeView: View {
                                         taskID: debugDashboardAutoScrollTaskID(title: title)) { scrollProxy in
                 await runDebugDashboardAutoScrollIfNeeded(proxy: scrollProxy, title: title)
             } content: {
-                LazyVStack(spacing: 18) {
+                // This wrapper has only four direct children. Making it lazy
+                // nests a LazyVStack around screens (Today, Vitals, Activity)
+                // that already own their own lazy content. On a physical
+                // iPhone that nested layout stopped extending the ScrollView's
+                // reachable content size after the weekly-plan row, leaving
+                // every later Today card—including the durable Strap steps
+                // receipt—present in the view graph but impossible to scroll
+                // to. Keep the outer shell eager and let each screen retain
+                // its own bounded/lazy rendering.
+                VStack(spacing: 18) {
                     Color.clear
                         .frame(height: 1)
                         .id(Self.debugDashboardScrollTopID)
