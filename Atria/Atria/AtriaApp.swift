@@ -341,6 +341,15 @@ struct AtriaApp: App {
                             guard !Task.isCancelled, scenePhase == .active else { return }
                             ble.handleInteractiveForeground(rest: store.baseline.restingInt ?? 60,
                                                            maxHR: store.profile.maxHR)
+                            store.resumeDeferredForegroundArchiveWork(
+                                reason: "scene_active_after_interactive_frame"
+                            )
+                            ble.resumePendingFullDrainPublicationIfNeeded(
+                                reason: "scene_active_after_interactive_frame"
+                            )
+                            ble.resumeDeferredWorkoutMotionBankCoverageEvaluationIfNeeded(
+                                reason: "scene_active_after_interactive_frame"
+                            )
                             foregroundBLETransitionTask = nil
                         }
                     @unknown default:

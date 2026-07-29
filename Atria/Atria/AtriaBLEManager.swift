@@ -2367,6 +2367,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// proof that a replacement connection has received the command.
     private var workoutHistoricalMotionBankArmedConnectionStartedAt: Date?
     private var workoutHistoricalMotionBankOffloadEvaluationInFlight = false
+    private var workoutHistoricalMotionBankOffloadEvaluationDeferredUntilForeground = false
     private var workoutHistoricalMotionBankOffloadRetryTask: Task<Void, Never>?
     nonisolated private static let workoutHistoricalMotionBankEnabledKey =
         "atria.workoutHistoricalMotionBank.enabled"
@@ -21395,6 +21396,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reason: String,
         allowRetry: Bool
     ) {
+        guard Self.shouldRunWorkoutMotionBankCoverageEvaluation(
+            applicationIsActive:
+                UIApplication.shared.applicationState == .active
+        ) else {
+            workoutHistoricalMotionBankOffloadEvaluationDeferredUntilForeground = true
+            workoutHistoricalMotionBankOffloadRetryTask?.cancel()
+            workoutHistoricalMotionBankOffloadRetryTask = nil
+            AtriaDebugLog(
+                "ATRIADBG workout_motion_bank_offload status=evaluation_deferred reason=%@ action=retain_durable_ticket_until_foreground",
+                reason
+            )
+            return
+        }
+        workoutHistoricalMotionBankOffloadEvaluationDeferredUntilForeground = false
         guard !workoutHistoricalMotionBankOffloadEvaluationInFlight,
               let peripheralID = peripheral?.identifier.uuidString,
               let ticket = AtriaWhoop4MotionBankCoverageLedger
@@ -21455,6 +21470,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 }
             }
         }
+    }
+
+    nonisolated static func shouldRunWorkoutMotionBankCoverageEvaluation(
+        applicationIsActive: Bool
+    ) -> Bool {
+        applicationIsActive
+    }
+
+    func resumeDeferredWorkoutMotionBankCoverageEvaluationIfNeeded(
+        reason: String
+    ) {
+        guard workoutHistoricalMotionBankOffloadEvaluationDeferredUntilForeground,
+              Self.shouldRunWorkoutMotionBankCoverageEvaluation(
+                applicationIsActive:
+                    UIApplication.shared.applicationState == .active
+              ) else { return }
+        evaluatePendingWorkoutHistoricalMotionBankOffload(
+            reason: "foreground_\(reason)",
+            allowRetry: true
+        )
     }
 
     /// Debug-only transport probe: close IMU mode before the physically
@@ -28753,6 +28788,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     || authority.status == .coverageProven
                     || authority.status == .gapResolvedConsumersPending
                     || authority.status == .consumersCommitted else { return }
+            // A CoreBluetooth restoration launch is CPU-budgeted background
+            // time. Terminal consumer settlement can scan the full retained
+            // archive and must never consume that lease: doing so has produced
+            // repeated cpu_resource_fatal terminations before live ownership
+            // could remain resident. The journal is already fsynced, so defer
+            // only this local projection until the UI is genuinely active.
+            guard Self.shouldRunTerminalConsumerMaterialization(
+                applicationIsActive:
+                    UIApplication.shared.applicationState == .active
+            ) else {
+                UserDefaults.standard.set(
+                    "terminal_consumer_materialization_deferred_foreground",
+                    forKey: OfflineSyncDefaults.lastStatus
+                )
+                UserDefaults.standard.set(
+                    reason,
+                    forKey: OfflineSyncDefaults.lastReason
+                )
+                AtriaDebugLog(
+                    "ATRIADBG historical_full_drain_publish status=deferred generation=%llu stage=%@ reason=background_cpu_budget action=preserve_live_wait_for_foreground",
+                    authority.attempt.transportGeneration,
+                    authority.status.rawValue
+                )
+                return
+            }
             guard prepareHistoricalAdmissionLedgerIfNeeded(
                 reason: "terminal_publication_\(reason)"
             ) else {
@@ -28790,6 +28850,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           reason,
                           String(describing: error))
         }
+    }
+
+    nonisolated static func shouldRunTerminalConsumerMaterialization(
+        applicationIsActive: Bool
+    ) -> Bool {
+        applicationIsActive
     }
 
     /// Runs only for a durable exact request bound to this reducer attempt and
