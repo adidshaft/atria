@@ -58,6 +58,34 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
         XCTAssertTrue(publicationIndex < deferredRefreshIndex)
     }
 
+    func testConfirmedSleepCycleChangeRebuildsCurrentStepReceipt() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/Sessions.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let start = try XCTUnwrap(
+            source.range(of: "private func saveConfirmedSleeps(")
+        )
+        let end = try XCTUnwrap(
+            source.range(
+                of: "private func writeDutyCycleSleepWindow",
+                range: start.upperBound..<source.endIndex
+            )
+        )
+        let savePath = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(savePath.contains("previousStepReceiptCycleStart"))
+        XCTAssertTrue(savePath.contains("nextStepReceiptCycleStart"))
+        XCTAssertTrue(savePath.contains(
+            "currentCycleStepReceiptDeferredUntilForeground = true"
+        ))
+        XCTAssertTrue(savePath.contains(
+            "reason: \"confirmed_sleep_cycle_changed\""
+        ))
+    }
+
     func testDashboardRevisionSchedulesWidgetRefreshWithoutRelaunch() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceURL = testsDirectory

@@ -1925,10 +1925,37 @@ enum AtriaWorkoutTargetMath {
 /// outside the latency-sensitive presentation transaction.
 @MainActor
 private final class AtriaLiveWorkoutMapSnapshotStore: ObservableObject {
+    private struct RenderInput: @unchecked Sendable {
+        let snapshot: MKMapSnapshotter.Snapshot
+        let segments: [[CLLocationCoordinate2D]]
+    }
+
+    private struct RenderOutput: @unchecked Sendable {
+        let image: UIImage
+    }
+
+    /// A live map is rendered only for the phone display. The previous
+    /// 780x1120-point image at 3x allocated ~31 MiB for the MapKit bitmap and
+    /// another ~31 MiB for the route composite on every refresh.
+    nonisolated static let liveSnapshotSize = CGSize(width: 390, height: 560)
+    nonisolated static let liveSnapshotScale: CGFloat = 2
+    nonisolated static let maximumLiveSnapshotPixelCount =
+        Int(liveSnapshotSize.width * liveSnapshotScale)
+        * Int(liveSnapshotSize.height * liveSnapshotScale)
+    private nonisolated static let renderQueue = DispatchQueue(
+        label: "com.adidshaft.atria.live-workout-map-render",
+        qos: .userInitiated
+    )
+
     @Published private(set) var image: UIImage?
+    private var snapshotter: MKMapSnapshotter?
+    private var renderGeneration: UInt = 0
 
     func refresh(segments: [[CLLocationCoordinate2D]],
-                 size: CGSize = CGSize(width: 780, height: 1_120)) async {
+                 size: CGSize = liveSnapshotSize) async {
+        renderGeneration &+= 1
+        let generation = renderGeneration
+        snapshotter?.cancel()
         let coordinates = segments.flatMap { $0 }
         let options = MKMapSnapshotter.Options()
         // A route fix can legitimately take tens of seconds indoors. Render a
@@ -1936,15 +1963,29 @@ private final class AtriaLiveWorkoutMapSnapshotStore: ObservableObject {
         // placeholder that looks broken, then recenter when coordinates land.
         options.region = Self.region(for: coordinates) ?? Self.locatingRegion
         options.size = size
-        options.scale = 3
+        options.scale = Self.liveSnapshotScale
         options.mapType = .mutedStandard
         options.traitCollection = UITraitCollection(userInterfaceStyle: .dark)
+        let request = MKMapSnapshotter(options: options)
+        snapshotter = request
         do {
-            let snapshot = try await MKMapSnapshotter(options: options).start()
-            guard !Task.isCancelled else { return }
-            image = Self.render(snapshot: snapshot, segments: segments)
+            let snapshot = try await request.start()
+            guard !Task.isCancelled,
+                  generation == renderGeneration,
+                  snapshotter === request else { return }
+            let rendered = await Self.renderOffMain(
+                RenderInput(snapshot: snapshot, segments: segments)
+            )
+            guard !Task.isCancelled,
+                  generation == renderGeneration,
+                  snapshotter === request else { return }
+            snapshotter = nil
+            image = rendered.image
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled,
+                  generation == renderGeneration,
+                  snapshotter === request else { return }
+            snapshotter = nil
             image = nil
         }
     }
@@ -1984,11 +2025,28 @@ private final class AtriaLiveWorkoutMapSnapshotStore: ObservableObject {
         span: MKCoordinateSpan(latitudeDelta: 115, longitudeDelta: 155)
     )
 
-    private static func render(
+    private nonisolated static func renderOffMain(
+        _ input: RenderInput
+    ) async -> RenderOutput {
+        await withCheckedContinuation { continuation in
+            renderQueue.async {
+                continuation.resume(returning: autoreleasepool {
+                    RenderOutput(image: render(snapshot: input.snapshot,
+                                               segments: input.segments))
+                })
+            }
+        }
+    }
+
+    private nonisolated static func render(
         snapshot: MKMapSnapshotter.Snapshot,
         segments: [[CLLocationCoordinate2D]]
     ) -> UIImage {
-        let renderer = UIGraphicsImageRenderer(size: snapshot.image.size)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = liveSnapshotScale
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: snapshot.image.size,
+                                               format: format)
         return renderer.image { context in
             snapshot.image.draw(at: .zero)
             let graphics = context.cgContext
@@ -2021,7 +2079,7 @@ private final class AtriaLiveWorkoutMapSnapshotStore: ObservableObject {
         }
     }
 
-    private static func marker(
+    private nonisolated static func marker(
         at point: CGPoint,
         color: UIColor,
         in context: CGContext

@@ -262,6 +262,12 @@ extension Metrics {
         AtriaAnalytics.TargetZones.sleepDuration(hours, goalHours: goalHours)
     }
 
+    static func sleepPerformanceZone(_ percent: Int?,
+                                     neededHours: Double? = nil) -> AtriaMetricZone? {
+        AtriaAnalytics.TargetZones.sleepPerformance(percent,
+                                                    neededHours: neededHours)
+    }
+
     static func stepsZone(_ steps: Int?, goal: Int = 8_000) -> AtriaMetricZone? {
         AtriaAnalytics.TargetZones.steps(steps, goal: goal)
     }

@@ -1174,8 +1174,9 @@ struct AtriaHomeView: View {
                                   preservesSensorStages: route.night != nil,
                                   evidenceNight: route.night,
                                   evidencePerformancePercent: route.night.map {
-                                      store.sleepHistorySnapshot.sleepPerformancePercent(for: $0,
-                                                                                         baseNeedHours: SessionStore.configuredSleepBaseNeedHours())
+                                      adaptiveSleepProjection(
+                                          for: $0
+                                      ).performancePercent
                                   },
                                   mode: route.night.map { $0.confirmed ? .edit : .review } ?? .add,
                                   onRemove: route.night.map { night in
@@ -3331,6 +3332,7 @@ struct AtriaHomeView: View {
             ),
             stepsCoverageFraction: dailySteps.coverageFraction,
             strain: model.heroStore.state.strain,
+            strainDetail: model.heroStore.state.strainDetail,
             strainCapturedAt: ble.lastAcceptedHeartRateAt,
             batteryLevel: displayableBatteryLevel,
             batteryCapturedAt: displayableBatteryLevel == nil ? nil : ble.lastVerifiedBatteryLevelAt,
@@ -4208,6 +4210,17 @@ struct AtriaHomeView: View {
                     rest: store.baseline.restingInt ?? 60,
                     source: "scene_foreground_deferred"
                 )
+                // The first live-HR widget publish can race the deferred
+                // confirmed-sleep projection load. Republish once after sleep
+                // settlement so widgets cannot retain the pre-merge/raw-span
+                // duration while Today already shows the canonical effective
+                // duration.
+                WidgetSnapshotPublisher.schedulePublish(
+                    store: store,
+                    ble: ble,
+                    reason: "scene_foreground_sleep_projection",
+                    delay: .milliseconds(80)
+                )
                 Task { await AtriaResearchUploadQueue.runForegroundCatchUpIfMissed(store: store) }
                 let lastJournalActivity = [store.behaviorJournalEntries.map(\.day).max(),
                                            store.journalAnswers.latestActivityDay()]
@@ -4599,7 +4612,7 @@ struct AtriaHomeView: View {
                 return Status(title: "Syncing strap history\(suffix)",
                               symbol: "arrow.triangle.2.circlepath",
                               accessibilityLabel: savedRecords > 0
-                                ? "History sync in progress. \(savedRecords) records durably saved; missing data is not yet verified."
+                                ? "History sync in progress. \(savedRecords) records durably saved in this recovery; missing data is not yet verified."
                                 : "History sync in progress. Missing data is not yet verified.")
             case .verified:
                 return Status(title: "Recovery verified",
@@ -4609,7 +4622,7 @@ struct AtriaHomeView: View {
                 let suffix = savedRecords > 0 ? " · \(savedRecords) saved" : ""
                 return Status(title: "Recovery partial\(suffix)",
                               symbol: "exclamationmark.triangle.fill",
-                              accessibilityLabel: "History sync saved \(savedRecords) records, but recovery of the missing interval is not verified.")
+                              accessibilityLabel: "This recovery saved \(savedRecords) records, but recovery of the missing interval is not verified.")
             case .needsAttention:
                 guard live.rangeLossBackfillPending else {
                     return liveProtectedStatus(live, now: now)
@@ -4686,16 +4699,19 @@ struct AtriaHomeView: View {
         )
         let sleepValue = sleep?.durationText ?? ""
         let sleepDetail = sleep?.confirmationText ?? "No sleep this cycle"
-        // Fill against the user's own sleep goal, not a hardcoded 8h — same key
-        // the Today sleep cards read (atria.target.sleep.goalHours).
-        let sleepGoalHours = (UserDefaults.standard.object(forKey: "atria.target.sleep.goalHours") as? Double) ?? 8.0
         let sleepIsConfirmedNight = sleep?.confirmed == true && sleep?.isNapEvidence != true
-        let sleepFill = sleepIsConfirmedNight ? sleep.map {
-            min(max($0.durationHours / max(sleepGoalHours, 1), 0), 1)
-        } : nil
-        let sleepZone = sleepIsConfirmedNight
-            ? Metrics.sleepDurationZone(sleep?.durationHours, goalHours: sleepGoalHours)
+        let sleepProjection = sleepIsConfirmedNight
+            ? sleep.map(adaptiveSleepProjection)
             : nil
+        let sleepFill = sleepProjection.map {
+            min(max(Double($0.performancePercent) / 100.0, 0), 1)
+        }
+        let sleepZone = sleepProjection.flatMap {
+            Metrics.sleepPerformanceZone(
+                $0.performancePercent,
+                neededHours: $0.needHours
+            )
+        }
         let recoveryPercent = hero.recoveryEstimate.percent
         let defaults = UserDefaults.standard
         let recoveryTarget = AtriaMetricTarget.recovery(
@@ -4765,7 +4781,7 @@ struct AtriaHomeView: View {
                                                                  tintHex: AtriaRingMetricProjection.achievementTintHex(fill: sleepFill),
                                                                  fill: sleepFill,
                                                                  stateTintHex: sleepZone.map { AtriaRingMetricProjection.zoneTintHex($0.level) },
-                                                                 targetFraction: sleepGoalHours.isFinite && sleepGoalHours > 0 ? 1.0 : nil),
+                                                                 targetFraction: sleepProjection == nil ? nil : 1.0),
                                   strain: AtriaShareSnapshot.Ring(title: "Strain",
                                                                   value: strainValue,
                                                                   detail: hero.strainDetail,
@@ -4779,6 +4795,39 @@ struct AtriaHomeView: View {
                                                                     ? AtriaRingMetricProjection.strainTargetFraction(hero.guidance.target)
                                                                     : nil),
                                   stats: stats)
+    }
+
+    /// Share and review must grade the same effective night against the same
+    /// adaptive need as Today: baseline + debt + prior strain - nap credit.
+    /// The configured duration goal remains a planning preference, not an
+    /// alternate scoring authority.
+    private func adaptiveSleepProjection(
+        for night: SleepHistorySnapshot.Night
+    ) -> (needHours: Double, performancePercent: Int) {
+        let calendar = Calendar.current
+        let priorDay = calendar.date(
+            byAdding: .day,
+            value: -1,
+            to: calendar.startOfDay(for: night.day)
+        )
+        let yesterdayStrain = priorDay.flatMap { day in
+            store.dailyRollupHistory.first {
+                calendar.isDate($0.day, inSameDayAs: day)
+            }?.strain
+        }
+        let need = store.sleepHistorySnapshot.sleepNeedHours(
+            for: night,
+            baseNeedHours: SessionStore.configuredSleepBaseNeedHours(),
+            yesterdayStrain: yesterdayStrain,
+            calendar: calendar
+        )
+        return (
+            needHours: need,
+            performancePercent: AtriaSleepBudget.performancePercent(
+                slept: night.durationHours,
+                needed: need
+            )
+        )
     }
 
     /// Share cards must never print a placeholder as if it were a measurement,

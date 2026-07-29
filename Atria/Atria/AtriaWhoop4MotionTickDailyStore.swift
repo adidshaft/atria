@@ -77,28 +77,26 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
             .map(Self.evidence)
     }
 
-    /// Every step surface must resolve the same persisted strap identity.
-    /// History verification is the strongest identity, while the saved link is
-    /// the durable reconnect identity available before/after that verification
-    /// is republished. Both are CoreBluetooth UUIDs for the same physical strap.
+    /// Every step surface must resolve the same current strap identity.
+    /// The saved link is updated on every successful connection and therefore
+    /// owns publication after replacement/re-pair. The verified-history
+    /// identity is only a fallback before a saved link exists; unioning two
+    /// different UUIDs could let a former strap masquerade as today's source.
     static func persistedStrapIdentifiers(
         defaults: UserDefaults = .standard
     ) -> [String] {
-        [
-            defaults.string(
-                forKey: AtriaBLEManager.OfflineSyncDefaults
-                    .verifiedHistoryPeripheralID
-            ),
-            defaults.string(
-                forKey: AtriaBLEManager.LinkDefaults.savedPeripheralUUID
-            ),
-        ]
-        .compactMap { $0.flatMap(canonicalStrapIdentifier) }
-        .reduce(into: []) { identifiers, identifier in
-            if !identifiers.contains(identifier) {
-                identifiers.append(identifier)
-            }
+        if let saved = defaults.string(
+            forKey: AtriaBLEManager.LinkDefaults.savedPeripheralUUID
+        ).flatMap(canonicalStrapIdentifier) {
+            return [saved]
         }
+        if let verified = defaults.string(
+            forKey: AtriaBLEManager.OfflineSyncDefaults
+                .verifiedHistoryPeripheralID
+        ).flatMap(canonicalStrapIdentifier) {
+            return [verified]
+        }
+        return []
     }
 
     /// Saves only stronger cumulative coverage evidence. Step totals may move
@@ -252,11 +250,13 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
 
     /// Resolves the strongest receipt that is safe for the active
     /// physiological cycle. An exact wake-boundary receipt retains exact-day
-    /// eligibility. A receipt beginning later in the same current civil day is
-    /// only a contained subset, so it is rebased as partial lower-bound
-    /// evidence with the uncovered prefix counted as missing. A receipt that
-    /// begins before the current wake boundary is never admitted because its
-    /// step subtotal may belong to the preceding cycle.
+    /// eligibility. A receipt beginning later in the same physiological cycle
+    /// is only a contained subset, so it is rebased as partial lower-bound
+    /// evidence with the uncovered prefix counted as missing. The receipt may
+    /// cross civil midnight: wake-to-wake ownership, not the calendar date at
+    /// presentation time, is authoritative. A receipt that begins before the
+    /// current wake boundary is never admitted because its step subtotal may
+    /// belong to the preceding cycle.
     func mergingCurrentCycleReceipt(
         into projectedDays: [AtriaHistoricalDailyConsumerProjection.StepDay],
         strapIdentifiers: [String],
@@ -281,8 +281,8 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
         let contained = candidates
             .filter {
                 $0.windowStart >= windowStart
-                    && calendar.isDate($0.windowStart, inSameDayAs: now)
-                    && calendar.isDate(now, inSameDayAs: $0.capturedThrough)
+                    && $0.windowStart <= now.addingTimeInterval(5)
+                    && $0.capturedThrough >= $0.windowStart
             }
             .max(by: Self.isWeaker)
         guard let record = exact ?? contained else {

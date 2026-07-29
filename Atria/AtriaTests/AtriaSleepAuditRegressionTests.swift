@@ -270,6 +270,26 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
             baselineRestingIsTrusted: false,
             baselineRestingIsNearTrusted: true
         ), "a 13-day near-trusted baseline may admit only this strict fragmented-HR tier")
+
+        let withoutTrustedBaseline = SessionStore.autoSleepClassification(
+            for: candidate,
+            baselineRestingIsTrusted: false,
+            baselineRestingIsNearTrusted: false
+        )
+        XCTAssertEqual(withoutTrustedBaseline.source, "sleep_review_hr_only")
+        XCTAssertEqual(withoutTrustedBaseline.confidence, "low")
+        XCTAssertFalse(withoutTrustedBaseline.allowsAutomaticPersistence,
+                       "review-only classification must never become a saved sleep")
+
+        let withNearTrustedBaseline = SessionStore.autoSleepClassification(
+            for: candidate,
+            baselineRestingIsTrusted: false,
+            baselineRestingIsNearTrusted: true
+        )
+        XCTAssertEqual(withNearTrustedBaseline.source, "auto_confirmed_sleep_hr_only")
+        XCTAssertEqual(withNearTrustedBaseline.confidence, "provisional")
+        XCTAssertTrue(withNearTrustedBaseline.allowsAutomaticPersistence,
+                      "the persistence label must agree with the strict baseline-aware gate")
     }
 
     func testPhysicalMorningShapeQueuesSeparateResumedSleepAfterMainSettlement() throws {
@@ -421,6 +441,185 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
             calendar: Self.indiaCalendar,
             historicalMotionPolicy: .sessionOnly
         ).contains { $0.kind == "resumed_sleep_candidate" })
+    }
+
+    func testDenseHROnlyPostWakeWindowSurfacesAsSeparateReviewWithoutBridgingGap() throws {
+        let mainStart = date(2032, 1, 1, 22, 52, 49, timeZoneIdentifier: "Asia/Kolkata")
+        let mainEnd = date(2032, 1, 2, 6, 14, 37, timeZoneIdentifier: "Asia/Kolkata")
+        let main = denseHRRRSession(
+            start: mainStart,
+            end: mainEnd,
+            bpm: 61,
+            eventTimeZoneIdentifier: "Asia/Kolkata"
+        )
+
+        // Exact physical July 29 journal shape: the resumed episode arrived in
+        // two all-day-wear sessions separated by a 6m28s reconnect seam. The
+        // first carried 4,126 accepted HR samples and one 81.86s accepted-HR
+        // seam. The second carried 6,766 samples, stayed open after wake, then
+        // recorded a sustained active transition beginning in the 14:35 bin.
+        // None of its RR was reference-qualified and no motion was validated.
+        let resumedStart = date(2032, 1, 2, 12, 19, 7, timeZoneIdentifier: "Asia/Kolkata")
+        let firstEnd = date(2032, 1, 2, 13, 27, 23, timeZoneIdentifier: "Asia/Kolkata")
+        let secondStart = date(2032, 1, 2, 13, 33, 51, timeZoneIdentifier: "Asia/Kolkata")
+        let journalEnd = date(2032, 1, 2, 15, 28, 16, timeZoneIdentifier: "Asia/Kolkata")
+        let wakeBoundary = date(2032, 1, 2, 14, 35, timeZoneIdentifier: "Asia/Kolkata")
+        let quietAwakeStart = date(2032, 1, 2, 14, 55, timeZoneIdentifier: "Asia/Kolkata")
+        let acceptedGap: TimeInterval = 81.85544097423553
+        let acceptedGapStart: TimeInterval = 34 * 60
+        let firstObservedSpan = firstEnd.timeIntervalSince(resumedStart) - acceptedGap
+        let firstPoints = (0..<4_126).map { index -> SavedSession.Point in
+            let observedOffset = firstObservedSpan * Double(index) / Double(4_125)
+            let offset = observedOffset > acceptedGapStart
+                ? observedOffset + acceptedGap
+                : observedOffset
+            let bpm: Int
+            if index.isMultiple(of: 211) {
+                bpm = 108
+            } else if index.isMultiple(of: 17) {
+                bpm = 69
+            } else {
+                bpm = 60
+            }
+            return SavedSession.Point(t: offset, bpm: bpm)
+        }
+        var firstAllDayWear = SavedSession(
+            id: UUID(),
+            start: resumedStart,
+            end: firstEnd,
+            label: "All-day wear",
+            points: firstPoints,
+            eventTimeZoneIdentifier: "Asia/Kolkata"
+        )
+        firstAllDayWear.hrMaxAcceptedGap = acceptedGap
+
+        let secondDuration = journalEnd.timeIntervalSince(secondStart)
+        let secondPoints = (0..<6_766).map { index -> SavedSession.Point in
+            let offset = secondDuration * Double(index) / Double(6_765)
+            let sampleDate = secondStart.addingTimeInterval(offset)
+            let bpm: Int
+            if sampleDate >= wakeBoundary && sampleDate < quietAwakeStart {
+                bpm = index.isMultiple(of: 9) ? 124 : 95
+            } else if sampleDate >= quietAwakeStart {
+                bpm = index.isMultiple(of: 31) ? 78 : 61
+            } else if index.isMultiple(of: 41) {
+                bpm = 82
+            } else {
+                bpm = 60
+            }
+            return SavedSession.Point(t: offset, bpm: bpm)
+        }
+        let secondAllDayWear = SavedSession(
+            id: UUID(),
+            start: secondStart,
+            end: journalEnd,
+            label: "All-day wear",
+            points: secondPoints,
+            eventTimeZoneIdentifier: "Asia/Kolkata"
+        )
+
+        let sessions = [main, firstAllDayWear, secondAllDayWear]
+        let candidates = SessionStore.aggregateSleepCandidates(
+            in: sessions,
+            rest: 56,
+            maxHR: 190,
+            calendar: Self.indiaCalendar,
+            historicalMotionPolicy: .sessionOnly
+        )
+        let mainCandidate = try XCTUnwrap(candidates.first {
+            $0.kind == "overnight_sleep"
+        })
+        let resumed = try XCTUnwrap(candidates.first {
+            $0.kind == "resumed_sleep_candidate"
+        })
+
+        XCTAssertEqual(resumed.start, resumedStart)
+        XCTAssertEqual(resumed.end, wakeBoundary)
+        XCTAssertEqual(resumed.sessions, 2)
+        XCTAssertEqual(
+            resumed.duration,
+            firstEnd.timeIntervalSince(resumedStart)
+                + wakeBoundary.timeIntervalSince(secondStart),
+            accuracy: 1,
+            "the reconnect seam and post-wake quiet journal tail must receive zero sleep credit"
+        )
+        XCTAssertEqual(
+            resumed.span - resumed.duration,
+            secondStart.timeIntervalSince(firstEnd),
+            accuracy: 1
+        )
+        XCTAssertEqual(resumed.maxGap, secondStart.timeIntervalSince(firstEnd), accuracy: 1)
+        XCTAssertEqual(resumed.maximumHRSampleGap,
+                       secondStart.timeIntervalSince(firstEnd),
+                       accuracy: 2)
+        XCTAssertGreaterThan(resumed.start.timeIntervalSince(mainCandidate.end), 6 * 60 * 60)
+        XCTAssertEqual(resumed.motionEvidenceSource, "strap_hr_review_only")
+        XCTAssertFalse(resumed.motionEvidenceValidated)
+        XCTAssertFalse(SessionStore.isAutoConfirmableMainSleepCandidate(
+            resumed,
+            baselineRestingIsTrusted: true
+        ))
+        XCTAssertFalse(SessionStore.autoSleepClassification(
+            for: resumed,
+            baselineRestingIsTrusted: true
+        ).allowsAutomaticPersistence)
+
+        let confirmedMain = UserConfirmedSleep(
+            id: "physical-main",
+            createdAt: mainEnd,
+            start: mainStart,
+            end: mainEnd,
+            source: "sleep_window",
+            confidence: "user_confirmed_hr_only",
+            sessions: 1,
+            samples: main.points.count,
+            avgHR: 61,
+            peakHR: 61,
+            restingHR: 56,
+            hrv: 50,
+            hrvWindowCount: 3,
+            duration: main.duration,
+            span: main.duration,
+            reason: "confirmed after review",
+            motionSource: "user_review",
+            motionValidated: false,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: "Asia/Kolkata"
+        )
+        let review = try XCTUnwrap(SessionStore.makeSleepReviewNightForCache(
+            snapshot: .empty,
+            canonicalSessions: sessions,
+            confirmedSleeps: [confirmedMain],
+            dismissedCandidates: [
+                AtriaDismissedSleepCandidate(start: mainStart, end: mainEnd)
+            ],
+            rest: 56,
+            maxHR: 190,
+            calendar: Self.indiaCalendar
+        ))
+        XCTAssertEqual(review.source, "resumed_sleep_candidate")
+        XCTAssertEqual(review.start, resumedStart)
+        XCTAssertEqual(review.end, wakeBoundary)
+        XCTAssertEqual(review.duration, resumed.duration, accuracy: 1)
+        XCTAssertFalse(review.confirmed)
+
+        var unboundedGap = SavedSession(
+            id: UUID(),
+            start: resumedStart,
+            end: firstEnd,
+            label: "All-day wear",
+            points: firstPoints,
+            eventTimeZoneIdentifier: "Asia/Kolkata"
+        )
+        unboundedGap.hrMaxAcceptedGap = 91
+        XCTAssertFalse(SessionStore.aggregateSleepCandidates(
+            in: [main, unboundedGap],
+            rest: 56,
+            maxHR: 190,
+            calendar: Self.indiaCalendar,
+            historicalMotionPolicy: .sessionOnly
+        ).contains { $0.kind == "resumed_sleep_candidate" },
+        "a resumed-sleep review may tolerate the physical 81.86s reconnect seam, but not a >90s accepted-HR outage")
     }
 
     func testConfirmedResumedSleepAddsOnlyObservedDurationToCycle() throws {
@@ -631,7 +830,19 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertEqual(durableResumed.end, resumedEnd)
         XCTAssertNotEqual(durableMain.id, durableResumed.id)
 
-        let projected = try XCTUnwrap(store.sleepHistorySnapshot.latestMainSleep)
+        // Other tests intentionally persist future-dated sleeps in the shared
+        // simulator container. Scope this projection to the two records created
+        // above so the regression proves resumed-sleep semantics rather than
+        // whichever unrelated fixture has the latest date.
+        let projected = try XCTUnwrap(
+            SleepHistorySnapshot(
+                rollups: [],
+                confirmedSleeps: store.confirmedSleeps.filter {
+                    $0.id == main.id || $0.id == resumed.id
+                },
+                calendar: Self.indiaCalendar
+            ).latestMainSleep
+        )
         XCTAssertEqual(projected.start, mainStart)
         XCTAssertEqual(projected.end, resumedEnd)
         XCTAssertEqual(

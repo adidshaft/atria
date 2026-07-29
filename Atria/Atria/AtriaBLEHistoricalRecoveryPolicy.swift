@@ -412,12 +412,15 @@ extension AtriaBLEManager {
         existing: PendingOfflineHistoricalSyncRequest?,
         reason: String,
         force: Bool,
-        explicitRequest: Bool
+        explicitRequest: Bool,
+        explicitPostWorkoutBankRequest: Bool = false
     ) -> PendingOfflineHistoricalSyncRequest {
         guard let existing else {
             return .init(reason: reason,
                          force: force,
-                         explicitRequest: explicitRequest)
+                         explicitRequest: explicitRequest,
+                         explicitPostWorkoutBankRequest:
+                            explicitPostWorkoutBankRequest)
         }
         let incomingPriority = (explicitRequest ? 2 : 0) + (force ? 1 : 0)
         let existingPriority = (existing.explicitRequest ? 2 : 0)
@@ -427,7 +430,10 @@ extension AtriaBLEManager {
                 ? reason
                 : existing.reason,
             force: existing.force || force,
-            explicitRequest: existing.explicitRequest || explicitRequest
+            explicitRequest: existing.explicitRequest || explicitRequest,
+            explicitPostWorkoutBankRequest:
+                existing.explicitPostWorkoutBankRequest
+                    || explicitPostWorkoutBankRequest
         )
     }
 

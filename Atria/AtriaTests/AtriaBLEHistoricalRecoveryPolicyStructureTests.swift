@@ -175,6 +175,246 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         ))
     }
 
+    func testTerminalJournalDoesNotStarveDurableMotionBankOffload() {
+        typealias Status =
+            AtriaHistoricalFullDrainCoverageStore.Authority.Status
+        typealias Disposition =
+            AtriaBLEManager.TerminalHistoryRequestDisposition
+
+        for status in [
+            Status.historyComplete,
+            .coverageProven,
+            .gapResolvedConsumersPending,
+            .consumersCommitted
+        ] {
+            XCTAssertEqual(
+                AtriaBLEManager.terminalHistoryRequestDisposition(
+                    authorityStatus: status,
+                    explicitPostWorkoutBankRequest: false
+                ),
+                Disposition.resumeLocalPublicationAndReturn
+            )
+            XCTAssertEqual(
+                AtriaBLEManager.terminalHistoryRequestDisposition(
+                    authorityStatus: status,
+                    explicitPostWorkoutBankRequest: true
+                ),
+                Disposition.resumeLocalPublicationAndContinueMotionBank
+            )
+        }
+
+        for status in [Status.draining, .resolved] {
+            XCTAssertEqual(
+                AtriaBLEManager.terminalHistoryRequestDisposition(
+                    authorityStatus: status,
+                    explicitPostWorkoutBankRequest: false
+                ),
+                Disposition.continueNormally
+            )
+            XCTAssertEqual(
+                AtriaBLEManager.terminalHistoryRequestDisposition(
+                    authorityStatus: status,
+                    explicitPostWorkoutBankRequest: true
+                ),
+                Disposition.continueNormally
+            )
+        }
+    }
+
+    func testTerminalJournalMotionBankExceptionStaysInsideNormalAdmissionGates() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria")
+        let manager = try String(
+            contentsOf: appDirectory.appendingPathComponent(
+                "AtriaBLEManager.swift"
+            ),
+            encoding: .utf8
+        )
+        let requestStart = try XCTUnwrap(manager.range(
+            of: "func requestOfflineHistoricalSyncIfNeeded("
+        )?.lowerBound)
+        let requestEnd = try XCTUnwrap(manager.range(
+            of: "private func armHistoryCapabilityQualification(",
+            range: requestStart..<manager.endIndex
+        )?.lowerBound)
+        let request = String(manager[requestStart..<requestEnd])
+
+        let terminalPassThrough = try XCTUnwrap(request.range(
+            of: "terminal_publication_parallel_motion_bank"
+        ))
+        let thermalGate = try XCTUnwrap(request.range(
+            of: "shouldDeferAutomaticOfflineSyncForThermalPressure"
+        ))
+        let transportAdmission = try XCTUnwrap(request.range(
+            of: "beginFreshHistoryOwnerCutover(reason: reason)"
+        ))
+        XCTAssertLessThan(terminalPassThrough.lowerBound, thermalGate.lowerBound)
+        XCTAssertLessThan(terminalPassThrough.lowerBound, transportAdmission.lowerBound)
+        XCTAssertTrue(request.contains(
+            "explicitPostWorkoutBankRequest: explicitPostWorkoutBankRequest"
+        ))
+        XCTAssertFalse(request.contains(
+            "explicitUserRequest\n                ? .resumeLocalPublicationAndContinueMotionBank"
+        ))
+        XCTAssertFalse(request.contains(
+            "explicitResearchRequest\n                ? .resumeLocalPublicationAndContinueMotionBank"
+        ))
+    }
+
+    func testFreshOwnerCutoverCarriesMotionBankAuthorityAcrossDisconnect() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria")
+        let manager = try String(
+            contentsOf: appDirectory.appendingPathComponent(
+                "AtriaBLEManager.swift"
+            ),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(manager.contains(
+            "explicitPostWorkoutBankRequest:\n                    explicitPostWorkoutBankRequest"
+        ))
+        XCTAssertTrue(manager.contains(
+            "explicitPostWorkoutBankRequest\n                    || transientMotionBankRequestAuthorization"
+        ))
+        XCTAssertTrue(manager.contains(
+            "explicitPostWorkoutBankRequest:\n                            pending.explicitPostWorkoutBankRequest"
+        ))
+    }
+
+    func testTerminalDependencyMismatchIsCachedBeforeTheGeneralArchiveFailure() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria")
+        let manager = try String(
+            contentsOf: appDirectory.appendingPathComponent(
+                "AtriaBLEManager.swift"
+            ),
+            encoding: .utf8
+        )
+        let materializationStart = try XCTUnwrap(manager.range(
+            of: "private func scheduleFullDrainConsumerMaterialization("
+        )?.lowerBound)
+        let materializationEnd = try XCTUnwrap(manager.range(
+            of: "private func finishHistoricalConsumerMaterialization(",
+            range: materializationStart..<manager.endIndex
+        )?.lowerBound)
+        let materialization = String(
+            manager[materializationStart..<materializationEnd]
+        )
+
+        let mismatchCatch = try XCTUnwrap(materialization.range(
+            of: "catch AtriaHistoricalConsumerProjectionCoordinator"
+        ))
+        let generalCatch = try XCTUnwrap(materialization.range(
+            of: "} catch {",
+            range: mismatchCatch.upperBound..<materialization.endIndex
+        ))
+        XCTAssertLessThan(mismatchCatch.lowerBound, generalCatch.lowerBound)
+        XCTAssertTrue(materialization.contains(
+            "CoordinatorError.pendingDependencyMismatch"
+        ))
+        XCTAssertTrue(materialization.contains(
+            "terminalConsumerDependencyMismatchKey"
+        ))
+        XCTAssertTrue(materialization.contains(
+            "terminalConsumerDependencyMismatchAtKey"
+        ))
+        XCTAssertTrue(materialization.contains(
+            "terminal_dependency_model_mismatch"
+        ))
+        XCTAssertTrue(materialization.contains(
+            "scheduleTerminalConsumerDependencyRetry()"
+        ))
+    }
+
+    func testCachedTerminalDependencyMismatchReleasesArchiveLaneBeforeRescan() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria")
+        let manager = try String(
+            contentsOf: appDirectory.appendingPathComponent(
+                "AtriaBLEManager.swift"
+            ),
+            encoding: .utf8
+        )
+        let resumeStart = try XCTUnwrap(manager.range(
+            of: "func resumePendingFullDrainPublicationIfNeeded("
+        )?.lowerBound)
+        let resumeEnd = try XCTUnwrap(manager.range(
+            of: "nonisolated static func shouldRunTerminalConsumerMaterialization(",
+            range: resumeStart..<manager.endIndex
+        )?.lowerBound)
+        let resume = String(manager[resumeStart..<resumeEnd])
+
+        let mismatchFingerprint = try XCTUnwrap(resume.range(
+            of: "terminalConsumerDependencyFingerprint("
+        ))
+        let materialization = try XCTUnwrap(resume.range(
+            of: "scheduleFullDrainConsumerMaterialization("
+        ))
+        XCTAssertLessThan(
+            mismatchFingerprint.lowerBound,
+            materialization.lowerBound
+        )
+        XCTAssertTrue(resume.contains(
+            "pending_dependency_model_mismatch_cached"
+        ))
+        XCTAssertTrue(resume.contains(
+            "terminal_consumer_dependency_incompatible"
+        ))
+    }
+
+    func testTerminalDependencyMismatchBackoffExpiresAndModelChangesRetry() {
+        let now = Date(timeIntervalSince1970: 10_000)
+
+        XCTAssertTrue(
+            AtriaBLEManager.shouldSuppressTerminalConsumerDependencyRetry(
+                cachedFingerprint: "model-v2|gap",
+                currentFingerprint: "model-v2|gap",
+                cachedAt: now.addingTimeInterval(-60),
+                now: now,
+                retryInterval: 15 * 60
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldSuppressTerminalConsumerDependencyRetry(
+                cachedFingerprint: "model-v2|gap",
+                currentFingerprint: "model-v2|gap",
+                cachedAt: now.addingTimeInterval(-(15 * 60)),
+                now: now,
+                retryInterval: 15 * 60
+            ),
+            "an unchanged durable terminal journal must get a bounded retry"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldSuppressTerminalConsumerDependencyRetry(
+                cachedFingerprint: "model-v1|gap",
+                currentFingerprint: "model-v2|gap",
+                cachedAt: now,
+                now: now,
+                retryInterval: 15 * 60
+            ),
+            "a publication-model change must invalidate the old mismatch"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldSuppressTerminalConsumerDependencyRetry(
+                cachedFingerprint: "model-v2|gap",
+                currentFingerprint: "model-v2|gap",
+                cachedAt: nil,
+                now: now,
+                retryInterval: 15 * 60
+            ),
+            "legacy fingerprints without a bounded lease cannot block forever"
+        )
+    }
+
     func testNoRowsFingerprintSuppressesOnlyAutomaticRetryForUnchangedGap() {
         let fingerprint = "gap-v1"
 

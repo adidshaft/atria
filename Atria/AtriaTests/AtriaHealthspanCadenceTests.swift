@@ -81,7 +81,7 @@ final class AtriaHealthspanCadenceTests: XCTestCase {
         let card = try String(contentsOf: appURL.appendingPathComponent("AtriaHealthScreen.swift"),
                               encoding: .utf8)
         XCTAssertTrue(card.contains("if let qualifier = summary.earlyEstimateQualifierText"))
-        XCTAssertTrue(card.contains("guard summary.isReady, !summary.isEarlyEstimate else { return .orange }"))
+        XCTAssertTrue(card.contains("guard !summary.isEarlyEstimate else { return .orange }"))
 
         let detail = try String(contentsOf: appURL.appendingPathComponent("AtriaHealthspanDetailView.swift"),
                                 encoding: .utf8)

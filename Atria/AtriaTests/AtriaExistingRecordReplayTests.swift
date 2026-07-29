@@ -133,19 +133,64 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
         return value
     }
 
-    private var pulledSessionsURL: URL {
+    private var replayEvidenceRoot: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("logs/live-device/morning-verification-20260718T080323Z/sessions.json")
+    }
+
+    private var pulledSessionsURL: URL {
+        let preferred = replayEvidenceRoot
+            .appendingPathComponent(
+                "logs/live-device/morning-verification-20260718T080323Z/sessions.json"
+            )
+        guard !FileManager.default.fileExists(atPath: preferred.path) else {
+            return preferred
+        }
+        return replayEvidenceRoot.appendingPathComponent(
+            "logs/live-device/detection-audit-20260717T193738Z/sessions.json"
+        )
     }
 
     private var pulledPreferencesURL: URL {
-        pulledSessionsURL.deletingLastPathComponent().appendingPathComponent("preferences.plist")
+        let preferred = replayEvidenceRoot
+            .appendingPathComponent(
+                "logs/live-device/morning-verification-20260718T080323Z/preferences.plist"
+            )
+        guard !FileManager.default.fileExists(atPath: preferred.path) else {
+            return preferred
+        }
+        return replayEvidenceRoot.appendingPathComponent(
+            "logs/live-device/desk-p0b-explicit-workout-forced-reconnect-20260717T192831Z/preferences.plist"
+        )
+    }
+
+    private func pulledSessionsJSON() throws -> Data {
+        guard FileManager.default.fileExists(atPath: pulledSessionsURL.path) else {
+            throw XCTSkip(
+                "External physical replay corpus is not present in this checkout."
+            )
+        }
+        return try Data(contentsOf: pulledSessionsURL)
+    }
+
+    private func requireMorningVerificationCorpus() throws {
+        guard pulledSessionsURL.path.contains(
+            "morning-verification-20260718T080323Z"
+        ) else {
+            throw XCTSkip(
+                "This assertion requires the later July 18 morning-verification corpus."
+            )
+        }
     }
 
     private func persistedConfirmedSleepsJSON() throws -> Data {
+        guard FileManager.default.fileExists(atPath: pulledPreferencesURL.path) else {
+            throw XCTSkip(
+                "External physical replay preferences are not present in this checkout."
+            )
+        }
         let plist = try Data(contentsOf: pulledPreferencesURL)
         let object = try PropertyListSerialization.propertyList(from: plist, format: nil)
         let dictionary = try XCTUnwrap(object as? [String: Any])
@@ -155,7 +200,7 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
     private func capturedOvernightSessions(endingYear year: Int,
                                            month: Int,
                                            day: Int) throws -> [SavedSession] {
-        let data = try Data(contentsOf: pulledSessionsURL)
+        let data = try pulledSessionsJSON()
         let all = try JSONDecoder().decode([SavedSession].self, from: data)
         let localNoon = try XCTUnwrap(calendar.date(from: DateComponents(year: year,
                                                                          month: month,
@@ -265,7 +310,7 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
     }
 
     func testPulledArchiveReplaysDeterministicallyWithoutExternalMotion() throws {
-        let data = try Data(contentsOf: pulledSessionsURL)
+        let data = try pulledSessionsJSON()
         let sessions = try JSONDecoder().decode([SavedSession].self, from: data)
         let now = Date(timeIntervalSinceReferenceDate: 805_702_080 + 60 * 60)
 
@@ -291,7 +336,7 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
     }
 
     func testPulledConfirmedBoundaryAnchorsAndShowsLimitedRecoveryWithoutUnqualifiedHRV() throws {
-        let data = try Data(contentsOf: pulledSessionsURL)
+        let data = try pulledSessionsJSON()
         _ = try JSONDecoder().decode([SavedSession].self, from: data)
         let now = Date(timeIntervalSinceReferenceDate: 805_702_080 + 60 * 60)
         let result = try AtriaExistingRecordReplay.run(sessionsJSON: data,
@@ -321,7 +366,7 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
     }
 
     func testJuly8IsolatedLegacyMotionFragmentCannotValidateWholeSleep() throws {
-        let data = try Data(contentsOf: pulledSessionsURL)
+        let data = try pulledSessionsJSON()
         let recordedEnd = Date(timeIntervalSinceReferenceDate: 805_179_279.049116)
         let result = try AtriaExistingRecordReplay.run(
             sessionsJSON: data,
@@ -339,7 +384,7 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
     }
 
     func testRemovingRRDoesNotManufactureHRVOrRecoveryInput() throws {
-        let data = try Data(contentsOf: pulledSessionsURL)
+        let data = try pulledSessionsJSON()
         var sessions = try JSONDecoder().decode([SavedSession].self, from: data)
         sessions = sessions.map { session in
             var copy = session
@@ -361,7 +406,8 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
     }
 
     func testLatestJuly18AwakeRecordsDoNotAutoConfirmAsSleep() throws {
-        let data = try Data(contentsOf: pulledSessionsURL)
+        try requireMorningVerificationCorpus()
+        let data = try pulledSessionsJSON()
         let all = try JSONDecoder().decode([SavedSession].self, from: data)
         let recent = all.filter { $0.start.timeIntervalSinceReferenceDate >= 806_006_000 }
         let recentData = try JSONEncoder().encode(recent)
@@ -420,6 +466,7 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
     }
 
     func testJuly18CapturedNightKeepsQualifiedHRVSeparateFromFragmentedWear() throws {
+        try requireMorningVerificationCorpus()
         try assertHonestRejectedNight(year: 2026,
                                       month: 7,
                                       day: 18,

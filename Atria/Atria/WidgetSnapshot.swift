@@ -128,6 +128,7 @@ enum WidgetSnapshotPublisher {
                                          stepsCompleteness: String? = nil,
                                          stepsCoverageFraction: Double? = nil,
                                          strain: Double,
+                                         strainDetail: String? = nil,
                                          strainCapturedAt: Date? = nil,
                                          batteryLevel: Int?,
                                          batteryCapturedAt: Date? = nil,
@@ -166,6 +167,7 @@ enum WidgetSnapshotPublisher {
                 stepsCompleteness: stepsCompleteness,
                 stepsCoverageFraction: stepsCoverageFraction,
                 strain: strain,
+                strainDetail: strainDetail,
                 strainCapturedAt: strainCapturedAt,
                 batteryLevel: batteryLevel,
                 batteryCapturedAt: batteryCapturedAt,
@@ -203,6 +205,7 @@ enum WidgetSnapshotPublisher {
         stepsCompleteness: String? = nil,
         stepsCoverageFraction: Double? = nil,
         strain: Double,
+        strainDetail: String? = nil,
         strainCapturedAt: Date? = nil,
         batteryLevel: Int?,
         batteryCapturedAt: Date? = nil,
@@ -219,11 +222,14 @@ enum WidgetSnapshotPublisher {
             recoveryConfidence: current.recoveryConfidence,
             recoveryDetail: current.recoveryDetail,
             strain: strain,
-            strainDetail: strainCapturedAt == nil
-                ? current.strainDetail
-                : (current.strainDetail?.localizedCaseInsensitiveContains("partial") == true && strain < 1
-                    ? current.strainDetail
-                    : "Current cycle"),
+            // A live patch may update the numeric lower bound, but it cannot
+            // upgrade the evidence authority established by the full daily
+            // projection. Preserve an existing partial marker unless the
+            // caller explicitly supplies an equally conservative detail.
+            strainDetail: mergedLiveStrainDetail(
+                previous: current.strainDetail,
+                next: strainDetail
+            ),
             strainCapturedAt: cumulativeStrainCaptureDate(
                 previousValue: current.strain,
                 previousCapturedAt: current.strainCapturedAt,
@@ -266,6 +272,23 @@ enum WidgetSnapshotPublisher {
             widgetTargetPresent: current.widgetTargetPresent,
             complicationTargetPresent: current.complicationTargetPresent
         )
+    }
+
+    /// A pulse-time patch may make an already-qualified cumulative value more
+    /// current, but it cannot prove that missing all-day HR coverage appeared.
+    /// Only a full projection rebuild owns that upgrade.
+    nonisolated static func mergedLiveStrainDetail(
+        previous: String?,
+        next: String?
+    ) -> String? {
+        let previousIsPartial =
+            previous?.localizedCaseInsensitiveContains("partial") == true
+        let nextIsPartial =
+            next?.localizedCaseInsensitiveContains("partial") == true
+        if previousIsPartial, !nextIsPartial {
+            return previous
+        }
+        return next ?? previous
     }
 
     /// Coalesces publisher bursts and lets scene/UI transitions commit before
@@ -459,16 +482,44 @@ enum WidgetSnapshotPublisher {
                                store: store,
                                ble: ble,
                                rest: rest ?? 60)
-        // Mirrors AtriaHomeModel.strainConfidence's "learning" guard: strain is
-        // only credible with real resting-HR evidence and a usable max HR.
-        let strainIsCredible = rest != nil && store.profile.maxHR > (rest ?? 60)
-        let strainIsPartial = strainIsCredible
-            && AtriaWorkoutMetricPresentation.cycleStrainIsIncomplete(
+        let wearCoverage = AtriaHomeModel.dayWearCoverageFraction(
+            observedSeconds: AtriaHomeModel.observedHeartRateUnionSeconds(
+                sessions: store.sessions,
+                windowStart: savedAggregate.day,
+                windowEnd: now
+            )
+                + Double(ble.session.count),
+            dayElapsedSeconds: now.timeIntervalSince(savedAggregate.day)
+        )
+        var strainConfidence = AtriaHomeModel.strainConfidence(
+            hasRestingHeartRateEvidence: rest != nil,
+            maxHRSource: store.profile.maxHRSource,
+            hasLoadEvidence:
+                savedAggregate.hasSavedToday || ble.session.count >= 60,
+            resolvedRest: rest ?? 60,
+            maxHR: store.profile.maxHR,
+            wearCoverageFraction: wearCoverage
+        )
+        if AtriaWorkoutMetricPresentation.cycleStrainIsIncomplete(
                 start: physiologicalCycle.start,
                 end: now,
                 strain: strain,
                 workouts: store.confirmedWorkouts
-            )
+           ), !strainConfidence.localizedCaseInsensitiveContains("partial") {
+            strainConfidence += " · partial sparse HR"
+        }
+        let strainIsCredible =
+            !strainConfidence.localizedCaseInsensitiveContains("learning")
+                && !strainConfidence.localizedCaseInsensitiveContains("standby")
+        let strainIsPartial =
+            strainConfidence.localizedCaseInsensitiveContains("partial")
+        let strainDetail: String? = strainIsCredible
+            ? (strainIsPartial
+                ? wearCoverage.map {
+                    "Partial · \(Int(($0 * 100).rounded()))% wear"
+                } ?? "Partial · sparse HR"
+                : "Current cycle")
+            : nil
         let strapStepsToday = AtriaHomeModel.mergedStrapStepResearchCount(
             savedToday: savedAggregate.savedTodayStrapSteps,
             savedActiveSession: savedAggregate.savedActiveSessionStrapSteps,
@@ -573,9 +624,7 @@ enum WidgetSnapshotPublisher {
                                       recoveryConfidence: widgetRecovery.confidence.rawValue,
                                       recoveryDetail: widgetRecovery.detail,
                                       strain: strain,
-                                      strainDetail: strainIsCredible
-                                        ? (strainIsPartial ? "Partial · sparse HR" : "Current cycle")
-                                        : nil,
+                                      strainDetail: strainDetail,
                                       // `dayStrain` was recomputed immediately
                                       // above; this is its true computation
                                       // clock, not a generic snapshot fallback.

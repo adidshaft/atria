@@ -2722,6 +2722,282 @@ POSITIVE STILL REQUIRED**
   night must persist automatically and publish its dependent day metrics
   before this failure is closed.
 
+#### 2026-07-29 — 0x69 recovery feedback loop across intentional history cutovers
+
+- **Physical observation:** after the first durable motion-bank exception was
+  allowed through terminal full-drain publication, the locked iPhone began an
+  approximately one-minute reconnect cycle. Each fresh accepted-HR callback
+  opened a new 0x69 bank and immediately retried an older ticket. The
+  intentional fresh-history-owner cutover then disconnected BLE and closed
+  that seconds-long bank into another pending ticket. The queue grew even
+  though live HR recovered after every cutover.
+- **Coverage correction:** persisted open-bank coverage is now scoped to one
+  physical BLE connection epoch. A real `didDisconnect` closes the bank at the
+  transport boundary. On process relaunch, an orphaned open bank is retired
+  only through the last durably recorded raw-HR observation. Legacy tickets
+  that crossed connection epochs are clipped to their recorded connection
+  start; an unprovable epoch is dropped instead of inventing coverage.
+- **Retry correction:** an already-closed ticket gets first refusal on a fresh
+  accepted-HR connection before any new bank is armed. In background/locked
+  state, an unattempted ticket receives one transport attempt, but an attempted
+  ticket cannot retry until foreground evaluation can decide whether its
+  durable rows qualify. Live HR then owns the link while one new bank remains
+  open and grows; an intentional history cutover can no longer manufacture its
+  own next ticket.
+- **Physical acceptance:** signed Release installed in place with data and
+  pairing preserved. Across a locked 154.6-second soak, accepted strap samples
+  increased from 151,873 to 152,034; `ble_link_disconnects` remained 896,
+  offline-sync attempts remained 1,189, pending motion tickets remained 21,
+  the same `openStart` remained active, the segmented journal stayed fresh,
+  and final packet age was 0.7 seconds. Evidence:
+  `/tmp/atria-runtime-bank-loopfix-start-20260729-PLHX55` and
+  `/tmp/atria-runtime-bank-loopfix-accept-20260729-8lnNTP`.
+- **Scope:** this physically closes the retry-feedback-loop regression only.
+  The retained tickets still require foreground qualification and a truthful
+  current-cycle receipt before all-day strap steps can be accepted.
+
+#### 2026-07-29 — wake-to-wake step receipts must survive civil midnight
+
+- **Demonstrated boundary failure:** the durable receipt fallback admitted a
+  receipt whose `windowStart` was later than the current wake boundary only
+  when both the receipt and `now` shared the same calendar date. That civil-day
+  check conflicts with Atria's physiological-day policy: a verified evening
+  subtotal could disappear at midnight even though no new main sleep had
+  closed the active wake-to-wake cycle.
+- **Repair:** a contained receipt is now owned solely by the current
+  physiological interval: its start must be at or after the current wake
+  boundary and no later than the current evaluation instant, and its durable
+  capture must be internally ordered. The uncovered wake-to-receipt prefix is
+  still added to missing coverage, so the count remains `≥N · Partial`.
+  Receipts beginning before the current wake boundary remain ineligible and
+  cannot masquerade as the new cycle.
+- **Quantity regression:** a compact immutable slice from the preserved
+  autonomous-day corpus contains 313 clock-corrected v24 rows over 300
+  seconds. V15 reconstructs one 177-step gait bout with 156 classified motion
+  ticks and retains 60.5625 seconds as unresolved. This prevents the prior
+  short-burst-only collapse without treating the unlabeled slice as
+  independently counted truth. Fixture:
+  `Atria/AtriaTests/Fixtures/whoop4-v15-autonomous-day-bout.jsonl`,
+  SHA-256
+  `b67115b776e3de4c3820131568fd93ca91d9ee8f1e1c0f705685cfcd80abe2a3`.
+- **Regression evidence:** the motion-model and durable-daily-store suites pass
+  47/47 in
+  `/private/tmp/atria-dd-all-day-steps-20260729/Logs/Test/`
+  `Test-AtriaTests-2026.07.29_16-08-25-+0530.xcresult`.
+- **Acceptance status:** the prior 92.4%-covered receipt remains a truthful
+  prior-cycle lower bound only. Physical acceptance for the current cycle
+  still requires a newly completed bank offload, current-cycle receipt
+  publication, and visible iPhone verification; this regression does not
+  promote either 4,315 or 5,546 to an exact all-day count.
+
+#### 2026-07-29 — resumed sleep can span more than one all-day journal
+
+- **Physical observation:** the post-main-sleep episode was split into
+  12:19:07–13:27:23 and 13:33:51–15:28:16 IST journals. The first contained
+  4,126 accepted-HR rows and an 81.855-second accepted-HR seam; the second
+  contained 6,766 rows and stayed open after the wearer became active.
+- **Failure:** the review classifier required one journal, rejected the
+  81.855-second seam under a 60-second cap, and then rejected the second
+  journal because its 6m28s reconnect seam was shorter than the old 90-minute
+  fresh-episode separation. No review card appeared.
+- **Repair:** review-only resumed sleep may cluster journals separated by at
+  most the existing 20-minute brief-gap limit. Missing seam time receives zero
+  sleep credit. A sustained three-by-five-minute wake transition trims the
+  open journal tail; isolated elevated/restless bins remain part of the review.
+  The accepted-HR seam cap is 90 seconds. This path cannot auto-save.
+- **Evidence:** the exact two-journal physical-shape regression passes in
+  `/tmp/atria-dd-resumed-sleep-physical/Logs/Test/`
+  `Test-AtriaTests-2026.07.29_16-09-44-+0530.xcresult`. The signed physical
+  Release visibly surfaced `Possible resumed sleep`, 12:19 PM–2:35 PM,
+  2h09 effective. The reconnect seam and post-wake tail were not credited.
+
+#### 2026-07-29 — full-night downstream metric truth corrections
+
+- **Physical corpus:** 16 confirmed records contain 12 main sleeps and four
+  naps. The current confirmed night is 22:52:49–06:14:37 IST, 6h16 effective
+  over a 7h22 span, with HRV 38 from three qualified windows, RHR 61, and
+  respiratory rate 10.5. Thirteen RHR days exist, but only two qualified
+  overnight-HRV baseline days; 47% recovery therefore remains provisional.
+- **Corrections:** historical consistency is rebuilt only from nights available
+  on that morning and stays absent on a no-sleep row; displayed sleep debt and
+  sleep need now share the same recency-weighted seven-night ledger; carried
+  HRV/RHR say `this morning`, `yesterday`, or `Nd ago`; confirmed sleep
+  projections carry their durable save time so settlement freshness no longer
+  substitutes wake time.
+- **Regression evidence:** the downstream focused suite passes in
+  `/private/tmp/atria-full-night-downstream-focused-20260729.xcresult`. The
+  combined sleep, step, BLE, analytics, and strain run passes 291/291 in
+  `/tmp/atria-combined-focused-20260729.xcresult`.
+
+#### 2026-07-29 — correction: pending bank backlog must not disable new capture
+
+- **Physical observation:** preventing all re-arm while any pending ticket
+  existed stopped the self-created six-second-ticket loop, but a retained
+  backlog of 62 tickets left `69/01` disabled after settlement. The current
+  cycle then had only 2,743 known seconds out of 36,203 and truthfully
+  published `>=173`, about 7.6% coverage—far too incomplete for a useful
+  all-day value.
+- **Repair:** motion-bank offloads now have a persisted global cadence: at most
+  one may start per 15 minutes. A pending ticket gets first refusal when the
+  cadence opens, but once that bounded attempt begins, all-day `69/01` banking
+  may re-arm while the remaining backlog waits. Manual workouts still outrank
+  maintenance. This prevents both reconnect churn and new-data blackout.
+- **Acceptance status:** cadence/ownership regressions pass in
+  `/tmp/atria-bank-cadence-20260729.xcresult`. Physical proof still requires
+  the post-offload bank to remain armed, disconnect count to stop advancing,
+  and a stronger current-cycle receipt to publish.
+
+#### 2026-07-29 — confirmed resumed sleep must credit classified sleep, not elapsed time
+
+- **Physical observation:** the confirmed resumed episode spans
+  12:19:07–14:35:00 IST. Its durable stage timeline covers 8,152 seconds:
+  3,982 awake, 1,140 light, 1,080 REM, and 1,950 deep. Adding the record's
+  raw observed duration to the 6h16 main sleep displayed 8h25, crediting about
+  one hour of stage-classified awake time as sleep.
+- **Repair:** `resumed_sleep` confirmations now derive their credited duration
+  from an integrity-validated stage timeline and sum only non-awake epochs.
+  The elapsed span and the inter-session wake gap remain preserved for
+  efficiency and audit, but receive zero sleep credit. The main and resumed
+  records remain one physiological night with one Recovery and a final wake
+  boundary at the resumed episode's end.
+- **Physical result:** the installed Release shows `7h25m of 10h need` and
+  `74%`, matching the classified non-awake total. The ring is yellow because
+  WHOOP's published sufficient band is 70–84% and optimal/green begins at 85%.
+- **Need and color semantics:** 10h is not a constant target. The shared model
+  starts from the configured 8h base, adds prior-day strain and 50% of
+  recency-weighted seven-night debt, subtracts qualified nap credit, and clamps
+  the result to 6–10h. This corpus has enough recent debt to reach the 10h cap.
+  Sleep Performance is red below 70%, yellow from 70–84%, and green at 85%+.
+  Recovery remains red at 1–33%, yellow at 34–66%, and green at 67%+.
+  Strain color is proximity to the recovery-scaled daily target, not a
+  universal higher-is-better threshold.
+- **Regression evidence:** focused sleep truth, sleep audit, and
+  physiological-cycle suites pass 22/22 in
+  `/tmp/atria-sleep-need-rings-20260729.xcresult`; widget truth/authority passes
+  28/28 in `/tmp/atria-widget-authority-20260729g.xcresult`, including the rule
+  that a larger live strain value cannot erase a partial-coverage qualifier.
+  The static handoff gate passes 184/184.
+
+#### 2026-07-29 — reserve motion-bank cadence before asynchronous transport admission
+
+- **Demonstrated race:** a pending offload could enter the asynchronous history
+  request before `lastOffloadStartedAt` was persisted. A concurrent live-HR
+  callback then saw no cooldown reservation and left new banking disabled,
+  even when the request was merely retained rather than started.
+- **Repair:** persist the global offload reservation before requesting
+  transport. Mark the individual ticket attempted only when transport actually
+  starts. This lets the HR path observe the cooldown and re-arm new capture
+  without allowing overlapping history work.
+- **Acceptance status:** source-order and BLE cadence regressions pass.
+  The post-install physical state is connected and the live journal is fresh,
+  but the bank remains `enabled=false` with `prearmRequested=true`; current-day
+  all-day step acceptance therefore remains open.
+
+#### 2026-07-29 — bounded compact v24 authority and truthful current-cycle publication
+
+- **Demonstrated runtime cost/failure:** projecting every recovered motion-bank
+  ticket and the current physiological-day step receipt from the lifetime
+  canonical JSONL archive made background convergence proportional to archive
+  size. Relaunch could also reuse an older projection-attempt lease and skip
+  the one-time migration needed by a newly installed compact reader.
+- **Repair:** every admitted, clock-corrected WHOOP 4 v24 row is mirrored after
+  canonical persistence into a 52-byte, payload-idempotent derivative retained
+  for four day buckets. The canonical JSONL remains truth. Background ticket
+  verification and daily projection read the compact derivative once per
+  batch; foreground performs one canonical migration for rows predating it.
+  The projection lease includes the compact shard fingerprint and has a new
+  cache generation, so an older binary cannot suppress migration.
+- **Backlog discipline:** exact windows shorter than ten seconds remain honest
+  missing coverage but are removed from the BLE job queue because the strap
+  cannot serve them reliably. Recoverable tickets are never silently truncated
+  to 128; larger unattempted gaps receive priority, and one compact generation
+  can resolve every qualifying ticket with one publication notification.
+- **Physical result:** signed Release installation preserved the existing app
+  data container and pairing. The pending queue fell from 71 to 38, with zero
+  sub-ten-second tickets. Foreground migration grew the compact shard from
+  1,879 to 2,841 records. The current physiological-cycle receipt advanced
+  from 713 to 1,518 qualified seconds and from 4.5% to 9.0% coverage. The
+  physical Home card matched the durable receipt exactly:
+  `>=250 · Partial archive · 9% covered`, while live HR continued to update.
+  Evidence:
+  `/tmp/atria-all-day-physical-v2-20260729-191259` and
+  `/tmp/atria-all-day-physical-v2b-20260729-192124`.
+- **Acceptance status:** publication, migration, and partial-state honesty are
+  physically proven. `>=250` is only a lower bound and is not an accepted
+  all-day total. Whole-day quantity remains open until exact-window recovery
+  brings the current cycle to at least 90% and an independently counted
+  natural interval validates the resulting delta.
+
+#### 2026-07-29 — publish only after compact rows are durable
+
+- **Demonstrated ordering failure:** the 19:29 IST scheduled drain appended
+  compact rows that already covered two pending exact windows at 257/257
+  seconds (100%) and 539/541 seconds (99.63%). Ticket evaluation ran before
+  the archive queue completed its durable synchronize, so both tickets
+  remained pending and the current-cycle receipt stayed frozen even though the
+  compact shard had grown from 2,841 to 3,755 records.
+- **Repair:** compact append generations now publish one notification only
+  after their file handles synchronize successfully. The session projection
+  refreshes the current physiological-cycle receipt from that durable
+  generation, while BLE evaluates all pending exact windows on its archive
+  queue without requesting another drain. Duplicate synchronize calls and
+  failed writes publish nothing.
+- **Physical result:** a signed Release installed over the same data-container
+  UUID and preserved pairing. On launch, the two already-qualified windows
+  were removed and pending work fell from 38 to 36. The receipt advanced from
+  `>=250 · 9.0%` to `>=311 · 12.8%` while accepted HR remained live. During
+  the next automatic drain, post-synchronize publication advanced the receipt
+  again to `>=382 · 16.4%` and resolved the active 14-minute ticket without
+  waiting for process relaunch or drain termination; pending work fell to 35.
+  The compact shard reached 239,980 bytes (4,615 fixed-size records). Evidence:
+  `/tmp/atria-all-day-postsync-v4-20260729-1945` and
+  `/tmp/atria-all-day-mid-drain-v4-20260729-1951`.
+- **Recovery-progress scope:** one physical recovery visibly crossed internal
+  bounded transport generations. The old ribbon derived `saved` from the
+  current generation's start row and therefore regressed from 1,652 to 1,052
+  without a user-visible restart. The presentation now retains one
+  in-process recovery-episode row baseline across `.syncing` and `.partial`
+  successor generations, so the count is monotonic and accessibility names it
+  as rows saved “in this recovery.” This changes no command, ownership,
+  cadence, ticket, or persistence behavior.
+- **Acceptance status:** durable-generation publication and batch ticket
+  convergence are physically proven. `>=382` is still a partial lower bound,
+  not a true all-day total; quantity acceptance remains open until the current
+  physiological interval reaches at least 90% verified coverage and a counted
+  natural interval validates its delta.
+
+#### 2026-07-29 — compact durability repair and bank-authority boundary
+
+- **Locked/background observation:** at 21:19 IST the running old build had
+  10,347 fsynced 52-byte compact v24 rows, a fresh 15,007-sample HR journal,
+  and live strap packets. The current-cycle step receipt admitted only 3,456
+  rows and remained `>=382`. This is not a storage-loss contradiction: daily
+  projection deliberately admits only timestamps inside the same strap's
+  durable `69/01` bank intervals. Rows outside proven bank ownership remain
+  raw protocol evidence and are never extrapolated into steps.
+- **Current coverage state:** the physiological cycle begins at the confirmed
+  resumed-sleep wake boundary, 14:35 IST. Historical connection churn left 170
+  closed bank fragments and 31 unresolved exact offload tickets. A new bank
+  interval opened at 21:16:24 IST and remained open through the locked pull.
+  Future all-day acceptance therefore depends on keeping that interval
+  continuous, not on relabeling the already-durable out-of-authority rows.
+- **Durability defects repaired before release:** a torn suffix is now
+  truncated to the last complete 52-byte boundary and fsynced before indexing
+  or append; duplicate identities are reconstructed only from fully decoded
+  valid records; retention deletion rebuilds the in-memory identity set so
+  deleted shards cannot leak digests or block later canonical repair.
+- **Recovered-metric liveness:** a cached terminal consumer-dependency mismatch
+  is now bound to the projection algorithm versions, expires after a bounded
+  15-minute backoff, schedules its own retry, and clears after a verified
+  consumer commit. The previous unversioned cache could strand already-durable
+  recovered metrics forever.
+- **Acceptance status:** focused durability/authority regressions pass, and the
+  complete simulator suite passes 2,989 tests with two explicit missing-corpus
+  skips and zero failures. The new signed Release is not yet installed because
+  the physical old build is still making monotonic progress on its active
+  recovery. Whole-day step quantity remains open and no phone fallback,
+  estimate, or extrapolation is admitted.
+
 ## Notebook maintenance rules
 
 1. Append every physical command experiment, including failures and no-response cases.

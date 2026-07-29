@@ -55,6 +55,12 @@ enum AtriaWhoop4MotionBankCoverageLedger {
     private static let schema = 2
     private static let stateKey = "atria.workoutHistoricalMotionBank.coverage.v2"
     private static let maximumClosedIntervals = 512
+    /// Two v24 endpoints are required to classify any motion. Windows shorter
+    /// than this cannot produce a reliable step delta at the observed ~1 Hz
+    /// history cadence and previously flooded the durable queue during link
+    /// churn. They remain honest missing coverage, but are not scheduled as
+    /// impossible BLE recovery jobs.
+    static let minimumRecoverableOffloadDuration: TimeInterval = 10
 
     static func open(
         at date: Date,
@@ -97,7 +103,8 @@ enum AtriaWhoop4MotionBankCoverageLedger {
                 state.closed.removeFirst(state.closed.count - maximumClosedIntervals)
             }
             let requestedStart = max(start, offloadStart ?? start)
-            if date > requestedStart {
+            if date.timeIntervalSince(requestedStart)
+                >= minimumRecoverableOffloadDuration {
                 let id = [
                     strapIdentifier,
                     String(Int64((requestedStart.timeIntervalSince1970 * 1_000).rounded())),
@@ -115,10 +122,151 @@ enum AtriaWhoop4MotionBankCoverageLedger {
                         lastAttemptAt: nil
                     ))
                 }
-                state.pendingOffloads = Array(tickets.suffix(128))
+                state.pendingOffloads = tickets
             }
         }
         save(state, defaults: defaults)
+    }
+
+    /// Repairs coverage written by builds that preserved one open bank across
+    /// a physical BLE disconnect. WHOOP 4 drops the historical-IMU bank with
+    /// that connection, so time before the ticket's recorded connection epoch
+    /// is not bank authority and must never depress or inflate a daily receipt.
+    ///
+    /// A repaired ticket starts at the only durable connection boundary we
+    /// can prove. Its prior attempts targeted an impossible wider interval, so
+    /// the corrected exact window receives one fresh attempt. No raw row,
+    /// step, or coverage second is manufactured.
+    @discardableResult
+    static func repairCrossConnectionCoverage(
+        defaults: UserDefaults = .standard
+    ) -> Int {
+        var state = load(defaults: defaults)
+        guard let existingTickets = state.pendingOffloads,
+              !existingTickets.isEmpty else { return 0 }
+
+        var repairedCount = 0
+        var repairedTickets: [OffloadTicket] = []
+        var closed = state.closed
+
+        for ticket in existingTickets {
+            guard let epoch = ticket.armedConnectionStartedAt,
+                  epoch > ticket.start else {
+                repairedTickets.append(ticket)
+                continue
+            }
+
+            repairedCount += 1
+            let invalidPrefixEnd = min(epoch, ticket.end)
+            closed = subtract(
+                DateInterval(
+                    start: ticket.start,
+                    end: invalidPrefixEnd
+                ),
+                from: closed
+            )
+
+            guard epoch < ticket.end else { continue }
+            let repairedID = [
+                ticket.strapIdentifier,
+                String(
+                    Int64(
+                        (epoch.timeIntervalSince1970 * 1_000).rounded()
+                    )
+                ),
+                String(
+                    Int64(
+                        (ticket.end.timeIntervalSince1970 * 1_000).rounded()
+                    )
+                ),
+            ].joined(separator: "|")
+            repairedTickets.append(
+                .init(
+                    id: repairedID,
+                    strapIdentifier: ticket.strapIdentifier,
+                    start: epoch,
+                    end: ticket.end,
+                    armedConnectionStartedAt: epoch,
+                    attempts: 0,
+                    lastAttemptAt: nil
+                )
+            )
+            closed.append(.init(start: epoch, end: ticket.end))
+        }
+
+        guard repairedCount > 0 else { return 0 }
+        var uniqueTickets: [String: OffloadTicket] = [:]
+        for ticket in repairedTickets {
+            if let existing = uniqueTickets[ticket.id] {
+                uniqueTickets[ticket.id] =
+                    existing.attempts <= ticket.attempts ? existing : ticket
+            } else {
+                uniqueTickets[ticket.id] = ticket
+            }
+        }
+        state.closed = merged(closed)
+        state.pendingOffloads = Array(
+            uniqueTickets.values.sorted {
+                if $0.start != $1.start { return $0.start < $1.start }
+                return $0.id < $1.id
+            }.suffix(128)
+        )
+        save(state, defaults: defaults)
+        return repairedCount
+    }
+
+    /// A process cannot prove that a persisted open bank survived its Core
+    /// Bluetooth owner. Close the orphan only through the last durably observed
+    /// HR packet, then let the new process open a fresh connection epoch.
+    ///
+    /// This intentionally loses any unproven tail between the last persisted
+    /// packet and process death. It never bridges that tail into the new link.
+    @discardableResult
+    static func retireOrphanedOpenCoverage(
+        lastObservedAt: Date?,
+        strapIdentifier: String,
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        var state = load(defaults: defaults)
+        guard state.strapIdentifier == strapIdentifier,
+              let start = state.openStart else { return false }
+        state.openStart = nil
+
+        if let end = lastObservedAt, end > start {
+            state.closed.append(.init(start: start, end: end))
+            state.closed = merged(state.closed)
+            let id = [
+                strapIdentifier,
+                String(
+                    Int64(
+                        (start.timeIntervalSince1970 * 1_000).rounded()
+                    )
+                ),
+                String(
+                    Int64(
+                        (end.timeIntervalSince1970 * 1_000).rounded()
+                    )
+                ),
+            ].joined(separator: "|")
+            var tickets = state.pendingOffloads ?? []
+            if !tickets.contains(where: { $0.id == id }) {
+                tickets.append(
+                    .init(
+                        id: id,
+                        strapIdentifier: strapIdentifier,
+                        start: start,
+                        end: end,
+                        armedConnectionStartedAt: start,
+                        attempts: 0,
+                        lastAttemptAt: nil
+                    )
+                )
+            }
+            state.pendingOffloads = tickets
+        }
+
+        save(state, defaults: defaults)
+        return true
     }
 
     static func nextPendingOffload(
@@ -137,11 +285,53 @@ enum AtriaWhoop4MotionBankCoverageLedger {
             if lhsUnattempted != rhsUnattempted {
                 return lhsUnattempted
             }
+            let lhsRecoverable =
+                $0.end.timeIntervalSince($0.start)
+                    >= minimumRecoverableOffloadDuration
+            let rhsRecoverable =
+                $1.end.timeIntervalSince($1.start)
+                    >= minimumRecoverableOffloadDuration
+            if lhsRecoverable != rhsRecoverable {
+                return lhsRecoverable
+            }
+            if lhsUnattempted {
+                let lhsDuration = $0.end.timeIntervalSince($0.start)
+                let rhsDuration = $1.end.timeIntervalSince($1.start)
+                if lhsDuration != rhsDuration {
+                    // One full history drain can satisfy every covered ticket.
+                    // Bind it to the largest new coverage gain instead of a
+                    // seconds-long reconnect fragment.
+                    return lhsDuration > rhsDuration
+                }
+            }
             if $0.end != $1.end {
                 return lhsUnattempted ? $0.end > $1.end : $0.end < $1.end
             }
             return $0.id < $1.id
         }.first
+    }
+
+    static func pendingOffloads(
+        strapIdentifier: String,
+        defaults: UserDefaults = .standard
+    ) -> [OffloadTicket] {
+        let state = load(defaults: defaults)
+        guard state.strapIdentifier == strapIdentifier else { return [] }
+        return (state.pendingOffloads ?? []).filter {
+            $0.strapIdentifier == strapIdentifier
+        }
+    }
+
+    static func pendingOffload(
+        id: String,
+        strapIdentifier: String,
+        defaults: UserDefaults = .standard
+    ) -> OffloadTicket? {
+        let state = load(defaults: defaults)
+        guard state.strapIdentifier == strapIdentifier else { return nil }
+        return (state.pendingOffloads ?? []).first {
+            $0.id == id && $0.strapIdentifier == strapIdentifier
+        }
     }
 
     @discardableResult
@@ -166,11 +356,32 @@ enum AtriaWhoop4MotionBankCoverageLedger {
         id: String,
         defaults: UserDefaults = .standard
     ) {
+        resolveOffloads(ids: [id], defaults: defaults)
+    }
+
+    /// Resolves every ticket proven by one durable compact generation and
+    /// publishes one refresh boundary. Posting once prevents a successful full
+    /// history drain from scheduling dozens of duplicate Home/widget scans.
+    static func resolveOffloads(
+        ids: Set<String>,
+        defaults: UserDefaults = .standard
+    ) {
+        resolveOffloads(ids: Array(ids), defaults: defaults)
+    }
+
+    private static func resolveOffloads(
+        ids: [String],
+        defaults: UserDefaults
+    ) {
+        let requested = Set(ids)
+        guard !requested.isEmpty else { return }
         var state = load(defaults: defaults)
-        let resolved = state.pendingOffloads?.first { $0.id == id }
-        state.pendingOffloads?.removeAll { $0.id == id }
+        let resolved = (state.pendingOffloads ?? []).filter {
+            requested.contains($0.id)
+        }
+        guard !resolved.isEmpty else { return }
+        state.pendingOffloads?.removeAll { requested.contains($0.id) }
         save(state, defaults: defaults)
-        guard resolved != nil else { return }
         // Archive-update notifications can arrive while history transport
         // still owns the link, so SessionStore correctly defers them. This
         // terminal receipt is the first point at which the exact bank window
@@ -179,9 +390,32 @@ enum AtriaWhoop4MotionBankCoverageLedger {
         DispatchQueue.main.async {
             NotificationCenter.default.post(
                 name: didResolveOffloadNotification,
-                object: id
+                object: resolved.count == 1
+                    ? resolved[0].id
+                    : resolved.map(\.id)
             )
         }
+    }
+
+    /// Removes only tickets that are physically too short to contain the two
+    /// v24 endpoints required for a step delta. Their closed intervals stay in
+    /// projection authority and therefore continue to lower coverage; no
+    /// second, row, or step is fabricated.
+    @discardableResult
+    static func pruneUnrecoverableShortOffloads(
+        defaults: UserDefaults = .standard
+    ) -> Int {
+        var state = load(defaults: defaults)
+        guard let tickets = state.pendingOffloads else { return 0 }
+        let retained = tickets.filter {
+            $0.end.timeIntervalSince($0.start)
+                >= minimumRecoverableOffloadDuration
+        }
+        let removed = tickets.count - retained.count
+        guard removed > 0 else { return 0 }
+        state.pendingOffloads = retained
+        save(state, defaults: defaults)
+        return removed
     }
 
     /// Repairs tickets cleared by the retired transport-only verifier. The
@@ -315,6 +549,32 @@ enum AtriaWhoop4MotionBankCoverageLedger {
             guard let end = $0.end, end > $0.start else { return nil }
             return DateInterval(start: $0.start, end: end)
         }).map { .init(start: $0.start, end: $0.end) }
+    }
+
+    private static func subtract(
+        _ removed: DateInterval,
+        from intervals: [Interval]
+    ) -> [Interval] {
+        guard removed.end > removed.start else { return intervals }
+        return intervals.flatMap { interval -> [Interval] in
+            guard let end = interval.end, end > interval.start else {
+                return []
+            }
+            let source = DateInterval(start: interval.start, end: end)
+            guard source.intersects(removed) else { return [interval] }
+            var fragments: [Interval] = []
+            if source.start < removed.start {
+                fragments.append(
+                    .init(start: source.start, end: removed.start)
+                )
+            }
+            if source.end > removed.end {
+                fragments.append(
+                    .init(start: removed.end, end: source.end)
+                )
+            }
+            return fragments
+        }
     }
 
     private static func mergeIntervals(_ values: [DateInterval]) -> [DateInterval] {

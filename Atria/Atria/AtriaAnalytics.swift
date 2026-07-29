@@ -328,6 +328,41 @@ enum AtriaAnalytics {
                                    disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
         }
 
+        /// Sleep Performance is not the same thing as a static duration goal:
+        /// it is effective sleep divided by that night's adaptive Sleep Need.
+        /// WHOOP's planning vocabulary treats 85% as the "perform" threshold,
+        /// while <70% is materially short. Keeping this as a separate target
+        /// prevents an 8h user goal from painting a night green when the same
+        /// screen truthfully says it was only 84% of a 10h adaptive need.
+        static func sleepPerformance(_ percent: Int?,
+                                     neededHours: Double? = nil) -> AtriaMetricZone? {
+            guard let percent else { return nil }
+            let safePercent = min(max(percent, 0), 100)
+            let level: AtriaMetricZoneLevel = safePercent >= 85
+                ? .green
+                : (safePercent >= 70 ? .yellow : .red)
+            let recommendation: String
+            switch level {
+            case .green:
+                recommendation = "Sleep reached the perform range. Keep the routine consistent."
+            case .yellow:
+                recommendation = "Sleep was close to the perform range. Protect more sleep when your schedule allows."
+            case .red:
+                recommendation = "Sleep was well below tonight's need. Prioritize recovery and an earlier sleep opportunity."
+            }
+            let needText = neededHours.map {
+                " · \(AtriaMetricFormat.sleepHours($0)) adaptive need"
+            } ?? ""
+            return AtriaMetricZone(
+                level: level,
+                title: "Sleep performance",
+                current: "\(safePercent)% of sleep need\(needText).",
+                targetSummary: "Adaptive need · Green 85-100%, yellow 70-84%, red below 70%.",
+                recommendation: recommendation,
+                disclaimer: AtriaMetricZone.nonMedicalDisclaimer
+            )
+        }
+
         static func steps(_ steps: Int?, goal: Int = 8_000) -> AtriaMetricZone? {
             guard let steps, steps > 0 else { return nil }
             let safeGoal = max(goal, 1_000)

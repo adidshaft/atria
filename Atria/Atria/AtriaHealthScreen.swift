@@ -377,15 +377,42 @@ enum AtriaHealthMetricEvidencePresentation {
     }
 
     static func settledRestingHeartRateDetail(rollup: DailyRollupStoreEntry,
-                                              isToday: Bool) -> String {
+                                              now: Date = Date(),
+                                              calendar: Calendar = .current) -> String {
         guard (rollup.sleepSeconds ?? 0) > 0 else { return "wear estimate" }
-        return isToday ? "this morning" : "yesterday"
+        return settledMorningAgeDetail(day: rollup.day,
+                                       now: now,
+                                       calendar: calendar)
     }
 
     static func settledHRVDetail(rollup: DailyRollupStoreEntry,
-                                 isToday: Bool) -> String {
+                                 now: Date = Date(),
+                                 calendar: Calendar = .current) -> String {
         guard (rollup.sleepSeconds ?? 0) > 0 else { return "limited signal" }
-        return isToday ? "this morning" : "yesterday"
+        return settledMorningAgeDetail(day: rollup.day,
+                                       now: now,
+                                       calendar: calendar)
+    }
+
+    /// Saved morning vitals may intentionally be carried until another
+    /// qualified sleep produces a replacement. Calling every carried value
+    /// "yesterday" hid its real age: after several nights without qualified RR,
+    /// a week-old HRV looked one day old. Keep the compact label, but derive it
+    /// from the saved rollup's civil day.
+    private static func settledMorningAgeDetail(day: Date,
+                                                now: Date,
+                                                calendar: Calendar) -> String {
+        let savedDay = calendar.startOfDay(for: day)
+        let today = calendar.startOfDay(for: now)
+        if calendar.isDate(savedDay, inSameDayAs: today) {
+            return "this morning"
+        }
+        guard savedDay < today else { return "saved morning" }
+        let age = max(calendar.dateComponents([.day],
+                                              from: savedDay,
+                                              to: today).day ?? 0,
+                      1)
+        return age == 1 ? "yesterday" : "\(age)d ago"
     }
 }
 

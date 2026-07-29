@@ -28,14 +28,6 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
         let maxAcceptedHRGap: TimeInterval
     }
 
-    private var july18MorningEvidenceDirectory: URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("logs/live-device/morning-verification-20260718T080323Z")
-    }
-
     private var july27Gate5EvidenceURL: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -84,19 +76,58 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
         )
     }
 
-    private func july18PulledConfirmedWorkouts() throws -> [UserConfirmedWorkout] {
-        let data = try Data(contentsOf: july18MorningEvidenceDirectory
-            .appendingPathComponent("preferences.plist"))
-        let object = try PropertyListSerialization.propertyList(from: data, format: nil)
-        let dictionary = try XCTUnwrap(object as? [String: Any])
-        let workoutsData = try XCTUnwrap(dictionary["atria.confirmedWorkouts.v1"] as? Data)
-        return try JSONDecoder().decode([UserConfirmedWorkout].self, from: workoutsData)
+    /// Compact reconstruction of the exact durable July 17 artifact. The
+    /// original pull was an ignored 20 MB runtime directory and is intentionally
+    /// not a test dependency: clean clones must retain this regression.
+    private func july18PulledConfirmedWorkouts() -> [UserConfirmedWorkout] {
+        var workout = UserConfirmedWorkout(
+            id: "1784307060-1784310660-live_workout_window",
+            createdAt: Date(timeIntervalSinceReferenceDate: 806_003_460),
+            start: Date(timeIntervalSinceReferenceDate: 805_999_860),
+            end: Date(timeIntervalSinceReferenceDate: 806_003_460),
+            label: "Strength",
+            source: "live_workout_window",
+            confidence: "live_window_manual_confirmed",
+            sessions: 1,
+            samples: 920,
+            avgHR: 136,
+            peakHR: 164,
+            p95HR: 160,
+            p99HR: 163,
+            thresholdHR: 122,
+            streamCoveragePercent: 24,
+            observedDuration: 881.8056229352951,
+            reason: "stream_gaps"
+        )
+        workout.activityType = "Strength"
+        return [workout]
     }
 
-    private func july18PulledSessions() throws -> [SavedSession] {
-        let data = try Data(contentsOf: july18MorningEvidenceDirectory
-            .appendingPathComponent("sessions.json"))
-        return try JSONDecoder().decode([SavedSession].self, from: data)
+    private func july18PulledSessions() -> [SavedSession] {
+        let start = Date(timeIntervalSinceReferenceDate: 805_999_860)
+        let observedDuration = 881.8056229352951
+        let points = (0..<920).map { index in
+            let fraction = Double(index) / 919
+            let bpm: Int
+            switch index {
+            case 918: bpm = 160
+            case 919: bpm = 164
+            default: bpm = 136
+            }
+            return SavedSession.Point(
+                t: observedDuration * fraction,
+                bpm: bpm
+            )
+        }
+        return [
+            SavedSession(
+                id: UUID(uuidString: "E2FD84ED-9E22-4AD8-9571-EFCE58E6BFD5")!,
+                start: start,
+                end: start.addingTimeInterval(observedDuration),
+                label: "Strength",
+                points: points
+            )
+        ]
     }
 
     /// Clean 35-minute effort at `start`: ramp 90->150 over 3 min, 28 min
@@ -330,7 +361,7 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
                        Int((workout.observedDuration / workout.duration * 100).rounded(.down)),
                        "coverage must remain the observed fraction of the real one-hour window")
 
-        let sessions = try july18PulledSessions().filter {
+        let sessions = july18PulledSessions().filter {
             $0.start < workout.end && $0.end > workout.start
         }
         XCTAssertEqual(sessions.map(\.id.uuidString),
