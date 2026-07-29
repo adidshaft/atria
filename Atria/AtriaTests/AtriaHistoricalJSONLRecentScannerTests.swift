@@ -2,6 +2,88 @@ import XCTest
 @testable import Atria
 
 final class AtriaHistoricalJSONLRecentScannerTests: XCTestCase {
+    func testConsumerSourceFingerprintIsOrderStableAndChangesForEverySourceMutation() {
+        let first = AtriaHistoricalJSONLRecentScanner.FileDescriptor(
+            url: URL(fileURLWithPath: "/tmp/archive-a.jsonl"),
+            size: 100,
+            modificationTime: 10.1234,
+            resourceIdentifier: "inode-a"
+        )
+        let second = AtriaHistoricalJSONLRecentScanner.FileDescriptor(
+            url: URL(fileURLWithPath: "/tmp/archive-b.jsonl"),
+            size: 200,
+            modificationTime: 20.5678,
+            resourceIdentifier: "inode-b"
+        )
+        let baseline = HistoricalArchive.makeConsumerSourceFingerprint(
+            catalogGeneration: 7,
+            descriptors: [second, first]
+        )
+        XCTAssertEqual(
+            baseline,
+            HistoricalArchive.makeConsumerSourceFingerprint(
+                catalogGeneration: 7,
+                descriptors: [first, second]
+            ),
+            "filesystem enumeration order must not create a false generation"
+        )
+        XCTAssertNotEqual(
+            baseline,
+            HistoricalArchive.makeConsumerSourceFingerprint(
+                catalogGeneration: 8,
+                descriptors: [first, second]
+            )
+        )
+        XCTAssertNotEqual(
+            baseline,
+            HistoricalArchive.makeConsumerSourceFingerprint(
+                catalogGeneration: 7,
+                descriptors: [
+                    .init(url: first.url,
+                          size: first.size + 1,
+                          modificationTime: first.modificationTime,
+                          resourceIdentifier: first.resourceIdentifier),
+                    second,
+                ]
+            )
+        )
+        XCTAssertNotEqual(
+            baseline,
+            HistoricalArchive.makeConsumerSourceFingerprint(
+                catalogGeneration: 7,
+                descriptors: [
+                    .init(url: first.url,
+                          size: first.size,
+                          modificationTime: first.modificationTime + 1,
+                          resourceIdentifier: first.resourceIdentifier),
+                    second,
+                ]
+            )
+        )
+        XCTAssertNotEqual(
+            baseline,
+            HistoricalArchive.makeConsumerSourceFingerprint(
+                catalogGeneration: 7,
+                descriptors: [
+                    .init(url: first.url,
+                          size: first.size,
+                          modificationTime: first.modificationTime,
+                          resourceIdentifier: "inode-replaced"),
+                    second,
+                ]
+            )
+        )
+        XCTAssertNotEqual(
+            baseline,
+            HistoricalArchive.makeConsumerSourceFingerprint(
+                catalogGeneration: 7,
+                descriptors: [first]
+            ),
+            "source removal must invalidate a conclusive negative"
+        )
+        XCTAssertNotNil(baseline.stableIdentifier)
+    }
+
     func testProductionRecoveredSnapshotReadsOnlyRecentActiveChunkWithManyVerifiedOldChunks() throws {
         let root = temporaryDirectory()
         let now = Date(timeIntervalSince1970: 2_000_000_000)
