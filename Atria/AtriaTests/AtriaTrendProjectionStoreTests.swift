@@ -153,6 +153,20 @@ final class AtriaTrendProjectionStoreTests: XCTestCase {
         XCTAssertEqual(Set(compact).count, compact.count)
     }
 
+    func testCompactTrendXAxisKeepsEdgeLabelsInsideClippedChart() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaTrendChart.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(
+            source.contains(
+                ".chartXScale(range: .plotDimension(startPadding: 18, endPadding: 18))"
+            )
+        )
+    }
+
     func testTrendHostUsesNarrowProjectionInsteadOfWholeSessionStoreObservation() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceURL = testsDirectory
