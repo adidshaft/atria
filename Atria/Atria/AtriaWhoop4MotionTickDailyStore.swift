@@ -237,6 +237,7 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
         into projectedDays: [AtriaHistoricalDailyConsumerProjection.StepDay],
         strapIdentifier: String,
         windowStart: Date,
+        includeUnqualifiedResearchEvidence: Bool = false,
         calendar: Calendar = .current
     ) -> [AtriaHistoricalDailyConsumerProjection.StepDay] {
         mergingCurrentCycleReceipt(
@@ -244,6 +245,8 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
             strapIdentifiers: [strapIdentifier],
             windowStart: windowStart,
             now: Date(),
+            includeUnqualifiedResearchEvidence:
+                includeUnqualifiedResearchEvidence,
             calendar: calendar
         )
     }
@@ -262,8 +265,14 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
         strapIdentifiers: [String],
         windowStart: Date,
         now: Date,
+        includeUnqualifiedResearchEvidence: Bool = false,
         calendar: Calendar = .current
     ) -> [AtriaHistoricalDailyConsumerProjection.StepDay] {
+        guard AtriaWhoop4GravityCadenceStepModel
+                .releaseDailyAuthorityQualified
+                || includeUnqualifiedResearchEvidence else {
+            return projectedDays
+        }
         let identifiers = Set(strapIdentifiers.compactMap(
             Self.canonicalStrapIdentifier
         ))
@@ -316,6 +325,46 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
         }
         merged.append(strongest)
         return merged.sorted { $0.dayStart > $1.dayStart }
+    }
+
+    /// Removes only day rows previously synthesized from this store's
+    /// now-unqualified v24 receipts. A history snapshot can outlive a model
+    /// qualification change in memory; merely refusing to merge a new receipt
+    /// would leave that stale row looking like canonical archive evidence on
+    /// Home and in the widget.
+    ///
+    /// Match the complete synthesized signature rather than only the day
+    /// boundary so a genuine canonical step receipt for the same day is never
+    /// removed.
+    func removingUnqualifiedResearchEvidence(
+        from projectedDays: [AtriaHistoricalDailyConsumerProjection.StepDay]
+    ) -> [AtriaHistoricalDailyConsumerProjection.StepDay] {
+        guard !AtriaWhoop4GravityCadenceStepModel
+                .releaseDailyAuthorityQualified else {
+            return projectedDays
+        }
+        lock.lock()
+        let records = loadRecordsLocked()
+        lock.unlock()
+        guard !records.isEmpty else { return projectedDays }
+        return projectedDays.filter { day in
+            !records.contains { record in
+                abs(day.dayStart.timeIntervalSince(record.windowStart)) < 1
+                    && abs(day.dayEnd.timeIntervalSince(
+                        record.capturedThrough
+                    )) < 1
+                    && day.state == .missing
+                    && day.stepCount == nil
+                    && day.knownStepDeltaSum == record.steps
+                    && day.knownEpochCount
+                        == (record.decodedRows > 0 ? 1 : 0)
+                    && day.rejectedOrUnknownEpochCount == 0
+                    && day.knownCoverageSeconds
+                        == record.knownCoverageSeconds
+                    && day.missingCoverageSeconds
+                        == record.missingCoverageSeconds
+            }
+        }
     }
 
     private func persistLocked(_ records: [Record]) throws {

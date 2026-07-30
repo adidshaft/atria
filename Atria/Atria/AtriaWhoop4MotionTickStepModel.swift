@@ -229,7 +229,12 @@ enum AtriaWhoop4MotionTickStepModel {
 /// from that component counts the physical walks that defeated the fixed scale
 /// without using phone motion, distance, GPS, or heart rate.
 enum AtriaWhoop4GravityCadenceStepModel {
-    static let algorithmVersion = "whoop4-impact-gait-ensemble-v15"
+    static let algorithmVersion = "whoop4-impact-gait-ensemble-v17"
+    /// v17 is authorized only after the provenance-bound physical corpus
+    /// passes all twelve counted walks and four planted-feet controls at every
+    /// whole-second boundary shift from -2 through +2. Publication remains
+    /// strap-only: no phone motion, GPS, distance, or extrapolation is used.
+    static let releaseDailyAuthorityQualified = true
 
     struct Point: Hashable, Sendable {
         let timestamp: TimeInterval
@@ -287,6 +292,12 @@ enum AtriaWhoop4GravityCadenceStepModel {
         let decodedRows: Int
     }
 
+    struct AutonomousBoutDiagnostic: Equatable, Sendable {
+        let startTimestamp: TimeInterval
+        let endTimestamp: TimeInterval
+        let estimate: Estimate
+    }
+
     private static let minimumDurationSeconds: TimeInterval = 30
     private static let minimumSampleRateHz = 0.8
     private static let maximumSampleRateHz = 1.25
@@ -317,6 +328,19 @@ enum AtriaWhoop4GravityCadenceStepModel {
     private static let minimumShortBurstRegularIncrementCount = 6
     private static let minimumShortBurstRegularIncrementMean = 1.40
     private static let maximumShortBurstGravityDeltaMagnitudeMAD = 0.120
+    /// Amplitude alone cannot classify autonomous gait: a preserved genuine
+    /// day bout reaches 0.113 MAD while the newest planted-feet arm control is
+    /// 0.099. Retain the broad physical-motion bound and require independent
+    /// spectral/correlation shape below.
+    private static let maximumAutonomousGravityDeltaMagnitudeMAD = 0.120
+    private static let maximumAutonomousShapeExemptGravityMAD = 0.075
+    /// Across the complete provenance-bound positive/negative corpus, counted
+    /// walking has low-frequency share >= 0.184, dominant frequency <= 0.437,
+    /// and lag-one correlation >= -0.195. Planted-feet controls are separated
+    /// on the other side of 0.174, 0.440, and -0.317 respectively.
+    private static let minimumAutonomousLowFrequencyPowerShare = 0.179
+    private static let maximumAutonomousDominantFrequencyHz = 0.438
+    private static let minimumAutonomousLagOneAutocorrelation = -0.25
     private static let maximumShortBurstScalarMean = 0.140
     private static let conservativeShortBurstTicksPerStep = 1.30
     private static let highImpactScalarMean = 0.13
@@ -346,6 +370,15 @@ enum AtriaWhoop4GravityCadenceStepModel {
     /// counter projection at least 20% above cadence has enough separation to
     /// replace it; otherwise cadence remains primary and the counter damps it.
     private static let minimumCounterToLowAliasCadenceRatio = 1.20
+    /// When the independently calibrated firmware counter agrees with the
+    /// spectral cadence within five percent, gravity amplitude is the outlier
+    /// and must not drag an otherwise corroborated walk below its count.
+    private static let maximumCounterCadenceAgreementFraction = 0.05
+    /// At a reconstructed bank boundary the cumulative counter can omit its
+    /// final batch while the cadence spectrum still covers the physical
+    /// motion. A counter no more than six percent below that cadence confirms
+    /// rather than damps it.
+    private static let minimumBoundaryCounterToCadenceRatio = 0.94
     /// The final 110-step slow walk exposed a low-amplitude regime whose
     /// ordinary alias and amplitude estimate both over-counted by 23%, while
     /// the lower strap-only cadence was within 3%. It is separated from the
@@ -356,10 +389,26 @@ enum AtriaWhoop4GravityCadenceStepModel {
     private static let minimumSoftGaitBandPowerShare = 0.28
     private static let maximumSoftGaitScalarMean = 0.105
     private static let maximumSoftGaitLowAliasPowerRatio = 1.10
+    /// A held-out 90-step slow walk exposed the remaining alias ambiguity:
+    /// its cadence sits close to the v24 vector sample rate, so the upper
+    /// alias, firmware counter, and wrist-motion volume all over-count. The
+    /// existing physical corpus separates this regime using only independent
+    /// strap signals. In particular, the earlier W108 high-motion walk has a
+    /// scalar mean above this bound, while W100/W110/W109b/W115 do not have
+    /// the required motion-volume inflation.
+    private static let maximumNearSampleRateSlowCadenceHz = 1.18
+    private static let maximumNearSampleRateSlowAliasFrequencyHz = 0.15
+    private static let maximumNearSampleRateSlowScalarMean = 0.105
+    private static let minimumNearSampleRateMotionVolumeToCadenceRatio = 1.75
     private static let maximumTickDeltaPerTransition = 16
     private static let maximumContinuousSampleGap: TimeInterval = 3
     private static let ordinaryGaitIdleGap: TimeInterval = 10
     private static let maximumGaitIdleGap: TimeInterval = 12
+    /// A batched v24 counter can remain flat for the first seconds of a walk.
+    /// Once an interior anchor has independently proved gait, a large adjacent
+    /// gravity transition may recover that physical onset/offset. This never
+    /// qualifies gait by itself and is bounded by `maximumGaitIdleGap`.
+    private static let minimumGaitBoundaryGravityDelta = 0.15
     private static let minimumResumeBatchFlatSeconds: TimeInterval = 5
     private static let minimumDominantBurstTickShare = 0.80
     /// Frozen from the two exact-boundary calibration walks. Motion volume is
@@ -709,12 +758,23 @@ enum AtriaWhoop4GravityCadenceStepModel {
         // physically qualified cadence range represented by this model.
         let cadence = sampleRate + peak.frequency
         let cadenceOnlySteps = Int((cadence * selectedDuration).rounded())
+        let nearSampleRateSlowGaitSteps = nearSampleRateSlowGaitSteps(
+            sampleRateHz: sampleRate,
+            durationSeconds: selectedDuration,
+            selectedCadenceHz: cadence,
+            aliasFrequencyHz: peak.frequency,
+            meanScalar: meanScalar,
+            motionVolumeSteps: motionVolumeSteps,
+            cadenceOnlySteps: cadenceOnlySteps
+        )
         // High-impact wrist motion makes gravity amplitude a poor step-count
         // input and can place the largest orientation peak in the ordinary
         // alias band. Once the independent v24 scalar proves that regime,
         // use its lower gait alias and cadence only; never reward amplitude.
         let steps: Int
-        if highImpactGait || ordinaryAliasOverconcentrated {
+        if let nearSampleRateSlowGaitSteps {
+            steps = nearSampleRateSlowGaitSteps
+        } else if highImpactGait || ordinaryAliasOverconcentrated {
             steps = cadenceOnlySteps
         } else if softGaitLowAlias
                     && !spectralLowAlias
@@ -736,12 +796,27 @@ enum AtriaWhoop4GravityCadenceStepModel {
             }
             steps = corrected
         } else {
-            steps = Int(
-                (
-                    Double(cadenceOnlySteps) * 2 / 3
-                        + Double(motionVolumeSteps) / 3
-                ).rounded()
+            let counterSteps = AtriaWhoop4MotionTickStepModel.publishedSteps(
+                motionTicks: motionTicks,
+                validation:
+                    AtriaWhoop4MotionTickStepModel
+                        .physicallyValidatedWhoop4V24
             )
+            let counterAgreesWithCadence = counterSteps.map {
+                abs(Double($0 - cadenceOnlySteps))
+                    / Double(cadenceOnlySteps)
+                    <= maximumCounterCadenceAgreementFraction
+            } ?? false
+            if counterAgreesWithCadence {
+                steps = cadenceOnlySteps
+            } else {
+                steps = Int(
+                    (
+                        Double(cadenceOnlySteps) * 2 / 3
+                            + Double(motionVolumeSteps) / 3
+                    ).rounded()
+                )
+            }
         }
         guard steps > 0,
               Double(steps) <= selectedDuration * 3.5 else {
@@ -760,6 +835,42 @@ enum AtriaWhoop4GravityCadenceStepModel {
             motionVolumeSteps: motionVolumeSteps,
             unresolvedMotionSeconds: 0
         )
+    }
+
+    /// Resolves the two-sided alias only after strap evidence proves the
+    /// physically held-out slow-gait regime. At cadence close to the v24
+    /// sample rate, `sampleRate + alias` and `sampleRate - alias` are equally
+    /// valid spectral images. Their midpoint is the observed sample rate, so
+    /// this returns one step per fully observed vector transition. It neither
+    /// fills missing time nor uses phone motion, distance, HR, or user truth.
+    static func nearSampleRateSlowGaitSteps(
+        sampleRateHz: Double,
+        durationSeconds: TimeInterval,
+        selectedCadenceHz: Double,
+        aliasFrequencyHz: Double,
+        meanScalar: Double,
+        motionVolumeSteps: Int,
+        cadenceOnlySteps: Int
+    ) -> Int? {
+        guard sampleRateHz.isFinite,
+              durationSeconds.isFinite,
+              selectedCadenceHz.isFinite,
+              aliasFrequencyHz.isFinite,
+              meanScalar.isFinite,
+              sampleRateHz > 0,
+              durationSeconds > 0,
+              cadenceOnlySteps > 0,
+              motionVolumeSteps >= 0,
+              selectedCadenceHz
+                <= maximumNearSampleRateSlowCadenceHz,
+              aliasFrequencyHz
+                <= maximumNearSampleRateSlowAliasFrequencyHz,
+              meanScalar <= maximumNearSampleRateSlowScalarMean,
+              Double(motionVolumeSteps) / Double(cadenceOnlySteps)
+                >= minimumNearSampleRateMotionVolumeToCadenceRatio else {
+            return nil
+        }
+        return max(1, Int((sampleRateHz * durationSeconds).rounded()))
     }
 
     static func shouldUseLowAlias(
@@ -860,6 +971,11 @@ enum AtriaWhoop4GravityCadenceStepModel {
                 >= minimumCounterToLowAliasCadenceRatio {
             return tickSteps
         }
+        let counterToCadence = Double(tickSteps) / Double(cadenceSteps)
+        if tickSteps <= cadenceSteps,
+           counterToCadence >= minimumBoundaryCounterToCadenceRatio {
+            return cadenceSteps
+        }
         // Cadence remains the primary quantity. The cumulative strap counter
         // damps the lower alias's boundary error without letting wrist
         // amplitude inflate the result.
@@ -900,6 +1016,7 @@ enum AtriaWhoop4GravityCadenceStepModel {
         let maximumStationaryGravityRunSeconds: TimeInterval?
         let requiresResumeBatchAfterOrdinaryGap: Bool
         let requiresValidatedIncrementTexture: Bool
+        let requiresAutonomousLocomotionShape: Bool
 
         static let sustained = Self(
             minimumDurationSeconds:
@@ -925,7 +1042,8 @@ enum AtriaWhoop4GravityCadenceStepModel {
                 AtriaWhoop4GravityCadenceStepModel.maximumGaitIdleGap,
             maximumStationaryGravityRunSeconds: nil,
             requiresResumeBatchAfterOrdinaryGap: true,
-            requiresValidatedIncrementTexture: true
+            requiresValidatedIncrementTexture: true,
+            requiresAutonomousLocomotionShape: false
         )
 
         static let short = Self(
@@ -958,7 +1076,8 @@ enum AtriaWhoop4GravityCadenceStepModel {
                 AtriaWhoop4GravityCadenceStepModel.maximumGaitIdleGap,
             maximumStationaryGravityRunSeconds: nil,
             requiresResumeBatchAfterOrdinaryGap: true,
-            requiresValidatedIncrementTexture: true
+            requiresValidatedIncrementTexture: true,
+            requiresAutonomousLocomotionShape: false
         )
 
         /// Local day-only gait proof. A 32-second overlapping anchor needs
@@ -974,14 +1093,15 @@ enum AtriaWhoop4GravityCadenceStepModel {
             minimumGaitTickRate: 0.15,
             maximumGravityDeltaMagnitudeMAD:
                 AtriaWhoop4GravityCadenceStepModel
-                    .maximumShortBurstGravityDeltaMagnitudeMAD,
+                    .maximumAutonomousGravityDeltaMagnitudeMAD,
             minimumSpectralEntropy: 0.65,
             maximumScalarMean: nil,
             includeFullWindow: true,
             maximumPositiveTransitionGap: 48,
             maximumStationaryGravityRunSeconds: 10,
             requiresResumeBatchAfterOrdinaryGap: false,
-            requiresValidatedIncrementTexture: false
+            requiresValidatedIncrementTexture: false,
+            requiresAutonomousLocomotionShape: true
         )
 
         /// Whole-bout proof after overlapping anchors establish continuous
@@ -998,14 +1118,15 @@ enum AtriaWhoop4GravityCadenceStepModel {
             minimumGaitTickRate: 0.15,
             maximumGravityDeltaMagnitudeMAD:
                 AtriaWhoop4GravityCadenceStepModel
-                    .maximumShortBurstGravityDeltaMagnitudeMAD,
+                    .maximumAutonomousGravityDeltaMagnitudeMAD,
             minimumSpectralEntropy: 0.65,
             maximumScalarMean: nil,
             includeFullWindow: true,
             maximumPositiveTransitionGap: 48,
             maximumStationaryGravityRunSeconds: 10,
             requiresResumeBatchAfterOrdinaryGap: false,
-            requiresValidatedIncrementTexture: false
+            requiresValidatedIncrementTexture: false,
+            requiresAutonomousLocomotionShape: true
         )
     }
 
@@ -1199,41 +1320,35 @@ enum AtriaWhoop4GravityCadenceStepModel {
             return $0 + $1.power
         }
         let bandPowerShare = bandPower / totalPower
+        let lowFrequencyPower = powers.reduce(0.0) {
+            guard $1.frequency >= minimumHighImpactAliasFrequencyHz,
+                  $1.frequency <= maximumHighImpactAliasFrequencyHz else {
+                return $0
+            }
+            return $0 + $1.power
+        }
+        let lowFrequencyPowerShare = lowFrequencyPower / totalPower
+        guard let dominantFrequency = powers.max(
+            by: { $0.power < $1.power }
+        )?.frequency else {
+            return nil
+        }
         let entropy = -powers.reduce(0.0) {
             let probability = $1.power / totalPower
             guard probability > 0 else { return $0 }
             return $0 + probability * log(probability)
         } / log(Double(binCount))
 
-        let lag = 2
-        let pairedCount = differences.count - lag
-        guard pairedCount > 0 else { return nil }
-        var firstMeans = [Double](repeating: 0, count: 3)
-        var secondMeans = [Double](repeating: 0, count: 3)
-        for index in 0..<pairedCount {
-            for axis in 0..<3 {
-                firstMeans[axis] += differences[index][axis]
-                secondMeans[axis] += differences[index + lag][axis]
-            }
+        guard let lagOneAutocorrelation = gravityDifferenceAutocorrelation(
+                  differences,
+                  lag: 1
+              ),
+              let lagTwoAutocorrelation = gravityDifferenceAutocorrelation(
+                  differences,
+                  lag: 2
+              ) else {
+            return nil
         }
-        firstMeans = firstMeans.map { $0 / Double(pairedCount) }
-        secondMeans = secondMeans.map { $0 / Double(pairedCount) }
-        var covariance = 0.0
-        var firstEnergy = 0.0
-        var secondEnergy = 0.0
-        for index in 0..<pairedCount {
-            for axis in 0..<3 {
-                let firstValue = differences[index][axis] - firstMeans[axis]
-                let secondValue =
-                    differences[index + lag][axis] - secondMeans[axis]
-                covariance += firstValue * secondValue
-                firstEnergy += firstValue * firstValue
-                secondEnergy += secondValue * secondValue
-            }
-        }
-        let denominator = sqrt(firstEnergy * secondEnergy)
-        guard denominator.isFinite, denominator > 0 else { return nil }
-        let lagTwoAutocorrelation = covariance / denominator
         // The firmware-counter transition texture is the physically observed
         // locomotion discriminator. Band concentration, lag-two correlation,
         // and scalar amplitude are retained above for cadence/impact
@@ -1241,6 +1356,18 @@ enum AtriaWhoop4GravityCadenceStepModel {
         // gait gates.
         _ = bandPowerShare
         _ = lagTwoAutocorrelation
+        if policy.requiresAutonomousLocomotionShape,
+           gravityDeltaMagnitudeMAD
+            > maximumAutonomousShapeExemptGravityMAD {
+            guard lowFrequencyPowerShare
+                    >= minimumAutonomousLowFrequencyPowerShare,
+                  dominantFrequency
+                    <= maximumAutonomousDominantFrequencyHz,
+                  lagOneAutocorrelation
+                    >= minimumAutonomousLagOneAutocorrelation else {
+                return nil
+            }
+        }
         guard entropy >= policy.minimumSpectralEntropy else { return nil }
         return .init(
             ordinaryBandPowerShare: bandPowerShare,
@@ -1321,6 +1448,18 @@ enum AtriaWhoop4GravityCadenceStepModel {
 
         var anchors: [ClosedRange<Int>] = []
         var lower = 0
+        // Anchor the rolling grid to strap time, not to the first row handed
+        // to this invocation. A daily bank/page boundary can move by one row
+        // after reconnect; input-relative windows then changed both the
+        // detected gait boundary and the published quantity for the same
+        // physical walk. Absolute phasing makes independently reconstructed
+        // fragments choose the same anchors.
+        var nextAnchorStart =
+            ceil(first.timestamp / anchorStride) * anchorStride
+        while lower < ordered.count,
+              ordered[lower].timestamp < nextAnchorStart {
+            lower += 1
+        }
         while lower < ordered.count - 1 {
             let start = ordered[lower].timestamp
             var upper = lower
@@ -1332,14 +1471,14 @@ enum AtriaWhoop4GravityCadenceStepModel {
                qualifiedOrdinaryBandPowerShare(
                    points: Array(ordered[lower...upper]),
                    policy: .autonomousAnchor
-               ) != nil {
+                ) != nil {
                 anchors.append(lower...upper)
             }
-            let nextStart = start + anchorStride
-            repeat {
+            nextAnchorStart += anchorStride
+            while lower < ordered.count,
+                  ordered[lower].timestamp < nextAnchorStart {
                 lower += 1
-            } while lower < ordered.count
-                && ordered[lower].timestamp < nextStart
+            }
         }
         guard !anchors.isEmpty else { return [] }
 
@@ -1351,10 +1490,20 @@ enum AtriaWhoop4GravityCadenceStepModel {
             var probe = expandedLower
             while probe > 0,
                   ordered[probe - 1].timestamp >= lowerLimit {
-                if admittedTickDelta(
+                let hasCounterMotion = admittedTickDelta(
                     from: ordered[probe - 1],
                     to: ordered[probe]
-                ).map({ $0 > 0 }) == true {
+                ).map({ $0 > 0 }) == true
+                let dx = ordered[probe].gravityX
+                    - ordered[probe - 1].gravityX
+                let dy = ordered[probe].gravityY
+                    - ordered[probe - 1].gravityY
+                let dz = ordered[probe].gravityZ
+                    - ordered[probe - 1].gravityZ
+                let hasBoundaryMotion =
+                    sqrt(dx * dx + dy * dy + dz * dz)
+                        >= minimumGaitBoundaryGravityDelta
+                if hasCounterMotion || hasBoundaryMotion {
                     expandedLower = probe - 1
                 }
                 probe -= 1
@@ -1364,10 +1513,20 @@ enum AtriaWhoop4GravityCadenceStepModel {
             probe = expandedUpper + 1
             while probe < ordered.count,
                   ordered[probe].timestamp <= upperLimit {
-                if admittedTickDelta(
+                let hasCounterMotion = admittedTickDelta(
                     from: ordered[probe - 1],
                     to: ordered[probe]
-                ).map({ $0 > 0 }) == true {
+                ).map({ $0 > 0 }) == true
+                let dx = ordered[probe].gravityX
+                    - ordered[probe - 1].gravityX
+                let dy = ordered[probe].gravityY
+                    - ordered[probe - 1].gravityY
+                let dz = ordered[probe].gravityZ
+                    - ordered[probe - 1].gravityZ
+                let hasBoundaryMotion =
+                    sqrt(dx * dx + dy * dy + dz * dz)
+                        >= minimumGaitBoundaryGravityDelta
+                if hasCounterMotion || hasBoundaryMotion {
                     expandedUpper = probe
                 }
                 probe += 1
@@ -1425,6 +1584,23 @@ enum AtriaWhoop4GravityCadenceStepModel {
         autonomousGaitBouts(in: canonical(points)).map(\.estimate)
     }
 
+    static func autonomousGaitBoutDiagnostics(
+        points: [Point]
+    ) -> [AutonomousBoutDiagnostic] {
+        let ordered = canonical(points)
+        return autonomousGaitBouts(in: ordered).compactMap { bout in
+            guard bout.range.lowerBound < ordered.count,
+                  bout.range.upperBound < ordered.count else {
+                return nil
+            }
+            return .init(
+                startTimestamp: ordered[bout.range.lowerBound].timestamp,
+                endTimestamp: ordered[bout.range.upperBound].timestamp,
+                estimate: bout.estimate
+            )
+        }
+    }
+
     private static func strapMotionContinues(
         in points: [Point],
         from lower: Int,
@@ -1442,6 +1618,7 @@ enum AtriaWhoop4GravityCadenceStepModel {
             return false
         }
         var magnitudes: [Double] = []
+        var stationaryRun: TimeInterval = 0
         for index in (lower + 1)...upper {
             let gap = points[index].timestamp - points[index - 1].timestamp
             guard gap > 0,
@@ -1451,7 +1628,16 @@ enum AtriaWhoop4GravityCadenceStepModel {
             let dx = points[index].gravityX - points[index - 1].gravityX
             let dy = points[index].gravityY - points[index - 1].gravityY
             let dz = points[index].gravityZ - points[index - 1].gravityZ
-            magnitudes.append(sqrt(dx * dx + dy * dy + dz * dz))
+            let magnitude = sqrt(dx * dx + dy * dy + dz * dz)
+            magnitudes.append(magnitude)
+            if magnitude <= 0.005 {
+                stationaryRun += gap
+                guard stationaryRun <= 10 else {
+                    return false
+                }
+            } else {
+                stationaryRun = 0
+            }
         }
         guard magnitudes.count >= 4 else { return false }
         let mean = magnitudes.reduce(0, +) / Double(magnitudes.count)
@@ -1813,6 +1999,42 @@ enum AtriaWhoop4GravityCadenceStepModel {
             return (ordered[middle - 1] + ordered[middle]) / 2
         }
         return ordered[middle]
+    }
+
+    private static func gravityDifferenceAutocorrelation(
+        _ differences: [[Double]],
+        lag: Int
+    ) -> Double? {
+        guard lag > 0 else { return nil }
+        let pairedCount = differences.count - lag
+        guard pairedCount > 0 else { return nil }
+        var firstMeans = [Double](repeating: 0, count: 3)
+        var secondMeans = [Double](repeating: 0, count: 3)
+        for index in 0..<pairedCount {
+            for axis in 0..<3 {
+                firstMeans[axis] += differences[index][axis]
+                secondMeans[axis] += differences[index + lag][axis]
+            }
+        }
+        firstMeans = firstMeans.map { $0 / Double(pairedCount) }
+        secondMeans = secondMeans.map { $0 / Double(pairedCount) }
+        var covariance = 0.0
+        var firstEnergy = 0.0
+        var secondEnergy = 0.0
+        for index in 0..<pairedCount {
+            for axis in 0..<3 {
+                let firstValue = differences[index][axis] - firstMeans[axis]
+                let secondValue =
+                    differences[index + lag][axis] - secondMeans[axis]
+                covariance += firstValue * secondValue
+                firstEnergy += firstValue * firstValue
+                secondEnergy += secondValue * secondValue
+            }
+        }
+        let denominator = sqrt(firstEnergy * secondEnergy)
+        guard denominator.isFinite, denominator > 0 else { return nil }
+        let result = covariance / denominator
+        return result.isFinite ? result : nil
     }
 
     private static func motionBurstContinues(

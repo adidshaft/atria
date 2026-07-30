@@ -169,7 +169,10 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertEqual(state.kind, .active)
         XCTAssertNil(state.level)
         let presentation = AtriaStressPresentation.make(state: state)
-        XCTAssertEqual(presentation.value, "Active")
+        XCTAssertEqual(
+            presentation.value,
+            AtriaCompactMetricPresentation.noValue
+        )
         XCTAssertEqual(presentation.detail, "Paused during activity")
         XCTAssertTrue(presentation.narrative.contains("pauses during activity"))
     }
@@ -233,7 +236,10 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertEqual(state.kind, .noSignal)
         XCTAssertNil(state.level)
         let presentation = AtriaStressPresentation.make(state: state)
-        XCTAssertEqual(presentation.value, "No signal")
+        XCTAssertEqual(
+            presentation.value,
+            AtriaCompactMetricPresentation.noValue
+        )
         XCTAssertEqual(presentation.detail, "Waiting for a fresh strap signal")
     }
 
@@ -256,8 +262,10 @@ final class AtriaStressMonitorTests: XCTestCase {
 
         let presentation = AtriaStressPresentation.make(state: state)
         XCTAssertEqual(state.kind, .calibrating)
-        XCTAssertEqual(presentation.value,
-                       "Calibrating (\(PersonalBaseline.trustedMinimumSamples - 1)/\(PersonalBaseline.trustedMinimumSamples))")
+        XCTAssertEqual(
+            presentation.value,
+            AtriaCompactMetricPresentation.noValue
+        )
         XCTAssertEqual(presentation.detail, "Building your personal HR baseline")
         XCTAssertFalse(presentation.value.contains("/3"))
     }

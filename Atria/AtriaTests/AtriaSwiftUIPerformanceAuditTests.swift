@@ -27,6 +27,47 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
         return try String(contentsOf: appURL.appendingPathComponent(relativePath), encoding: .utf8)
     }
 
+    func testHistoricalIngressCacheNeverSynchronizesOnMainActorHotPath() throws {
+        let spool = try appSource("AtriaWhoop4HistoricalIngressSpool.swift")
+        let appendStart = try XCTUnwrap(spool.range(of: "func append(_ event: Event) throws"))
+        let popStart = try XCTUnwrap(spool.range(
+            of: "func popFirst() throws",
+            range: appendStart.upperBound..<spool.endIndex
+        ))
+        let createStart = try XCTUnwrap(spool.range(of: "private func create() throws"))
+        let reopenStart = try XCTUnwrap(spool.range(
+            of: "private func reopen() throws",
+            range: createStart.upperBound..<spool.endIndex
+        ))
+        let encodeStart = try XCTUnwrap(spool.range(
+            of: "private func encode(_ event: Event) throws",
+            range: reopenStart.upperBound..<spool.endIndex
+        ))
+        for body in [
+            String(spool[appendStart.lowerBound..<popStart.lowerBound]),
+            String(spool[createStart.lowerBound..<reopenStart.lowerBound]),
+            String(spool[reopenStart.lowerBound..<encodeStart.lowerBound]),
+        ] {
+            XCTAssertFalse(
+                body.contains(".synchronize()"),
+                "Non-authoritative ingress cache I/O must not fsync on the BLE/MainActor path"
+            )
+        }
+
+        let manager = try appSource("AtriaBLEManager.swift")
+        let finishStart = try XCTUnwrap(manager.range(
+            of: "private func finishOfflineHistoricalSync("
+        ))
+        let finalizeStart = try XCTUnwrap(manager.range(
+            of: "private func finalizeOfflineHistoricalSyncAfterLiveRestoration(",
+            range: finishStart.upperBound..<manager.endIndex
+        ))
+        let finish = String(
+            manager[finishStart.lowerBound..<finalizeStart.lowerBound]
+        )
+        XCTAssertFalse(finish.contains("historicalIngressSpool?.synchronize()"))
+    }
+
     func testAutomaticSessionBackupUsesCoalescingOffMainWorker() throws {
         let sessions = try appSource("Sessions.swift")
         let start = try XCTUnwrap(sessions.range(of: "private func writeAutomaticSessionBackup("))

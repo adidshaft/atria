@@ -228,8 +228,11 @@ enum AtriaWorkoutSharePresentation {
         guard [.walking, .running, .hiking].contains(activity),
               let count,
               count >= 0 else { return nil }
-        guard !(isEstimated == true && count == 0) else { return nil }
-        return isEstimated == true ? "~\(count)" : "\(count)"
+        // The only current estimated workout source is the disproven sparse
+        // v24 cadence model. Sharing accepts detector-measured strap steps
+        // only; a research estimate must never look like a workout result.
+        guard isEstimated == false else { return nil }
+        return "\(count)"
     }
 
     /// A completed-workout card must never turn an in-flight/stale counter into

@@ -42,6 +42,113 @@ final class AtriaBLEHistoryTransportPhaseFenceTests: XCTestCase {
         XCTAssertFalse(fence.activate(generation: 22).usesExplicitHistoryProfile)
     }
 
+    func testRealtimeRestoreRetiresOnlyExactGenerationAndBindsExactEpoch() {
+        let fence = AtriaBLEHistoryTransportPhaseFence()
+        let peripheralID = UUID()
+        let peripheral = NSObject()
+        let objectID = ObjectIdentifier(peripheral)
+        _ = fence.activate(generation: 31)
+
+        XCTAssertTrue(fence.retireForRealtimeRestore(
+            ifMatching: 31,
+            peripheralID: peripheralID
+        ))
+        XCTAssertFalse(fence.snapshot().isActive)
+        XCTAssertEqual(fence.claimRealtimeRestore(
+            peripheralID: peripheralID,
+            peripheralObjectID: objectID,
+            callbackEpoch: 4
+        ), 31)
+        XCTAssertTrue(fence.acceptsRealtimeRestoreClaim(
+            peripheralID: peripheralID,
+            peripheralObjectID: objectID,
+            interruptedGeneration: 31,
+            callbackEpoch: 4
+        ))
+        XCTAssertFalse(fence.settleRealtimeRestoreClaim(
+            peripheralID: peripheralID,
+            peripheralObjectID: objectID,
+            interruptedGeneration: 31,
+            callbackEpoch: 3
+        ), "a stale callback epoch must not consume the handoff")
+        XCTAssertTrue(fence.settleRealtimeRestoreClaim(
+            peripheralID: peripheralID,
+            peripheralObjectID: objectID,
+            interruptedGeneration: 31,
+            callbackEpoch: 4
+        ))
+        XCTAssertNil(fence.realtimeRestoreHandoffSnapshot())
+    }
+
+    func testRealtimeRestoreCannotRetireOrOverrideNewerGeneration() {
+        let fence = AtriaBLEHistoryTransportPhaseFence()
+        let peripheralID = UUID()
+        _ = fence.activate(generation: 40)
+        _ = fence.activate(generation: 41)
+
+        XCTAssertFalse(fence.retireForRealtimeRestore(
+            ifMatching: 40,
+            peripheralID: peripheralID
+        ))
+        XCTAssertEqual(fence.snapshot().generation, 41)
+        XCTAssertNil(fence.realtimeRestoreHandoffSnapshot())
+    }
+
+    func testFreshHistoryActivationInvalidatesOlderRealtimeRestoreHandoff() {
+        let fence = AtriaBLEHistoryTransportPhaseFence()
+        let peripheralID = UUID()
+        let peripheral = NSObject()
+        _ = fence.activate(generation: 50)
+        XCTAssertTrue(fence.retireForRealtimeRestore(
+            ifMatching: 50,
+            peripheralID: peripheralID
+        ))
+
+        _ = fence.activate(generation: 51)
+
+        XCTAssertEqual(fence.snapshot().generation, 51)
+        XCTAssertNil(fence.claimRealtimeRestore(
+            peripheralID: peripheralID,
+            peripheralObjectID: ObjectIdentifier(peripheral),
+            callbackEpoch: 8
+        ))
+    }
+
+    func testStaleConnectedCallbackCanBeReboundWithoutClearingHandoff() {
+        let fence = AtriaBLEHistoryTransportPhaseFence()
+        let peripheralID = UUID()
+        let stalePeripheral = NSObject()
+        let currentPeripheral = NSObject()
+        _ = fence.activate(generation: 60)
+        XCTAssertTrue(fence.retireForRealtimeRestore(
+            ifMatching: 60,
+            peripheralID: peripheralID
+        ))
+        XCTAssertEqual(fence.claimRealtimeRestore(
+            peripheralID: peripheralID,
+            peripheralObjectID: ObjectIdentifier(stalePeripheral),
+            callbackEpoch: 10
+        ), 60)
+
+        XCTAssertEqual(fence.claimRealtimeRestore(
+            peripheralID: peripheralID,
+            peripheralObjectID: ObjectIdentifier(currentPeripheral),
+            callbackEpoch: 11
+        ), 60)
+        XCTAssertFalse(fence.acceptsRealtimeRestoreClaim(
+            peripheralID: peripheralID,
+            peripheralObjectID: ObjectIdentifier(stalePeripheral),
+            interruptedGeneration: 60,
+            callbackEpoch: 10
+        ))
+        XCTAssertTrue(fence.acceptsRealtimeRestoreClaim(
+            peripheralID: peripheralID,
+            peripheralObjectID: ObjectIdentifier(currentPeripheral),
+            interruptedGeneration: 60,
+            callbackEpoch: 11
+        ))
+    }
+
     func testProtectedV9HistoryDiscoveryUsesGenericHistoryRoute() {
         XCTAssertFalse(AtriaBLEManager.shouldUseProtectedV9CharacteristicHandler(
             standardHROnlyMode: true,

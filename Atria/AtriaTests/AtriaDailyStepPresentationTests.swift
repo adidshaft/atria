@@ -38,7 +38,8 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
                                     stepCount: 8_412,
                                     known: 8_412,
                                     covered: 86_400,
-                                    missing: 0)],
+                                    missing: 0,
+                                    end: capturedAt)],
             calendar: utcCalendar
         )
 
@@ -46,6 +47,34 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.source, .verifiedCanonical)
         XCTAssertEqual(value.completeness, .complete)
         XCTAssertEqual(value.detailText, "Today so far · verified")
+    }
+
+    func testAgedExactOpenCycleReceiptKeepsCountAndNamesCaptureTime() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        let capturedAt = now.addingTimeInterval(-2 * 3_600)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: now,
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [stepDay(state: .available,
+                                    stepCount: 4_321,
+                                    known: 4_321,
+                                    covered: 12 * 3_600,
+                                    missing: 0,
+                                    end: capturedAt)],
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.valueText, "4321")
+        XCTAssertEqual(value.completeness, .complete)
+        XCTAssertEqual(value.source, .verifiedCanonical)
+        XCTAssertEqual(value.capturedAt, capturedAt)
+        XCTAssertFalse(value.openCycleReceiptIsCurrent)
+        XCTAssertTrue(value.detailText.hasPrefix("Verified through "))
+        XCTAssertFalse(value.detailText.contains("Today so far"))
+        XCTAssertTrue(value.accessibilityText.contains("steps. Verified through "))
     }
 
     func testPartialCanonicalCoverageUsesLowerBoundLabel() {
@@ -105,6 +134,29 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertFalse(value.isValidated)
         XCTAssertEqual(value.valueText, "--")
         XCTAssertEqual(value.detailText, "Strap motion is still validating")
+    }
+
+    func testDisprovenLiveModelFailsClosedEvenWhenStateSaysValidated() {
+        let capturedAt = day.addingTimeInterval(14 * 3_600)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: capturedAt,
+            liveCount: 4_257,
+            liveValidationState: "validated",
+            liveCapturedAt: capturedAt,
+            canonicalDays: [],
+            liveAuthorityQualified: false,
+            calendar: utcCalendar
+        )
+
+        XCTAssertNil(value.count)
+        XCTAssertFalse(value.isValidated)
+        XCTAssertEqual(value.valueText, "--")
+        XCTAssertEqual(value.unavailabilityReason, .stepModelNotQualified)
+        XCTAssertEqual(
+            value.detailText,
+            "Strap step model is still validating"
+        )
     }
 
     func testPostMidnightLiveStrapTotalStaysVisibleUntilCompletedSleep() {
@@ -311,11 +363,12 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         stepCount: Int?,
         known: Int,
         covered: Int,
-        missing: Int
+        missing: Int,
+        end: Date? = nil
     ) -> AtriaHistoricalDailyConsumerProjection.StepDay {
         .init(localDay: "2033-07-02",
               dayStart: day,
-              dayEnd: day.addingTimeInterval(86_400),
+              dayEnd: end ?? day.addingTimeInterval(86_400),
               state: state,
               stepCount: stepCount,
               knownStepDeltaSum: known,

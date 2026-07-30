@@ -209,6 +209,17 @@ extension AtriaBLEManager {
         return receivedAt >= connectionStartedAt
     }
 
+    /// Historical/proprietary frames are an archive transport, not a current
+    /// Battery Service authority. Some WHOOP 4 drains contain event-shaped
+    /// payloads with an old SOC; allowing those to overwrite 2A19 made the
+    /// visible percentage jump during a history repair. Current 2A19/2A1B
+    /// callbacks remain independently accepted on their own paths.
+    nonisolated static func batteryEventMayUpdateProjection(
+        historyTransportActive: Bool
+    ) -> Bool {
+        !historyTransportActive
+    }
+
     /// 2A1B is subscribed, never read. A value is therefore usable as a
     /// present-power indication only if the CCCD enable completed in this
     /// process and (when known) after the current link began.

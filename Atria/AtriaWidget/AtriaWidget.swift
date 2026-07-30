@@ -41,6 +41,7 @@ private let atriaHeartRateFreshness: TimeInterval = 90
 // Live Activity remains stricter because ActivityKit receives its own frequent
 // workout updates.
 private let atriaStaticStepFreshness: TimeInterval = 90
+private let atriaQualifiedStepAuthorityVersion = "strap-steps-release-v1"
 private let atriaBatteryFreshness: TimeInterval = 10 * 60
 private let atriaBatteryChargeFreshness: TimeInterval = 90
 // Cumulative day strain is a durable wake-to-wake aggregate, not a live HR
@@ -84,9 +85,14 @@ private func atriaFreshStaticSensorValue<Value>(_ value: Value?,
 
 /// Canonical step evidence is a durable wake-to-wake subtotal/total. It is
 /// bounded by its physiological cycle, not by the 90-second live radio clock.
-/// Legacy snapshots without provenance retain the former freshness policy.
+/// Legacy snapshots lack the current release-authority revision and fail
+/// closed even if a pre-update v15 subtotal was marked canonical.
 private func atriaCurrentStepValue(_ snapshot: AtriaWidgetSnapshot,
                                    now: Date) -> Int? {
+    guard snapshot.stepsAuthorityVersion
+            == atriaQualifiedStepAuthorityVersion else {
+        return nil
+    }
     if snapshot.stepsSource == "verifiedCanonical" {
         guard let steps = snapshot.steps,
               let cycleStart = snapshot.stepsCycleStart,
@@ -182,6 +188,7 @@ struct AtriaWidgetSnapshot: Codable {
     var stepsSource: String? = nil
     var stepsCompleteness: String? = nil
     var stepsCoverageFraction: Double? = nil
+    var stepsAuthorityVersion: String? = nil
     var stepsCycleStart: Date? = nil
     var stepsCycleExpiresAt: Date? = nil
     var dailyStepGoal: Int? = nil
@@ -1882,7 +1889,14 @@ enum AtriaWidgetMetric: String, Identifiable {
                 }
                 if let cycleExpiresAt = snapshot.stepsCycleExpiresAt,
                    cycleExpiresAt > now {
-                    return "Today so far · verified"
+                    guard let capturedAt = snapshot.stepsCapturedAt else {
+                        return "Verified earlier in this cycle"
+                    }
+                    let age = now.timeIntervalSince(capturedAt)
+                    return age >= -atriaStaticSensorFutureTolerance
+                        && age <= atriaStaticStepFreshness
+                        ? "Today so far · verified"
+                        : "Verified through \(atriaCaptureTimeText(capturedAt))"
                 }
                 return "Verified complete day"
             }

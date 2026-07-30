@@ -128,7 +128,10 @@ final class AtriaMetricTruthUXTests: XCTestCase {
             "if let cycleExpiresAt = snapshot.stepsCycleExpiresAt,\n                   cycleExpiresAt > now"
         ))
         XCTAssertTrue(widget.contains(
-            "return \"Today so far · verified\""
+            "? \"Today so far · verified\""
+        ))
+        XCTAssertTrue(widget.contains(
+            ": \"Verified through \\(atriaCaptureTimeText(capturedAt))\""
         ))
     }
 
@@ -186,5 +189,40 @@ final class AtriaMetricTruthUXTests: XCTestCase {
         XCTAssertTrue(health.contains(
             "guard summary.isReady else { return .secondary }"
         ))
+    }
+
+    func testTodayWristTemperatureUsesCanonicalNoValueProjection() throws {
+        let today = try source("AtriaTodayScreen.swift")
+        let bodyTemperatureStart = try XCTUnwrap(
+            today.range(of: "case .bodyTemp:")
+        )
+        let nextCase = try XCTUnwrap(
+            today.range(
+                of: "case .trend:",
+                range: bodyTemperatureStart.upperBound..<today.endIndex
+            )
+        )
+        let bodyTemperature = String(
+            today[bodyTemperatureStart.lowerBound..<nextCase.lowerBound]
+        )
+
+        XCTAssertTrue(bodyTemperature.contains(
+            "AtriaExperimentalSensorCopy\n                                            .skinTemperatureValue("
+        ))
+        XCTAssertFalse(bodyTemperature.contains(
+            "decoderAvailable ? skinTemp.valueText : \"\\u{2014}\""
+        ))
+        XCTAssertEqual(
+            AtriaExperimentalSensorCopy.skinTemperatureValue(
+                summary: .init(
+                    latestDeltaCelsius: nil,
+                    baselineSessions: 0,
+                    candidateFrames: 0,
+                    candidateValues: 0
+                ),
+                decoderAvailable: false
+            ),
+            AtriaCompactMetricPresentation.noValue
+        )
     }
 }

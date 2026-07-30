@@ -29,6 +29,7 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         case unvalidatedLiveReceipt
         case motionObservedCountUnresolved
         case conflictingExactReceipts
+        case stepModelNotQualified
     }
 
     let day: Date
@@ -44,6 +45,10 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     /// separate so an exact "today so far" count is never described as a
     /// completed day.
     var isOpenCycle: Bool = false
+    /// A durable exact subtotal remains exact after its collection clock ages,
+    /// but it no longer describes the current edge of an open physiological
+    /// cycle. Keep the count and make that time boundary explicit in copy.
+    var openCycleReceiptIsCurrent: Bool = false
 
     var valueText: String {
         guard let count else { return "--" }
@@ -57,7 +62,12 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     var detailText: String {
         switch (source, completeness) {
         case (.verifiedCanonical, .complete):
-            return isOpenCycle ? "Today so far · verified" : "Verified complete day"
+            if isOpenCycle {
+                return openCycleReceiptIsCurrent
+                    ? "Today so far · verified"
+                    : verifiedThroughText
+            }
+            return "Verified complete day"
         case (.verifiedCanonical, .partial):
             if let coverageFraction {
                 return "Partial archive · \(Int((coverageFraction * 100).rounded()))% covered"
@@ -75,6 +85,8 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                 return "Strap motion found · count still resolving"
             case .conflictingExactReceipts:
                 return "Conflicting verified strap receipts"
+            case .stepModelNotQualified:
+                return "Strap step model is still validating"
             case .none, .noCurrentCycleReceipt:
                 return "No verified receipt for this cycle"
             }
@@ -85,9 +97,12 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         guard let count else { return "Step count unavailable. \(detailText)." }
         switch (source, completeness) {
         case (.verifiedCanonical, .complete):
-            return isOpenCycle
-                ? "\(count) verified steps today so far."
-                : "\(count) steps. Verified complete day."
+            if isOpenCycle {
+                return openCycleReceiptIsCurrent
+                    ? "\(count) verified steps today so far."
+                    : "\(count) steps. \(verifiedThroughText)."
+            }
+            return "\(count) steps. Verified complete day."
         case (.verifiedCanonical, .partial):
             return "At least \(count) steps. Partial verified archive coverage."
         case (.live, .partial):
@@ -97,6 +112,11 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         }
     }
 
+    private var verifiedThroughText: String {
+        guard let capturedAt else { return "Verified earlier in this cycle" }
+        return "Verified through \(capturedAt.formatted(date: .omitted, time: .shortened))"
+    }
+
     static func resolve(
         day: Date,
         now: Date,
@@ -104,6 +124,11 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         liveValidationState: String,
         liveCapturedAt: Date?,
         canonicalDays: [AtriaHistoricalDailyConsumerProjection.StepDay],
+        /// The connected live detector is a product source only after the same
+        /// model has passed autonomous counted walks and arm-motion controls.
+        /// Research counters remain available to diagnostics but cannot leak
+        /// onto Home or widgets.
+        liveAuthorityQualified: Bool = true,
         /// Live strap totals are attributed wake-to-wake. When a completed
         /// main sleep has not arrived, this can deliberately begin on the
         /// preceding civil date; a fresh post-midnight sample must still be
@@ -149,14 +174,20 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         // Conflicting exact generations are withheld instead of selecting a
         // convenient number. A later repaired page can resolve the conflict.
         if completeCounts.count == 1, let exact = completeCounts.first {
+            let capturedAt = matching.map(\.dayEnd).max()
+            let capturedAge = capturedAt.map { now.timeIntervalSince($0) }
+            let openCycleReceiptIsCurrent = capturedAge.map {
+                $0 >= -5 && $0 <= liveEvidenceMaximumAge
+            } ?? false
             return .init(day: dayStart,
                          count: exact,
                          completeness: .complete,
                          source: .verifiedCanonical,
                          isValidated: true,
-                         capturedAt: matching.map(\.dayEnd).max(),
+                         capturedAt: capturedAt,
                          coverageFraction: 1,
-                         isOpenCycle: isOpenDay)
+                         isOpenCycle: isOpenDay,
+                         openCycleReceiptIsCurrent: openCycleReceiptIsCurrent)
         }
         if completeCounts.count > 1 {
             return .init(day: dayStart,
@@ -203,7 +234,10 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         // detector-applied coordinate is fresh. A restored prefix is retained
         // in the strap detail view as "Not live", but it cannot silently
         // masquerade as today's current count.
-        if isOpenDay, liveBelongsToDay, liveIsValidated {
+        if liveAuthorityQualified,
+           isOpenDay,
+           liveBelongsToDay,
+           liveIsValidated {
             return .init(day: dayStart,
                          count: max(0, liveCount),
                          completeness: .partial,
@@ -221,12 +255,15 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                      capturedAt: nil,
                      coverageFraction: nil,
                      unavailabilityReason:
-                        hasUnresolvedMotionReceipt
+                        !liveAuthorityQualified
+                            ? .stepModelNotQualified
+                            : (hasUnresolvedMotionReceipt
                             ? .motionObservedCountUnresolved
                             : (liveCapturedAt == nil
                                 ? .noCurrentCycleReceipt
                                 : (liveBelongsToDay
-                                   ? .unvalidatedLiveReceipt : .staleLiveReceipt)),
+                                   ? .unvalidatedLiveReceipt
+                                   : .staleLiveReceipt))),
                      isOpenCycle: isOpenDay)
     }
 }

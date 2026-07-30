@@ -115,6 +115,14 @@ final class AtriaHistoricalArchiveDurableStore {
         fileprivate let identifier = UUID()
         fileprivate var keys = Set<String>()
         fileprivate var dirtyURLs = Set<URL>()
+        /// Raw and identity JSONL handles are retained only until this exact
+        /// durability boundary. Reopening both files for every served frame
+        /// was the dominant Foundation I/O stack in long history drains.
+        fileprivate var writeHandles: [String: FileHandle] = [:]
+        /// SQLite is an acceleration cache, not ACK authority. Publish its
+        /// hints in bounded transactions after the canonical receipt succeeds
+        /// instead of committing one transaction per frame.
+        fileprivate var lookupEntries: [String: IndexEntry] = [:]
         fileprivate var lastReceipt: FlushReceipt?
 
         fileprivate init() {}
@@ -252,7 +260,7 @@ final class AtriaHistoricalArchiveDurableStore {
         let chainSHA256: String
     }
 
-    private struct IndexEntry: Codable, Equatable {
+    fileprivate struct IndexEntry: Codable, Equatable {
         let version: Int
         let key: String
         let observedAtUnix: TimeInterval
@@ -424,12 +432,34 @@ final class AtriaHistoricalArchiveDurableStore {
         try loadAndVerifyReceiptState()
     }
 
+    deinit {
+        for batch in openBatches.values {
+            for handle in batch.writeHandles.values {
+                try? handle.close()
+            }
+        }
+    }
+
     func beginDrainBatch() -> DrainBatch {
         lock.lock()
         defer { lock.unlock() }
         let batch = DrainBatch()
         openBatches[batch.identifier] = batch
         return batch
+    }
+
+    /// Ends only the process-local write lease for an unacknowledged batch.
+    /// Complete JSONL rows remain on disk and are safely replayed because no
+    /// durability receipt was issued.
+    func abandon(_ batch: DrainBatch) {
+        lock.lock()
+        defer { lock.unlock() }
+        for handle in batch.writeHandles.values {
+            try? handle.close()
+        }
+        batch.writeHandles.removeAll(keepingCapacity: false)
+        batch.lookupEntries.removeAll(keepingCapacity: false)
+        openBatches.removeValue(forKey: batch.identifier)
     }
 
     /// Adds an already archived exact identity to a later durability boundary
@@ -450,10 +480,10 @@ final class AtriaHistoricalArchiveDurableStore {
         }
         batch.keys.insert(key)
         if !state.indexed {
-            try appendIndex(state.entry)
+            try appendIndex(state.entry, batch: batch)
             state.indexed = true
             statesByKey[key] = state
-            upsertLiveIdentityLookupBestEffort(state.entry)
+            batch.lookupEntries[state.entry.key] = state.entry
         }
         if !state.durable {
             batch.dirtyURLs.insert(URL(fileURLWithPath: state.entry.archivePath).standardizedFileURL)
@@ -482,10 +512,10 @@ final class AtriaHistoricalArchiveDurableStore {
             if !existing.durable {
                 batch.dirtyURLs.insert(URL(fileURLWithPath: existing.entry.archivePath).standardizedFileURL)
                 if !existing.indexed {
-                    try appendIndex(existing.entry)
+                    try appendIndex(existing.entry, batch: batch)
                     existing.indexed = true
                     statesByKey[key] = existing
-                    upsertLiveIdentityLookupBestEffort(existing.entry)
+                    batch.lookupEntries[existing.entry.key] = existing.entry
                 }
                 batch.dirtyURLs.insert(indexURL)
             }
@@ -502,14 +532,13 @@ final class AtriaHistoricalArchiveDurableStore {
             fileManager.createFile(atPath: archiveURL.path, contents: nil)
         }
 
-        let handle = try FileHandle(forWritingTo: archiveURL)
         let offset: UInt64
         do {
+            let handle = try writeHandle(for: archiveURL, batch: batch)
             offset = try handle.seekToEnd()
             try handle.write(contentsOf: line)
-            try handle.close()
         } catch {
-            try? handle.close()
+            closeWriteHandle(for: archiveURL, batch: batch)
             _ = try? Self.repairTornJSONLTail(at: archiveURL)
             throw error
         }
@@ -531,10 +560,10 @@ final class AtriaHistoricalArchiveDurableStore {
         batch.dirtyURLs.insert(archiveURL)
 
         do {
-            try appendIndex(entry)
+            try appendIndex(entry, batch: batch)
             statesByKey[key]?.indexed = true
             batch.dirtyURLs.insert(indexURL)
-            upsertLiveIdentityLookupBestEffort(entry)
+            batch.lookupEntries[entry.key] = entry
         } catch {
             // The archive line is already complete and discoverable. Preserve
             // its pending state so a retry can rebuild and flush the index.
@@ -561,12 +590,13 @@ final class AtriaHistoricalArchiveDurableStore {
 
         for key in batch.keys {
             guard var state = statesByKey[key], !state.indexed else { continue }
-            try appendIndex(state.entry)
+            try appendIndex(state.entry, batch: batch)
             state.indexed = true
             statesByKey[key] = state
             batch.dirtyURLs.insert(indexURL)
-            upsertLiveIdentityLookupBestEffort(state.entry)
+            batch.lookupEntries[state.entry.key] = state.entry
         }
+        try closeWriteHandles(in: batch)
 
         let dirtyArchiveURLs = batch.dirtyURLs
             .filter { $0.standardizedFileURL != indexURL }
@@ -659,6 +689,10 @@ final class AtriaHistoricalArchiveDurableStore {
         receiptChainSHA256 = chain
         batch.lastReceipt = receipt
         openBatches.removeValue(forKey: batch.identifier)
+        populateLiveIdentityLookupBestEffort(
+            entries: Array(batch.lookupEntries.values)
+        )
+        batch.lookupEntries.removeAll(keepingCapacity: false)
         // This snapshot is strictly an acceleration cache. Keep its O(total
         // index size) rebuild out of almost every page ACK; the receipt above
         // is already the restart-safe durability authority.
@@ -1632,21 +1666,77 @@ final class AtriaHistoricalArchiveDurableStore {
     }
 
     private func appendIndex(_ entry: IndexEntry) throws {
+        try appendIndex(entry, batch: nil)
+    }
+
+    private func appendIndex(
+        _ entry: IndexEntry,
+        batch: DrainBatch?
+    ) throws {
         try fileManager.createDirectory(at: indexURL.deletingLastPathComponent(),
                                         withIntermediateDirectories: true)
         if !fileManager.fileExists(atPath: indexURL.path) {
             fileManager.createFile(atPath: indexURL.path, contents: nil)
         }
         let line = try encodedIndexLine(entry)
-        let handle = try FileHandle(forWritingTo: indexURL)
+        let handle: FileHandle
+        if let batch {
+            handle = try writeHandle(for: indexURL, batch: batch)
+        } else {
+            handle = try FileHandle(forWritingTo: indexURL)
+        }
         do {
             _ = try handle.seekToEnd()
             try handle.write(contentsOf: line)
-            try handle.close()
+            if batch == nil {
+                try handle.close()
+            }
         } catch {
-            try? handle.close()
+            if let batch {
+                closeWriteHandle(for: indexURL, batch: batch)
+            } else {
+                try? handle.close()
+            }
             throw error
         }
+    }
+
+    private func writeHandle(
+        for url: URL,
+        batch: DrainBatch
+    ) throws -> FileHandle {
+        let canonical = url.standardizedFileURL
+        if let handle = batch.writeHandles[canonical.path] {
+            return handle
+        }
+        let handle = try FileHandle(forWritingTo: canonical)
+        batch.writeHandles[canonical.path] = handle
+        return handle
+    }
+
+    private func closeWriteHandle(
+        for url: URL,
+        batch: DrainBatch
+    ) {
+        let canonical = url.standardizedFileURL
+        guard let handle = batch.writeHandles.removeValue(
+            forKey: canonical.path
+        ) else { return }
+        try? handle.close()
+    }
+
+    private func closeWriteHandles(in batch: DrainBatch) throws {
+        let handles = Array(batch.writeHandles.values)
+        batch.writeHandles.removeAll(keepingCapacity: false)
+        var firstError: Error?
+        for handle in handles {
+            do {
+                try handle.close()
+            } catch {
+                firstError = firstError ?? error
+            }
+        }
+        if let firstError { throw firstError }
     }
 
     private func rebuildDerivedIndex(with entries: [IndexEntry]) throws {

@@ -177,7 +177,7 @@ remain in the append-only log below, but do not override a later physical pass.
 | 1 — locked reconnect | **PASS — sealed** | `evidence/2026-07-26-gate-1-accepted.md` |
 | 2 — exact historical recovery | **PASS — sealed** | `evidence/2026-07-28-gate2-generation-fix/terminal-physical/acceptance.md` |
 | 3 — manual workout reliability | **PASS — sealed** | `evidence/2026-07-28-gate3-manual-workout/acceptance.md` |
-| 4 — strap-only steps and motion | **PASS — sealed** | `evidence/2026-07-27-gate4-final-110-step/ACCEPTANCE.md` |
+| 4 — strap-only steps and motion | **FAIL — reopened for all-day authority** | Workout-local pass: `evidence/2026-07-27-gate4-final-110-step/ACCEPTANCE.md`; autonomous replay failure: “v15 all-day step authority withdrawn” below |
 | 5 — automatic detection and strain | **PASS — sealed** | `evidence/2026-07-27-gate5-physical-positive/acceptance.md` |
 
 Gate 2 chronology matters: the first 162-second controlled outage remained at
@@ -186,6 +186,13 @@ the strap through the requested interval, durably covered 114/115 expected
 seconds (99%; every whole-second position present), survived two real
 transport drops, and therefore superseded that earlier failure. Gate 2 is not
 being inferred from archived rows or code structure.
+
+Gate 4 chronology also matters: the 110-step physical acceptance remains valid
+for its explicitly bounded workout window (112 measured, 1.82% error), but it
+did not test the autonomous all-day bout selector. The later full-corpus replay
+failed both held-out walks and a planted-feet arm-motion control, so Gate 4 is
+not sealed for the product’s all-day step promise. This ledger must not use the
+workout-local pass to imply all-day authority.
 
 ## Harvard frame format
 
@@ -3361,3 +3368,652 @@ POSITIVE STILL REQUIRED**
   identity tests in `/tmp/atria-ble-release-blockers-20260730.xcresult`, plus
   184/184 static release checks. Physical in-place Release verification remains
   required before claiming the installed binary contains the repair.
+
+### 2026-07-30 — physical v5 rejects concurrent bank rearm during FIFO recovery
+
+- **Physical failure:** v5 opened a new `69/01` bank after an accepted
+  `HISTORY_START` and a durably flushed/ACKed boundary. Generation 1 persisted
+  190 decoded rows, then entered connection-timeout churn. The pending-ticket
+  ledger grew from 45 tickets before the attempt to 51 at terminal capture;
+  the exact bound interval remained uncovered.
+- The strap served history from its read cursor, not from the ticket's wall
+  clock interval. Its returned v24 rows were roughly 02:54–02:57 IST, while
+  the bound ticket was 04:41:48–04:48:12 IST. A later v25 stream also could not
+  satisfy motion coverage because it contains no validated motion-tick counter.
+  Exact `0/385` coverage was therefore correct; accepting those rows would have
+  fabricated recovery.
+- **Protocol conclusion:** a free CoreBluetooth write slot does not make
+  `69/01` independent of WHOOP 4's history FIFO. Opening a successor motion
+  bank while an older ticket drains can manufacture history faster than the
+  cursor catches up. The in-history coexistence path is rejected for Release.
+- The corrected production flow is serial: keep the same durable ticket bound
+  across reconnects, do not automatically rearm `69/01` while any ticket is
+  unresolved, drain with the validated `16/00` → durable-save → token-derived
+  `17/01…` handshake, and reopen the next bank only after the ticket resolves
+  and accepted live HR has returned. An explicit manual workout remains the
+  sole higher-priority exception.
+- Automatic ticket and current-cycle receipt evaluation are compact-v24 only.
+  Launch, unlock, reconnect, and compact-generation notifications may not
+  reopen the lifetime JSONL archive. Older installations require a separate,
+  explicit bounded migration rather than a hidden foreground fallback.
+- The history-terminal live-restoration rebuild now carries the exact
+  interrupted generation into the synchronous reconnect fence, preventing an
+  app-owned cancellation marker from stranding a locked phone.
+- Regression evidence is 484/484 focused tests in
+  `/tmp/atria-gate2-convergence-post-audit.xcresult`; physical v5 failure
+  evidence is `/tmp/atria-bank-coexistence-v5.yvztcS/`.
+- **Acceptance remains open.** The next in-place Release run must prove a
+  monotonically shrinking FIFO backlog, no automatic `69/01` during the drain,
+  at least 90% exact-window durable coverage, automatic accepted-live-HR
+  restoration, and receipt persistence across relaunch. This entry does not
+  claim a new physical pass or buyer readiness.
+
+### 2026-07-30 — bounded sacrificial FIFO drain v6 timed out without postflight proof
+
+- **Physical failure:** the explicitly authorized, one-shot sacrificial drain
+  began with `write_cursor=96409`, `read_cursor=95156`, and
+  `pending_records=1253`. It accepted **5,057** decoded historical rows and
+  confirmed **108** ACK writes derived from CRC-valid `HISTORY_END` tokens.
+- CoreBluetooth then disconnected with
+  `The connection has timed out unexpectedly.` The capture contains no
+  `HISTORY_COMPLETE`, postflight `GET_DATA_RANGE`, or
+  `discard_drain_finished` receipt. The cursor state after the last confirmed
+  ACK is therefore unknown; row count is not substituted for cursor proof.
+- The first and last confirmed ACK tokens decode to cursor units `95161` and
+  `95665`. Relative to the preflight read cursor, that suggests `509 / 1253`
+  units (40.62%) advanced and roughly 744 remained. This is diagnostic
+  inference only; without a matched postflight response it is not accepted as
+  cursor authority.
+- The signed normal Release was immediately restored in place with no
+  diagnostic launch arguments. Sessions, confirmed workouts, sleep records,
+  compact motion data, step ledgers, and the saved strap identifier remained
+  present, and the active all-day journal resumed fresh HR collection.
+- The destructive diagnostic was not retried. This run does not establish
+  exact-gap coverage, backlog collapse, or buyer readiness. Gate 2 remains
+  open until a resumable production recovery owner can survive a transport
+  timeout and prove the same ticket's durable coverage after reconnect.
+- **Evidence:**
+  `/tmp/atria-gate2-serial-convergence-v6.MneS43/`, including
+  `fast-drain-on-device/read-only-history-42211315-78C2-4A4E-BE94-F27223C6AA53.jsonl`,
+  `release-install.json`, `release-normal-launch.json`, and
+  `post-release-restore/`.
+
+### 2026-07-30 — sliced sacrificial FIFO cleanup v7 physically collapsed the backlog
+
+- The corrected one-root operation used a fresh `GET_DATA_RANGE` before
+  serving history and reported `read_cursor=96527`, `write_cursor=96591`, and
+  `pending_records=64`.
+- The strap then delivered **652 real historical rows**. Atria confirmed
+  **17** ACK writes, each derived from a CRC-valid `HISTORY_END` token; no ACK
+  was fabricated or reused across a slice boundary.
+- The strap emitted `HISTORY_COMPLETE`. The required postflight range read
+  returned `read_cursor=96593`, `write_cursor=96593`, and
+  `pending_records=0`. The terminal receipt was
+  `discard_drain_finished accepted=true`,
+  `reason=verified_backlog_collapse`, `ack_in_flight=false`, and
+  `pending_ack_token=none`.
+- This result validates the bounded cleanup mechanism and removes the stale
+  FIFO prerequisite for a fresh exact-gap test. It does **not** by itself pass
+  Gate 2: acceptance still requires a newly created locked-phone outage whose
+  exact missing interval is requested, durably materialized at at least 90%
+  coverage, and remains present after relaunch.
+- The signed normal Release was restored in place immediately after the
+  terminal receipt with no diagnostic launch arguments. Local sessions,
+  workouts, sleep, compact motion data, and Bluetooth pairing were preserved.
+- A separate DEBUG reconciliation launch then re-read and fail-closed verified
+  that exact 64-row receipt without constructing CoreBluetooth. It retired only
+  recovery windows beginning before the verified cleanup completed and cleared
+  the pending backfill flag only because no later window remained. The durable
+  gap ledger advanced from generation 6089 with 16 obsolete windows to
+  generation 6090 with zero windows; the full-drain authority envelope remained
+  empty. Metric archives, sessions, workouts, sleep, motion stores, and pairing
+  were not deleted or rewritten.
+- Normal signed Release was again restored with zero arguments. Its independently
+  fsynced accepted-HR anchor was 0.66 seconds old at the ready snapshot, the
+  reconciled ledger remained valid and empty, and the saved strap UUID was
+  unchanged. This is the clean baseline for the still-required fresh outage.
+- **Evidence:** `/tmp/atria-gate2-sliced-drain-v7.k3JRKt/`, especially
+  `poll-002.jsonl`, `receipt-before-reconcile.jsonl`, `post-reconcile/`,
+  `fresh-outage-ready/`, `restore-release-install.json`, and
+  `restore-release-launch.json`.
+
+### 2026-07-30 — Gate 2 exact-window recovery is sealed
+
+- Fresh locked-phone outage ticket
+  `37b98471-a122-48d7-8365-4403cd74bc8d` bound the exact missing interval,
+  requested that interval from the strap, and durably materialized all
+  **129 / 129 seconds (100%)**. This is recovered strap history, not an
+  overlapping older archive page or a live-HR inference.
+- The sliced FIFO cleanup above is only a prerequisite. The exact ticket's
+  independently verified coverage is the acceptance authority and remains
+  available in
+  `/tmp/atria-gate2-exact-release-374ace35/evidence/`.
+- Gate 2 is sealed. Later work must not rerun it unless a new code change
+  directly modifies the accepted exact-range, durable-ingress, or receipt
+  transaction.
+
+### 2026-07-30 — v15 all-day step authority withdrawn after autonomous replay
+
+- The earlier v15 acceptance matrix used manually bounded workout windows and
+  did not exercise the autonomous bout selection used by the all-day product.
+  Replaying the full labelled corpus through that actual path changes the
+  conclusion:
+
+| Check | Observed | Result |
+|---|---:|---|
+| Autonomous counted walks within 5% | 5 / 11 | **FAIL** |
+| Planted-feet arm control C4 | 79 steps for truth 0 | **FAIL** |
+| W110b | 118 for truth 110 (+7.27%) | **FAIL** |
+| W110c | 130 for truth 110 (+18.18%) | **FAIL** |
+| ±2-second boundary robustness | 225 / 275 walk windows; C4 failed 25 / 25 | **FAIL** |
+
+- Evidence-provenance correction: the replay labels `W110b`, `W110c`, and
+  `C4` retain their reported numeric outcomes above, but their exact timestamp
+  windows and source-file mapping were not persisted with the replay. They
+  therefore must not be used as standalone physical acceptance authority.
+  This does not restore v15 authority: the checked-in physical gait fixtures,
+  independently persisted arm-motion controls, autonomous-path failures, and
+  boundary-instability results still support the broader fail-closed
+  conclusion. Future labelled replays must persist the timestamp window and
+  evidence path beside every result.
+- Scanning every byte coordinate across all fifteen labelled v24 windows found
+  only flash/time coordinates and the already-known offset-88 motion value.
+  Offset 88 advances strongly during zero-step arm controls as well as walks.
+  At roughly 1.04 Hz, the stored gravity samples are below the rate needed to
+  reliably distinguish gait from rhythmic wrist motion. The independently
+  persisted arm controls and repeated boundary failures establish that
+  non-identifiability without treating the unprovenanced `C4` label as
+  standalone authority; another threshold fit would only overfit the corpus.
+- Consequently a v15 subtotal is not even a valid `≥N` lower bound: false
+  positives can exceed physical truth. The release product now withholds v15
+  daily receipts and live v15 numbers from Home, expanded detail, widgets, and
+  post-hoc workout/share publication. Raw v24 rows, compact stores, and durable
+  receipts remain untouched as research evidence.
+- `whoop4-impact-gait-ensemble-v15` remains the on-disk algorithm identifier so
+  existing evidence is not deleted or silently reinterpreted. Product
+  authority is a separate fail-closed flag and cannot be re-enabled until an
+  autonomous positive-walk matrix and planted-feet negative controls pass.
+- Connected explicit-workout R10 measurements are not invalidated by this
+  result. The unresolved requirement is truthful autonomous/all-day quantity,
+  including periods when the phone is disconnected.
+
+### 2026-07-30 — all-day v24 capture no longer authorizes realtime R10
+
+- The ordinary all-day governor previously reused the workout motion lease.
+  That owner timestamp was also consumed by dense bring-up, so a low-bandwidth
+  historical-v24 request could accidentally trigger the unstable realtime R10
+  profile after connect or relaunch.
+- The owners are now separate. Ordinary wear may only arm/stop the `69/01`
+  v24 bank. It cannot create a workout owner, schedule the R10 evaluator, or
+  authorize dense bring-up. Explicit workouts and guided calibration retain
+  their existing higher-priority R10 lease.
+- A stale owner persisted by an older all-day build is rejected before R10
+  evaluation. Focused transport evidence is 8 / 8 in
+  `/tmp/atria-decouple-v24-focused-v5.xcresult`.
+
+### 2026-07-30 — native WHOOP 4 feature probe is bounded; the proposed walk-detector key is absent
+
+- Earlier external protocol evidence named
+  `enable_sigproc_walk_detector`, but a complete physical enumeration on this
+  WHOOP 4 (`i41.17.6.0`) disproves that key for the current firmware. Read-only
+  `75/01` announced 13 keys and repeated `76/01` returned exactly:
+  `general_ab_test`, `sigproc_10_sec_dp`, `enable_r19_packets`,
+  `enable_r19_v2_packets`, `enable_r19_v3_packets`,
+  `enable_r19_v4_packets`, `enable_r19_v5_packets`,
+  `enable_r19_v6_packets`, `enable_write_r24_packets`,
+  `enable_write_r25_packets`, `enable_capsense_wear_detect`,
+  `enable_false_step_detection`, and `wear_detect_bias`.
+- The successful enumeration manifest reports `targetPresent=false`.
+  Consequently the harness did not authorize or emit `0x78`; its durable
+  persistent-write guard remains unclaimed. A nonexistent key will not be
+  written speculatively. The evidence-backed next research path is the
+  firmware's actual R19 family and false-step-detection behavior.
+- The isolated research harness
+  `tools/whoop4_walk_detector_probe.py` has two independent command
+  firewalls. Enumeration can emit only `0x75` and `0x76`. A persistent
+  `0x78` write is unreachable without two exact acknowledgements, is limited
+  to one `enable_sigproc_walk_detector=1` attempt, and is never retried.
+- Optional banked observation first requires a CRC-valid physical-shape
+  `GET_DATA_RANGE` response with an empty FIFO (`W == U`). It then records a
+  matched pre-enable and post-enable pair of short labelled
+  quiet → walk → quiet → planted-feet arm-motion → quiet sequences, with the
+  sole persistent write between them. It then emits one plain `0x16/00`,
+  stops at the first `HISTORY_END` (or the 75-second / 8-MiB
+  DATA_FROM_STRAP cap), sends `0x14/00`, and postflights with `0x22/00`.
+  Command responses remain admissible after the data-lane cap so ABORT and
+  postflight proof cannot be stranded. The read cursor and ring capacity must
+  remain unchanged, and device time must not regress. An eight-byte
+  exact-range selector is not supported by this protocol and is intentionally
+  unconstructible.
+- The harness cannot construct history ACK, trim, rewind, clock, reboot, or
+  mode commands. Every command response is correlated by both opcode and the
+  request-sequence echo. Feature-response data must then carry the observed
+  `01` prefix; the preceding byte is the echoed request sequence, not a fixed
+  success byte. `0x78` counts as configuration confirmation only when its
+  remaining record is exactly the sole allowlisted 65-byte key/value payload.
+  Ambiguous or stale replies never trigger a retry.
+- Immediately before `0x78`, an exclusive per-strap/per-target attempt record
+  is created and fsynced together with its containing directory. That record
+  is never deleted by the harness. A crash or a later invocation therefore
+  fails closed rather than issuing an unknowable second persistent write.
+- The enable experiment can opt into fixed macOS operator cues. A neutral
+  `/usr/bin/say` ready check must complete before Bluetooth import, scanning,
+  artifact creation, or the persistent attempt. Each fixed quiet/walk/control
+  cue must complete before its recorder phase and timestamps begin. The
+  shell-free argv cannot contain user-provided labels, and every cue has a
+  five-second hard timeout.
+- The physical `0x22` layout is pinned to a real WHOOP 4 capture: W/U/capacity
+  are decoded at command-response offsets 14/18/26 and device Unix time at
+  offset 62. The earlier research harness draft mislabeled capacity as strap
+  time; it was corrected before any hardware write.
+- The recorder subscribes to `61080003`, `61080004`, `61080005`, and
+  `61080007`, preserving every raw notification plus every reassembled,
+  CRC-valid frame with its characteristic, phase and timestamp. Post-enable
+  analysis is ordered: first look for a new `0x2f` v19 (`2f13`) or other new
+  version/length; then diff v24 inner bytes 84–95 (especially the existing
+  little-endian motion coordinate at 88–89 and currently-zero 90–95); then
+  inspect historical/realtime IMU packet types `0x34`/`0x33`, unknown event
+  IDs, and diagnostics. The pre-flag corpus contains 387,287 unique
+  v24/96-byte records and 12,136 unique v25/76-byte records, with no v19.
+  Configuration response `0x24/0x78` is never interpreted as detector output.
+- WHOOP 4's prior flag value cannot currently be read reliably, so enabling it
+  cannot restore the unknown previous state. Silence or a packet difference is
+  explicitly inconclusive; success requires a decoded cumulative/delta step
+  signal that passes a counted walk and a planted-feet arm-motion negative
+  control. Operator labels are explicitly recorded as planned or externally
+  reported, never as activity truth proven by the harness. The current offline
+  safety suite is 49/49. No hardware write has
+  been made from this harness.
+- The Bluetooth runtime is isolated and pinned in
+  `tools/requirements-whoop4-walk-detector-probe.txt` (`bleak==3.0.2`).
+  Import/API compatibility and all 49 tests passed in
+  `/tmp/atria-whoop-probe-venv-v1`; the durable target-attempt guard remains
+  unclaimed.
+- The first physical Mac-side **read-only** enumeration attempt on
+  2026-07-30 resolved CoreBluetooth peripheral
+  `837560C0-5B6C-C520-95EF-B1E713358D33` at `-61 dBm`, but CoreBluetooth
+  rejected the connection with `CBErrorDomain Code=14`
+  (`peerRemovedPairingInformation`). The failure occurred before notification
+  subscription and before either allowlisted `0x75` or `0x76` command. Its
+  corpus therefore contains zero notifications, zero frames, and zero rows;
+  it is transport evidence only and cannot support any detector conclusion.
+  The exact failed manifest is
+  `evidence/2026-07-30-native-walk-detector-readonly-enumeration/walk-detector-20260730T041222Z-manifest.json`.
+- The Mac still exposes `ADIDSHAFT'S WHO` as a paired-but-disconnected device
+  even after `blueutil --unpair` reports success. This is a stale host bond:
+  the strap no longer accepts the Mac's retained encryption key after being
+  bonded to the iPhone. Bleak/CoreBluetooth has no explicit pairing API;
+  `pair=True` cannot repair this state. The bounded recovery is to forget only
+  the exact Mac device in Bluetooth Settings, put the sacrificial strap into
+  pulsing-blue pairing mode, rescan and repin its possibly changed
+  CoreBluetooth UUID, then attempt one read-only enumeration. A fresh Mac bond
+  may replace the iPhone bond. No automatic retry is allowed, and the
+  persistent `0x78` guard remains unclaimed.
+- After the stale Mac bond was removed and the strap entered pulsing-blue mode,
+  the advertisement switched from the standard `0x180D` service to proprietary
+  `61080001`, confirming the pairing window. A first fresh-bond attempt timed
+  out before `0x75`; a second reached five keys before iOS background
+  restoration reclaimed the strap. Both failed closed and emitted no
+  persistent write.
+- Holding the already-installed Atria process USB-suspended before any app code
+  or CoreBluetooth initialization removed that ownership race without
+  uninstalling, changing its container, or launching a different binary. The
+  next read-only run completed all 13 replies with zero discarded bytes and
+  no write. Exact evidence is
+  `evidence/2026-07-30-native-walk-detector-readonly-enumeration-v4/`.
+- No physical R19 frame has yet been captured. An exact structured scan found
+  zero `0x2f` version-19 (`2f13`) records in repository evidence/fixtures or
+  the retained Atria runtime artifacts. The only R19-shaped payload is
+  synthetic recorder-test input in
+  `tools/test_whoop4_walk_detector_probe.py`; it validates version/length
+  bookkeeping only and is not packet-layout or native-step evidence. A
+  production R19 decoder must remain fail-closed until a CRC-valid physical
+  frame and matched quiet/walk/planted-feet controls establish its layout and
+  semantics.
+
+### 2026-07-30 — no standard Bluetooth step service is exposed
+
+- Bluetooth SIG's standard Physical Activity Monitor Service is UUID `0x183E`;
+  its Physical Activity Monitor Features and Step Counter Activity Summary
+  characteristics are `0x2B3B` and `0x2B40`.
+- The captured WHOOP 4 service map exposes the proprietary `0x6108` service
+  plus the standard Heart Rate (`0x180D`), Battery (`0x180F`), and Device
+  Information (`0x180A`) services. It does not expose `0x183E`, `0x2B3B`, or
+  `0x2B40`.
+- Therefore Atria cannot truthfully obtain all-day WHOOP 4 steps through the
+  standard Bluetooth activity-monitor path on this firmware. A conditional
+  reader may be useful for a future strap that actually advertises the
+  service, but it cannot repair this device and is not used as a fallback.
+
+### 2026-07-30 — v25 middle waveform is optical, not an all-day step lane
+
+- The current active corpus contains 319 v25 rows in eight approximately
+  37.5-second bursts, spaced about 1,192 seconds apart. Total observed waveform
+  time is 306.695 seconds across 9,577.421 seconds: only **3.2023%** duty
+  coverage.
+- Bytes 15...68 are not nine 3-axis IMU samples. The stable partition is one
+  discontinuous scalar, one tiny status/quality word, 24 continuous signed
+  samples, and another discontinuous scalar. With v25 rows arriving every
+  0.96142578125 seconds, that middle waveform runs at approximately 24.963 Hz.
+- Only counted walk W100 overlaps a v25 burst: 35 rows / 840 samples /
+  32.685 seconds, or 35.37% of its 92.405-second window. Its dominant waveform
+  frequency is 105.20 per minute, matching the saved average HR of 105 bpm and
+  not the physical step cadence (roughly 65–69 per minute). The other ten
+  counted walks and all four planted-feet controls contain zero v25 rows.
+- This is strong PPG/optical evidence, not a native cumulative/delta step
+  coordinate. The missing negative-control coverage also prevents a held-out
+  gait classifier, and the 3.2% duty cycle makes the stream incapable of
+  complete all-day quantity even if occasional motion artifact were decoded.
+  The conclusion agrees with NOOP's v25 optical decoder/artifact guard and
+  OpenStrap's decision to decode only v25 time/gravity
+  ([NOOP decoder](https://github.com/ryanbr/noop/blob/b9a4126767946e97258b897c5936abead7c7e340/Packages/WhoopProtocol/Sources/WhoopProtocol/PostHooks.swift#L310-L339),
+  [NOOP guard](https://github.com/ryanbr/noop/blob/b9a4126767946e97258b897c5936abead7c7e340/Packages/WhoopProtocol/Tests/WhoopProtocolTests/Whoop4HistoricalV25PpgTests.swift),
+  [OpenStrap parser](https://github.com/OpenStrap/protocol/blob/main/lib/src/records.dart#L171-L210)).
+  v25 is rejected as Release step authority; raw rows remain preserved in
+  `/tmp/atria-current-active.4fUTxk/active.jsonl` and the durable archive for
+  protocol research.
+
+### 2026-07-30 — physical read-only feature values are stable but semantics remain unproven
+
+- A fixed `GET_FF_VALUE` (`0x80`) ABAB / invalid / BABA probe was run against
+  the same enumerated WHOOP 4 peripheral and current firmware. The tool can
+  construct only `0x80`; it cannot construct `0x78` or any history, clock,
+  reboot, mode, cursor, ACK, trim, or rewind write.
+- All nine requests received CRC-valid, opcode- and sequence-correlated
+  responses on `COMMAND_FROM_STRAP`. The manifest and lossless corpus contain
+  the same nine frames:
+
+| Feature key | Physical reads | Stable raw value |
+|---|---:|---:|
+| `enable_false_step_detection` | 4 / 4 | ASCII `"2"` |
+| `enable_r19_v4_packets` | 4 / 4 | ASCII `"1"` |
+| `__atria_invalid_ff_probe_v1__` | 1 / 1 | no value |
+
+- The invalid control echoed only its own key and returned no value; it did not
+  replay either real key or a previous value. This makes the two real-key
+  values accepted **raw read evidence**. It does not establish that `"1"` or
+  `"2"` means enabled/disabled and does not establish any behavioral effect.
+- The original manifest was written before the evaluator learned that a
+  genuine invalid-key response may echo the invalid key itself. Its embedded
+  verdict is therefore stale but its raw frames remain immutable. The
+  hash-pinned offline reevaluation is
+  `evidence/2026-07-30-whoop4-feature-values-readonly-v1/offline-reevaluation-v2.json`;
+  no hardware rerun and no write were performed for that reevaluation.
+- This result is not an all-day step result and does not pass Gate 4. It
+  narrows the next physical experiment to one at-most-once, matched
+  pre/post trial of the present `enable_false_step_detection` key. Only a
+  newly emitted, physically decoded signal that distinguishes real walking
+  from planted-feet arm motion can authorize a product step source.
+
+### 2026-07-30 — first matched false-step trial stopped before its write
+
+- The first attempt at the matched false-step state trial reached its
+  read-only `GET_DATA_RANGE` preflight and observed
+  `write_cursor=98351`, `read_cursor=97085`, `capacity=131072`, so the FIFO
+  contained 1,266 pre-existing records.
+- The harness requires `W == U` before it can create the persistent attempt
+  record or send `0x78`. It therefore stopped with
+  `blocked_preexisting_fifo_backlog`.
+- `setWriteAttempted=false`; no feature value changed, no walk/control
+  comparison began, and the durable false-step attempt guard remains
+  unclaimed. This is a safe prerequisite failure, not Gate 4 evidence.
+- Exact evidence is
+  `evidence/2026-07-30-native-false-step-filter-trial-v1/`.
+
+### 2026-07-30 — sacrificial trim re-established an exact empty FIFO
+
+- A separate Mac-side tool was pinned to the previously successful physical
+  WHOOP 4 trace and could construct only
+  `0x22/00 → 0x19/(FE×8 + 00) → 0x22/00`. Its one destructive command was
+  guarded by a per-strap `O_EXCL` receipt fsynced before the write and can
+  never be retried by the tool.
+- Physical preflight observed 1,344 pending records
+  (`W=98429`, `U=97085`, capacity 131,072). The sole `0x19` received its
+  exact correlated response. Postflight observed an exact empty ring
+  (`W=U=98429`) with unchanged capacity.
+- Status is `completed_verified_backlog_collapse`; there were zero discarded
+  transport bytes and no ACK, clock, reboot, mode, feature, or second trim
+  command. Exact evidence is
+  `evidence/2026-07-30-sacrificial-fifo-trim-v1/`.
+
+### 2026-07-30 — all 13 current feature values captured read-only
+
+- A fixed forward / invalid / reverse / invalid `0x80` plan read every key
+  from the physical 13-key enumeration twice. All 28 responses passed CRC,
+  opcode, request-sequence, revision, exact-key, and characteristic checks;
+  both invalid keys returned status zero and no value.
+- Stable raw values, without enabled/disabled interpretation:
+
+| Raw `"1"` | Raw `"2"` |
+|---|---|
+| `enable_r19_v4_packets` | `general_ab_test` |
+| `enable_write_r24_packets` | `sigproc_10_sec_dp` |
+| `enable_write_r25_packets` | `enable_r19_packets` |
+|  | `enable_r19_v2_packets` |
+|  | `enable_r19_v3_packets` |
+|  | `enable_r19_v5_packets` |
+|  | `enable_r19_v6_packets` |
+|  | `enable_capsense_wear_detect` |
+|  | `enable_false_step_detection` |
+|  | `wear_detect_bias` |
+
+- The correlation is evidence-ranked but not semantic proof: physical v24/v25
+  records exist while their writer keys carry raw `"1"`; no physical R19
+  exists while the R19 base key carries raw `"2"` and the v4 selector carries
+  raw `"1"`. This makes a reversible R19-base state trial more directly
+  relevant to native packet discovery than changing only the false-step
+  filter. It does not yet authorize a production step source.
+- Exact evidence is
+  `evidence/2026-07-30-whoop4-all-feature-values-readonly-v1/`.
+
+### 2026-07-30 — second false-step trial also stopped before its write
+
+- The all-key read-only snapshot took 25 seconds after the exact-empty trim.
+  During that normal recording interval the strap advanced to
+  `W=98439`, `U=98435`, leaving four pre-existing records.
+- The false-step harness again refused before its durable attempt record and
+  before `0x78`; `setWriteAttempted=false`. Repeating preflights while the
+  FIFO grows is rejected as a strategy. The next prerequisite is one bounded,
+  token-derived normal ACK drain, not a second destructive trim and not a
+  weakened backlog check.
+- Exact evidence is
+  `evidence/2026-07-30-native-false-step-filter-trial-v2/`.
+
+### 2026-07-30 — reversible R19-base trial restored safely but emitted no live R19
+
+- The current all-key read made the R19 base raw state reversible: physical
+  prestate was stable raw `"2"` while the v4 selector was stable raw `"1"`.
+  A dedicated transaction journal was fsynced before the sole base
+  raw-`"2"` → raw-`"1"` write. Immediate AB/invalid/BA readback verified raw
+  `"1"` without assigning enabled/disabled semantics.
+- The strap stayed in raw `"1"` for 43.032 seconds. The live recorder retained
+  all proprietary notification lanes and found **zero** outer `0x2f` version-19
+  candidate frames. One pre-change `0x30` event was observed; no new live
+  packet family appeared in the changed-state interval.
+- The fixed spoken post-change sequence exceeded its reserved observation
+  budget, so the activity comparison is incomplete and the run status is
+  `failed_trial_but_restored_raw2_verified`, not a signal pass/fail.
+- The `finally` restoration issued the sole raw-`"2"` restore attempt and two
+  exact real-key reads separated by a clean invalid control verified raw
+  `"2"`. The durable journal is terminal with `restoreRequired=false`,
+  `currentRawObserved="2"`, and `deadlineOutcome=restored_within_cap`.
+  Restoration completed 16.97 seconds before the absolute 60-second deadline.
+- The next bounded check is read-only history inspection over the exact altered
+  interval `1785393598.946...1785393641.978`: the R19 family may be banked
+  rather than live. No second R19-base write is authorized.
+- Exact evidence is
+  `evidence/2026-07-30-reversible-r19-base-trial-v1/`.
+
+### 2026-07-30 — bounded FIFO capture found no R19 in the altered-state segment
+
+- The first ACK-drain preflight observed 435 pending records at the pinned
+  read cursor 98,435 and refused before `SEND_HISTORICAL` or any ACK because
+  its original "small backlog" bound was too narrow. It performed only the
+  read-only data-range query; no guard was claimed and no cursor advanced.
+  Exact evidence is
+  `evidence/2026-07-30-r19-altered-interval-ack-drain-v1/`.
+- The first target-window capture observed 662 pending records and began the
+  read-only history stream, then failed closed after a v24 timestamp
+  `1785391149` was followed by an interleaved v25 timestamp `1785391111`.
+  This physically proves that cross-version v24/v25 timestamp order cannot be
+  treated as one monotonic lane. Only `0x22` and `0x16` were written; there
+  was no ACK, guard, or cursor movement. Exact evidence is
+  `evidence/2026-07-30-r19-target-window-v2/`.
+- The corrected capture used only CRC-valid, 96-byte v24 rows as timestamp
+  anchors. V25 and any R19 rows remained raw capture-order evidence and could
+  not anchor, regress, or timestamp the target. The run captured 2,653 v24
+  rows and 97 v25 rows with zero discarded bytes and stayed within its fixed
+  90-ACK, 100-second, and 2 MB limits.
+- The exact altered-state interval was bracketed by v24 anchors:
+  `1785393582 <= 1785393582.343982` and
+  `1785393637 >= 1785393636.498092`. Forty-five validated v24 rows fall
+  inside the original wall interval `1785393598.946...1785393641.978`.
+  There were **zero raw `0x2f` version-19 (`2f13`) frames anywhere in the
+  captured FIFO segment**. This closes the immediate "R19 is banked but not
+  live" hypothesis for this one altered-state segment. It does not validate an
+  R19 timestamp layout, assign semantics to raw feature values, or prove that
+  R19 can never exist in another firmware/state.
+- The bounded drain issued 55 unique, token-derived `0x17` ACKs. Every ACK has
+  one matching fsynced `O_EXCL` guard and no automatic retry. The 56th
+  `HISTORY_END` token (`9681010012000000`) was deliberately left
+  unacknowledged and unguarded. Its fresh `HISTORY_START`/`HISTORY_END` pair
+  occurred after the target ACK transport boundary, causally proving that the
+  acknowledged target page committed while later FIFO data remained intact.
+- Cursor arithmetic reconciles exactly. Preflight was
+  `W=99133, U=98435, pending=698`; postflight was
+  `W=99138, U=98705, pending=433`; therefore
+  `698 + 5 newly written - 270 acknowledged = 433`. The reconnect
+  postcondition used only `0x22`.
+- Independent audit passed all command, token, guard, anchor, hash, and cursor
+  invariants. Evidence hashes at audit time:
+  manifest
+  `63c0cf2bdb84781a0a2eeb1cf936ad3a717a2be57db4bdfa4c5a81fa56cc3105`;
+  corpus
+  `532b3a40969677f0061878ed60b8e017e3cb0661a924d6b2fd6ad088159ca125`.
+  Exact evidence is
+  `evidence/2026-07-30-r19-target-window-v3/`.
+
+### 2026-07-30 — independent firmware research exposes a walk-detector flag
+
+- A read-only source audit of
+  [`johnmiddleton12/wearable` at `890e0c96`](https://github.com/johnmiddleton12/wearable/tree/890e0c96beb817ab0cec3aaf7d9a06c530025355)
+  found a separate WHOOP 4 feature key named
+  `enable_sigproc_walk_detector`. Its retained scripts describe raw ASCII
+  `"1"` as on and `"2"` as off, and group the key with sigproc/R19 research
+  data products
+  ([enable script](https://github.com/johnmiddleton12/wearable/blob/890e0c96beb817ab0cec3aaf7d9a06c530025355/re/enable_dataproducts.py),
+  [protocol catalogue](https://github.com/johnmiddleton12/wearable/blob/890e0c96beb817ab0cec3aaf7d9a06c530025355/docs/specs/2026-05-24-whoop-protocol-complete.md#feature-flags)).
+- This is **reference evidence, not physical evidence for the present strap**.
+  That source enumerated an 11-key firmware store; the present strap
+  enumerates 13 keys and includes `enable_false_step_detection` instead of
+  `enable_sigproc_walk_detector`. The key may have been renamed, replaced, or
+  removed.
+- The only safe next use of this lead is an exact-key, read-only `0x80`
+  query interleaved with a clean invalid control. No hidden-key `0x78`, reboot,
+  clock, mode, history, cursor, ACK, trim, or rewind command is authorized.
+  A missing/invalid response closes the lead for this firmware; a stable raw
+  value would justify a separately reviewed reversible experiment, not a
+  product step claim.
+
+### 2026-07-30 — v16 all-day strap-step candidate closes the labelled v15 failures
+
+- This supersedes only the v15 all-day-authority withdrawal above. It does not
+  reopen locked reconnect, exact history recovery, or manual-workout gates.
+- The acceptance replay now binds every label to an exact timestamp window,
+  physical truth, and original evidence path. It exercises the production
+  autonomous daily scorer at the exact boundary and every whole-second shift
+  from `-2...+2`.
+- Eleven independently counted walks passed all 55 shifted checks within 5%:
+
+| Walk truth | v16 observed range |
+|---:|---:|
+| 132 | 128–133 |
+| 136 | 133–136 |
+| 150 | 147–153 |
+| 129 | 127–128 |
+| 106 | 103–109 |
+| 108 | 108–112 |
+| 100 | 95–105 |
+| 110 | 107 |
+| 109 | 110–111 |
+| 109 | 107–109 |
+| 115 | 114–115 |
+
+- Four independently captured planted-feet controls passed all 20 shifted
+  checks at exactly zero steps. In particular, C4—previously misclassified as
+  79 steps—now remains zero for all five boundary variants.
+- The correction does not use an amplitude-only cutoff. A genuine preserved
+  autonomous bout has gravity-delta MAD `0.113`, overlapping C4 at `0.099`.
+  Higher-amplitude candidates therefore require three independent WHOOP v24
+  shape properties: low-frequency power share, dominant frequency, and
+  lag-one correlation. Low-amplitude gait retains the existing conservative
+  path. A stationary-gravity run above ten seconds remains a hard bout
+  boundary.
+- The preserved 313-row autonomous-day fixture remains one admitted bout:
+  179 strap-only steps with the same 60.5625 seconds explicitly unresolved.
+  No missing interval is extrapolated into the subtotal.
+- The daily receipt remains a quality-bearing result:
+  complete qualified coverage publishes an exact count; incomplete qualified
+  coverage publishes `≥N` with coverage context; unresolved motion or absent
+  evidence remains unavailable with its specific reason. Phone pedometer,
+  GPS, distance, HR-derived steps, and fabricated interpolation remain absent.
+- Offline result: **75 / 75 passed**, zero failures. Focused production tests:
+  **53 / 53 passed** (step model plus durable daily receipt/store).
+- Reproducer:
+  `tools/verify_whoop4_autonomous_step_corpus.swift` against
+  `evidence/2026-07-29-autonomous-day-model/raw-v2`.
+  At verification time, model SHA-256 was
+  `88c842df26f584a6c077e0db59657215901a3657081c607aba709bbb5f2625cf`;
+  verifier SHA-256 was
+  `0ca89d9c3d792728bb55891fe26dcdadff70d9284e659145cfc2f5dd38f972b8`;
+  full JSON result SHA-256 was
+  `fc1ed1c7e9027ca3b7acdf69baffefdea63f5a4cbb792f8437ba22b9ed5aa24a`.
+- This is the accepted offline Release candidate, not yet the physical daily
+  card pass. The remaining Gate 4 extension is one signed-Release iPhone
+  verification of delta accuracy, durable receipt publication, relaunch
+  persistence, and honest partial coverage.
+
+### 2026-07-30 — v17 closes the held-out 90-step slow-walk alias
+
+- A later recovered physical walk supplied a genuinely held-out quantity
+  check: strap `C125C62E-C432-53E7-BD19-9761251B2C3E`, WHOOP seconds
+  `1785417551...1785417641`, 90 user-counted steps, and 89/90 seconds of
+  qualified strap coverage. The preserved compact source SHA-256 is
+  `e49a6a6bd42742d27e51a125c4a36e9ab533363dd093e342b6cfa21633e9d9fe`.
+  V16 returned 105 steps, a 16.7% overcount, so that result was not accepted.
+- The failure is a narrow near-sample-rate alias: selected cadence at or below
+  1.18 Hz, competing alias at or below 0.15 Hz, mean WHOOP scalar at or below
+  0.105, and motion-volume/cadence ratio at or above 1.75. Only when all four
+  independent strap-only conditions hold does v17 choose the fully observed
+  vector-transition midpoint (`sampleRate * observedDuration`). It does not
+  use phone motion, HR, GPS, distance, user truth at runtime, missing-time
+  extrapolation, or fabricated steps.
+- The exact W90 boundary now returns 92. Across the existing `-2...+2`
+  whole-second boundary variants it returns `93, 93, 92, 93, 93`; maximum
+  absolute error is 3.33%. The discriminator rejects the nearby W108 and W100
+  regimes that would otherwise look superficially similar.
+- All 75 previously accepted v16 checks remain unchanged and passing. Adding
+  W90's five provenance-bound boundary checks produces **80 / 80 passed**:
+  twelve counted walks and four planted-feet controls, each at five boundary
+  variants. All controls remain exactly zero and `phoneMotionUsed` remains
+  false.
+- The preserved 313-row autonomous-day fixture still publishes 179
+  strap-only steps with 60.5625 seconds unresolved. No uncovered duration is
+  converted into steps.
+- Daily receipts are semantic-version bound. V17 receipts use
+  `whoop4-impact-gait-ensemble-v17`; persisted v16 receipts fail validation
+  and are quarantined for recomputation instead of masquerading as current
+  authority after relaunch.
+- Reproducer:
+  `tools/verify_whoop4_autonomous_step_corpus.swift` against
+  `evidence/2026-07-29-autonomous-day-model/raw-v2`, with the exact held-out
+  rows preserved in
+  `Atria/AtriaTests/Fixtures/whoop4-v15-physical-gait-corpus.jsonl`.
+  At verification time, model SHA-256 was
+  `b82e94a4c7591afb2b5ee9f50367dd28364a6b064cb631337825b948f1123d64`;
+  verifier SHA-256 was
+  `9f64db98cd7ded11338fd104a7bb2e3739d7e0e1736844e4c28bd419f61dc32d`;
+  fixture SHA-256 was
+  `4cc3579249490f7f88faf61c8111fde7033703c59190cb9a8ad5053919899e78`;
+  full JSON result SHA-256 was
+  `ae6522e0faad77596cd100bb295bcf36daaf6a7b54954c03e6f34ddfeec79616`.

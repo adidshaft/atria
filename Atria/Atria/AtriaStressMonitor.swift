@@ -111,7 +111,11 @@ struct AtriaStressPresentation: Equatable {
             narrative = "Stress resumes after a fresh qualified strap reading."
         }
         return Self(level: state.level,
-                    value: state.level?.title ?? state.label,
+                    // Value lines carry a real scored band or the one canonical
+                    // no-value token. The specific unscored state remains in
+                    // `detail`, where it cannot masquerade as a measurement.
+                    value: state.level?.title
+                        ?? AtriaCompactMetricPresentation.noValue,
                     detail: detail,
                     narrative: narrative)
     }

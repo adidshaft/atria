@@ -20,13 +20,26 @@ final class AtriaBLEHistoryTransportPhaseFence: @unchecked Sendable {
         var isActive: Bool { generation != nil }
     }
 
+    struct RealtimeRestoreHandoff: Equatable, Sendable {
+        let peripheralID: UUID
+        let interruptedGeneration: UInt64
+        let claimedPeripheralObjectID: ObjectIdentifier?
+        let claimedCallbackEpoch: UInt64?
+    }
+
     private let lock = NSLock()
     private var generation: UInt64?
     private var usesExplicitHistoryProfile = false
+    private var realtimeRestoreHandoff: RealtimeRestoreHandoff?
 
     func activate(generation: UInt64,
                   usesExplicitHistoryProfile: Bool = false) -> Snapshot {
         lock.lock()
+        // A newly admitted history generation always outranks an older,
+        // not-yet-consumed live-restore handoff. This is the fail-closed edge
+        // that prevents standard 2A37 discovery from overlapping a fresh
+        // proprietary history owner.
+        realtimeRestoreHandoff = nil
         self.generation = generation
         self.usesExplicitHistoryProfile = usesExplicitHistoryProfile
         let snapshot = Snapshot(generation: generation,
@@ -46,6 +59,106 @@ final class AtriaBLEHistoryTransportPhaseFence: @unchecked Sendable {
                                 usesExplicitHistoryProfile: usesExplicitHistoryProfile)
         lock.unlock()
         return snapshot
+    }
+
+    /// Atomically retires exactly one interrupted history generation and
+    /// transfers its identity to the replacement realtime connection.
+    ///
+    /// This is called only after the physical history link is already down. A
+    /// stale terminal callback can therefore never retire a newer generation.
+    @discardableResult
+    func retireForRealtimeRestore(
+        ifMatching expectedGeneration: UInt64,
+        peripheralID: UUID
+    ) -> Bool {
+        lock.lock()
+        guard generation == expectedGeneration else {
+            lock.unlock()
+            return false
+        }
+        generation = nil
+        usesExplicitHistoryProfile = false
+        realtimeRestoreHandoff = RealtimeRestoreHandoff(
+            peripheralID: peripheralID,
+            interruptedGeneration: expectedGeneration,
+            claimedPeripheralObjectID: nil,
+            claimedCallbackEpoch: nil
+        )
+        lock.unlock()
+        return true
+    }
+
+    /// Binds an interrupted-owner handoff to one concrete CoreBluetooth
+    /// callback object and epoch. A failed/stale callback may be superseded by
+    /// a later connection, but a newly active history generation refuses it.
+    func claimRealtimeRestore(
+        peripheralID: UUID,
+        peripheralObjectID: ObjectIdentifier,
+        callbackEpoch: UInt64
+    ) -> UInt64? {
+        lock.lock()
+        guard generation == nil,
+              let handoff = realtimeRestoreHandoff,
+              handoff.peripheralID == peripheralID else {
+            lock.unlock()
+            return nil
+        }
+        realtimeRestoreHandoff = RealtimeRestoreHandoff(
+            peripheralID: peripheralID,
+            interruptedGeneration: handoff.interruptedGeneration,
+            claimedPeripheralObjectID: peripheralObjectID,
+            claimedCallbackEpoch: callbackEpoch
+        )
+        lock.unlock()
+        return handoff.interruptedGeneration
+    }
+
+    func acceptsRealtimeRestoreClaim(
+        peripheralID: UUID,
+        peripheralObjectID: ObjectIdentifier,
+        interruptedGeneration: UInt64,
+        callbackEpoch: UInt64
+    ) -> Bool {
+        lock.lock()
+        let accepted = generation == nil
+            && realtimeRestoreHandoff == RealtimeRestoreHandoff(
+                peripheralID: peripheralID,
+                interruptedGeneration: interruptedGeneration,
+                claimedPeripheralObjectID: peripheralObjectID,
+                claimedCallbackEpoch: callbackEpoch
+            )
+        lock.unlock()
+        return accepted
+    }
+
+    @discardableResult
+    func settleRealtimeRestoreClaim(
+        peripheralID: UUID,
+        peripheralObjectID: ObjectIdentifier,
+        interruptedGeneration: UInt64,
+        callbackEpoch: UInt64
+    ) -> Bool {
+        lock.lock()
+        let expected = RealtimeRestoreHandoff(
+            peripheralID: peripheralID,
+            interruptedGeneration: interruptedGeneration,
+            claimedPeripheralObjectID: peripheralObjectID,
+            claimedCallbackEpoch: callbackEpoch
+        )
+        guard realtimeRestoreHandoff == expected else {
+            lock.unlock()
+            return false
+        }
+        realtimeRestoreHandoff = nil
+        lock.unlock()
+        return true
+    }
+
+    func realtimeRestoreHandoffSnapshot() -> RealtimeRestoreHandoff? {
+        lock.lock()
+        let handoff = realtimeRestoreHandoff
+        lock.unlock()
+        return handoff
     }
 
     func snapshot() -> Snapshot {

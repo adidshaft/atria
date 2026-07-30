@@ -10,20 +10,16 @@ struct AtriaJournalProjectionState: Equatable {
 }
 
 struct AtriaJournalDeckSizing: Equatable {
-    // Large, focal swipe cards (2026-07-16): the morning check-in is the primary
-    // action of the Journal tab, so the deck fills most of the leftover area
-    // rather than sitting as a small 250pt tile. The glass surface reads far
-    // better at this scale. Accessibility sizes still grow past this floor.
-    static let standardHeight: CGFloat = 460
+    // The check-in remains the focal action, but it cannot monopolize a phone
+    // viewport or clip its own content.  A 360pt floor keeps the prompt and
+    // actions comfortably tappable, while the card is free to grow for longer
+    // localized questions, larger text, or future follow-up controls.
+    static let standardHeight: CGFloat = 360
 
     let minimumHeight: CGFloat
-    let maximumHeight: CGFloat?
-    let clipsContent: Bool
 
     init(dynamicTypeSize: DynamicTypeSize) {
         minimumHeight = Self.standardHeight
-        maximumHeight = dynamicTypeSize.isAccessibilitySize ? nil : Self.standardHeight
-        clipsContent = !dynamicTypeSize.isAccessibilitySize
     }
 }
 
@@ -663,16 +659,12 @@ private struct AtriaJournalCheckInDeck: View {
 
     @ViewBuilder
     private func sizedCard<Content: View>(_ content: Content) -> some View {
-        if deckSizing.clipsContent {
-            content
-                .frame(maxWidth: .infinity,
-                       minHeight: deckSizing.minimumHeight,
-                       maxHeight: deckSizing.maximumHeight)
-                .clipped()
-        } else {
-            content
-                .frame(maxWidth: .infinity, minHeight: deckSizing.minimumHeight)
-        }
+        // Never use a fixed maximum height here. A fixed, clipped deck was
+        // hiding controls and text for real users once content or Dynamic Type
+        // exceeded its assumptions. The stack stays stable at its floor and
+        // grows inside the enclosing Journal scroll view when it needs to.
+        content
+            .frame(maxWidth: .infinity, minHeight: deckSizing.minimumHeight)
     }
 
     private var swipeDeck: some View {
@@ -690,8 +682,7 @@ private struct AtriaJournalCheckInDeck: View {
                             .stroke(Color.cyan.opacity(0.16), lineWidth: 1)
                     }
                     .frame(maxWidth: .infinity,
-                           minHeight: deckSizing.minimumHeight,
-                           maxHeight: deckSizing.maximumHeight)
+                           minHeight: deckSizing.minimumHeight)
                     .scaleEffect(0.94)
                     .offset(y: 14)
                     .allowsHitTesting(false)
@@ -720,8 +711,7 @@ private struct AtriaJournalCheckInDeck: View {
                 }
             }
         }
-        .frame(minHeight: deckSizing.minimumHeight,
-               maxHeight: deckSizing.maximumHeight)
+        .frame(minHeight: deckSizing.minimumHeight)
     }
 
     private func swipeBadge(text: String, tint: Color) -> some View {

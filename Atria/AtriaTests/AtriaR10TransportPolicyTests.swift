@@ -105,8 +105,12 @@ final class AtriaR10TransportPolicyTests: XCTestCase {
                 streamSuppressed: false
             )
         )
-        XCTAssertEqual(batteryCharacteristics, [AtriaBLEManager.UUIDs.batteryLevel])
-        XCTAssertFalse(batteryCharacteristics.contains(AtriaBLEManager.UUIDs.batteryLevelStatus))
+        XCTAssertEqual(batteryCharacteristics, [
+            AtriaBLEManager.UUIDs.batteryLevel,
+            AtriaBLEManager.UUIDs.batteryLevelStatus
+        ])
+        XCTAssertTrue(batteryCharacteristics.contains(AtriaBLEManager.UUIDs.batteryLevelStatus),
+                      "2A1B is the standard current-link charger-state source; it must not be replaced with a proprietary stream")
     }
 
     func testProtectedProductionIngestMatchesDiscoveryPolicy() {

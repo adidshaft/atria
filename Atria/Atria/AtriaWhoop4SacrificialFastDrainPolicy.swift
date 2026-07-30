@@ -14,6 +14,11 @@ enum AtriaWhoop4SacrificialFastDrainPolicy {
     static let runIDArgument = "--atria-history-discard-run-id"
 
     static let maximumAbortTimeout: TimeInterval = 120
+    /// The physical v6 run lost its BLE link 104.93 seconds after SERVE. Stop
+    /// each destructive slice well before that observed boundary, then begin
+    /// any continuation from a fresh cursor preflight.
+    static let sliceTimeout: TimeInterval = 75
+    static let maximumSliceAttempts = 4
 
     struct Authorization: Equatable, Sendable {
         let runID: UUID
@@ -55,7 +60,48 @@ enum AtriaWhoop4SacrificialFastDrainPolicy {
     struct CursorObservation: Equatable, Sendable {
         let writeCursor: UInt32
         let readCursor: UInt32
+        let capacity: UInt32
         let pendingRecords: UInt32
+    }
+
+    /// A continuation may only move the strap read cursor forward (allowing a
+    /// bounded ring wrap) or observe the same cursor when the preceding ACK was
+    /// accepted by CoreBluetooth but not yet committed by the strap. A backward
+    /// cursor observation is fail-closed.
+    static func hasNonRegressingContinuationPreflight(
+        previous: CursorObservation,
+        current: CursorObservation
+    ) -> Bool {
+        guard previous.capacity > 0,
+              current.capacity == previous.capacity,
+              previous.pendingRecords <= previous.capacity,
+              current.pendingRecords <= current.capacity else {
+            return false
+        }
+        if current.readCursor == previous.readCursor {
+            return true
+        }
+        let capacity = UInt64(previous.capacity)
+        let previousCursor = UInt64(previous.readCursor) % capacity
+        let currentCursor = UInt64(current.readCursor) % capacity
+        let forward = (currentCursor + capacity - previousCursor) % capacity
+        return forward > 0 && forward <= capacity / 2
+    }
+
+    /// A launch UUID is a root authorization, not an escape hatch. Once a root
+    /// has started serving history, a different UUID cannot replace it. Slices
+    /// continue internally under the original authorization.
+    static func admitsRootLaunch(
+        authorization: Authorization,
+        consumedRunID: String?,
+        activeRootRunID: String?
+    ) -> Bool {
+        guard consumedRunID != authorization.runID.uuidString else {
+            return false
+        }
+        guard let activeRootRunID else { return true }
+        return activeRootRunID == authorization.runID.uuidString
+            && consumedRunID == nil
     }
 
     static let getDataRange = Command(opcode: 0x22, payload: [0x00])

@@ -44,6 +44,32 @@ final class AtriaBLECallbackEpochFenceTests: XCTestCase {
         ))
     }
 
+    func testOwnedEpochSurvivesDisconnectedObjectForStandingReconnect() {
+        let active = UUID()
+        let fence = AtriaBLECallbackEpochFence()
+        let epoch = fence.activate(peripheralID: active)
+
+        XCTAssertTrue(fence.owns(
+            callbackEpoch: epoch,
+            peripheralID: active
+        ))
+        XCTAssertFalse(fence.accepts(
+            callbackEpoch: epoch,
+            peripheralID: active,
+            peripheralConnected: false
+        ))
+        XCTAssertFalse(fence.owns(
+            callbackEpoch: epoch,
+            peripheralID: UUID()
+        ))
+
+        fence.invalidate(ifMatching: active)
+        XCTAssertFalse(fence.owns(
+            callbackEpoch: epoch,
+            peripheralID: active
+        ))
+    }
+
     func testPoweredOnMarkersAreConsumedTogetherExactlyOnce() {
         let fence = AtriaBLECallbackEpochFence()
         fence.markAwaitingPowerOn(

@@ -19,6 +19,21 @@ final class AtriaStrapStepLiveStatusTests: XCTestCase {
         XCTAssertEqual(status.lastMotionText, "motion 12s ago")
     }
 
+    func testFreshTransportCannotValidateAnUnqualifiedStepAuthority() {
+        let status = AtriaStrapStepLiveStatus.make(
+            count: 842,
+            validationState: "r10_live_validated",
+            capturedAt: now.addingTimeInterval(-12),
+            now: now,
+            authorityQualified: false
+        )
+
+        XCTAssertTrue(status.isLive)
+        XCTAssertFalse(status.isValidated)
+        XCTAssertEqual(status.tileValue, "~842")
+        XCTAssertEqual(status.tileDetail, "Live estimate")
+    }
+
     func testFreshUnvalidatedCountIsClearlyEstimated() {
         let status = AtriaStrapStepLiveStatus.make(
             count: 842,

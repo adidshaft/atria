@@ -35,23 +35,51 @@ extension AtriaBLEManager {
     final class BackgroundReconnectFence: @unchecked Sendable {
         enum Disposition: Equatable {
             case reconnectRealtime
+            case reconnectRealtimeAfterHistoryRelease(generation: UInt64)
             case suppressAppOwnedCancellation
             case suppressHistoryOwner
             case suppressDiagnostic
             case suppressCaptureInactive
+
+            var requestsRealtimeReconnect: Bool {
+                switch self {
+                case .reconnectRealtime,
+                     .reconnectRealtimeAfterHistoryRelease:
+                    return true
+                case .suppressAppOwnedCancellation,
+                     .suppressHistoryOwner,
+                     .suppressDiagnostic,
+                     .suppressCaptureInactive:
+                    return false
+                }
+            }
+        }
+
+        private struct AppOwnedCancellation {
+            let markedAt: Date
+            let restoreRealtimeAfterHistoryGeneration: UInt64?
         }
 
         private let lock = NSLock()
-        private var appOwnedCancellations: [UUID: Date] = [:]
+        private var appOwnedCancellations:
+            [UUID: AppOwnedCancellation] = [:]
         private let markerMaximumAge: TimeInterval
 
         init(markerMaximumAge: TimeInterval = 30) {
             self.markerMaximumAge = max(1, markerMaximumAge)
         }
 
-        func markAppOwnedCancellation(peripheralID: UUID, at date: Date = Date()) {
+        func markAppOwnedCancellation(
+            peripheralID: UUID,
+            restoreRealtimeAfterHistoryGeneration: UInt64? = nil,
+            at date: Date = Date()
+        ) {
             lock.lock()
-            appOwnedCancellations[peripheralID] = date
+            appOwnedCancellations[peripheralID] = .init(
+                markedAt: date,
+                restoreRealtimeAfterHistoryGeneration:
+                    restoreRealtimeAfterHistoryGeneration
+            )
             lock.unlock()
         }
 
@@ -59,28 +87,69 @@ extension AtriaBLEManager {
             peripheralID: UUID,
             continuousCaptureWanted: Bool,
             historyTransportActive: Bool,
+            activeHistoryTransportGeneration: UInt64? = nil,
             diagnosticActive: Bool,
             now: Date = Date()
         ) -> Disposition {
             lock.lock()
-            let markedAt = appOwnedCancellations.removeValue(forKey: peripheralID)
+            let cancellation = appOwnedCancellations.removeValue(
+                forKey: peripheralID
+            )
             appOwnedCancellations = appOwnedCancellations.filter {
-                let age = now.timeIntervalSince($0.value)
+                let age = now.timeIntervalSince($0.value.markedAt)
                 return age >= 0 && age <= markerMaximumAge
             }
             lock.unlock()
 
-            if let markedAt {
-                let age = now.timeIntervalSince(markedAt)
+            if let cancellation {
+                let age = now.timeIntervalSince(cancellation.markedAt)
                 // A future clock is conflicting evidence. Suppress once rather
                 // than turning an app-owned cutover into a realtime reconnect.
-                if age < 0 || age <= markerMaximumAge {
+                if age < 0 {
                     return .suppressAppOwnedCancellation
                 }
+                if age <= markerMaximumAge {
+                    guard let interruptedGeneration =
+                            cancellation
+                                .restoreRealtimeAfterHistoryGeneration else {
+                        return .suppressAppOwnedCancellation
+                    }
+                    if diagnosticActive { return .suppressDiagnostic }
+                    guard continuousCaptureWanted else {
+                        return .suppressCaptureInactive
+                    }
+                    if historyTransportActive,
+                       activeHistoryTransportGeneration
+                        != interruptedGeneration {
+                        // A different generation is a newer history owner. The
+                        // stale cancellation may not retire or overlap it.
+                        return .suppressHistoryOwner
+                    }
+                    // This marker is reserved for the exact history generation
+                    // which elected to relinquish ownership because accepted
+                    // 2A37 went stale. The delegate callback atomically retires
+                    // that generation before reinstalling realtime.
+                    return .reconnectRealtimeAfterHistoryRelease(
+                        generation: interruptedGeneration
+                    )
+                }
             }
-            if historyTransportActive { return .suppressHistoryOwner }
             if diagnosticActive { return .suppressDiagnostic }
             guard continuousCaptureWanted else { return .suppressCaptureInactive }
+            if historyTransportActive {
+                // didDisconnect/didFailToConnect are physical terminal
+                // callbacks: the proprietary history owner no longer has a
+                // link to protect. Retire only its exact generation and
+                // reinstall realtime before yielding to MainActor. Without
+                // this handoff a locked app can be suspended in the gap
+                // between the callback and delayed history cleanup.
+                guard let activeHistoryTransportGeneration else {
+                    return .suppressHistoryOwner
+                }
+                return .reconnectRealtimeAfterHistoryRelease(
+                    generation: activeHistoryTransportGeneration
+                )
+            }
             return .reconnectRealtime
         }
     }
@@ -90,7 +159,7 @@ extension AtriaBLEManager {
         failedPeripheralIsSaved: Bool,
         peripheralIsDisconnected: Bool
     ) -> Bool {
-        disposition == .reconnectRealtime
+        disposition.requestsRealtimeReconnect
             && failedPeripheralIsSaved
             && peripheralIsDisconnected
     }

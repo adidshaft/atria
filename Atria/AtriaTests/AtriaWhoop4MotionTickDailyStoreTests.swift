@@ -37,6 +37,34 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         )
     }
 
+    func testV16ReceiptCannotMasqueradeAsV17Authority() throws {
+        let strap = UUID().uuidString
+        let start = Date(timeIntervalSince1970: 10_000)
+        let evidence = makeEvidence(start: start, ticks: 155, steps: 132)
+        let writer = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        XCTAssertTrue(try writer.save(evidence, strapIdentifier: strap))
+
+        let stateURL = directory.appendingPathComponent(
+            "whoop4-motion-tick-days-v1.json"
+        )
+        let current = try String(contentsOf: stateURL, encoding: .utf8)
+        let stale = current.replacingOccurrences(
+            of: "whoop4-impact-gait-ensemble-v17",
+            with: "whoop4-impact-gait-ensemble-v16"
+        )
+        XCTAssertNotEqual(stale, current)
+        try XCTUnwrap(stale.data(using: .utf8)).write(
+            to: stateURL,
+            options: .atomic
+        )
+
+        let reader = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        XCTAssertNil(
+            reader.load(strapIdentifier: strap, windowStart: start),
+            "a durable v16 subtotal must be recomputed under v17"
+        )
+    }
+
     func testCurrentCycleAttemptSignatureInvalidatesForEvidenceAuthority() throws {
         let start = Date(timeIntervalSince1970: 9_000)
         let strap = "strap-a"
@@ -103,6 +131,63 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
                 coverageAuthority: authority,
                 sourceFingerprint: source,
                 compactSourceIdentifier: "compact-2"
+            )
+        )
+    }
+
+    func testLegacyCompactMigrationSignatureTracksSourceCycleAndCoverage() throws {
+        let start = Date(timeIntervalSince1970: 9_000)
+        let strap = "strap-a"
+        let source = HistoricalArchive.makeConsumerSourceFingerprint(
+            catalogGeneration: 1,
+            descriptors: []
+        )
+        let authority = AtriaWhoop4MotionBankCoverageLedger
+            .ProjectionAuthority(
+                algorithmVersion:
+                    AtriaWhoop4MotionBankCoverageLedger.algorithmVersion,
+                strapIdentifier: strap,
+                closed: [],
+                openStart: start
+            )
+        let base = try XCTUnwrap(
+            SessionStore.currentCycleStepCompactMigrationSignature(
+                strapIdentifier: strap,
+                cycleStart: start,
+                coverageAuthority: authority,
+                sourceFingerprint: source
+            )
+        )
+
+        XCTAssertEqual(
+            base,
+            SessionStore.currentCycleStepCompactMigrationSignature(
+                strapIdentifier: strap,
+                cycleStart: start,
+                coverageAuthority: authority,
+                sourceFingerprint: source
+            )
+        )
+        XCTAssertNotEqual(
+            base,
+            SessionStore.currentCycleStepCompactMigrationSignature(
+                strapIdentifier: strap,
+                cycleStart: start.addingTimeInterval(1),
+                coverageAuthority: authority,
+                sourceFingerprint: source
+            )
+        )
+        XCTAssertNotEqual(
+            base,
+            SessionStore.currentCycleStepCompactMigrationSignature(
+                strapIdentifier: strap,
+                cycleStart: start,
+                coverageAuthority: authority,
+                sourceFingerprint:
+                    HistoricalArchive.makeConsumerSourceFingerprint(
+                        catalogGeneration: 2,
+                        descriptors: []
+                    )
             )
         )
     }
@@ -199,6 +284,7 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             into: [],
             strapIdentifier: strap,
             windowStart: start,
+            includeUnqualifiedResearchEvidence: true,
             calendar: utcCalendar
         )
 
@@ -220,6 +306,87 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         XCTAssertEqual(presentation.valueText, "≥268")
         XCTAssertEqual(presentation.completeness, .partial)
         XCTAssertEqual(presentation.source, .verifiedCanonical)
+    }
+
+    func testQualifiedReceiptEntersProductProjection() throws {
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+        let start = Date(timeIntervalSince1970: 55_000)
+        XCTAssertTrue(
+            try store.save(
+                makeEvidence(start: start, ticks: 315, steps: 268),
+                strapIdentifier: strap
+            )
+        )
+
+        let product = store.mergingCurrentCycleReceipt(
+            into: [],
+            strapIdentifier: strap,
+            windowStart: start,
+            calendar: utcCalendar
+        )
+        let retainedResearch = store.load(
+            strapIdentifier: strap,
+            windowStart: start
+        )
+
+        XCTAssertTrue(
+            AtriaWhoop4GravityCadenceStepModel
+                .releaseDailyAuthorityQualified
+        )
+        XCTAssertEqual(product.first?.knownStepDeltaSum, 268)
+        XCTAssertEqual(product.first?.state, .missing)
+        XCTAssertEqual(retainedResearch?.steps, 268)
+    }
+
+    func testQualifiedReceiptProjectionIsNeverRemovedAsUnqualified() throws {
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+        let start = Date(timeIntervalSince1970: 57_000)
+        let evidence = makeEvidence(
+            start: start,
+            ticks: 315,
+            steps: 268,
+            capturedAfter: 180,
+            known: 160
+        )
+        XCTAssertTrue(try store.save(evidence, strapIdentifier: strap))
+        let staleInjected = AtriaHistoricalDailyConsumerProjection.StepDay(
+            localDay: "1970-01-01",
+            dayStart: start,
+            dayEnd: evidence.capturedThrough,
+            state: .missing,
+            stepCount: nil,
+            knownStepDeltaSum: evidence.steps,
+            knownEpochCount: 1,
+            rejectedOrUnknownEpochCount: 0,
+            knownCoverageSeconds: evidence.knownCoverageSeconds,
+            missingCoverageSeconds: evidence.missingCoverageSeconds
+        )
+        var genuineCanonical = staleInjected
+        genuineCanonical = .init(
+            localDay: genuineCanonical.localDay,
+            dayStart: genuineCanonical.dayStart,
+            dayEnd: genuineCanonical.dayEnd,
+            state: genuineCanonical.state,
+            stepCount: genuineCanonical.stepCount,
+            knownStepDeltaSum: genuineCanonical.knownStepDeltaSum,
+            knownEpochCount: 2,
+            rejectedOrUnknownEpochCount:
+                genuineCanonical.rejectedOrUnknownEpochCount,
+            knownCoverageSeconds: genuineCanonical.knownCoverageSeconds,
+            missingCoverageSeconds: genuineCanonical.missingCoverageSeconds
+        )
+
+        let filtered = store.removingUnqualifiedResearchEvidence(
+            from: [staleInjected, genuineCanonical]
+        )
+
+        XCTAssertTrue(
+            AtriaWhoop4GravityCadenceStepModel
+                .releaseDailyAuthorityQualified
+        )
+        XCTAssertEqual(filtered, [staleInjected, genuineCanonical])
     }
 
     func testDurableReceiptWinsOnlyWhenItsCoverageIsStronger() throws {
@@ -249,6 +416,7 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             into: [strongerProjection],
             strapIdentifier: strap,
             windowStart: start,
+            includeUnqualifiedResearchEvidence: true,
             calendar: utcCalendar
         )
 
@@ -283,6 +451,7 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             into: [exact],
             strapIdentifier: strap,
             windowStart: start,
+            includeUnqualifiedResearchEvidence: true,
             calendar: utcCalendar
         )
 
@@ -315,6 +484,7 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             strapIdentifiers: identifiers,
             windowStart: start,
             now: start.addingTimeInterval(360),
+            includeUnqualifiedResearchEvidence: true,
             calendar: utcCalendar
         )
 
@@ -366,6 +536,7 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             strapIdentifiers: [strap],
             windowStart: start,
             now: start.addingTimeInterval(360),
+            includeUnqualifiedResearchEvidence: true,
             calendar: utcCalendar
         )
 
@@ -396,6 +567,7 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             strapIdentifiers: [strap],
             windowStart: cycleStart,
             now: receiptStart.addingTimeInterval(360),
+            includeUnqualifiedResearchEvidence: true,
             calendar: utcCalendar
         )
 
@@ -434,6 +606,7 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             strapIdentifiers: [strap],
             windowStart: cycleStart,
             now: afterMidnight,
+            includeUnqualifiedResearchEvidence: true,
             calendar: utcCalendar
         )
 
@@ -466,6 +639,7 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             strapIdentifiers: [strap],
             windowStart: newCycle,
             now: oldStart.addingTimeInterval(180),
+            includeUnqualifiedResearchEvidence: true,
             calendar: utcCalendar
         )
 
@@ -493,6 +667,7 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             strapIdentifiers: [strap],
             windowStart: start,
             now: start.addingTimeInterval(600),
+            includeUnqualifiedResearchEvidence: true,
             calendar: utcCalendar
         )
 
@@ -519,6 +694,7 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             strapIdentifiers: [strap],
             windowStart: start,
             now: unresolved.capturedThrough,
+            includeUnqualifiedResearchEvidence: true,
             calendar: utcCalendar
         )
         let day = try XCTUnwrap(merged.first)
@@ -569,6 +745,7 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             strapIdentifiers: [strap],
             windowStart: start,
             now: stationary.capturedThrough,
+            includeUnqualifiedResearchEvidence: true,
             calendar: utcCalendar
         )
         XCTAssertEqual(merged.first?.state, .available)
@@ -596,15 +773,15 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             range: start.upperBound..<sessions.endIndex
         ))
         let body = String(sessions[start.lowerBound..<end.lowerBound])
-        XCTAssertTrue(body.contains(
+        XCTAssertFalse(body.contains(
             "HistoricalArchive.motionTickDayEvidenceRead("
-        ))
+        ), "automatic receipt publication must never reopen the lifetime archive")
         XCTAssertTrue(body.contains(
             "Self.currentCycleStepReceiptQueue.async"
         ), "bounded compact receipt work must not wait behind lifetime archive projections")
-        XCTAssertTrue(body.contains(
+        XCTAssertFalse(body.contains(
             "Self.historySnapshotProjectionQueue.sync"
-        ), "the legacy JSONL fallback must remain serialized with heavyweight archive readers")
+        ), "legacy migration must be explicit, not a launch or reconnect fallback")
         XCTAssertTrue(body.contains(
             "AtriaWhoop4MotionTickDailyStore.shared.save("
         ))
@@ -635,6 +812,65 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         XCTAssertTrue(body.contains(
             ".didSaveNotification"
         ), "an unchanged durable receipt must still refresh relaunch surfaces")
+    }
+
+    func testLegacyCanonicalMotionMigratesOnceOffMainBeforeNegativeCaching()
+        throws {
+        let testsURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let sessions = try String(
+            contentsOf: testsURL.deletingLastPathComponent()
+                .appendingPathComponent("Atria/Sessions.swift"),
+            encoding: .utf8
+        )
+        let migrationStart = try XCTUnwrap(sessions.range(
+            of: "private func prepareCurrentCycleStrapStepReceipt"
+        ))
+        let refreshStart = try XCTUnwrap(sessions.range(
+            of: "private func refreshCurrentCycleStrapStepReceipt",
+            range: migrationStart.upperBound..<sessions.endIndex
+        ))
+        let migration = String(
+            sessions[migrationStart.lowerBound..<refreshStart.lowerBound]
+        )
+        let refreshEnd = try XCTUnwrap(sessions.range(
+            of: "nonisolated static func currentCycleStepReceiptAttemptSignature",
+            range: refreshStart.upperBound..<sessions.endIndex
+        ))
+        let refresh = String(
+            sessions[refreshStart.lowerBound..<refreshEnd.lowerBound]
+        )
+
+        XCTAssertTrue(migration.contains(
+            "Self.historySnapshotProjectionQueue.async"
+        ))
+        XCTAssertTrue(migration.contains(
+            "HistoricalArchive.motionTickDayEvidenceRead("
+        ))
+        XCTAssertTrue(migration.contains(
+            "compactMigrationStore:"
+        ))
+        XCTAssertTrue(migration.contains(
+            "currentCycleStepCompactMigrationKey"
+        ))
+        XCTAssertTrue(migration.contains(
+            "sourceBefore == sourceAfter"
+        ))
+        XCTAssertFalse(migration.contains(
+            "Self.historySnapshotProjectionQueue.sync"
+        ))
+        XCTAssertTrue(refresh.contains(
+            "allowNegativeAttemptPersistence"
+        ))
+        XCTAssertTrue(refresh.contains(
+            "if allowNegativeAttemptPersistence,"
+        ))
+        XCTAssertTrue(sessions.contains(
+            "prepareCurrentCycleStrapStepReceipt(\n                reason: \"session_store_init\""
+        ))
+        XCTAssertTrue(sessions.contains(
+            "prepareCurrentCycleStrapStepReceipt(\n                    reason: \"verified_bank_offload\""
+        ))
     }
 
     func testArchiveWideMotionReadersShareOneSerialConsumerLane() throws {

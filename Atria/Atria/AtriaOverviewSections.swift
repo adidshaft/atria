@@ -1722,11 +1722,11 @@ enum AtriaOverviewCurrentSleep {
         guard let latest = snapshot.latestMainSleep,
               let wake = latest.end,
               wake <= now else { return nil }
-        let eventCalendar = EventCivilTime.eventCalendar(
-            timeZoneIdentifier: latest.eventTimeZoneIdentifier,
-            fallback: calendar
-        )
-        guard let noSleepBoundary = eventCalendar.date(byAdding: .day, value: 1, to: wake),
+        guard let noSleepBoundary = AtriaPhysiologicalCycle.firstNoSleepFallback(
+            after: wake,
+            eventTimeZoneIdentifier: latest.eventTimeZoneIdentifier,
+            calendar: calendar
+        ),
               noSleepBoundary > now else { return nil }
         return latest
     }
@@ -4037,19 +4037,13 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                     : "Respiratory rate early sleep-only signal \(currentMainSleep?.respiratoryRateText ?? "--") breaths per minute.")
         case .steps:
             Button { showStrapStepsDetail = true } label: {
-                TimelineView(.periodic(from: .now, by: 30)) { context in
-                    let status = AtriaStrapStepLiveStatus.make(
-                        count: live.strapStepResearchCount,
-                        validationState: live.strapStepResearchState,
-                        capturedAt: AtriaStrapStepLiveStatus.persistedMotionDate(),
-                        now: context.date
-                    )
+                TimelineView(.periodic(from: .now, by: 30)) { _ in
                     let steps = live.dailyStepPresentation
                     AtriaGlanceMetricCard(title: "Strap steps",
                                           value: steps.valueText,
                                           detail: steps.detailText,
                                           systemImage: metric.systemImage,
-                                          tint: steps.count == nil ? status.tint
+                                          tint: steps.count == nil ? .secondary
                                             : (steps.completeness == .complete
                                                ? (stepsZone?.tint ?? .green) : .orange),
                                           zone: steps.count == nil ? nil : stepsZone,
@@ -5899,9 +5893,13 @@ struct AtriaStrapStepLiveStatus: Equatable {
     static func make(count: Int,
                      validationState: String,
                      capturedAt: Date?,
-                     now: Date) -> Self {
+                     now: Date,
+                     authorityQualified: Bool = true) -> Self {
         let safeCount = max(0, count)
-        let isValidated = WidgetSnapshotPublisher.strapStepsAreValidated(state: validationState)
+        let isValidated = authorityQualified
+            && WidgetSnapshotPublisher.strapStepsAreValidated(
+                state: validationState
+            )
         guard let capturedAt else {
             return Self(count: safeCount,
                         isValidated: isValidated,
@@ -5958,7 +5956,10 @@ private struct AtriaStrapStepsDetailSheet: View {
                     count: count,
                     validationState: validationState,
                     capturedAt: AtriaStrapStepLiveStatus.persistedMotionDate(),
-                    now: context.date
+                    now: context.date,
+                    authorityQualified:
+                        AtriaWhoop4GravityCadenceStepModel
+                            .releaseDailyAuthorityQualified
                 )
 
                 VStack(alignment: .leading, spacing: 14) {
@@ -5970,7 +5971,11 @@ private struct AtriaStrapStepsDetailSheet: View {
                             .background(status.tint.opacity(0.12), in: Circle())
 
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(status.isLive ? "Live" : "Not live")
+                            Text(
+                                status.isLive
+                                    ? "Strap motion live"
+                                    : "Strap motion not live"
+                            )
                                 .font(.headline)
                             Text(status.lastMotionText.capitalized)
                                 .font(.caption)
@@ -5997,22 +6002,30 @@ private struct AtriaStrapStepsDetailSheet: View {
                     }
 
                     VStack(alignment: .leading, spacing: 7) {
-                        HStack {
-                            Text(status.isLive ? "Daily goal" : "Saved progress")
-                            Spacer()
-                            Text("\(presentation.valueText) / \(max(goal, 0))")
-                                .monospacedDigit()
-                        }
-                        .font(.caption.weight(.semibold))
+                        if let count = presentation.count {
+                            HStack {
+                                Text(status.isLive ? "Daily goal" : "Saved progress")
+                                Spacer()
+                                Text("\(presentation.valueText) / \(max(goal, 0))")
+                                    .monospacedDigit()
+                            }
+                            .font(.caption.weight(.semibold))
 
-                        ProgressView(value: Double(presentation.count ?? 0),
-                                     total: Double(max(goal, 1)))
-                            .tint(status.tint)
+                            ProgressView(value: Double(count),
+                                         total: Double(max(goal, 1)))
+                                .tint(status.tint)
 
-                        if presentation.completeness != .complete {
-                            Text(presentation.source == .live
-                                 ? "Partial day total; it grows as new strap movement arrives."
-                                 : "Partial verified archive coverage; this is a lower bound, not a full-day total.")
+                            if presentation.completeness != .complete {
+                                Text(presentation.source == .live
+                                     ? "Partial day total; it grows as new strap movement arrives."
+                                     : "Partial verified archive coverage; this is a lower bound, not a full-day total.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Text(presentation.detailText)
+                                .font(.caption.weight(.semibold))
+                            Text("Daily progress appears when reliable strap steps are available.")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }

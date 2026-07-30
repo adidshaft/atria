@@ -2802,7 +2802,7 @@ enum AtriaTrendMetric: String, CaseIterable, Identifiable {
     }
 }
 
-/// One session's trend-relevant values, prepared on the main-actor store side so
+/// One day's trend-relevant values, prepared on the main-actor store side so
 /// the chart view stays cheap and Equatable.
 struct AtriaTrendPoint: Equatable, Identifiable {
     let id: UUID
