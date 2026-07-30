@@ -30628,6 +30628,58 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                       String(describing: error))
                     }
                 }
+            } catch AtriaHistoricalFullDrainCoveragePolicy.Rejection
+                .noUsableTimestamps {
+                do {
+                    let released = try coverageStore
+                        .releaseHistoryCompleteAuthorityWithoutGapCoverage(
+                            identity: identity
+                        )
+                    guard released else {
+                        throw AtriaBLEHistoryTerminalMaterializationError
+                            .publicationCheckpointMissing
+                    }
+                    UserDefaults.standard.set(
+                        "terminal_gap_uncovered_raw_retained",
+                        forKey: OfflineSyncDefaults.lastStatus
+                    )
+                    UserDefaults.standard.set(
+                        "no_overlapping_history_rows",
+                        forKey: OfflineSyncDefaults.lastReason
+                    )
+                    AtriaDebugLog(
+                        "ATRIADBG historical_full_drain_publish status=gap_uncovered generation=%llu action=preserve_gap_and_raw_release_priority_publish_partial_metrics",
+                        transportGeneration
+                    )
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        self.historicalConsumerMaterializationInFlight = false
+                        let published =
+                            await self.requestAndAwaitRecoveredDataPublication?(
+                                "full_drain_uncovered_partial_metrics"
+                            ) ?? false
+                        UserDefaults.standard.set(
+                            published
+                                ? "partial_history_published_gap_preserved"
+                                : "partial_history_publication_deferred",
+                            forKey: OfflineSyncDefaults.lastStatus
+                        )
+                        self.onHistoricalTransportOwnershipReleased?(
+                            "terminal_gap_uncovered"
+                        )
+                    }
+                } catch {
+                    UserDefaults.standard.set(
+                        String(reflecting: error),
+                        forKey:
+                            "atria.offlineSync.terminalArchiveFailureDiagnostic.v1"
+                    )
+                    Task { @MainActor [weak self] in
+                        self?.finishHistoricalConsumerMaterialization(
+                            reason: "uncovered_terminal_release_failed"
+                        )
+                    }
+                }
             } catch AtriaHistoricalConsumerProjectionCoordinator
                 .CoordinatorError.pendingDependencyMismatch {
                 if let fingerprint = Self

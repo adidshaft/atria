@@ -416,6 +416,84 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(store.load()).status, .historyComplete)
     }
 
+    func testNoCoverageTerminalReleasesOnlyPublicationPriority() throws {
+        let store = try armedStore()
+        let stores = durableStores(sequence: 1, fsyncedAt: start + 104)
+        let permit = try store.recordHistoryEndFsynced(
+            identity: identity(),
+            boundaryIdentifier: "end-terminal",
+            historyEndPayload: Data([0x31]),
+            expectedACKPayload: Data([0x01]),
+            stores: stores,
+            fsyncedAt: date(104)
+        )
+        _ = try store.recordMatchingACK(
+            identity: identity(),
+            permit: permit,
+            actualACKPayload: Data([0x01]),
+            ackAttempt: 1,
+            completedAt: date(105)
+        )
+        _ = try store.recordHistoryComplete(
+            identity: identity(),
+            completionIdentifier: "complete-terminal",
+            notificationPayload: Data([0x30]),
+            stores: stores,
+            receivedAt: date(106)
+        )
+
+        XCTAssertTrue(
+            try store.releaseHistoryCompleteAuthorityWithoutGapCoverage(
+                identity: identity()
+            )
+        )
+        XCTAssertNil(try store.load())
+
+        let proven = try armedStore()
+        let provenPermit = try proven.recordHistoryEndFsynced(
+            identity: identity(),
+            boundaryIdentifier: "end-proven",
+            historyEndPayload: Data([0x31]),
+            expectedACKPayload: Data([0x01]),
+            stores: stores,
+            fsyncedAt: date(104)
+        )
+        _ = try proven.recordMatchingACK(
+            identity: identity(),
+            permit: provenPermit,
+            actualACKPayload: Data([0x01]),
+            ackAttempt: 1,
+            completedAt: date(105)
+        )
+        _ = try proven.recordHistoryComplete(
+            identity: identity(),
+            completionIdentifier: "complete-proven",
+            notificationPayload: Data([0x30]),
+            stores: stores,
+            receivedAt: date(106)
+        )
+        let proof = try Policy.evaluate(
+            gapIdentifier: "gap-a",
+            gapStartUnix: start,
+            gapEndUnix: start + 100,
+            attemptIdentifier: "attempt-a",
+            transportNonce: "nonce-a",
+            transportGeneration: 7,
+            stores: stores,
+            decoderIdentifier: "decoder",
+            decoderVersion: 1,
+            metricTimestampsUnix: denseTimestamps()
+        )
+        _ = try proven.recordCoverageProof(identity: identity(), proof: proof)
+
+        XCTAssertFalse(
+            try proven.releaseHistoryCompleteAuthorityWithoutGapCoverage(
+                identity: identity()
+            )
+        )
+        XCTAssertEqual(try proven.load()?.status, .coverageProven)
+    }
+
     func testNoLongerPendingDrainingAuthorityClearsOnlyForExactIdentifier() throws {
         let store = try armedStore()
         try store.clearUnresolvedAuthorityIfGapNoLongerPending(

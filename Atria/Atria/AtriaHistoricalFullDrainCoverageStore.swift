@@ -964,6 +964,30 @@ final class AtriaHistoricalFullDrainCoverageStore: @unchecked Sendable {
         return try loadLocked().authority == nil
     }
 
+    /// Releases a terminal attempt only after its decoded timestamp set proves
+    /// that it contains no sample inside the bound gap. The gap remains in the
+    /// independent gap ledger and every raw row remains on disk; this removes
+    /// only the local-publication priority that would otherwise prevent those
+    /// unrelated rows from producing honestly partial daily metrics.
+    func releaseHistoryCompleteAuthorityWithoutGapCoverage(
+        identity: EventIdentity
+    ) throws -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        var envelope = try loadLocked()
+        guard let authority = envelope.authority else { return false }
+        try Self.match(identity, authority: authority)
+        guard authority.status == .historyComplete,
+              authority.historyComplete != nil,
+              authority.coverageProof == nil,
+              authority.consumerCommit == nil,
+              authority.resolvedAtUnix == nil else {
+            return false
+        }
+        envelope.authority = nil
+        try persistLocked(envelope)
+        return try loadLocked().authority == nil
+    }
+
     /// A separately verified physical strap-history reset makes every older
     /// in-flight drain impossible to resume: the cursor range it owned no
     /// longer exists on the strap. This retires only a pre-reset `.draining`
