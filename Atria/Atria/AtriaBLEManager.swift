@@ -30403,20 +30403,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             timestamps.count
                         )
                     }
-                    let terminalGapEntries = try
-                        AtriaHistoricalTerminalGapReconciliationCoordinator.evaluate(
-                            candidates: AtriaHistoricalGapLedger
-                                .allClosedRecoveryCandidates(),
-                            excludingGapIdentifier: authority.gap.gapIdentifier,
-                            authority: authority,
-                            decoderIdentifier: HistoricalArchive.layoutVersion,
-                            decoderVersion: HistoricalArchive.schema,
-                            metricTimestampsUnix: timestamps
+                    // This candidate set is part of the immutable terminal
+                    // receipt. A retry may run after newer gaps were created;
+                    // recomputing against that later ledger would reject the
+                    // already-persisted set and permanently wedge publication.
+                    if authority.terminalGapReconciliations == nil {
+                        let terminalGapEntries = try
+                            AtriaHistoricalTerminalGapReconciliationCoordinator.evaluate(
+                                candidates: AtriaHistoricalGapLedger
+                                    .allClosedRecoveryCandidates(),
+                                excludingGapIdentifier:
+                                    authority.gap.gapIdentifier,
+                                authority: authority,
+                                decoderIdentifier:
+                                    HistoricalArchive.layoutVersion,
+                                decoderVersion: HistoricalArchive.schema,
+                                metricTimestampsUnix: timestamps
+                            )
+                        _ = try coverageStore.recordTerminalGapReconciliations(
+                            identity: identity,
+                            entries: terminalGapEntries
                         )
-                    _ = try coverageStore.recordTerminalGapReconciliations(
-                        identity: identity,
-                        entries: terminalGapEntries
-                    )
+                    }
                     let coverageEffect =
                         try AtriaHistoricalFullDrainCoverageCoordinator(
                             store: coverageStore

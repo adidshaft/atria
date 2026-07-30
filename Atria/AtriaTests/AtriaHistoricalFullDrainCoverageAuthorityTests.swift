@@ -1058,9 +1058,14 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
             .appendingPathComponent("Atria/AtriaBLEManager.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
-        let enumerate = try XCTUnwrap(source.range(of:
+        let immutableSetGuard = try XCTUnwrap(source.range(of:
+            "if authority.terminalGapReconciliations == nil"))
+        let guardedSuffix = source[immutableSetGuard.lowerBound...]
+        let enumerate = try XCTUnwrap(guardedSuffix.range(of:
             "let terminalGapEntries = try"))
-        let suffix = source[enumerate.lowerBound...]
+        XCTAssertLessThan(immutableSetGuard.lowerBound, enumerate.lowerBound,
+                          "a retry must reuse its persisted terminal gap set")
+        let suffix = guardedSuffix[enumerate.lowerBound...]
         let journal = try XCTUnwrap(suffix.range(of:
             "recordTerminalGapReconciliations("))
         let primaryProof = try XCTUnwrap(suffix.range(of:
