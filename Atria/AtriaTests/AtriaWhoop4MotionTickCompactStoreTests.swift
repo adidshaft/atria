@@ -96,6 +96,47 @@ final class AtriaWhoop4MotionTickCompactStoreTests: XCTestCase {
         NotificationCenter.default.removeObserver(observer)
     }
 
+    func testHistoricalDrainPublishesCompactStepsAtDurableCheckpoints()
+        throws
+    {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let checkpointStart = try XCTUnwrap(source.range(
+            of: "if let checkpoint = checkpointCoordinator.recordPersistence("
+        ))
+        let callbackStart = try XCTUnwrap(source.range(
+            of: "Task { @MainActor [weak self] in",
+            range: checkpointStart.upperBound..<source.endIndex
+        ))
+        let checkpoint = String(
+            source[checkpointStart.lowerBound..<callbackStart.lowerBound]
+        )
+
+        let rawSync = try XCTUnwrap(checkpoint.range(
+            of: ".synchronizeDurableStorage(generation: generation)"
+        ))
+        let admission = try XCTUnwrap(checkpoint.range(
+            of: "markCurrentPrefixArchiveDurableWithReceipt"
+        ))
+        let compactSync = try XCTUnwrap(checkpoint.range(
+            of: "AtriaWhoop4MotionTickCompactStore.shared"
+        ))
+        let completed = try XCTUnwrap(checkpoint.range(
+            of: "checkpointCoordinator.checkpointCompleted("
+        ))
+
+        XCTAssertLessThan(rawSync.lowerBound, admission.lowerBound)
+        XCTAssertLessThan(admission.lowerBound, compactSync.lowerBound)
+        XCTAssertLessThan(compactSync.lowerBound, completed.lowerBound)
+        XCTAssertTrue(
+            checkpoint.contains("checkpoint_flush_failed"),
+            "compact cache failure must not invalidate canonical durability"
+        )
+    }
+
     func testExactWindowRequiresAtLeastNinetyPercentCoverage() async throws {
         let base = UInt32(Date().timeIntervalSince1970.rounded(.down)) - 120
         for second in 0..<89 {
