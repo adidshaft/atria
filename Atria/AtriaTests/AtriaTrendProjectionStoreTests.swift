@@ -165,6 +165,13 @@ final class AtriaTrendProjectionStoreTests: XCTestCase {
                 ".chartXScale(range: .plotDimension(startPadding: 18, endPadding: 18))"
             )
         )
+        XCTAssertTrue(source.contains("private var compactXAxisLabelRow: some View"))
+        XCTAssertTrue(source.contains("ForEach(Array(chartXAxisDates.enumerated())"))
+        XCTAssertFalse(
+            source.contains(
+                "AxisValueLabel(format: .dateTime.month(.abbreviated).day())"
+            )
+        )
     }
 
     func testTrendHostUsesNarrowProjectionInsteadOfWholeSessionStoreObservation() throws {
