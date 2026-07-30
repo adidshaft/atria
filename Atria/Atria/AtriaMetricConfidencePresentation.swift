@@ -215,13 +215,16 @@ extension AtriaCompactMetricPresentation {
     }
 
     /// Marker priority: carry-over first (it explains a number that otherwise
-    /// looks stale), then the missing input, then the bare level. At high
-    /// confidence there is nothing worth saying.
+    /// looks stale), then the score's actual input provenance, then the bare
+    /// level. At high confidence there is nothing worth saying.
     private static func recoveryMarker(level: AtriaMetricConfidenceLevel,
                                        usesHRV: Bool,
                                        isFromPreviousSleep: Bool) -> String? {
         if isFromPreviousSleep { return "prev. sleep" }
-        if !usesHRV { return "HRV pending" }
+        // A numeric score with `usesHRV == false` is already computed from RHR.
+        // Calling it "HRV pending" makes a real, settled RHR-only estimate look
+        // like an unfinished job and hides which evidence actually produced it.
+        if !usesHRV { return "RHR-only" }
         switch level {
         case .high: return nil
         case .moderate: return nil
