@@ -6561,7 +6561,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     func requestStrapStatusRead(reason: String) {
-        if recoveredDataProjectionDeferralIsActive {
+        let batteryLevelReadTransportActive =
+            Self.batteryLevelReadTransportIsActive(
+                offlineSyncInProgress: offlineHistoricalSyncInProgress,
+                historyPhaseActive: historyOnlyProbeMode,
+                readOnlyCaptureActive: readOnlyHistoryCaptureActive
+            )
+        if batteryLevelReadTransportActive {
             guard status == .connected,
                   let peripheral,
                   peripheral.state == .connected,
