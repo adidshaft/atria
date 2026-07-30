@@ -5636,10 +5636,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
         XCTAssertTrue(AtriaBLEManager.shouldRequestBatteryRefresh(lastRequestedAt: nil, now: now))
         XCTAssertFalse(AtriaBLEManager.shouldRequestBatteryRefresh(
-            lastRequestedAt: now.addingTimeInterval(-119), now: now
+            lastRequestedAt: now.addingTimeInterval(-59), now: now
         ))
         XCTAssertTrue(AtriaBLEManager.shouldRequestBatteryRefresh(
-            lastRequestedAt: now.addingTimeInterval(-120), now: now
+            lastRequestedAt: now.addingTimeInterval(-60), now: now
         ))
 
         XCTAssertFalse(AtriaBLEManager.batteryLevelIsFresh(lastAcceptedAt: nil, now: now))

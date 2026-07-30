@@ -1031,7 +1031,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// than presenting a false empty/full warning; an ordinary mid-range value
     /// still confirms in twelve seconds.
     nonisolated static let freshBoundaryBatteryConfirmationMinimumSpan: TimeInterval = 15 * 60
-    nonisolated static let batteryRefreshInterval: TimeInterval = 2 * 60
+    // Battery Service reads are tiny, bounded and independent of live HR.
+    // A one-minute request cadence keeps attach/remove state understandable
+    // without pretending that CoreBluetooth background scheduling is a clock.
+    nonisolated static let batteryRefreshInterval: TimeInterval = 60
     nonisolated static let batteryDisplayFreshnessLimit: TimeInterval = 10 * 60
     /// A 2A19 subscription is change-driven: after relaunch the strap may not
     /// emit another packet until the integer percentage changes. Retain the
