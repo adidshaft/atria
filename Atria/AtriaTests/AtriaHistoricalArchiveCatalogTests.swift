@@ -104,6 +104,39 @@ final class AtriaHistoricalArchiveCatalogTests: XCTestCase {
         XCTAssertEqual(try restarted.snapshotVerifiedAgainstFiles().activeChunk?.byteCount, 12)
     }
 
+    func testDurableFlushReconcilesActiveCatalogBeforeTerminalProof() throws {
+        let root = try temporaryDirectory()
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let store = AtriaHistoricalArchiveCatalogStore(
+            rootURL: root,
+            makeIdentifier: IdentifierSource(["active-a"]).next
+        )
+        _ = try store.loadOrRecover(discoveredLegacyURLs: [], now: now)
+        let activeURL = try store.writableChunkURL(now: now)
+        try FileManager.default.createDirectory(
+            at: activeURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("durable-history-row\n".utf8).write(to: activeURL)
+
+        XCTAssertThrowsError(try store.snapshotVerifiedAgainstFiles()) { error in
+            XCTAssertEqual(
+                error as? AtriaHistoricalArchiveCatalogStore.StoreError,
+                .catalogFileMismatch
+            )
+        }
+
+        try HistoricalArchive.reconcileActiveCatalogAfterDurableFlush(
+            synchronizedFiles: [activeURL],
+            catalogStore: store
+        )
+
+        XCTAssertEqual(
+            try store.snapshotVerifiedAgainstFiles().activeChunk?.byteCount,
+            20
+        )
+    }
+
     func testExistingV2CatalogWithoutStorageMetadataRemainsCompatible() throws {
         let root = try temporaryDirectory()
         let now = Date(timeIntervalSince1970: 2_000_000_000)

@@ -731,9 +731,32 @@ enum HistoricalArchive {
             durableStoreLock.unlock()
             throw error
         }
+        if let receipt {
+            try reconcileActiveCatalogAfterDurableFlush(
+                synchronizedFiles: receipt.synchronizedFiles,
+                catalogStore: try catalogStoreLocked()
+            )
+        }
         flushDurableDiagnostics(generation: generation)
         NotificationCenter.default.post(name: didUpdateNotification, object: nil)
         return receipt
+    }
+
+    /// Mirrors the normal JSONL append path's catalog hint once the durable
+    /// writer has fsynced its exact batch. Durable history appends intentionally
+    /// bypass `appendJSONLine`; without this boundary update the in-process
+    /// catalog retains its pre-drain size and terminal proof rejects valid raw
+    /// rows until the app is relaunched.
+    static func reconcileActiveCatalogAfterDurableFlush(
+        synchronizedFiles: [URL],
+        catalogStore: AtriaHistoricalArchiveCatalogStore
+    ) throws {
+        let active = try catalogStore.activeChunkDescriptor()
+        let activePath = active.fileURL.standardizedFileURL.path
+        guard synchronizedFiles.contains(where: {
+            $0.standardizedFileURL.path == activePath
+        }) else { return }
+        try catalogStore.recordAppendCompleted(at: active.fileURL)
     }
 
     /// Opens the exact-history identity store before a recovery drain needs its
