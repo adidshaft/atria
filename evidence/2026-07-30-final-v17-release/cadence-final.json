@@ -1,0 +1,24 @@
+{
+  "activeTicketID": "C125C62E-C432-53E7-BD19-9761251B2C3E|1785430846329|1785431049100",
+  "binarySHA256": "8c9ea62ba46ae275835232946fa38573282a01f784ff0763f291f0914403d183",
+  "capturedAtUTC": "2026-07-30T17:15:55.322380+00:00",
+  "closedCount": 279,
+  "connectionEpochAtUnix": 1785431581.814965,
+  "enabled": true,
+  "lastDisconnectAtUnix": 1785431049.09971,
+  "lastDisconnectCause": "corebluetooth:CBErrorDomain:6",
+  "offlineStatus": "deferred_terminal_materialization",
+  "openAgeSeconds": 173.106,
+  "openStartUTC": "2026-07-30T17:13:02.216686+00:00",
+  "packetAgeSeconds": 0.2684500217437744,
+  "pendingOffloads": [
+    {
+      "attempts": 0,
+      "durationSeconds": 202.771,
+      "id": "C125C62E-C432-53E7-BD19-9761251B2C3E|1785430846329|1785431049100"
+    }
+  ],
+  "prearmRequested": true,
+  "streamNotifying": true,
+  "streamState": "live"
+}

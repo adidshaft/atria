@@ -4017,3 +4017,32 @@ POSITIVE STILL REQUIRED**
   `4cc3579249490f7f88faf61c8111fde7033703c59190cb9a8ad5053919899e78`;
   full JSON result SHA-256 was
   `ae6522e0faad77596cd100bb295bcf36daaf6a7b54954c03e6f34ddfeec79616`.
+
+### 2026-07-30 — autonomous `0x69` bank lifecycle under deferred recovery
+
+- Repeated reconciliation of an already-terminal workout must not send
+  `69/00`. Once the explicit motion lease is absent, the armed historical
+  bank belongs to autonomous all-day capture. The previous no-op release path
+  closed that bank every 79–125 seconds and produced a chain of small tickets.
+- With the release guard corrected, one bank remained open for 202.771
+  seconds. Its eventual close coincided exactly with a real
+  `CBErrorDomain:6` link loss, not a workout reconciliation. CoreBluetooth
+  established the replacement epoch 6.362 seconds later and accepted HR
+  resumed automatically.
+- That real transport boundary produced one exact 202.771-second durable
+  ticket. An older terminal consumer materialization temporarily retained the
+  ticket's first history request without starting BLE, so its attempts
+  correctly remained zero.
+- A retained first request is not permission to claim recovery, but it also
+  must not suppress new capture. The successor `0x69` bank therefore re-arms
+  while the exact older ticket remains durable. Physical Release evidence
+  held that state for 173.106 seconds with no additional close, the ticket
+  still at attempt zero, accepted live HR active, and packet age 0.268
+  seconds.
+- This separates three authorities cleanly: the open bank records new factual
+  strap motion; the pending ticket represents missing historical coverage;
+  the compact-store verifier alone may resolve that ticket after its exact
+  window reaches the existing threshold. No deferred second is counted,
+  extrapolated, or marked recovered.
+- Evidence:
+  `evidence/2026-07-30-final-v17-release/cadence-final.json`.
