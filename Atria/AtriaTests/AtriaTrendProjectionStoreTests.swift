@@ -129,6 +129,30 @@ final class AtriaTrendProjectionStoreTests: XCTestCase {
         XCTAssertEqual(points[1].restingHR, 66)
     }
 
+    func testCompactTrendXAxisUsesDistinctObservedDays() {
+        let twoDays = [
+            date(2026, 7, 27),
+            date(2026, 7, 28),
+        ]
+        XCTAssertEqual(
+            AtriaTrendChartCard.compactXAxisDates(twoDays),
+            twoDays
+        )
+
+        let month = (0..<30).map {
+            utcCalendar.date(
+                byAdding: .day,
+                value: $0,
+                to: date(2026, 7, 1)
+            )!
+        }
+        let compact = AtriaTrendChartCard.compactXAxisDates(month)
+        XCTAssertEqual(compact.count, 4)
+        XCTAssertEqual(compact.first, month.first)
+        XCTAssertEqual(compact.last, month.last)
+        XCTAssertEqual(Set(compact).count, compact.count)
+    }
+
     func testTrendHostUsesNarrowProjectionInsteadOfWholeSessionStoreObservation() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceURL = testsDirectory

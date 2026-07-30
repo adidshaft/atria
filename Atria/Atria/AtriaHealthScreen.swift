@@ -195,6 +195,17 @@ enum AtriaHealthCurrentSleepEvidence {
     }
 }
 
+/// Retained history is useful context when the active wake-to-wake cycle has no
+/// sleep, but it must be labelled as previous and must never feed current
+/// Recovery, sleep need, respiration, stages, or ring values.
+enum AtriaHealthPreviousSleepEvidence {
+    static func resolve(
+        from snapshot: SleepHistorySnapshot
+    ) -> SleepHistorySnapshot.Night? {
+        snapshot.nights.first { $0.confirmed && !$0.isNapEvidence }
+    }
+}
+
 /// Current Vitals values are wake-to-wake Hero projections. A civil rollup is
 /// valid only when the UI is explicitly rendering that dated historical row.
 /// Keeping the choice in one pure resolver prevents midnight from silently
@@ -812,6 +823,11 @@ struct AtriaHealthScreen: View {
     /// caption are (visibilitySpec §2, 2026-07-05).
     private var sleepDetailCard: some View {
         let currentSleep = currentMainSleep
+        let previousSleep = currentSleep == nil
+            ? AtriaHealthPreviousSleepEvidence.resolve(
+                from: vitalsStore.state.sleepHistorySnapshot
+            )
+            : nil
         return VStack(alignment: .leading, spacing: 12) {
             Text("Sleep detail")
                 .font(.title2.weight(.bold))
@@ -827,6 +843,34 @@ struct AtriaHealthScreen: View {
                                 state: currentSleep?.sleepEfficiency == nil ? .learning : .research,
                                 tint: .cyan,
                                 footnote: "Duration-based estimate")
+            }
+
+            if currentSleep == nil {
+                HStack(spacing: AtriaDesignTokens.Spacing.md) {
+                    Image(systemName: "moon.zzz")
+                        .foregroundStyle(Metrics.electricSleep)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("No sleep recorded in this cycle")
+                            .font(.caption.weight(.bold))
+                        if let previousSleep {
+                            Text(
+                                "Last saved sleep · \(previousSleep.durationText) · "
+                                    + previousSleep.day.formatted(
+                                        .dateTime.day().month(.abbreviated)
+                                    )
+                            )
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        } else {
+                            Text("Atria will detect and review the next qualified sleep automatically.")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(12)
+                .atriaInsetCard(tint: Metrics.electricSleep)
             }
 
             if let currentSleep {
