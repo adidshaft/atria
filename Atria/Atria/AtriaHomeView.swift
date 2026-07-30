@@ -4886,6 +4886,14 @@ struct AtriaHomeView: View {
         })
 
         return VStack(spacing: 18) {
+#if DEBUG
+            // Screenshot hook (2026-07-30): the workout-review/notifications block
+            // renders inside AtriaTodayScreen UNDER the ring (below the fold) and
+            // simctl can't scroll, so float a copy to the top for headless capture.
+            if ProcessInfo.processInfo.arguments.contains("--atria-ui-notifications-top") {
+                todayNotifications
+            }
+#endif
             if shouldLeadWithSystemBanners && !debugShowsSleepPlanBedtimeFixture && !debugShowsNorthStarTodayFixture {
                 overviewSystemBanners
             }
@@ -5650,7 +5658,6 @@ private struct AtriaWorkoutDetectionBanner: View, Equatable {
             }
 
             workoutEvidenceRail
-            workoutDecisionStrip
 
             HStack(spacing: 10) {
                 Button(action: onStart) {
@@ -5674,89 +5681,49 @@ private struct AtriaWorkoutDetectionBanner: View, Equatable {
     }
 
     private var workoutEvidenceRail: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Strap effort")
-                    .font(.caption.weight(.bold))
-                Spacer(minLength: 8)
-                Text("\(prompt.heartRate) bpm · +\(prompt.bpmOverRest)")
-                    .font(.caption.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-
-            GeometryReader { proxy in
-                let width = proxy.size.width
-                let hrProgress = min(max(Double(prompt.bpmOverRest) / 80.0, 0), 1)
-                let strainProgress = min(max(prompt.strain / 12.0, 0), 1)
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(.primary.opacity(0.08))
-                    Capsule(style: .continuous)
-                        .fill(.orange.opacity(0.68))
-                        .frame(width: max(8, width * hrProgress))
-                    Capsule(style: .continuous)
-                        .fill(Metrics.electricStrain.opacity(0.48))
-                        .frame(width: max(5, width * strainProgress), height: 5)
-                        .offset(y: 7)
-                }
-            }
-            .frame(height: 16)
-
-            HStack {
-                Label("Strap HR", systemImage: "waveform.path.ecg")
-                Spacer(minLength: 8)
-                Text(String(format: "Strain %.1f", prompt.strain))
-                    .monospacedDigit()
-            }
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.secondary)
+        // Two calm, clearly SEPARATED bars (user feedback 2026-07-30). The old
+        // rail stacked an HR bar and a thin strain bar in ONE ZStack — the strain
+        // capsule was offset just 7pt down INTO the HR capsule — so they overlapped
+        // and read as one muddy bar. Each metric now owns a labeled row and its
+        // own full-height track. The redundant "Strap HR / Strain" footer row and
+        // the three Signal/Time/Next decision chips were dropped: the header, these
+        // two bars, and the buttons already carry everything this prompt needs.
+        VStack(alignment: .leading, spacing: 12) {
+            evidenceBar(title: "Effort",
+                        valueText: "\(prompt.heartRate) bpm · +\(prompt.bpmOverRest)",
+                        fraction: min(max(Double(prompt.bpmOverRest) / 80.0, 0), 1),
+                        tint: .orange)
+            evidenceBar(title: "Strain",
+                        valueText: String(format: "%.1f", prompt.strain),
+                        fraction: min(max(prompt.strain / 12.0, 0), 1),
+                        tint: Metrics.electricStrain)
         }
         .padding(12)
         .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
-    private var workoutDecisionStrip: some View {
-        HStack(spacing: 7) {
-            decisionChip(title: "Signal",
-                         value: prompt.confidenceLabel,
-                         systemImage: prompt.isReviewReady ? "checkmark.seal.fill" : "waveform.path.ecg",
-                         tint: prompt.isReviewReady ? .mint : .orange)
-            decisionChip(title: "Time",
-                         value: "\(prompt.evidenceMinutes)m",
-                         systemImage: "clock.fill",
-                         tint: .cyan)
-            decisionChip(title: "Next",
-                         value: prompt.isReviewReady ? "Review" : "Watching",
-                         systemImage: prompt.isReviewReady ? "hand.tap.fill" : "eye.fill",
-                         tint: prompt.isReviewReady ? .orange : .secondary)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Workout review. Strap signal \(prompt.confidenceLabel), \(prompt.evidenceMinutes) minutes seen, \(prompt.reviewHint).")
-    }
-
-    private func decisionChip(title: String, value: String, systemImage: String, tint: Color) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: systemImage)
-                .font(.caption2.weight(.black))
-                .foregroundStyle(tint)
-                .frame(width: 18, height: 18)
-                .background(tint.opacity(0.12), in: Circle())
-            VStack(alignment: .leading, spacing: 1) {
+    private func evidenceBar(title: String, valueText: String, fraction: Double, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
                 Text(title)
-                    .font(.caption2.weight(.bold))
+                    .font(.caption.weight(.bold))
+                Spacer(minLength: 8)
+                Text(valueText)
+                    .font(.caption.monospacedDigit().weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(value)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
             }
+            GeometryReader { proxy in
+                let width = proxy.size.width
+                ZStack(alignment: .leading) {
+                    Capsule(style: .continuous)
+                        .fill(.primary.opacity(0.08))
+                    Capsule(style: .continuous)
+                        .fill(tint.opacity(0.7))
+                        .frame(width: max(6, width * fraction))
+                }
+            }
+            .frame(height: 7)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
     }
 }
 

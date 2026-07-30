@@ -7,18 +7,28 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
         return try String(contentsOf: appURL.appendingPathComponent(relativePath), encoding: .utf8)
     }
 
-    func testStrapOnboardingUsesCompactAdaptiveSetupStrip() throws {
+    func testStrapOnboardingIsImageLedWithDetailCollapsedButHonest() throws {
+        // 2026-07-31 redesign (user: onboarding should be minimal + image-first
+        // like the reference screens, "not just texts"). The strap page now leads
+        // with the visual StrapSetupShowcase; the old compact setupStepTile strip
+        // and the always-on pairing/data wall-of-text were removed. Details collapse
+        // behind ONE tap -- but the honest pairing + data-handling copy must remain
+        // present (now inside the DisclosureGroup), never dropped.
         let source = try source("AtriaOnboardingFlow.swift")
         let start = try XCTUnwrap(source.range(of: "private var strapPage"))
         let end = try XCTUnwrap(source.range(of: "private var youPage", range: start.upperBound..<source.endIndex))
         let page = String(source[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(page.contains("LazyVGrid(columns: [GridItem(.adaptive(minimum: 92)"))
-        XCTAssertEqual(page.components(separatedBy: "setupStepTile(").count - 1, 3)
-        XCTAssertTrue(page.contains("Tap until blue"))
+        // Image-led, minimal: showcase leads; no tile strip, no always-visible wall.
+        XCTAssertTrue(page.contains("StrapSetupShowcase()"))
+        XCTAssertFalse(page.contains("LazyVGrid(columns: [GridItem(.adaptive(minimum: 92)"))
+        XCTAssertEqual(page.components(separatedBy: "setupStepTile(").count - 1, 0)
+        XCTAssertTrue(page.contains("DisclosureGroup"))
+        // Honesty preserved: pairing truth + data-handling detail still present.
         XCTAssertTrue(page.contains("side light pulses blue"))
         XCTAssertTrue(page.contains("The strap stops its blue light when pairing finishes"))
         XCTAssertTrue(page.contains("Atria does not force the light off"))
+        XCTAssertTrue(page.contains("FreshStartPolicy.summary"))
         XCTAssertFalse(page.contains("StrapChargeIllustration"))
     }
 
@@ -57,21 +67,27 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
 
         XCTAssertTrue(source.contains("private func onboardingHeader"))
         XCTAssertTrue(source.contains(".accessibilityElement(children: .combine)"))
-        XCTAssertTrue(source.contains("onboardingHeader(\"Connect your strap\""))
+        // 2026-07-31: the strap page went image-led (StrapSetupShowcase), so its
+        // "Connect your strap" onboardingHeader was removed; the remaining pages
+        // still use the accessible combined-title header.
         XCTAssertTrue(source.contains("onboardingHeader(\"Wear it tonight\""))
     }
 
-    func testExpectationTilesWrapInsteadOfForcingThreeAcross() throws {
+    func testExpectationsUseAdaptiveVerticalTimeline() throws {
+        // 2026-07-30 redesign: the expectations step is a vertical "what to expect"
+        // timeline (expectationStep x3) rather than a 3-across pill grid, so it
+        // stacks and adapts to narrow widths / larger text by construction (no
+        // fixed horizontal grid to overflow).
         let source = try source("AtriaOnboardingFlow.swift")
         let start = try XCTUnwrap(source.range(of: "private var expectationsPage"))
         let end = try XCTUnwrap(source.range(of: "private var progressDots",
                                               range: start.upperBound..<source.endIndex))
         let page = String(source[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(page.contains("LazyVGrid(columns: [GridItem(.adaptive(minimum: 92)"))
-        XCTAssertFalse(page.contains("HStack(spacing: 8)"),
-                       "Expectation tiles must wrap for narrow widths and larger text")
-        XCTAssertEqual(page.components(separatedBy: "expectationPill(").count - 1, 3)
+        XCTAssertEqual(page.components(separatedBy: "expectationStep(").count - 1, 3)
+        XCTAssertFalse(page.contains("expectationPill("))
+        XCTAssertFalse(page.contains("LazyVGrid(columns: [GridItem(.adaptive(minimum: 92)"),
+                       "Vertical timeline must not force a fixed adaptive grid")
     }
 
     func testOnboardingKeepsSupportingCopyForVoiceOverWithoutRenderingExtraLines() throws {
@@ -79,11 +95,13 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
 
         XCTAssertFalse(source.contains("Text(\"WHOOP insights without the subscription.\")"))
         XCTAssertTrue(source.contains(".accessibilityHint(\"WHOOP insights without the subscription.\")"))
-        XCTAssertTrue(source.contains("title: \"Wear\""))
-        XCTAssertTrue(source.contains("title: \"Sleep\""))
-        XCTAssertTrue(source.contains("title: \"Recovery\""))
+        // 2026-07-30: expectation flow is a vertical timeline; assert its step copy
+        // is present (each step combines its title + detail for VoiceOver) rather
+        // than the old Wear/Sleep/Recovery pill titles.
+        XCTAssertTrue(source.contains("title: \"Tonight\""))
+        XCTAssertTrue(source.contains("title: \"Tomorrow morning\""))
+        XCTAssertTrue(source.contains(".accessibilityElement(children: .combine)"))
         XCTAssertFalse(source.contains("detail: \"First sleep\""))
-        XCTAssertTrue(source.contains(".frame(maxWidth: .infinity, minHeight: 58)"))
     }
 
     func testOverviewRemovesDuplicateVisibleConnectionDetailButKeepsVoiceOverHint() throws {

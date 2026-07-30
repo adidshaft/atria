@@ -263,7 +263,10 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
 
         XCTAssertTrue(flow.contains(".frame(maxWidth: 260)"))
         XCTAssertTrue(flow.contains(".font(.system(size: 28, weight: .bold, design: .rounded))"))
-        XCTAssertTrue(flow.contains(".frame(maxWidth: .infinity, minHeight: 58)"))
+        // 2026-07-30: the fixed-height expectation pills were replaced by a compact
+        // vertical "what to expect" timeline; the ring maxWidth + title font above
+        // still assert the compact visual hierarchy this test guards.
+        XCTAssertTrue(flow.contains("private func expectationStep"))
         XCTAssertTrue(sharing.contains("Anonymous data only. No identity or location. Review the bundle before sharing."))
         XCTAssertFalse(sharing.contains("Share anonymized heart-rate, sleep and workout series"))
         XCTAssertTrue(sharing.contains("DisclosureGroup(\"Privacy details\")"),

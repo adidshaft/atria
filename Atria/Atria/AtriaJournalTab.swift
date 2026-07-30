@@ -602,6 +602,16 @@ private struct AtriaJournalCheckInDeck: View {
             // Completion is persisted state, not transient UI state: resume at
             // the first unanswered card (or the done card) after any view reset.
             deckIndex = firstUnansweredIndex
+#if DEBUG
+            // Screenshot hook (2026-07-30): hold a card mid-swipe so the
+            // horizontal-containment mask is verifiable headlessly (no input
+            // injection in this env). The card slides right + rotates but must
+            // stay clipped inside the deck column — never reaching the gutter.
+            if ProcessInfo.processInfo.arguments.contains("--atria-ui-journal-drag-preview"),
+               deckIndex < tags.count {
+                dragOffset = CGSize(width: 210, height: 0)
+            }
+#endif
         }
     }
 
@@ -699,19 +709,30 @@ private struct AtriaJournalCheckInDeck: View {
                 }
                 .offset(dragOffset)
                 .rotationEffect(.degrees(reduceMotion ? 0 : min(max(Double(dragOffset.width / 18), -14), 14)))
-                .overlay(alignment: .topTrailing) {
-                    if isCurrentCardSwipeable, dragOffset.width > 24 {
-                        swipeBadge(text: "YES", tint: .cyan)
-                    }
-                }
-                .overlay(alignment: .topLeading) {
-                    if isCurrentCardSwipeable, dragOffset.width < -24 {
-                        swipeBadge(text: "NO", tint: .red)
-                    }
-                }
             }
         }
         .frame(minHeight: deckSizing.minimumHeight)
+        // Contain the Tinder drag/fly-off HORIZONTALLY (user 2026-07-30: journal
+        // cards "crossing over the margins from both sides"). The mask is exactly
+        // the deck-column width but runs far past top and bottom, so a dragged or
+        // flying card is clipped at the card's own edges and can never bleed across
+        // the gutter to the screen margin, while vertical rotation overhang and the
+        // peeking card's bottom sliver stay visible.
+        .mask(alignment: .center) {
+            Rectangle().padding(.vertical, -300)
+        }
+        // Direction badges sit OUTSIDE the mask, pinned to the deck's fixed top
+        // corners, so they read clearly and never ride off-column with the card.
+        .overlay(alignment: .topTrailing) {
+            if isCurrentCardSwipeable, dragOffset.width > 24 {
+                swipeBadge(text: "YES", tint: .cyan)
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if isCurrentCardSwipeable, dragOffset.width < -24 {
+                swipeBadge(text: "NO", tint: .red)
+            }
+        }
     }
 
     private func swipeBadge(text: String, tint: Color) -> some View {
