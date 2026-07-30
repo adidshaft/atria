@@ -122,6 +122,16 @@ final class AtriaOverviewCurrentSleepTests: XCTestCase {
                      "Vitals must not reuse an old confirmed night after Today rolls over")
     }
 
+    func testHealthPreviousSleepContextIsExplicitlyHistorical() {
+        let wake = date(2026, 7, 18, 8, 0)
+        let history = snapshot(wake: wake)
+
+        XCTAssertEqual(
+            AtriaHealthPreviousSleepEvidence.resolve(from: history)?.id,
+            "manual-july-14"
+        )
+    }
+
     func testHealthScreenCannotReadUnfilteredLatestMainSleep() throws {
         let testsURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let healthURL = testsURL.deletingLastPathComponent()
@@ -130,6 +140,7 @@ final class AtriaOverviewCurrentSleepTests: XCTestCase {
 
         XCTAssertTrue(source.contains("AtriaHealthCurrentSleepEvidence.resolve("))
         XCTAssertTrue(source.contains("No sleep this cycle"))
+        XCTAssertTrue(source.contains("Last saved sleep"))
         XCTAssertFalse(source.contains(".latestMainSleep"),
                        "current Vitals duration, stages, performance, and respiration must use the physiological resolver")
     }

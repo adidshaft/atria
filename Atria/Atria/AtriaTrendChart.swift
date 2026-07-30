@@ -374,6 +374,29 @@ struct AtriaTrendChartCard: View {
         return values.reduce(0, +) / Double(values.count)
     }
 
+    /// Produces distinct, data-owned ticks instead of asking Charts to
+    /// interpolate several instants inside a one-day domain. The latter
+    /// rendered four identical "Jul 27" labels for a real Jul 27–28 series on
+    /// the physical phone.
+    nonisolated static func compactXAxisDates(
+        _ dates: [Date],
+        maximumCount: Int = 4
+    ) -> [Date] {
+        let ordered = Array(Set(dates)).sorted()
+        let limit = max(2, maximumCount)
+        guard ordered.count > limit else { return ordered }
+        let finalIndex = ordered.count - 1
+        let divisor = Double(limit - 1)
+        let indices = Set((0..<limit).map { slot in
+            Int((Double(slot) * Double(finalIndex) / divisor).rounded())
+        })
+        return indices.sorted().map { ordered[$0] }
+    }
+
+    private var chartXAxisDates: [Date] {
+        Self.compactXAxisDates(prepared.series.map(\.date))
+    }
+
     private var chart: some View {
         Chart {
             if let referenceValue = prepared.referenceValue {
@@ -470,7 +493,7 @@ struct AtriaTrendChartCard: View {
         .chartXSelection(value: $scrubDate)
         .chartYScale(domain: prepared.yDomain)
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+            AxisMarks(values: chartXAxisDates) { _ in
                 AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
                 AxisValueLabel(format: .dateTime.month(.abbreviated).day())
                     .font(.caption2)

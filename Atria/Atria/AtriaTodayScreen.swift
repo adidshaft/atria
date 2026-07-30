@@ -224,12 +224,11 @@ struct AtriaTodayScreen: View {
 
     var body: some View {
         let _ = AtriaBodyEvalProbe.tick("AtriaTodayScreen")
-        // This is the dashboard's one lazy content stack. `tabNavigation`
-        // deliberately uses a small eager wrapper so this stack can extend the
-        // physical ScrollView's full reachable content size; nesting it inside
-        // another LazyVStack made below-the-fold cards unreachable on device.
-        // Lazy rendering remains here, where the section count actually grows.
-        LazyVStack(spacing: 16) {
+        // The dashboard owns a small, bounded set of major sections. Keep this
+        // stack eager so the enclosing physical ScrollView receives the final
+        // content height up front. A LazyVStack here has repeatedly truncated
+        // the reachable device scroll range before the Strap steps card.
+        VStack(spacing: 16) {
             if debugShowsAICoachOnly {
                 AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in
                     AtriaAICoachCard(context: coachContext,

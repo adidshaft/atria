@@ -335,8 +335,12 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
             "The scroll shell must not wrap screen-owned lazy content in a second LazyVStack; nested lazy layout made below-fold Strap steps unreachable on a physical iPhone."
         )
         XCTAssertTrue(
+            today.contains("VStack(spacing: 16)"),
+            "Today's bounded section list must publish its full content height so the physical scroll reaches Strap steps."
+        )
+        XCTAssertFalse(
             today.contains("LazyVStack(spacing: 16)"),
-            "Today should retain the one lazy stack that owns its growing section content."
+            "A lazy Today root can truncate the device scroll surface before below-fold cards."
         )
     }
 
