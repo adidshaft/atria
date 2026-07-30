@@ -8577,6 +8577,11 @@ struct AtriaMetricDetailSheet: View {
     /// provenance to show, in which case the section is simply absent rather
     /// than rendered empty.
     var provenance: AtriaMetricProvenance? = nil
+    /// Strap model, threaded only so the .bloodOxygen detail can reuse the
+    /// strap-aware honest copy the SpO2 tile already uses (strap3 = hardware
+    /// absent, "Not available on this strap"; strap4+ = decoder "Not available
+    /// yet") instead of a hardcoded "yet" a strap3 can never fulfil.
+    var bloodOxygenStrapModel: AtriaBLEManager.AtriaStrapModel? = nil
 
     private final class ExpandedChartEventsCache {
         private var key: Int?
@@ -8638,6 +8643,7 @@ struct AtriaMetricDetailSheet: View {
          vo2MaxEstimate: VO2MaxEstimateSummary? = nil,
          skinTemperatureDeviation: IMUAuditSummary.SkinTemperatureDeviationSummary? = nil,
          provenance: AtriaMetricProvenance? = nil,
+         bloodOxygenStrapModel: AtriaBLEManager.AtriaStrapModel? = nil,
          initialRange: AtriaTrendRange = .day,
          initialScrubbedDay: Date? = nil,
          initialBucketOverride: AtriaChartBucketOverride = .auto,
@@ -8657,6 +8663,7 @@ struct AtriaMetricDetailSheet: View {
         _bucketOverride = State(initialValue: initialBucketOverride)
         _showMinMaxBand = State(initialValue: initialShowMinMaxBand)
         self.provenance = provenance
+        self.bloodOxygenStrapModel = bloodOxygenStrapModel
         self.metric = metric
         self.confirmedWorkouts = confirmedWorkouts
         self.confirmedWorkoutsRevision = confirmedWorkoutsRevision
@@ -9138,10 +9145,24 @@ struct AtriaMetricDetailSheet: View {
                 aboutDisclosure
             }
         case .bloodOxygen:
-            honestPartialDetail(heroValue: "\u{2014}",
-                                heroState: "Not available yet",
-                                tint: .pink,
-                                bodyText: "Atria can't read blood oxygen from this strap yet, so it shows no percentage.")
+            // Reuse the strap-aware, regression-tested copy the SpO2 tile uses,
+            // so the tapped-through sheet matches the tile and never promises a
+            // "yet" a SpO2-incapable strap (strap3) cannot deliver. Falls back
+            // to the previous copy only when no strap model was threaded in.
+            honestPartialDetail(
+                heroValue: "\u{2014}",
+                heroState: bloodOxygenStrapModel.map {
+                    AtriaExperimentalSensorCopy.bloodOxygenStatus(
+                        strapModel: $0,
+                        decoderAvailable: AtriaResearchProbe.validatedSpO2DecoderAvailable)
+                } ?? "Not available yet",
+                tint: .pink,
+                bodyText: bloodOxygenStrapModel.map {
+                    AtriaExperimentalSensorCopy.bloodOxygenDetail(
+                        strapModel: $0,
+                        decoderAvailable: AtriaResearchProbe.validatedSpO2DecoderAvailable,
+                        candidateFrames: 0)
+                } ?? "Atria can't read blood oxygen from this strap yet, so it shows no percentage.")
         }
     }
 
@@ -10279,7 +10300,7 @@ struct AtriaMetricDetailSheet: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Behaviors that move you")
                     .font(.subheadline.weight(.semibold))
-                AtriaJournalBehaviorImpactRows(impacts: Array(behaviorImpacts.prefix(3)))
+                AtriaJournalBehaviorImpactRows(impacts: Array(behaviorImpacts.prefix(3)), showsBar: true)
                 Text("From your journal tags vs next-day recovery over 90 days. Association, not proof of cause.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -14392,25 +14413,36 @@ private struct AtriaJournalImpactStrip: View, Equatable {
 
 struct AtriaJournalBehaviorImpactRows: View, Equatable {
     let impacts: [BehaviorImpactSummary]
+    /// When true (recovery-detail "what moves your recovery" card) each row
+    /// gains a diverging center-baseline bar mirroring the contributor rail
+    /// directly above it, so behaviours read at a glance like the contributors.
+    /// Off in the Journal list. Visualizes the already-computed signed impact —
+    /// introduces no new number.
+    var showsBar: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             ForEach(impacts) { impact in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Image(systemName: impact.tag.symbolName)
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(tint(for: impact))
-                        .frame(width: 18)
-                    Text(impact.tag.label)
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Spacer(minLength: 8)
-                    Text("\(impact.valueText) · \(impact.nightsText)")
-                        .font(.caption.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(tint(for: impact))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.78)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: impact.tag.symbolName)
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(tint(for: impact))
+                            .frame(width: 18)
+                        Text(impact.tag.label)
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        Text("\(impact.valueText) · \(impact.nightsText)")
+                            .font(.caption.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(tint(for: impact))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.78)
+                    }
+                    if showsBar {
+                        impactBar(impact)
+                    }
                 }
             }
 
@@ -14426,6 +14458,34 @@ struct AtriaJournalBehaviorImpactRows: View, Equatable {
 
     private func tint(for impact: BehaviorImpactSummary) -> Color {
         impact.impact >= 0 ? .mint : .orange
+    }
+
+    /// Diverging center-baseline bar (same geometry idiom as the recovery
+    /// contributor rail): fills right for a positive next-day-recovery impact,
+    /// left for negative, against a fixed ±15% presentation cap. Read-only.
+    private func impactBar(_ impact: BehaviorImpactSummary) -> some View {
+        let cap = 15.0
+        let progress = min(max(impact.impact / cap, -1), 1)
+        let barTint = tint(for: impact)
+        return GeometryReader { proxy in
+            let width = proxy.size.width
+            let halfWidth = width / 2
+            let fillWidth = max(3, abs(progress) * halfWidth)
+            ZStack(alignment: .leading) {
+                Capsule(style: .continuous)
+                    .fill(.primary.opacity(0.08))
+                Rectangle()
+                    .fill(.primary.opacity(0.24))
+                    .frame(width: 1.5)
+                    .offset(x: halfWidth)
+                Capsule(style: .continuous)
+                    .fill(barTint.opacity(0.56))
+                    .frame(width: fillWidth)
+                    .offset(x: progress >= 0 ? halfWidth : halfWidth - fillWidth)
+            }
+        }
+        .frame(height: 6)
+        .accessibilityHidden(true)
     }
 }
 
