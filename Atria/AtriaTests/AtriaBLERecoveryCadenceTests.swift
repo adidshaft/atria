@@ -8127,6 +8127,46 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testRepeatedTerminalReconciliationCannotCloseAllDayBank() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "func endWorkoutMotionLease(reason: String)"
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "private func stopWorkoutRawMotionIfConnected",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        let noLeaseGuard = try XCTUnwrap(body.range(
+            of: "guard hadLease else"
+        ))
+        let bankStop = try XCTUnwrap(body.range(
+            of: "stopWorkoutHistoricalMotionBankIfPossible(reason: reason)"
+        ))
+        XCTAssertLessThan(
+            noLeaseGuard.lowerBound,
+            bankStop.lowerBound,
+            "an already-released workout must retain the autonomous all-day bank"
+        )
+        XCTAssertTrue(body.contains("action=retain_all_day_bank"))
+    }
+
+    func testDeferredFirstBankOffloadResumesPresentCapture() {
+        XCTAssertFalse(AtriaBLEManager.historicalMotionBankArmEligible(
+            manualWorkoutActive: false,
+            pendingOffloadAttempts: 0
+        ))
+        XCTAssertTrue(AtriaBLEManager.historicalMotionBankArmEligible(
+            manualWorkoutActive: false,
+            pendingOffloadAttempts: 0,
+            firstAttemptTransportDeferred: true
+        ))
+        XCTAssertTrue(AtriaBLEManager.historicalMotionBankArmEligible(
+            manualWorkoutActive: false,
+            pendingOffloadAttempts: 1
+        ))
+    }
+
     func testConnectionAndRestorationPathsReadoptPersistedLease() throws {
         let source = try leaseManagerSource()
         let didConnect = try XCTUnwrap(source.range(of: "didConnect peripheral: CBPeripheral"))

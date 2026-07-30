@@ -21601,6 +21601,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     func endWorkoutMotionLease(reason: String) {
         let hadLease = workoutMotionOwnerStartedAt != nil
             || UserDefaults.standard.object(forKey: WorkoutMotionDefaults.ownerStartedAt) != nil
+        // Reconciliation can observe the same already-terminal workout intent
+        // more than once. Once its explicit lease is gone, the currently armed
+        // 0x69 bank belongs to autonomous all-day capture. Closing that bank
+        // from this no-op path created a new history ticket every reconciliation
+        // tick, interrupting live capture and preventing the hourly bank from
+        // accumulating useful coverage.
+        guard hadLease else {
+            AtriaDebugLog(
+                "ATRIADBG workout_motion status=lease_release_noop reason=%@ action=retain_all_day_bank",
+                reason
+            )
+            return
+        }
         stopWorkoutHistoricalMotionBankIfPossible(reason: reason)
         stopWorkoutRawMotionIfConnected(reason: reason)
         workoutMotionCutoverTask?.cancel()
@@ -21609,7 +21622,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         workoutMotionActivationTask = nil
         workoutMotionCommandTask?.cancel()
         workoutMotionCommandTask = nil
-        guard hadLease else { return }
         let now = Date()
         recordWorkoutMotionGapClosureIfNeeded(endedAt: now, outcome: "lease_released")
         workoutMotionOwnerStartedAt = nil
@@ -21765,11 +21777,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// intentional checkpoint retries or terminally resolves it.
     nonisolated static func historicalMotionBankArmEligible(
         manualWorkoutActive: Bool,
-        pendingOffloadAttempts: Int?
+        pendingOffloadAttempts: Int?,
+        firstAttemptTransportDeferred: Bool = false
     ) -> Bool {
         manualWorkoutActive
             || pendingOffloadAttempts == nil
             || (pendingOffloadAttempts ?? 0) > 0
+            || firstAttemptTransportDeferred
     }
 
     /// Retries may interrupt present capture only at an explicit maintenance
@@ -21922,6 +21936,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 processInterruptedBoundRetry:
                     processInterruptedBoundRetry
             )
+        // `resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded` binds the
+        // exact ticket and reserves `lastOffloadStartedAt` before asking the
+        // asynchronous history owner. Archive-only terminal materialization
+        // can retain that request without starting BLE, leaving attempts at
+        // zero. Present capture must resume in that state: the exact ticket
+        // remains durable for the next maintenance boundary, while keeping
+        // 0x69 disabled would lose every new all-day second for work that is
+        // not currently using the radio.
+        let firstAttemptTransportDeferred =
+            selectedPendingOffload?.attempts == 0
+                && bound?.id == selectedPendingOffload?.id
+                && lastStartedAt.map {
+                    $0 >= (selectedPendingOffload?.end ?? .distantFuture)
+                        && $0 >= processLaunchStartedAt
+                } == true
         if let selectedPendingOffload,
            !manualWorkoutActive,
            !calibrationHoldActive,
@@ -21968,7 +21997,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         guard Self.historicalMotionBankArmEligible(
             manualWorkoutActive: manualWorkoutActive,
-            pendingOffloadAttempts: selectedPendingOffload?.attempts
+            pendingOffloadAttempts: selectedPendingOffload?.attempts,
+            firstAttemptTransportDeferred:
+                firstAttemptTransportDeferred
         ) else {
             AtriaDebugLog(
                 "ATRIADBG workout_motion_bank status=arm_deferred reason=%@ pending_offload_attempts=%d action=complete_first_attempt_before_present_rearm",
