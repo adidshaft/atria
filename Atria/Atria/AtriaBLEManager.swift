@@ -3702,7 +3702,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var freshScanFallbackTask: Task<Void, Never>?
     private var batteryChargeExpirationTask: Task<Void, Never>?
     private var batteryConfirmationReadTask: Task<Void, Never>?
-    private var batteryLevelReadTimeoutTask: Task<Void, Never>?
     private var batteryConfirmationReadLevel: Int?
     private var batteryLevelCharacteristic: CBCharacteristic?
     private var batteryStatusCharacteristic: CBCharacteristic?
@@ -3713,10 +3712,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// Set only for one bounded standard 2A1B request on the current link.
     /// Cleared by its callback, any error, reconnect, or disconnect.
     private var batteryStatusReadRequestedAt: Date?
-    /// One bounded current-link 2A19 read. Notification callbacks also settle
-    /// it because either is fresh standard Battery Service evidence.
-    private var batteryLevelReadRequestedAt: Date?
-    private var lastCurrentLinkBatteryLevelReadAt: Date?
     private var lastBatteryReadRequestedAt: Date?
     private var lastActiveBatteryChargeEvidenceAt: Date?
     private var lastPlausibleBatteryRiseEvidenceAt: Date?
@@ -6526,52 +6521,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       characteristic.properties.rawValue)
     }
 
-    private func requestCurrentLinkBatteryLevelReadIfSafe(
-        peripheral: CBPeripheral,
-        characteristic: CBCharacteristic,
-        reason: String
-    ) -> Bool {
-        let now = Date()
-        guard Self.shouldPerformCurrentLinkBatteryLevelRead(
-            canonicalLinkConnected: status == .connected
-                && self.peripheral === peripheral
-                && peripheral.state == .connected,
-            historyTransportOwnsLink: Self.batteryLevelReadTransportIsActive(
-                offlineSyncInProgress: offlineHistoricalSyncInProgress,
-                historyPhaseActive: historyOnlyProbeMode,
-                readOnlyCaptureActive: readOnlyHistoryCaptureActive
-            ),
-            characteristicReadable: characteristic.properties.contains(.read),
-            readInFlight: batteryLevelReadRequestedAt != nil,
-            lastReadAt: lastCurrentLinkBatteryLevelReadAt,
-            now: now
-        ) else { return false }
-
-        batteryLevelReadRequestedAt = now
-        lastCurrentLinkBatteryLevelReadAt = now
-        lastBatteryReadRequestedAt = now
-        batteryLevelReadTimeoutTask?.cancel()
-        batteryLevelReadTimeoutTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(12))
-            guard let self, !Task.isCancelled,
-                  self.batteryLevelReadRequestedAt == now else { return }
-            self.batteryLevelReadRequestedAt = nil
-            self.batteryLevelReadTimeoutTask = nil
-            AtriaDebugLog("ATRIADBG battery source=2A19 status=read_timed_out reason=%@ action=await_notification_no_reconnect",
-                          reason)
-        }
-        peripheral.readValue(for: characteristic)
-        AtriaDebugLog("ATRIADBG battery source=2A19 status=read_requested reason=%@ cadence_s=60 history_transport_owned=0",
-                      reason)
-        return true
-    }
-
-    private func settleCurrentLinkBatteryLevelRead() {
-        batteryLevelReadRequestedAt = nil
-        batteryLevelReadTimeoutTask?.cancel()
-        batteryLevelReadTimeoutTask = nil
-    }
-
     func requestStrapStatusRead(reason: String) {
         let batteryLevelReadTransportActive =
             Self.batteryLevelReadTransportIsActive(
@@ -6622,13 +6571,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
         }
         if let batteryLevelCharacteristic {
-            if requestCurrentLinkBatteryLevelReadIfSafe(
-                peripheral: peripheral,
-                characteristic: batteryLevelCharacteristic,
-                reason: reason
-            ) {
-                return
-            }
             let action = Self.standardBatteryRefreshAction(
                 canRead: batteryLevelCharacteristic.properties.contains(.read),
                 canNotify: batteryLevelCharacteristic.properties.contains(.notify)
@@ -17342,7 +17284,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         activeJournalStepCheckpointTask?.cancel()
         batteryChargeExpirationTask?.cancel()
         batteryConfirmationReadTask?.cancel()
-        batteryLevelReadTimeoutTask?.cancel()
         proprietaryBatteryRefreshTimeoutTask?.cancel()
         batteryNotificationRecoveryTask?.cancel()
         motionHandshakeAddHRTask?.cancel()
@@ -35954,10 +35895,6 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             freshScanFallbackTask = nil
             batteryConfirmationReadTask?.cancel()
             batteryConfirmationReadTask = nil
-            batteryLevelReadTimeoutTask?.cancel()
-            batteryLevelReadTimeoutTask = nil
-            batteryLevelReadRequestedAt = nil
-            lastCurrentLinkBatteryLevelReadAt = nil
             batteryConfirmationReadLevel = nil
             batteryLevelCharacteristic = nil
             batteryStatusCharacteristic = nil
@@ -37648,7 +37585,6 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             if characteristic.uuid == Self.UUIDs.batteryLevel {
                 let receivedAt = Date()
                 Task { @MainActor in
-                    self.settleCurrentLinkBatteryLevelRead()
                     self.recoverBatteryNotificationAfterValueError(
                         peripheral: peripheral,
                         characteristic: characteristic,
@@ -37676,7 +37612,6 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             }
             if uuid == Self.UUIDs.batteryLevel {
                 Task { @MainActor in
-                    self.settleCurrentLinkBatteryLevelRead()
                     self.recoverBatteryNotificationAfterValueError(
                         peripheral: peripheral,
                         characteristic: characteristic,
@@ -37734,7 +37669,6 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                                       forKey: BatteryDefaults.notificationLastCallbackAt)
             guard let newLevel = Self.parseBatteryLevel(data) else {
                 Task { @MainActor in
-                    self.settleCurrentLinkBatteryLevelRead()
                     self.recoverBatteryNotificationAfterValueError(
                         peripheral: peripheral,
                         characteristic: characteristic,
@@ -37747,7 +37681,6 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 return
             }
             Task { @MainActor in
-                self.settleCurrentLinkBatteryLevelRead()
                 // A GATT value from a CB-connected peripheral proves the link is
                 // live. Record the activity and heal a status that a watchdog or a
                 // transient central blip wrongly left non-connected (after state
