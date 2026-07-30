@@ -66,3 +66,33 @@ Date: 2026-07-30 (Asia/Kolkata)
   charger reseat. The decline already proves the detached/not-powered
   transition and correct no-bolt presentation; do not claim the attach row
   until a qualified rise or direct charger-state event is observed.
+
+## July 31 continuous-capture and one-minute release
+
+- Physical inspection found the retired hidden all-day-wear preference stored
+  as `false` even though its one-time migration marker already existed. That
+  disabled the supervisor responsible for continuous journaling and bounded
+  standard battery refreshes. Commit `c45662db` makes normal production launch
+  repair this orphaned state every time it reappears; isolated full-protocol
+  diagnostics remain untouched.
+- The in-place install preserved database UUID
+  `3A0E1087-4035-47FE-B081-3607AF09CBD1` and preserved the exact daily step
+  receipt SHA-256
+  `d864334e7b9a9edfec1746900f491cd590f46b69e4f063b8b6a1ee8a6bb1da5a`.
+- Commit `8edc78a6` changed the outer connected-battery request cadence from two
+  minutes to one minute. The existing single-flight, exact-current-peripheral,
+  active-history exclusion, and no-reconnect timeout rules are unchanged.
+- Exact installed Release executable SHA-256:
+  `4e01f1f4fb224769570d79c017f3a85c5d16513a2d63feff82115611143e1a0b`.
+  Installation URL:
+  `/private/var/containers/Bundle/Application/337B464A-D82B-4ADD-98F1-B65FD5E89688/Atria.app/`.
+- The physical Release accepted a current-link 2A19 callback at
+  `2026-07-31 00:55:24 IST`, then another at `00:56:41` on the next available
+  one-minute scheduler boundary. Live HR remained moving and was visibly
+  `87 bpm` after the second callback. No disconnect or pairing change occurred.
+- Both callbacks returned `91%`; the strap therefore supplied no qualified
+  charging evidence despite the charger being reported attached. The no-bolt
+  91% pill is the truthful presentation. Charger-attach acceptance remains
+  pending an actual 2A19 increase or a direct charger-state event.
+- Physical UI proof:
+  `physical-one-minute-battery-rhr-only.png`.
