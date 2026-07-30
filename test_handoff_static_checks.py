@@ -3028,7 +3028,10 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "struct AtriaHapticAlertSettingsCard: View, Equatable",
             ".atriaInsetCard(tint: .purple)",
-            ".accessibilityLabel(\"Notifications. Choose coaching nudges Atria can send on this phone. Nothing leaves your device.\")",
+            # 2026-07-30: master toggle relabeled "Allow notifications" (it gates
+            # safety alerts too, not only coaching), so the a11y copy dropped
+            # "coaching nudges" for the accurate "which alerts".
+            ".accessibilityLabel(\"Notifications. Choose which alerts Atria can send on this phone. Nothing leaves your device.\")",
         ]:
             assert_contains(self, haptics, needle)
         assert_not_contains(self, haptics, ".atriaRaisedCard(")
@@ -6595,7 +6598,7 @@ class HandoffStaticChecks(unittest.TestCase):
             'case "sleep_review": return sleepReview',
             'case "workout_review": return workoutReview',
             'case "morning_summary": return morningSummary',
-            'notificationToggle("Allow coach notifications", keyPath: \\.allowNotifications, prominent: true)',
+            'notificationToggle("Allow notifications", keyPath: \\.allowNotifications, prominent: true)',
             'notificationToggle("Sleep review", keyPath: \\.sleepReview)',
             'notificationToggle("Workout review", keyPath: \\.workoutReview)',
             'notificationToggle("Morning summary", keyPath: \\.morningSummary)',
@@ -10954,15 +10957,21 @@ class HandoffStaticChecks(unittest.TestCase):
             # leaf so a raw strap-motion timestamp update cannot rebuild the
             # workout controls or route map.
             "private struct AtriaLiveWorkoutMotionStatusHost: View",
+            # 2026-07-30: HR-liveness host added as its own narrow leaf so the
+            # HR block can grey a stale reading (reading metricStore.sensorAvailability)
+            # without the root view observing the high-frequency metric store.
+            "private struct AtriaLiveWorkoutHeartBlockHost: View",
         ]:
             assert_contains(self, workout, leaf)
         assert_contains(self, workout, "AtriaLiveWorkoutHeartBlock(pulseStore: pulseStore,")
+        assert_contains(self, workout, "AtriaLiveWorkoutHeartBlockHost(metricStore: metricStore,")
         assert_contains(self, workout, "AtriaLiveWorkoutRouteMetricsHost(metricStore: metricStore,")
         assert_contains(self, workout, "AtriaLiveWorkoutStrainGuidanceHost(metricStore: metricStore,")
         assert_contains(self, workout, "AtriaLiveWorkoutMotionStatusHost(metricStore: metricStore)")
         # 2026-07-16: 2 -> 3 for the added motion-status leaf above; the root
         # view still must not observe metricStore directly (asserted above).
-        self.assertEqual(workout.count("@ObservedObject var metricStore: AtriaLiveWorkoutMetricStore"), 3)
+        # 2026-07-30: 3 -> 4 for the added HR-liveness host leaf above.
+        self.assertEqual(workout.count("@ObservedObject var metricStore: AtriaLiveWorkoutMetricStore"), 4)
         assert_not_contains(self, workout, "private struct AtriaLiveWorkoutZoneCard: View")
         assert_not_contains(self, workout, "private struct AtriaLiveWorkoutStatsRow: View")
 
@@ -11282,7 +11291,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaTodayWeeklyPlanCard(plan: weeklyPlan)",
             "showWeeklyReport = true",
             ".sheet(isPresented: $showWeeklyReport)",
-            "AtriaWeeklyReportSheet(report: weeklyReport)",
+            # 2026-07-30: weekly sheet now also carries the monthly companion
+            # (AtriaWeeklyReportSheet's "Monthly" toolbar button), so the call
+            # gained args after `report: weeklyReport`.
+            "AtriaWeeklyReportSheet(report: weeklyReport,",
             "private var weeklyPlan: WeeklyPlan",
             "weeklyPlan = store.currentWeeklyPlan()",
             "sessionProjectionStore.state.weeklyPlan",

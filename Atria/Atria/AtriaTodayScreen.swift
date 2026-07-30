@@ -184,6 +184,10 @@ struct AtriaTodayScreen: View {
     /// sleep, plan).
     var systemNotifications: AnyView? = nil
     @State private var metricDetail: AtriaMetricDetailKind?
+    // Open the metric detail sheet at full height so the trend chart + context
+    // the header promises are above the fold on open; .medium stays reachable
+    // by dragging down.
+    @State private var metricDetailDetent: PresentationDetent = .large
     @State private var draggingSection: AtriaTodaySection?
     // User-arranged order of the big sections below the ring (2026-07-07
     // user feedback: "let people drag drop and arrange entire big sections").
@@ -316,12 +320,19 @@ struct AtriaTodayScreen: View {
                                        vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                                        skinTemperatureDeviation: sessionProjectionStore.state.skinTemperatureDeviationSummary,
                                        provenance: provenance(for: detail))
-                    .presentationDetents([.medium, .large])
+                    .presentationDetents([.medium, .large], selection: $metricDetailDetent)
                     .presentationDragIndicator(.visible)
             }
         }
+        // Reset to full height on every open so the chart + context are above the
+        // fold; a mid-session drag to .medium is respected until the sheet closes.
+        .onChange(of: metricDetail) { _, newValue in
+            if newValue != nil { metricDetailDetent = .large }
+        }
         .sheet(isPresented: $showWeeklyReport) {
-            AtriaWeeklyReportSheet(report: weeklyReport)
+            AtriaWeeklyReportSheet(report: weeklyReport,
+                                   monthlyReport: monthlyReport,
+                                   autoPresentMonthly: debugAutoPresentMonthly)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
@@ -358,7 +369,8 @@ struct AtriaTodayScreen: View {
                let debugDetail = Self.debugInitialMetricDetail(arguments: ProcessInfo.processInfo.arguments) {
                 metricDetail = debugDetail
             }
-            if Self.debugShowsWeeklyReport(arguments: ProcessInfo.processInfo.arguments) {
+            if Self.debugShowsWeeklyReport(arguments: ProcessInfo.processInfo.arguments)
+                || Self.debugShowsMonthlyReport(arguments: ProcessInfo.processInfo.arguments) {
                 showWeeklyReport = true
             }
             if Self.debugShowsBreathwork(arguments: ProcessInfo.processInfo.arguments) {
@@ -976,6 +988,7 @@ struct AtriaTodayScreen: View {
         #if DEBUG
         if Self.debugShowsNorthStarHighlights(arguments: ProcessInfo.processInfo.arguments)
             || Self.debugShowsWeeklyReport(arguments: ProcessInfo.processInfo.arguments)
+            || Self.debugShowsMonthlyReport(arguments: ProcessInfo.processInfo.arguments)
             || Self.debugShowsAICoachLocalFixture(arguments: ProcessInfo.processInfo.arguments)
             || Self.debugShowsNutritionRecoveryDetail(arguments: ProcessInfo.processInfo.arguments) {
             return Self.debugHighlightRollups(includeNutrition: Self.debugShowsNutritionRecoveryDetail(arguments: ProcessInfo.processInfo.arguments))
@@ -1014,6 +1027,13 @@ struct AtriaTodayScreen: View {
         let valueIndex = arguments.index(after: fixtureIndex)
         return arguments.indices.contains(valueIndex)
             && arguments[valueIndex] == "weekly-report"
+    }
+
+    private static func debugShowsMonthlyReport(arguments: [String]) -> Bool {
+        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
+        let valueIndex = arguments.index(after: fixtureIndex)
+        return arguments.indices.contains(valueIndex)
+            && arguments[valueIndex] == "monthly-report"
     }
 
     private static func debugShowsBreathwork(arguments: [String]) -> Bool {
@@ -1798,6 +1818,21 @@ struct AtriaTodayScreen: View {
         glanceMemo.weeklyReportWeekStart = weekStart
         glanceMemo.weeklyReportValue = report
         return report
+    }
+
+    /// Monthly companion for the weekly report sheet. Built from the same full
+    /// rollup history the weekly report reads; only evaluated when the weekly
+    /// sheet is presented (not in the hot body), so no memoization is needed.
+    private var monthlyReport: MonthlyReport {
+        MonthlyReport(rollups: highlightRollups)
+    }
+
+    private var debugAutoPresentMonthly: Bool {
+        #if DEBUG
+        return Self.debugShowsMonthlyReport(arguments: ProcessInfo.processInfo.arguments)
+        #else
+        return false
+        #endif
     }
 
     private var centerValue: String {
@@ -3014,8 +3049,11 @@ private struct AtriaTodayPlanCard: View, Equatable {
                             in: Capsule())
         }
         .padding(12)
-        .background(Color(uiColor: .tertiarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+        // Route the actionable Plan card through the hue-tinted token surface
+        // (like the glance tiles + sleep-settlement row) so the most actionable
+        // card no longer recedes behind the hue-washed secondary grid. Uses the
+        // existing guidance tint; stays within the WHOOP-electric palette.
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip, tint: tint, hueTinted: true)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Today's Plan. \(title). \(detail). \(target).")
     }
@@ -3132,9 +3170,10 @@ private struct AtriaTodayWeeklyPlanCard: View, Equatable {
                         .font(.headline.weight(.bold))
                         .foregroundStyle(.primary)
                     Spacer(minLength: 8)
-                    Text("W\(plan.isoWeek)")
+                    Text(plan.dateRangeText)
                         .font(.caption.weight(.bold).monospacedDigit())
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(Color(uiColor: .tertiarySystemGroupedBackground), in: Capsule())

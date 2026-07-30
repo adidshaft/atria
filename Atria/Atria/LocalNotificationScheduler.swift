@@ -880,7 +880,7 @@ enum LocalNotificationScheduler {
             let decision = NotificationDecision(kind: "battery",
                                                 identifier: Identifier.strapChargeReminder,
                                                 title: "Strap charge window",
-                                                body: "Battery at \(batteryLevel)% — you usually charge around \(medianHour):00. Top up before tonight sleep tracking.",
+                                                body: "Battery at \(batteryLevel)% — you usually charge around \(medianHour):00. Top up before tonight's sleep tracking.",
                                                 reason: "learned_charge_hour_\(medianHour)_battery_\(batteryLevel)",
                                                 shouldSchedule: true,
                                                 delay: 5,
@@ -1827,6 +1827,13 @@ enum LocalNotificationScheduler {
         content.title = decision.title
         content.body = decision.body
         content.sound = .default
+        // Group related alerts in Notification Center and let the OS rank/soften
+        // them by importance. Presentation only — does not change whether or when
+        // a notification fires (that is the decision/budget/quiet-hours logic above).
+        let presentation = Self.presentation(for: decision.kind)
+        content.threadIdentifier = presentation.threadIdentifier
+        content.interruptionLevel = presentation.interruptionLevel
+        content.relevanceScore = presentation.relevanceScore
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: decision.delay,
                                                         repeats: false)
         if let categoryIdentifier = decision.categoryIdentifier {
@@ -1858,6 +1865,69 @@ enum LocalNotificationScheduler {
               decision.title,
               decision.delay,
               decision.reason)
+    }
+
+    /// Coarse grouping + priority applied to every scheduled notification.
+    /// `threadIdentifier` stacks related alerts together in Notification Center;
+    /// `interruptionLevel` lets pure-FYI notices arrive quietly (`.passive`)
+    /// while actionable ones alert normally (`.active`); `relevanceScore` orders
+    /// them within a grouped summary. Content formatting only.
+    private struct NotificationPresentation {
+        let threadIdentifier: String
+        let interruptionLevel: UNNotificationInterruptionLevel
+        let relevanceScore: Double
+    }
+
+    private static func presentation(for kind: String) -> NotificationPresentation {
+        switch kind {
+        // Device & wear — actionable hardware/fit alerts.
+        case "battery", "bluetooth_off", "fit_check":
+            return NotificationPresentation(threadIdentifier: "atria.device",
+                                            interruptionLevel: .active,
+                                            relevanceScore: 0.7)
+        case "diagnostic":
+            return NotificationPresentation(threadIdentifier: "atria.device",
+                                            interruptionLevel: .passive,
+                                            relevanceScore: 0.2)
+        // Coaching & daily insight.
+        case "morning_summary":
+            return NotificationPresentation(threadIdentifier: "atria.coach",
+                                            interruptionLevel: .active,
+                                            relevanceScore: 0.9)
+        case "health_deviation":
+            return NotificationPresentation(threadIdentifier: "atria.coach",
+                                            interruptionLevel: .active,
+                                            relevanceScore: 0.85)
+        case "recovery":
+            return NotificationPresentation(threadIdentifier: "atria.coach",
+                                            interruptionLevel: .active,
+                                            relevanceScore: 0.8)
+        case "strain":
+            return NotificationPresentation(threadIdentifier: "atria.coach",
+                                            interruptionLevel: .active,
+                                            relevanceScore: 0.6)
+        case "evening_checkin":
+            return NotificationPresentation(threadIdentifier: "atria.coach",
+                                            interruptionLevel: .active,
+                                            relevanceScore: 0.5)
+        case "weekly_report":
+            return NotificationPresentation(threadIdentifier: "atria.coach",
+                                            interruptionLevel: .passive,
+                                            relevanceScore: 0.4)
+        // Sleep & activity review prompts + confirmations.
+        case "sleep_review", "workout_review":
+            return NotificationPresentation(threadIdentifier: "atria.log",
+                                            interruptionLevel: .active,
+                                            relevanceScore: 0.6)
+        case "sleep_logged":
+            return NotificationPresentation(threadIdentifier: "atria.log",
+                                            interruptionLevel: .passive,
+                                            relevanceScore: 0.3)
+        default:
+            return NotificationPresentation(threadIdentifier: "atria",
+                                            interruptionLevel: .active,
+                                            relevanceScore: 0.5)
+        }
     }
 
     private static func requestProvisionalAuthorization(center: UNUserNotificationCenter) async -> Bool {

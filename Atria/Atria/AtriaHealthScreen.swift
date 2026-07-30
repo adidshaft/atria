@@ -594,6 +594,9 @@ struct AtriaHealthScreen: View {
     // breakdown, and three new rows (VO2, skin temp, SpO2) that need a real
     // detail sheet rather than just the education sheet.
     @State private var metricDetail: AtriaMetricDetailKind?
+    // Open the metric detail sheet at full height so the trend chart + context
+    // are above the fold on open; .medium stays reachable by dragging down.
+    @State private var metricDetailDetent: PresentationDetent = .large
     @State private var showBreathworkSession = false
     /// Reference identity lives here, but HealthScreen deliberately does not
     /// observe its publications. Only the presented session host observes the
@@ -778,8 +781,13 @@ struct AtriaHealthScreen: View {
                                    maxHeartRate: vitals.maxHeartRate,
                                    vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                                    skinTemperatureDeviation: vitals.skinTemperatureDeviationSummary)
-                .presentationDetents([.medium, .large])
+                .presentationDetents([.medium, .large], selection: $metricDetailDetent)
                 .presentationDragIndicator(.visible)
+        }
+        // Reset to full height on every open so the chart + context are above the
+        // fold; a mid-session drag to .medium is respected until the sheet closes.
+        .onChange(of: metricDetail) { _, newValue in
+            if newValue != nil { metricDetailDetent = .large }
         }
         .fullScreenCover(isPresented: $showBreathworkSession) {
             AtriaHealthBreathworkSessionHost(pulseStore: pulseStore,

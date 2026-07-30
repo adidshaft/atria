@@ -293,8 +293,13 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
         XCTAssertFalse(source.contains(".repeatForever("),
                        "The always-visible overview ring must become idle after its value reveal")
         XCTAssertFalse(source.contains("ambientPulseExpanded"))
-        XCTAssertTrue(source.contains("animateToFinalValues()"),
+        // 2026-07-30: animateToFinalValues() split into (initialReveal:) — the
+        // zero-reset staggered intro plays only on first appearance; value
+        // changes advance the arcs in one bounded spring (no perpetual loop).
+        XCTAssertTrue(source.contains("animateToFinalValues(initialReveal:"),
                       "Real metric changes should retain their bounded value transition")
+        XCTAssertTrue(source.contains("withAnimation(.spring(duration: 0.4))"),
+                      "The value-update path must be a single bounded spring, not a repeating loop")
     }
 
     func testConnectionDiagnosisUsesOneShotDeadlineInsteadOfPermanentTimer() throws {

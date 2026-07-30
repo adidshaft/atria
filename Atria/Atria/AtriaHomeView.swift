@@ -1509,6 +1509,8 @@ struct AtriaHomeView: View {
                     AtriaBackdropLayer(isDark: isDark, reduceTransparency: reduceTransparency)
                         .ignoresSafeArea()
                 }
+                .navigationTitle("Strap")
+                .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Done") {

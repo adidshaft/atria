@@ -347,9 +347,13 @@ struct AtriaNotificationSettingsCard: View {
                     .font(.subheadline.weight(.semibold))
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Notifications. Choose coaching nudges Atria can send on this phone. Nothing leaves your device.")
+            .accessibilityLabel("Notifications. Choose which alerts Atria can send on this phone. Nothing leaves your device.")
 
-            notificationToggle("Allow coach notifications", keyPath: \.allowNotifications, prominent: true)
+            // Master gate for EVERY alert kind except diagnostics (see
+            // AtriaNotificationSettings.allows(kind:)), including strap
+            // battery / Bluetooth / fit-check — so it must not read as
+            // coaching-only, or a user keeping safety alerts would turn it off.
+            notificationToggle("Allow notifications", keyPath: \.allowNotifications, prominent: true)
 
             if settings.allowNotifications {
                 LazyVGrid(columns: AtriaAlertSettingsGrid.columns(for: dynamicTypeSize), spacing: 8) {

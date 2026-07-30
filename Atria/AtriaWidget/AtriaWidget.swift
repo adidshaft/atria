@@ -988,20 +988,17 @@ struct AtriaLiveActivityWidget: Widget {
 
                 DynamicIslandExpandedRegion(.bottom) {
                     VStack(spacing: 8) {
+                        // The elapsed timer lives in the center region above; this
+                        // row leads with strain (the workout hero) and spreads it
+                        // against calories rather than repeating the clock.
                         HStack(spacing: 12) {
-                            Label {
-                                liveActivityTimer(state: context.state,
-                                                  startedAt: context.attributes.startedAt)
-                            } icon: {
-                                Image(systemName: (context.state.isPaused ?? false) ? "pause.fill" : "timer")
-                            }
-                            Spacer(minLength: 4)
                             Label(liveActivityStrainProgressText(for: context.state),
                                   systemImage: "bolt.fill")
                                 .foregroundStyle(liveActivityStrainProgressColor(for: context.state))
                                 .atriaLiveActivityValueTransition(
                                     liveActivityStrainProgressText(for: context.state)
                                 )
+                            Spacer(minLength: 4)
                             Label(liveActivityCaloriesText(for: context.state),
                                   systemImage: "flame.fill")
                                 .foregroundStyle(.pink)
@@ -2015,20 +2012,51 @@ struct AtriaMetricWidgetEntryView: View {
             case .systemMedium:
                 systemMediumMetric
             default:
-                VStack(spacing: 0) {
-                    Image(systemName: metric.icon)
-                        .font(.system(size: 12, weight: .semibold))
-                    Text(value)
-                        .font(.system(size: 17, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .minimumScaleFactor(0.5)
-                        .lineLimit(1)
-                }
-                .containerBackground(for: .widget) { AccessoryWidgetBackground() }
-                .widgetAccentable()
+                accessoryCircularMetric
             }
         }
         .widgetURL(metric.deepLinkURL)
+    }
+
+    // Steps is the one single-metric widget with a bounded daily goal, so its
+    // Lock-Screen circular renders a true progress ring (WHOOP-style); unbounded
+    // metrics (BPM/HRV/RHR/Sleep) stay a plain value read. An unavailable value
+    // yields nil → the plain value branch (icon + "--"), no ring drawn, so a
+    // partial/zero ring is never shown — preserving honesty.
+    private var accessoryCircularGoalFraction: Double? {
+        guard metric == .steps,
+              let snapshot = entry.snapshot,
+              let steps = atriaCurrentStepValue(snapshot, now: entry.date),
+              let goal = snapshot.dailyStepGoal, goal > 0 else { return nil }
+        return min(1, max(0, Double(steps) / Double(goal)))
+    }
+
+    @ViewBuilder
+    private var accessoryCircularMetric: some View {
+        if let fraction = accessoryCircularGoalFraction {
+            Gauge(value: fraction) {
+                Image(systemName: metric.icon)
+            } currentValueLabel: {
+                Text(value)
+                    .minimumScaleFactor(0.5)
+                    .lineLimit(1)
+            }
+            .gaugeStyle(.accessoryCircularCapacity)
+            .containerBackground(for: .widget) { AccessoryWidgetBackground() }
+            .widgetAccentable()
+        } else {
+            VStack(spacing: 0) {
+                Image(systemName: metric.icon)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(value)
+                    .font(.system(size: 17, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .minimumScaleFactor(0.5)
+                    .lineLimit(1)
+            }
+            .containerBackground(for: .widget) { AccessoryWidgetBackground() }
+            .widgetAccentable()
+        }
     }
 
     private var systemSmallMetric: some View {
@@ -2172,6 +2200,28 @@ struct AtriaBPMWidget: Widget {
     }
 }
 
+struct AtriaSleepWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "AtriaSleepWidget", provider: AtriaWidgetProvider()) { entry in
+            AtriaMetricWidgetEntryView(metric: .sleep, entry: entry)
+        }
+        .configurationDisplayName("Atria Sleep")
+        .description("Last night's sleep on your Home Screen or Lock Screen.")
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryInline, .accessoryRectangular])
+    }
+}
+
+struct AtriaRHRWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "AtriaRHRWidget", provider: AtriaWidgetProvider()) { entry in
+            AtriaMetricWidgetEntryView(metric: .rhr, entry: entry)
+        }
+        .configurationDisplayName("Atria Resting HR")
+        .description("Resting heart rate on your Home Screen or Lock Screen.")
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryInline, .accessoryRectangular])
+    }
+}
+
 @main
 struct AtriaWidgetBundle: WidgetBundle {
     var body: some Widget {
@@ -2180,6 +2230,8 @@ struct AtriaWidgetBundle: WidgetBundle {
         AtriaStrainWidget()
         AtriaHRVWidget()
         AtriaBPMWidget()
+        AtriaSleepWidget()
+        AtriaRHRWidget()
         AtriaLiveActivityWidget()
         AtriaStartCaptureControl()
         AtriaStopCaptureControl()
