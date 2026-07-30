@@ -6524,7 +6524,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             canonicalLinkConnected: status == .connected
                 && self.peripheral === peripheral
                 && peripheral.state == .connected,
-            historyTransportOwnsLink: recoveredDataProjectionDeferralIsActive,
+            historyTransportOwnsLink: Self.batteryLevelReadTransportIsActive(
+                offlineSyncInProgress: offlineHistoricalSyncInProgress,
+                historyPhaseActive: historyOnlyProbeMode,
+                readOnlyCaptureActive: readOnlyHistoryCaptureActive
+            ),
             characteristicReadable: characteristic.properties.contains(.read),
             readInFlight: batteryLevelReadRequestedAt != nil,
             lastReadAt: lastCurrentLinkBatteryLevelReadAt,

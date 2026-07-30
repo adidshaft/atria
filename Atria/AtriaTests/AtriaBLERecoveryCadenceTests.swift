@@ -5635,6 +5635,26 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
 
     func testCurrentLinkBatteryReadIsBoundedAndNeverAdmittedDuringHistory() {
         let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        XCTAssertFalse(AtriaBLEManager.batteryLevelReadTransportIsActive(
+            offlineSyncInProgress: false,
+            historyPhaseActive: false,
+            readOnlyCaptureActive: false
+        ), "pending/materializing history work is not active BLE transport ownership")
+        XCTAssertTrue(AtriaBLEManager.batteryLevelReadTransportIsActive(
+            offlineSyncInProgress: true,
+            historyPhaseActive: false,
+            readOnlyCaptureActive: false
+        ))
+        XCTAssertTrue(AtriaBLEManager.batteryLevelReadTransportIsActive(
+            offlineSyncInProgress: false,
+            historyPhaseActive: true,
+            readOnlyCaptureActive: false
+        ))
+        XCTAssertTrue(AtriaBLEManager.batteryLevelReadTransportIsActive(
+            offlineSyncInProgress: false,
+            historyPhaseActive: false,
+            readOnlyCaptureActive: true
+        ))
         XCTAssertTrue(AtriaBLEManager.shouldPerformCurrentLinkBatteryLevelRead(
             canonicalLinkConnected: true,
             historyTransportOwnsLink: false,
