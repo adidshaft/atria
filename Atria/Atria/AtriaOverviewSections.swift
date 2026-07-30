@@ -5091,8 +5091,16 @@ private struct AtriaWeeklyReportHighlightRow: View, Equatable {
 
 struct AtriaWeeklyReportSheet: View {
     let report: WeeklyReport
+    /// Optional monthly companion. When present, a "Monthly" toolbar button
+    /// opens the (otherwise unreachable) monthly performance report from the
+    /// same entry the weekly report already uses — no extra Today card.
+    var monthlyReport: MonthlyReport? = nil
+    /// DEBUG fixture hook: auto-open the monthly sheet on appear for screenshot
+    /// verification (the headless simulator has no tap automation).
+    var autoPresentMonthly: Bool = false
     @Environment(\.dismiss) private var dismiss
     @State private var showShareSheet = false
+    @State private var showMonthlyReport = false
 
     var body: some View {
         NavigationStack {
@@ -5182,6 +5190,12 @@ struct AtriaWeeklyReportSheet: View {
             .navigationTitle("Weekly report")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if monthlyReport != nil {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Monthly") { showMonthlyReport = true }
+                            .font(.body.weight(.semibold))
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                         .font(.body.weight(.semibold))
@@ -5191,6 +5205,16 @@ struct AtriaWeeklyReportSheet: View {
                 AtriaWeeklyShareSheet(snapshot: makeWeeklyShareSnapshot())
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
+            }
+            .sheet(isPresented: $showMonthlyReport) {
+                if let monthlyReport {
+                    AtriaMonthlyReportSheet(report: monthlyReport)
+                        .presentationDetents([.large])
+                        .presentationDragIndicator(.visible)
+                }
+            }
+            .onAppear {
+                if autoPresentMonthly { showMonthlyReport = true }
             }
         }
     }

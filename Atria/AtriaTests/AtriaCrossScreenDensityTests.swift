@@ -131,7 +131,9 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertFalse(alerts.contains("Text(\"Incoming calls, zones, targets, and low strap battery.\")"))
         XCTAssertFalse(alerts.contains("Text(\"Choose the coaching nudges Atria can send on this phone. Nothing leaves your device.\")"))
         XCTAssertTrue(alerts.contains(".accessibilityLabel(\"Phone haptics. Incoming calls, zones, targets, and low strap battery.\")"))
-        XCTAssertTrue(alerts.contains(".accessibilityLabel(\"Notifications. Choose coaching nudges Atria can send on this phone. Nothing leaves your device.\")"))
+        // 2026-07-30: master toggle relabeled "Allow notifications"; a11y copy
+        // now "which alerts" (it gates safety alerts too, not only coaching).
+        XCTAssertTrue(alerts.contains(".accessibilityLabel(\"Notifications. Choose which alerts Atria can send on this phone. Nothing leaves your device.\")"))
         XCTAssertTrue(alerts.contains("AtriaAlertSettingsGrid.columns(for: dynamicTypeSize)"))
 
         XCTAssertFalse(settings.contains("Text(\"Phone-side alerts and on-device notifications only. Nothing leaves your phone.\")"))

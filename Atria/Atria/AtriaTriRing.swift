@@ -410,9 +410,9 @@ struct AtriaTriRing: View, Equatable {
         }
         .frame(maxWidth: .infinity)
         .onAppear {
-            animateToFinalValues()
+            animateToFinalValues(initialReveal: true)
         }
-        .onChange(of: fillSignature) { _, _ in animateToFinalValues() }
+        .onChange(of: fillSignature) { _, _ in animateToFinalValues(initialReveal: false) }
     }
 
     /// Flattened fill snapshot (slot-order-stable since `slots` is fixed for
@@ -663,10 +663,17 @@ struct AtriaTriRing: View, Equatable {
                             : "\(metric.title) \(metric.value)")
     }
 
-    /// Spring fill-in that plays once per real appearance/value change, and
-    /// is skipped entirely under Reduce Motion (values snap straight to
-    /// their final state).
-    private func animateToFinalValues() {
+    /// Fill animation. On the first appearance it sweeps each ring in from
+    /// empty with a slot stagger (the intro reveal); on later value changes it
+    /// advances the arcs from their current fill to the new targets in a single
+    /// spring — no reset-to-zero, no stagger. Skipped entirely under Reduce
+    /// Motion (values snap straight to their final state).
+    ///
+    /// The split matters: the strain fill republishes on every throttled
+    /// HeroStore tick (~1.5 s), so re-running the zero-reset staggered reveal on
+    /// every change made the frozen recovery/sleep rings visibly blink to empty
+    /// and re-sweep repeatedly instead of just letting the strain arc advance.
+    private func animateToFinalValues(initialReveal: Bool) {
         var finals: [AtriaTriRingSlot: Double] = [:]
         for content in slots {
             finals[content.slot] = min(max(content.metric.fill ?? 0, 0), 1)
@@ -674,6 +681,13 @@ struct AtriaTriRing: View, Equatable {
 
         if reduceMotion {
             animatedFills = finals
+            return
+        }
+
+        guard initialReveal else {
+            withAnimation(.spring(duration: 0.4)) {
+                animatedFills = finals
+            }
             return
         }
 

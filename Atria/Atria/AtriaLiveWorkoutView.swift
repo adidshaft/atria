@@ -2325,11 +2325,12 @@ struct AtriaLiveWorkoutView: View {
                     VStack(spacing: 10) {
                         header
                         AtriaLiveWorkoutMotionStatusHost(metricStore: metricStore)
-                        AtriaLiveWorkoutHeartBlock(pulseStore: pulseStore,
-                                                   coreLiveStore: coreLiveStore,
-                                                   maxHR: maxHR,
-                                                   lowerTargetZone: lowerTargetZone,
-                                                   upperTargetZone: upperTargetZone)
+                        AtriaLiveWorkoutHeartBlockHost(metricStore: metricStore,
+                                                       pulseStore: pulseStore,
+                                                       coreLiveStore: coreLiveStore,
+                                                       maxHR: maxHR,
+                                                       lowerTargetZone: lowerTargetZone,
+                                                       upperTargetZone: upperTargetZone)
                             .padding(.top, 2)
                         AtriaLiveWorkoutStrainGuidanceHost(metricStore: metricStore,
                                                           guidanceTarget: strainTarget,
@@ -3005,13 +3006,29 @@ private struct AtriaLiveWorkoutRouteMetricsHUD: View {
               let calories = metricProjection.activeCalories else { return "--" }
         return "≈\(Int(calories.rounded()))"
     }
+    private var isLive: Bool { metricProjection.sensorAvailability == .live }
+    private var livenessNote: String? {
+        switch metricProjection.sensorAvailability {
+        case .live: return nil
+        case .reconnecting: return "Reconnecting"
+        case .stale: return "Signal paused"
+        case .unavailable: return "Signal unavailable"
+        }
+    }
 
     var body: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                // Beats with the handoff's live-heart keyframe; the number
-                // beside it stays the honest reading.
-                AtriaPulsingHeart(font: .headline.weight(.black))
+                // Beats with the handoff's live-heart keyframe when HR is live;
+                // the beat halts and the number dims on a held-over reading so a
+                // beating heart never sits atop a stale pulse.
+                if isLive {
+                    AtriaPulsingHeart(font: .headline.weight(.black))
+                } else {
+                    Image(systemName: "heart.fill")
+                        .font(.headline.weight(.black))
+                        .foregroundStyle(.white.opacity(0.4))
+                }
 
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text(heartRate > 0 ? "\(heartRate)" : "--")
@@ -3021,6 +3038,7 @@ private struct AtriaLiveWorkoutRouteMetricsHUD: View {
                         .minimumScaleFactor(0.58)
                         .allowsTightening(true)
                         .layoutPriority(3)
+                        .foregroundStyle(.white.opacity(isLive ? 1 : 0.5))
                         .contentTransition(.numericText())
                     Text("BPM")
                         .font(.caption2.weight(.black))
@@ -3033,7 +3051,7 @@ private struct AtriaLiveWorkoutRouteMetricsHUD: View {
                 // target button in this outer row.
                 .layoutPriority(3)
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Heart rate \(heartRate) beats per minute")
+                .accessibilityLabel("Heart rate \(heartRate) beats per minute.\(livenessNote.map { " \($0)." } ?? "")")
 
                 Spacer(minLength: 4)
 
@@ -3049,6 +3067,13 @@ private struct AtriaLiveWorkoutRouteMetricsHUD: View {
                             .font(.caption2.weight(.bold).monospacedDigit())
                             .foregroundStyle(.white.opacity(0.62))
                             .lineLimit(1)
+                    }
+                    if let livenessNote {
+                        Text(livenessNote)
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.white.opacity(0.72))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
                     }
                 }
                 .accessibilityElement(children: .ignore)
@@ -3124,13 +3149,52 @@ private struct AtriaLiveWorkoutRouteMetricsHUD: View {
     }
 }
 
+/// Isolates the metric store's HR-liveness read so only this small host
+/// re-renders when availability flips — mirroring the motion/strain hosts, and
+/// keeping the rapid metric publications off the surrounding workout body.
+private struct AtriaLiveWorkoutHeartBlockHost: View {
+    @ObservedObject var metricStore: AtriaLiveWorkoutMetricStore
+    let pulseStore: AtriaHomeModel.PulseLiveStore
+    let coreLiveStore: AtriaHomeModel.CoreLiveStore
+    let maxHR: Int
+    let lowerTargetZone: Int?
+    let upperTargetZone: Int?
+
+    var body: some View {
+        AtriaLiveWorkoutHeartBlock(pulseStore: pulseStore,
+                                   coreLiveStore: coreLiveStore,
+                                   maxHR: maxHR,
+                                   lowerTargetZone: lowerTargetZone,
+                                   upperTargetZone: upperTargetZone,
+                                   availability: metricStore.state.sensorAvailability)
+    }
+}
+
 private struct AtriaLiveWorkoutHeartBlock: View {
     @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
     @ObservedObject var coreLiveStore: AtriaHomeModel.CoreLiveStore
     let maxHR: Int
     let lowerTargetZone: Int?
     let upperTargetZone: Int?
+    // HR-signal liveness (derived from accepted-HR freshness). When it isn't
+    // `.live` the shown number is a held-over reading, so the beat halts and the
+    // value dims — a beating, full-brightness pulse must never sit atop a stale
+    // number. Honesty is law; the Live Activity already greys HR the same way.
+    // Required (no default): every caller must supply an HR-derived value so a
+    // future call site can never silently render a live heart over stale data.
+    let availability: AtriaLiveSensorAvailability
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var isLive: Bool { availability == .live }
+
+    private var livenessNote: String? {
+        switch availability {
+        case .live: return nil
+        case .reconnecting: return "Reconnecting"
+        case .stale: return "Signal paused"
+        case .unavailable: return "Signal unavailable"
+        }
+    }
 
     var body: some View {
         let heartRate = pulseStore.state.heartRate
@@ -3147,7 +3211,7 @@ private struct AtriaLiveWorkoutHeartBlock: View {
                         .minimumScaleFactor(0.52)
                         .allowsTightening(true)
                         .layoutPriority(3)
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.white.opacity(isLive ? 1 : 0.5))
                         .contentTransition(.numericText())
                     Text("BPM")
                         .font(.caption.weight(.black))
@@ -3184,6 +3248,15 @@ private struct AtriaLiveWorkoutHeartBlock: View {
                     .background(zone.color.opacity(0.16), in: Capsule())
             }
 
+            if let livenessNote {
+                Label(livenessNote, systemImage: "antenna.radiowaves.left.and.right.slash")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             HStack(spacing: 4) {
                 ForEach(HRZone.allCases, id: \.self) { candidate in
                     VStack(spacing: 4) {
@@ -3212,7 +3285,7 @@ private struct AtriaLiveWorkoutHeartBlock: View {
         .padding(14)
         .atriaWorkoutContentSurface(cornerRadius: 22, tint: zone.color)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Heart rate \(heartRate) beats per minute. Zone \(zone.rawValue), \(zone.name), \(zoneBandText(zone)).")
+        .accessibilityLabel("Heart rate \(heartRate) beats per minute.\(livenessNote.map { " \($0)." } ?? "") Zone \(zone.rawValue), \(zone.name), \(zoneBandText(zone)).")
     }
 
     @ViewBuilder
@@ -3220,7 +3293,15 @@ private struct AtriaLiveWorkoutHeartBlock: View {
         // Was `.symbolEffect(.pulse)` — an opacity fade, which next to a live
         // BPM read as a signal-strength indicator. Shares the one heartbeat
         // keyframe with the compact hero so both live HR surfaces beat alike.
-        AtriaPulsingHeart(font: .title2)
+        // The beat halts (static dimmed heart) whenever HR isn't live so it
+        // never animates over a held-over number.
+        if isLive {
+            AtriaPulsingHeart(font: .title2)
+        } else {
+            Image(systemName: "heart.fill")
+                .font(.title2)
+                .foregroundStyle(.white.opacity(0.4))
+        }
     }
 
     private func zoneBandText(_ zone: HRZone) -> String {

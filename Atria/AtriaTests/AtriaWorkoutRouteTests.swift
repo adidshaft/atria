@@ -97,7 +97,10 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         XCTAssertTrue(actions.contains("GlassEffectContainer(spacing: 10)"))
 
         XCTAssertTrue(standard.contains("ScrollView(showsIndicators: false)"))
-        XCTAssertTrue(standard.contains("AtriaLiveWorkoutHeartBlock(pulseStore: pulseStore,"))
+        // 2026-07-30: the heart block now renders through AtriaLiveWorkoutHeartBlockHost
+        // (a narrow leaf observing metricStore for HR-liveness); the standard
+        // content still owns the HR surface, just via its host.
+        XCTAssertTrue(standard.contains("AtriaLiveWorkoutHeartBlockHost(metricStore: metricStore,"))
         XCTAssertTrue(standard.contains("AtriaLiveWorkoutStrainGuidanceHost(metricStore: metricStore,"))
         XCTAssertTrue(standard.contains("workoutActionsCard"))
         XCTAssertTrue(standard.contains("stopButton"),
@@ -224,7 +227,9 @@ final class AtriaWorkoutRouteTests: XCTestCase {
                                                 range: mainStart.upperBound..<source.endIndex))
         let main = String(source[mainStart.lowerBound..<mainEnd.lowerBound])
 
-        XCTAssertTrue(main.contains("AtriaLiveWorkoutHeartBlock(pulseStore: pulseStore,"))
+        // 2026-07-30: heart block wrapped in AtriaLiveWorkoutHeartBlockHost for
+        // HR-liveness observation; the two de-stacked performance surfaces stand.
+        XCTAssertTrue(main.contains("AtriaLiveWorkoutHeartBlockHost(metricStore: metricStore,"))
         XCTAssertTrue(main.contains("AtriaLiveWorkoutRouteMetricsHost(metricStore: metricStore,"))
         XCTAssertTrue(main.contains("AtriaLiveWorkoutStrainGuidanceHost(metricStore: metricStore,"))
         XCTAssertFalse(main.contains("AtriaLiveWorkoutZoneCard("))
