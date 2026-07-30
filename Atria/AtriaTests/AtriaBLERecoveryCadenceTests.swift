@@ -934,6 +934,24 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), "the migration must be one-shot")
     }
 
+    func testAlwaysOnLongWearRepairsDisabledCaptureAfterMigrationMarkerExists() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.alwaysOnRepair.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: AtriaBLEManager.CaptureDefaults.configured)
+        defaults.set(true, forKey: AtriaBLEManager.CaptureDefaults.alwaysOnLongWearMigrated)
+        defaults.set(false, forKey: AtriaBLEManager.LongWearDefaults.enabled)
+        defaults.set(true, forKey: AtriaBLEManager.LongWearDefaults.userSelected)
+
+        XCTAssertTrue(AtriaBLEManager.migrateAlwaysOnLongWearIfNeeded(
+            defaults: defaults,
+            arguments: []
+        ))
+        XCTAssertTrue(defaults.bool(forKey: AtriaBLEManager.LongWearDefaults.enabled))
+        XCTAssertFalse(defaults.bool(forKey: AtriaBLEManager.LongWearDefaults.userSelected))
+        XCTAssertTrue(defaults.bool(forKey: AtriaBLEManager.CaptureDefaults.alwaysOnLongWearMigrated))
+    }
+
     func testAlwaysOnLongWearMigrationDoesNotMutateDiagnosticLaunch() throws {
         let suite = "AtriaBLERecoveryCadenceTests.alwaysOnDiagnostic.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

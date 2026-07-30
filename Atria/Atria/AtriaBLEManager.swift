@@ -5569,13 +5569,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     ) -> Bool {
         guard !arguments.contains("--atria-full-protocol-mode") else { return false }
         guard defaults.bool(forKey: CaptureDefaults.configured) else { return false }
-        guard !defaults.bool(forKey: CaptureDefaults.alwaysOnLongWearMigrated) else { return false }
+
+        // `alwaysOnLongWearMigrated` records that the old preference was
+        // retired; it must not turn the migration into a one-shot guard. A UI
+        // or intent build from before the retirement can leave `enabled=false`
+        // after that marker was already written. Trusting that orphaned value
+        // on a later launch silently disables the supervisor that journals
+        // sleep/all-day motion and performs bounded standard battery refreshes.
+        let needsRepair =
+            !defaults.bool(forKey: CaptureDefaults.alwaysOnLongWearMigrated)
+            || !defaults.bool(forKey: LongWearDefaults.enabled)
+            || defaults.bool(forKey: LongWearDefaults.userSelected)
+        guard needsRepair else { return false }
 
         defaults.set(true, forKey: CaptureDefaults.alwaysOnLongWearMigrated)
         defaults.set(true, forKey: LongWearDefaults.enabled)
-        // The retired toggle must not continue to block later automatic
-        // migrations. This does not change the independent battery-saver/radio
-        // preference.
+        // This does not change the independent battery-saver/radio preference.
         defaults.set(false, forKey: LongWearDefaults.userSelected)
         return true
     }
