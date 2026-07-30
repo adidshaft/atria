@@ -37,8 +37,9 @@ final class AtriaMetricConfidencePresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(presentation.value, "75%")
-        // "HRV pending" outranks the bare level: it names the missing input.
-        XCTAssertEqual(presentation.marker, "HRV pending")
+        // The score is complete for the evidence it used; name the actual
+        // provenance instead of implying that the numeric result is pending.
+        XCTAssertEqual(presentation.marker, "RHR-only")
     }
 
     func testRecoveryProvisionalKeepsValueAndIsMarkedProvisional() {
