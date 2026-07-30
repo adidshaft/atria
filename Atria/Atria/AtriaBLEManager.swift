@@ -21920,6 +21920,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             && lastStartedAt.map { $0 < processLaunchStartedAt } == true
     }
 
+    /// A retry from an earlier process gets first refusal only while it can
+    /// actually progress toward BLE ownership. Terminal consumer
+    /// materialization is local archive work: it owns no radio and may run in
+    /// parallel with the low-bandwidth 0x69 capture bank. Treating a retained
+    /// request in that state as active transport leaves present-day motion
+    /// disabled until the local projection completes.
+    nonisolated static func historicalMotionBankProcessRetryBlocksPresentCapture(
+        processInterruptedRetry: Bool,
+        consumerMaterializationInFlight: Bool,
+        attemptDelayElapsed: Bool,
+        cadenceEligible: Bool
+    ) -> Bool {
+        processInterruptedRetry
+            && !consumerMaterializationInFlight
+            && attemptDelayElapsed
+            && cadenceEligible
+    }
+
     nonisolated static func historicalMotionBankOffloadCadenceEligible(
         attempts: Int,
         now: Date,
@@ -22090,13 +22108,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                     selectedPendingOffload.attempts
                             )
                 } ?? true
-            if processInterruptedRetry,
-               attemptDelayElapsed,
-               Self.historicalMotionBankOffloadCadenceEligible(
-                   attempts: selectedPendingOffload.attempts,
-                   now: now,
-                   lastStartedAt: lastStartedAt
-               ) {
+            if Self.historicalMotionBankProcessRetryBlocksPresentCapture(
+                processInterruptedRetry: processInterruptedRetry,
+                consumerMaterializationInFlight:
+                    historicalConsumerMaterializationInFlight,
+                attemptDelayElapsed: attemptDelayElapsed,
+                cadenceEligible:
+                    Self.historicalMotionBankOffloadCadenceEligible(
+                        attempts: selectedPendingOffload.attempts,
+                        now: now,
+                        lastStartedAt: lastStartedAt
+                    )
+            ) {
                 AtriaDebugLog(
                     "ATRIADBG workout_motion_bank status=arm_deferred ticket=%@ attempts=%d reason=%@ action=resume_process_interrupted_exact_ticket_first",
                     selectedPendingOffload.id,
@@ -22900,6 +22923,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 } != nil
         if let ticket,
            processInterruptedMotionBankReservedTicketID == ticket.id {
+            if historicalConsumerMaterializationInFlight,
+               !offlineHistoricalSyncInProgress {
+                // The retained request owns only a future retry. Local
+                // terminal projection has no BLE transport, so release this
+                // process-local claim and let the accepted-HR caller reopen
+                // present all-day motion capture. The exact ticket remains in
+                // the durable ledger and the pending request remains retained.
+                processInterruptedMotionBankReservationTask?.cancel()
+                processInterruptedMotionBankReservationTask = nil
+                processInterruptedMotionBankReservedTicketID = nil
+                AtriaDebugLog(
+                    "ATRIADBG workout_motion_bank_offload status=local_materialization_deferred ticket=%@ reason=%@ action=release_process_claim_resume_present_capture_preserve_exact_ticket",
+                    ticket.id,
+                    reason
+                )
+                return false
+            }
             if !manualWorkoutActive,
                !calibrationHoldActive,
                UIApplication.shared.applicationState == .active {
@@ -23107,9 +23147,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             updatedAttempts,
             reason
         )
+        let retainedRequestOwnsTransport =
+            processInterruptedRetry
+                && retainedAuthorizedRequest
+                && !historicalConsumerMaterializationInFlight
         return started
             || generationStarted
-            || (processInterruptedRetry && retainedAuthorizedRequest)
+            || retainedRequestOwnsTransport
     }
 
     /// Builds one replacement ticket for devices that ran the retired
