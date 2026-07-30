@@ -398,6 +398,13 @@ struct AtriaTrendChartCard: View {
     }
 
     private var chart: some View {
+        VStack(spacing: 4) {
+            coreChart
+            compactXAxisLabelRow
+        }
+    }
+
+    private var coreChart: some View {
         Chart {
             if let referenceValue = prepared.referenceValue {
                 RuleMark(y: .value("Baseline", referenceValue))
@@ -500,8 +507,6 @@ struct AtriaTrendChartCard: View {
         .chartXAxis {
             AxisMarks(values: chartXAxisDates) { _ in
                 AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
-                AxisValueLabel(format: .dateTime.month(.abbreviated).day())
-                    .font(.caption2)
             }
         }
         .chartYAxis {
@@ -513,6 +518,27 @@ struct AtriaTrendChartCard: View {
 
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(chartAccessibilityLabel)
+    }
+
+    /// Swift Charts may collision-prune the trailing label of a two-point
+    /// domain even when both observed dates are explicit. Render the compact
+    /// labels from those same dates so the physical graph always identifies
+    /// both edges without synthesizing intermediate ticks.
+    private var compactXAxisLabelRow: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(chartXAxisDates.enumerated()), id: \.offset) { index, date in
+                if index > 0 {
+                    Spacer(minLength: 8)
+                }
+                Text(date, format: .dateTime.month(.abbreviated).day())
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.leading, 34)
+        .padding(.trailing, 4)
+        .accessibilityHidden(true)
     }
 
     /// Honest gating for the ghost overlay: only draw it when the prior window
