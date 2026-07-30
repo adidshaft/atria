@@ -59,6 +59,18 @@ extension AtriaBLEManager {
         return now.timeIntervalSince(lastReadAt) >= minimumInterval
     }
 
+    /// Pending or archive-materializing history work is not BLE ownership.
+    /// Standard Battery Service reads defer only while a history transport is
+    /// actually active on the link; otherwise a durable pending ticket could
+    /// suppress battery freshness for hours despite live HR continuing.
+    nonisolated static func batteryLevelReadTransportIsActive(
+        offlineSyncInProgress: Bool,
+        historyPhaseActive: Bool,
+        readOnlyCaptureActive: Bool
+    ) -> Bool {
+        offlineSyncInProgress || historyPhaseActive || readOnlyCaptureActive
+    }
+
     /// A proprietary battery query is allowed only after the already-proven R10
     /// transport has remained dense and fresh on this connection, then survived
     /// an additional quiet grace. The command pipe remains entirely untouched
