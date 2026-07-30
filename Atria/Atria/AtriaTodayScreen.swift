@@ -2078,7 +2078,7 @@ struct AtriaTodayScreen: View {
                                         tint: Metrics.electricStrain,
                                         layoutSize: layoutSize(for: metric))
         case .hrv:
-            return AtriaTodayGlanceItem(title: metric.label,
+            return AtriaTodayGlanceItem(title: "Morning HRV",
                                         metricKey: metric.rawValue,
                                         value: displaySettledHRV.value,
                                         detail: legendDetail(displaySettledHRV.detail),

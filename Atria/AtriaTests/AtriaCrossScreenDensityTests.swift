@@ -548,4 +548,17 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertFalse(source.contains("case .bloodOxygen: return \"98%\""))
         XCTAssertFalse(source.contains("case .bodyTemp: return \"+0.1\""))
     }
+
+    func testTodayDistinguishesSettledMorningHRVFromLivePersonalHRV() throws {
+        let source = try source("AtriaTodayScreen.swift")
+        let start = try XCTUnwrap(source.range(of: "case .hrv:"))
+        let end = try XCTUnwrap(
+            source.range(of: "case .stress:", range: start.upperBound..<source.endIndex)
+        )
+        let hrvCard = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(hrvCard.contains("title: \"Morning HRV\""))
+        XCTAssertTrue(hrvCard.contains("value: displaySettledHRV.value"))
+        XCTAssertTrue(hrvCard.contains("detail: legendDetail(displaySettledHRV.detail)"))
+    }
 }
