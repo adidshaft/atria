@@ -7860,6 +7860,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             OfflineSyncDefaults.rangeLossBackfillPending
                     )
                     assignIfChanged(\.rangeLossBackfillPending, false)
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        let published =
+                            await self.requestAndAwaitRecoveredDataPublication?(
+                                "disabled_interrupted_drain_partial_metrics"
+                            ) ?? false
+                        UserDefaults.standard.set(
+                            published
+                                ? "partial_history_published_gap_preserved"
+                                : "partial_history_publication_deferred",
+                            forKey: OfflineSyncDefaults.lastStatus
+                        )
+                        self.onHistoricalTransportOwnershipReleased?(
+                            "interrupted_gap_uncovered"
+                        )
+                    }
                 }
             } catch {
                 AtriaDebugLog(
