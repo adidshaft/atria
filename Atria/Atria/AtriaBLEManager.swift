@@ -7846,9 +7846,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         : "no_live_connection_claim_range_loss_lane_free"
                 )
                 if released {
-                    scheduleRangeLossBackfillIfNeeded(
-                        reason: "disabled_interrupted_drain_authority_released"
+                    // The production full-flash resume lane is disabled
+                    // because it cannot target this gap. Do not immediately
+                    // turn the released transport receipt into another full
+                    // drain. The exact gap remains in its durable ledger and
+                    // continues to present as missing coverage.
+                    rangeLossBackfillTask?.cancel()
+                    rangeLossBackfillTask = nil
+                    pendingOfflineHistoricalSyncRequest = nil
+                    UserDefaults.standard.set(
+                        false,
+                        forKey:
+                            OfflineSyncDefaults.rangeLossBackfillPending
                     )
+                    assignIfChanged(\.rangeLossBackfillPending, false)
                 }
             } catch {
                 AtriaDebugLog(
@@ -30647,12 +30658,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         "no_overlapping_history_rows",
                         forKey: OfflineSyncDefaults.lastReason
                     )
+                    UserDefaults.standard.set(
+                        false,
+                        forKey:
+                            OfflineSyncDefaults.rangeLossBackfillPending
+                    )
                     AtriaDebugLog(
                         "ATRIADBG historical_full_drain_publish status=gap_uncovered generation=%llu action=preserve_gap_and_raw_release_priority_publish_partial_metrics",
                         transportGeneration
                     )
                     Task { @MainActor [weak self] in
                         guard let self else { return }
+                        self.rangeLossBackfillTask?.cancel()
+                        self.rangeLossBackfillTask = nil
+                        self.pendingOfflineHistoricalSyncRequest = nil
+                        self.assignIfChanged(
+                            \.rangeLossBackfillPending,
+                            false
+                        )
                         self.historicalConsumerMaterializationInFlight = false
                         let published =
                             await self.requestAndAwaitRecoveredDataPublication?(
