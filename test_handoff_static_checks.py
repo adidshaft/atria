@@ -3518,15 +3518,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "Text(zone.title)",
             "Text(zone.name)",
             "headerChip(zone.shortLabel, tint: zone.tint)",
-            "private var workoutDecisionStrip: some View",
-            "decisionChip(title: \"Signal\"",
-            "decisionChip(title: \"Time\"",
-            "decisionChip(title: \"Next\"",
-            "value: prompt.isReviewReady ? \"Review\" : \"Watching\"",
-            "Workout review. Strap signal \\(prompt.confidenceLabel), \\(prompt.evidenceMinutes) minutes seen, \\(prompt.reviewHint).",
-            "let hrProgress = min(max(Double(prompt.bpmOverRest) / 80.0, 0), 1)",
-            "let strainProgress = min(max(prompt.strain / 12.0, 0), 1)",
-            "Label(\"Strap HR\", systemImage: \"waveform.path.ecg\")",
+            # Decluttered 2026-07-30 (user: "make it minimal"): the
+            # workoutDecisionStrip (Signal/Time/Next chips) and the redundant
+            # "Strap HR / Strain" footer row were removed from
+            # AtriaWorkoutDetectionBanner, and the two evidence bars no longer
+            # overlap in one ZStack -- each owns a labeled row -- so the
+            # progress-fraction clamps are pinned without the old let-bindings.
+            "min(max(Double(prompt.bpmOverRest) / 80.0, 0), 1)",
+            "min(max(prompt.strain / 12.0, 0), 1)",
             "Text(prompt.primaryTitle)",
             ".disabled(!prompt.isReviewReady)",
             "Text(\"Not now\")",
