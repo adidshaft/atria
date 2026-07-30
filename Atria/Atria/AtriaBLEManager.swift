@@ -3706,6 +3706,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// enable completed on this actual BLE link. The timestamp stays in memory:
     /// an app relaunch must re-establish the subscription before trusting it.
     private var batteryStatusNotificationConfirmedAt: Date?
+    /// Set only for one bounded standard 2A1B request on the current link.
+    /// Cleared by its callback, any error, reconnect, or disconnect.
+    private var batteryStatusReadRequestedAt: Date?
     private var lastBatteryReadRequestedAt: Date?
     private var lastActiveBatteryChargeEvidenceAt: Date?
     private var lastPlausibleBatteryRiseEvidenceAt: Date?
@@ -3913,10 +3916,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return [UUIDs.strapStream5, UUIDs.strapTX]
     }
 
-    /// Protected production keeps standard HR and the standard battery-level
-    /// service available independently of the proprietary R10 rollback. The
-    /// battery service is notification-only at the characteristic boundary;
-    /// adding it here does not authorize a 2A19 read or any custom command.
+    /// Protected production keeps standard HR and the standard battery service
+    /// available independently of the proprietary R10 rollback. 2A19 remains
+    /// notification-only; 2A1B may use one bounded standard read outside
+    /// history ownership. Neither path authorizes a custom command.
     nonisolated static func protectedStandardHRServices(
         streamSuppressed: Bool
     ) -> [CBUUID] {
@@ -3929,9 +3932,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     /// Protected production uses the two standard Battery Service
     /// characteristics: 2A19 is the percentage and 2A1B is the charger state.
-    /// Both are notification-only in this profile. 2A1B is not a proprietary
-    /// stream and never authorizes a command; its current-link CCCD completion
-    /// is required again before it can surface Charging.
+    /// 2A19 is notification-only in this profile. 2A1B is not a proprietary
+    /// stream and never authorizes a command; a current-link CCCD completion or
+    /// bounded standard read response is required before it can surface
+    /// Charging.
     nonisolated static func protectedStandardHRCharacteristics(
         for service: CBUUID,
         streamSuppressed: Bool,
@@ -6435,8 +6439,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
 
-    /// 2A1B is the standard charger-state characteristic. It must be enabled
-    /// only on a live link outside a history-owned transport; its callback is
+    /// 2A1B is the standard charger-state characteristic. Its subscription is
+    /// independent of the proprietary history transport, just as 2A19 is:
+    /// history ownership may permit a missing CCCD to be enabled but never a
+    /// read, discovery reset, custom command, or reconnect. Its callback is
     /// still rejected unless CoreBluetooth confirms this epoch's CCCD change.
     private func ensureBatteryStatusNotificationForCurrentEpoch(
         peripheral: CBPeripheral,
@@ -6445,17 +6451,62 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     ) {
         guard status == .connected,
               peripheral.state == .connected,
-              Self.shouldAllowAncillaryGATTRefresh(
-                historyTransportOwnsLink: recoveredDataProjectionDeferralIsActive
-              ),
               characteristic.properties.contains(.notify)
                 || characteristic.properties.contains(.indicate) else {
             return
         }
         guard !characteristic.isNotifying else { return }
+        UserDefaults.standard.set(
+            Date().timeIntervalSince1970,
+            forKey: BatteryDefaults.statusNotificationRequestedAt
+        )
         peripheral.setNotifyValue(true, for: characteristic)
-        AtriaDebugLog("ATRIADBG battery_charge source=2A1B status=subscribe_requested reason=%@",
-                      reason)
+        AtriaDebugLog("ATRIADBG battery_charge source=2A1B status=subscribe_requested reason=%@ history_transport_owned=%d no_read=1",
+                      reason,
+                      recoveredDataProjectionDeferralIsActive ? 1 : 0)
+    }
+
+    /// Bounded fallback for firmware that restores the 2A1B CCCD without
+    /// delivering an initial charger-state notification. It uses the standard
+    /// Battery Service only, never runs during proprietary history ownership,
+    /// and follows the app's existing battery-refresh cadence.
+    private func requestBatteryStatusReadForCurrentEpoch(
+        peripheral: CBPeripheral,
+        characteristic: CBCharacteristic,
+        reason: String
+    ) {
+        let defaults = UserDefaults.standard
+        defaults.set(
+            Int(characteristic.properties.rawValue),
+            forKey: BatteryDefaults.statusProperties
+        )
+        guard !recoveredDataProjectionDeferralIsActive else {
+            AtriaDebugLog("ATRIADBG battery_charge source=2A1B status=read_skipped reason=%@ detail=history_transport_owned",
+                          reason)
+            return
+        }
+        guard status == .connected,
+              self.peripheral?.identifier == peripheral.identifier,
+              peripheral.state == .connected,
+              characteristic.properties.contains(.read) else {
+            AtriaDebugLog("ATRIADBG battery_charge source=2A1B status=read_skipped reason=%@ detail=not_readable_or_not_current props=%lu",
+                          reason,
+                          characteristic.properties.rawValue)
+            return
+        }
+        let now = Date()
+        if let requestedAt = batteryStatusReadRequestedAt,
+           now.timeIntervalSince(requestedAt) < 15 {
+            return
+        }
+        batteryStatusReadRequestedAt = now
+        defaults.set(now.timeIntervalSince1970,
+                     forKey: BatteryDefaults.statusReadRequestedAt)
+        defaults.removeObject(forKey: BatteryDefaults.statusReadLastError)
+        peripheral.readValue(for: characteristic)
+        AtriaDebugLog("ATRIADBG battery_charge source=2A1B status=read_requested reason=%@ props=%lu",
+                      reason,
+                      characteristic.properties.rawValue)
     }
 
     func requestStrapStatusRead(reason: String) {
@@ -6493,6 +6544,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard status == .connected, let peripheral, peripheral.state == .connected else {
             AtriaDebugLog("ATRIADBG strap_status_read status=skipped reason=%@ detail=not_connected", reason)
             return
+        }
+        if let batteryStatusCharacteristic {
+            requestBatteryStatusReadForCurrentEpoch(
+                peripheral: peripheral,
+                characteristic: batteryStatusCharacteristic,
+                reason: reason
+            )
         }
         if let batteryLevelCharacteristic {
             let action = Self.standardBatteryRefreshAction(
@@ -10406,22 +10464,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         if let cachedBatteryStatus {
             batteryStatusCharacteristic = cachedBatteryStatus
-            let batteryRefreshAllowed = Self.shouldAllowAncillaryGATTRefresh(
-                historyTransportOwnsLink: recoveredDataProjectionDeferralIsActive
+            // This standard, independent CCCD is safe while history owns the
+            // proprietary pipe. The helper permits only the missing
+            // subscription; it never reads or otherwise changes that owner.
+            ensureBatteryStatusNotificationForCurrentEpoch(
+                peripheral: peripheral,
+                characteristic: cachedBatteryStatus,
+                reason: "restored_cache"
             )
-            if batteryRefreshAllowed {
-                // This is the standard, independent charger-state CCCD. It is
-                // intentionally separate from 2A19 freshness and uses no read
-                // or proprietary transport, so it cannot mint a stale power
-                // claim after restoration.
-                ensureBatteryStatusNotificationForCurrentEpoch(
-                    peripheral: peripheral,
-                    characteristic: cachedBatteryStatus,
-                    reason: "restored_cache"
-                )
-            } else if !batteryRefreshAllowed {
-                AtriaDebugLog("ATRIADBG battery_charge source=2A1B status=restored_cache_observed reason=history_transport_owned action=no_cccd_mutation")
-            }
+            requestBatteryStatusReadForCurrentEpoch(
+                peripheral: peripheral,
+                characteristic: cachedBatteryStatus,
+                reason: "restored_cache"
+            )
         }
         AtriaDebugLog("ATRIADBG protected_r10 status=restored_cache_rehydrated services=%d hr=%d stream5=%d tx=%d stream5_notifying=%d action=resume_minimal_transport",
                       peripheral.services?.count ?? 0,
@@ -35343,6 +35398,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             self.pendingNotifyReenableUUIDs.remove(Self.UUIDs.batteryLevel)
             self.batteryConnectionRestoredSamePeripheral = false
             self.recentReconnectBatteryBaselineProjectionPublished = false
+            self.batteryStatusNotificationConfirmedAt = nil
+            self.batteryStatusReadRequestedAt = nil
             self.lastPlausibleBatteryRiseEvidenceAt = nil
             self.lastUncorroboratedChargingStatusAt = nil
             self.batteryRiseCandidate = Self.batteryRiseCandidateAfterReconnect(
@@ -35376,6 +35433,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             self.batteryBaselineValidationStartedAt = now
             let defaults = UserDefaults.standard
             defaults.removeObject(forKey: BatteryDefaults.notificationConfirmedAt)
+            defaults.removeObject(forKey: BatteryDefaults.statusNotificationConfirmedAt)
+            defaults.removeObject(forKey: BatteryDefaults.statusReadRequestedAt)
             defaults.set("new_link_unconfirmed",
                          forKey: BatteryDefaults.notificationLastError)
             let credibleLevel = defaults.object(forKey: BatteryDefaults.credibleLevel) as? Int
@@ -35692,6 +35751,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             batteryConfirmationReadLevel = nil
             batteryLevelCharacteristic = nil
             batteryStatusCharacteristic = nil
+            batteryStatusNotificationConfirmedAt = nil
+            batteryStatusReadRequestedAt = nil
             lastBatteryReadRequestedAt = nil
             realtimeArmed = false        // re-arm realtime after reconnect
             r10ArmRetryTask?.cancel()
@@ -35709,6 +35770,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             let defaults = UserDefaults.standard
             defaults.removeObject(forKey: BatteryDefaults.notificationLeaseAt)
             defaults.removeObject(forKey: BatteryDefaults.notificationConfirmedAt)
+            defaults.removeObject(forKey: BatteryDefaults.statusNotificationConfirmedAt)
+            defaults.removeObject(forKey: BatteryDefaults.statusReadRequestedAt)
             defaults.set("link_disconnected",
                          forKey: BatteryDefaults.notificationLastError)
             let disconnects = defaults.integer(forKey: LinkDefaults.disconnects) + 1
@@ -36768,6 +36831,11 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                         characteristic: foundBatteryStatusCharacteristic,
                         reason: "battery_characteristic_discovered"
                     )
+                    self.requestBatteryStatusReadForCurrentEpoch(
+                        peripheral: peripheral,
+                        characteristic: foundBatteryStatusCharacteristic,
+                        reason: "battery_characteristic_discovered"
+                    )
                 }
                 if foundBatteryLevelCharacteristic != nil {
                     self.requestStrapStatusRead(reason: "battery_characteristic_discovered")
@@ -37138,10 +37206,18 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                    notifying,
                    self.peripheral?.identifier == peripheral.identifier,
                    peripheral.state == .connected {
-                    self.batteryStatusNotificationConfirmedAt = Date()
+                    let confirmedAt = Date()
+                    self.batteryStatusNotificationConfirmedAt = confirmedAt
+                    UserDefaults.standard.set(
+                        confirmedAt.timeIntervalSince1970,
+                        forKey: BatteryDefaults.statusNotificationConfirmedAt
+                    )
                     AtriaDebugLog("ATRIADBG battery_charge source=2A1B status=notify_confirmed")
                 } else if self.batteryStatusCharacteristic?.uuid == characteristic.uuid {
                     self.batteryStatusNotificationConfirmedAt = nil
+                    UserDefaults.standard.removeObject(
+                        forKey: BatteryDefaults.statusNotificationConfirmedAt
+                    )
                 }
             }
             if characteristic.uuid == Self.UUIDs.heartRateMeasure {
@@ -37350,6 +37426,15 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         let callbackEpoch = bleCallbackEpochFence.epoch
         let historyPhase = historyTransportPhaseFence.snapshot()
         if let error {
+            if characteristic.uuid == Self.UUIDs.batteryLevelStatus {
+                Task { @MainActor in
+                    self.batteryStatusReadRequestedAt = nil
+                    let defaults = UserDefaults.standard
+                    defaults.removeObject(forKey: BatteryDefaults.statusReadRequestedAt)
+                    defaults.set(error.localizedDescription,
+                                 forKey: BatteryDefaults.statusReadLastError)
+                }
+            }
             if characteristic.uuid == Self.UUIDs.batteryLevel {
                 let receivedAt = Date()
                 Task { @MainActor in
@@ -37369,6 +37454,15 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         let uuid = characteristic.uuid
         let receivedAt = Date()
         guard let data = characteristic.value else {
+            if uuid == Self.UUIDs.batteryLevelStatus {
+                Task { @MainActor in
+                    self.batteryStatusReadRequestedAt = nil
+                    let defaults = UserDefaults.standard
+                    defaults.removeObject(forKey: BatteryDefaults.statusReadRequestedAt)
+                    defaults.set("missing 2A1B characteristic value",
+                                 forKey: BatteryDefaults.statusReadLastError)
+                }
+            }
             if uuid == Self.UUIDs.batteryLevel {
                 Task { @MainActor in
                     self.recoverBatteryNotificationAfterValueError(
@@ -37499,10 +37593,10 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 }
                 let previousAcceptedBatteryAt = self.lastAcceptedBatteryLevelAt
                 self.lastAcceptedBatteryLevelAt = receivedAt
-                // 2A19 exposes percentage, not external-power state. A single
-                // small rise can be quantization/correction and must never claim
-                // Charging. A decline is still strong not-charging evidence; 100%
-                // may be surfaced as Full after its separate truth gate accepts it.
+                // 2A19 exposes percentage, not external-power state. A bounded
+                // rise spanning real time may prove Charging after the packet
+                // passes the current-link truth gates. A decline is still strong
+                // not-charging evidence; 100% has its separate truth gate.
                 let previous = batteryLevel
                 let chargeEvidenceFromThisRead = Self.chargeEvidenceFromBatteryLevelChange(
                     previousLevel: previous,
@@ -37538,10 +37632,9 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                         clearBatteryDropMarker()
                         if let batteryRiseCandidate,
                            Self.batteryRiseCandidateProvesCharging(batteryRiseCandidate) {
-                            // This is the only production path that originates
-                            // Charging: multiple accepted mid-range increases
-                            // (or one bounded coalesced increase) spanning real
-                            // time. The raw 2A1B/stream-4 bits never renew it.
+                            // This path originates Charging from an accepted,
+                            // bounded mid-range increase spanning real time. A
+                            // raw or stale stream-4 bit never renews it.
                             assignIfChanged(\.batteryIsCharging, true)
                             assignIfChanged(\.batteryChargeStatus, .charging)
                             persistBatteryChargeStatus(
@@ -37603,6 +37696,19 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         }
         if uuid == UUIDs.batteryLevelStatus {
             Task { @MainActor in
+                let statusReadRequestedAt = self.batteryStatusReadRequestedAt
+                let readCanAuthorize = Self.batteryStatusReadCanAuthorizeCharging(
+                    peripheralConnected: peripheral.state == .connected
+                        && self.status == .connected,
+                    connectionStartedAt: self.connectedAt,
+                    readRequestedAt: statusReadRequestedAt,
+                    statusReceivedAt: receivedAt
+                )
+                self.batteryStatusReadRequestedAt = nil
+                let defaults = UserDefaults.standard
+                defaults.removeObject(forKey: BatteryDefaults.statusReadRequestedAt)
+                defaults.set(receivedAt.timeIntervalSince1970,
+                             forKey: BatteryDefaults.statusReadCallbackAt)
                 if central.state == .poweredOn, peripheral.state == .connected, self.status != .connected {
                     self.recomputeConnectionStatus(reason: "event")
                 }
@@ -37626,7 +37732,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                             connectionStartedAt: self.connectedAt,
                             notificationConfirmedAt: self.batteryStatusNotificationConfirmedAt,
                             statusReceivedAt: receivedAt
-                        )
+                        ) || readCanAuthorize
                     ) else {
                         self.lastUncorroboratedChargingStatusAt = nil
                         if self.batteryChargeStatus == .charging,
@@ -37693,9 +37799,15 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                         assignIfChanged(\.batteryRecentlyDropping, false)
                         clearBatteryDropMarker()
                     }
-                    persistBatteryChargeStatus(status,
-                                               source: "live_2A1B",
-                                               observedAt: receivedAt)
+                    if readCanAuthorize {
+                        persistBatteryChargeStatus(status,
+                                                   source: "live_2A1B_read",
+                                                   observedAt: receivedAt)
+                    } else {
+                        persistBatteryChargeStatus(status,
+                                                   source: "live_2A1B",
+                                                   observedAt: receivedAt)
+                    }
                     recordBatteryChargeEvidence(status,
                                                 reason: "battery_status",
                                                 observedAt: receivedAt)

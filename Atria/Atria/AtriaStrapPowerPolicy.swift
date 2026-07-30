@@ -220,9 +220,9 @@ extension AtriaBLEManager {
         !historyTransportActive
     }
 
-    /// 2A1B is subscribed, never read. A value is therefore usable as a
-    /// present-power indication only if the CCCD enable completed in this
-    /// process and (when known) after the current link began.
+    /// A 2A1B notification is usable as a present-power indication only if its
+    /// CCCD enable completed in this process and (when known) after the current
+    /// link began.
     nonisolated static func batteryStatusNotificationCanAuthorizeCharging(
         peripheralConnected: Bool,
         connectionStartedAt: Date?,
@@ -234,6 +234,26 @@ extension AtriaBLEManager {
               notificationConfirmedAt <= statusReceivedAt else { return false }
         guard let connectionStartedAt else { return true }
         return notificationConfirmedAt >= connectionStartedAt
+    }
+
+    /// Some WHOOP 4 firmware restores 2A1B without emitting an initial value.
+    /// One standard read on the current link is equivalent present-power
+    /// evidence only for its short request/response window.
+    nonisolated static func batteryStatusReadCanAuthorizeCharging(
+        peripheralConnected: Bool,
+        connectionStartedAt: Date?,
+        readRequestedAt: Date?,
+        statusReceivedAt: Date,
+        maximumLatency: TimeInterval = 15
+    ) -> Bool {
+        guard peripheralConnected,
+              let readRequestedAt,
+              statusReceivedAt >= readRequestedAt,
+              statusReceivedAt.timeIntervalSince(readRequestedAt) <= maximumLatency else {
+            return false
+        }
+        guard let connectionStartedAt else { return true }
+        return readRequestedAt >= connectionStartedAt
     }
 
     nonisolated static func batteryEventAcceptanceDecision(
@@ -460,15 +480,21 @@ extension AtriaBLEManager {
 
     nonisolated static func batteryRiseCandidateProvesCharging(
         _ candidate: BatteryRiseCandidate,
-        minimumRise: Int = 2,
+        minimumRise: Int = 1,
         minimumSpan: TimeInterval = 30,
         maximumSpan: TimeInterval = batteryRiseCandidateMaximumSpan
     ) -> Bool {
         let span = candidate.lastAt.timeIntervalSince(candidate.startAt)
         let rise = candidate.lastLevel - candidate.startLevel
-        let repeatedRise = candidate.confirmations >= 3 && rise >= minimumRise
-        let coalescedRise = candidate.confirmations == 1 && (4...10).contains(rise)
-        return (repeatedRise || coalescedRise)
+        // 2A19 is change-driven and each value has already passed the
+        // current-link and transition truth gates. A bounded increase across
+        // real time is therefore sufficient external-power evidence; waiting
+        // for three integer changes made Charging lag for many minutes. Keep
+        // large corrections rejected and retain the short presentation lease
+        // so unplugging still fails closed.
+        let boundedRise = (minimumRise...10).contains(rise)
+        return candidate.confirmations >= 1
+            && boundedRise
             && span >= minimumSpan
             && span <= maximumSpan
     }

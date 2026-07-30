@@ -3189,7 +3189,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
-    func testChargingTrajectoryNeedsMultipleAcceptedMidrangeRisesAcrossTime() throws {
+    func testChargingTrajectoryNeedsOneAcceptedMidrangeRiseAcrossRealTime() throws {
         let start = Date(timeIntervalSince1970: 20_000)
         let first = try XCTUnwrap(AtriaBLEManager.updatedBatteryRiseCandidate(
             current: nil,
@@ -3206,7 +3206,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             newLevel: 24,
             receivedAt: start.addingTimeInterval(65)
         ))
-        XCTAssertFalse(AtriaBLEManager.batteryRiseCandidateProvesCharging(second))
+        XCTAssertTrue(AtriaBLEManager.batteryRiseCandidateProvesCharging(second))
         let third = try XCTUnwrap(AtriaBLEManager.updatedBatteryRiseCandidate(
             current: second,
             previousLevel: 24,
@@ -3332,8 +3332,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             newLevel: 36,
             receivedAt: start.addingTimeInterval(130)
         ))
-        XCTAssertTrue(AtriaBLEManager.batteryRiseCandidateProvesCharging(sustainedThird),
-                      "two post-correction rises may establish a new trajectory")
+        XCTAssertFalse(AtriaBLEManager.batteryRiseCandidateProvesCharging(sustainedThird),
+                       "a candidate rooted in a large correction stays ineligible")
     }
 
     func testChargingTrajectoryAcceptsCoalescedSixPointRiseAcrossRealTime() throws {
@@ -3359,6 +3359,16 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             receivedAt: start.addingTimeInterval(5)
         ))
         XCTAssertFalse(AtriaBLEManager.batteryRiseCandidateProvesCharging(instantCorrection))
+
+        let onePointRise = try XCTUnwrap(AtriaBLEManager.updatedBatteryRiseCandidate(
+            current: nil,
+            previousLevel: 49,
+            previousAcceptedAt: start,
+            newLevel: 50,
+            receivedAt: start.addingTimeInterval(45)
+        ))
+        XCTAssertTrue(AtriaBLEManager.batteryRiseCandidateProvesCharging(onePointRise),
+                      "one accepted percentage rise across real time should surface Charging")
     }
 
     func testInitialBatteryValueAfterDidConnectBelongsToCurrentPhysicalLink() {
@@ -6607,8 +6617,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(body.contains("batteryStatusCharacteristic = cachedBatteryStatus"))
         XCTAssertTrue(body.contains("ensureBatteryStatusNotificationForCurrentEpoch("),
                       "restoration must re-establish the independent standard charger-state subscription")
-        XCTAssertTrue(body.contains("history_transport_owned action=no_cccd_mutation"),
-                      "history ownership must continue to veto ancillary battery CCCD changes")
+        XCTAssertTrue(body.contains("history_transport_owned=%d no_read=1"),
+                      "history ownership may subscribe the independent standard charger-state characteristic without a read or proprietary mutation")
+        XCTAssertTrue(body.contains("detail=history_transport_owned"),
+                      "the bounded 2A1B read fallback must stay blocked while history owns the link")
     }
 
     func testHistoryTransportCannotOverwriteLiveBatteryProjectionFromEventFrame() {

@@ -121,6 +121,29 @@ final class AtriaStrapPowerPolicyTests: XCTestCase {
         ), "a status sample cannot be authorized by a later CCCD callback")
     }
 
+    func testCurrentLinkBatteryStatusReadCanAuthorizeOnlyItsBoundedResponse() {
+        let connectedAt = Date(timeIntervalSince1970: 10_000)
+        let requestedAt = connectedAt.addingTimeInterval(1)
+        XCTAssertTrue(AtriaBLEManager.batteryStatusReadCanAuthorizeCharging(
+            peripheralConnected: true,
+            connectionStartedAt: connectedAt,
+            readRequestedAt: requestedAt,
+            statusReceivedAt: requestedAt.addingTimeInterval(2)
+        ))
+        XCTAssertFalse(AtriaBLEManager.batteryStatusReadCanAuthorizeCharging(
+            peripheralConnected: true,
+            connectionStartedAt: connectedAt,
+            readRequestedAt: requestedAt,
+            statusReceivedAt: requestedAt.addingTimeInterval(16)
+        ), "a delayed/cached callback cannot borrow an old read request")
+        XCTAssertFalse(AtriaBLEManager.batteryStatusReadCanAuthorizeCharging(
+            peripheralConnected: true,
+            connectionStartedAt: connectedAt,
+            readRequestedAt: connectedAt.addingTimeInterval(-1),
+            statusReceivedAt: connectedAt.addingTimeInterval(1)
+        ), "a prior-link read cannot authorize the current connection")
+    }
+
     func testChargePersistenceDoesNotRefreshBatteryLevelTimestamp() throws {
         let suite = "AtriaStrapPowerPolicyTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
