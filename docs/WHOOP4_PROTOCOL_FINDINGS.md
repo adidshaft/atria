@@ -4075,3 +4075,18 @@ POSITIVE STILL REQUIRED**
   independent renewal; a decline immediately publishes Not Charging, and
   disconnect/reconnect revokes current-link evidence. History-origin
   proprietary battery frames cannot overwrite either SOC or charge state.
+
+### 2026-07-31 — automatic `2A19` polling regression removed
+
+- Commit `4e445035` accidentally bypassed the physically accepted policy above
+  by issuing a readable `2A19` request as often as once per minute. Bounded
+  cadence and single-flight state do not make that command safe on this WHOOP
+  4; the transport failure is caused by the explicit read itself.
+- Production again treats `2A19` as change-driven notification authority only.
+  It may establish or repair the CCCD for the current connection, but it does
+  not poll the percentage. Firmware exposing qualified `2A1B` retains its
+  separate bounded charger-status read.
+- This removal protects accepted HR, the open all-day motion bank, workouts,
+  and sleep capture from a battery-refresh-induced disconnect. A cached
+  percentage may be shown with its age; freshness is never manufactured by
+  risking the live strap link.

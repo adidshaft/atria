@@ -5651,8 +5651,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
-    func testCurrentLinkBatteryReadIsBoundedAndNeverAdmittedDuringHistory() {
-        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+    func testBatteryLevelTransportOwnershipIgnoresDeferredLocalWork() {
         XCTAssertFalse(AtriaBLEManager.batteryLevelReadTransportIsActive(
             offlineSyncInProgress: false,
             historyPhaseActive: false,
@@ -5672,46 +5671,6 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             offlineSyncInProgress: false,
             historyPhaseActive: false,
             readOnlyCaptureActive: true
-        ))
-        XCTAssertTrue(AtriaBLEManager.shouldPerformCurrentLinkBatteryLevelRead(
-            canonicalLinkConnected: true,
-            historyTransportOwnsLink: false,
-            characteristicReadable: true,
-            readInFlight: false,
-            lastReadAt: nil,
-            now: now
-        ))
-        XCTAssertFalse(AtriaBLEManager.shouldPerformCurrentLinkBatteryLevelRead(
-            canonicalLinkConnected: true,
-            historyTransportOwnsLink: true,
-            characteristicReadable: true,
-            readInFlight: false,
-            lastReadAt: nil,
-            now: now
-        ))
-        XCTAssertFalse(AtriaBLEManager.shouldPerformCurrentLinkBatteryLevelRead(
-            canonicalLinkConnected: true,
-            historyTransportOwnsLink: false,
-            characteristicReadable: true,
-            readInFlight: true,
-            lastReadAt: nil,
-            now: now
-        ))
-        XCTAssertFalse(AtriaBLEManager.shouldPerformCurrentLinkBatteryLevelRead(
-            canonicalLinkConnected: true,
-            historyTransportOwnsLink: false,
-            characteristicReadable: true,
-            readInFlight: false,
-            lastReadAt: now.addingTimeInterval(-59),
-            now: now
-        ))
-        XCTAssertTrue(AtriaBLEManager.shouldPerformCurrentLinkBatteryLevelRead(
-            canonicalLinkConnected: true,
-            historyTransportOwnsLink: false,
-            characteristicReadable: true,
-            readInFlight: false,
-            lastReadAt: now.addingTimeInterval(-60),
-            now: now
         ))
     }
 
