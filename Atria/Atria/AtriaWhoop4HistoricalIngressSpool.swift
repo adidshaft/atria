@@ -48,7 +48,6 @@ final class AtriaWhoop4HistoricalIngressSpool {
     private var readOffset: UInt64 = UInt64(headerBytes)
     private var writeOffset: UInt64 = UInt64(headerBytes)
     private var unreadCount = 0
-    private var appendsSinceSync = 0
     private var writeHandle: FileHandle?
     private var readHandle: FileHandle?
 
@@ -130,13 +129,11 @@ final class AtriaWhoop4HistoricalIngressSpool {
         try handle.write(contentsOf: encoded)
         writeOffset = next
         unreadCount += 1
-        appendsSinceSync += 1
-        // The next ACK still depends on the canonical archive fsync. This
-        // sync only bounds crash loss in the ingress journal itself.
-        if appendsSinceSync >= 256 {
-            try handle.synchronize()
-            appendsSinceSync = 0
-        }
+        // This spool is an ordered, non-authoritative ingress buffer. The
+        // canonical archive/admission flush remains the sole durability
+        // boundary before an ACK. Never fsync this cache on the BLE/MainActor
+        // callback path: a crash before canonical durability produces no ACK
+        // and the strap safely replays the page.
     }
 
     func popFirst() throws -> Event? {
@@ -187,7 +184,6 @@ final class AtriaWhoop4HistoricalIngressSpool {
     func synchronize() throws {
         guard let handle = writeHandle else { throw CocoaError(.fileWriteUnknown) }
         try handle.synchronize()
-        appendsSinceSync = 0
     }
 
     private func create() throws {
@@ -200,7 +196,8 @@ final class AtriaWhoop4HistoricalIngressSpool {
         var header = Self.magic
         header.append(le(generation))
         try handle.write(contentsOf: header)
-        try handle.synchronize()
+        // Header durability is not ACK authority. Callers that hand this
+        // cache to an off-main orphan vault may explicitly synchronize there.
     }
 
     private func reopen() throws {
@@ -227,7 +224,9 @@ final class AtriaWhoop4HistoricalIngressSpool {
             let handle = try FileHandle(forWritingTo: url)
             defer { try? handle.close() }
             try handle.truncate(atOffset: UInt64(offset))
-            try handle.synchronize()
+            // A torn tail necessarily predates canonical ACK authority.
+            // Repeated reopen remains deterministic without blocking the
+            // BLE/MainActor path on an inline filesystem sync.
         }
         writeOffset = UInt64(offset)
         readOffset = UInt64(Self.headerBytes)

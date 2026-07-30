@@ -212,7 +212,7 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
         ), .reconnectRealtime)
     }
 
-    func testHistoryDiagnosticAndInactiveCaptureCannotUseRealtimeFastLane() {
+    func testPhysicalHistoryLossRestoresRealtimeButDiagnosticsAndInactiveCaptureDoNot() {
         let fence = AtriaBLEManager.BackgroundReconnectFence()
         let peripheralID = UUID()
         let now = Date(timeIntervalSince1970: 20_000)
@@ -221,9 +221,18 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
             peripheralID: peripheralID,
             continuousCaptureWanted: true,
             historyTransportActive: true,
+            activeHistoryTransportGeneration: 6,
             diagnosticActive: false,
             now: now
-        ), .suppressHistoryOwner)
+        ), .reconnectRealtimeAfterHistoryRelease(generation: 6))
+        XCTAssertEqual(fence.consumeDisposition(
+            peripheralID: peripheralID,
+            continuousCaptureWanted: true,
+            historyTransportActive: true,
+            activeHistoryTransportGeneration: nil,
+            diagnosticActive: false,
+            now: now
+        ), .suppressHistoryOwner, "an unscoped history owner must fail closed")
         XCTAssertEqual(fence.consumeDisposition(
             peripheralID: peripheralID,
             continuousCaptureWanted: true,
@@ -255,6 +264,92 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
             diagnosticActive: false,
             now: now
         ), .reconnectRealtime)
+    }
+
+    func testHistorySliceReleaseCanRestoreRealtimeBeforeMainActorCleanup() {
+        let fence = AtriaBLEManager.BackgroundReconnectFence(
+            markerMaximumAge: 30
+        )
+        let peripheralID = UUID()
+        let now = Date(timeIntervalSince1970: 40_000)
+
+        fence.markAppOwnedCancellation(
+            peripheralID: peripheralID,
+            restoreRealtimeAfterHistoryGeneration: 7,
+            at: now
+        )
+        XCTAssertEqual(fence.consumeDisposition(
+            peripheralID: peripheralID,
+            continuousCaptureWanted: true,
+            historyTransportActive: true,
+            activeHistoryTransportGeneration: 7,
+            diagnosticActive: false,
+            now: now
+        ), .reconnectRealtimeAfterHistoryRelease(generation: 7))
+        XCTAssertEqual(fence.consumeDisposition(
+            peripheralID: peripheralID,
+            continuousCaptureWanted: true,
+            historyTransportActive: true,
+            activeHistoryTransportGeneration: 7,
+            diagnosticActive: false,
+            now: now
+        ), .reconnectRealtimeAfterHistoryRelease(
+            generation: 7
+        ), "a later physical loss still restores live from the exact active owner")
+    }
+
+    func testHistorySliceReleaseCannotOverrideInactiveCaptureOrDiagnostic() {
+        let fence = AtriaBLEManager.BackgroundReconnectFence()
+        let peripheralID = UUID()
+        let now = Date(timeIntervalSince1970: 50_000)
+
+        fence.markAppOwnedCancellation(
+            peripheralID: peripheralID,
+            restoreRealtimeAfterHistoryGeneration: 9,
+            at: now
+        )
+        XCTAssertEqual(fence.consumeDisposition(
+            peripheralID: peripheralID,
+            continuousCaptureWanted: false,
+            historyTransportActive: true,
+            activeHistoryTransportGeneration: 9,
+            diagnosticActive: false,
+            now: now
+        ), .suppressCaptureInactive)
+
+        fence.markAppOwnedCancellation(
+            peripheralID: peripheralID,
+            restoreRealtimeAfterHistoryGeneration: 9,
+            at: now
+        )
+        XCTAssertEqual(fence.consumeDisposition(
+            peripheralID: peripheralID,
+            continuousCaptureWanted: true,
+            historyTransportActive: true,
+            activeHistoryTransportGeneration: 9,
+            diagnosticActive: true,
+            now: now
+        ), .suppressDiagnostic)
+    }
+
+    func testHistorySliceReleaseCannotRetireNewerHistoryGeneration() {
+        let fence = AtriaBLEManager.BackgroundReconnectFence()
+        let peripheralID = UUID()
+        let now = Date(timeIntervalSince1970: 60_000)
+
+        fence.markAppOwnedCancellation(
+            peripheralID: peripheralID,
+            restoreRealtimeAfterHistoryGeneration: 12,
+            at: now
+        )
+        XCTAssertEqual(fence.consumeDisposition(
+            peripheralID: peripheralID,
+            continuousCaptureWanted: true,
+            historyTransportActive: true,
+            activeHistoryTransportGeneration: 13,
+            diagnosticActive: false,
+            now: now
+        ), .suppressHistoryOwner)
     }
 
     func testFastLaneRadioCallsPrecedeMainActorAndShareOneGuardedHelper() throws {
@@ -362,6 +457,113 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
                 "self.bleCallbackEpochFence.epoch == failedCallbackEpoch"
             )
         )
+    }
+
+    func testHistorySliceRealtimeHandoffPrecedesRadioAndMainActorLease() throws {
+        let source = try managerSource()
+        let connectStart = try XCTUnwrap(source.range(
+            of: "nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral)"
+        ))
+        let disconnectStart = try XCTUnwrap(source.range(
+            of: "nonisolated func centralManager(_ central: CBCentralManager,\n                        didDisconnectPeripheral",
+            range: connectStart.upperBound..<source.endIndex
+        ))
+        let connect = String(
+            source[connectStart.lowerBound..<disconnectStart.lowerBound]
+        )
+        let claim = try XCTUnwrap(connect.range(
+            of: "claimRealtimeRestore("
+        ))
+        let historyGate = try XCTUnwrap(connect.range(
+            of: "let historyRecoveryActive ="
+        ))
+        let synchronousDiscovery = try XCTUnwrap(connect.range(
+            of: "beginSynchronousHeartRateDiscoveryFastLane("
+        ))
+        let mainActor = try XCTUnwrap(connect.range(
+            of: "Task { @MainActor in"
+        ))
+        let exactCleanup = try XCTUnwrap(connect.range(
+            of: "history_slice_live_restore_connected",
+            range: mainActor.upperBound..<connect.endIndex
+        ))
+        let streamLease = try XCTUnwrap(connect.range(
+            of: "beginPostReconnectStreamLeaseIfNeeded(",
+            range: mainActor.upperBound..<connect.endIndex
+        ))
+
+        XCTAssertLessThan(claim.lowerBound, historyGate.lowerBound)
+        XCTAssertLessThan(historyGate.lowerBound, synchronousDiscovery.lowerBound)
+        XCTAssertLessThan(synchronousDiscovery.lowerBound, mainActor.lowerBound)
+        XCTAssertLessThan(exactCleanup.lowerBound, streamLease.lowerBound)
+
+        let cleanupBody = String(
+            connect[exactCleanup.lowerBound..<streamLease.lowerBound]
+        )
+        XCTAssertFalse(cleanupBody.contains("Cmd.ackHistoricalData"))
+        XCTAssertFalse(cleanupBody.contains("Cmd.abortHistoricalTransmits"))
+        XCTAssertFalse(cleanupBody.contains("Cmd.sendHistoricalData"))
+        XCTAssertFalse(cleanupBody.contains("sendCommand("))
+    }
+
+    func testHistorySliceTerminalCallbacksRetireExactGenerationBeforeReconnect() throws {
+        let source = try managerSource()
+        let disconnectStart = try XCTUnwrap(source.range(
+            of: "didDisconnectPeripheral peripheral: CBPeripheral"
+        ))
+        let failedStart = try XCTUnwrap(source.range(
+            of: "didFailToConnect peripheral: CBPeripheral",
+            range: disconnectStart.upperBound..<source.endIndex
+        ))
+        let disconnect = String(
+            source[disconnectStart.lowerBound..<failedStart.lowerBound]
+        )
+        let disconnectRetire = try XCTUnwrap(disconnect.range(
+            of: "retireForRealtimeRestore("
+        ))
+        let disconnectConnect = try XCTUnwrap(disconnect.range(
+            of: "central.connect(peripheral, options: nil)",
+            range: disconnectRetire.upperBound..<disconnect.endIndex
+        ))
+        let disconnectMainActor = try XCTUnwrap(disconnect.range(
+            of: "Task { @MainActor",
+            range: disconnectConnect.upperBound..<disconnect.endIndex
+        ))
+        XCTAssertLessThan(
+            disconnectRetire.lowerBound,
+            disconnectConnect.lowerBound
+        )
+        XCTAssertLessThan(
+            disconnectConnect.lowerBound,
+            disconnectMainActor.lowerBound
+        )
+
+        let failedEnd = try XCTUnwrap(source.range(
+            of: "// MARK: - CBPeripheralDelegate",
+            range: failedStart.upperBound..<source.endIndex
+        ))
+        let failed = String(
+            source[failedStart.lowerBound..<failedEnd.lowerBound]
+        )
+        let failedRetire = try XCTUnwrap(failed.range(
+            of: "retireForRealtimeRestore("
+        ))
+        let failedConnect = try XCTUnwrap(failed.range(
+            of: "central.connect(peripheral, options: nil)",
+            range: failedRetire.upperBound..<failed.endIndex
+        ))
+        let failedMainActor = try XCTUnwrap(failed.range(
+            of: "Task { @MainActor",
+            range: failedConnect.upperBound..<failed.endIndex
+        ))
+        XCTAssertLessThan(failedRetire.lowerBound, failedConnect.lowerBound)
+        XCTAssertLessThan(failedConnect.lowerBound, failedMainActor.lowerBound)
+        XCTAssertTrue(failed.contains(
+            "case .reconnectRealtimeAfterHistoryRelease:"
+        ))
+        XCTAssertTrue(failed.contains(
+            "return"
+        ), "the delayed special failure path must not add a scan or second connect")
     }
 
     func testSharedDiscoveryPolicyFailsClosedForHistoryReadOnlyAndDiagnostics() {

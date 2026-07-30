@@ -183,10 +183,9 @@ final class AtriaSceneResumePolicyTests: XCTestCase {
         ), "baseline trust is part of the mutation identity even when its numeric value is unchanged")
     }
 
-    func testForegroundSleepSettlementProposalCanBuildAwayFromMainThread() {
-        let completed = expectation(description: "utility proposal")
-        DispatchQueue.global(qos: .utility).async {
-            XCTAssertFalse(Thread.isMainThread)
+    func testForegroundSleepSettlementProposalCanBuildAwayFromMainThread() async {
+        let result = await Task.detached(priority: .utility) {
+            let wasMainThread = Thread.isMainThread
             let now = Date(timeIntervalSince1970: 1_800_000_000)
             let fingerprint = SessionStore.ForegroundSleepSettlementFingerprint(
                 canonicalSessionsRevision: 1,
@@ -220,16 +219,15 @@ final class AtriaSceneResumePolicyTests: XCTestCase {
                 learnedWindow: nil
             )
 
-            XCTAssertEqual(proposal.fingerprint, fingerprint)
-            XCTAssertEqual(proposal.sourceSessions.map(\.id), [activeJournal.id],
-                           "the off-main resident journal must survive into stage/HRV construction")
-            XCTAssertTrue(proposal.strongCandidates.isEmpty)
-            XCTAssertNil(proposal.wakeBoundary.candidate)
-            completed.fulfill()
-        }
-        // The full test plan launches several simulator clones concurrently;
-        // allow utility work to survive that harness-only scheduling pressure.
-        wait(for: [completed], timeout: 5)
+            return (wasMainThread, fingerprint, activeJournal.id, proposal)
+        }.value
+
+        XCTAssertFalse(result.0)
+        XCTAssertEqual(result.3.fingerprint, result.1)
+        XCTAssertEqual(result.3.sourceSessions.map(\.id), [result.2],
+                       "the off-main resident journal must survive into stage/HRV construction")
+        XCTAssertTrue(result.3.strongCandidates.isEmpty)
+        XCTAssertNil(result.3.wakeBoundary.candidate)
     }
 
     private func residentJournalRecord(

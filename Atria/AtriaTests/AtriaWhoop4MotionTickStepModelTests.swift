@@ -2,10 +2,10 @@ import XCTest
 @testable import Atria
 
 final class AtriaWhoop4MotionTickStepModelTests: XCTestCase {
-    func testGravityEstimatorPublishesPhysicallyCalibratedV15Only() {
+    func testGravityEstimatorPublishesPhysicallyCalibratedV17Only() {
         XCTAssertEqual(
             AtriaWhoop4GravityCadenceStepModel.algorithmVersion,
-            "whoop4-impact-gait-ensemble-v15"
+            "whoop4-impact-gait-ensemble-v17"
         )
     }
 
@@ -898,6 +898,131 @@ final class AtriaWhoop4MotionTickStepModelTests: XCTestCase {
         }
     }
 
+    func testAutonomousDayPhysicalBoundaryVariantsRejectNewestArmControl()
+        throws {
+        let walkStart: TimeInterval = 1_785_106_514
+        let walkEnd: TimeInterval = 1_785_106_608
+        let walkTruth = 100
+        let walkPoints = try physicalV24Points(
+            relativePath:
+                "Atria/AtriaTests/Fixtures/"
+                + "whoop4-v15-physical-gait-corpus.jsonl",
+            wallStart: walkStart - 2,
+            wallEnd: walkEnd + 2,
+            useCorrectedTimestamp: true
+        )
+        let controlStart: TimeInterval = 1_785_114_466.586_846
+        let controlEnd: TimeInterval = 1_785_114_557.847_872
+        let controlPoints = try physicalV24Points(
+            relativePath:
+                "evidence/2026-07-27-gate4-v12-fresh-arm-control/"
+                + "historical-archive-segments/raw-v2/"
+                + "raw-20260727-46633af5-c5d8-47df-baf9-d7b6f02c4672.jsonl",
+            wallStart: controlStart - 2,
+            wallEnd: controlEnd + 2,
+            useCorrectedTimestamp: true
+        )
+
+        for shift in -2...2 {
+            let shiftedWalk = walkPoints.filter {
+                $0.timestamp >= walkStart + Double(shift)
+                    && $0.timestamp <= walkEnd + Double(shift)
+            }
+            let walkEstimate = try XCTUnwrap(
+                AtriaWhoop4GravityCadenceStepModel
+                    .estimateCoveredActivityFragments([shiftedWalk]),
+                "walk boundary shift \(shift)"
+            )
+            XCTAssertLessThanOrEqual(
+                abs(Double(walkEstimate.steps - walkTruth))
+                    / Double(walkTruth),
+                0.05,
+                "walk shift \(shift): \(walkEstimate.steps) vs \(walkTruth)"
+            )
+
+            let shiftedControl = controlPoints.filter {
+                $0.timestamp >= controlStart + Double(shift)
+                    && $0.timestamp <= controlEnd + Double(shift)
+            }
+            let controlEstimate = AtriaWhoop4GravityCadenceStepModel
+                .estimateCoveredActivityFragments([shiftedControl])
+            XCTAssertEqual(
+                controlEstimate?.steps ?? 0,
+                0,
+                "planted-feet arm control shift \(shift)"
+            )
+        }
+    }
+
+    func testNearSampleRateSlowGaitUsesStrapAliasMidpointOnlyInHeldOutRegime() {
+        XCTAssertEqual(
+            AtriaWhoop4GravityCadenceStepModel.nearSampleRateSlowGaitSteps(
+                sampleRateHz: 1.040_251,
+                durationSeconds: 88.440_186,
+                selectedCadenceHz: 1.142_015,
+                aliasFrequencyHz: 0.101_764,
+                meanScalar: 0.083_012,
+                motionVolumeSteps: 194,
+                cadenceOnlySteps: 101
+            ),
+            92
+        )
+        XCTAssertNil(
+            AtriaWhoop4GravityCadenceStepModel.nearSampleRateSlowGaitSteps(
+                sampleRateHz: 1.040,
+                durationSeconds: 93.25,
+                selectedCadenceHz: 1.158,
+                aliasFrequencyHz: 0.118,
+                meanScalar: 0.161,
+                motionVolumeSteps: 260,
+                cadenceOnlySteps: 108
+            ),
+            "the preserved high-impact W108 regime must not be corrected"
+        )
+        XCTAssertNil(
+            AtriaWhoop4GravityCadenceStepModel.nearSampleRateSlowGaitSteps(
+                sampleRateHz: 1.040,
+                durationSeconds: 93.25,
+                selectedCadenceHz: 1.169,
+                aliasFrequencyHz: 0.129,
+                meanScalar: 0.110,
+                motionVolumeSteps: 173,
+                cadenceOnlySteps: 109
+            ),
+            "the preserved W100 motion-volume ratio must stay below the lane"
+        )
+    }
+
+    func testHeldOutNinetyStepSlowWalkPassesEveryBoundaryVariant() throws {
+        let start: TimeInterval = 1_785_417_551
+        let end: TimeInterval = 1_785_417_641
+        let points = try physicalV24Points(
+            relativePath:
+                "Atria/AtriaTests/Fixtures/"
+                + "whoop4-v15-physical-gait-corpus.jsonl",
+            wallStart: start - 2,
+            wallEnd: end + 2,
+            useCorrectedTimestamp: true
+        )
+        XCTAssertEqual(points.count, 98)
+        for shift in -2...2 {
+            let bounded = points.filter {
+                $0.timestamp >= start + Double(shift)
+                    && $0.timestamp <= end + Double(shift)
+            }
+            let estimate = try XCTUnwrap(
+                AtriaWhoop4GravityCadenceStepModel
+                    .estimateCoveredActivityFragments([bounded]),
+                "W90 boundary shift \(shift)"
+            )
+            XCTAssertLessThanOrEqual(
+                abs(Double(estimate.steps - 90)) / 90,
+                0.05,
+                "W90 shift \(shift): \(estimate.steps)"
+            )
+        }
+    }
+
     func testPreservedAutonomousDayBoutDoesNotRegressToShortBurstOnly()
         throws {
         let raw =
@@ -914,13 +1039,13 @@ final class AtriaWhoop4MotionTickStepModelTests: XCTestCase {
         let bouts = AtriaWhoop4GravityCadenceStepModel
             .autonomousGaitBoutEstimates(points: points)
         XCTAssertEqual(bouts.count, 1)
-        XCTAssertEqual(bouts.first?.steps, 177)
+        XCTAssertEqual(bouts.first?.steps, 179)
 
         let estimate = try XCTUnwrap(
             AtriaWhoop4GravityCadenceStepModel
                 .estimateCoveredActivityFragments([points])
         )
-        XCTAssertEqual(estimate.steps, 177)
+        XCTAssertEqual(estimate.steps, 179)
         XCTAssertEqual(estimate.motionTicks, 156)
         XCTAssertEqual(estimate.unresolvedMotionSeconds, 60.5625, accuracy: 0.001)
         XCTAssertGreaterThan(

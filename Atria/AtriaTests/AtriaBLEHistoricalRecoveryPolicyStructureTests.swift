@@ -26,6 +26,9 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         XCTAssertTrue(finish.contains("acceptedAt > restorationRequestedAt"))
         XCTAssertTrue(finish.contains("offline_sync_live_restore_rebuild_"))
         XCTAssertTrue(finish.contains("cancel_once_then_reconnect_known"))
+        XCTAssertTrue(finish.contains(
+            "restoreRealtimeAfterHistoryGeneration: generation"
+        ), "the terminal rebuild must install a synchronous locked reconnect")
         XCTAssertTrue(
             finish.contains("terminalAndLiveRestored: completedDrain && restored"),
             "live restoration must not falsely promote an incomplete history drain"

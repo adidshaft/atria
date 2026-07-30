@@ -389,7 +389,7 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
         )
     }
 
-    func testClosedWorkoutCreatesDurableExactOffloadTicket() {
+    func testWorkoutBoundaryPreservesEarlierAllDayBankInOffloadTicket() {
         let bankStart = Date(timeIntervalSince1970: 5_000)
         let workoutStart = bankStart.addingTimeInterval(30)
         let end = workoutStart.addingTimeInterval(90)
@@ -402,7 +402,6 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
         AtriaWhoop4MotionBankCoverageLedger.close(
             at: end,
             strapIdentifier: strap,
-            offloadStart: workoutStart,
             armedConnectionStartedAt: epoch,
             defaults: defaults
         )
@@ -411,7 +410,11 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
             strapIdentifier: strap,
             defaults: defaults
         )
-        XCTAssertEqual(ticket?.start, workoutStart)
+        XCTAssertEqual(
+            ticket?.start,
+            bankStart,
+            "a later workout may close the all-day bank but must not erase its autonomous prefix"
+        )
         XCTAssertEqual(ticket?.end, end)
         XCTAssertEqual(ticket?.armedConnectionStartedAt, epoch)
         XCTAssertEqual(ticket?.attempts, 0)
@@ -432,6 +435,65 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
                 strapIdentifier: strap,
                 defaults: defaults
             )
+        )
+    }
+
+    func testRepairsLegacyWorkoutSuffixTicketToFullClosedBank() throws {
+        let bankStart = Date(timeIntervalSince1970: 8_000)
+        let workoutStart = bankStart.addingTimeInterval(600)
+        let end = workoutStart.addingTimeInterval(90)
+        AtriaWhoop4MotionBankCoverageLedger.open(
+            at: bankStart,
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        // Reproduce the legacy suffix ticket using a closed full interval and
+        // a manually restored subrange ticket.
+        AtriaWhoop4MotionBankCoverageLedger.close(
+            at: end,
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        let full = try XCTUnwrap(
+            AtriaWhoop4MotionBankCoverageLedger.nextPendingOffload(
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+        )
+        AtriaWhoop4MotionBankCoverageLedger.resolveOffload(
+            id: full.id,
+            defaults: defaults
+        )
+        let suffix = try XCTUnwrap(
+            AtriaWhoop4MotionBankCoverageLedger
+                .restorePendingOffloadIfCovered(
+                    start: workoutStart,
+                    end: end,
+                    strapIdentifier: strap,
+                    defaults: defaults
+                )
+        )
+        XCTAssertEqual(suffix.start, workoutStart)
+
+        XCTAssertEqual(
+            AtriaWhoop4MotionBankCoverageLedger
+                .repairWorkoutTruncatedOffloadCoverage(defaults: defaults),
+            1
+        )
+        let repaired = try XCTUnwrap(
+            AtriaWhoop4MotionBankCoverageLedger.nextPendingOffload(
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+        )
+        XCTAssertEqual(repaired.start, bankStart)
+        XCTAssertEqual(repaired.end, end)
+        XCTAssertEqual(repaired.attempts, 0)
+        XCTAssertEqual(
+            AtriaWhoop4MotionBankCoverageLedger
+                .repairWorkoutTruncatedOffloadCoverage(defaults: defaults),
+            0,
+            "repair must be idempotent"
         )
     }
 
@@ -473,6 +535,128 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
                 strapIdentifier: strap,
                 defaults: defaults
             )
+        )
+    }
+
+    func testExhaustedOffloadPreservesMissingCoverageWithoutClaimingResolution() throws {
+        let start = Date(timeIntervalSince1970: 5_400)
+        let end = start.addingTimeInterval(90)
+        AtriaWhoop4MotionBankCoverageLedger.open(
+            at: start,
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        AtriaWhoop4MotionBankCoverageLedger.close(
+            at: end,
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        let ticket = try XCTUnwrap(
+            AtriaWhoop4MotionBankCoverageLedger.nextPendingOffload(
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+        )
+        let finalized = expectation(
+            forNotification: AtriaWhoop4MotionBankCoverageLedger
+                .didFinalizeOffloadNotification,
+            object: nil
+        ) { note in
+            note.object as? String == ticket.id
+        }
+        let falselyResolved = expectation(
+            forNotification: AtriaWhoop4MotionBankCoverageLedger
+                .didResolveOffloadNotification,
+            object: nil
+        )
+        falselyResolved.isInverted = true
+
+        XCTAssertTrue(
+            AtriaWhoop4MotionBankCoverageLedger.exhaustOffload(
+                id: ticket.id,
+                defaults: defaults
+            )
+        )
+
+        wait(for: [finalized, falselyResolved], timeout: 0.2)
+        XCTAssertNil(
+            AtriaWhoop4MotionBankCoverageLedger.nextPendingOffload(
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+        )
+        XCTAssertEqual(
+            AtriaWhoop4MotionBankCoverageLedger.intervals(
+                intersecting: .init(
+                    start: start.addingTimeInterval(-1),
+                    end: end.addingTimeInterval(1)
+                ),
+                strapIdentifier: strap,
+                now: end,
+                defaults: defaults
+            ),
+            [.init(start: start, end: end)]
+        )
+    }
+
+    func testStaleOffloadBatchExhaustionRetainsIntervalsAndNeverResolves()
+        throws
+    {
+        let firstStart = Date(timeIntervalSince1970: 5_600)
+        let firstEnd = firstStart.addingTimeInterval(90)
+        let secondStart = firstEnd.addingTimeInterval(10)
+        let secondEnd = secondStart.addingTimeInterval(90)
+        for (start, end) in [
+            (firstStart, firstEnd),
+            (secondStart, secondEnd),
+        ] {
+            AtriaWhoop4MotionBankCoverageLedger.open(
+                at: start,
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+            AtriaWhoop4MotionBankCoverageLedger.close(
+                at: end,
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+        }
+        let falselyResolved = expectation(
+            forNotification: AtriaWhoop4MotionBankCoverageLedger
+                .didResolveOffloadNotification,
+            object: nil
+        )
+        falselyResolved.isInverted = true
+
+        let exhausted =
+            AtriaWhoop4MotionBankCoverageLedger.exhaustOffloads(
+                endingAtOrBefore: secondEnd,
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+
+        wait(for: [falselyResolved], timeout: 0.2)
+        XCTAssertEqual(exhausted.count, 2)
+        XCTAssertTrue(
+            AtriaWhoop4MotionBankCoverageLedger.pendingOffloads(
+                strapIdentifier: strap,
+                defaults: defaults
+            ).isEmpty
+        )
+        XCTAssertEqual(
+            AtriaWhoop4MotionBankCoverageLedger.intervals(
+                intersecting: .init(
+                    start: firstStart.addingTimeInterval(-1),
+                    end: secondEnd.addingTimeInterval(1)
+                ),
+                strapIdentifier: strap,
+                now: secondEnd,
+                defaults: defaults
+            ),
+            [
+                .init(start: firstStart, end: firstEnd),
+                .init(start: secondStart, end: secondEnd),
+            ]
         )
     }
 
@@ -750,7 +934,28 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
         )
     }
 
-    func testNewGenerationRotatesAttemptedBindingToDistinctUnattemptedTicket() {
+    func testAutomaticTicketEvaluationNeverScansLifetimeArchive() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(
+            of: "private func evaluatePendingWorkoutHistoricalMotionBankOffload("
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "nonisolated static func shouldRunWorkoutMotionBankCoverageEvaluation(",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(body.contains("let coverage = compactCoverage"))
+        XCTAssertFalse(body.contains(
+            "HistoricalArchive.motionBankTransportCoverage("
+        ))
+    }
+
+    func testNewGenerationPreservesAttemptedBindingAheadOfNewerTicket() {
         let bound = offloadTicket(
             id: "bound",
             start: 1_000,
@@ -768,8 +973,173 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
                     bound: bound,
                     next: next
                 )?.id,
+            bound.id
+        )
+    }
+
+    func testMaintenanceBoundaryGivesNewBankItsFirstAttemptBeforeOldRetry() {
+        let bound = offloadTicket(
+            id: "bound",
+            start: 1_000,
+            attempts: 2
+        )
+        let next = offloadTicket(
+            id: "next",
+            start: 2_000,
+            attempts: 0
+        )
+
+        XCTAssertEqual(
+            AtriaBLEManager
+                .historicalMotionBankOffloadTicketForNewGeneration(
+                    bound: bound,
+                    next: next,
+                    maintenanceWindow: true
+                )?.id,
             next.id
         )
+    }
+
+    func testProcessInterruptedBindingOutranksStaleMaintenanceHint() {
+        let bound = offloadTicket(
+            id: "interrupted-bound",
+            start: 1_000,
+            attempts: 1
+        )
+        let maintenance = offloadTicket(
+            id: "new-maintenance",
+            start: 2_000,
+            attempts: 0
+        )
+
+        XCTAssertEqual(
+            AtriaBLEManager
+                .historicalMotionBankOffloadTicketForNewGeneration(
+                    bound: bound,
+                    next: maintenance,
+                    maintenanceWindow: true,
+                    processInterruptedBoundRetry: true
+                )?.id,
+            bound.id
+        )
+    }
+
+    func testDeferredMaintenanceBoundaryRetainsPriorityUntilTransportStarts() {
+        XCTAssertTrue(
+            AtriaBLEManager.historicalMotionBankEffectiveMaintenanceWindow(
+                requested: true,
+                deferred: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.historicalMotionBankEffectiveMaintenanceWindow(
+                requested: false,
+                deferred: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.historicalMotionBankEffectiveMaintenanceWindow(
+                requested: false,
+                deferred: false
+            )
+        )
+    }
+
+    func testMaintenancePriorityClearsOnlyAfterHistoryGenerationStarts() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let resumeStart = try XCTUnwrap(source.range(
+            of: "private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded("
+        ))
+        let resumeEnd = try XCTUnwrap(source.range(
+            of: "/// Builds one replacement ticket",
+            range: resumeStart.upperBound..<source.endIndex
+        ))
+        let resumeBody = String(
+            source[resumeStart.lowerBound..<resumeEnd.lowerBound]
+        )
+        XCTAssertFalse(resumeBody.contains("markOffloadAttempt("))
+        XCTAssertFalse(resumeBody.contains(
+            "workoutHistoricalMotionBankMaintenancePendingKey"
+        ))
+
+        let generationStart = try XCTUnwrap(source.range(
+            of: "offlineHistoricalSyncInProgress = true"
+        ))
+        let mark = try XCTUnwrap(source.range(
+            of: "markActiveWorkoutHistoricalMotionBankAttemptForStartedGeneration(",
+            range: generationStart.upperBound..<source.endIndex
+        ))
+        XCTAssertGreaterThan(mark.lowerBound, generationStart.lowerBound)
+
+        let markerHelper = try XCTUnwrap(source.range(
+            of: "private func markActiveWorkoutHistoricalMotionBankAttemptForStartedGeneration("
+        ))
+        let markerEnd = try XCTUnwrap(source.range(
+            of: "private func ",
+            range: markerHelper.upperBound..<source.endIndex
+        ))
+        let markerBody = String(
+            source[markerHelper.lowerBound..<markerEnd.lowerBound]
+        )
+        XCTAssertTrue(markerBody.contains("markOffloadAttempt("))
+        XCTAssertTrue(markerBody.contains(
+            "workoutHistoricalMotionBankMaintenanceTicketIDKey"
+        ))
+    }
+
+    func testExactDeferredMaintenanceTicketBlocksPrematureRearm() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(
+            of: "private func armWorkoutHistoricalMotionBankIfPossible("
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "private func checkpointDailyHistoricalMotionBankIfNeeded(",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(body.contains(
+            "pendingWorkoutHistoricalMotionBankMaintenanceTicket("
+        ))
+        XCTAssertTrue(body.contains(
+            "maintenanceWindow: maintenanceTicket != nil"
+        ))
+        XCTAssertTrue(body.contains(
+            "pendingOffloadAttempts: selectedPendingOffload?.attempts"
+        ))
+    }
+
+    func testBankThermalDeferralRetainsBankAuthorityWithoutAttendedUpgrade()
+        throws
+    {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(
+            of: "if Self.shouldDeferAutomaticOfflineSyncForThermalPressure("
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "// Never turn a pending CoreBluetooth reconnect",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(body.contains(
+            "explicitRequest: attendedHistoricalRequest"
+        ))
+        XCTAssertFalse(body.contains(
+            "explicitRequest: explicitHistoricalRequest"
+        ))
     }
 
     func testNewGenerationPreservesBindingWhenItIsAlreadyNext() {

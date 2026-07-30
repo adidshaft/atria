@@ -37,6 +37,47 @@ final class AtriaWhoop4HistoricalIngressSpoolTests: XCTestCase {
         XCTAssertNil(try reopened.popFirst())
     }
 
+    func testMoreThanLegacySyncBatchPreservesExactOrderAfterExplicitWorkerDurability() throws {
+        let url = directory.appendingPathComponent("large-ingress.bin")
+        let spool = try AtriaWhoop4HistoricalIngressSpool(
+            url: url,
+            generation: 45
+        )
+        let events: [AtriaWhoop4HistoricalIngressSpool.Event] =
+            (0..<513).map { index in
+                if index.isMultiple(of: 2) {
+                    return .frame(
+                        payload: [0x2f, UInt8(truncatingIfNeeded: index)],
+                        clock: .init(
+                            device: UInt32(index),
+                            wall: UInt32(index + 7)
+                        ),
+                        clockAuthorityEnabled: true
+                    )
+                }
+                return .metadata(
+                    payload: [0x31, UInt8(truncatingIfNeeded: index)],
+                    phaseGeneration: 45
+                )
+            }
+        for event in events {
+            try spool.append(event)
+        }
+        // Explicit durability is permitted for an off-main archival boundary;
+        // the hot BLE/MainActor append path must not fsync every 256 events.
+        try spool.synchronize()
+
+        let reopened = try AtriaWhoop4HistoricalIngressSpool(
+            url: url,
+            generation: 45
+        )
+        XCTAssertEqual(reopened.pendingCount, events.count)
+        for expected in events {
+            XCTAssertEqual(try reopened.popFirst(), expected)
+        }
+        XCTAssertNil(try reopened.popFirst())
+    }
+
     func testOrphanHeaderGenerationCanBeReadWithoutRemovingJournal() throws {
         let url = directory.appendingPathComponent("orphan.bin")
         let spool = try AtriaWhoop4HistoricalIngressSpool(url: url, generation: 91)
@@ -61,9 +102,20 @@ final class AtriaWhoop4HistoricalIngressSpoolTests: XCTestCase {
         try handle.write(contentsOf: Data([0x20, 0, 0]))
         try handle.close()
 
-        let reopened = try AtriaWhoop4HistoricalIngressSpool(url: url, generation: 6)
-        XCTAssertEqual(reopened.pendingCount, 1)
-        XCTAssertEqual(try reopened.popFirst(), .metadata(payload: [0x31], phaseGeneration: 6))
+        let firstReopen = try AtriaWhoop4HistoricalIngressSpool(
+            url: url,
+            generation: 6
+        )
+        XCTAssertEqual(firstReopen.pendingCount, 1)
+        let secondReopen = try AtriaWhoop4HistoricalIngressSpool(
+            url: url,
+            generation: 6
+        )
+        XCTAssertEqual(secondReopen.pendingCount, 1)
+        XCTAssertEqual(
+            try secondReopen.popFirst(),
+            .metadata(payload: [0x31], phaseGeneration: 6)
+        )
     }
 
     func testHardByteCapFailsClosedBeforeAppendingOverflow() throws {

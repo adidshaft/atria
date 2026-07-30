@@ -11,6 +11,13 @@ enum AtriaWhoop4MotionBankCoverageLedger {
     static let didResolveOffloadNotification = Notification.Name(
         "AtriaWhoop4MotionBankCoverageLedger.didResolveOffload"
     )
+    /// Published when a pending ticket leaves the transport queue, whether it
+    /// was exactly verified or honestly exhausted after bounded retries.
+    /// Consumers must recompute from durable rows + retained bank intervals;
+    /// this notification is never itself step or coverage authority.
+    static let didFinalizeOffloadNotification = Notification.Name(
+        "AtriaWhoop4MotionBankCoverageLedger.didFinalizeOffload"
+    )
 
     struct Interval: Codable, Equatable, Sendable {
         let start: Date
@@ -88,7 +95,6 @@ enum AtriaWhoop4MotionBankCoverageLedger {
     static func close(
         at date: Date,
         strapIdentifier: String,
-        offloadStart: Date? = nil,
         armedConnectionStartedAt: Date? = nil,
         defaults: UserDefaults = .standard
     ) {
@@ -102,12 +108,20 @@ enum AtriaWhoop4MotionBankCoverageLedger {
             if state.closed.count > maximumClosedIntervals {
                 state.closed.removeFirst(state.closed.count - maximumClosedIntervals)
             }
-            let requestedStart = max(start, offloadStart ?? start)
-            if date.timeIntervalSince(requestedStart)
+            // The firmware bank may have been collecting ordinary all-day
+            // motion before a manual workout began. A workout boundary is
+            // only the trigger that closes the bank; it must never truncate
+            // the recovery request to the later workout start or the earlier
+            // autonomous steps become permanently unreachable.
+            //
+            // Exact workout projection can still crop the recovered full-bank
+            // rows to its own start/end. Transport authority always owns the
+            // complete physical bank interval.
+            if date.timeIntervalSince(start)
                 >= minimumRecoverableOffloadDuration {
                 let id = [
                     strapIdentifier,
-                    String(Int64((requestedStart.timeIntervalSince1970 * 1_000).rounded())),
+                    String(Int64((start.timeIntervalSince1970 * 1_000).rounded())),
                     String(Int64((date.timeIntervalSince1970 * 1_000).rounded())),
                 ].joined(separator: "|")
                 var tickets = state.pendingOffloads ?? []
@@ -115,7 +129,7 @@ enum AtriaWhoop4MotionBankCoverageLedger {
                     tickets.append(.init(
                         id: id,
                         strapIdentifier: strapIdentifier,
-                        start: requestedStart,
+                        start: start,
                         end: date,
                         armedConnectionStartedAt: armedConnectionStartedAt,
                         attempts: 0,
@@ -207,6 +221,89 @@ enum AtriaWhoop4MotionBankCoverageLedger {
         state.closed = merged(closed)
         state.pendingOffloads = Array(
             uniqueTickets.values.sorted {
+                if $0.start != $1.start { return $0.start < $1.start }
+                return $0.id < $1.id
+            }.suffix(128)
+        )
+        save(state, defaults: defaults)
+        return repairedCount
+    }
+
+    /// Repairs tickets written by builds that closed an already-running
+    /// all-day bank at a later workout boundary but requested only the workout
+    /// suffix. The durably closed interval is the authority: expanding back to
+    /// its exact start recovers no invented time and is the only way to make
+    /// the autonomous prefix requestable from the strap.
+    ///
+    /// Run this before cross-connection repair so a bank that truly crossed a
+    /// BLE epoch is still clipped to its independently recorded connection
+    /// boundary afterward.
+    @discardableResult
+    static func repairWorkoutTruncatedOffloadCoverage(
+        defaults: UserDefaults = .standard
+    ) -> Int {
+        var state = load(defaults: defaults)
+        guard let tickets = state.pendingOffloads,
+              !tickets.isEmpty else { return 0 }
+
+        var repairedCount = 0
+        var repaired: [OffloadTicket] = []
+        for ticket in tickets {
+            let authority = state.closed
+                .compactMap { interval -> DateInterval? in
+                    guard let end = interval.end,
+                          abs(end.timeIntervalSince(ticket.end)) < 0.001,
+                          interval.start < ticket.start else {
+                        return nil
+                    }
+                    return DateInterval(start: interval.start, end: end)
+                }
+                .max { $0.start < $1.start }
+            guard let authority else {
+                repaired.append(ticket)
+                continue
+            }
+            repairedCount += 1
+            repaired.append(
+                .init(
+                    id: [
+                        ticket.strapIdentifier,
+                        String(
+                            Int64(
+                                (authority.start.timeIntervalSince1970
+                                    * 1_000).rounded()
+                            )
+                        ),
+                        String(
+                            Int64(
+                                (authority.end.timeIntervalSince1970
+                                    * 1_000).rounded()
+                            )
+                        ),
+                    ].joined(separator: "|"),
+                    strapIdentifier: ticket.strapIdentifier,
+                    start: authority.start,
+                    end: authority.end,
+                    armedConnectionStartedAt:
+                        ticket.armedConnectionStartedAt,
+                    attempts: ticket.attempts,
+                    lastAttemptAt: ticket.lastAttemptAt
+                )
+            )
+        }
+        guard repairedCount > 0 else { return 0 }
+        var unique: [String: OffloadTicket] = [:]
+        for ticket in repaired {
+            if let existing = unique[ticket.id] {
+                unique[ticket.id] =
+                    existing.attempts <= ticket.attempts
+                        ? existing : ticket
+            } else {
+                unique[ticket.id] = ticket
+            }
+        }
+        state.pendingOffloads = Array(
+            unique.values.sorted {
                 if $0.start != $1.start { return $0.start < $1.start }
                 return $0.id < $1.id
             }.suffix(128)
@@ -394,7 +491,73 @@ enum AtriaWhoop4MotionBankCoverageLedger {
                     ? resolved[0].id
                     : resolved.map(\.id)
             )
+            NotificationCenter.default.post(
+                name: didFinalizeOffloadNotification,
+                object: resolved.count == 1
+                    ? resolved[0].id
+                    : resolved.map(\.id)
+            )
         }
+    }
+
+    /// Stops an exact-window retry from blocking future all-day collection
+    /// after the bounded transport budget is exhausted. The closed interval is
+    /// deliberately retained, so daily projection continues to report its
+    /// missing/partial coverage; only the impossible BLE work item is removed.
+    /// This is not resolution and never emits `didResolveOffloadNotification`.
+    @discardableResult
+    static func exhaustOffload(
+        id: String,
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        var state = load(defaults: defaults)
+        guard let exhausted = state.pendingOffloads?.first(where: {
+            $0.id == id
+        }) else { return false }
+        state.pendingOffloads?.removeAll { $0.id == id }
+        save(state, defaults: defaults)
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: didFinalizeOffloadNotification,
+                object: exhausted.id
+            )
+        }
+        return true
+    }
+
+    /// Retires transport jobs that are too old to keep blocking present-day
+    /// capture. Their closed bank intervals remain durable missing-coverage
+    /// facts, and later generic history ingestion may still populate those
+    /// intervals. This only removes exact-window retry work; it never marks a
+    /// row, second, or step as recovered.
+    @discardableResult
+    static func exhaustOffloads(
+        endingAtOrBefore cutoff: Date,
+        strapIdentifier: String,
+        defaults: UserDefaults = .standard
+    ) -> [String] {
+        var state = load(defaults: defaults)
+        let exhausted = (state.pendingOffloads ?? []).filter {
+            $0.strapIdentifier.caseInsensitiveCompare(strapIdentifier)
+                == .orderedSame
+                && $0.end <= cutoff
+        }
+        guard !exhausted.isEmpty else { return [] }
+        let exhaustedIDs = Set(exhausted.map(\.id))
+        state.pendingOffloads?.removeAll {
+            exhaustedIDs.contains($0.id)
+        }
+        save(state, defaults: defaults)
+        let orderedIDs = exhausted.map(\.id)
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: didFinalizeOffloadNotification,
+                object: orderedIDs.count == 1
+                    ? orderedIDs[0]
+                    : orderedIDs
+            )
+        }
+        return orderedIDs
     }
 
     /// Removes only tickets that are physically too short to contain the two

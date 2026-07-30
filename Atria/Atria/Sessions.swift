@@ -98,6 +98,11 @@ struct AtriaPhysiologicalCycle: Equatable {
     static let defaultInterval: TimeInterval = 24 * 60 * 60
     static let minimumLearnedInterval: TimeInterval = 20 * 60 * 60
     static let maximumLearnedInterval: TimeInterval = 28 * 60 * 60
+    /// Sleep confirmation deliberately settles after the measured wake so a
+    /// resumed fragment can join the same night. A no-sleep rollover must not
+    /// race that settlement and briefly open a synthetic cycle underneath a
+    /// normal overnight sleep.
+    static let noSleepSettlementGrace: TimeInterval = 30 * 60
     /// A short rest explicitly labelled "sleep" must not reset recovery or
     /// suppress an all-nighter rollover. Three hours is the same conservative
     /// lower bound used by the detector for a reviewable main-sleep episode.
@@ -109,18 +114,23 @@ struct AtriaPhysiologicalCycle: Equatable {
     let expectedInterval: TimeInterval
 
     static func latestCompletedMainSleep(now: Date,
-                                         confirmedSleeps: [UserConfirmedSleep]) -> UserConfirmedSleep? {
-        canonicalMainSleeps(from: confirmedSleeps)
-            .filter { $0.end <= now }
-            .max { $0.end < $1.end }
+                                         confirmedSleeps: [UserConfirmedSleep],
+                                         calendar: Calendar = .current) -> UserConfirmedSleep? {
+        boundaryEligibleMainSleeps(
+            now: now,
+            confirmedSleeps: confirmedSleeps,
+            calendar: calendar
+        ).last
     }
 
     static func current(now: Date,
                         confirmedSleeps: [UserConfirmedSleep],
                         calendar: Calendar = .current) -> Self {
-        let mainSleeps = canonicalMainSleeps(from: confirmedSleeps)
-            .filter { $0.end <= now }
-            .sorted { $0.end < $1.end }
+        let mainSleeps = boundaryEligibleMainSleeps(
+            now: now,
+            confirmedSleeps: confirmedSleeps,
+            calendar: calendar
+        )
         let expected = learnedInterval(from: mainSleeps.map(\.end))
 
         guard let latest = mainSleeps.last else {
@@ -135,33 +145,116 @@ struct AtriaPhysiologicalCycle: Equatable {
                         expectedInterval: expected)
         }
 
-        let eventCalendar = EventCivilTime.eventCalendar(
-            timeZoneIdentifier: latest.eventTimeZoneIdentifier,
-            fallback: calendar
-        )
-        guard let firstFallback = eventCalendar.date(byAdding: .day, value: 1, to: latest.end),
-              firstFallback <= now else {
+        guard let fallback = latestCompletedNoSleepFallback(
+            after: latest,
+            at: now,
+            calendar: calendar
+        ) else {
             return Self(start: latest.end,
                         boundaryKind: .mainSleep,
                         anchorSleepID: latest.id,
                         expectedInterval: expected)
         }
 
-        // Advance by civil days in the event's time zone. Adding 86,400-second
-        // chunks moves the boundary an hour at DST transitions and eventually
-        // lets yesterday's cycle leak into today's widgets. The loop is bounded
-        // by elapsed civil days and always retains the most recent completed
-        // fallback boundary.
-        var fallback = firstFallback
-        while let next = eventCalendar.date(byAdding: .day, value: 1, to: fallback),
-              next > fallback,
-              next <= now {
-            fallback = next
-        }
         return Self(start: fallback,
                     boundaryKind: .noSleepFallback,
                     anchorSleepID: latest.id,
                     expectedInterval: expected)
+    }
+
+    /// The first bounded rollover after a wake, expressed in the time zone in
+    /// which that wake occurred. Civil-day arithmetic keeps the local boundary
+    /// stable through DST and travel; elapsed 86,400-second arithmetic does not.
+    static func firstNoSleepFallback(
+        after wake: Date,
+        eventTimeZoneIdentifier: String?,
+        calendar: Calendar
+    ) -> Date? {
+        let eventCalendar = EventCivilTime.eventCalendar(
+            timeZoneIdentifier: eventTimeZoneIdentifier,
+            fallback: calendar
+        )
+        guard let nextCivilWake = eventCalendar.date(
+            byAdding: .day,
+            value: 1,
+            to: wake
+        ) else {
+            return nil
+        }
+        return nextCivilWake.addingTimeInterval(noSleepSettlementGrace)
+    }
+
+    /// Returns the latest completed fallback without inventing a sleep record.
+    /// Repeated civil-day advancement prevents an indefinitely open cycle even
+    /// when the user remains awake for multiple days.
+    private static func latestCompletedNoSleepFallback(
+        after sleep: UserConfirmedSleep,
+        at instant: Date,
+        calendar: Calendar
+    ) -> Date? {
+        guard var fallback = firstNoSleepFallback(
+            after: sleep.end,
+            eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+            calendar: calendar
+        ), fallback <= instant else {
+            return nil
+        }
+        let eventCalendar = EventCivilTime.eventCalendar(
+            timeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+            fallback: calendar
+        )
+        while let next = eventCalendar.date(
+            byAdding: .day,
+            value: 1,
+            to: fallback
+        ), next > fallback, next <= instant {
+            fallback = next
+        }
+        return fallback
+    }
+
+    /// A sleep learned only after an earlier no-sleep boundary was completed
+    /// cannot move the live cycle backwards across that sealed boundary.
+    /// Sleep history still retains the record; this filter governs day
+    /// ownership only. A sleep whose wake reaches or follows the boundary is
+    /// accepted because it starts a later, non-overlapping physiological day.
+    private static func boundaryEligibleMainSleeps(
+        now: Date,
+        confirmedSleeps: [UserConfirmedSleep],
+        calendar: Calendar
+    ) -> [UserConfirmedSleep] {
+        let candidates = canonicalMainSleeps(from: confirmedSleeps)
+            .filter { $0.end <= now }
+            .sorted { $0.end < $1.end }
+        guard let first = candidates.first else { return [] }
+
+        var accepted = [first]
+        for candidate in candidates.dropFirst() {
+            guard let anchor = accepted.last else { break }
+            let knownAt = min(candidate.createdAt, now)
+            if let sealedFallback = latestCompletedNoSleepFallback(
+                after: anchor,
+                at: knownAt,
+                calendar: calendar
+            ), candidate.end < sealedFallback,
+               !explicitUserSleepCorrection(candidate) {
+                continue
+            }
+            accepted.append(candidate)
+        }
+        return accepted
+    }
+
+    /// A fallback protects the live cycle from a late automatic inference, but
+    /// it cannot overrule an explicit correction. Manual/adjusted records and a
+    /// candidate the user actively confirmed are durable user authority, so
+    /// accepting them intentionally recomputes the affected physiological day.
+    private static func explicitUserSleepCorrection(
+        _ sleep: UserConfirmedSleep
+    ) -> Bool {
+        sleep.source.hasPrefix("manual_")
+            || sleep.source.hasPrefix("user_adjusted_")
+            || sleep.confidence.hasPrefix("user_confirmed_")
     }
 
     /// Resumed sleep is stored as a separate durable Activity record so either
@@ -336,7 +429,7 @@ struct AtriaPhysiologicalDay: Equatable {
                       let end = night.end,
                       end > start else { return nil }
                 return UserConfirmedSleep(id: night.id,
-                                          createdAt: end,
+                                          createdAt: night.savedAt ?? end,
                                           start: start,
                                           end: end,
                                           source: night.source,
@@ -6745,9 +6838,9 @@ final class SessionStore: ObservableObject {
     /// Current-cycle publication normally reads only the bounded compact v24
     /// shard. Keeping that small receipt refresh behind lifetime archive
     /// projections made a durably appended step subtotal remain stale on Home
-    /// for minutes. Give the compact path its own serial utility lane; the rare
-    /// legacy JSONL fallback below still synchronizes through the shared
-    /// archive-consumer queue.
+    /// for minutes. Give the compact path its own serial utility lane. A
+    /// separately scheduled, one-shot legacy migration remains on the shared
+    /// archive-consumer queue and never blocks this receipt read.
     private static let currentCycleStepReceiptQueue = DispatchQueue(
         label: "com.adidshaft.atria.current-cycle-step-receipt",
         qos: .utility
@@ -6760,9 +6853,13 @@ final class SessionStore: ObservableObject {
         // were migrated into the compact store. Reusing the v1 lease would
         // incorrectly skip that one-time migration after an app upgrade.
         "atria.currentCycleStepReceipt.attempt.v2"
+    nonisolated private static let currentCycleStepCompactMigrationKey =
+        "atria.currentCycleStepReceipt.compactMigration.v1"
     private var pendingWorkoutStepEvidenceWorkItem: DispatchWorkItem?
     private var workoutStepEvidenceGeneration = 0
     private var currentCycleStepReceiptGeneration = 0
+    private var currentCycleStepCompactMigrationInFlight = false
+    private var currentCycleStepCompactMigrationNeedsRerun = false
     private var currentCycleStepReceiptDeferredUntilForeground = false
     private var workoutStepEvidenceDeferredUntilForeground = false
     private var workoutRehydrationDeferredUntilForeground = false
@@ -7106,7 +7203,11 @@ final class SessionStore: ObservableObject {
             calendar: .current
         ).start
         let preservedStepEvidenceDays =
-            historySnapshot.verifiedHistoricalStepEvidenceDays
+            AtriaWhoop4MotionTickDailyStore.shared
+                .removingUnqualifiedResearchEvidence(
+                    from: historySnapshot
+                        .verifiedHistoricalStepEvidenceDays
+                )
         historySnapshot = HistorySnapshot.sessionsOnly(
             sourceSessions,
             verifiedHistoricalStepEvidenceDays: preservedStepEvidenceDays,
@@ -7132,12 +7233,14 @@ final class SessionStore: ObservableObject {
                         .verifiedHistoryPeripheralID
                 )
                 let motionTickDayEvidence =
-                    motionStrapIdentifier.flatMap { strapIdentifier in
+                    AtriaWhoop4GravityCadenceStepModel
+                        .releaseDailyAuthorityQualified
+                    ? motionStrapIdentifier.flatMap { strapIdentifier in
                         AtriaWhoop4MotionTickDailyStore.shared.load(
                             strapIdentifier: strapIdentifier,
                             windowStart: physiologicalDayStart
                         )
-                    }
+                    } : nil
                 let snapshots = SessionStore.makeHistorySnapshots(sessions: sourceSessions,
                                                                   confirmedWorkouts: confirmedWorkouts,
                                                                   confirmedSleeps: confirmedSleeps,
@@ -7181,6 +7284,151 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// Migrates canonical v24 rows retained by pre-compact app versions exactly
+    /// once for the current source/cycle/coverage authority. This work always
+    /// runs on the shared archive-consumer lane; the compact receipt path below
+    /// remains independent and never reopens lifetime JSONL from a BLE,
+    /// foreground, or UI callback.
+    private func prepareCurrentCycleStrapStepReceipt(reason: String) {
+        guard AtriaWhoop4GravityCadenceStepModel
+                .releaseDailyAuthorityQualified else {
+            currentCycleStepReceiptDeferredUntilForeground = false
+            return
+        }
+        guard UIApplication.shared.applicationState == .active else {
+            refreshCurrentCycleStrapStepReceipt(reason: reason)
+            return
+        }
+        let identifiers =
+            AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers()
+        guard let strapIdentifier = identifiers.first else {
+            refreshCurrentCycleStrapStepReceipt(reason: reason)
+            return
+        }
+        let now = Date()
+        let cycleStart = AtriaPhysiologicalCycle.current(
+            now: now,
+            confirmedSleeps: cachedConfirmedSleeps,
+            calendar: .current
+        ).start
+        let coverage = AtriaWhoop4MotionBankCoverageLedger.intervals(
+            intersecting: .init(start: cycleStart, end: now),
+            strapIdentifier: strapIdentifier,
+            now: now
+        )
+        guard !coverage.isEmpty,
+              let coverageAuthority =
+                AtriaWhoop4MotionBankCoverageLedger.projectionAuthority(
+                    intersecting: .init(start: cycleStart, end: now),
+                    strapIdentifier: strapIdentifier
+                ) else {
+            refreshCurrentCycleStrapStepReceipt(reason: reason)
+            return
+        }
+        guard !currentCycleStepCompactMigrationInFlight else {
+            currentCycleStepCompactMigrationNeedsRerun = true
+            return
+        }
+        currentCycleStepCompactMigrationInFlight = true
+        let completedSignature = UserDefaults.standard.string(
+            forKey: Self.currentCycleStepCompactMigrationKey
+        )
+
+        Self.historySnapshotProjectionQueue.async { [weak self] in
+            let sourceBefore =
+                HistoricalArchive.consumerSourceFingerprint()
+            let signatureBefore =
+                Self.currentCycleStepCompactMigrationSignature(
+                    strapIdentifier: strapIdentifier,
+                    cycleStart: cycleStart,
+                    coverageAuthority: coverageAuthority,
+                    sourceFingerprint: sourceBefore
+                )
+            let compactBefore =
+                AtriaWhoop4MotionTickCompactStore.shared
+                    .motionTickDayEvidenceRead(
+                        start: cycleStart,
+                        end: now,
+                        bankCoverage: coverage,
+                        strapIdentifier: strapIdentifier
+                    )
+            var migrationResolved = compactBefore != .incomplete
+            var canonicalRead:
+                HistoricalArchive.MotionTickDayEvidenceRead?
+
+            if !migrationResolved,
+               signatureBefore != completedSignature {
+                canonicalRead = HistoricalArchive.motionTickDayEvidenceRead(
+                    start: cycleStart,
+                    end: now,
+                    bankCoverage: coverage,
+                    strapIdentifier: strapIdentifier,
+                    compactMigrationStore:
+                        AtriaWhoop4MotionTickCompactStore.shared
+                )
+                let sourceAfter =
+                    HistoricalArchive.consumerSourceFingerprint()
+                let compactAfter =
+                    AtriaWhoop4MotionTickCompactStore.shared
+                        .motionTickDayEvidenceRead(
+                            start: cycleStart,
+                            end: now,
+                            bankCoverage: coverage,
+                            strapIdentifier: strapIdentifier
+                        )
+                migrationResolved =
+                    sourceBefore == sourceAfter
+                        && canonicalRead != .incomplete
+                        && (
+                            compactAfter != .incomplete
+                                || canonicalRead
+                                    == .completeNoQualifiedEvidence
+                        )
+                if migrationResolved,
+                   let completed =
+                    Self.currentCycleStepCompactMigrationSignature(
+                        strapIdentifier: strapIdentifier,
+                        cycleStart: cycleStart,
+                        coverageAuthority: coverageAuthority,
+                        sourceFingerprint: sourceAfter
+                    ) {
+                    UserDefaults.standard.set(
+                        completed,
+                        forKey: Self.currentCycleStepCompactMigrationKey
+                    )
+                }
+            } else if migrationResolved,
+                      let signatureBefore {
+                UserDefaults.standard.set(
+                    signatureBefore,
+                    forKey: Self.currentCycleStepCompactMigrationKey
+                )
+            } else if signatureBefore == completedSignature {
+                // A stable completed scan with no qualified canonical motion is
+                // authoritative negative evidence for this exact source.
+                migrationResolved = true
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.currentCycleStepCompactMigrationInFlight = false
+                if self.currentCycleStepCompactMigrationNeedsRerun {
+                    self.currentCycleStepCompactMigrationNeedsRerun = false
+                    self.prepareCurrentCycleStrapStepReceipt(
+                        reason: "coalesced_\(reason)"
+                    )
+                    return
+                }
+                self.currentCycleStepReceiptDeferredUntilForeground =
+                    !migrationResolved
+                self.refreshCurrentCycleStrapStepReceipt(
+                    reason: reason,
+                    allowNegativeAttemptPersistence: migrationResolved
+                )
+            }
+        }
+    }
+
     /// Publishes the current physiological cycle's strap-only step receipt
     /// without waiting for the much broader recovered-history transaction.
     ///
@@ -7188,7 +7436,15 @@ final class SessionStore: ObservableObject {
     /// runs. The scan stays on the existing serial utility queue, and the
     /// daily store posts the one lightweight Home/widget invalidation only
     /// after its atomic receipt is durable.
-    private func refreshCurrentCycleStrapStepReceipt(reason: String) {
+    private func refreshCurrentCycleStrapStepReceipt(
+        reason: String,
+        allowNegativeAttemptPersistence: Bool = true
+    ) {
+        guard AtriaWhoop4GravityCadenceStepModel
+                .releaseDailyAuthorityQualified else {
+            currentCycleStepReceiptDeferredUntilForeground = false
+            return
+        }
         let applicationIsActive =
             UIApplication.shared.applicationState == .active
         let identifiers =
@@ -7268,32 +7524,13 @@ final class SessionStore: ObservableObject {
                     bankCoverage: coverage,
                     strapIdentifier: strapIdentifier
                 )
-            let read: HistoricalArchive.MotionTickDayEvidenceRead
-            let readUsedCompactSource: Bool
-            if case .qualified = compactRead {
-                read = compactRead
-                readUsedCompactSource = true
-            } else if applicationIsActive {
-                // Migration/failure fallback for installations whose retained
-                // rows predate the compact shard. Locked/background hourly
-                // publication never scans the canonical JSONL archive. The
-                // fallback remains on the one archive-consumer lane so this
-                // dedicated compact queue cannot multiply heavyweight scans.
-                read = Self.historySnapshotProjectionQueue.sync {
-                    HistoricalArchive.motionTickDayEvidenceRead(
-                        start: cycleStart,
-                        end: now,
-                        bankCoverage: coverage,
-                        strapIdentifier: strapIdentifier,
-                        compactMigrationStore:
-                            AtriaWhoop4MotionTickCompactStore.shared
-                    )
-                }
-                readUsedCompactSource = false
-            } else {
-                read = compactRead
-                readUsedCompactSource = true
-            }
+            // The compact v24 shard is synchronized at the same durability
+            // boundary as accepted motion rows. Receipt publication must never
+            // reopen the lifetime JSONL archive from a launch, reconnect, or
+            // foreground refresh; on a compact miss we retain the honest
+            // unavailable/partial state until explicit bounded migration has
+            // populated the shard.
+            let read = compactRead
             let fingerprintAfter =
                 HistoricalArchive.consumerSourceFingerprint()
             let compactFingerprintAfter =
@@ -7304,11 +7541,7 @@ final class SessionStore: ObservableObject {
                 )
             let stableCompleteRead =
                 fingerprintBefore == fingerprintAfter
-                    && (
-                        !readUsedCompactSource
-                            || compactFingerprintBefore
-                                == compactFingerprintAfter
-                    )
+                    && compactFingerprintBefore == compactFingerprintAfter
                     && read != .incomplete
             let completedAttemptSignature =
                 Self.currentCycleStepReceiptAttemptSignature(
@@ -7325,7 +7558,9 @@ final class SessionStore: ObservableObject {
                             true
                     }
                 }
-                if stableCompleteRead, let completedAttemptSignature {
+                if allowNegativeAttemptPersistence,
+                   stableCompleteRead,
+                   let completedAttemptSignature {
                     UserDefaults.standard.set(
                         completedAttemptSignature,
                         forKey: Self.currentCycleStepReceiptAttemptKey
@@ -7420,6 +7655,23 @@ final class SessionStore: ObservableObject {
             .joined()
     }
 
+    nonisolated static func currentCycleStepCompactMigrationSignature(
+        strapIdentifier: String,
+        cycleStart: Date,
+        coverageAuthority:
+            AtriaWhoop4MotionBankCoverageLedger.ProjectionAuthority,
+        sourceFingerprint: HistoricalArchive.ConsumerSourceFingerprint
+    ) -> String? {
+        currentCycleStepReceiptAttemptSignature(
+            strapIdentifier: strapIdentifier,
+            cycleStart: cycleStart,
+            coverageAuthority: coverageAuthority,
+            sourceFingerprint: sourceFingerprint,
+            compactSourceIdentifier:
+                "legacy-canonical-to-compact-v1"
+        )
+    }
+
     /// Loads one older verified canonical page only when a history surface asks
     /// for it. Previously loaded pages remain in the snapshot, so derived
     /// sleep/activity/strain values are rebuilt from one consistent source set.
@@ -7438,7 +7690,11 @@ final class SessionStore: ObservableObject {
         let archiveHeartRatePoints = cachedHistoricalTodayHeartRatePoints
         let existingCanonical = historySnapshot.verifiedCanonicalSources
         let existingStepEvidence =
-            historySnapshot.verifiedHistoricalStepEvidenceDays
+            AtriaWhoop4MotionTickDailyStore.shared
+                .removingUnqualifiedResearchEvidence(
+                    from: historySnapshot
+                        .verifiedHistoricalStepEvidenceDays
+                )
         let biologicalSex = profile.biologicalSex
         let baselineSnapshot = baseline
         let rest = baselineSnapshot.restingInt ?? 60
@@ -9667,6 +9923,11 @@ final class SessionStore: ObservableObject {
     private func scheduleConfirmedWorkoutStepEvidencePublication(
         reason: String
     ) {
+        guard AtriaWhoop4GravityCadenceStepModel
+                .releaseDailyAuthorityQualified else {
+            workoutStepEvidenceDeferredUntilForeground = false
+            return
+        }
         guard Self.shouldStartAutomaticArchiveProjection(
             applicationIsActive:
                 UIApplication.shared.applicationState == .active
@@ -9910,7 +10171,7 @@ final class SessionStore: ObservableObject {
             )
         }
         if currentCycleStepReceiptDeferredUntilForeground {
-            refreshCurrentCycleStrapStepReceipt(
+            prepareCurrentCycleStrapStepReceipt(
                 reason: "foreground_\(reason)"
             )
         }
@@ -9931,18 +10192,48 @@ final class SessionStore: ObservableObject {
         completions.forEach { $0(succeeded) }
     }
 
-    private nonisolated static func makeOverviewTrendPoints(sessions: [SavedSession],
-                                                            rest: Int,
-                                                            maxHR: Int) -> [AtriaTrendPoint] {
-        let cutoff = Date().addingTimeInterval(-92 * 86_400)
+    nonisolated static func makeOverviewTrendPoints(sessions: [SavedSession],
+                                                    rest: Int,
+                                                    maxHR: Int,
+                                                    now: Date = Date(),
+                                                    calendar: Calendar = .current) -> [AtriaTrendPoint] {
+        let cutoff = now.addingTimeInterval(-92 * 86_400)
         let meaningful = sessions.filter { $0.points.count >= 8 && $0.start >= cutoff }
-        let recent = meaningful.sorted { $0.start < $1.start }.suffix(200)
-        return recent.map { session in
-            AtriaTrendPoint(id: session.id,
-                            date: session.start,
-                            restingHR: session.restingStable,
-                            strain: Metrics.strain(fromTRIMP: session.trimp(rest: rest, max: maxHR)),
-                            hrv: session.localRMSSD)
+        let recent = meaningful.sorted {
+            if $0.start != $1.start { return $0.start < $1.start }
+            return $0.id.uuidString < $1.id.uuidString
+        }.suffix(200)
+        let rows = trendSessionRows(sessions: Array(recent),
+                                    rest: rest,
+                                    maxHR: maxHR,
+                                    calendar: calendar)
+        let rowsByDay = Dictionary(grouping: rows, by: \.day)
+
+        // Overview charts and their "days" labels require one point per event-
+        // aware civil day, not one point per reconnect-fragmented session.
+        // Aggregate load in TRIMP space before applying the nonlinear strain
+        // scale. RHR uses only baseline-qualified rest evidence; HRV uses only
+        // locally qualified RMSSD, so persisted-but-unproven values stay absent.
+        return rowsByDay.keys.sorted().compactMap { day in
+            guard let dayRows = rowsByDay[day], !dayRows.isEmpty else { return nil }
+            let orderedRows = dayRows.sorted {
+                if $0.session.start != $1.session.start {
+                    return $0.session.start < $1.session.start
+                }
+                return $0.session.id.uuidString < $1.session.id.uuidString
+            }
+            let qualifiedHRVs = orderedRows.compactMap(\.localRMSSD).filter { $0 > 0 }
+            let acceptedRestingHRs = orderedRows.compactMap(\.acceptedRestingHR).filter { $0 > 0 }
+            let dayTRIMP = orderedRows.reduce(0.0) {
+                $0 + $1.session.trimp(rest: rest, max: maxHR)
+            }
+            return AtriaTrendPoint(
+                id: orderedRows[0].session.id,
+                date: day,
+                restingHR: acceptedRestingHRs.min(),
+                strain: Metrics.strain(fromTRIMP: dayTRIMP),
+                hrv: averageIntSnapshot(qualifiedHRVs)
+            )
         }
     }
 
@@ -11806,17 +12097,16 @@ final class SessionStore: ObservableObject {
         }
         self.motionBankOffloadObserver = NotificationCenter.default.addObserver(
             forName: AtriaWhoop4MotionBankCoverageLedger
-                .didResolveOffloadNotification,
+                .didFinalizeOffloadNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                // Exact-gap recovery can deliberately defer the full history
-                // snapshot for hours. Daily strap steps are an independent,
-                // already-offloaded consumer and must not disappear behind
-                // that unrelated priority fence.
-                self?.refreshCurrentCycleStrapStepReceipt(
-                    reason: "verified_bank_offload"
+                // Exact verification and honest bounded exhaustion both change
+                // the transport queue. Recompute from durable rows + retained
+                // bank intervals; the notification itself grants no coverage.
+                self?.prepareCurrentCycleStrapStepReceipt(
+                    reason: "finalized_bank_offload"
                 )
             }
         }
@@ -11886,7 +12176,7 @@ final class SessionStore: ObservableObject {
             self.scheduleConfirmedWorkoutStepEvidencePublication(
                 reason: "session_store_init_workout_evidence"
             )
-            self.refreshCurrentCycleStrapStepReceipt(
+            self.prepareCurrentCycleStrapStepReceipt(
                 reason: "session_store_init"
             )
         }
@@ -12010,7 +12300,8 @@ final class SessionStore: ObservableObject {
         if cycle.boundaryKind == .mainSleep,
            let anchor = AtriaPhysiologicalCycle.latestCompletedMainSleep(
                 now: now,
-                confirmedSleeps: cachedConfirmedSleeps
+                confirmedSleeps: cachedConfirmedSleeps,
+                calendar: calendar
             ) {
             return cachedCanonicalSessions.lazy
                 .filter {
@@ -12035,7 +12326,8 @@ final class SessionStore: ObservableObject {
         if cycle.boundaryKind == .mainSleep,
            let anchor = AtriaPhysiologicalCycle.latestCompletedMainSleep(
                 now: now,
-                confirmedSleeps: cachedConfirmedSleeps
+                confirmedSleeps: cachedConfirmedSleeps,
+                calendar: calendar
            ) {
             if let hrv = anchor.hrv, hrv > 0 { return hrv }
             // The confirmed sleep's HRV is computed from that exact window. If
@@ -23179,7 +23471,7 @@ final class SessionStore: ObservableObject {
             if deferDerivedPublication {
                 currentCycleStepReceiptDeferredUntilForeground = true
             } else {
-                refreshCurrentCycleStrapStepReceipt(
+                prepareCurrentCycleStrapStepReceipt(
                     reason: "confirmed_sleep_cycle_changed"
                 )
             }
@@ -31282,7 +31574,8 @@ final class SessionStore: ObservableObject {
         // valid morning card behind an old widget snapshot.
         if let sleep = AtriaPhysiologicalCycle.latestCompletedMainSleep(
             now: now,
-            confirmedSleeps: cachedConfirmedSleeps
+            confirmedSleeps: cachedConfirmedSleeps,
+            calendar: calendar
         ) {
             let morningDay = EventCivilTime.day(
                 containing: sleep.end,
@@ -31350,7 +31643,8 @@ final class SessionStore: ObservableObject {
             let calendar = Calendar.current
             guard let sleep = AtriaPhysiologicalCycle.latestCompletedMainSleep(
                 now: Date(),
-                confirmedSleeps: self.cachedConfirmedSleeps
+                confirmedSleeps: self.cachedConfirmedSleeps,
+                calendar: calendar
             ) else {
                 // There is no confirmed main sleep to settle. Still publish the
                 // fully-loaded non-sleep dashboard once, without fabricating a
@@ -31443,7 +31737,8 @@ final class SessionStore: ObservableObject {
               recoveredDataMutationTransaction.activeTicket == nil,
               let canonicalSleep = AtriaPhysiologicalCycle.latestCompletedMainSleep(
                 now: now,
-                confirmedSleeps: cachedConfirmedSleeps
+                confirmedSleeps: cachedConfirmedSleeps,
+                calendar: calendar
               ) else {
             return false
         }

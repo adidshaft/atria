@@ -49,6 +49,10 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
     private var knownIdentities: Set<Data>?
     private var mutationGeneration: UInt64 = 0
     private var publishedGeneration: UInt64 = 0
+    /// Retention changes only when an appended point crosses a UTC-day shard.
+    /// Enumerating the directory for every 52-byte historical point turned a
+    /// long drain into thousands of redundant Foundation filesystem calls.
+    private var preparedRetentionBucket: Int64?
 
     init(directoryURL: URL, fileManager: FileManager = .default) {
         self.directoryURL = directoryURL.standardizedFileURL
@@ -618,6 +622,7 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
     }
 
     private func prepareDirectoryLocked(currentBucket: Int64) throws {
+        guard preparedRetentionBucket != currentBucket else { return }
         try fileManager.createDirectory(
             at: directoryURL,
             withIntermediateDirectories: true
@@ -648,6 +653,7 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
                 // its identities remain part of the retained source.
             }
         }
+        preparedRetentionBucket = currentBucket
     }
 
     private func loadKnownIdentitiesLocked() throws {

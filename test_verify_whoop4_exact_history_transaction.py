@@ -46,7 +46,7 @@ class ExactHistoryTransactionVerifierTests(unittest.TestCase):
         gap = "7f8f3af8-b06a-4f58-a80e-dd211db8470a"
         return "\n".join([
             "ATRIADBG history_request_authority status=candidate_selected "
-            f"reason=acceptance detail=full_flash_positive_gap_authority gap={gap} "
+            f"reason=acceptance detail=full_flash_positive_gap_authority gap={gap.upper()} "
             "action=clock_then_drain",
             "ATRIADBG historyRange status=requested generation=9 sequence=4 "
             "payload=00 attempt=1 mutation=0",
@@ -61,9 +61,9 @@ class ExactHistoryTransactionVerifierTests(unittest.TestCase):
             "settle_s=2.0 clock_source=2200 action=send_verified_1600",
             "ATRIADBG historical_full_drain_write status=confirmed generation=9 "
             "sequence=5 command=1600 exact_interval_authority=0",
-            "ATRIADBG historyMeta status=start sequence=6 generation=9",
             "ATRIADBG historical_full_drain_authority status=armed generation=9 "
             f"gap={gap} clock_seq=4 drain_seq=5 history_start_seq=6",
+            "ATRIADBG historyMeta status=start sequence=6 generation=9",
             "ATRIADBG historyDrain status=durable generation=9 "
             'boundary=batch("enddata:aabb") rows_since_ack=90 error=nil',
             "ATRIADBG historyAck status=sending key=enddata:aabb generation=9 "
@@ -75,8 +75,9 @@ class ExactHistoryTransactionVerifierTests(unittest.TestCase):
             "response_seq=8 response=1700",
             "ATRIADBG historyTerminal status=received sequence=9 generation=9 "
             "pending=0 action=reduce",
-            "ATRIADBG offline_sync status=complete reason=acceptance_terminal "
-            "generation=9 rows=90 new_rows=90 live_restored=1 action=preserve_live_connection",
+            "ATRIADBG offline_sync status=archived_gap_unresolved "
+            "reason=acceptance_terminal generation=9 rows=90 new_rows=90 "
+            "live_restored=1 action=publish_after_fresh_hr",
             "ATRIADBG historical_full_drain_reconcile "
             f"gap={gap} generation=9 status=resolved density=90 maximum_gap=3 p95_gap=1",
             "ATRIADBG historical_full_drain_publish status=resolved generation=9 "
@@ -119,6 +120,8 @@ class ExactHistoryTransactionVerifierTests(unittest.TestCase):
         self.assertIn("clock_authority_verified=1", result.stdout)
         self.assertIn("ack_confirmations=1", result.stdout)
         self.assertIn("consumer_receipts=5", result.stdout)
+        self.assertIn("offline_sync_status=archived_gap_unresolved", result.stdout)
+        self.assertIn("live_restored=1", result.stdout)
         self.assertIn("blockers=none", result.stdout)
 
     def test_accepts_exact_coverage_when_typed_consumers_need_future_context(self):
@@ -152,6 +155,44 @@ class ExactHistoryTransactionVerifierTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("transaction_mode=production_full_drain_gap_bound", result.stdout)
         self.assertIn("clock_drift_s=12.0", result.stdout)
+        self.assertIn("blockers=none", result.stdout)
+
+    def test_production_accepts_gap_recovered_policy_terminal(self):
+        self.log.write_text(
+            self.valid_production_trace().replace(
+                "status=archived_gap_unresolved reason=acceptance_terminal",
+                "status=gap_recovered reason=acceptance_terminal",
+            ),
+            encoding="utf-8",
+        )
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("offline_sync_status=gap_recovered", result.stdout)
+        self.assertIn("blockers=none", result.stdout)
+
+    def test_production_accepts_metric_progress_before_async_uuid_cas_publish(self):
+        self.log.write_text(
+            self.valid_production_trace().replace(
+                "status=archived_gap_unresolved reason=acceptance_terminal",
+                "status=metric_progress reason=acceptance_terminal",
+            ),
+            encoding="utf-8",
+        )
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("offline_sync_status=metric_progress", result.stdout)
+        self.assertIn("blockers=none", result.stdout)
+
+    def test_production_accepts_current_gatt_write_only_ack_proof(self):
+        trace = self.valid_production_trace().replace(
+            "proof=confirmed_gatt_write_plus_logical_response "
+            "response_seq=8 response=1700",
+            "proof=confirmed_gatt_write response_seq=0 response=none",
+        )
+        self.log.write_text(trace, encoding="utf-8")
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("ack_confirmations=1", result.stdout)
         self.assertIn("blockers=none", result.stdout)
 
     def test_uses_latest_authority_mode_in_a_multi_transaction_console_log(self):
@@ -277,18 +318,15 @@ class ExactHistoryTransactionVerifierTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("ack_acceptance_proof_invalid:enddata:aabb", result.stdout)
 
-    def test_production_accepts_write_callback_after_correlated_history_start(self):
+    def test_production_rejects_history_start_log_outside_current_authority_slice(self):
         trace = self.valid_production_trace()
-        full_write = (
-            "ATRIADBG historical_full_drain_write status=confirmed generation=9 "
-            "sequence=5 command=1600 exact_interval_authority=0\n"
-        )
         history_start = "ATRIADBG historyMeta status=start sequence=6 generation=9\n"
-        trace = trace.replace(full_write + history_start, history_start + full_write)
+        trace = trace.replace(history_start, "")
+        trace = history_start + trace
         self.log.write_text(trace, encoding="utf-8")
         result = self.run_tool()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("blockers=none", result.stdout)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("missing_generation_bound_history_start", result.stdout)
 
     def test_production_accepts_range_response_before_matching_write_callback(self):
         trace = self.valid_production_trace()
@@ -319,7 +357,7 @@ class ExactHistoryTransactionVerifierTests(unittest.TestCase):
         self.assertIn("resolved_gap_density_below_90_percent", result.stdout)
         self.assertIn("resolved_gap_maximum_gap_over_3s", result.stdout)
         self.assertIn("resolved_gap_p95_gap_over_1s", result.stdout)
-        self.assertIn("missing_committed_verified_consumers", result.stdout)
+        self.assertIn("missing_exact_gap_resolution_commit", result.stdout)
 
     def test_production_rejects_full_drain_authority_without_matching_gap_selection(self):
         trace = self.valid_production_trace().replace(
@@ -357,7 +395,9 @@ class ExactHistoryTransactionVerifierTests(unittest.TestCase):
             "drain_seq=5 history_start_seq=6\n"
         )
         first_batch = trace.index("ATRIADBG historyDrain status=durable")
-        completion = trace.index("ATRIADBG offline_sync status=complete")
+        completion = trace.index(
+            "ATRIADBG offline_sync status=archived_gap_unresolved"
+        )
         batch = trace[first_batch:completion]
         trace = trace[:first_batch] + trace[completion:]
         trace = trace.replace(authority, batch + authority)
@@ -390,6 +430,135 @@ class ExactHistoryTransactionVerifierTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("gap_coverage_resolved_before_history_terminal", result.stdout)
         self.assertIn("consumers_committed_before_history_terminal", result.stdout)
+
+    def test_production_rejects_literal_complete_instead_of_policy_terminal(self):
+        self.log.write_text(
+            self.valid_production_trace().replace(
+                "status=archived_gap_unresolved reason=acceptance_terminal",
+                "status=complete reason=acceptance_terminal",
+            ),
+            encoding="utf-8",
+        )
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("offline_sync_completion_status_not_accepted", result.stdout)
+
+    def test_production_rejects_no_rows_even_when_global_pending_is_false(self):
+        trace = self.valid_production_trace().replace(
+            "status=archived_gap_unresolved reason=acceptance_terminal",
+            "status=no_rows reason=acceptance_terminal",
+        )
+        trace += (
+            "ATRIADBG ble_evidence offline_range_loss_backfill_pending=0 "
+            "rangeLossBackfillPending=0\n"
+        )
+        self.log.write_text(trace, encoding="utf-8")
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("offline_sync_completion_status_not_accepted", result.stdout)
+
+    def test_production_global_pending_clear_cannot_replace_exact_uuid_cas(self):
+        publish = (
+            "ATRIADBG historical_full_drain_publish status=resolved generation=9 "
+            "gap=7f8f3af8-b06a-4f58-a80e-dd211db8470a receipts=5\n"
+        )
+        trace = self.valid_production_trace().replace(publish, "")
+        trace += (
+            "ATRIADBG ble_evidence offline_range_loss_backfill_pending=0 "
+            "rangeLossBackfillPending=0\n"
+        )
+        self.log.write_text(trace, encoding="utf-8")
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("missing_exact_gap_resolution_commit", result.stdout)
+
+    def test_production_rejects_mismatched_uuid_coverage_and_publish(self):
+        trace = self.valid_production_trace().replace(
+            "gap=7f8f3af8-b06a-4f58-a80e-dd211db8470a generation=9 status=resolved",
+            "gap=ffffffff-ffff-ffff-ffff-ffffffffffff generation=9 status=resolved",
+        ).replace(
+            "status=resolved generation=9 "
+            "gap=7f8f3af8-b06a-4f58-a80e-dd211db8470a receipts=5",
+            "status=resolved generation=9 "
+            "gap=ffffffff-ffff-ffff-ffff-ffffffffffff receipts=5",
+        )
+        self.log.write_text(trace, encoding="utf-8")
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("missing_exact_gap_coverage_resolution", result.stdout)
+        self.assertIn("missing_exact_gap_resolution_commit", result.stdout)
+
+    def test_production_rejects_old_selector_across_newer_gap_selection(self):
+        current_selector = (
+            "ATRIADBG history_request_authority status=candidate_selected "
+            "reason=acceptance detail=full_flash_positive_gap_authority "
+            "gap=ffffffff-ffff-ffff-ffff-ffffffffffff action=clock_then_drain\n"
+        )
+        trace = self.valid_production_trace().replace(
+            "ATRIADBG historyRange status=requested",
+            current_selector + "ATRIADBG historyRange status=requested",
+            1,
+        )
+        self.log.write_text(trace, encoding="utf-8")
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("missing_matching_gap_candidate_selection", result.stdout)
+
+    def test_production_rejects_stale_generation_live_restoration(self):
+        trace = self.valid_production_trace().replace(
+            "generation=9 rows=90 new_rows=90 live_restored=1 "
+            "action=publish_after_fresh_hr",
+            "generation=8 rows=90 new_rows=90 live_restored=1 "
+            "action=publish_after_fresh_hr",
+        )
+        self.log.write_text(trace, encoding="utf-8")
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("missing_offline_sync_completion", result.stdout)
+
+    def test_production_rejects_nonfresh_live_restoration_action(self):
+        trace = self.valid_production_trace().replace(
+            "live_restored=1 action=publish_after_fresh_hr",
+            "live_restored=1 action=retain_gap_retry_realtime",
+        )
+        self.log.write_text(trace, encoding="utf-8")
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("offline_sync_completion_not_fresh_hr_published", result.stdout)
+
+    def test_production_rejects_ack_borrowed_after_current_terminal(self):
+        trace = self.valid_production_trace()
+        accepted = (
+            "ATRIADBG historyAck status=accepted key=enddata:aabb generation=9 "
+            "attempt=1 command_seq=7 "
+            "proof=confirmed_gatt_write_plus_logical_response "
+            "response_seq=8 response=1700\n"
+        )
+        trace = trace.replace(accepted, "")
+        terminal = (
+            "ATRIADBG historyTerminal status=received sequence=9 generation=9 "
+            "pending=0 action=reduce\n"
+        )
+        trace = trace.replace(terminal, terminal + accepted)
+        self.log.write_text(trace, encoding="utf-8")
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("missing_history_ack_confirmation", result.stdout)
+        self.assertIn("ack_not_confirmed_after_send:enddata:aabb", result.stdout)
+
+    def test_production_rejects_inconsistent_persisted_density(self):
+        gap = "7f8f3af8-b06a-4f58-a80e-dd211db8470a"
+        trace = self.valid_production_trace().replace(
+            "ATRIADBG historical_full_drain_reconcile "
+            f"gap={gap} generation=9 status=resolved density=90 maximum_gap=3 p95_gap=1",
+            "ATRIADBG historical_full_drain_coverage status=persisted "
+            f"gap={gap} generation=9 observed=89 expected=100 "
+            "density=90 maximum_gap=3 p95_gap=1",
+        )
+        self.log.write_text(trace, encoding="utf-8")
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("resolved_gap_density_inconsistent", result.stdout)
 
 
 if __name__ == "__main__":

@@ -100,6 +100,19 @@ enum HistoricalArchive {
         var gravityValidatedRows: Int
     }
 
+    /// One in-memory diagnostics delta per active history generation/file.
+    /// The sidecar is a derived status accelerator, never raw-data or ACK
+    /// authority. Keeping its tiny aggregate in memory lets the canonical
+    /// archive append thousands of rows while writing the sidecar once at the
+    /// durable boundary instead of atomically replacing it for every row.
+    private struct DurableDiagnosticsAccumulator {
+        let archiveURL: URL
+        var index: DiagnosticsIndex?
+    }
+
+    private static var durableDiagnosticsAccumulators:
+        [UInt64: [String: DurableDiagnosticsAccumulator]] = [:]
+
     private struct RotationManifest: Codable {
         var version: Int
         var baseRelativePath: String
@@ -544,9 +557,12 @@ enum HistoricalArchive {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(record)
+        let diagnosticsObject =
+            (try? JSONSerialization.jsonObject(with: data))
+                as? [String: Any]
         return try appendDurably(
             encodedJSONObject: data,
-            diagnosticsObject: (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            diagnosticsObject: diagnosticsObject,
             identity: identity,
             generation: generation
         )
@@ -569,9 +585,12 @@ enum HistoricalArchive {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(frame)
+        let diagnosticsObject =
+            (try? JSONSerialization.jsonObject(with: data))
+                as? [String: Any]
         return try appendDurably(
             encodedJSONObject: data,
-            diagnosticsObject: (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            diagnosticsObject: diagnosticsObject,
             identity: identity,
             generation: generation
         )
@@ -586,7 +605,10 @@ enum HistoricalArchive {
         promotionLock.lock()
         defer { promotionLock.unlock() }
         let url = try writableFileURL()
-        let previousAttributes = archiveAttributes(for: url)
+        beginDurableDiagnosticsAccumulationIfNeeded(
+            generation: generation,
+            archiveURL: url
+        )
 
         durableStoreLock.lock()
         defer { durableStoreLock.unlock() }
@@ -601,9 +623,11 @@ enum HistoricalArchive {
         switch result {
         case .inserted:
             inserted = true
-            updateDiagnosticsIndexAfterAppend(object: diagnosticsObject,
-                                              archiveURL: url,
-                                              previousAttributes: previousAttributes)
+            appendDurableDiagnostics(
+                object: diagnosticsObject,
+                generation: generation,
+                archiveURL: url
+            )
         case .duplicate:
             inserted = false
         }
@@ -689,17 +713,25 @@ enum HistoricalArchive {
         generation: UInt64
     ) throws -> AtriaHistoricalArchiveDurableStore.FlushReceipt? {
         durableStoreLock.lock()
-        defer { durableStoreLock.unlock() }
-        let store = try durableStoreLocked()
-        // Empty terminal tails still receive a distinct durable sequence and
-        // zero-row receipt. This proves ordering without fabricating positive
-        // historical coverage.
-        let batch = durableDrainBatches[generation] ?? store.beginDrainBatch()
-        let receipt = try store.flush(batch)
-        // Each HISTORY_END is a separate durability boundary. A successful
-        // flush seals this store batch; the next strap burst gets a fresh one
-        // while retaining the same BLE drain generation.
-        durableDrainBatches.removeValue(forKey: generation)
+        let receipt: AtriaHistoricalArchiveDurableStore.FlushReceipt?
+        do {
+            let store = try durableStoreLocked()
+            // Empty terminal tails still receive a distinct durable sequence
+            // and zero-row receipt. This proves ordering without fabricating
+            // positive historical coverage.
+            let batch =
+                durableDrainBatches[generation] ?? store.beginDrainBatch()
+            receipt = try store.flush(batch)
+            // Each HISTORY_END is a separate durability boundary. A
+            // successful flush seals this store batch; the next strap burst
+            // gets a fresh one while retaining the same BLE drain generation.
+            durableDrainBatches.removeValue(forKey: generation)
+            durableStoreLock.unlock()
+        } catch {
+            durableStoreLock.unlock()
+            throw error
+        }
+        flushDurableDiagnostics(generation: generation)
         NotificationCenter.default.post(name: didUpdateNotification, object: nil)
         return receipt
     }
@@ -739,6 +771,7 @@ enum HistoricalArchive {
             durableStoreLock.unlock()
             throw error
         }
+        flushDurableDiagnostics(generation: generation)
 
         let catalogStore = try catalogStoreLocked()
         let active = try catalogStore.activeChunkDescriptor()
@@ -1862,8 +1895,12 @@ enum HistoricalArchive {
 
     static func endDurableDrain(generation: UInt64) {
         durableStoreLock.lock()
-        durableDrainBatches.removeValue(forKey: generation)
+        let batch = durableDrainBatches.removeValue(forKey: generation)
+        if let batch {
+            durableStore?.abandon(batch)
+        }
         durableStoreLock.unlock()
+        discardDurableDiagnostics(generation: generation)
     }
 
     private static func durableStoreLocked() throws -> AtriaHistoricalArchiveDurableStore {
@@ -4388,6 +4425,108 @@ enum HistoricalArchive {
         }
     }
 
+    private static func beginDurableDiagnosticsAccumulationIfNeeded(
+        generation: UInt64,
+        archiveURL: URL
+    ) {
+        let canonical = archiveURL.standardizedFileURL
+        diagnosticsIndexLock.lock()
+        defer { diagnosticsIndexLock.unlock() }
+        if durableDiagnosticsAccumulators[generation]?[canonical.path] != nil {
+            return
+        }
+        let attributes = archiveAttributes(for: canonical)
+        let initial: DiagnosticsIndex?
+        if let indexURL = diagnosticsIndexURL(for: canonical),
+           let data = try? Data(contentsOf: indexURL),
+           let decoded = try? JSONDecoder().decode(
+               DiagnosticsIndex.self,
+               from: data
+           ),
+           decoded.fileSize == attributes.byteCount,
+           abs(decoded.modificationTime - attributes.modificationTime)
+               < 0.001 {
+            initial = decoded
+        } else if attributes.byteCount == 0 {
+            initial = DiagnosticsIndex(
+                fileSize: 0,
+                modificationTime: attributes.modificationTime,
+                rows: 0,
+                schemas: [],
+                layoutVersions: [],
+                metricUsableRows: 0,
+                currentSessionUsableRows: 0,
+                undecodableRows: 0,
+                rawPayloadRows: 0,
+                unixFirst: nil,
+                unixLast: nil,
+                correctedUnixFirst: nil,
+                correctedUnixLast: nil,
+                gravityRows: 0,
+                gravityValidatedRows: 0
+            )
+        } else {
+            // A missing/stale preexisting index stays invalid and is rebuilt
+            // by the existing bounded diagnostics path. Never scan a large
+            // canonical archive in the BLE drain.
+            initial = nil
+        }
+        var generationAccumulators =
+            durableDiagnosticsAccumulators[generation] ?? [:]
+        generationAccumulators[canonical.path] =
+            DurableDiagnosticsAccumulator(
+                archiveURL: canonical,
+                index: initial
+            )
+        durableDiagnosticsAccumulators[generation] =
+            generationAccumulators
+    }
+
+    private static func appendDurableDiagnostics(
+        object: [String: Any]?,
+        generation: UInt64,
+        archiveURL: URL
+    ) {
+        let canonical = archiveURL.standardizedFileURL
+        diagnosticsIndexLock.lock()
+        defer { diagnosticsIndexLock.unlock() }
+        guard let object,
+              var accumulator =
+                durableDiagnosticsAccumulators[generation]?[canonical.path],
+              var index = accumulator.index else {
+            return
+        }
+        append(object: object, to: &index)
+        accumulator.index = index
+        var generationAccumulators =
+            durableDiagnosticsAccumulators[generation] ?? [:]
+        generationAccumulators[canonical.path] = accumulator
+        durableDiagnosticsAccumulators[generation] =
+            generationAccumulators
+    }
+
+    private static func flushDurableDiagnostics(generation: UInt64) {
+        diagnosticsIndexLock.lock()
+        let accumulators = durableDiagnosticsAccumulators.removeValue(
+            forKey: generation
+        ).map { Array($0.values) } ?? []
+        diagnosticsIndexLock.unlock()
+
+        for accumulator in accumulators {
+            guard var index = accumulator.index else { continue }
+            let attributes = archiveAttributes(for: accumulator.archiveURL)
+            index.fileSize = attributes.byteCount
+            index.modificationTime = attributes.modificationTime
+            writeDiagnosticsIndex(index, for: accumulator.archiveURL)
+        }
+    }
+
+    private static func discardDurableDiagnostics(generation: UInt64) {
+        diagnosticsIndexLock.lock()
+        durableDiagnosticsAccumulators.removeValue(forKey: generation)
+        diagnosticsIndexLock.unlock()
+    }
+
     private static func append(object: [String: Any], to index: inout DiagnosticsIndex) {
         index.rows += 1
         if let schema = object["schema"] {
@@ -4614,6 +4753,9 @@ enum HistoricalArchive {
         durableStore = nil
         durableDrainBatches.removeAll()
         durableStoreLock.unlock()
+        diagnosticsIndexLock.lock()
+        durableDiagnosticsAccumulators.removeAll()
+        diagnosticsIndexLock.unlock()
     }
 #endif
 

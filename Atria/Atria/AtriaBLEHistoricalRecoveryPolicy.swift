@@ -694,7 +694,7 @@ extension AtriaBLEManager {
     /// 2A37 silence; callers preserve the ingress spool and exact gap ticket.
     nonisolated static func shouldReleaseConnectedHistorySlice(
         sliceStartedAt: Date,
-        lastRawHeartRateAt: Date?,
+        lastAcceptedHeartRateAt: Date?,
         now: Date,
         minimumSliceDuration: TimeInterval,
         liveSilenceLimit: TimeInterval
@@ -708,7 +708,7 @@ extension AtriaBLEManager {
               now >= sliceStartedAt,
               now.timeIntervalSince(sliceStartedAt) >= minimumSliceDuration
         else { return false }
-        let liveReference = max(lastRawHeartRateAt ?? sliceStartedAt,
+        let liveReference = max(lastAcceptedHeartRateAt ?? sliceStartedAt,
                                 sliceStartedAt)
         return now.timeIntervalSince(liveReference) >= liveSilenceLimit
     }

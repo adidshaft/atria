@@ -55,6 +55,22 @@ final class AtriaBLECallbackEpochFence: @unchecked Sendable {
         }
     }
 
+    /// Whether work still belongs to the active connection epoch, independent
+    /// of the peripheral's instantaneous CoreBluetooth state. A repair-owned
+    /// cancel can move the object to `.disconnected` without delivering
+    /// `didDisconnect`; the recovery watchdog must distinguish that live epoch
+    /// from genuinely stale queued work so it can install the standing
+    /// reconnect.
+    func owns(
+        callbackEpoch: UInt64,
+        peripheralID: UUID
+    ) -> Bool {
+        lock.withLock {
+            callbackEpoch == storedEpoch
+                && peripheralID == activePeripheralID
+        }
+    }
+
     func markAwaitingPowerOn(
         standingConnect: Bool,
         silentStreamRebuild: Bool = false

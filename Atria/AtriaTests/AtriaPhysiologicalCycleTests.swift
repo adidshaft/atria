@@ -17,13 +17,15 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
                        end: Date,
                        source: String = "manual_sleep",
                        hrv: Int? = 60,
-                       eventTimeZoneIdentifier: String = "UTC") -> UserConfirmedSleep {
+                       eventTimeZoneIdentifier: String = "UTC",
+                       createdAt: Date? = nil,
+                       confidence: String = "user") -> UserConfirmedSleep {
         UserConfirmedSleep(id: id,
-                           createdAt: end,
+                           createdAt: createdAt ?? end,
                            start: start,
                            end: end,
                            source: source,
-                           confidence: "user",
+                           confidence: confidence,
                            sessions: 1,
                            samples: 100,
                            avgHR: 52,
@@ -152,7 +154,7 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
                                                confirmedSleeps: [main],
                                                calendar: calendar)
 
-        XCTAssertEqual(day.start, date(2, 7))
+        XCTAssertEqual(day.start, date(2, 7).addingTimeInterval(30 * 60))
         XCTAssertEqual(day.boundaryKind, .noSleepFallback)
     }
 
@@ -433,7 +435,7 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
                                                          calendar: calendar)
 
         XCTAssertEqual(beforeDelete.anchorSleepID, deleted.id)
-        XCTAssertEqual(afterDelete.start, date(3, 7))
+        XCTAssertEqual(afterDelete.start, date(3, 7).addingTimeInterval(30 * 60))
         XCTAssertEqual(afterDelete.boundaryKind, .noSleepFallback)
     }
 
@@ -457,7 +459,7 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
                                                    confirmedSleeps: [main],
                                                    calendar: calendar)
 
-        XCTAssertEqual(cycle.start, date(3, 7))
+        XCTAssertEqual(cycle.start, date(3, 7).addingTimeInterval(30 * 60))
         XCTAssertEqual(cycle.boundaryKind, .noSleepFallback)
     }
 
@@ -472,7 +474,7 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
                                                     confirmedSleeps: [priorMain, shortRest],
                                                     calendar: calendar)
 
-        XCTAssertEqual(cycle.start, date(3, 7))
+        XCTAssertEqual(cycle.start, date(3, 7).addingTimeInterval(30 * 60))
         XCTAssertEqual(cycle.boundaryKind, .noSleepFallback)
         XCTAssertEqual(cycle.anchorSleepID, priorMain.id)
     }
@@ -512,8 +514,258 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
                                                     confirmedSleeps: [main],
                                                     calendar: losAngeles)
 
-        XCTAssertEqual(cycle.start, local(15, 7))
+        XCTAssertEqual(cycle.start, local(15, 7, 30))
         XCTAssertEqual(losAngeles.component(.hour, from: cycle.start), 7)
+        XCTAssertEqual(cycle.boundaryKind, .noSleepFallback)
+    }
+
+    func testNoSleepFallbackWaitsForSleepSettlementBeforeRollover() {
+        let main = sleep(id: "main", start: date(1, 23), end: date(2, 7))
+
+        let whileOvernightSleepCanStillSettle = AtriaPhysiologicalCycle.current(
+            now: date(3, 7).addingTimeInterval(29 * 60),
+            confirmedSleeps: [main],
+            calendar: calendar
+        )
+        let afterSettlement = AtriaPhysiologicalCycle.current(
+            now: date(3, 7).addingTimeInterval(30 * 60),
+            confirmedSleeps: [main],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(whileOvernightSleepCanStillSettle.start, main.end)
+        XCTAssertEqual(whileOvernightSleepCanStillSettle.boundaryKind, .mainSleep)
+        XCTAssertEqual(afterSettlement.start, date(3, 7).addingTimeInterval(30 * 60))
+        XCTAssertEqual(afterSettlement.boundaryKind, .noSleepFallback)
+    }
+
+    func testMultipleAllNightersAdvanceOneCivilBoundaryAtATime() {
+        let main = sleep(id: "main", start: date(1, 23), end: date(2, 7))
+        let first = AtriaPhysiologicalCycle.current(
+            now: date(3, 10),
+            confirmedSleeps: [main],
+            calendar: calendar
+        )
+        let second = AtriaPhysiologicalCycle.current(
+            now: date(4, 10),
+            confirmedSleeps: [main],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(first.start, date(3, 7).addingTimeInterval(30 * 60))
+        XCTAssertEqual(second.start, date(4, 7).addingTimeInterval(30 * 60))
+        XCTAssertEqual(first.boundaryKind, .noSleepFallback)
+        XCTAssertEqual(second.boundaryKind, .noSleepFallback)
+        XCTAssertLessThan(first.start, second.start)
+    }
+
+    func testLateConfirmedSleepCannotMoveCycleBehindSealedFallback() {
+        let prior = sleep(id: "prior", start: date(1, 23), end: date(2, 7))
+        let sealedFallback = date(3, 7).addingTimeInterval(30 * 60)
+        let learnedLate = sleep(
+            id: "learned-late",
+            start: date(3, 1),
+            end: date(3, 6),
+            source: "auto_confirmed_sleep",
+            createdAt: date(3, 10)
+        )
+
+        let cycle = AtriaPhysiologicalCycle.current(
+            now: date(3, 12),
+            confirmedSleeps: [prior, learnedLate],
+            calendar: calendar
+        )
+        let anchor = AtriaPhysiologicalCycle.latestCompletedMainSleep(
+            now: date(3, 12),
+            confirmedSleeps: [prior, learnedLate],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(cycle.start, sealedFallback)
+        XCTAssertEqual(cycle.boundaryKind, .noSleepFallback)
+        XCTAssertEqual(cycle.anchorSleepID, prior.id)
+        XCTAssertEqual(anchor?.id, prior.id)
+
+        let crossingWorkout = SavedSession(
+            id: UUID(),
+            start: date(3, 6),
+            end: date(3, 8),
+            label: "Crossing fallback",
+            points: stride(from: 0.0, through: 7_200.0, by: 10).map {
+                SavedSession.Point(t: $0, bpm: 120)
+            },
+            strapStepResearchCount: 200
+        )
+        let aggregate = SessionStore.homeSavedAggregate(
+            from: [crossingWorkout],
+            rest: 50,
+            maxHR: 190,
+            biologicalSex: .unspecified,
+            calendar: calendar,
+            now: date(3, 12),
+            cycleStart: cycle.start
+        )
+        XCTAssertEqual(aggregate.savedTodayStrapSteps, 50)
+    }
+
+    func testLateManualSleepSupersedesSealedFallbackAndRecomputesCycle() {
+        let prior = sleep(id: "prior", start: date(1, 23), end: date(2, 7))
+        let corrected = sleep(
+            id: "manual-correction",
+            start: date(3, 0),
+            end: date(3, 6),
+            source: "manual_sleep",
+            createdAt: date(3, 10)
+        )
+
+        let cycle = AtriaPhysiologicalCycle.current(
+            now: date(3, 12),
+            confirmedSleeps: [prior, corrected],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(cycle.start, corrected.end)
+        XCTAssertEqual(cycle.boundaryKind, .mainSleep)
+        XCTAssertEqual(cycle.anchorSleepID, corrected.id)
+    }
+
+    func testLateUserConfirmedReviewSupersedesSealedFallback() {
+        let prior = sleep(id: "prior", start: date(1, 23), end: date(2, 7))
+        let confirmedReview = sleep(
+            id: "confirmed-review",
+            start: date(3, 0),
+            end: date(3, 6),
+            source: "sleep_window",
+            createdAt: date(3, 10),
+            confidence: "user_confirmed_hr_only"
+        )
+
+        let cycle = AtriaPhysiologicalCycle.current(
+            now: date(3, 12),
+            confirmedSleeps: [prior, confirmedReview],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(cycle.start, confirmedReview.end)
+        XCTAssertEqual(cycle.boundaryKind, .mainSleep)
+        XCTAssertEqual(cycle.anchorSleepID, confirmedReview.id)
+    }
+
+    func testCompactSleepSnapshotPreservesLateConfirmationBoundaryParity() {
+        let prior = sleep(
+            id: "prior",
+            start: date(1, 23),
+            end: date(2, 7)
+        )
+        let learnedLate = sleep(
+            id: "learned-late",
+            start: date(3, 1),
+            end: date(3, 6),
+            source: "auto_confirmed_sleep",
+            createdAt: date(3, 10)
+        )
+        let now = date(3, 12)
+        let expected = AtriaPhysiologicalDay.current(
+            now: now,
+            confirmedSleeps: [prior, learnedLate],
+            calendar: calendar
+        )
+        let compact = SleepHistorySnapshot(
+            rollups: [],
+            confirmedSleeps: [prior, learnedLate],
+            calendar: calendar
+        )
+        let projected = AtriaPhysiologicalDay.current(
+            now: now,
+            sleepHistory: compact,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(
+            expected.start,
+            date(3, 7).addingTimeInterval(30 * 60)
+        )
+        XCTAssertEqual(expected.boundaryKind, .noSleepFallback)
+        XCTAssertEqual(projected, expected)
+    }
+
+    func testSleepWakingAfterFallbackStartsLaterNonOverlappingCycle() {
+        let prior = sleep(id: "prior", start: date(1, 23), end: date(2, 7))
+        let current = sleep(
+            id: "current",
+            start: date(3, 5),
+            end: date(3, 9),
+            createdAt: date(3, 10)
+        )
+
+        let cycle = AtriaPhysiologicalCycle.current(
+            now: date(3, 12),
+            confirmedSleeps: [prior, current],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(cycle.start, current.end)
+        XCTAssertEqual(cycle.boundaryKind, .mainSleep)
+        XCTAssertEqual(cycle.anchorSleepID, current.id)
+    }
+
+    func testNoSleepFallbackPreservesEventZoneAfterTravel() throws {
+        var losAngeles = Calendar(identifier: .gregorian)
+        losAngeles.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Los_Angeles"))
+        var tokyo = Calendar(identifier: .gregorian)
+        tokyo.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Tokyo"))
+        func losAngelesDate(_ day: Int, _ hour: Int, _ minute: Int = 0) -> Date {
+            losAngeles.date(from: DateComponents(
+                year: 2032,
+                month: 1,
+                day: day,
+                hour: hour,
+                minute: minute
+            ))!
+        }
+        let prior = sleep(
+            id: "travel-anchor",
+            start: losAngelesDate(1, 23),
+            end: losAngelesDate(2, 7),
+            eventTimeZoneIdentifier: "America/Los_Angeles"
+        )
+        let expected = losAngelesDate(3, 7, 30)
+
+        let cycle = AtriaPhysiologicalCycle.current(
+            now: expected.addingTimeInterval(2 * 60 * 60),
+            confirmedSleeps: [prior],
+            calendar: tokyo
+        )
+
+        XCTAssertEqual(cycle.start, expected)
+        XCTAssertEqual(cycle.boundaryKind, .noSleepFallback)
+    }
+
+    func testNoSleepFallbackPreservesLocalWakeAcrossFallDST() throws {
+        var losAngeles = Calendar(identifier: .gregorian)
+        losAngeles.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Los_Angeles"))
+        func local(_ day: Int, _ hour: Int, _ minute: Int = 0) -> Date {
+            losAngeles.date(from: DateComponents(
+                year: 2032,
+                month: 11,
+                day: day,
+                hour: hour,
+                minute: minute
+            ))!
+        }
+        let main = sleep(
+            id: "fall-dst-main",
+            start: local(5, 23),
+            end: local(6, 7),
+            eventTimeZoneIdentifier: "America/Los_Angeles"
+        )
+        let cycle = AtriaPhysiologicalCycle.current(
+            now: local(7, 8),
+            confirmedSleeps: [main],
+            calendar: losAngeles
+        )
+
+        XCTAssertEqual(cycle.start, local(7, 7, 30))
         XCTAssertEqual(cycle.boundaryKind, .noSleepFallback)
     }
 

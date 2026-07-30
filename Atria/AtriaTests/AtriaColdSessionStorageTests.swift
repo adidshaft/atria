@@ -860,7 +860,22 @@ final class AtriaColdSessionStorageTests: XCTestCase {
         let compactionFinished = DispatchSemaphore(value: 0)
         let ordinaryFinished = DispatchSemaphore(value: 0)
         let errors = ColdManifestRaceErrors()
-        DispatchQueue.global(qos: .utility).async {
+        // Keep this synchronization test independent of the shared utility
+        // pool. The full suite runs thousands of tests in parallel and can
+        // starve a global utility task past the gate timeout before the storage
+        // transaction even begins, producing a timeout cascade rather than a
+        // manifest-race result. Distinct queues still provide real concurrent
+        // writers while making entry into the deliberately paused transaction
+        // deterministic.
+        let compactionQueue = DispatchQueue(
+            label: "com.adidshaft.atria.tests.cold-manifest-race.compaction",
+            qos: .userInitiated
+        )
+        let ordinaryQueue = DispatchQueue(
+            label: "com.adidshaft.atria.tests.cold-manifest-race.ordinary",
+            qos: .userInitiated
+        )
+        compactionQueue.async {
             do {
                 _ = try AtriaManifestedColdSessionCompaction().compactAndRetire(
                     fullStore: compactionStore,
@@ -877,7 +892,7 @@ final class AtriaColdSessionStorageTests: XCTestCase {
         XCTAssertEqual(gate.entered.wait(timeout: .now() + 5), .success)
 
         let newlyCold = makeSession(ageDays: 61, sampleCount: 75)
-        DispatchQueue.global(qos: .utility).async {
+        ordinaryQueue.async {
             do {
                 _ = try ordinaryStore.persist(
                     sessions: [recent, newlyCold],

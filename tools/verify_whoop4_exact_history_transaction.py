@@ -13,7 +13,10 @@ Two explicitly distinguished transports are accepted:
 The production path deliberately does *not* claim that 22/00 selects a range.
 It proves that a full-flash drain resolved one exact durable gap. Returned rows
 alone are never authority. Both paths require generation-correlated terminal,
-fsync-before-ACK evidence, and ACK acceptance. The production path accepts
+fsync-before-ACK evidence, and ACK acceptance. Production completion is the
+generation-bound policy outcome emitted after a fresh accepted HR
+(`gap_recovered`, or an honest pre-publication status followed by the exact
+UUID's durable publish/CAS). The production path accepts
 `gapResolvedConsumersPending` only after exact ≥90% coverage is persisted;
 pending typed projections are not part of missing-HR recovery acceptance.
 This is an offline evidence tool: it never launches, terminates, installs, or
@@ -25,12 +28,19 @@ from __future__ import annotations
 import argparse
 import math
 import re
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 
 KEY_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9_]*)=")
 BATCH_BOUNDARY_RE = re.compile(r'^batch\("([^"\\]+)"\)$')
+TERMINAL_BOUNDARY_RE = re.compile(r"^terminal\(\d+\)$")
+PRODUCTION_LIVE_RESTORED_STATUSES = frozenset({
+    "gap_recovered",
+    "metric_progress",
+    "archived_gap_unresolved",
+})
 
 
 @dataclass(frozen=True)
@@ -88,6 +98,17 @@ def latest_matching(items: list[Event], **fields: str) -> Event | None:
         if all(event.fields.get(key) == value for key, value in fields.items())
     ]
     return matching[-1] if matching else None
+
+
+def latest(items: list[Event]) -> Event | None:
+    return max(items, key=lambda event: event.position) if items else None
+
+
+def normalized_uuid(value: str | None) -> str | None:
+    try:
+        return str(uuid.UUID(value or ""))
+    except (ValueError, AttributeError):
+        return None
 
 
 def batch_boundary_key(event: Event) -> str | None:
@@ -211,13 +232,16 @@ def verify(
     elif production_authority is not None:
         transaction_mode = "production_full_drain_gap_bound"
         transport_generation = integer(production_authority, "generation")
-        gap_identifier = production_authority.fields.get("gap")
-        selected = matching_before(
-            authority_events,
-            production_authority.position,
-            status="candidate_selected",
-            gap=gap_identifier or "",
-        )
+        gap_identifier = normalized_uuid(production_authority.fields.get("gap"))
+        candidate_selections = [
+            event for event in authority_events
+            if event.position < production_authority.position
+            and event.fields.get("status") == "candidate_selected"
+        ]
+        # The latest selector is the only request that may arm this authority.
+        # Searching backwards for any older matching UUID lets an intervening
+        # transaction borrow stale request authority.
+        selected = latest(candidate_selections)
         transaction_start = selected.position if selected else production_authority.position
         transaction_text = text[transaction_start:]
         # The authority is emitted only after the correlated clock, full-drain
@@ -228,12 +252,23 @@ def verify(
 
         if transport_generation is None or transport_generation <= 0:
             blockers.append("invalid_transport_generation")
-        if not gap_identifier or gap_identifier == "none":
+        if gap_identifier is None:
             blockers.append("missing_durable_gap_identifier")
-        if selected is None:
+        if (
+            selected is None
+            or normalized_uuid(selected.fields.get("gap")) != gap_identifier
+        ):
             blockers.append("missing_matching_gap_candidate_selection")
+        elif (
+            selected.fields.get("action") != "clock_then_drain"
+            or selected.fields.get("detail") != "full_flash_positive_gap_authority"
+        ):
+            blockers.append("matching_gap_candidate_lacks_full_drain_authority")
 
-        range_events = events(transaction_text, "ATRIADBG historyRange")
+        range_events = [
+            event for event in events(transaction_text, "ATRIADBG historyRange")
+            if event.position < transaction_evidence_floor
+        ]
         requested = latest_matching(
             range_events,
             status="requested",
@@ -310,7 +345,7 @@ def verify(
 
         full_write = matching_before(
             events(transaction_text, "ATRIADBG historical_full_drain_write"),
-            production_authority.position - transaction_start,
+            transaction_evidence_floor,
             status="confirmed",
             generation=str(transport_generation),
             command="1600",
@@ -320,19 +355,52 @@ def verify(
             blockers.append("missing_ordered_full_drain_write_confirmation")
         drain_sequence = integer(full_write, "sequence")
         starts = events(transaction_text, "ATRIADBG historyMeta")
-        history_start = matching_before(
-            starts,
-            production_authority.position - transaction_start,
-            status="start",
-            generation=str(transport_generation),
+        authority_history_start_sequence = integer(
+            production_authority, "history_start_seq"
         )
-        if history_start is None or (settled is not None and history_start.position <= settled.position):
+        history_start_candidates = [
+            event for event in starts
+            if event.position > transaction_evidence_floor
+            and event.fields.get("status") == "start"
+            and integer(event, "generation") == transport_generation
+            and integer(event, "sequence") == authority_history_start_sequence
+        ]
+        history_start = history_start_candidates[0] if history_start_candidates else None
+        post_authority_boundaries = [
+            event for event in events(transaction_text, "ATRIADBG historyDrain")
+            if event.position > transaction_evidence_floor
+            and event.fields.get("status") in {"durable", "failed", "flush_failed"}
+            and integer(event, "generation") == transport_generation
+        ] + [
+            event for event in events(transaction_text, "ATRIADBG historyAck")
+            if event.position > transaction_evidence_floor
+            and event.fields.get("status") in {
+                "sending", "accepted", "confirmed", "write_failed",
+            }
+            and integer(event, "generation") == transport_generation
+        ] + [
+            event for event in events(transaction_text, "ATRIADBG historyTerminal")
+            if event.position > transaction_evidence_floor
+            and event.fields.get("status") == "received"
+            and integer(event, "generation") == transport_generation
+        ]
+        first_post_authority_boundary = min(
+            (event.position for event in post_authority_boundaries),
+            default=None,
+        )
+        if (
+            history_start is None
+            or (
+                first_post_authority_boundary is not None
+                and history_start.position >= first_post_authority_boundary
+            )
+        ):
             blockers.append("missing_generation_bound_history_start")
         if integer(production_authority, "clock_seq") != range_sequence:
             blockers.append("full_drain_clock_sequence_mismatch")
         if integer(production_authority, "drain_seq") != drain_sequence:
             blockers.append("full_drain_command_sequence_mismatch")
-        if integer(production_authority, "history_start_seq") != integer(history_start, "sequence"):
+        if authority_history_start_sequence != integer(history_start, "sequence"):
             blockers.append("full_drain_history_start_sequence_mismatch")
         exact_write = full_write
     else:
@@ -346,31 +414,45 @@ def verify(
             "missing_attempt_bound_clock_authority",
         ])
 
-    terminal = latest_matching([
+    terminal_candidates = [
         event for event in events(transaction_text, "ATRIADBG historyTerminal")
         if event.position > transaction_evidence_floor
-    ], status="received")
+        and event.fields.get("status") == "received"
+        and integer(event, "generation") == transport_generation
+    ]
+    terminal = terminal_candidates[0] if terminal_candidates else None
     if terminal is None:
         blockers.append("missing_generation_matching_history_complete")
-    elif integer(terminal, "generation") != transport_generation:
-        blockers.append("history_complete_transport_generation_mismatch")
+    if len(terminal_candidates) > 1:
+        blockers.append("ambiguous_generation_matching_history_complete")
+
+    transport_evidence_ceiling = terminal.position if terminal is not None else len(
+        transaction_text
+    )
 
     durable = [
         event for event in events(transaction_text, "ATRIADBG historyDrain")
         if event.fields.get("status") == "durable"
         and event.position > transaction_evidence_floor
+        and event.position < transport_evidence_ceiling
         and integer(event, "generation") == transport_generation
     ]
     ack_sending = [
         event for event in events(transaction_text, "ATRIADBG historyAck")
         if event.fields.get("status") == "sending"
         and event.position > transaction_evidence_floor
+        and event.position < transport_evidence_ceiling
         and integer(event, "generation") == transport_generation
     ]
     ack_confirmed = [
         event for event in events(transaction_text, "ATRIADBG historyAck")
-        if event.fields.get("status") in {"confirmed", "accepted"}
+        if (
+            event.fields.get("status") == "accepted"
+            if transaction_mode == "production_full_drain_gap_bound"
+            else event.fields.get("status") in {"confirmed", "accepted"}
+        )
         and event.position > transaction_evidence_floor
+        and event.position < transport_evidence_ceiling
         and integer(event, "generation") == transport_generation
     ]
     if not durable:
@@ -383,6 +465,8 @@ def verify(
     durable_by_key: dict[str, list[int]] = {}
     for event in durable:
         key = batch_boundary_key(event)
+        if TERMINAL_BOUNDARY_RE.fullmatch(event.fields.get("boundary", "")):
+            continue
         if not key:
             blockers.append("unparseable_durable_batch_boundary")
             continue
@@ -449,34 +533,35 @@ def verify(
         blockers.append("history_drain_failed")
 
     consumers: Event | None
+    coverage: Event | None = None
+    resolution_commit: Event | None = None
     if transaction_mode == "legacy_exact_selector":
         consumers = latest_matching(
             events(transaction_text, "ATRIADBG historical_consumers"), status="committed"
         )
     else:
-        persisted_coverage = latest_matching(
-            [
-                event for event in events(
-                    transaction_text, "ATRIADBG historical_full_drain_coverage"
-                )
-                if event.position > transaction_evidence_floor
-            ],
-            gap=gap_identifier or "",
-            generation=str(transport_generation),
-            status="persisted",
-        )
-        reconcile = latest_matching(
-            [
-                event for event in events(
-                    transaction_text, "ATRIADBG historical_full_drain_reconcile"
-                )
-                if event.position > transaction_evidence_floor
-            ],
-            gap=gap_identifier or "",
-            generation=str(transport_generation),
-            status="resolved",
-        )
-        coverage = persisted_coverage or reconcile
+        persisted_coverage = latest([
+            event for event in events(
+                transaction_text, "ATRIADBG historical_full_drain_coverage"
+            )
+            if event.position > transaction_evidence_floor
+            and event.fields.get("status") == "persisted"
+            and normalized_uuid(event.fields.get("gap")) == gap_identifier
+            and integer(event, "generation") == transport_generation
+        ])
+        reconcile = latest([
+            event for event in events(
+                transaction_text, "ATRIADBG historical_full_drain_reconcile"
+            )
+            if event.position > transaction_evidence_floor
+            and event.fields.get("status") == "resolved"
+            and normalized_uuid(event.fields.get("gap")) == gap_identifier
+            and integer(event, "generation") == transport_generation
+        ])
+        coverage = latest([
+            event for event in (persisted_coverage, reconcile)
+            if event is not None
+        ])
         if coverage is None:
             blockers.append("missing_exact_gap_coverage_resolution")
         else:
@@ -491,42 +576,60 @@ def verify(
                 blockers.append("resolved_gap_maximum_gap_over_3s")
             if p95_gap is None or p95_gap > 1:
                 blockers.append("resolved_gap_p95_gap_over_1s")
+            if coverage.fields.get("status") == "persisted":
+                observed = integer(coverage, "observed")
+                expected = integer(coverage, "expected")
+                if (
+                    observed is None
+                    or expected is None
+                    or expected <= 0
+                    or observed < 0
+                    or observed > expected
+                ):
+                    blockers.append("resolved_gap_bucket_counts_invalid")
+                elif density != math.floor(100 * observed / expected):
+                    blockers.append("resolved_gap_density_inconsistent")
         publish_events = events(
             transaction_text, "ATRIADBG historical_full_drain_publish"
         )
         publish_events = [
             event for event in publish_events
             if event.position > transaction_evidence_floor
+            and normalized_uuid(event.fields.get("gap")) == gap_identifier
+            and integer(event, "generation") == transport_generation
         ]
-        consumers = latest_matching(
-            publish_events,
-            status="resolved",
-            generation=str(transport_generation),
-            gap=gap_identifier or "",
-            receipts="5",
-        ) or latest_matching(
-            publish_events,
-            status="resolved_after_consumers_pending",
-            generation=str(transport_generation),
-            gap=gap_identifier or "",
-            receipts="5",
-        )
-        pending_consumers = latest_matching(
-            publish_events,
-            status="gap_resolved_consumers_pending",
-            generation=str(transport_generation),
-            gap=gap_identifier or "",
-            receipts="0",
-        )
-        if consumers is None and pending_consumers is None:
+        resolution_commits = [
+            event for event in publish_events
+            if (
+                event.fields.get("status") == "gap_resolved_consumers_pending"
+                and integer(event, "receipts") == 0
+            ) or (
+                event.fields.get("status") in {
+                    "resolved",
+                    "resolved_after_consumers_pending",
+                }
+                and integer(event, "receipts") == 5
+            )
+        ]
+        resolution_commit = latest(resolution_commits)
+        consumers = latest([
+            event for event in resolution_commits
+            if integer(event, "receipts") == 5
+        ])
+        if resolution_commit is None:
             blockers.append("missing_exact_gap_resolution_commit")
-            blockers.append("missing_committed_verified_consumers")
         if (
-            consumers is not None
+            resolution_commit is not None
             and coverage is not None
-            and consumers.position <= coverage.position
+            and resolution_commit.position <= coverage.position
         ):
             blockers.append("consumers_committed_before_gap_coverage_resolution")
+        if (
+            resolution_commit is not None
+            and terminal is not None
+            and resolution_commit.position <= terminal.position
+        ):
+            blockers.append("consumers_committed_before_history_terminal")
 
     if consumers is None and transaction_mode == "legacy_exact_selector":
         blockers.append("missing_committed_verified_consumers")
@@ -553,26 +656,44 @@ def verify(
         ):
             blockers.append("consumers_committed_before_history_terminal")
 
-    completion = latest_matching(
-        [
-            event for event in events(transaction_text, "ATRIADBG offline_sync")
-            if event.position > transaction_evidence_floor
-        ],
-        status="complete",
-    )
-    if completion is None:
-        blockers.append("missing_offline_sync_completion")
-    elif not completion.fields.get("reason", "").endswith("_terminal"):
-        blockers.append("offline_sync_completion_not_terminal")
-    if completion is not None:
-        completion_generation = integer(completion, "generation")
-        if completion_generation is not None and completion_generation != transport_generation:
-            blockers.append("offline_sync_completion_generation_mismatch")
-        if (
-            transaction_mode == "production_full_drain_gap_bound"
-            and completion.fields.get("live_restored") != "1"
-        ):
-            blockers.append("offline_sync_completion_live_not_restored")
+    offline_events = [
+        event for event in events(transaction_text, "ATRIADBG offline_sync")
+        if event.position > transaction_evidence_floor
+    ]
+    if transaction_mode == "production_full_drain_gap_bound":
+        completion_candidates = [
+            event for event in offline_events
+            if integer(event, "generation") == transport_generation
+            and "live_restored" in event.fields
+            and "action" in event.fields
+        ]
+        completion = latest(completion_candidates)
+        if not completion_candidates:
+            blockers.append("missing_offline_sync_completion")
+        elif len(completion_candidates) != 1:
+            blockers.append("ambiguous_generation_bound_offline_sync_completion")
+        if completion is not None:
+            if completion.fields.get("status") not in PRODUCTION_LIVE_RESTORED_STATUSES:
+                blockers.append("offline_sync_completion_status_not_accepted")
+            if not completion.fields.get("reason", "").endswith("_terminal"):
+                blockers.append("offline_sync_completion_not_terminal")
+            if completion.fields.get("live_restored") != "1":
+                blockers.append("offline_sync_completion_live_not_restored")
+            if completion.fields.get("action") != "publish_after_fresh_hr":
+                blockers.append("offline_sync_completion_not_fresh_hr_published")
+    else:
+        completion = latest_matching(offline_events, status="complete")
+        if completion is None:
+            blockers.append("missing_offline_sync_completion")
+        elif not completion.fields.get("reason", "").endswith("_terminal"):
+            blockers.append("offline_sync_completion_not_terminal")
+        if completion is not None:
+            completion_generation = integer(completion, "generation")
+            if (
+                completion_generation is not None
+                and completion_generation != transport_generation
+            ):
+                blockers.append("offline_sync_completion_generation_mismatch")
     if terminal is not None and completion is not None:
         # Positions in transaction_text share the same coordinate system.
         if completion.position <= terminal.position:
@@ -611,7 +732,13 @@ def verify(
         "ack_sends": len(ack_sending),
         "ack_confirmations": len(ack_confirmed),
         "consumer_receipts": integer(consumers, "receipts") or 0,
+        "exact_gap_density_percent": integer(coverage, "density") or 0,
+        "gap_resolution_status": resolution_commit.fields.get("status", "missing")
+        if resolution_commit else "missing",
         "offline_sync_complete": 1 if completion else 0,
+        "offline_sync_status": completion.fields.get("status", "missing")
+        if completion else "missing",
+        "live_restored": integer(completion, "live_restored") or 0,
     }
     return blockers, details
 

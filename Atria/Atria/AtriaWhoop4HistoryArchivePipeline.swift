@@ -19,7 +19,11 @@ enum AtriaWhoop4HistoryArchivePipeline {
             case undecodable(payload: [UInt8], reason: String)
         }
 
-        let logMessage: String
+        /// The decoded frame log is intentionally absent in normal Release
+        /// operation. Formatting several hundred bytes of diagnostics for
+        /// every row in a full-flash drain consumed measurable CPU even though
+        /// `AtriaDebugLog` ultimately discarded it.
+        let logMessage: String?
         let rawPayload: [UInt8]
         let payload: Payload
     }
@@ -48,12 +52,14 @@ enum AtriaWhoop4HistoryArchivePipeline {
                 .map { "decoder_\(String(describing: $0.reason))" }
                 ?? "decoder_unknown_failure"
             return Computation(
-                logMessage: String(
-                    format: "ATRIADBG historicalData decoded=0 reason=%@ len=%d payload=%@",
-                    reason,
-                    payload.count,
-                    hex(payload)
-                ),
+                logMessage: AtriaDebugLogging.isEnabled
+                    ? String(
+                        format: "ATRIADBG historicalData decoded=0 reason=%@ len=%d payload=%@",
+                        reason,
+                        payload.count,
+                        hex(payload)
+                    )
+                    : nil,
                 rawPayload: payload,
                 payload: .undecodable(payload: payload, reason: reason)
             )
@@ -120,32 +126,34 @@ enum AtriaWhoop4HistoryArchivePipeline {
         }
 
         let payloadHex = hex(payload)
-        let logMessage = String(
-            format: "ATRIADBG historicalData decoded=1 layout=%@ metric_usable=%d unix=%u subsec=%u counter=%u len=%d hr=%d hr_accepted=%d rr_count=%d rr_accepted=%d rr=%@ gravity_mag=%.3f gravity_validated=%d clock_status=%@ clock_device_ref=%@ clock_wall_ref=%@ clock_drift_s=%@ clock_snapped_drift_s=%@ clock_corrected_unix=%@ clock_effective_unix=%u clock_effective_age_s=%@ clock_recent_12h=%d payload=%@",
-            layoutVersion,
-            metricUsable ? 1 : 0,
-            unix,
-            subsecond,
-            counter,
-            payload.count,
-            decodedHeartRate,
-            acceptedHeartRate != nil ? 1 : 0,
-            decodedRR.count,
-            acceptedRR != nil ? 1 : 0,
-            decodedRR.map(String.init).joined(separator: ","),
-            gravity.magnitude,
-            gravityValidated ? 1 : 0,
-            clockStatus,
-            clock.map { String($0.device) } ?? "none",
-            clock.map { String($0.wall) } ?? "none",
-            clock.map { String($0.driftSeconds) } ?? "none",
-            clock.map { String($0.snappedDriftSeconds) } ?? "none",
-            correctedUnix.map(String.init) ?? "none",
-            effectiveUnix,
-            effectiveAgeSeconds.map(String.init) ?? "none",
-            recentTwelveHours ? 1 : 0,
-            payloadHex
-        )
+        let logMessage = AtriaDebugLogging.isEnabled
+            ? String(
+                format: "ATRIADBG historicalData decoded=1 layout=%@ metric_usable=%d unix=%u subsec=%u counter=%u len=%d hr=%d hr_accepted=%d rr_count=%d rr_accepted=%d rr=%@ gravity_mag=%.3f gravity_validated=%d clock_status=%@ clock_device_ref=%@ clock_wall_ref=%@ clock_drift_s=%@ clock_snapped_drift_s=%@ clock_corrected_unix=%@ clock_effective_unix=%u clock_effective_age_s=%@ clock_recent_12h=%d payload=%@",
+                layoutVersion,
+                metricUsable ? 1 : 0,
+                unix,
+                subsecond,
+                counter,
+                payload.count,
+                decodedHeartRate,
+                acceptedHeartRate != nil ? 1 : 0,
+                decodedRR.count,
+                acceptedRR != nil ? 1 : 0,
+                decodedRR.map(String.init).joined(separator: ","),
+                gravity.magnitude,
+                gravityValidated ? 1 : 0,
+                clockStatus,
+                clock.map { String($0.device) } ?? "none",
+                clock.map { String($0.wall) } ?? "none",
+                clock.map { String($0.driftSeconds) } ?? "none",
+                clock.map { String($0.snappedDriftSeconds) } ?? "none",
+                correctedUnix.map(String.init) ?? "none",
+                effectiveUnix,
+                effectiveAgeSeconds.map(String.init) ?? "none",
+                recentTwelveHours ? 1 : 0,
+                payloadHex
+            )
+            : nil
 
         var record = HistoricalArchive.Record(
             schema: HistoricalArchive.schema,

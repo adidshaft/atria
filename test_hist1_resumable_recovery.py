@@ -42,7 +42,9 @@ def transport(generation):
 
 def trace(generation, terminal):
     prefix = "\n".join([
-        f"ATRIADBG history_request_authority status=candidate_selected gap={GAP} reason=test action=clock_then_drain",
+        "ATRIADBG history_request_authority status=candidate_selected "
+        f"gap={GAP.upper()} reason=test detail=full_flash_positive_gap_authority "
+        "action=clock_then_drain",
         f"ATRIADBG historyRange status=requested generation={generation} sequence=4 payload=00 attempt=1 mutation=0",
         f"ATRIADBG historyRange status=write_confirmed generation={generation} sequence=4 mutation=0",
         "ATRIADBG historyRange status=observed response_seq=5 request_seq_echo=4 matched=1 write=800 read=710 capacity=1000 pending=120 mutation=0 payload=aabb",
@@ -50,8 +52,8 @@ def trace(generation, terminal):
         f"ATRIADBG historyRange status=forward_backlog_available generation={generation} pending=120 action=monotonic_settle_then_1600",
         f"ATRIADBG historyRange status=post_response_settle_confirmed generation={generation} settle_s=2 clock_source=2200 action=send_verified_1600",
         f"ATRIADBG historical_full_drain_write status=confirmed generation={generation} sequence=5 command=1600 exact_interval_authority=0",
-        f"ATRIADBG historyMeta status=start sequence=6 generation={generation}",
         f"ATRIADBG historical_full_drain_authority status=armed generation={generation} gap={GAP} clock_seq=4 drain_seq=5 history_start_seq=6",
+        f"ATRIADBG historyMeta status=start sequence=6 generation={generation}",
         f'ATRIADBG historyDrain status=durable generation={generation} boundary=batch("enddata:aabb") rows_since_ack=60 error=nil',
         f"ATRIADBG historyAck status=sending key=enddata:aabb generation={generation} attempt=1 payload=01aabb write_mode=wr",
         f"ATRIADBG historyAck status=accepted key=enddata:aabb generation={generation} attempt=1 proof=confirmed_gatt_write_plus_logical_response",
@@ -60,7 +62,9 @@ def trace(generation, terminal):
         return prefix + "ATRIADBG ble status=disconnected gap_retained=1\n"
     return prefix + "\n".join([
         f"ATRIADBG historyTerminal status=received sequence=9 generation={generation} pending=0 action=reduce",
-        f"ATRIADBG offline_sync status=complete reason=test_terminal generation={generation} live_restored=1",
+        f"ATRIADBG offline_sync status=archived_gap_unresolved reason=test_terminal "
+        f"generation={generation} rows=120 new_rows=120 live_restored=1 "
+        "action=publish_after_fresh_hr",
         f"ATRIADBG historical_full_drain_reconcile gap={GAP} generation={generation} status=resolved density=100 maximum_gap=1 p95_gap=1",
         f"ATRIADBG historical_full_drain_publish status=resolved generation={generation} gap={GAP} receipts=5",
     ]) + "\n"

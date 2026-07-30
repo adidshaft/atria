@@ -516,9 +516,12 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
         // This test exercises persistence without SavedSession coverage. Give
         // it a boundary that cannot alias another durable suite fixture;
         // canonical sleep IDs are window-derived, not review-marker-derived.
+        // The adjacent idempotency test runs in parallel and also leases a
+        // window after the latest durable wake, so each test needs a distinct
+        // offset even when both read the same initial ledger generation.
         let start = max(
             fixtureStart,
-            store.confirmedSleeps.map(\.end).max()?.addingTimeInterval(24 * 60 * 60)
+            store.confirmedSleeps.map(\.end).max()?.addingTimeInterval(7 * 24 * 60 * 60)
                 ?? .distantPast
         )
         let end = start.addingTimeInterval(fixtureEnd.timeIntervalSince(fixtureStart))
@@ -615,7 +618,10 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
                                                day: 3,
                                                hour: 2,
                                                minute: 15))!,
-            store.confirmedSleeps.map(\.end).max()?.addingTimeInterval(24 * 60 * 60)
+            // Deliberately differs from the seven-day lease used by the
+            // unchanged detected-sleep test above. Parallel tests can observe
+            // the same maximum before either write becomes durable.
+            store.confirmedSleeps.map(\.end).max()?.addingTimeInterval(14 * 24 * 60 * 60)
                 ?? .distantPast
         )
         let end = start.addingTimeInterval(7 * 3_600 + 20 * 60)

@@ -6055,7 +6055,8 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "case 0x24:\n            handleCommandResponsePayload(payload, historyPhase: historyPhase)",
-            "handleUnknownProtocolPayload(payload, fullFrame: b, sourceUUID: sourceUUID)",
+            "handleUnknownProtocolPayload(payload,",
+            "historyTransportActive: historyPhase.isActive",
             "private func handleCommandResponsePayload(\n        _ payload: [UInt8],\n        historyPhase: AtriaBLEHistoryTransportPhaseFence.Snapshot",
             "logClockCommandResponse(payload)",
             "logDataRangeCommandResponse(payload)",
@@ -6812,7 +6813,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "if points != self.overviewTrendPoints {",
             "self.overviewTrendPointsRevision &+= 1",
             "SessionStore.makeTrainingLoadSummary(sessions: source,",
-            "private nonisolated static func makeOverviewTrendPoints(sessions: [SavedSession]",
+            "nonisolated static func makeOverviewTrendPoints(sessions: [SavedSession]",
             "private nonisolated static func makeTrainingLoadSummary(sessions: [SavedSession]",
             "AtriaAnalytics.TrainingLoad.summary(sessions: sessions,",
             "trainingLoadSummarySnapshot",
@@ -7670,7 +7671,6 @@ class HandoffStaticChecks(unittest.TestCase):
                 "retryProtectedR10ShortBurstIfEligible",
                 "stopWorkoutRawMotionIfConnected",
                 "armWorkoutHistoricalMotionBankIfPossible",
-                "scheduleGate4DailyBankRearmAfterHistoryStart",
                 "stopWorkoutHistoricalMotionBankIfPossible",
                 "scheduleGate4IMUOnlyProbeStop",
                 "startGate4HistoricalIMUWindowIfRequested",
@@ -7721,10 +7721,6 @@ class HandoffStaticChecks(unittest.TestCase):
                 "!historyOnlyProbeMode",
                 "!offlineHistoricalSyncInProgress",
                 "historicalMotionBankIsArmedForCurrentConnection(",
-            ],
-            "scheduleGate4DailyBankRearmAfterHistoryStart": [
-                "offlineHistoricalSyncGeneration == generation",
-                "gate4DailyBankRearmGeneration == generation",
             ],
             "startGate4HistoricalIMUWindowIfRequested": [
                 "gate4HistoricalIMUWindowProbeRequested",
@@ -14926,7 +14922,11 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, manager, "protectedStandardHRServices(")
         assert_contains(self, manager, "var services = [UUIDs.heartRateService, UUIDs.batteryService]")
         assert_contains(self, manager, "case UUIDs.batteryService:")
-        assert_contains(self, manager, "return [UUIDs.batteryLevel]")
+        assert_contains(
+            self,
+            manager,
+            "return [UUIDs.batteryLevel, UUIDs.batteryLevelStatus]",
+        )
         assert_contains(self, manager, "protectedStandardHRStrapCharacteristics(")
         assert_contains(self, manager, "guard !streamSuppressed else { return nil }")
         assert_contains(self, manager, "protectedR10ResponseEventDataNotifyOrder + [UUIDs.strapTX]")

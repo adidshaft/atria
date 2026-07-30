@@ -207,6 +207,7 @@ final class AtriaWhoop4SacrificialFastDrainPolicyTests: XCTestCase {
         let preflight = Policy.CursorObservation(
             writeCursor: 90_000,
             readCursor: 1_000,
+            capacity: 131_072,
             pendingRecords: 89_000
         )
         XCTAssertTrue(Policy.hasAcceptableCursorCollapse(
@@ -214,6 +215,7 @@ final class AtriaWhoop4SacrificialFastDrainPolicyTests: XCTestCase {
             postflight: .init(
                 writeCursor: 90_000,
                 readCursor: 90_000,
+                capacity: 131_072,
                 pendingRecords: 0
             )
         ))
@@ -222,6 +224,7 @@ final class AtriaWhoop4SacrificialFastDrainPolicyTests: XCTestCase {
             postflight: .init(
                 writeCursor: 90_002,
                 readCursor: 90_000,
+                capacity: 131_072,
                 pendingRecords: 2
             )
         ))
@@ -230,6 +233,7 @@ final class AtriaWhoop4SacrificialFastDrainPolicyTests: XCTestCase {
             postflight: .init(
                 writeCursor: 90_003,
                 readCursor: 90_000,
+                capacity: 131_072,
                 pendingRecords: 3
             )
         ))
@@ -238,6 +242,7 @@ final class AtriaWhoop4SacrificialFastDrainPolicyTests: XCTestCase {
             postflight: .init(
                 writeCursor: 90_000,
                 readCursor: 89_999,
+                capacity: 131_072,
                 pendingRecords: 0
             )
         ))
@@ -245,14 +250,230 @@ final class AtriaWhoop4SacrificialFastDrainPolicyTests: XCTestCase {
             preflight: .init(
                 writeCursor: 2,
                 readCursor: 0,
+                capacity: 131_072,
                 pendingRecords: 2
             ),
             postflight: .init(
                 writeCursor: 2,
                 readCursor: 2,
+                capacity: 131_072,
                 pendingRecords: 0
             )
         ))
+    }
+
+    func testContinuationPreflightAcceptsSameOrForwardCursorAndRejectsRegression() {
+        let previous = Policy.CursorObservation(
+            writeCursor: 96_409,
+            readCursor: 95_156,
+            capacity: 131_072,
+            pendingRecords: 1_253
+        )
+        XCTAssertTrue(Policy.hasNonRegressingContinuationPreflight(
+            previous: previous,
+            current: .init(
+                writeCursor: 96_500,
+                readCursor: 95_156,
+                capacity: 131_072,
+                pendingRecords: 1_344
+            )
+        ))
+        XCTAssertTrue(Policy.hasNonRegressingContinuationPreflight(
+            previous: previous,
+            current: .init(
+                writeCursor: 96_500,
+                readCursor: 95_665,
+                capacity: 131_072,
+                pendingRecords: 835
+            )
+        ))
+        XCTAssertFalse(Policy.hasNonRegressingContinuationPreflight(
+            previous: previous,
+            current: .init(
+                writeCursor: 96_500,
+                readCursor: 95_155,
+                capacity: 131_072,
+                pendingRecords: 1_345
+            )
+        ))
+        XCTAssertFalse(Policy.hasNonRegressingContinuationPreflight(
+            previous: previous,
+            current: .init(
+                writeCursor: 96_500,
+                readCursor: 95_665,
+                capacity: 65_536,
+                pendingRecords: 835
+            )
+        ))
+    }
+
+    func testContinuationPreflightAcceptsBoundedRingWrap() {
+        XCTAssertTrue(Policy.hasNonRegressingContinuationPreflight(
+            previous: .init(
+                writeCursor: 131_070,
+                readCursor: 131_060,
+                capacity: 131_072,
+                pendingRecords: 10
+            ),
+            current: .init(
+                writeCursor: 20,
+                readCursor: 8,
+                capacity: 131_072,
+                pendingRecords: 12
+            )
+        ))
+    }
+
+    func testActiveRootRejectsRandomUUIDBypass() throws {
+        let authorization = try authorization()
+        XCTAssertTrue(Policy.admitsRootLaunch(
+            authorization: authorization,
+            consumedRunID: nil,
+            activeRootRunID: nil
+        ))
+        XCTAssertFalse(Policy.admitsRootLaunch(
+            authorization: authorization,
+            consumedRunID: runID,
+            activeRootRunID: runID
+        ))
+        XCTAssertFalse(Policy.admitsRootLaunch(
+            authorization: authorization,
+            consumedRunID: "3C1B6AAC-AFB7-41A7-8E7A-51FC478C3472",
+            activeRootRunID: "3C1B6AAC-AFB7-41A7-8E7A-51FC478C3472"
+        ))
+    }
+
+    func testSliceBoundsAreBelowObservedTimeoutAndAttemptLimited() {
+        XCTAssertEqual(Policy.sliceTimeout, 75)
+        XCTAssertLessThan(Policy.sliceTimeout, Policy.maximumAbortTimeout)
+        XCTAssertEqual(Policy.maximumSliceAttempts, 4)
+    }
+
+    func testInterruptedSliceCannotSatisfyFinalAcceptance() {
+        let preflight = Policy.CursorObservation(
+            writeCursor: 96_409,
+            readCursor: 95_156,
+            capacity: 131_072,
+            pendingRecords: 1_253
+        )
+        XCTAssertFalse(Policy.hasAcceptableCursorCollapse(
+            preflight: preflight,
+            postflight: .init(
+                writeCursor: 96_500,
+                readCursor: 95_665,
+                capacity: 131_072,
+                pendingRecords: 835
+            )
+        ))
+    }
+
+    func testDisconnectUsesRealTerminalWriterWithActualFastDrainEvidence() throws {
+        let source = try managerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func cancelReadOnlyHistoryCaptureAfterDisconnect"
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "nonisolated static func shouldRearmHistoryOnlyProbeAfterTXDiscovery",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        let fastDrainBranch = try XCTUnwrap(body.range(
+            of: "if sacrificialFastDrainActive"
+        ))
+        let terminal = try XCTUnwrap(body.range(
+            of: "finishSacrificialFastDrain(",
+            range: fastDrainBranch.upperBound..<body.endIndex
+        ))
+        let genericClose = try XCTUnwrap(body.range(
+            of: "try? readOnlyHistoryCaptureStore?.close()",
+            range: terminal.upperBound..<body.endIndex
+        ))
+
+        XCTAssertLessThan(terminal.lowerBound, genericClose.lowerBound)
+        XCTAssertTrue(body.contains(
+            "\"historical_records_discarded\":\n                        sacrificialFastDrainReceivedRecords"
+        ))
+        XCTAssertTrue(body.contains(
+            "\"acknowledged_chunks\":\n                        sacrificialFastDrainACKCount"
+        ))
+        XCTAssertTrue(body.contains("\"ack_in_flight\":"))
+        XCTAssertTrue(body.contains("\"last_confirmed_ack_token\":"))
+        XCTAssertTrue(body.contains("\"accepted\": false"))
+    }
+
+    func testSliceDeadlineCannotMintACKFromDeferredOrNewHistoryEnd() throws {
+        let source = try managerSource()
+        let handlerStart = try XCTUnwrap(source.range(
+            of: "private func handleSacrificialFastDrainPayload"
+        ))
+        let handlerEnd = try XCTUnwrap(source.range(
+            of: "private func compareHRChannelsIfPossible",
+            range: handlerStart.upperBound..<source.endIndex
+        ))
+        let body = String(
+            source[handlerStart.lowerBound..<handlerEnd.lowerBound]
+        )
+        let deadlineGuard = try XCTUnwrap(body.range(
+            of: "if sacrificialFastDrainStopAfterCurrentACK"
+        ))
+        let policyMint = try XCTUnwrap(body.range(
+            of: "try policySession.recordMetadata(payload)"
+        ))
+        XCTAssertLessThan(deadlineGuard.lowerBound, policyMint.lowerBound)
+        XCTAssertTrue(body.contains(
+            "history_end_not_acked_after_slice_deadline"
+        ))
+        XCTAssertTrue(body.contains(
+            "deferred_history_end_dropped_after_slice_deadline"
+        ))
+        XCTAssertTrue(body.contains(
+            "sacrificialFastDrainLastConfirmedACKToken ="
+        ))
+    }
+
+    func testContinuationUsesFreshRangeBeforeServeAndNeverCachedToken() throws {
+        let source = try managerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func runSacrificialFastDrainSlices"
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "private func sendSacrificialFastDrainCommand",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        let sessionReset = try XCTUnwrap(body.range(
+            of: "sacrificialFastDrainSession = .init("
+        ))
+        let range = try XCTUnwrap(body.range(
+            of: "AtriaWhoop4SacrificialFastDrainPolicy.getDataRange"
+        ))
+        let serve = try XCTUnwrap(body.range(
+            of: "AtriaWhoop4SacrificialFastDrainPolicy.sendHistorical"
+        ))
+
+        XCTAssertLessThan(range.lowerBound, serve.lowerBound)
+        XCTAssertLessThan(serve.lowerBound, sessionReset.lowerBound)
+        XCTAssertTrue(body.contains(
+            ".hasNonRegressingContinuationPreflight("
+        ))
+        XCTAssertTrue(body.contains(
+            "sacrificialFastDrainAcknowledgedTokens.removeAll"
+        ))
+        XCTAssertFalse(body.contains(
+            "sacrificialFastDrainLastConfirmedACKToken.map"
+        ))
+        XCTAssertTrue(body.contains(
+            "\"discard_drain_checkpoint\""
+        ))
+        XCTAssertTrue(body.contains("\"accepted\": false"))
+    }
+
+    private func managerSource() throws -> String {
+        let managerURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        return try String(contentsOf: managerURL, encoding: .utf8)
     }
 
     private func authorization() throws -> Policy.Authorization {

@@ -231,11 +231,11 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
             isEstimated: false,
             activity: .walking
         ), "0")
-        XCTAssertEqual(AtriaWorkoutSharePresentation.stepsText(
+        XCTAssertNil(AtriaWorkoutSharePresentation.stepsText(
             count: 842,
             isEstimated: true,
             activity: .running
-        ), "~842")
+        ))
         XCTAssertNil(AtriaWorkoutSharePresentation.stepsText(
             count: 842,
             isEstimated: true,
@@ -245,13 +245,20 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
 
     func testCompletedWorkoutShareOmitsStaleOrMissingStepProvenance() {
         let end = Date(timeIntervalSince1970: 2_000_000_000)
-        XCTAssertEqual(AtriaWorkoutSharePresentation.completedStepsText(
+        XCTAssertNil(AtriaWorkoutSharePresentation.completedStepsText(
             count: 842,
             isEstimated: true,
             capturedAt: end.addingTimeInterval(-1),
             workoutEndedAt: end,
             activity: .walking
-        ), "~842")
+        ))
+        XCTAssertEqual(AtriaWorkoutSharePresentation.completedStepsText(
+            count: 842,
+            isEstimated: false,
+            capturedAt: end.addingTimeInterval(-1),
+            workoutEndedAt: end,
+            activity: .walking
+        ), "842")
         XCTAssertNil(AtriaWorkoutSharePresentation.completedStepsText(
             count: 842,
             isEstimated: true,
@@ -326,9 +333,9 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
                 activity: .walking
             ),
             AtriaWorkoutSharePresentation.CompletedSteps(
-                valueText: "~842",
-                detailText: "WHOOP strap motion",
-                isAvailable: true
+                valueText: "--",
+                detailText: "No verified strap step count for this workout",
+                isAvailable: false
             )
         )
         XCTAssertNil(

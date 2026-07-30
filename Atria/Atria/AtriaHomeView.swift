@@ -3331,6 +3331,9 @@ struct AtriaHomeView: View {
                 dailySteps.completeness
             ),
             stepsCoverageFraction: dailySteps.coverageFraction,
+            stepsAuthorityVersion: steps == nil
+                ? nil
+                : WidgetSnapshotPublisher.qualifiedStepAuthorityVersion,
             strain: model.heroStore.state.strain,
             strainDetail: model.heroStore.state.strainDetail,
             strainCapturedAt: ble.lastAcceptedHeartRateAt,
@@ -8302,7 +8305,14 @@ final class AtriaHomeModel {
         let hrZoneMinutes: TodayHRZoneMinutes
 
         var recoveryValue: String {
-            recoveryEstimate.percent.map { "\($0)%" } ?? "Learning"
+            Self.recoveryValueText(recoveryEstimate: recoveryEstimate)
+        }
+
+        static func recoveryValueText(
+            recoveryEstimate: Metrics.RecoveryEstimate
+        ) -> String {
+            recoveryEstimate.percent.map { "\($0)%" }
+                ?? AtriaCompactMetricPresentation.noValue
         }
 
         var recoveryDetail: String {
@@ -9824,18 +9834,22 @@ final class AtriaHomeModel {
         let currentCycleStepDays: [
             AtriaHistoricalDailyConsumerProjection.StepDay
         ]
+        let qualifiedCanonicalStepDays =
+            motionTickDailyStore.removingUnqualifiedResearchEvidence(
+                from: canonicalStepDays
+            )
         let strapIdentifiers =
             AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers()
         if !strapIdentifiers.isEmpty {
             currentCycleStepDays = motionTickDailyStore
                 .mergingCurrentCycleReceipt(
-                    into: canonicalStepDays,
+                    into: qualifiedCanonicalStepDays,
                     strapIdentifiers: strapIdentifiers,
                     windowStart: savedAggregate.cycleStart,
                     now: Date()
                 )
         } else {
-            currentCycleStepDays = canonicalStepDays
+            currentCycleStepDays = qualifiedCanonicalStepDays
         }
         let dailyStepPresentation = AtriaDailyStepPresentation.resolve(
             day: Date(),
@@ -9844,6 +9858,9 @@ final class AtriaHomeModel {
             liveValidationState: ble.liveStrapStepResearchState,
             liveCapturedAt: ble.liveStrapStepCountCapturedAt,
             canonicalDays: currentCycleStepDays,
+            liveAuthorityQualified:
+                AtriaWhoop4GravityCadenceStepModel
+                    .releaseDailyAuthorityQualified,
             physiologicalDayStart: savedAggregate.cycleStart
         )
         let activeCaloriesToday = SessionStore.mergedTodayActiveCalories(

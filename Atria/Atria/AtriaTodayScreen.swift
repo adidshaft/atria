@@ -2196,7 +2196,11 @@ struct AtriaTodayScreen: View {
             let decoderAvailable = AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: decoderAvailable ? skinTemp.valueText : "\u{2014}",
+                                        value: AtriaExperimentalSensorCopy
+                                            .skinTemperatureValue(
+                                                summary: skinTemp,
+                                                decoderAvailable: decoderAvailable
+                                            ),
                                         detail: legendDetail(decoderAvailable
                                             ? skinTemp.detailText
                                             : "Decoder unavailable"),

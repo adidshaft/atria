@@ -46,6 +46,10 @@ struct WidgetSnapshot: Codable {
     var stepsSource: String? = nil
     var stepsCompleteness: String? = nil
     var stepsCoverageFraction: Double? = nil
+    /// Release authority carried into the extension process. Missing values
+    /// belong to pre-qualification snapshots and must fail closed after an app
+    /// update instead of keeping a disproven v15 subtotal visible.
+    var stepsAuthorityVersion: String? = nil
     var stepsCycleStart: Date? = nil
     var stepsCycleExpiresAt: Date? = nil
     /// Optional so schema-4 snapshots written before goals were added still
@@ -82,6 +86,9 @@ struct WidgetSnapshot: Codable {
 
 @MainActor
 enum WidgetSnapshotPublisher {
+    nonisolated static let qualifiedStepAuthorityVersion =
+        "strap-steps-release-v1"
+
     struct Diagnostics {
         let storage: String
         let appGroupEnabled: Bool
@@ -127,6 +134,7 @@ enum WidgetSnapshotPublisher {
                                          stepsSource: String? = nil,
                                          stepsCompleteness: String? = nil,
                                          stepsCoverageFraction: Double? = nil,
+                                         stepsAuthorityVersion: String? = nil,
                                          strain: Double,
                                          strainDetail: String? = nil,
                                          strainCapturedAt: Date? = nil,
@@ -166,6 +174,7 @@ enum WidgetSnapshotPublisher {
                 stepsSource: stepsSource,
                 stepsCompleteness: stepsCompleteness,
                 stepsCoverageFraction: stepsCoverageFraction,
+                stepsAuthorityVersion: stepsAuthorityVersion,
                 strain: strain,
                 strainDetail: strainDetail,
                 strainCapturedAt: strainCapturedAt,
@@ -204,6 +213,7 @@ enum WidgetSnapshotPublisher {
         stepsSource: String? = nil,
         stepsCompleteness: String? = nil,
         stepsCoverageFraction: Double? = nil,
+        stepsAuthorityVersion: String? = nil,
         strain: Double,
         strainDetail: String? = nil,
         strainCapturedAt: Date? = nil,
@@ -250,6 +260,8 @@ enum WidgetSnapshotPublisher {
             stepsSource: steps == nil ? nil : stepsSource,
             stepsCompleteness: steps == nil ? nil : stepsCompleteness,
             stepsCoverageFraction: steps == nil ? nil : stepsCoverageFraction,
+            stepsAuthorityVersion:
+                steps == nil ? nil : stepsAuthorityVersion,
             stepsCycleStart: steps == nil ? nil : current.stepsCycleStart,
             stepsCycleExpiresAt: steps == nil ? nil : current.stepsCycleExpiresAt,
             dailyStepGoal: current.dailyStepGoal,
@@ -342,6 +354,8 @@ enum WidgetSnapshotPublisher {
                                        stepsSource: snapshot.stepsSource,
                                        stepsCompleteness: snapshot.stepsCompleteness,
                                        stepsCoverageFraction: snapshot.stepsCoverageFraction,
+                                       stepsAuthorityVersion:
+                                        snapshot.stepsAuthorityVersion,
                                        stepsCycleStart: snapshot.stepsCycleStart,
                                        stepsCycleExpiresAt: snapshot.stepsCycleExpiresAt,
                                        dailyStepGoal: snapshot.dailyStepGoal,
@@ -529,21 +543,25 @@ enum WidgetSnapshotPublisher {
         let projectedStepDays: [
             AtriaHistoricalDailyConsumerProjection.StepDay
         ]
+        let qualifiedHistoricalStepDays =
+            AtriaWhoop4MotionTickDailyStore.shared
+                .removingUnqualifiedResearchEvidence(
+                    from: store.historySnapshot
+                        .verifiedHistoricalStepEvidenceDays
+                )
         let strapIdentifiers =
             AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers()
         if !strapIdentifiers.isEmpty {
             projectedStepDays = AtriaWhoop4MotionTickDailyStore.shared
                 .mergingCurrentCycleReceipt(
-                    into: store.historySnapshot
-                        .verifiedHistoricalStepEvidenceDays,
+                    into: qualifiedHistoricalStepDays,
                     strapIdentifiers: strapIdentifiers,
                     windowStart: savedAggregate.day,
                     now: now,
                     calendar: calendar
                 )
         } else {
-            projectedStepDays = store.historySnapshot
-                .verifiedHistoricalStepEvidenceDays
+            projectedStepDays = qualifiedHistoricalStepDays
         }
         let dailySteps = resolvedDailySteps(
             day: now,
@@ -552,6 +570,9 @@ enum WidgetSnapshotPublisher {
             liveValidationState: ble.liveStrapStepResearchState,
             liveCapturedAt: ble.liveStrapStepCountCapturedAt,
             canonicalDays: projectedStepDays,
+            liveAuthorityQualified:
+                AtriaWhoop4GravityCadenceStepModel
+                    .releaseDailyAuthorityQualified,
             physiologicalDayStart: savedAggregate.day,
             calendar: calendar
         )
@@ -659,6 +680,8 @@ enum WidgetSnapshotPublisher {
                                       stepsSource: stepSourceIdentifier(dailySteps.source),
                                       stepsCompleteness: stepCompletenessIdentifier(dailySteps.completeness),
                                       stepsCoverageFraction: dailySteps.coverageFraction,
+                                      stepsAuthorityVersion: publishedSteps == nil
+                                        ? nil : qualifiedStepAuthorityVersion,
                                       stepsCycleStart: publishedSteps == nil ? nil : physiologicalCycle.start,
                                       stepsCycleExpiresAt: publishedSteps == nil ? nil : strainCycleExpiresAt,
                                       dailyStepGoal: dailyStepGoal,
@@ -764,6 +787,7 @@ enum WidgetSnapshotPublisher {
         liveValidationState: String,
         liveCapturedAt: Date?,
         canonicalDays: [AtriaHistoricalDailyConsumerProjection.StepDay] = [],
+        liveAuthorityQualified: Bool = true,
         physiologicalDayStart: Date? = nil,
         calendar: Calendar = .current
     ) -> AtriaDailyStepPresentation {
@@ -774,6 +798,7 @@ enum WidgetSnapshotPublisher {
             liveValidationState: liveValidationState,
             liveCapturedAt: liveCapturedAt,
             canonicalDays: canonicalDays,
+            liveAuthorityQualified: liveAuthorityQualified,
             physiologicalDayStart: physiologicalDayStart,
             calendar: calendar
         )
@@ -829,6 +854,8 @@ enum WidgetSnapshotPublisher {
         let sensorProjectionChanged = previous.steps != snapshot.steps
             || previous.stepsCapturedAt != snapshot.stepsCapturedAt
             || previous.stepsCoverageFraction != snapshot.stepsCoverageFraction
+            || previous.stepsAuthorityVersion
+                != snapshot.stepsAuthorityVersion
             || previous.heartRate != snapshot.heartRate
             || previous.heartRateCapturedAt != snapshot.heartRateCapturedAt
             || previous.batteryCapturedAt != snapshot.batteryCapturedAt
@@ -863,6 +890,9 @@ enum WidgetSnapshotPublisher {
         parts.append(snapshot.stepsAreEstimated == false ? "validated" : "estimated")
         parts.append(snapshot.stepsSource ?? "legacy_source")
         parts.append(snapshot.stepsCompleteness ?? "legacy_completeness")
+        parts.append(
+            snapshot.stepsAuthorityVersion ?? "steps_authority_absent"
+        )
         parts.append(snapshot.stepsCycleStart.map { String($0.timeIntervalSince1970) } ?? "steps_cycle_absent")
         parts.append(snapshot.stepsCycleExpiresAt.map { String($0.timeIntervalSince1970) } ?? "steps_expiry_absent")
         parts.append(snapshot.dailyStepGoal.map(String.init) ?? "-")

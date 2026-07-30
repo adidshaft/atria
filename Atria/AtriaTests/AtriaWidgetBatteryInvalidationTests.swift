@@ -122,6 +122,8 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             stepsSource: "verifiedCanonical",
             stepsCompleteness: "partial",
             stepsCoverageFraction: 0.8,
+            stepsAuthorityVersion:
+                WidgetSnapshotPublisher.qualifiedStepAuthorityVersion,
             strain: 6.8,
             batteryLevel: 43,
             batteryCapturedAt: Date(timeIntervalSince1970: 1_900),
@@ -142,6 +144,10 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertEqual(patched.stepsSource, "verifiedCanonical")
         XCTAssertEqual(patched.stepsCompleteness, "partial")
         XCTAssertEqual(patched.stepsCoverageFraction, 0.8)
+        XCTAssertEqual(
+            patched.stepsAuthorityVersion,
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        )
         XCTAssertEqual(patched.stepsCycleStart, current.stepsCycleStart)
         XCTAssertEqual(patched.stepsCycleExpiresAt, current.stepsCycleExpiresAt)
         XCTAssertEqual(patched.dailyStepGoal, 8_000)
@@ -196,6 +202,10 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertNil(decoded.stepsSource)
         XCTAssertNil(decoded.stepsCompleteness)
         XCTAssertNil(decoded.stepsCoverageFraction)
+        XCTAssertNil(
+            decoded.stepsAuthorityVersion,
+            "a pre-qualification widget payload must fail closed after update"
+        )
         XCTAssertNil(decoded.stepsCycleStart)
         XCTAssertNil(decoded.stepsCycleExpiresAt)
         XCTAssertNil(decoded.heartRateCapturedAt)
@@ -294,6 +304,15 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
 
         XCTAssertTrue(widgetSource.contains("let stepsCapturedAt: Date?"))
         XCTAssertTrue(widgetSource.contains("var stepsAreEstimated: Bool? = nil"))
+        XCTAssertTrue(widgetSource.contains(
+            "var stepsAuthorityVersion: String? = nil"
+        ))
+        XCTAssertTrue(widgetSource.contains(
+            "snapshot.stepsAuthorityVersion"
+        ))
+        XCTAssertTrue(widgetSource.contains(
+            "== atriaQualifiedStepAuthorityVersion"
+        ))
         XCTAssertTrue(widgetSource.contains("let heartRateCapturedAt: Date?"))
         XCTAssertTrue(widgetSource.contains("var dailyStepGoal: Int? = nil"))
         XCTAssertTrue(widgetSource.contains("var heartRateZoneIndex: Int? = nil"))
@@ -519,6 +538,9 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(widgetSource.contains("snapshot.stepsSource == \"verifiedCanonical\""))
         XCTAssertTrue(widgetSource.contains("return \"≥\\(value)\""))
         XCTAssertTrue(widgetSource.contains("return \"Verified complete day\""))
+        XCTAssertTrue(widgetSource.contains(
+            ": \"Verified through \\(atriaCaptureTimeText(capturedAt))\""
+        ))
         XCTAssertTrue(widgetSource.contains("\"Partial archive\""))
         XCTAssertTrue(widgetSource.contains("snapshot.stepsAreEstimated == false"),
                       "only explicit validated provenance may claim exact steps or goal completion")

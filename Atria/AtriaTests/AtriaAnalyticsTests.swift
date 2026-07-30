@@ -3591,6 +3591,33 @@ final class AtriaAnalyticsTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testHeroRecoveryWithoutScoreUsesNoValueAndKeepsReasonInDetail() {
+        let estimate = Metrics.RecoveryEstimate(
+            percent: nil,
+            confidence: .learning,
+            usesHRV: false,
+            detail: "HRV unavailable",
+            contributors: []
+        )
+
+        XCTAssertEqual(
+            AtriaHomeModel.HeroSnapshot.recoveryValueText(
+                recoveryEstimate: estimate
+            ),
+            AtriaCompactMetricPresentation.noValue
+        )
+        XCTAssertEqual(
+            AtriaHomeModel.HeroSnapshot.recoveryDetailText(
+                recoveryEstimate: estimate,
+                recoveryIsProvisional: true,
+                recoveryIsFromPreviousSleep: false,
+                recoveryLiftedAfterNap: false
+            ),
+            "HRV pending"
+        )
+    }
+
     func testSavedSleepUnlocksUnverifiedRecoveryBeforeHRVBaselineMatures() {
         let now = Date()
         let sampleCount = 10

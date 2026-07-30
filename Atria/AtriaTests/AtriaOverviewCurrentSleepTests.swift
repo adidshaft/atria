@@ -82,7 +82,7 @@ final class AtriaOverviewCurrentSleepTests: XCTestCase {
 
     func testTodayShareCannotExportRetainedPriorNightAfterRollover() throws {
         let staleWake = date(2026, 7, 17, 8, 0)
-        let afterRollover = date(2026, 7, 18, 8, 1)
+        let afterRollover = date(2026, 7, 18, 8, 31)
         XCTAssertNil(AtriaOverviewCurrentSleep.resolveDisplayEvidence(
             from: snapshot(wake: staleWake),
             now: afterRollover,
@@ -109,7 +109,7 @@ final class AtriaOverviewCurrentSleepTests: XCTestCase {
 
     func testHealthCurrentSleepEvidenceSharesTodayRolloverAuthority() {
         let wake = date(2026, 7, 18, 8, 0)
-        let staleNow = date(2026, 7, 19, 8, 1)
+        let staleNow = date(2026, 7, 19, 8, 31)
         let currentNow = date(2026, 7, 18, 18, 0)
         let history = snapshot(wake: wake)
 
