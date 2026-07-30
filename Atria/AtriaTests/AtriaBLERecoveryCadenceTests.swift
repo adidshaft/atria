@@ -5633,6 +5633,50 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testCurrentLinkBatteryReadIsBoundedAndNeverAdmittedDuringHistory() {
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        XCTAssertTrue(AtriaBLEManager.shouldPerformCurrentLinkBatteryLevelRead(
+            canonicalLinkConnected: true,
+            historyTransportOwnsLink: false,
+            characteristicReadable: true,
+            readInFlight: false,
+            lastReadAt: nil,
+            now: now
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldPerformCurrentLinkBatteryLevelRead(
+            canonicalLinkConnected: true,
+            historyTransportOwnsLink: true,
+            characteristicReadable: true,
+            readInFlight: false,
+            lastReadAt: nil,
+            now: now
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldPerformCurrentLinkBatteryLevelRead(
+            canonicalLinkConnected: true,
+            historyTransportOwnsLink: false,
+            characteristicReadable: true,
+            readInFlight: true,
+            lastReadAt: nil,
+            now: now
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldPerformCurrentLinkBatteryLevelRead(
+            canonicalLinkConnected: true,
+            historyTransportOwnsLink: false,
+            characteristicReadable: true,
+            readInFlight: false,
+            lastReadAt: now.addingTimeInterval(-59),
+            now: now
+        ))
+        XCTAssertTrue(AtriaBLEManager.shouldPerformCurrentLinkBatteryLevelRead(
+            canonicalLinkConnected: true,
+            historyTransportOwnsLink: false,
+            characteristicReadable: true,
+            readInFlight: false,
+            lastReadAt: now.addingTimeInterval(-60),
+            now: now
+        ))
+    }
+
     func testStaleLowBatteryCannotDisableMotionOrSteps() {
         let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
         XCTAssertEqual(AtriaBLEManager.resolvedMotionBatteryLevel(

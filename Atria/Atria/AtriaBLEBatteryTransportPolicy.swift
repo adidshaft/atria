@@ -36,6 +36,29 @@ extension AtriaBLEManager {
         return now >= lastRequestedAt && now.timeIntervalSince(lastRequestedAt) >= interval
     }
 
+    /// A bounded standard 2A19 read is a freshness repair for firmware that
+    /// does not emit another percentage notification for a long time. It is
+    /// deliberately unavailable while proprietary history owns the link and
+    /// is single-flight/rate-limited so it cannot become a polling loop.
+    nonisolated static func shouldPerformCurrentLinkBatteryLevelRead(
+        canonicalLinkConnected: Bool,
+        historyTransportOwnsLink: Bool,
+        characteristicReadable: Bool,
+        readInFlight: Bool,
+        lastReadAt: Date?,
+        now: Date,
+        minimumInterval: TimeInterval = 60
+    ) -> Bool {
+        guard canonicalLinkConnected,
+              !historyTransportOwnsLink,
+              characteristicReadable,
+              !readInFlight,
+              minimumInterval >= 0 else { return false }
+        guard let lastReadAt else { return true }
+        guard now >= lastReadAt else { return false }
+        return now.timeIntervalSince(lastReadAt) >= minimumInterval
+    }
+
     /// A proprietary battery query is allowed only after the already-proven R10
     /// transport has remained dense and fresh on this connection, then survived
     /// an additional quiet grace. The command pipe remains entirely untouched
