@@ -491,6 +491,11 @@ struct AtriaTrendChartCard: View {
             }
         }
         .chartXSelection(value: $scrubDate)
+        // Keep the first and last observed dates inside the plot instead of
+        // pinning their labels to its clipped edges. Swift Charts otherwise
+        // suppresses the trailing label on a real two-day series even when
+        // both distinct dates are supplied explicitly.
+        .chartXScale(range: .plotDimension(startPadding: 18, endPadding: 18))
         .chartYScale(domain: prepared.yDomain)
         .chartXAxis {
             AxisMarks(values: chartXAxisDates) { _ in
