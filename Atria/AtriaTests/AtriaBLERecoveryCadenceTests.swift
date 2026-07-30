@@ -8668,6 +8668,47 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
     }
 
+    func testLocalConsumerMaterializationDoesNotBlockPresentMotionCapture() {
+        XCTAssertTrue(
+            AtriaBLEManager
+                .historicalMotionBankProcessRetryBlocksPresentCapture(
+                    processInterruptedRetry: true,
+                    consumerMaterializationInFlight: false,
+                    attemptDelayElapsed: true,
+                    cadenceEligible: true
+                ),
+            "A runnable interrupted retry still receives first refusal"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .historicalMotionBankProcessRetryBlocksPresentCapture(
+                    processInterruptedRetry: true,
+                    consumerMaterializationInFlight: true,
+                    attemptDelayElapsed: true,
+                    cadenceEligible: true
+                ),
+            "Local archive projection owns no BLE radio and must not suppress the present 0x69 bank"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .historicalMotionBankProcessRetryBlocksPresentCapture(
+                    processInterruptedRetry: true,
+                    consumerMaterializationInFlight: false,
+                    attemptDelayElapsed: false,
+                    cadenceEligible: true
+                )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .historicalMotionBankProcessRetryBlocksPresentCapture(
+                    processInterruptedRetry: true,
+                    consumerMaterializationInFlight: false,
+                    attemptDelayElapsed: true,
+                    cadenceEligible: false
+                )
+        )
+    }
+
     func testProcessInterruptedMotionBankRetryIsReservedBeforeTransport()
         throws
     {
@@ -8758,6 +8799,9 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
         XCTAssertTrue(body.contains(
             "processInterruptedRetry && retainedAuthorizedRequest"
+        ) || body.contains("retainedRequestOwnsTransport"))
+        XCTAssertTrue(body.contains(
+            "historicalConsumerMaterializationInFlight"
         ))
         XCTAssertTrue(body.contains(
             "Task.sleep(for: .seconds(120))"

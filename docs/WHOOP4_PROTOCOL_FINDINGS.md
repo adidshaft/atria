@@ -2,7 +2,7 @@
 
 This is Atria's living, append-only notebook for WHOOP 4.0 ("Harvard") protocol work. It records the wire protocol, physical strap behaviour, failed approaches, and the evidence behind conclusions. New experiments must be appended to the experiment log even when they fail.
 
-Last updated: 2026-07-30 (Asia/Kolkata)
+Last updated: 2026-07-31 (Asia/Kolkata)
 
 ## Evidence labels
 
@@ -4090,3 +4090,32 @@ POSITIVE STILL REQUIRED**
   and sleep capture from a battery-refresh-induced disconnect. A cached
   percentage may be shown with its age; freshness is never manufactured by
   risking the live strap link.
+## 2026-07-31 — terminal local materialization must not suppress the present 0x69 bank
+
+- Physical Release state after live HR restoration showed the WHOOP link
+  connected while `workoutHistoricalMotionBank.enabled=false`,
+  `prearmRequested=true`, and no open coverage interval.
+- The bound durable motion ticket had one attempt from an earlier process.
+  A terminal full-drain consumer projection was concurrently running locally;
+  no historical BLE transport owner was active.
+- The accepted-HR path reserved the interrupted ticket, retained its request
+  behind `deferred_terminal_materialization`, and returned as though BLE
+  transport had started. Every later HR callback therefore skipped reopening
+  the present bank.
+- Correct ownership rule: an interrupted ticket gets first refusal only when
+  it can progress toward BLE transport. Local terminal materialization owns no
+  radio, so the process-local retry claim is released, the durable ticket and
+  pending request are preserved, and current `69/01` capture may run in
+  parallel.
+- This does **not** permit `69/01` during an active history FIFO drain. The
+  existing `offlineHistoricalSyncInProgress` and fresh-owner-cutover guards
+  remain unchanged.
+- **PHYSICAL PASS:** the signed Release was installed in place on the cabled
+  iPhone with the existing pairing and data preserved. While
+  `offlineSync.lastStatus=terminal_consumer_materialization`, the device
+  reported `link.lastStatus=connected`,
+  `workoutHistoricalMotionBank.enabled=true`, `stopPending=false`, and a
+  durable open interval beginning `2026-07-31 04:13:45 IST`. The same screen
+  showed fresh live HR at 73 bpm. Evidence:
+  `/tmp/atria-bank-rearm.GcCSvN/prefs.plist` and
+  `/tmp/atria-bank-rearm-release-build.log`.
