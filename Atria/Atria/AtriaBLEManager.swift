@@ -29050,6 +29050,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         through: checkpoint.throughOrdinal,
                         archiveReceipt: archiveReceipt
                     )
+                    // Long WHOOP history serves can run for tens of minutes.
+                    // The compact v24 shard is populated beside every accepted
+                    // raw row, so publish it at this existing bounded
+                    // durability checkpoint instead of withholding stronger
+                    // all-day step receipts until the terminal frame. This
+                    // derived cache never grants ACK or gap-coverage authority;
+                    // a failed compact fsync leaves the canonical checkpoint
+                    // valid and is retried at the next checkpoint/terminal.
+                    do {
+                        try AtriaWhoop4MotionTickCompactStore.shared
+                            .synchronize()
+                    } catch {
+                        AtriaDebugLog(
+                            "ATRIADBG whoop4_motion_compact status=checkpoint_flush_failed generation=%llu through_ordinal=%llu error=%@ action=retain_raw_checkpoint_retry_compact_later",
+                            generation,
+                            checkpoint.throughOrdinal,
+                            String(describing: error)
+                        )
+                    }
                     checkpointCoordinator.checkpointCompleted(
                         generation: generation,
                         succeeded: true
