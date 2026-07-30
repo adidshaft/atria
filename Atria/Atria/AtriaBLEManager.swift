@@ -6820,10 +6820,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             historyOnlyProbeEnabled: historyOnlyProbeEnabled,
             historyTransportPhaseActive: historyOnlyProbeMode
         ) {
+            // A durable request or configured probe may keep this broad
+            // observe-only gate true while no proprietary operation actually
+            // owns GATT. Let the battery path apply its narrower transport
+            // predicate so readable 2A19 stays fresh without permitting any
+            // HR repair, discovery reset, reconnect, or history command here.
+            if Self.shouldRequestBatteryRefresh(
+                lastRequestedAt: lastBatteryReadRequestedAt,
+                now: now
+            ) {
+                requestStrapStatusRead(reason: "keepalive_history_boundary_freshness")
+            }
             foregroundKeepaliveReassertAt = nil
             defaults.set("history_transport_owned", forKey: KeepaliveDefaults.lastStatus)
             defaults.set("observe", forKey: KeepaliveDefaults.lastAction)
-            AtriaDebugLog("ATRIADBG foreground_keepalive status=history_transport_owned action=observe_only no_battery_read=1 no_2a37_read_or_discovery=1 no_reconnect=1")
+            AtriaDebugLog("ATRIADBG foreground_keepalive status=history_transport_owned action=observe_only battery_refresh_evaluated=1 no_2a37_read_or_discovery=1 no_reconnect=1")
             return
         }
         defaults.set(now.timeIntervalSince1970, forKey: KeepaliveDefaults.lastTickAt)
