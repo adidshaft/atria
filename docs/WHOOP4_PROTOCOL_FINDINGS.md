@@ -4046,3 +4046,32 @@ POSITIVE STILL REQUIRED**
   extrapolated, or marked recovered.
 - Evidence:
   `evidence/2026-07-30-final-v17-release/cadence-final.json`.
+
+### 2026-07-30 — WHOOP 4 charging-state transport and truthful fallback
+
+- On the present WHOOP 4 firmware, the standard Battery Service exposed
+  change-driven Battery Level (`2A19`) but did not expose Battery Level Status
+  (`2A1B`) to Atria. A signed physical Release recorded no `2A1B`
+  characteristic properties, subscription, read, or callback while the
+  charger was attached. Code may support `2A1B` on other straps, but it cannot
+  be treated as universal WHOOP 4 authority.
+- A current-link `2A1B` notification remains acceptable only after its CCCD
+  enable completes in the same connection epoch. For firmware that advertises
+  `2A1B` as readable but restores its CCCD without an initial value, Atria may
+  issue one bounded standard read outside proprietary history ownership. That
+  request authorizes only a response within 15 seconds and is revoked by any
+  error, reconnect, or disconnect. It does not send a proprietary command,
+  reset discovery, or reconnect.
+- Explicit automatic reads of `2A19` remain prohibited: earlier physical A/B
+  evidence showed they repeatedly disconnect this strap. The production path
+  subscribes once and waits for spontaneous level changes.
+- For the present firmware, Charging is therefore derived from a qualified
+  `2A19` trajectory. Every percentage has already passed current-link,
+  duplicate, sentinel, and transition admission. A bounded increase of at
+  least one percentage point spanning at least 30 seconds (and no more than
+  ten minutes) is sufficient charging evidence. Jumps above ten points remain
+  rejected as corrections.
+- Charging is a short lease, not a latch. It expires after 90 seconds without
+  independent renewal; a decline immediately publishes Not Charging, and
+  disconnect/reconnect revokes current-link evidence. History-origin
+  proprietary battery frames cannot overwrite either SOC or charge state.
