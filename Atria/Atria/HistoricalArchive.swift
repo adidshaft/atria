@@ -2929,7 +2929,8 @@ enum HistoricalArchive {
 
     static func makeRecoveredDataSnapshot(
         since: Date,
-        budget: RecoveredProjectionBudget = .production
+        budget: RecoveredProjectionBudget = .production,
+        onScanProgress: ((AtriaHistoricalJSONLRecentScanner.Statistics) -> Void)? = nil
     ) -> RecoveredDataSnapshot {
         precondition(!Thread.isMainThread, "Recovered archive decoding must run off the main thread")
         let started = DispatchTime.now().uptimeNanoseconds
@@ -2941,7 +2942,8 @@ enum HistoricalArchive {
             since: since,
             budget: budget,
             descriptors: descriptors,
-            started: started
+            started: started,
+            onScanProgress: onScanProgress
         )
     }
 
@@ -3226,7 +3228,8 @@ enum HistoricalArchive {
         budget: RecoveredProjectionBudget = .production,
         candidates: [URL],
         catalog: AtriaHistoricalArchiveCatalog,
-        archiveRoot: URL
+        archiveRoot: URL,
+        onScanProgress: ((AtriaHistoricalJSONLRecentScanner.Statistics) -> Void)? = nil
     ) -> RecoveredDataSnapshot {
         precondition(!Thread.isMainThread, "Recovered archive decoding must run off the main thread")
         let started = DispatchTime.now().uptimeNanoseconds
@@ -3241,7 +3244,8 @@ enum HistoricalArchive {
             since: since,
             budget: budget,
             descriptors: descriptors,
-            started: started
+            started: started,
+            onScanProgress: onScanProgress
         )
     }
 
@@ -3249,7 +3253,8 @@ enum HistoricalArchive {
         since: Date,
         budget: RecoveredProjectionBudget,
         descriptors: [AtriaHistoricalJSONLRecentScanner.FileDescriptor],
-        started: UInt64
+        started: UInt64,
+        onScanProgress: ((AtriaHistoricalJSONLRecentScanner.Statistics) -> Void)?
     ) -> RecoveredDataSnapshot {
         let cutoff = since.timeIntervalSince1970
 
@@ -3310,7 +3315,8 @@ enum HistoricalArchive {
 
         let scanResult = AtriaHistoricalJSONLRecentScanner.scan(
             sources: sources,
-            cutoff: coveredSince
+            cutoff: coveredSince,
+            onProgress: onScanProgress
         ) { lineData in
             guard let record = try? decoder.decode(Record.self, from: lineData) else { return }
             decodedRecordCount += 1
@@ -3868,10 +3874,10 @@ enum HistoricalArchive {
             case .draining,
                  .historyComplete,
                  .coverageProven,
-                 .gapResolvedConsumersPending,
                  .consumersCommitted:
                 return true
-            case .resolved:
+            case .gapResolvedConsumersPending,
+                 .resolved:
                 return false
             }
         } catch {

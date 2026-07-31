@@ -46,6 +46,130 @@ final class AtriaHistoricalFullScanCompletionStoreTests: XCTestCase {
         }
     }
 
+    func testDelayedIndependentScanAdvancesLocalPointerWithoutChangingFacts()
+        throws
+    {
+        let root = try temporaryRoot()
+        let store = AtriaHistoricalFullScanCompletionStore(directoryURL: root)
+        _ = try store.recordCompletion(record(generation: 59))
+        let delayed = record(
+            generation: 3,
+            transportNonce: "later-transport-settled-out-of-order"
+        )
+
+        let published = try store.recordCompletionAdvancingLatest(delayed)
+
+        XCTAssertEqual(published.record.generation, 60)
+        XCTAssertEqual(
+            published.record.transportNonce,
+            delayed.transportNonce
+        )
+        XCTAssertEqual(
+            published.record.transportGeneration,
+            delayed.transportGeneration
+        )
+        XCTAssertEqual(
+            published.record.sourceRawSHA256,
+            delayed.sourceRawSHA256
+        )
+        XCTAssertEqual(try store.loadLatest(), published.record)
+        XCTAssertFalse(published.reusedExistingGeneration)
+    }
+
+    func testDelayedRetryOfSameScanReusesAdvancedGeneration() throws {
+        let root = try temporaryRoot()
+        let store = AtriaHistoricalFullScanCompletionStore(directoryURL: root)
+        let delayed = record(
+            generation: 3,
+            transportNonce: "same-delayed-transport"
+        )
+        _ = try store.recordCompletion(record(generation: 59))
+        let first = try store.recordCompletionAdvancingLatest(delayed)
+        let retry = try store.recordCompletionAdvancingLatest(delayed)
+
+        XCTAssertEqual(first.record.generation, 60)
+        XCTAssertEqual(retry.record, first.record)
+        XCTAssertTrue(retry.reusedExistingGeneration)
+        XCTAssertEqual(try store.loadLatest(), first.record)
+    }
+
+    func testDelayedSubsecondRetryReusesAdvancedGeneration() throws {
+        let root = try temporaryRoot()
+        let store = AtriaHistoricalFullScanCompletionStore(directoryURL: root)
+        let delayed = record(
+            generation: 3,
+            transportNonce: "subsecond-delayed-transport",
+            timestampFraction: 0.625
+        )
+        _ = try store.recordCompletion(record(generation: 59))
+
+        let first = try store.recordCompletionAdvancingLatest(delayed)
+        let retry = try store.recordCompletionAdvancingLatest(delayed)
+
+        XCTAssertEqual(first.record.generation, 60)
+        XCTAssertEqual(retry.record, first.record)
+        XCTAssertTrue(retry.reusedExistingGeneration)
+        XCTAssertEqual(try store.loadLatest(), first.record)
+    }
+
+    func testDistinctDelayedFactsAdvanceMonotonically() throws {
+        let root = try temporaryRoot()
+        let store = AtriaHistoricalFullScanCompletionStore(directoryURL: root)
+        _ = try store.recordCompletion(record(generation: 59))
+
+        let first = try store.recordCompletionAdvancingLatest(
+            record(generation: 3, transportNonce: "delayed-a")
+        )
+        let second = try store.recordCompletionAdvancingLatest(
+            record(generation: 3, transportNonce: "delayed-b")
+        )
+
+        XCTAssertEqual(first.record.generation, 60)
+        XCTAssertEqual(second.record.generation, 61)
+        XCTAssertEqual(try store.loadLatest(), second.record)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: first.recordURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second.recordURL.path))
+    }
+
+    func testGenerationTieWithDifferentFactsAdvancesPastLatest() throws {
+        let root = try temporaryRoot()
+        let store = AtriaHistoricalFullScanCompletionStore(directoryURL: root)
+        _ = try store.recordCompletion(
+            record(generation: 59, transportNonce: "current")
+        )
+
+        let published = try store.recordCompletionAdvancingLatest(
+            record(generation: 59, transportNonce: "different-delayed-scan")
+        )
+
+        XCTAssertEqual(published.record.generation, 60)
+        XCTAssertEqual(
+            published.record.transportNonce,
+            "different-delayed-scan"
+        )
+        XCTAssertEqual(try store.loadLatest(), published.record)
+    }
+
+    func testAdvancingLatestFailsClosedAtGenerationOverflow() throws {
+        let root = try temporaryRoot()
+        let store = AtriaHistoricalFullScanCompletionStore(directoryURL: root)
+        let latest = record(
+            generation: UInt64.max,
+            transportNonce: "maximum-generation"
+        )
+        _ = try store.recordCompletion(latest)
+
+        XCTAssertThrowsError(try store.recordCompletionAdvancingLatest(
+            record(generation: 1, transportNonce: "delayed-after-maximum")
+        )) { error in
+            XCTAssertEqual(
+                error as? AtriaHistoricalFullScanCompletionStore.StoreError,
+                .staleGeneration
+            )
+        }
+        XCTAssertEqual(try store.loadLatest(), latest)
+    }
+
     func testCrashBeforePointerPublicationLeavesOrphanUntrusted() throws {
         enum Injected: Error { case crash }
         let root = try temporaryRoot()
@@ -228,13 +352,19 @@ final class AtriaHistoricalFullScanCompletionStoreTests: XCTestCase {
 
     private func record(
         generation: UInt64,
-        transportNonce: String = "nonce-a"
+        transportNonce: String = "nonce-a",
+        timestampFraction: TimeInterval = 0
     ) -> AtriaHistoricalFullScanCompletionStore.Record {
-        let first = Date(timeIntervalSince1970: 2_002_000_000)
+        let first = Date(
+            timeIntervalSince1970: 2_002_000_000 + timestampFraction
+        )
+        let transportGeneration = generation <= UInt64.max - 10
+            ? generation + 10
+            : generation
         return .init(
             version: 1,
             generation: generation,
-            transportGeneration: generation + 10,
+            transportGeneration: transportGeneration,
             transportNonce: transportNonce,
             peripheralIdentifier: "peripheral-a",
             strapIdentity: "whoop-4",

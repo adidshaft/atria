@@ -6747,9 +6747,25 @@ final class SessionStore: ObservableObject {
     private let recoveredDataPublicationFence = AtriaRecoveredDataPublicationFence()
     private var recoveredDataRecompute = AtriaRecoveredDataRecomputeCoordinator()
     private let recoveredDataMutationTransaction = AtriaRecoveredDataMutationTransaction()
+    private struct RecoveredDataTimeoutContext {
+        let ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket
+        let phase: String
+        let component: AtriaRecoveredDataRecomputeCoordinator.Component?
+    }
     private var recoveredDataRecomputeTimeoutTask: Task<Void, Never>?
-    private var recoveredDataRecomputationDeferralProvider: (() -> Bool)?
+    private var recoveredDataRecomputeTimeoutContext: RecoveredDataTimeoutContext?
+    private var recoveredDataRecomputeLeaseSuspendedForBackground = false
+    private var recoveredDataProjectionLeaseRenewals: [UInt64: Int] = [:]
+    private var recoveredDataProjectionCompletedStages: [UInt64: Set<String>] = [:]
+    private var recoveredDataDerivedLeaseRenewals: [UInt64: Int] = [:]
+    private var recoveredDataDerivedCompletedStages: [UInt64: Set<String>] = [:]
+    private var exactRecoveryProjectionArchiveRevisions = Set<UInt64>()
+    private var exactRecoveryArchivePriorityLeaseActive =
+        HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority()
+    private var recoveredDataRecomputationDeferralProvider:
+        ((_ isExactRecoveryPublication: Bool) -> Bool)?
     private var deferredRecoveredDataRecomputationReason: String?
+    private var deferredRecoveredDataRecomputationIsExact = false
     var onRecoveredDataRecomputePublished: ((UInt64, String) -> Void)?
     /// Fired only after the deferred canonical-session load has rebuilt and
     /// verified the persisted confirmed-sleep -> daily metric -> rollup chain.
@@ -7170,14 +7186,44 @@ final class SessionStore: ObservableObject {
         exactRecoveryOwnsPriority && !isRecoveredPublication
     }
 
+    private var nonExactArchiveConsumerShouldDefer: Bool {
+        exactRecoveryArchivePriorityLeaseActive
+    }
+
+    private func releaseExactRecoveryArchivePriority(
+        for ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket,
+        reason: String
+    ) {
+        guard exactRecoveryProjectionArchiveRevisions.remove(
+            ticket.archiveRevision
+        ) != nil,
+        exactRecoveryProjectionArchiveRevisions.isEmpty else { return }
+        exactRecoveryArchivePriorityLeaseActive = false
+        AtriaDebugLog(
+            "ATRIADBG recovered_projection status=archive_priority_released reason=%@ generation=%llu archive_revision=%llu action=resume_coalesced_non_exact_consumers",
+            reason,
+            ticket.generation,
+            ticket.archiveRevision
+        )
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            self?.resumeDeferredForegroundArchiveWork(
+                reason: "exact_recovery_\(reason)"
+            )
+        }
+    }
+
     private func refreshHistorySnapshotCache(
         deferred: Bool = true,
         isRecoveredPublication: Bool = false,
+        reuseLoadedCanonicalHistory: Bool = false,
+        recoveredAffectedDays: Set<Date>? = nil,
+        progress: ((String) -> Void)? = nil,
         completion: ((Bool) -> Void)? = nil
     ) {
         guard !Self.historySnapshotProjectionShouldDefer(
             exactRecoveryOwnsPriority:
-                HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority(),
+                nonExactArchiveConsumerShouldDefer,
             isRecoveredPublication: isRecoveredPublication
         ) else {
             AtriaDebugLog(
@@ -7208,14 +7254,23 @@ final class SessionStore: ObservableObject {
                     from: historySnapshot
                         .verifiedHistoricalStepEvidenceDays
                 )
-        historySnapshot = HistorySnapshot.sessionsOnly(
-            sourceSessions,
-            verifiedHistoricalStepEvidenceDays: preservedStepEvidenceDays,
-            rest: rest,
-            maxHR: maxHR
-        )
+        let loadedCanonicalHistory = historySnapshot.verifiedCanonicalSources
+        let loadedCanonicalPageCursor =
+            historySnapshot.verifiedCanonicalPageCursor
+        let loadedCanonicalHistoryHasMore =
+            historySnapshot.verifiedCanonicalHistoryHasMore
+        let previousHistorySnapshot = historySnapshot
+        let previousSleepHistorySnapshot = sleepHistorySnapshot
+        if !isRecoveredPublication {
+            historySnapshot = HistorySnapshot.sessionsOnly(
+                sourceSessions,
+                verifiedHistoricalStepEvidenceDays: preservedStepEvidenceDays,
+                rest: rest,
+                maxHR: maxHR
+            )
+        }
         if deferred {
-            Self.historySnapshotProjectionQueue.asyncAfter(deadline: .now() + 0.12) { [weak self, sourceSessions, confirmedWorkouts, confirmedSleeps, dismissedSleepCandidates, archiveHeartRatePoints, biologicalSex, baselineSnapshot, rest, maxHR, physiologicalDayStart, revision] in
+            Self.historySnapshotProjectionQueue.asyncAfter(deadline: .now() + 0.12) { [weak self, sourceSessions, confirmedWorkouts, confirmedSleeps, dismissedSleepCandidates, archiveHeartRatePoints, biologicalSex, baselineSnapshot, rest, maxHR, physiologicalDayStart, revision, loadedCanonicalHistory, loadedCanonicalPageCursor, loadedCanonicalHistoryHasMore, previousHistorySnapshot, previousSleepHistorySnapshot, recoveredAffectedDays] in
                 let isCurrent = DispatchQueue.main.sync {
                     self?.historySnapshotRevision == revision
                 }
@@ -7225,9 +7280,31 @@ final class SessionStore: ObservableObject {
                     }
                     return
                 }
-                let canonicalPage = HistoricalArchive
-                    .readVerifiedCanonicalConsumerSourcePage(after: nil,
-                                                             maximumSourceCount: 8)
+                let canonicalHistory:
+                    [HistoricalArchive.VerifiedCanonicalConsumerSource]
+                let canonicalPageCursor:
+                    AtriaHistoricalAggregateReader.PageCursor?
+                let canonicalHistoryHasMore: Bool
+                if reuseLoadedCanonicalHistory {
+                    // The exact recovered projection has already streamed and
+                    // verified the complete archive into canonical sessions.
+                    // Reopening up to eight large verified source payloads here
+                    // duplicated archive I/O and exhausted the finite physical
+                    // publication lease. Retain the already-loaded canonical
+                    // page only for presentation metadata.
+                    canonicalHistory = loadedCanonicalHistory
+                    canonicalPageCursor = loadedCanonicalPageCursor
+                    canonicalHistoryHasMore = loadedCanonicalHistoryHasMore
+                } else {
+                    let canonicalPage = HistoricalArchive
+                        .readVerifiedCanonicalConsumerSourcePage(
+                            after: nil,
+                            maximumSourceCount: 8
+                        )
+                    canonicalHistory = canonicalPage.sources
+                    canonicalPageCursor = canonicalPage.nextCursor
+                    canonicalHistoryHasMore = canonicalPage.hasMore
+                }
                 let motionStrapIdentifier = UserDefaults.standard.string(
                     forKey: AtriaBLEManager.OfflineSyncDefaults
                         .verifiedHistoryPeripheralID
@@ -7241,28 +7318,58 @@ final class SessionStore: ObservableObject {
                             windowStart: physiologicalDayStart
                         )
                     } : nil
-                let snapshots = SessionStore.makeHistorySnapshots(sessions: sourceSessions,
-                                                                  confirmedWorkouts: confirmedWorkouts,
-                                                                  confirmedSleeps: confirmedSleeps,
-                                                                  dismissedSleepCandidates: dismissedSleepCandidates,
-                                                                  archiveHeartRatePoints: archiveHeartRatePoints,
-                                                                  canonicalHistory: canonicalPage.sources,
-                                                                  additionalStepEvidenceDays: preservedStepEvidenceDays,
-                                                                  motionTickDayEvidence: motionTickDayEvidence,
-                                                                  canonicalPageCursor: canonicalPage.nextCursor,
-                                                                  canonicalHistoryHasMore: canonicalPage.hasMore,
-                                                                  biologicalSex: biologicalSex,
-                                                                  baseline: baselineSnapshot,
-                                                                  rest: rest,
-                                                                  maxHR: maxHR)
+                let incremental = recoveredAffectedDays.flatMap { affectedDays in
+                    SessionStore.makeIncrementalRecoveredHistorySnapshots(
+                        previous: previousHistorySnapshot,
+                        previousSleep: previousSleepHistorySnapshot,
+                        affectedDays: affectedDays,
+                        sessions: sourceSessions,
+                        confirmedWorkouts: confirmedWorkouts,
+                        confirmedSleeps: confirmedSleeps,
+                        dismissedSleepCandidates:
+                            dismissedSleepCandidates,
+                        archiveHeartRatePoints: archiveHeartRatePoints,
+                        biologicalSex: biologicalSex,
+                        baseline: baselineSnapshot,
+                        rest: rest,
+                        maxHR: maxHR
+                    )
+                }
+                let snapshots = incremental ?? SessionStore.makeHistorySnapshots(
+                    sessions: sourceSessions,
+                    confirmedWorkouts: confirmedWorkouts,
+                    confirmedSleeps: confirmedSleeps,
+                    dismissedSleepCandidates: dismissedSleepCandidates,
+                    archiveHeartRatePoints: archiveHeartRatePoints,
+                    canonicalHistory: canonicalHistory,
+                    additionalStepEvidenceDays: preservedStepEvidenceDays,
+                    motionTickDayEvidence: motionTickDayEvidence,
+                    canonicalPageCursor: canonicalPageCursor,
+                    canonicalHistoryHasMore: canonicalHistoryHasMore,
+                    biologicalSex: biologicalSex,
+                    baseline: baselineSnapshot,
+                    rest: rest,
+                    maxHR: maxHR
+                )
+                let preparationSessions = recoveredAffectedDays.map {
+                    SessionStore.recoveredDailyPreparationSessions(
+                        sessions: sourceSessions,
+                        affectedDays: $0,
+                        physiologicalDayStart: physiologicalDayStart
+                    )
+                }
                 DispatchQueue.main.async {
                     guard let self else {
                         completion?(false)
                         return
                     }
+                    progress?("history_snapshot")
                     self.publishFullHistorySnapshotIfCurrent(revision: revision,
                                                              history: snapshots.history,
                                                              sleep: snapshots.sleep,
+                                                             preparationSessions:
+                                                                preparationSessions,
+                                                             progress: progress,
                                                              completion: completion)
                 }
             }
@@ -7280,6 +7387,7 @@ final class SessionStore: ObservableObject {
             publishFullHistorySnapshotIfCurrent(revision: revision,
                                                 history: snapshots.history,
                                                 sleep: snapshots.sleep,
+                                                progress: progress,
                                                 completion: completion)
         }
     }
@@ -7293,6 +7401,14 @@ final class SessionStore: ObservableObject {
         guard AtriaWhoop4GravityCadenceStepModel
                 .releaseDailyAuthorityQualified else {
             currentCycleStepReceiptDeferredUntilForeground = false
+            return
+        }
+        guard !nonExactArchiveConsumerShouldDefer else {
+            currentCycleStepReceiptDeferredUntilForeground = true
+            AtriaDebugLog(
+                "ATRIADBG whoop4_daily_steps status=migration_deferred reason=%@ detail=exact_recovery_archive_priority action=coalesce_until_terminal_projection",
+                reason
+            )
             return
         }
         guard UIApplication.shared.applicationState == .active else {
@@ -7335,6 +7451,18 @@ final class SessionStore: ObservableObject {
         )
 
         Self.historySnapshotProjectionQueue.async { [weak self] in
+            guard !HistoricalArchive
+                .exactRecoveryProjectionOwnsArchivePriority() else {
+                DispatchQueue.main.async { [weak self] in
+                    self?.currentCycleStepCompactMigrationInFlight = false
+                    self?.currentCycleStepReceiptDeferredUntilForeground = true
+                }
+                AtriaDebugLog(
+                    "ATRIADBG whoop4_daily_steps status=migration_deferred reason=%@ detail=exact_recovery_became_active action=yield_shared_archive_lane",
+                    reason
+                )
+                return
+            }
             let sourceBefore =
                 HistoricalArchive.consumerSourceFingerprint()
             let signatureBefore =
@@ -7785,6 +7913,8 @@ final class SessionStore: ObservableObject {
     private func publishFullHistorySnapshotIfCurrent(revision: Int,
                                                      history: HistorySnapshot,
                                                      sleep: SleepHistorySnapshot,
+                                                     preparationSessions: [SavedSession]? = nil,
+                                                     progress: ((String) -> Void)? = nil,
                                                      completion: ((Bool) -> Void)? = nil) {
         guard revision == historySnapshotRevision else {
             completion?(false)
@@ -7799,12 +7929,17 @@ final class SessionStore: ObservableObject {
         prepareDailyMetricRollupPreparationIfCurrent(revision: revision,
                                                      history: history,
                                                      sleep: sleep,
+                                                     preparationSessions:
+                                                        preparationSessions,
+                                                     progress: progress,
                                                      completion: completion)
     }
 
     private func prepareDailyMetricRollupPreparationIfCurrent(revision: Int,
                                                               history: HistorySnapshot,
                                                               sleep: SleepHistorySnapshot,
+                                                              preparationSessions: [SavedSession]? = nil,
+                                                              progress: ((String) -> Void)? = nil,
                                                               completion: ((Bool) -> Void)? = nil) {
         guard revision == historySnapshotRevision else {
             completion?(false)
@@ -7839,6 +7974,8 @@ final class SessionStore: ObservableObject {
                                                      rollupRevision] in
             let preparation = Self.makeDailyHistoryMetricRollupPreparation(history: history,
                                                                           sleep: sleep,
+                                                                          sessionsOverride:
+                                                                            preparationSessions,
                                                                           existingDailyMetrics: existingDailyMetrics,
                                                                           baseline: baselineSnapshot,
                                                                           maxHR: maxHR,
@@ -7861,6 +7998,9 @@ final class SessionStore: ObservableObject {
                     history: history,
                     sleep: sleep,
                     preparation: preparation,
+                    preparationSessions:
+                        preparationSessions,
+                    progress: progress,
                     completion: completion
                 )
             }
@@ -7873,6 +8013,8 @@ final class SessionStore: ObservableObject {
                                                                 history: HistorySnapshot,
                                                                 sleep: SleepHistorySnapshot,
                                                                 preparation: DailyMetricRollupPreparation,
+                                                                preparationSessions: [SavedSession]? = nil,
+                                                                progress: ((String) -> Void)? = nil,
                                                                 completion: ((Bool) -> Void)? = nil) {
         guard revision == historySnapshotRevision,
               rollupRevision == dailyRollupPreparationRevision else {
@@ -7883,6 +8025,9 @@ final class SessionStore: ObservableObject {
             prepareDailyMetricRollupPreparationIfCurrent(revision: revision,
                                                          history: history,
                                                          sleep: sleep,
+                                                         preparationSessions:
+                                                            preparationSessions,
+                                                         progress: progress,
                                                          completion: completion)
             return
         }
@@ -7902,6 +8047,7 @@ final class SessionStore: ObservableObject {
             scheduleDailyMetricPersist(reason: "history_snapshot_refresh")
         }
         persistPreparedDailyRollups(preparation)
+        progress?("daily_rollups")
         completion?(true)
         completeRequiredHistorySnapshotRefreshesIfPossible()
     }
@@ -8108,6 +8254,7 @@ final class SessionStore: ObservableObject {
 
     private nonisolated static func makeDailyHistoryMetricRollupPreparation(history: HistorySnapshot,
                                                                             sleep: SleepHistorySnapshot,
+                                                                            sessionsOverride: [SavedSession]? = nil,
                                                                             existingDailyMetrics: [SavedDailyMetric],
                                                                             baseline: PersonalBaseline,
                                                                             maxHR: Int,
@@ -8118,19 +8265,20 @@ final class SessionStore: ObservableObject {
                                                                             now: Date,
                                                                             invalidatedDays: Set<Date>,
                                                                             calendar: Calendar = .current) -> DailyMetricRollupPreparation {
-        let skinTemperatureDeviationByDay = finalizedSkinTemperatureDeviationByMorningDay(sessions: history.sessions,
+        let sourceSessions = sessionsOverride ?? history.sessions
+        let skinTemperatureDeviationByDay = finalizedSkinTemperatureDeviationByMorningDay(sessions: sourceSessions,
                                                                                           activeSessionID: activeSessionID,
                                                                                           calendar: calendar)
         let savedDailyMetrics = makeSavedDailyMetrics(rollups: history.rollups,
                                                       sleep: sleep,
                                                       baseline: baseline,
-                                                      sessions: history.sessions,
+                                                      sessions: sourceSessions,
                                                       activeSessionID: activeSessionID,
                                                       skinTemperatureDeviationByDay: skinTemperatureDeviationByDay,
                                                       calendar: calendar)
         let mergedDailyMetrics = mergeDailyMetricHistory(existing: existingDailyMetrics,
                                                          computed: savedDailyMetrics,
-                                                         sessions: history.sessions,
+                                                         sessions: sourceSessions,
                                                          sleep: sleep,
                                                          baseline: baseline,
                                                          maxHR: maxHR,
@@ -8139,7 +8287,7 @@ final class SessionStore: ObservableObject {
                                                          authoritativeDays: invalidatedDays,
                                                          calendar: calendar)
         return makeDailyMetricRollupPreparation(metrics: mergedDailyMetrics,
-                                                sessions: history.sessions,
+                                                sessions: sourceSessions,
                                                 sleep: sleep,
                                                 baseline: baseline,
                                                 maxHR: maxHR,
@@ -8727,6 +8875,9 @@ final class SessionStore: ObservableObject {
             }
         }
 
+        let policy = AtriaRecoveredDataTimeoutPolicy.physicalSessionStore
+        var lastOfferedProgressBytes = 0
+        var lastOfferedProgressUptime = DispatchTime.now().uptimeNanoseconds
         let workItem = DispatchWorkItem { [weak self, livePoints, cutoff, ticket] in
             let diagnostics = HistoricalArchive.diagnostics()
             guard !diagnostics.exists || diagnostics.parseOK else {
@@ -8742,8 +8893,34 @@ final class SessionStore: ObservableObject {
                 return
             }
             let recoveredSnapshot = HistoricalArchive.makeRecoveredDataSnapshot(
-                since: cutoff
+                since: cutoff,
+                onScanProgress: { [weak self] statistics in
+                    let now = DispatchTime.now().uptimeNanoseconds
+                    let elapsed = Double(now - lastOfferedProgressUptime)
+                        / 1_000_000_000
+                    guard Self.shouldRenewRecoveredProjectionLease(
+                        newByteCount: statistics.byteCount,
+                        lastRenewedByteCount: lastOfferedProgressBytes,
+                        secondsSinceLastRenewal: elapsed,
+                        renewalsUsed: 0,
+                        policy: policy
+                    ) else { return }
+                    lastOfferedProgressBytes = statistics.byteCount
+                    lastOfferedProgressUptime = now
+                    Task { @MainActor [weak self, ticket] in
+                        self?.renewRecoveredProjectionLease(
+                            ticket: ticket,
+                            scannedByteCount: statistics.byteCount
+                        )
+                    }
+                }
             )
+            Task { @MainActor [weak self, ticket] in
+                self?.renewRecoveredProjectionLease(
+                    ticket: ticket,
+                    completedStage: "archive_snapshot"
+                )
+            }
             guard recoveredSnapshot.physiologyCompleteness == .complete else {
                 let failureReason = recoveredSnapshot.physiologyCompleteness.failureReason
                     ?? "archive_projection_incomplete"
@@ -8778,6 +8955,12 @@ final class SessionStore: ObservableObject {
                 live: livePoints,
                 configuration: configuration
             )
+            Task { @MainActor [weak self, ticket] in
+                self?.renewRecoveredProjectionLease(
+                    ticket: ticket,
+                    completedStage: "heart_rate_projection"
+                )
+            }
             var recoveredSessions = AtriaRecoveredHeartRateProjection.recoveredSessions(
                 from: projection,
                 maximumGap: configuration.maximumGap,
@@ -8809,6 +8992,12 @@ final class SessionStore: ObservableObject {
                 recoveredSessions[index].imuActivityBursts = fields.imuActivityBursts
                 recoveredSessions[index].imuValidationState = fields.imuValidationState
                 recoveredSessions[index].strapStepResearchCount = fields.strapStepResearchCount
+            }
+            Task { @MainActor [weak self, ticket] in
+                self?.renewRecoveredProjectionLease(
+                    ticket: ticket,
+                    completedStage: "motion_projection"
+                )
             }
 
             Task { @MainActor [weak self, archivePoints, recoveredSessions, projection, rrProjection, ticket] in
@@ -8928,6 +9117,109 @@ final class SessionStore: ObservableObject {
         Self.historySnapshotProjectionQueue.async(execute: workItem)
     }
 
+    nonisolated static func shouldRenewRecoveredProjectionLease(
+        newByteCount: Int,
+        lastRenewedByteCount: Int,
+        secondsSinceLastRenewal: TimeInterval,
+        renewalsUsed: Int,
+        policy: AtriaRecoveredDataTimeoutPolicy =
+            .physicalSessionStore
+    ) -> Bool {
+        guard renewalsUsed < policy.maximumProjectionLeaseRenewals,
+              secondsSinceLastRenewal
+                >= TimeInterval(
+                    policy.projectionLeaseRenewalMinimumIntervalSeconds
+                ),
+              newByteCount >= lastRenewedByteCount,
+              newByteCount - lastRenewedByteCount
+                >= policy.projectionLeaseRenewalMinimumBytes else {
+            return false
+        }
+        return true
+    }
+
+    nonisolated static func shouldRenewRecoveredProjectionLeaseForStage(
+        stage: String,
+        completedStages: Set<String>,
+        renewalsUsed: Int,
+        policy: AtriaRecoveredDataTimeoutPolicy =
+            .physicalSessionStore
+    ) -> Bool {
+        !stage.isEmpty
+            && !completedStages.contains(stage)
+            && renewalsUsed < policy.maximumProjectionLeaseRenewals
+    }
+
+    private func renewRecoveredProjectionLease(
+        ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket,
+        scannedByteCount: Int
+    ) {
+        guard case let .projecting(active) = recoveredDataRecompute.phase,
+              active == ticket else { return }
+        let policy = AtriaRecoveredDataTimeoutPolicy.physicalSessionStore
+        let used = recoveredDataProjectionLeaseRenewals[ticket.generation] ?? 0
+        guard Self.shouldRenewRecoveredProjectionLease(
+            newByteCount: scannedByteCount,
+            lastRenewedByteCount: 0,
+            secondsSinceLastRenewal:
+                TimeInterval(policy.projectionLeaseRenewalMinimumIntervalSeconds),
+            renewalsUsed: used,
+            policy: policy
+        ) else { return }
+        recoveredDataProjectionLeaseRenewals[ticket.generation] = used + 1
+        armRecoveredDataRecomputeTimeout(
+            ticket: ticket,
+            phase: "projection",
+            component: nil
+        )
+        AtriaDebugLog(
+            "ATRIADBG recovered_derived status=lease_renewed phase=projection scanned_bytes=%d renewal=%d renewal_cap=%d lease_s=%d generation=%llu archive_revision=%llu",
+            scannedByteCount,
+            used + 1,
+            policy.maximumProjectionLeaseRenewals,
+            policy.projectionLeaseSeconds,
+            ticket.generation,
+            ticket.archiveRevision
+        )
+    }
+
+    private func renewRecoveredProjectionLease(
+        ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket,
+        completedStage stage: String
+    ) {
+        guard case let .projecting(active) = recoveredDataRecompute.phase,
+              active == ticket else { return }
+        let policy = AtriaRecoveredDataTimeoutPolicy.physicalSessionStore
+        let used = recoveredDataProjectionLeaseRenewals[ticket.generation] ?? 0
+        let completed =
+            recoveredDataProjectionCompletedStages[ticket.generation] ?? []
+        guard Self.shouldRenewRecoveredProjectionLeaseForStage(
+            stage: stage,
+            completedStages: completed,
+            renewalsUsed: used,
+            policy: policy
+        ) else { return }
+        recoveredDataProjectionCompletedStages[
+            ticket.generation,
+            default: []
+        ].insert(stage)
+        recoveredDataProjectionLeaseRenewals[ticket.generation] = used + 1
+        armRecoveredDataRecomputeTimeout(
+            ticket: ticket,
+            phase: "projection",
+            component: nil
+        )
+        AtriaDebugLog(
+            "ATRIADBG recovered_derived status=lease_renewed phase=projection stage=%@ renewal=%d renewal_cap=%d lease_s=%d generation=%llu archive_revision=%llu",
+            stage,
+            used + 1,
+            policy.maximumProjectionLeaseRenewals,
+            policy.projectionLeaseSeconds,
+            ticket.generation,
+            ticket.archiveRevision
+        )
+    }
+
     /// Runs the archive-backed analytics cascade behind a revisioned,
     /// fail-closed completion fence. The history pass begins only after archive
     /// diagnostics/cycle HR and confirmed-workout rehydration have committed;
@@ -8959,7 +9251,7 @@ final class SessionStore: ObservableObject {
     }
 
     func installRecoveredDataRecomputationDeferralProvider(
-        _ provider: @escaping () -> Bool
+        _ provider: @escaping (_ isExactRecoveryPublication: Bool) -> Bool
     ) {
         recoveredDataRecomputationDeferralProvider = provider
     }
@@ -8969,11 +9261,32 @@ final class SessionStore: ObservableObject {
     /// already started, the provider keeps the request pending for that finalizer.
     func resumeDeferredRecoveredDataRecomputation(reason: String) {
         guard let pendingReason = deferredRecoveredDataRecomputationReason else { return }
+        let pendingIsExact = deferredRecoveredDataRecomputationIsExact
         deferredRecoveredDataRecomputationReason = nil
+        deferredRecoveredDataRecomputationIsExact = false
         guard requestRecoveredDataRecomputation(
-            reason: "\(pendingReason)_after_\(reason)"
+            reason: "\(pendingReason)_after_\(reason)",
+            allowsIncompleteOnboarding: pendingIsExact,
+            isExactRecoveryPublication: pendingIsExact
         ) else { return }
-        AtriaDebugLog("ATRIADBG recovered_projection status=resumed reason=%@", reason)
+        AtriaDebugLog(
+            "ATRIADBG recovered_projection status=resumed reason=%@ exact=%d",
+            reason,
+            pendingIsExact ? 1 : 0
+        )
+    }
+
+    private func retainDeferredRecoveredDataRecomputation(
+        reason: String,
+        isExactRecoveryPublication: Bool
+    ) {
+        // A later ordinary archive notification must not downgrade the exact
+        // completion-fenced request that is waiting for radio ownership.
+        guard isExactRecoveryPublication
+                || !deferredRecoveredDataRecomputationIsExact else { return }
+        deferredRecoveredDataRecomputationReason = reason
+        deferredRecoveredDataRecomputationIsExact =
+            isExactRecoveryPublication
     }
 
     @discardableResult
@@ -8988,7 +9301,10 @@ final class SessionStore: ObservableObject {
                 HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority(),
             isExactRecoveryPublication: isExactRecoveryPublication
         ) {
-            deferredRecoveredDataRecomputationReason = reason
+            retainDeferredRecoveredDataRecomputation(
+                reason: reason,
+                isExactRecoveryPublication: isExactRecoveryPublication
+            )
             AtriaDebugLog(
                 "ATRIADBG recovered_projection status=deferred reason=%@ exact_recovery_priority=1 action=coalesce_until_required_publication",
                 reason
@@ -9000,20 +9316,29 @@ final class SessionStore: ObservableObject {
                 applicationIsActive:
                     UIApplication.shared.applicationState == .active
            ) {
-            deferredRecoveredDataRecomputationReason = reason
+            retainDeferredRecoveredDataRecomputation(
+                reason: reason,
+                isExactRecoveryPublication: isExactRecoveryPublication
+            )
             AtriaDebugLog(
                 "ATRIADBG recovered_projection status=deferred reason=%@ app_active=0 action=coalesce_until_foreground",
                 reason
             )
             return false
         }
-        let historyTransportOwnsLink = recoveredDataRecomputationDeferralProvider?() ?? false
+        let historyTransportOwnsLink =
+            recoveredDataRecomputationDeferralProvider?(
+                isExactRecoveryPublication
+            ) ?? false
         if Self.shouldDeferAutomaticRecoveredDataRecomputation(
             historyTransportOwnsLink: historyTransportOwnsLink,
             onboardingComplete: profile.hasCompletedOnboarding,
             allowsIncompleteOnboarding: allowsIncompleteOnboarding
         ) {
-            deferredRecoveredDataRecomputationReason = reason
+            retainDeferredRecoveredDataRecomputation(
+                reason: reason,
+                isExactRecoveryPublication: isExactRecoveryPublication
+            )
             AtriaDebugLog("ATRIADBG recovered_projection status=deferred reason=%@ history_owner=%d onboarding_complete=%d action=coalesce_until_history_finalizer",
                           reason,
                           historyTransportOwnsLink ? 1 : 0,
@@ -9021,10 +9346,20 @@ final class SessionStore: ObservableObject {
             return false
         }
         deferredRecoveredDataRecomputationReason = nil
+        deferredRecoveredDataRecomputationIsExact = false
         if reason.hasPrefix("archive_did_update") {
             scheduleConfirmedWorkoutArchiveRehydration(reason: reason)
         }
         let archiveRevision = recoveredDataPublicationFence.recordArchiveUpdate()
+        if isExactRecoveryPublication {
+            // Reserve the archive lane before the coordinator starts so
+            // launch-time background consumers cannot queue ahead of the
+            // terminal publication ticket.
+            exactRecoveryArchivePriorityLeaseActive = true
+            exactRecoveryProjectionArchiveRevisions.insert(archiveRevision)
+            deferredRecoveredDataRecomputationReason = nil
+            deferredRecoveredDataRecomputationIsExact = false
+        }
         let effects = recoveredDataRecompute.request(
             archiveRevision: archiveRevision,
             reason: reason
@@ -9358,6 +9693,15 @@ final class SessionStore: ObservableObject {
         for effect in effects {
             switch effect {
             case .startProjection(let ticket):
+                if exactRecoveryProjectionArchiveRevisions.contains(
+                    ticket.archiveRevision
+                ) {
+                    exactRecoveryArchivePriorityLeaseActive = true
+                }
+                recoveredDataProjectionLeaseRenewals[ticket.generation] = 0
+                recoveredDataProjectionCompletedStages[ticket.generation] = []
+                recoveredDataDerivedLeaseRenewals[ticket.generation] = 0
+                recoveredDataDerivedCompletedStages[ticket.generation] = []
                 guard beginRecoveredDataMutationTransaction(ticket: ticket) else {
                     handleRecoveredDataRecomputeEffects(
                         recoveredDataRecompute.projectionCompleted(
@@ -9370,6 +9714,12 @@ final class SessionStore: ObservableObject {
                 armRecoveredDataRecomputeTimeout(ticket: ticket,
                                                  phase: "projection",
                                                  component: nil)
+                AtriaDebugLog(
+                    "ATRIADBG recovered_projection status=started reason=%@ generation=%llu archive_revision=%llu",
+                    ticket.reason,
+                    ticket.generation,
+                    ticket.archiveRevision
+                )
                 runRecoveredHeartRateProjection(ticket: ticket)
 
             case .startDerived(let ticket, _):
@@ -9383,12 +9733,28 @@ final class SessionStore: ObservableObject {
                 runRecoveredArchiveStatusStep(ticket: ticket)
 
             case .superseded(let ticket):
+                recoveredDataProjectionLeaseRenewals.removeValue(
+                    forKey: ticket.generation
+                )
+                recoveredDataProjectionCompletedStages.removeValue(
+                    forKey: ticket.generation
+                )
+                recoveredDataDerivedLeaseRenewals.removeValue(
+                    forKey: ticket.generation
+                )
+                recoveredDataDerivedCompletedStages.removeValue(
+                    forKey: ticket.generation
+                )
                 guard rollbackRecoveredDataMutationTransaction(ticket: ticket) else {
                     AtriaDebugLog("ATRIADBG recovered_transaction status=rollback_rejected reason=superseded generation=%llu archive_revision=%llu",
                                   ticket.generation,
                                   ticket.archiveRevision)
                     continue
                 }
+                releaseExactRecoveryArchivePriority(
+                    for: ticket,
+                    reason: "superseded"
+                )
                 AtriaDebugLog("ATRIADBG recovered_derived status=superseded generation=%llu archive_revision=%llu",
                               ticket.generation,
                               ticket.archiveRevision)
@@ -9396,6 +9762,20 @@ final class SessionStore: ObservableObject {
             case .failed(let ticket, let failure):
                 recoveredDataRecomputeTimeoutTask?.cancel()
                 recoveredDataRecomputeTimeoutTask = nil
+                recoveredDataRecomputeTimeoutContext = nil
+                recoveredDataRecomputeLeaseSuspendedForBackground = false
+                recoveredDataProjectionLeaseRenewals.removeValue(
+                    forKey: ticket.generation
+                )
+                recoveredDataProjectionCompletedStages.removeValue(
+                    forKey: ticket.generation
+                )
+                recoveredDataDerivedLeaseRenewals.removeValue(
+                    forKey: ticket.generation
+                )
+                recoveredDataDerivedCompletedStages.removeValue(
+                    forKey: ticket.generation
+                )
                 let rolledBack = rollbackRecoveredDataMutationTransaction(ticket: ticket)
                 AtriaDebugLog("ATRIADBG recovered_derived status=failed generation=%llu archive_revision=%llu component=%@ reason=%@ action=retain_previous_publication",
                               ticket.generation,
@@ -9411,12 +9791,34 @@ final class SessionStore: ObservableObject {
                         through: ticket.archiveRevision
                     )
                 }
+                releaseExactRecoveryArchivePriority(
+                    for: ticket,
+                    reason: failure.reason
+                )
 
             case .publish(let ticket):
                 recoveredDataRecomputeTimeoutTask?.cancel()
                 recoveredDataRecomputeTimeoutTask = nil
+                recoveredDataRecomputeTimeoutContext = nil
+                recoveredDataRecomputeLeaseSuspendedForBackground = false
+                recoveredDataProjectionLeaseRenewals.removeValue(
+                    forKey: ticket.generation
+                )
+                recoveredDataProjectionCompletedStages.removeValue(
+                    forKey: ticket.generation
+                )
+                recoveredDataDerivedLeaseRenewals.removeValue(
+                    forKey: ticket.generation
+                )
+                recoveredDataDerivedCompletedStages.removeValue(
+                    forKey: ticket.generation
+                )
                 guard commitRecoveredDataMutationTransaction(ticket: ticket) else {
                     recoveredDataPublicationFence.fail(through: ticket.archiveRevision)
+                    releaseExactRecoveryArchivePriority(
+                        for: ticket,
+                        reason: "commit_rejected"
+                    )
                     AtriaDebugLog("ATRIADBG recovered_transaction status=commit_rejected generation=%llu archive_revision=%llu",
                                   ticket.generation,
                                   ticket.archiveRevision)
@@ -9440,6 +9842,10 @@ final class SessionStore: ObservableObject {
                 AtriaDebugLog("ATRIADBG recovered_derived status=published generation=%llu archive_revision=%llu",
                               ticket.generation,
                               ticket.archiveRevision)
+                releaseExactRecoveryArchivePriority(
+                    for: ticket,
+                    reason: "published"
+                )
             }
         }
     }
@@ -9450,6 +9856,24 @@ final class SessionStore: ObservableObject {
         component: AtriaRecoveredDataRecomputeCoordinator.Component?
     ) {
         recoveredDataRecomputeTimeoutTask?.cancel()
+        recoveredDataRecomputeTimeoutContext = .init(
+            ticket: ticket,
+            phase: phase,
+            component: component
+        )
+        guard UIApplication.shared.applicationState == .active else {
+            recoveredDataRecomputeTimeoutTask = nil
+            recoveredDataRecomputeLeaseSuspendedForBackground = true
+            AtriaDebugLog(
+                "ATRIADBG recovered_derived status=lease_suspended phase=%@ component=%@ generation=%llu archive_revision=%llu reason=application_not_active",
+                phase,
+                component?.rawValue ?? "pipeline",
+                ticket.generation,
+                ticket.archiveRevision
+            )
+            return
+        }
+        recoveredDataRecomputeLeaseSuspendedForBackground = false
         let policy = AtriaRecoveredDataTimeoutPolicy.physicalSessionStore
         let leaseSeconds = phase == "projection"
             ? policy.projectionLeaseSeconds
@@ -9468,6 +9892,49 @@ final class SessionStore: ObservableObject {
                                                      component: component)
             )
         }
+    }
+
+    func suspendRecoveredDataPublicationLeaseForBackground(reason: String) {
+        guard recoveredDataRecomputeTimeoutContext != nil,
+              !recoveredDataRecomputeLeaseSuspendedForBackground else { return }
+        recoveredDataRecomputeTimeoutTask?.cancel()
+        recoveredDataRecomputeTimeoutTask = nil
+        recoveredDataRecomputeLeaseSuspendedForBackground = true
+        AtriaDebugLog(
+            "ATRIADBG recovered_derived status=lease_suspended reason=%@",
+            reason
+        )
+    }
+
+    func resumeRecoveredDataPublicationLeaseForForeground(reason: String) {
+        guard recoveredDataRecomputeLeaseSuspendedForBackground,
+              let context = recoveredDataRecomputeTimeoutContext else { return }
+        let isActive: Bool
+        switch recoveredDataRecompute.phase {
+        case .projecting(let active):
+            isActive = active == context.ticket
+        case .deriving(let active, _):
+            isActive = active == context.ticket
+        case .idle, .failed:
+            isActive = false
+        }
+        guard isActive else {
+            recoveredDataRecomputeTimeoutContext = nil
+            recoveredDataRecomputeLeaseSuspendedForBackground = false
+            return
+        }
+        recoveredDataRecomputeLeaseSuspendedForBackground = false
+        armRecoveredDataRecomputeTimeout(
+            ticket: context.ticket,
+            phase: context.phase,
+            component: context.component
+        )
+        AtriaDebugLog(
+            "ATRIADBG recovered_derived status=lease_resumed reason=%@ generation=%llu archive_revision=%llu",
+            reason,
+            context.ticket.generation,
+            context.ticket.archiveRevision
+        )
     }
 
     private func runRecoveredArchiveStatusStep(
@@ -9581,8 +10048,20 @@ final class SessionStore: ObservableObject {
     private func runRecoveredWorkoutStep(
         ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket
     ) {
+        // The immediately preceding projection already streamed and verified
+        // the complete 14-day physiology image. Re-reading the same 553 MB raw
+        // corpus here delayed the confirmed-workout callback past its finite
+        // lease on the physical phone. Reuse that immutable image for workouts
+        // fully contained by its proven window; older incomplete workouts stay
+        // untouched and remain eligible for the ordinary deferred repair pass.
+        let recoveredArchiveCoverageStart =
+            Date().addingTimeInterval(-14 * 24 * 60 * 60)
         scheduleConfirmedWorkoutArchiveRehydration(
-            reason: "recovered_fence_\(ticket.reason)"
+            reason: "recovered_fence_\(ticket.reason)",
+            recoveredArchiveHeartRatePoints:
+                cachedRecoveredArchiveHeartRatePoints,
+            recoveredArchiveCoverageStart:
+                recoveredArchiveCoverageStart
         ) { [weak self] succeeded in
             guard let self else { return }
             guard self.completeRecoveredDataComponent(
@@ -9618,9 +10097,22 @@ final class SessionStore: ObservableObject {
     private func runRecoveredHistoryStep(
         ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket
     ) {
+        let affectedDays = Self.currentExactRecoveryAffectedDays()
+        if let affectedDays {
+            pendingDailyDerivedInvalidationDays.formUnion(affectedDays)
+        }
         refreshHistorySnapshotCache(
             deferred: true,
-            isRecoveredPublication: true
+            isRecoveredPublication: true,
+            reuseLoadedCanonicalHistory: true,
+            recoveredAffectedDays: affectedDays,
+            progress: { [weak self] stage in
+                self?.renewRecoveredDerivedLease(
+                    ticket: ticket,
+                    component: .historySleepAndDailyRollups,
+                    completedStage: stage
+                )
+            }
         ) { [weak self] succeeded in
             guard let self else { return }
             guard self.completeRecoveredDataComponent(
@@ -9630,6 +10122,79 @@ final class SessionStore: ObservableObject {
             ) else { return }
             self.runRecoveredIndependentDerivedSteps(ticket: ticket)
         }
+    }
+
+    nonisolated static func currentExactRecoveryAffectedDays(
+        calendar: Calendar = .current
+    ) -> Set<Date>? {
+        let root = FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        )[0].appendingPathComponent(
+            "atria-historical/full-drain-authority-v1",
+            isDirectory: true
+        )
+        guard let authority = try? AtriaHistoricalFullDrainCoverageStore(
+            directoryURL: root
+        ).load(),
+        authority.gap.pending else { return nil }
+        let start = Date(timeIntervalSince1970: authority.gap.startUnix)
+        let end = Date(timeIntervalSince1970: authority.gap.endUnix)
+        guard end > start else { return nil }
+        var day = calendar.startOfDay(for: start)
+        let finalDay = calendar.startOfDay(
+            for: end.addingTimeInterval(-0.001)
+        )
+        var result = Set<Date>()
+        while day <= finalDay {
+            result.insert(day)
+            guard let next = calendar.date(
+                byAdding: .day,
+                value: 1,
+                to: day
+            ), next > day else { break }
+            day = next
+        }
+        return result.isEmpty ? nil : result
+    }
+
+    private func renewRecoveredDerivedLease(
+        ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket,
+        component: AtriaRecoveredDataRecomputeCoordinator.Component,
+        completedStage stage: String
+    ) {
+        guard case let .deriving(active, pending) =
+                recoveredDataRecompute.phase,
+              active == ticket,
+              pending.contains(component) else { return }
+        let policy = AtriaRecoveredDataTimeoutPolicy.physicalSessionStore
+        let used =
+            recoveredDataDerivedLeaseRenewals[ticket.generation] ?? 0
+        let completed =
+            recoveredDataDerivedCompletedStages[ticket.generation] ?? []
+        guard !stage.isEmpty,
+              !completed.contains(stage),
+              used < policy.maximumDerivedStageLeaseRenewals else { return }
+        recoveredDataDerivedCompletedStages[
+            ticket.generation,
+            default: []
+        ].insert(stage)
+        recoveredDataDerivedLeaseRenewals[ticket.generation] = used + 1
+        armRecoveredDataRecomputeTimeout(
+            ticket: ticket,
+            phase: "derived",
+            component: component
+        )
+        AtriaDebugLog(
+            "ATRIADBG recovered_derived status=lease_renewed phase=derived component=%@ stage=%@ renewal=%d renewal_cap=%d lease_s=%d generation=%llu archive_revision=%llu",
+            component.rawValue,
+            stage,
+            used + 1,
+            policy.maximumDerivedStageLeaseRenewals,
+            policy.derivedComponentLeaseSeconds,
+            ticket.generation,
+            ticket.archiveRevision
+        )
     }
 
     private func runRecoveredIndependentDerivedSteps(
@@ -9711,8 +10276,21 @@ final class SessionStore: ObservableObject {
     /// compare-and-swap is one atomic confirmed-workout persistence revision.
     private func scheduleConfirmedWorkoutArchiveRehydration(
         reason: String,
+        recoveredArchiveHeartRatePoints:
+            [HistoricalArchive.HeartRatePoint]? = nil,
+        recoveredArchiveCoverageStart: Date? = nil,
         completion: ((Bool) -> Void)? = nil
     ) {
+        let isRequiredRecoveredPublication = completion != nil
+        if !isRequiredRecoveredPublication,
+           nonExactArchiveConsumerShouldDefer {
+            workoutRehydrationDeferredUntilForeground = true
+            AtriaDebugLog(
+                "ATRIADBG confirmed_workout_rehydration status=deferred reason=%@ detail=exact_recovery_archive_priority action=coalesce_until_terminal_projection",
+                reason
+            )
+            return
+        }
         if completion == nil,
            !Self.shouldStartAutomaticArchiveProjection(
                 applicationIsActive:
@@ -9737,7 +10315,21 @@ final class SessionStore: ObservableObject {
         }
         confirmedWorkoutRehydrationGeneration &+= 1
         let generation = confirmedWorkoutRehydrationGeneration
-        let originals = cachedConfirmedWorkouts.filter(Self.confirmedWorkoutNeedsArchiveRehydration)
+        let candidates = cachedConfirmedWorkouts.filter(
+            Self.confirmedWorkoutNeedsArchiveRehydration
+        )
+        let originals: [UserConfirmedWorkout]
+        if recoveredArchiveHeartRatePoints != nil,
+           let recoveredArchiveCoverageStart {
+            originals = candidates.filter {
+                Self.confirmedWorkoutFallsWithinRecoveredArchive(
+                    workoutStart: $0.start,
+                    coverageStart: recoveredArchiveCoverageStart
+                )
+            }
+        } else {
+            originals = candidates
+        }
         guard !originals.isEmpty else {
             finishConfirmedWorkoutRehydrationCompletions(succeeded: true)
             return
@@ -9749,7 +10341,7 @@ final class SessionStore: ObservableObject {
         let currentProfile = profile
         let workItem = DispatchWorkItem { [weak self, originals, sourceSessions,
                                            currentRest, currentMaxHR, currentProfile,
-                                           reason] in
+                                           reason, recoveredArchiveHeartRatePoints] in
             let heartRateOriginals = originals.filter(
                 Self.confirmedWorkoutNeedsHeartRateArchiveRehydration
             )
@@ -9799,18 +10391,32 @@ final class SessionStore: ObservableObject {
             if let union = Self.confirmedWorkoutArchiveUnionWindow(
                 heartRateOriginals
             ) {
-                // Scan immutable history once for the complete set of eligible
-                // workouts. Reading the same 304 MB archive once per workout
-                // exceeded the recovered-data component lease on the physical
-                // device. The global ceiling remains fail-closed: overflow
-                // withholds every HR replacement instead of publishing a
-                // partial prefix.
-                archiveHeartRateWindow = HistoricalArchive
-                    .metricHeartRatePoints(
-                        start: union.start,
-                        end: union.end.addingTimeInterval(0.001),
-                        maximumPoints: 1_500_000
+                if let recoveredArchiveHeartRatePoints {
+                    archiveHeartRateWindow = .init(
+                        points: recoveredArchiveHeartRatePoints.filter {
+                            $0.t >= union.start && $0.t <= union.end
+                        },
+                        scannedFileCount: 0,
+                        scannedByteCount: 0
                     )
+                    AtriaDebugLog(
+                        "ATRIADBG confirmed_workout_rehydration status=reusing_recovered_projection reason=%@ generation=%d points=%d action=avoid_duplicate_raw_archive_scan",
+                        reason,
+                        generation,
+                        archiveHeartRateWindow?.points.count ?? 0
+                    )
+                } else {
+                    // Scan immutable history once for the complete set of
+                    // eligible workouts. The global ceiling remains
+                    // fail-closed: overflow withholds every HR replacement
+                    // instead of publishing a partial prefix.
+                    archiveHeartRateWindow = HistoricalArchive
+                        .metricHeartRatePoints(
+                            start: union.start,
+                            end: union.end.addingTimeInterval(0.001),
+                            maximumPoints: 1_500_000
+                        )
+                }
             } else {
                 archiveHeartRateWindow = nil
             }
@@ -9940,6 +10546,14 @@ final class SessionStore: ObservableObject {
             return
         }
         workoutStepEvidenceDeferredUntilForeground = false
+        guard !nonExactArchiveConsumerShouldDefer else {
+            workoutStepEvidenceDeferredUntilForeground = true
+            AtriaDebugLog(
+                "ATRIADBG confirmed_workout_steps status=deferred reason=%@ detail=exact_recovery_archive_priority action=coalesce_until_terminal_projection",
+                reason
+            )
+            return
+        }
         guard pendingWorkoutStepEvidenceWorkItem == nil else { return }
         let originals = cachedConfirmedWorkouts.filter {
             ($0.workoutSteps == nil
@@ -9959,6 +10573,14 @@ final class SessionStore: ObservableObject {
         let generation = workoutStepEvidenceGeneration
         let workItem = DispatchWorkItem { [weak self, originals,
                                            strapIdentifier, reason] in
+            guard !HistoricalArchive
+                .exactRecoveryProjectionOwnsArchivePriority() else {
+                Task { @MainActor [weak self] in
+                    self?.pendingWorkoutStepEvidenceWorkItem = nil
+                    self?.workoutStepEvidenceDeferredUntilForeground = true
+                }
+                return
+            }
             let fingerprintBefore =
                 HistoricalArchive.consumerSourceFingerprint()
             let fingerprintIdentifier =
@@ -10394,6 +11016,114 @@ final class SessionStore: ObservableObject {
                                          dismissedCandidates: dismissedSleepCandidates,
                                          calendar: calendar)
         return (history, sleep)
+    }
+
+    /// Rebuilds only civil days whose durable inputs changed during one exact
+    /// recovery transaction. Untouched rows remain the previously published
+    /// verified values; the full path remains the fail-closed fallback when no
+    /// usable prior snapshot exists.
+    nonisolated static func makeIncrementalRecoveredHistorySnapshots(
+        previous: HistorySnapshot,
+        previousSleep: SleepHistorySnapshot,
+        affectedDays: Set<Date>,
+        sessions: [SavedSession],
+        confirmedWorkouts: [UserConfirmedWorkout],
+        confirmedSleeps: [UserConfirmedSleep],
+        dismissedSleepCandidates: [AtriaDismissedSleepCandidate],
+        archiveHeartRatePoints: [HistoricalArchive.HeartRatePoint],
+        biologicalSex: AthleteProfile.BiologicalSex,
+        baseline: PersonalBaseline,
+        rest: Int,
+        maxHR: Int,
+        calendar: Calendar = .current
+    ) -> (history: HistorySnapshot, sleep: SleepHistorySnapshot)? {
+        let normalizedAffectedDays = Set(affectedDays.map {
+            calendar.startOfDay(for: $0)
+        })
+        guard !normalizedAffectedDays.isEmpty,
+              !previous.rollups.isEmpty else { return nil }
+
+        func overlapsAffectedDay(_ session: SavedSession) -> Bool {
+            EventCivilTime.days(
+                overlappedBy: session.start,
+                end: session.end,
+                eventTimeZoneIdentifier: session.eventTimeZoneIdentifier,
+                outputCalendar: calendar
+            ).contains { normalizedAffectedDays.contains($0) }
+        }
+        let affectedSessions = sessions.filter(overlapsAffectedDay)
+        let affectedWorkouts = confirmedWorkouts.filter {
+            normalizedAffectedDays.contains(
+                EventCivilTime.day(
+                    containing: $0.start,
+                    eventTimeZoneIdentifier: $0.eventTimeZoneIdentifier,
+                    outputCalendar: calendar
+                )
+            )
+        }
+        let affectedArchivePoints = archiveHeartRatePoints.filter {
+            normalizedAffectedDays.contains(calendar.startOfDay(for: $0.t))
+        }
+        let partial = makeHistorySnapshots(
+            sessions: affectedSessions,
+            confirmedWorkouts: affectedWorkouts,
+            confirmedSleeps: confirmedSleeps,
+            dismissedSleepCandidates: dismissedSleepCandidates,
+            archiveHeartRatePoints: affectedArchivePoints,
+            biologicalSex: biologicalSex,
+            baseline: baseline,
+            rest: rest,
+            maxHR: maxHR,
+            calendar: calendar
+        )
+        let retainedDetections = previous.detections.filter {
+            !normalizedAffectedDays.contains(calendar.startOfDay(for: $0.start))
+        }
+        let mergedDetections = (retainedDetections + partial.history.detections)
+            .sorted { $0.start > $1.start }
+        let retainedRollups = previous.rollups.filter {
+            !normalizedAffectedDays.contains(calendar.startOfDay(for: $0.day))
+        }
+        let mergedRollups = (retainedRollups + partial.history.rollups)
+            .sorted { $0.day > $1.day }
+        let history = HistorySnapshot(
+            recoveredSessions: sessions,
+            detections: mergedDetections,
+            trends: previous.trends,
+            rollups: mergedRollups,
+            preservingPresentationFrom: previous
+        )
+        let sleep = SleepHistorySnapshot(
+            rollups: mergedRollups,
+            confirmedSleeps: confirmedSleeps,
+            dismissedCandidates: dismissedSleepCandidates,
+            calendar: calendar
+        )
+        _ = previousSleep
+        return (history, sleep)
+    }
+
+    nonisolated static func recoveredDailyPreparationSessions(
+        sessions: [SavedSession],
+        affectedDays: Set<Date>,
+        physiologicalDayStart: Date,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> [SavedSession] {
+        let normalizedAffectedDays = Set(affectedDays.map {
+            calendar.startOfDay(for: $0)
+        })
+        return sessions.filter { session in
+            if session.end > physiologicalDayStart && session.start < now {
+                return true
+            }
+            return EventCivilTime.days(
+                overlappedBy: session.start,
+                end: session.end,
+                eventTimeZoneIdentifier: session.eventTimeZoneIdentifier,
+                outputCalendar: calendar
+            ).contains { normalizedAffectedDays.contains($0) }
+        }
     }
 
     private nonisolated static func motionTickStepDay(
@@ -12264,6 +12994,11 @@ final class SessionStore: ObservableObject {
         pendingSleepReviewCacheWorkItem?.cancel()
         pendingWorkoutReviewCacheWorkItem?.cancel()
         recoveredDataRecomputeTimeoutTask?.cancel()
+        recoveredDataRecomputeTimeoutContext = nil
+        recoveredDataProjectionLeaseRenewals.removeAll()
+        recoveredDataProjectionCompletedStages.removeAll()
+        recoveredDataDerivedLeaseRenewals.removeAll()
+        recoveredDataDerivedCompletedStages.removeAll()
         pendingWorkoutStepEvidenceWorkItem?.cancel()
         deferredLaunchCardSettlementRetryTask?.cancel()
         pendingSleepReadinessRetry?.cancel()
@@ -19882,6 +20617,13 @@ final class SessionStore: ObservableObject {
               let end = workouts.map(\.end).max(),
               end > start else { return nil }
         return DateInterval(start: start, end: end)
+    }
+
+    nonisolated static func confirmedWorkoutFallsWithinRecoveredArchive(
+        workoutStart: Date,
+        coverageStart: Date
+    ) -> Bool {
+        workoutStart >= coverageStart
     }
 
     /// Durable identity of every input that can change confirmed-workout HR
@@ -30003,6 +30745,12 @@ final class SessionStore: ObservableObject {
         pendingWorkoutReviewCacheWorkItem = nil
         recoveredDataRecomputeTimeoutTask?.cancel()
         recoveredDataRecomputeTimeoutTask = nil
+        recoveredDataRecomputeTimeoutContext = nil
+        recoveredDataRecomputeLeaseSuspendedForBackground = false
+        recoveredDataProjectionLeaseRenewals.removeAll()
+        recoveredDataProjectionCompletedStages.removeAll()
+        recoveredDataDerivedLeaseRenewals.removeAll()
+        recoveredDataDerivedCompletedStages.removeAll()
         recoveredDataPublicationFence.failAll()
         AtriaDebugLog("ATRIADBG session_store status=blocked reason=restore_marker_retained")
     }
@@ -33028,6 +33776,33 @@ struct HistorySnapshot {
         detections = source.detections
         self.trends = trends
         rollups = source.rollups
+        verifiedHistoricalStepDays = source.verifiedHistoricalStepDays
+        verifiedHistoricalStepEvidenceDays =
+            source.verifiedHistoricalStepEvidenceDays
+        verifiedReplayIdentityRowCount = source.verifiedReplayIdentityRowCount
+        verifiedCanonicalSources = source.verifiedCanonicalSources
+        verifiedCanonicalPageCursor = source.verifiedCanonicalPageCursor
+        verifiedCanonicalHistoryHasMore =
+            source.verifiedCanonicalHistoryHasMore
+    }
+
+    /// Exact recovery updates the canonical sensor sessions and affected-day
+    /// aggregates without synchronously rebuilding every historical detail row.
+    /// Existing detail rows remain truthful for their already-published
+    /// sessions and a later ordinary history refresh may expand the new rows.
+    init(
+        recoveredSessions: [SavedSession],
+        detections: [ActivityDetection],
+        trends: [TrendSummary],
+        rollups: [DailyRollup],
+        preservingPresentationFrom source: HistorySnapshot
+    ) {
+        sessions = recoveredSessions
+        sessionRows = source.sessionRows
+        restingTrendPoints = source.restingTrendPoints
+        self.detections = detections
+        self.trends = trends
+        self.rollups = rollups
         verifiedHistoricalStepDays = source.verifiedHistoricalStepDays
         verifiedHistoricalStepEvidenceDays =
             source.verifiedHistoricalStepEvidenceDays

@@ -239,6 +239,34 @@ final class AtriaHistoricalJSONLRecentScannerTests: XCTestCase {
         XCTAssertEqual(result.states[file.path]?.processedOffset, UInt64(bytes.count))
     }
 
+    func testStreamingScanReportsMonotonicPostChunkProgress() throws {
+        let file = temporaryDirectory().appendingPathComponent("progress.jsonl")
+        let lines = (0..<32).map {
+            "{\"unix7\":\(300 + $0),\"subsec11\":0}\n"
+        }.joined()
+        let bytes = Data(lines.utf8)
+        try bytes.write(to: file)
+        let descriptor = try XCTUnwrap(
+            AtriaHistoricalJSONLRecentScanner.descriptors(for: [file]).first
+        )
+        var progress: [AtriaHistoricalJSONLRecentScanner.Statistics] = []
+
+        let result = AtriaHistoricalJSONLRecentScanner.scan(
+            sources: [.init(descriptor: descriptor, startOffset: 0)],
+            cutoff: 0,
+            chunkSize: 37,
+            onProgress: { progress.append($0) }
+        ) { _ in }
+
+        XCTAssertTrue(result.complete)
+        XCTAssertGreaterThan(progress.count, 1)
+        XCTAssertEqual(progress.last?.byteCount, bytes.count)
+        XCTAssertTrue(zip(progress, progress.dropFirst()).allSatisfy {
+            $0.byteCount < $1.byteCount
+        })
+        XCTAssertEqual(progress.last, result.statistics)
+    }
+
     func testCompressedArtifactScanTransparentlyDecodesAndReusesPhysicalEOF() throws {
         let root = temporaryDirectory()
         let source = root.appendingPathComponent("segments/raw-v2/raw.jsonl")

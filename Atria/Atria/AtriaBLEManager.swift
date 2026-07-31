@@ -1128,6 +1128,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             explicitLaunchIntentPending: explicitHistoryLaunchIntentPending
         )
     }
+    /// Exact recovered-data publication is local archive work. It must defer
+    /// only while a history operation actually owns or is cutting over the
+    /// radio, not merely because a newer user/history intent is durably queued.
+    var historicalRadioTransportOwnsLink: Bool {
+        Self.historicalRadioTransportOwnershipIsActive(
+            offlineSyncInProgress: offlineHistoricalSyncInProgress,
+            historyProbeEnabled: historyOnlyProbeEnabled,
+            historyPhaseActive: historyOnlyProbeMode,
+            readOnlyRequested: readOnlyHistoryCaptureRequested,
+            readOnlyActive: readOnlyHistoryCaptureActive,
+            postHistoryLiveRestorationPending:
+                postHistoryLiveRestorationGeneration != nil,
+            freshOwnerCutoverPending: freshHistoryOwnerCutoverPending,
+            freshOwnerConnectionArmed:
+                freshHistoryOwnerConnectionGeneration != nil
+        )
+    }
     private let autoSaveMinSamples = 10
 
     private var sessionMinHeartRate: Int?
@@ -7080,16 +7097,49 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         freshOwnerConnectionArmed: Bool,
         explicitLaunchIntentPending: Bool
     ) -> Bool {
+        historicalRadioTransportOwnershipIsActive(
+            offlineSyncInProgress: offlineSyncInProgress,
+            historyProbeEnabled: historyProbeEnabled,
+            historyPhaseActive: historyPhaseActive,
+            readOnlyRequested: readOnlyRequested,
+            readOnlyActive: readOnlyActive,
+            postHistoryLiveRestorationPending:
+                postHistoryLiveRestorationPending,
+            freshOwnerCutoverPending: freshOwnerCutoverPending,
+            freshOwnerConnectionArmed: freshOwnerConnectionArmed
+        )
+            || explicitRequestPending
+            || explicitLaunchIntentPending
+    }
+
+    nonisolated static func historicalRadioTransportOwnershipIsActive(
+        offlineSyncInProgress: Bool,
+        historyProbeEnabled: Bool,
+        historyPhaseActive: Bool,
+        readOnlyRequested: Bool,
+        readOnlyActive: Bool,
+        postHistoryLiveRestorationPending: Bool,
+        freshOwnerCutoverPending: Bool,
+        freshOwnerConnectionArmed: Bool
+    ) -> Bool {
         offlineSyncInProgress
             || historyProbeEnabled
             || historyPhaseActive
             || readOnlyRequested
             || readOnlyActive
             || postHistoryLiveRestorationPending
-            || explicitRequestPending
             || freshOwnerCutoverPending
             || freshOwnerConnectionArmed
-            || explicitLaunchIntentPending
+    }
+
+    nonisolated static func recoveredDataProjectionShouldDefer(
+        isExactRecoveryPublication: Bool,
+        broadHistoricalOwnershipActive: Bool,
+        radioHistoricalOwnershipActive: Bool
+    ) -> Bool {
+        isExactRecoveryPublication
+            ? radioHistoricalOwnershipActive
+            : broadHistoricalOwnershipActive
     }
 
     /// A history owner belongs to the BLE epoch which armed it.  If that epoch
@@ -30268,7 +30318,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                 publication.completedAtUnix)
                         )
                     let scanSource = seal.aggregateBuild.aggregate.source
-                    _ = try fullScanCompletionStore.recordCompletion(.init(
+                    _ = try fullScanCompletionStore
+                        .recordCompletionAdvancingLatest(.init(
                         version: AtriaHistoricalFullScanCompletionStore.Record
                             .currentVersion,
                         generation: refreshed.completion.record.generation,
@@ -30293,7 +30344,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             .catalogSnapshotSHA256,
                         aggregateSnapshotSHA256: refreshed.completion.record
                             .aggregateSnapshotSHA256
-                    ))
+                        ))
                     let refreshedEvidence =
                         AtriaBLEHistoryTerminalPublicationStore.CompletionEvidence(
                             generation: refreshed.completion.record.generation,
@@ -30471,7 +30522,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         completedAt: Date(timeIntervalSince1970: publication.completedAtUnix)
                     )
                     let scanSource = seal.aggregateBuild.aggregate.source
-                    _ = try fullScanCompletionStore.recordCompletion(.init(
+                    _ = try fullScanCompletionStore
+                        .recordCompletionAdvancingLatest(.init(
                         version: AtriaHistoricalFullScanCompletionStore.Record.currentVersion,
                         generation: published.completion.record.generation,
                         transportGeneration: authority.attempt.transportGeneration,
@@ -30492,7 +30544,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         catalogGeneration: published.completion.record.catalogGeneration,
                         catalogSnapshotSHA256: published.completion.record.catalogSnapshotSHA256,
                         aggregateSnapshotSHA256: published.completion.record.aggregateSnapshotSHA256
-                    ))
+                        ))
                     current = try coverageStore.recordCompletionPublished(
                         identity: identity,
                         evidence: .init(
@@ -31043,6 +31095,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             finishHistoricalConsumerMaterialization(
                 reason: "pending_consumers_already_resolved"
             )
+            onHistoricalTransportOwnershipReleased?(
+                "full_drain_gap_already_resolved_consumers_pending"
+            )
             return
         }
         do {
@@ -31083,6 +31138,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         finishHistoricalConsumerMaterialization(
             reason: "pending_consumers_complete"
+        )
+        onHistoricalTransportOwnershipReleased?(
+            "full_drain_gap_resolved_consumers_pending"
         )
     }
 
@@ -33730,6 +33788,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// up by the next `snapshotSession`.
     private func refreshHistoricalMotionCache(start: Date, end: Date) {
         guard !historicalMotionRefreshInFlight else { return }
+        guard !HistoricalArchive
+            .exactRecoveryProjectionOwnsArchivePriority() else {
+            return
+        }
         if cachedHistoricalMotionOrigin == start,
            let at = cachedHistoricalMotionAt,
            Date().timeIntervalSince(at) < 30 {
@@ -33737,6 +33799,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         historicalMotionRefreshInFlight = true
         HistoricalArchive.consumerProjectionQueue.async { [weak self, start, end] in
+            guard !HistoricalArchive
+                .exactRecoveryProjectionOwnsArchivePriority() else {
+                Task { @MainActor [weak self] in
+                    self?.historicalMotionRefreshInFlight = false
+                }
+                return
+            }
             let summary = HistoricalArchive.motionFeatureSummary(start: start, end: end)
             Task { @MainActor [weak self] in
                 guard let self else { return }

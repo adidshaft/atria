@@ -10,19 +10,31 @@ struct AtriaRecoveredDataTimeoutPolicy: Equatable, Sendable {
     let projectionLeaseSeconds: Int
     let derivedComponentLeaseSeconds: Int
     let publicationSchedulingGraceSeconds: Int
+    let maximumProjectionLeaseRenewals: Int
+    let maximumDerivedStageLeaseRenewals: Int
+    let projectionLeaseRenewalMinimumBytes: Int
+    let projectionLeaseRenewalMinimumIntervalSeconds: Int
 
-    /// Physical iPhone 15 Pro evidence under simultaneous BLE history and disk
-    /// contention measured 95.923 seconds for the first derived component.
-    /// 150 seconds provides 54 seconds (56%) of headroom while remaining finite.
+    /// Physical iPhone 15 Pro Release evidence under simultaneous live BLE and
+    /// archive I/O measured the recovered projection exceeding the old
+    /// 90-second lease, which expired at exactly 90 seconds before completion.
+    /// A 150-second projection lease preserves a finite fail-closed watchdog
+    /// while providing at least 1.5x headroom over the 95.923-second measured
+    /// pipeline milestone. Derived components use the same bounded lease.
     static let physicalSessionStore = AtriaRecoveredDataTimeoutPolicy(
-        projectionLeaseSeconds: 90,
+        projectionLeaseSeconds: 150,
         derivedComponentLeaseSeconds: 150,
-        publicationSchedulingGraceSeconds: 30
+        publicationSchedulingGraceSeconds: 30,
+        maximumProjectionLeaseRenewals: 8,
+        maximumDerivedStageLeaseRenewals: 5,
+        projectionLeaseRenewalMinimumBytes: 8 * 1_024 * 1_024,
+        projectionLeaseRenewalMinimumIntervalSeconds: 75
     )
 
     func maximumPipelineSeconds(requiredDerivedComponentCount: Int) -> Int {
-        projectionLeaseSeconds
+        (1 + max(0, maximumProjectionLeaseRenewals)) * projectionLeaseSeconds
             + max(0, requiredDerivedComponentCount) * derivedComponentLeaseSeconds
+            + max(0, maximumDerivedStageLeaseRenewals) * derivedComponentLeaseSeconds
             + publicationSchedulingGraceSeconds
     }
 
