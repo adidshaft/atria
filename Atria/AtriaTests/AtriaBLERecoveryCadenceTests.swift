@@ -1208,6 +1208,94 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
     }
 
+    func testPeripheralRetainerMigrationRearmsOnlyExactStaleFallbackOnce() throws {
+        let suite = "AtriaBLERecoveryCadenceTests.retainerMigration.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        defaults.set(true, forKey: "atria.protectedR10.responseEventDataMigrationV9")
+        defaults.set(true, forKey: "atria.protectedR10.cleanOwnerMigrationV7")
+        defaults.set("pure_hr_v10", forKey: "atria.protectedR10.cleanOwner")
+        defaults.set("fallback_active", forKey: "atria.protectedR10.cleanOwnerState")
+        defaults.set(true, forKey: "atria.protectedR10.streamSuppressed")
+        defaults.set(true, forKey: "atria.protectedR10.rollback")
+        defaults.set(51, forKey: "atria.protectedR10.passiveReprobeFailureCount")
+        defaults.set("lease_released_before_density_proof",
+                     forKey: "atria.protectedR10.cleanOwnerFailureReason")
+        defaults.set(now.timeIntervalSince1970 - 86_400,
+                     forKey: "atria.protectedR10.stableTransportQualifiedAt")
+
+        XCTAssertEqual(
+            AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(
+                defaults: defaults,
+                allowFallbackRequalification: false,
+                now: now
+            ),
+            .requalifiedProtectedV9FromFallback
+        )
+        XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwner"),
+                       "protected_redp_v9")
+        XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwnerState"),
+                       "protected_launch_pending")
+        XCTAssertFalse(defaults.bool(forKey: "atria.protectedR10.streamSuppressed"))
+        XCTAssertEqual(defaults.integer(forKey: "atria.protectedR10.passiveReprobeFailureCount"),
+                       0)
+        XCTAssertNotNil(defaults.object(forKey: "atria.protectedR10.stableTransportQualifiedAt"))
+        XCTAssertTrue(
+            AtriaBLEManager.protectedR10QualificationIsEvidenceConsistent(
+                cleanOwnerState: .protectedLaunchPending,
+                stableTransportProven: false
+            )
+        )
+
+        defaults.set("pure_hr_v10", forKey: "atria.protectedR10.cleanOwner")
+        defaults.set("fallback_active", forKey: "atria.protectedR10.cleanOwnerState")
+        defaults.set(true, forKey: "atria.protectedR10.streamSuppressed")
+        XCTAssertEqual(
+            AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(
+                defaults: defaults,
+                allowFallbackRequalification: false,
+                now: now.addingTimeInterval(60)
+            ),
+            .none,
+            "the migration is one-shot and cannot create a fallback loop"
+        )
+    }
+
+    func testPeripheralRetainerMigrationRejectsUnqualifiedOrDifferentFallbacks() throws {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        for (credential, reason) in [
+            (nil as Double?, "lease_released_before_density_proof"),
+            (now.timeIntervalSince1970 - 86_400, "short_links_with_fresh_r10"),
+        ] {
+            let suite = "AtriaBLERecoveryCadenceTests.retainerReject.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+            defaults.set(true, forKey: "atria.protectedR10.responseEventDataMigrationV9")
+            defaults.set(true, forKey: "atria.protectedR10.cleanOwnerMigrationV7")
+            defaults.set("pure_hr_v10", forKey: "atria.protectedR10.cleanOwner")
+            defaults.set("fallback_active", forKey: "atria.protectedR10.cleanOwnerState")
+            defaults.set(true, forKey: "atria.protectedR10.streamSuppressed")
+            defaults.set(reason, forKey: "atria.protectedR10.cleanOwnerFailureReason")
+            if let credential {
+                defaults.set(credential,
+                             forKey: "atria.protectedR10.stableTransportQualifiedAt")
+            }
+
+            XCTAssertEqual(
+                AtriaBLEManager.prepareProtectedR10CleanOwnerAtLaunch(
+                    defaults: defaults,
+                    allowFallbackRequalification: false,
+                    now: now
+                ),
+                .none
+            )
+            XCTAssertEqual(defaults.string(forKey: "atria.protectedR10.cleanOwner"),
+                           "pure_hr_v10")
+            XCTAssertTrue(defaults.bool(forKey: "atria.protectedR10.streamSuppressed"))
+        }
+    }
+
     func testExplicitNewWorkoutCanRequalifyQualifiedV8FallbackOnlyAtLaunch() throws {
         let suite = "AtriaBLERecoveryCadenceTests.v8WorkoutRequalify.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
