@@ -182,7 +182,6 @@ struct AtriaSettingsView: View {
     let restingBaseline: Int?
     /// Real weekly recovery average for the leaderboard "You" row (nil while
     /// still learning). Demo social feature (2026-07-08).
-    var myWeeklyRecovery: Int? = nil
     let strapName: String
     let strapModel: String
     let strapGenerationDetail: String
@@ -223,8 +222,6 @@ struct AtriaSettingsView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var showForgetConfirm = false
-    @State private var showLeaderboard = false
-    @State private var showSparring = false
     @State private var draft: AthleteProfile
     @State private var haptics: AtriaHapticAlertSettings
     @State private var nameDraft: String
@@ -282,7 +279,6 @@ struct AtriaSettingsView: View {
 
     init(profile: AthleteProfile,
          restingBaseline: Int?,
-         myWeeklyRecovery: Int? = nil,
          strapName: String = "",
          strapModel: String = "",
          strapGenerationDetail: String = "",
@@ -316,7 +312,6 @@ struct AtriaSettingsView: View {
          onExitDeveloperMode: @escaping () -> Void = {}) {
         self.profile = profile
         self.restingBaseline = restingBaseline
-        self.myWeeklyRecovery = myWeeklyRecovery
         self.strapName = strapName
         self.strapModel = strapModel
         self.strapGenerationDetail = strapGenerationDetail
@@ -718,12 +713,6 @@ struct AtriaSettingsView: View {
     private var privacySettingsPage: some View {
         compactSettingsForm(title: "Privacy & About") {
             AtriaResearchSharingSection(buildBundle: buildResearchBundle)
-            Section {
-                leaderboardRow
-                sparringRow
-            } header: {
-                Text("Community")
-            }
             aboutSection
         }
     }
@@ -754,57 +743,6 @@ struct AtriaSettingsView: View {
         .listSectionSpacing(.compact)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
-    }
-
-    /// Entry to the leaderboard demo (2026-07-08). Self-contained button +
-    /// sheet so it needs no Form-level plumbing.
-    private var leaderboardRow: some View {
-        Button {
-            showLeaderboard = true
-        } label: {
-            HStack {
-                Label("Leaderboard", systemImage: "trophy.fill")
-                Spacer(minLength: 8)
-                Text("Preview")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.orange)
-                    .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(.orange.opacity(0.16), in: Capsule())
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .font(.subheadline)
-        .foregroundStyle(.primary)
-        .sheet(isPresented: $showLeaderboard) {
-            AtriaLeaderboardScreen(myWeeklyRecovery: myWeeklyRecovery)
-        }
-    }
-
-    /// Entry to the sparring demo (2026-07-08), sibling of the leaderboard.
-    private var sparringRow: some View {
-        Button {
-            showSparring = true
-        } label: {
-            HStack {
-                Label("Sparring", systemImage: "figure.fencing")
-                Spacer(minLength: 8)
-                Text("Preview")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.purple)
-                    .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(.purple.opacity(0.16), in: Capsule())
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .font(.subheadline)
-        .foregroundStyle(.primary)
-        .sheet(isPresented: $showSparring) {
-            AtriaSparringScreen(myWeeklyRecovery: myWeeklyRecovery)
-        }
     }
 
 

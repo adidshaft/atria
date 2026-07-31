@@ -1562,7 +1562,6 @@ struct AtriaHomeView: View {
                                       revision: settingsPresentationRevision) {
             AnyView(AtriaSettingsView(profile: model.profileStore.profile,
                               restingBaseline: store.baseline.restingInt,
-                              myWeeklyRecovery: store.currentWeeklyRecovery(),
                               strapName: ble.resolvedDeviceName,
                               strapModel: ble.strapModelLabel,
                               strapGenerationDetail: ble.strapGenerationDetail,

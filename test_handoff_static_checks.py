@@ -1568,7 +1568,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "lhs.coordinator === rhs.coordinator && lhs.revision == rhs.revision",
             ".equatable()",
             "researchValidationContent: developerModeEnabled ? {",
-            "myWeeklyRecovery: store.currentWeeklyRecovery()",
+            # 2026-07-31: the leaderboard/sparring sample previews were
+            # deleted (no sample data anywhere); myWeeklyRecovery plumbing
+            # went with them.
         ]:
             assert_contains(self, home, needle)
 
