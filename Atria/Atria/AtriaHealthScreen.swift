@@ -312,6 +312,12 @@ enum AtriaHealthMetricAuthority {
             )
         case .datedHistory(let rollup):
             let hrvMS = rollup.lnRMSSD.map { Int(exp($0).rounded()) }
+            let strainPresentation = Metrics.StrainPresentation.resolve(
+                value: rollup.strain,
+                coverageFraction: rollup.strainCoverageFraction,
+                baseConfidence: "dated history",
+                persistedQuality: rollup.strainEvidenceQuality
+            )
             return Projection(
                 recoveryPercent: rollup.recovery,
                 recoveryValue: rollup.recovery.map { "\($0)%" } ?? AtriaCompactMetricPresentation.noValue,
@@ -334,10 +340,11 @@ enum AtriaHealthMetricAuthority {
                     rollup: rollup,
                     liveValueAvailable: false
                 ),
-                strain: rollup.strain,
-                strainDetail: "dated history",
-                strainIsPartial: false,
-                wearCoverageFraction: nil,
+                strain: strainPresentation.value,
+                strainDetail: strainPresentation.coverageText
+                    ?? strainPresentation.confidence,
+                strainIsPartial: strainPresentation.quality == .partial,
+                wearCoverageFraction: strainPresentation.coverageFraction,
                 cycleStart: rollup.day,
                 projectedAt: nil
             )

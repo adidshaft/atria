@@ -176,6 +176,86 @@ enum Metrics {
                                          respiratoryBaseline: respiratoryBaseline)
     }
 
+    /// One authority for deciding whether cumulative strain may be presented as
+    /// an exact day total. Strain is an integral over observed strap HR, so a
+    /// result with missing time remains useful as a lower bound but is not an
+    /// exact whole-day value.
+    enum StrainEvidenceQuality: String, Codable, Equatable, Sendable {
+        case exact
+        case partial
+        case unavailable
+    }
+
+    struct StrainPresentation: Equatable {
+        /// Missing less than five percent is the strongest practical coverage
+        /// tier. This matches the product's ~95% real-world accuracy target
+        /// without treating ordinary sub-second packet loss as a failed day.
+        static let strongCoverageThreshold = 0.95
+
+        let value: Double?
+        let coverageFraction: Double?
+        let quality: StrainEvidenceQuality
+        let confidence: String
+
+        static func resolve(value: Double?,
+                            coverageFraction: Double?,
+                            baseConfidence: String,
+                            additionalIncompleteEvidence: Bool = false,
+                            persistedQuality: StrainEvidenceQuality? = nil) -> Self {
+            let normalizedCoverage = coverageFraction.map { min(1, max(0, $0)) }
+            let computable = value.map { $0.isFinite && $0 >= 0 } == true
+                && !baseConfidence.localizedCaseInsensitiveContains("learning")
+                && !baseConfidence.localizedCaseInsensitiveContains("standby")
+            guard computable else {
+                return Self(value: nil,
+                            coverageFraction: normalizedCoverage,
+                            quality: .unavailable,
+                            confidence: baseConfidence)
+            }
+
+            // A legacy persisted number has no proof that its full day was
+            // observed. Preserve it as a lower bound instead of silently
+            // upgrading it to exact after relaunch.
+            let quality: StrainEvidenceQuality
+            if persistedQuality == .unavailable {
+                quality = .unavailable
+            } else if persistedQuality == .partial
+                        || additionalIncompleteEvidence
+                        || normalizedCoverage.map({ $0 < strongCoverageThreshold }) == true {
+                quality = .partial
+            } else if persistedQuality == .exact
+                        || normalizedCoverage.map({ $0 >= strongCoverageThreshold }) == true
+                        || normalizedCoverage == nil {
+                quality = .exact
+            } else {
+                quality = .partial
+            }
+
+            let resolvedConfidence: String
+            if quality == .partial,
+               !baseConfidence.localizedCaseInsensitiveContains("partial") {
+                resolvedConfidence = baseConfidence + " · partial"
+            } else {
+                resolvedConfidence = baseConfidence
+            }
+            return Self(value: quality == .unavailable ? nil : value,
+                        coverageFraction: normalizedCoverage,
+                        quality: quality,
+                        confidence: resolvedConfidence)
+        }
+
+        var valueText: String {
+            guard let value else { return AtriaCompactMetricPresentation.noValue }
+            let numeric = String(format: "%.1f", value)
+            return quality == .partial ? "≥ \(numeric)" : numeric
+        }
+
+        var coverageText: String? {
+            guard quality == .partial, let coverageFraction else { return nil }
+            return "Partial · \(Int((coverageFraction * 100).rounded()))% covered"
+        }
+    }
+
     /// WHOOP-style electric readiness palette. Vivid on dark (where WHOOP lives),
     /// deepened on light so the same band stays legible — Atria supports both modes.
     private static func adaptive(dark: (Double, Double, Double),
