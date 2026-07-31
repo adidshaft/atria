@@ -646,6 +646,99 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         XCTAssertTrue(merged.isEmpty)
     }
 
+    // 2026-07-31: prior-cycle disclosure lookup. The newest receipt that
+    // closed before the wake boundary is returned separately for copy-only
+    // disclosure and never merges into the current cycle's projected days.
+    func testLatestPriorCycleReceiptIsDisclosedSeparatelyFromToday() throws {
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+        let olderStart = Date(timeIntervalSince1970: 100_000)
+        let priorStart = olderStart.addingTimeInterval(86_400)
+        // makeEvidence windows close at +600; the new cycle begins after the
+        // prior window has fully closed.
+        let newCycle = priorStart.addingTimeInterval(700)
+        let todayStart = newCycle.addingTimeInterval(60)
+        XCTAssertTrue(try store.save(
+            makeEvidence(start: olderStart, ticks: 1_100, steps: 999),
+            strapIdentifier: strap
+        ))
+        XCTAssertTrue(try store.save(
+            makeEvidence(start: priorStart, ticks: 1_600, steps: 1_435),
+            strapIdentifier: strap
+        ))
+        XCTAssertTrue(try store.save(
+            makeEvidence(start: todayStart, ticks: 90, steps: 74),
+            strapIdentifier: strap
+        ))
+
+        let prior = store.latestReceipt(
+            before: newCycle,
+            strapIdentifiers: [strap],
+            includeUnqualifiedResearchEvidence: true
+        )
+        XCTAssertEqual(prior?.windowStart, priorStart,
+                       "the newest closed prior window wins")
+        XCTAssertEqual(prior?.steps, 1_435)
+
+        // Today's open-cycle receipt must never be offered as prior-cycle
+        // disclosure, and the prior-cycle steps must not enter projected days
+        // for the new cycle (the masquerade guard stays authoritative).
+        XCTAssertNotEqual(prior?.windowStart, todayStart)
+        XCTAssertNil(store.latestReceipt(
+            before: olderStart,
+            strapIdentifiers: [strap],
+            includeUnqualifiedResearchEvidence: true
+        ))
+        XCTAssertNil(store.latestReceipt(
+            before: newCycle,
+            strapIdentifiers: [UUID().uuidString],
+            includeUnqualifiedResearchEvidence: true
+        ))
+    }
+
+    func testReceiptOverlappingWakeBoundaryIsNotDisclosedAsPrior() throws {
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+        let priorStart = Date(timeIntervalSince1970: 100_000)
+        XCTAssertTrue(try store.save(
+            makeEvidence(start: priorStart, ticks: 1_600, steps: 1_435),
+            strapIdentifier: strap
+        ))
+        // The receipt's window (start..start+600) crosses this boundary, so
+        // its subtotal may straddle both cycles and must not be disclosed.
+        let midWindowBoundary = priorStart.addingTimeInterval(300)
+        XCTAssertNil(store.latestReceipt(
+            before: midWindowBoundary,
+            strapIdentifiers: [strap],
+            includeUnqualifiedResearchEvidence: true
+        ))
+    }
+
+    func testRecentReceiptsReturnNewestFirstAndIsolateStrap() throws {
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+        let first = Date(timeIntervalSince1970: 100_000)
+        let second = first.addingTimeInterval(86_400)
+        let third = second.addingTimeInterval(86_400)
+        for (start, steps) in [(first, 100), (second, 200), (third, 300)] {
+            XCTAssertTrue(try store.save(
+                makeEvidence(start: start, ticks: steps + 40, steps: steps),
+                strapIdentifier: strap
+            ))
+        }
+
+        let receipts = store.recentReceipts(strapIdentifier: strap)
+        XCTAssertEqual(receipts.map(\.windowStart), [third, second, first])
+        XCTAssertEqual(
+            store.recentReceipts(strapIdentifier: strap, limit: 2)
+                .map(\.steps),
+            [300, 200]
+        )
+        XCTAssertTrue(
+            store.recentReceipts(strapIdentifier: UUID().uuidString).isEmpty
+        )
+    }
+
     func testCompleteDurableReceiptPublishesExactCount() throws {
         let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
         let strap = UUID().uuidString
@@ -915,8 +1008,12 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         XCTAssertFalse(historyBody.contains(
             "HistoricalArchive.motionTickDayEvidence("
         ), "history refresh must consume the durable receipt, not decode it again")
+        // 2026-07-31: history retention reads the recent durable receipts
+        // (prior cycles stay visible across relaunch) instead of only the
+        // exact current-window record — still the durable store, never a
+        // fresh archive decode.
         XCTAssertTrue(historyBody.contains(
-            "AtriaWhoop4MotionTickDailyStore.shared.load("
+            "AtriaWhoop4MotionTickDailyStore.shared.recentReceipts("
         ))
 
         let home = try String(

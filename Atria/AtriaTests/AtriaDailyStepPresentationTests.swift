@@ -352,6 +352,101 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.valueText, "≥3210")
     }
 
+    // 2026-07-31: after a no-sleep rollover the fresh cycle has no receipt
+    // and no live sample. The prior cycle's verified subtotal is disclosed in
+    // copy only; the count stays nil so rings, zones, and widget step values
+    // never attribute prior-cycle steps to today.
+    func testPriorCycleReceiptOnlyDisclosesWithoutCountingToday() {
+        let cycleStart = day.addingTimeInterval(15 * 3_600)
+        let endedAt = cycleStart.addingTimeInterval(-41 * 60)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: cycleStart.addingTimeInterval(600),
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [],
+            physiologicalDayStart: cycleStart,
+            priorCycleReceipt: .init(steps: 1_435, endedAt: endedAt),
+            calendar: utcCalendar
+        )
+
+        XCTAssertNil(value.count)
+        XCTAssertEqual(value.valueText, "--")
+        XCTAssertEqual(value.completeness, .unavailable)
+        XCTAssertEqual(value.source, .none)
+        XCTAssertEqual(value.unavailabilityReason, .priorCycleReceiptOnly)
+        XCTAssertEqual(value.priorCycleReceipt,
+                       .init(steps: 1_435, endedAt: endedAt))
+        XCTAssertTrue(value.detailText.hasPrefix("Prior cycle: ≥1435 · ended "),
+                      value.detailText)
+        XCTAssertTrue(value.accessibilityText.contains("Prior cycle: ≥1435"),
+                      value.accessibilityText)
+    }
+
+    func testStaleLiveFromBeforeWakeBoundaryDisclosesPriorCycle() {
+        let cycleStart = day.addingTimeInterval(15 * 3_600)
+        let endedAt = cycleStart.addingTimeInterval(-41 * 60)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: cycleStart.addingTimeInterval(600),
+            liveCount: 1_435,
+            liveValidationState: "validated",
+            // Captured before the rolled wake boundary: this sample belongs
+            // to the prior cycle, not a stale edge of the current one.
+            liveCapturedAt: cycleStart.addingTimeInterval(-3_600),
+            canonicalDays: [],
+            physiologicalDayStart: cycleStart,
+            priorCycleReceipt: .init(steps: 1_435, endedAt: endedAt),
+            calendar: utcCalendar
+        )
+
+        XCTAssertNil(value.count)
+        XCTAssertEqual(value.unavailabilityReason, .priorCycleReceiptOnly)
+        XCTAssertTrue(value.detailText.hasPrefix("Prior cycle: ≥1435 · ended "))
+    }
+
+    func testStaleLiveWithinCurrentCycleKeepsStaleReason() {
+        let cycleStart = day.addingTimeInterval(15 * 3_600)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: cycleStart.addingTimeInterval(600),
+            liveCount: 12,
+            liveValidationState: "validated",
+            liveCapturedAt: cycleStart.addingTimeInterval(60),
+            canonicalDays: [],
+            physiologicalDayStart: cycleStart,
+            priorCycleReceipt: .init(
+                steps: 1_435,
+                endedAt: cycleStart.addingTimeInterval(-41 * 60)
+            ),
+            calendar: utcCalendar
+        )
+
+        XCTAssertNil(value.count)
+        XCTAssertEqual(value.unavailabilityReason, .staleLiveReceipt)
+        XCTAssertNil(value.priorCycleReceipt)
+        XCTAssertEqual(value.detailText,
+                       "Last strap movement is no longer live")
+    }
+
+    func testNoPriorReceiptKeepsExistingEmptyReason() {
+        let cycleStart = day.addingTimeInterval(15 * 3_600)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: cycleStart.addingTimeInterval(600),
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [],
+            physiologicalDayStart: cycleStart,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.unavailabilityReason, .noCurrentCycleReceipt)
+        XCTAssertEqual(value.detailText, "No verified receipt for this cycle")
+    }
+
     private var utcCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!

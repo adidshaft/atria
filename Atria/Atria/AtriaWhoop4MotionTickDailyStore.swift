@@ -77,6 +77,70 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
             .map(Self.evidence)
     }
 
+    /// 2026-07-31: newest receipt that closed at or before the given wake
+    /// boundary. This is disclosure-only evidence for the preceding
+    /// physiological cycle: it is returned separately and is never merged into
+    /// the current cycle's projected days, so a prior-cycle subtotal cannot
+    /// masquerade as today's count. Callers may only name it (value stays
+    /// "--") while the open cycle has no receipt of its own.
+    func latestReceipt(
+        before windowStart: Date,
+        strapIdentifiers: [String],
+        includeUnqualifiedResearchEvidence: Bool = false
+    ) -> HistoricalArchive.MotionTickDayEvidence? {
+        guard AtriaWhoop4GravityCadenceStepModel
+                .releaseDailyAuthorityQualified
+                || includeUnqualifiedResearchEvidence else { return nil }
+        let identifiers = Set(strapIdentifiers.compactMap(
+            Self.canonicalStrapIdentifier
+        ))
+        guard !identifiers.isEmpty else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        return loadRecordsLocked()
+            .filter {
+                identifiers.contains($0.strapIdentifier)
+                    && $0.windowStart < windowStart
+                    && $0.windowEnd <= windowStart.addingTimeInterval(1)
+            }
+            .max { lhs, rhs in
+                if abs(lhs.windowStart.timeIntervalSince(
+                    rhs.windowStart
+                )) >= 1 {
+                    return lhs.windowStart < rhs.windowStart
+                }
+                return Self.isWeaker(lhs, rhs)
+            }
+            .map(Self.evidence)
+    }
+
+    func latestReceipt(
+        before windowStart: Date,
+        strapIdentifier: String
+    ) -> HistoricalArchive.MotionTickDayEvidence? {
+        latestReceipt(before: windowStart, strapIdentifiers: [strapIdentifier])
+    }
+
+    /// 2026-07-31: most recent durable receipts for relaunch rehydration.
+    /// Records are day-keyed (one strongest record per wake window) and
+    /// returned newest-first. Consumers must keep the cycle-boundary rules:
+    /// only the exact current-window receipt may represent the open day.
+    func recentReceipts(
+        strapIdentifier: String,
+        limit: Int = 14
+    ) -> [HistoricalArchive.MotionTickDayEvidence] {
+        guard limit > 0, let strapIdentifier = Self.canonicalStrapIdentifier(
+            strapIdentifier
+        ) else { return [] }
+        lock.lock()
+        defer { lock.unlock() }
+        return loadRecordsLocked()
+            .filter { $0.strapIdentifier == strapIdentifier }
+            .sorted { $0.windowStart > $1.windowStart }
+            .prefix(limit)
+            .map(Self.evidence)
+    }
+
     /// Every step surface must resolve the same current strap identity.
     /// The saved link is updated on every successful connection and therefore
     /// owns publication after replacement/re-pair. The verified-history
@@ -487,7 +551,10 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
         return lhs.decodedRows < rhs.decodedRows
     }
 
-    private static func isWeaker(
+    /// 2026-07-31: internal (not private) so history rehydration can apply the
+    /// same weaker-record rule when deduplicating rehydrated prior-day
+    /// receipts against projected evidence days.
+    static func isWeaker(
         _ lhs: AtriaHistoricalDailyConsumerProjection.StepDay,
         _ rhs: AtriaHistoricalDailyConsumerProjection.StepDay
     ) -> Bool {

@@ -9818,6 +9818,15 @@ final class AtriaHomeModel {
         } else {
             currentCycleStepDays = qualifiedCanonicalStepDays
         }
+        // 2026-07-31: disclosure-only prior-cycle receipt. Never merged into
+        // currentCycleStepDays; presentation may only name it while today's
+        // value stays "--".
+        let priorCycleReceipt = strapIdentifiers.isEmpty
+            ? nil
+            : motionTickDailyStore.latestReceipt(
+                before: savedAggregate.cycleStart,
+                strapIdentifiers: strapIdentifiers
+            )
         let dailyStepPresentation = AtriaDailyStepPresentation.resolve(
             day: Date(),
             now: Date(),
@@ -9828,7 +9837,10 @@ final class AtriaHomeModel {
             liveAuthorityQualified:
                 AtriaWhoop4GravityCadenceStepModel
                     .releaseDailyAuthorityQualified,
-            physiologicalDayStart: savedAggregate.cycleStart
+            physiologicalDayStart: savedAggregate.cycleStart,
+            priorCycleReceipt: priorCycleReceipt.map {
+                .init(steps: $0.steps, endedAt: $0.capturedThrough)
+            }
         )
         let activeCaloriesToday = SessionStore.mergedTodayActiveCalories(
             savedToday: savedAggregate.savedTodayActiveCalories,
