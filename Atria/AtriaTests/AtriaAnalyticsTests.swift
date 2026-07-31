@@ -104,7 +104,35 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(summary.detail, "2/14 RHR")
         XCTAssertEqual(summary.compactStatusText, "2/14 RHR")
         XCTAssertEqual(summary.trendDetail, "2/14 RHR days.")
-        XCTAssertTrue(summary.narrative.localizedCaseInsensitiveContains("trusted resting baseline"))
+        XCTAssertTrue(summary.narrative.localizedCaseInsensitiveContains("7 qualified resting-HR days"))
+    }
+
+    func testVO2PublishesPreliminaryValueBeforeTrustedBaseline() throws {
+        let summary = AtriaAnalytics.VO2Max.summary(
+            rest: 57,
+            maxHR: 190,
+            restingSamples: 11,
+            maxHRMeasured: true,
+            restingTrend: [60, 59, 58, 57]
+        )
+
+        XCTAssertEqual(try XCTUnwrap(summary.value), 51.0, accuracy: 0.01)
+        XCTAssertEqual(summary.confidence, "preliminary")
+        XCTAssertEqual(summary.detail, "preliminary · RHR 57 · HRmax 190")
+        XCTAssertTrue(summary.narrative.contains("11/14 qualified RHR days"))
+    }
+
+    func testVO2KeepsTrustedLabelAtFourteenDays() throws {
+        let summary = AtriaAnalytics.VO2Max.summary(
+            rest: 57,
+            maxHR: 190,
+            restingSamples: 14,
+            maxHRMeasured: true,
+            restingTrend: [60, 59, 58, 57]
+        )
+
+        XCTAssertEqual(try XCTUnwrap(summary.value), 51.0, accuracy: 0.01)
+        XCTAssertEqual(summary.confidence, "rough estimate")
     }
 
     func testMeasuredSustainedStrengthLoadUsesModerateStrainRange() {

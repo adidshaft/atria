@@ -9515,13 +9515,15 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "enum VO2Max",
             "guard rest > 0, maxHR > rest else",
-            "guard restingSamples >= PersonalBaseline.trustedMinimumSamples else",
+            "private static let preliminaryMinimumRestingSamples = 7",
+            "guard restingSamples >= preliminaryMinimumRestingSamples else",
             "\"\\(restingSamples)/\\(PersonalBaseline.trustedMinimumSamples) RHR\"",
-            "Atria needs a trusted resting baseline before estimating VO2max.",
+            "qualified resting-HR days before showing a preliminary VO2max estimate.",
             "guard maxHRMeasured else",
             "VO2MaxEstimateSummary(value: nil",
             "let rawEstimate = 15.3 * Double(maxHR) / rest",
-            "let confidence = \"rough estimate\"",
+            "let baselineIsTrusted = restingSamples >= PersonalBaseline.trustedMinimumSamples",
+            "let confidence = baselineIsTrusted ? \"rough estimate\" : \"preliminary\"",
             "let trend = trendText(currentEstimate: boundedEstimate,",
             "trendText: trend.text",
             "trendDetail: trend.detail",
@@ -9534,7 +9536,6 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, analytics, needle)
         self.assertGreater(analytics.find("let rawEstimate = 15.3"), analytics.find("guard maxHRMeasured else"))
-        assert_not_contains(self, analytics, "guard restingSamples >= 7 else")
         assert_not_contains(self, analytics, "Atria needs 7 resting nights before estimating VO2max.")
 
         for needle in [

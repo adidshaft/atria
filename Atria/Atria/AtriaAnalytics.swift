@@ -1583,6 +1583,12 @@ enum AtriaAnalytics {
     }
 
     enum VO2Max {
+        /// The HR-ratio estimate is useful before the resting baseline is mature,
+        /// but must not be presented with the same confidence as a trusted
+        /// 14-day baseline. Seven distinct qualified RHR days is the earliest
+        /// point at which Atria publishes a visibly preliminary value.
+        private static let preliminaryMinimumRestingSamples = 7
+
         static func summary(rest: Int,
                             maxHR: Int,
                             restingSamples: Int,
@@ -1593,9 +1599,9 @@ enum AtriaAnalytics {
                                 narrative: "Atria needs resting HR and HRmax before estimating VO2max.",
                                 trendDetail: "Needs resting baseline.")
             }
-            guard restingSamples >= PersonalBaseline.trustedMinimumSamples else {
+            guard restingSamples >= preliminaryMinimumRestingSamples else {
                 return learning(detail: "\(restingSamples)/\(PersonalBaseline.trustedMinimumSamples) RHR",
-                                narrative: "Atria needs a trusted resting baseline before estimating VO2max.",
+                                narrative: "Atria needs \(preliminaryMinimumRestingSamples) qualified resting-HR days before showing a preliminary VO2max estimate.",
                                 trendDetail: "\(restingSamples)/\(PersonalBaseline.trustedMinimumSamples) RHR days.")
             }
             guard maxHRMeasured else {
@@ -1605,7 +1611,8 @@ enum AtriaAnalytics {
             }
 
             let boundedEstimate = boundedEstimate(rest: rest, maxHR: maxHR)
-            let confidence = "rough estimate"
+            let baselineIsTrusted = restingSamples >= PersonalBaseline.trustedMinimumSamples
+            let confidence = baselineIsTrusted ? "rough estimate" : "preliminary"
             let detail = "\(confidence) · RHR \(rest) · HRmax \(maxHR)"
             let trend = trendText(currentEstimate: boundedEstimate,
                                   maxHR: maxHR,
@@ -1613,7 +1620,9 @@ enum AtriaAnalytics {
             return VO2MaxEstimateSummary(value: boundedEstimate,
                                          confidence: confidence,
                                          detail: detail,
-                                         narrative: "Rough estimate from measured max HR and resting baseline.",
+                                         narrative: baselineIsTrusted
+                                            ? "Rough estimate from measured max HR and resting baseline."
+                                            : "\(restingSamples)/\(PersonalBaseline.trustedMinimumSamples) qualified RHR days · preliminary estimate from measured max HR.",
                                          trendText: trend.text,
                                          trendDetail: trend.detail,
                                          trendDelta: trend.delta)
