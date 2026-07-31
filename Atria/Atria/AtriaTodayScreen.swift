@@ -2634,16 +2634,21 @@ private struct AtriaTodayCompactTriRing: View {
             ForEach(slots, id: \.metric.title) { slot in
                 let index = slots.firstIndex(where: { $0.metric.title == slot.metric.title }) ?? 0
                 let inset = CGFloat(index) * 8
-                let fill = slot.metric.fill ?? 0.08
                 Circle()
                     .stroke(slot.metric.tint.opacity(0.18), lineWidth: 5)
                     .padding(inset)
-                Circle()
-                    .trim(from: 0, to: min(max(fill, 0.025), 1))
-                    .stroke(slot.metric.tint,
-                            style: StrokeStyle(lineWidth: 5, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                    .padding(inset)
+                // `fill == nil` is the deliberate learning sentinel; the full
+                // ring renders a dashed band for it. At this compact scale a
+                // dashed band is unreadable, so draw no arc at all — a solid
+                // sliver implied ~8% of something that was never measured.
+                if let fill = slot.metric.fill {
+                    Circle()
+                        .trim(from: 0, to: min(max(fill, 0.025), 1))
+                        .stroke(slot.metric.tint,
+                                style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .padding(inset)
+                }
             }
         }
         .drawingGroup(opaque: false, colorMode: .linear)

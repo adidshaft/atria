@@ -4211,10 +4211,17 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                               // nights to plot, so say exactly how far off it is ("0 of 2
                               // nights") instead of a bare "Learning" — matches the "N of M"
                               // progress the RHR/HRV cards already show.
-                              detail: trendValues.count > 1 ? "14 sessions" : "\(trendValues.count) of 2 nights",
+                              //
+                              // 2026-07-31: the populated branch previously claimed a
+                              // hard-coded "14 sessions" for any count ≥ 2 and drew a
+                              // synthetic flat [0, 0] sparkline below two nights. Real
+                              // count, and nil (no line) until a line is real.
+                              detail: trendValues.count > 1
+                                ? "\(trendValues.count) nights"
+                                : "\(trendValues.count) of 2 nights",
                               systemImage: AtriaTodayMetric.trend.systemImage,
                               tint: .red,
-                              sparklineValues: trendValues.count > 1 ? trendValues : [0, 0])
+                              sparklineValues: trendValues.count > 1 ? trendValues : nil)
     }
 
     private var insightsCard: some View {
@@ -4658,10 +4665,15 @@ private struct AtriaDailyFocusRail: View, Equatable {
 
             HStack(alignment: .bottom, spacing: 5) {
                 ForEach(items) { item in
+                    // `progress == nil` means unmeasured (learning/partial/no
+                    // samples); render the 7pt base only — a fabricated 18%
+                    // fill under a "Learning" value implied real progress.
                     Capsule(style: .continuous)
-                        .fill(item.tint.opacity(0.78))
+                        .fill(item.tint.opacity(item.progress == nil ? 0.32 : 0.78))
                         .frame(maxWidth: .infinity)
-                        .frame(height: 7 + CGFloat(min(max(item.progress ?? 0.18, 0.06), 1)) * 19)
+                        .frame(height: 7 + CGFloat(
+                            item.progress.map { min(max($0, 0.06), 1) } ?? 0
+                        ) * 19)
                         .accessibilityLabel("\(item.title) \(item.value)")
                 }
             }
@@ -4716,9 +4728,13 @@ private struct AtriaDailyFocusRail: View, Equatable {
                 Capsule(style: .continuous)
                     .fill(item.tint.opacity(0.16))
                     .overlay(alignment: .leading) {
-                        Capsule(style: .continuous)
-                            .fill(item.tint.opacity(0.76))
-                            .frame(width: max(6, width * CGFloat(min(max(item.progress ?? 0.18, 0.06), 1))))
+                        // Unmeasured (`nil`) draws no fill: the track alone is
+                        // the honest "no progress measured yet" state.
+                        if let progress = item.progress {
+                            Capsule(style: .continuous)
+                                .fill(item.tint.opacity(0.76))
+                                .frame(width: max(6, width * CGFloat(min(max(progress, 0.06), 1))))
+                        }
                     }
             }
             .frame(height: 5)

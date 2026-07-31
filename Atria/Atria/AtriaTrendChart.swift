@@ -85,14 +85,19 @@ struct AtriaTrendChartCard: View {
             HStack(alignment: .top, spacing: 12) {
                 AtriaPanelSectionHeader(title: "Trends", subtitle: "\(range.headerLabel) · \(prepared.series.count) days")
                 Spacer(minLength: 0)
-                Button {
-                    showExpandedChart = true
-                } label: {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                // Expanding an empty series rendered a full-screen chart with
+                // a fabricated 0…1 axis and "1 of 1 days visible". Mirror the
+                // metric-detail rule: no expand until a real line exists.
+                if prepared.series.count >= 2 {
+                    Button {
+                        showExpandedChart = true
+                    } label: {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityLabel("Expand chart")
                 }
-                .accessibilityLabel("Expand chart")
             }
 
             VStack(spacing: 8) {
@@ -2879,7 +2884,9 @@ struct AtriaTrendPoint: Equatable, Identifiable {
         var id: Date { date }
     }
 
+    #if DEBUG
     /// Deterministic sample series for previews and on-device visual checks.
+    /// DEBUG-only: demo series must have a compile-time barrier from Release.
     static func sampleData(now: Date) -> [AtriaTrendPoint] {
         let resting = [62, 61, 63, 60, 59, 60, 58, 59, 57, 58, 56, 57]
         let strain = [8.2, 11.4, 6.1, 14.0, 9.5, 12.8, 7.3, 15.1, 10.2, 13.6, 8.9, 11.0]
@@ -2894,8 +2901,6 @@ struct AtriaTrendPoint: Equatable, Identifiable {
             )
         }
     }
-
-    #if DEBUG
     /// Longer deterministic series for screenshotting current-vs-prior trend summaries.
     static func priorComparisonSampleData(now: Date) -> [AtriaTrendPoint] {
         (0..<70).map { index in

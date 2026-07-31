@@ -280,6 +280,16 @@ struct PersonalBaseline: Codable {
         return "Learning · \(days) of \(Self.trustedMinimumSamples) days"
     }
 
+    /// Display-ready maturity qualifier for the HRV baseline, e.g.
+    /// "HRV calibrating · 2 of 14 nights". `nil` once trusted. Same show-the-
+    /// value-and-disclose philosophy as the resting qualifier above; nights,
+    /// not days, because HRV qualification is sleep-window-only.
+    func hrvBaselineMaturityQualifierText(now: Date = Date()) -> String? {
+        guard !hasTrustedHRVBaseline(now: now) else { return nil }
+        let nights = min(freshHRVSampleCount(now: now), Self.trustedMinimumSamples)
+        return "HRV calibrating · \(nights) of \(Self.trustedMinimumSamples) nights"
+    }
+
     var restingStats: (mean: Double, sd: Double, count: Int)? {
         restingStats(now: Date())
     }

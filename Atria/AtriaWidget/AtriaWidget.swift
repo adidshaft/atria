@@ -675,16 +675,28 @@ struct AtriaWidgetEntryView: View {
 
     /// Recovery gauge for the Lock Screen. Falls back honestly to "--" and a
     /// gray ring while recovery is still learning — never a fabricated percent.
+    /// A stale snapshot keeps its real number (matching the medium widget) but
+    /// loses the zone color and gains an age disclosure, so an old score can
+    /// never pass for a live one.
     private var accessoryCircular: some View {
-        Gauge(value: accessoryCircularProgress) {
+        let stale = entry.snapshot.map { atriaSnapshotIsStale($0, now: entry.date) } == true
+        return Gauge(value: accessoryCircularProgress) {
             Text("REC")
         } currentValueLabel: {
             Text(entry.snapshot?.recoveryPercent.map { "\($0)" } ?? "--")
         }
         .gaugeStyle(.accessoryCircularCapacity)
-        .tint(atriaRecoveryZoneColor(entry.snapshot?.recoveryPercent))
+        .tint(stale ? Color.secondary : atriaRecoveryZoneColor(entry.snapshot?.recoveryPercent))
         .containerBackground(.background, for: .widget)
-        .accessibilityLabel(entry.snapshot?.recoveryPercent.map { "Recovery \($0) percent" } ?? "Recovery learning")
+        .accessibilityLabel(accessoryCircularAccessibilityLabel(stale: stale))
+    }
+
+    private func accessoryCircularAccessibilityLabel(stale: Bool) -> String {
+        guard let snapshot = entry.snapshot,
+              let percent = snapshot.recoveryPercent else { return "Recovery learning" }
+        guard stale else { return "Recovery \(percent) percent" }
+        let hours = atriaSnapshotAgeMinutes(snapshot, now: entry.date) / 60
+        return "Recovery \(percent) percent, stale, from \(hours) hours ago"
     }
 
     private var accessoryCircularProgress: Double {
@@ -702,12 +714,21 @@ struct AtriaWidgetEntryView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-            Text(accessoryHRLine)
+            // At 6h+ the HR line is "HR --" anyway (its own capture clock);
+            // spend that line on the staleness disclosure the larger families
+            // already show, so old recovery/strain never read as live.
+            Text(accessoryStaleLine ?? accessoryHRLine)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
         .containerBackground(.background, for: .widget)
+    }
+
+    private var accessoryStaleLine: String? {
+        guard let snapshot = entry.snapshot,
+              atriaSnapshotIsStale(snapshot, now: entry.date) else { return nil }
+        return "Stale · \(atriaSnapshotAgeMinutes(snapshot, now: entry.date) / 60)h old"
     }
 
     private var accessoryRecoveryLine: String {
@@ -767,11 +788,15 @@ struct AtriaWidgetEntryView: View {
     }
 
     /// "Rec 64% · 12.3 strain" — honestly falls back to "--" while recovery
-    /// is still learning rather than fabricating a percent.
+    /// is still learning rather than fabricating a percent, and discloses the
+    /// snapshot age once it crosses the stale threshold.
     private var inlineText: String {
         guard let snapshot = entry.snapshot else { return "Atria learning" }
         let recovery = snapshot.recoveryPercent.map { "\($0)%" } ?? "--"
         let strain = AtriaWidgetMetric.strain.value(snapshot, now: entry.date)
+        if atriaSnapshotIsStale(snapshot, now: entry.date) {
+            return "Rec \(recovery) · \(atriaSnapshotAgeMinutes(snapshot, now: entry.date) / 60)h old"
+        }
         return "Rec \(recovery) · \(strain) strain"
     }
 
