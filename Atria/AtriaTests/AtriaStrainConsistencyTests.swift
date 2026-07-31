@@ -66,6 +66,35 @@ final class AtriaStrainConsistencyTests: XCTestCase {
             100,
             "workout-window TRIMP must remain unchanged"
         )
+        let historicalStrains = SessionStore.perDayStrains(
+            [quiet],
+            rest: 56,
+            maxHR: 190
+        )
+        XCTAssertFalse(historicalStrains.isEmpty)
+        XCTAssertTrue(
+            historicalStrains.allSatisfy { $0 == 0 },
+            "historical strain must share Today's quiet-wear exclusion"
+        )
+        XCTAssertEqual(
+            AtriaAnalytics.TrainingLoad.summary(
+                sessions: [quiet],
+                rest: 56,
+                maxHR: 190
+            ).acuteLoad,
+            0,
+            "fitness-age training load must not count ordinary all-day wear"
+        )
+        XCTAssertEqual(
+            SessionStore.makeOverviewTrendPoints(
+                sessions: [quiet],
+                rest: 56,
+                maxHR: 190,
+                now: start.addingTimeInterval(12 * 60 * 60)
+            ).first?.strain,
+            0,
+            "D/W/M Overview strain must match the daily-load authority"
+        )
     }
 
     func testDailyLoadRetainsMeasuredExerciseAboveRestZone() {
