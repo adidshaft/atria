@@ -9135,6 +9135,37 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(body.contains("if generationStarted || started {"))
     }
 
+    func testArchivedPrefixCannotSuppressUnresolvedRangeRetry() {
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRetryUnresolvedRangeLossAfterTerminal(
+                rangeLossResolved: false,
+                forwardCursorCaughtUp: false,
+                noRowsForDurableGap: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRetryUnresolvedRangeLossAfterTerminal(
+                rangeLossResolved: true,
+                forwardCursorCaughtUp: false,
+                noRowsForDurableGap: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRetryUnresolvedRangeLossAfterTerminal(
+                rangeLossResolved: false,
+                forwardCursorCaughtUp: true,
+                noRowsForDurableGap: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRetryUnresolvedRangeLossAfterTerminal(
+                rangeLossResolved: false,
+                forwardCursorCaughtUp: false,
+                noRowsForDurableGap: true
+            )
+        )
+    }
+
     func testAllDayMotionWantsHoldUsesV24BatteryFloorWithResumeHysteresis() {
         // v24 is a low-bandwidth strap-resident bank, not the retired R10
         // flood. It stays useful through ordinary low-battery operation.

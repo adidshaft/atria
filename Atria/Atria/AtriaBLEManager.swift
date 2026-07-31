@@ -12283,7 +12283,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 transportGeneration: generation
             )
         }
-        if !rangeLossResolved && !rawOnlyGapArchived && !forwardCursorCaughtUp && !noRowsForDurableGap {
+        if Self.shouldRetryUnresolvedRangeLossAfterTerminal(
+            rangeLossResolved: rangeLossResolved,
+            forwardCursorCaughtUp: forwardCursorCaughtUp,
+            noRowsForDurableGap: noRowsForDurableGap
+        ) {
+            // Saving an earlier FIFO prefix is factual progress, but it is not
+            // recovery of the requested interval. Keep the existing bounded
+            // live-preserving retry cadence until the cursor catches up, the
+            // exact gap resolves, or the strap proves that no rows exist.
             scheduleRangeLossBackfillRetry(reason: reason)
         }
         evaluatePendingWorkoutHistoricalMotionBankOffload(
@@ -23460,6 +23468,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         applicationIsActive: Bool
     ) -> Bool {
         applicationIsActive
+    }
+
+    nonisolated static func shouldRetryUnresolvedRangeLossAfterTerminal(
+        rangeLossResolved: Bool,
+        forwardCursorCaughtUp: Bool,
+        noRowsForDurableGap: Bool
+    ) -> Bool {
+        !rangeLossResolved
+            && !forwardCursorCaughtUp
+            && !noRowsForDurableGap
     }
 
     func resumeDeferredWorkoutMotionBankCoverageEvaluationIfNeeded(
