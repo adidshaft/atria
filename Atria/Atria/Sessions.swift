@@ -3591,14 +3591,19 @@ struct AggregateSleepCandidate {
     /// short of the ordinary main-sleep gate: HR without validated motion may
     /// suggest a continuation, but it may never confirm one automatically.
     static let resumedSleepMinimumDuration: TimeInterval = 60 * 60
-    static let resumedSleepMaximumDuration: TimeInterval = 3 * 60 * 60
+    /// Physical 2026-07-31: a real late-morning resumed sleep ran 08:39–13:27
+    /// (4 h 43 m captured across one 5-minute reconnect seam) and the previous
+    /// 3-hour cap made it unrepresentable. Five hours keeps the episode
+    /// review-only and physiology-gated while covering observed biphasic
+    /// schedules; it still cannot auto-confirm.
+    static let resumedSleepMaximumDuration: TimeInterval = 5 * 60 * 60
     static let resumedSleepMinimumSeparation: TimeInterval = 90 * 60
     static let resumedSleepMaximumSeparationFromMain: TimeInterval = 8 * 60 * 60
     /// A resumed episode may straddle one short journal/reconnect seam and may
     /// include a short awake tail before the next journal closes. This is only
     /// source material for the review-only classifier; the review itself still
     /// has to fit `resumedSleepMaximumDuration`.
-    static let resumedSleepMaximumSourceSpan: TimeInterval = 4 * 60 * 60
+    static let resumedSleepMaximumSourceSpan: TimeInterval = 5.5 * 60 * 60
     static let resumedSleepMaximumAcceptedHRGap: TimeInterval = 90
 
     let kind: String
@@ -27615,6 +27620,16 @@ final class SessionStore: ObservableObject {
             // Tiny/ambiguous journals between the main wake and this tail stay
             // separate. A fresh >90-minute wake boundary immediately before the
             // substantial tail is required; no duration is credited across it.
+            //
+            // 2026-07-31 note: continuous background capture removes the wear
+            // gaps this rule relies on, and an HR-only replacement anchor was
+            // physically measured to be unbuildable — this wearer's quiet
+            // pre-sleep descent (median ~65) passes every sleep-physiology
+            // bar, so any HR-anchored candidate swallows the drowsy-awake
+            // lead-in and recreates the mis-bounded window the user dismissed.
+            // Continuous-wear resumed detection therefore requires validated
+            // low-motion evidence for onset and remains deliberately absent
+            // until that evidence exists.
             let nearestPriorEnd = orderedSessions
                 .filter { $0.id != session.id && $0.end <= session.start }
                 .map(\.end)
