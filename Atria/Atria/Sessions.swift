@@ -21183,13 +21183,28 @@ final class SessionStore: ObservableObject {
                 activeJournalSession: activeJournalSession,
                 now: preparedAt
             )
-            let result = SessionStore.makeSleepReviewNightForCache(snapshot: snapshot,
-                                                                   canonicalSessions: sourceSessions,
-                                                                   confirmedSleeps: confirmedSleeps,
-                                                                   dismissedCandidates: dismissedCandidates,
-                                                                   rest: rest,
-                                                                   maxHR: maxHR,
-                                                                   calendar: calendar)
+            let freshlyQualified =
+                SessionStore.makeSleepReviewNightForCache(
+                    snapshot: snapshot,
+                    canonicalSessions: sourceSessions,
+                    confirmedSleeps: confirmedSleeps,
+                    dismissedCandidates: dismissedCandidates,
+                    rest: rest,
+                    maxHR: maxHR,
+                    calendar: calendar
+                )
+            if let freshlyQualified {
+                AtriaPendingSleepReviewStore.save(
+                    freshlyQualified,
+                    now: preparedAt
+                )
+            }
+            let result = freshlyQualified
+                ?? AtriaPendingSleepReviewStore.load(
+                    now: preparedAt,
+                    confirmedSleeps: confirmedSleeps,
+                    dismissedCandidates: dismissedCandidates
+                )
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 guard SessionStore.shouldPublishSleepReviewCache(
@@ -23509,6 +23524,10 @@ final class SessionStore: ObservableObject {
         dismissedSleepCandidates.removeAll { $0.overlaps(start: start, end: end) }
         dismissedSleepCandidates.append(AtriaDismissedSleepCandidate(start: start, end: end))
         AtriaDismissedSleepCandidateStore.save(dismissedSleepCandidates)
+        AtriaPendingSleepReviewStore.clear(
+            overlappingStart: start,
+            end: end
+        )
     }
 
     private func clearDismissedSleepCandidates(overlappingStart start: Date, end: Date) {

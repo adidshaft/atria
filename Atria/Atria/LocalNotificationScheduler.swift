@@ -1345,6 +1345,13 @@ enum LocalNotificationScheduler {
             )
         }
 
+        // The notification scheduler can legitimately see a reviewable daily
+        // snapshot while the heavier foreground cache is still rebuilding.
+        // Persist the exact candidate before scheduling/deduplication so a
+        // relaunch, projection refresh, or reminder cooldown cannot erase the
+        // review the user was just told about.
+        AtriaPendingSleepReviewStore.save(latest)
+
         guard latest.id != defaults.string(forKey: sleepReviewDismissedIDKey) else {
             return NotificationDecision(
                 kind: "sleep_review",
