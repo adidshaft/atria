@@ -2465,6 +2465,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         "atria.offlineSync.terminalConsumerDependencyMismatchAt.v2"
     nonisolated static let terminalConsumerDependencyMismatchRetryInterval:
         TimeInterval = 15 * 60
+    nonisolated private static let terminalConsumerCoverageFailureKey =
+        "atria.offlineSync.terminalConsumerCoverageFailure.v1"
+    nonisolated private static let terminalConsumerCoverageFailureAtKey =
+        "atria.offlineSync.terminalConsumerCoverageFailureAt.v1"
     nonisolated private static let workoutHistoricalMotionBankStopPendingKey =
         "atria.workoutHistoricalMotionBank.stopPending"
     nonisolated private static let workoutHistoricalMotionBankPrearmRequestedKey =
@@ -30840,6 +30844,44 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         )
                     }
                 }
+            } catch AtriaHistoricalActivityInspectionProofFactory
+                .FactoryError.completionCoverageMismatch {
+                if let self,
+                   let fingerprint = self
+                    .terminalConsumerCoverageFailureFingerprint(
+                        authority: authority
+                    ) {
+                    UserDefaults.standard.set(
+                        fingerprint,
+                        forKey: Self.terminalConsumerCoverageFailureKey
+                    )
+                    UserDefaults.standard.set(
+                        Date(),
+                        forKey: Self.terminalConsumerCoverageFailureAtKey
+                    )
+                }
+                UserDefaults.standard.set(
+                    String(
+                        reflecting:
+                            AtriaHistoricalActivityInspectionProofFactory
+                                .FactoryError.completionCoverageMismatch
+                    ),
+                    forKey:
+                        "atria.offlineSync.terminalArchiveFailureDiagnostic.v1"
+                )
+                UserDefaults.standard.set(
+                    Date(),
+                    forKey: "atria.offlineSync.terminalArchiveFailureAt.v1"
+                )
+                AtriaDebugLog(
+                    "ATRIADBG historical_full_drain_publish status=deferred generation=%llu reason=completionCoverageMismatch action=cache_unchanged_terminal_snapshot_release_archive_lane",
+                    transportGeneration
+                )
+                Task { @MainActor [weak self] in
+                    self?.finishHistoricalConsumerMaterialization(
+                        reason: "terminal_completion_coverage_mismatch"
+                    )
+                }
             } catch AtriaHistoricalConsumerProjectionCoordinator
                 .CoordinatorError.pendingDependencyMismatch {
                 if let fingerprint = Self
@@ -31549,12 +31591,87 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                               authority.attempt.transportGeneration)
                 return
             }
+            let terminalCoverageFailureFingerprint =
+                terminalConsumerCoverageFailureFingerprint(
+                    authority: authority
+                )
+            let defaults = UserDefaults.standard
+            var cachedTerminalCoverageFailureFingerprint =
+                defaults.string(
+                    forKey: Self.terminalConsumerCoverageFailureKey
+                )
+            if Self.shouldSeedTerminalConsumerCoverageFailureFromDiagnostic(
+                cachedFingerprint:
+                    cachedTerminalCoverageFailureFingerprint,
+                currentFingerprint:
+                    terminalCoverageFailureFingerprint,
+                persistedFailureDiagnostic: defaults.string(
+                    forKey:
+                        "atria.offlineSync.terminalArchiveFailureDiagnostic.v1"
+                )
+            ), let terminalCoverageFailureFingerprint {
+                // Builds installed after a deterministic failure already
+                // persisted its typed diagnostic but not the newer snapshot
+                // lease. Bind that existing failure to today's unchanged
+                // durable authority without paying for one more watchdog-risk
+                // scan merely to rediscover the same error.
+                defaults.set(
+                    terminalCoverageFailureFingerprint,
+                    forKey: Self.terminalConsumerCoverageFailureKey
+                )
+                if defaults.object(
+                    forKey: Self.terminalConsumerCoverageFailureAtKey
+                ) == nil {
+                    defaults.set(
+                        defaults.object(
+                            forKey:
+                                "atria.offlineSync.terminalArchiveFailureAt.v1"
+                        ) as? Date ?? Date(),
+                        forKey: Self.terminalConsumerCoverageFailureAtKey
+                    )
+                }
+                cachedTerminalCoverageFailureFingerprint =
+                    terminalCoverageFailureFingerprint
+                AtriaDebugLog(
+                    "ATRIADBG historical_full_drain_publish status=deferred generation=%llu reason=migrated_completion_coverage_mismatch action=seed_unchanged_terminal_snapshot_without_rescan",
+                    authority.attempt.transportGeneration
+                )
+            }
+            if Self.shouldSuppressUnchangedTerminalConsumerCoverageFailure(
+                cachedFingerprint:
+                    cachedTerminalCoverageFailureFingerprint,
+                currentFingerprint: terminalCoverageFailureFingerprint
+            ) {
+                defaults.set(
+                    "terminal_consumer_coverage_snapshot_unchanged",
+                    forKey: OfflineSyncDefaults.lastStatus
+                )
+                defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+                AtriaDebugLog(
+                    "ATRIADBG historical_full_drain_publish status=deferred generation=%llu reason=unchanged_completion_coverage_mismatch action=retain_terminal_journal_skip_full_archive_rescan",
+                    authority.attempt.transportGeneration
+                )
+                return
+            }
+            // Any changed terminal authority, full-scan checkpoint, current
+            // catalog image, time-zone, or projection algorithm invalidates
+            // the deterministic failure. Preserve the raw journal and retry
+            // against the new immutable dependency set.
+            if defaults.string(
+                forKey: Self.terminalConsumerCoverageFailureKey
+            ) != nil, terminalCoverageFailureFingerprint != nil {
+                defaults.removeObject(
+                    forKey: Self.terminalConsumerCoverageFailureKey
+                )
+                defaults.removeObject(
+                    forKey: Self.terminalConsumerCoverageFailureAtKey
+                )
+            }
             let dependencyFingerprint =
                 Self.terminalConsumerDependencyFingerprint(
-                authority: authority,
-                timeZoneIdentifier: TimeZone.current.identifier
-            )
-            let defaults = UserDefaults.standard
+                    authority: authority,
+                    timeZoneIdentifier: TimeZone.current.identifier
+                )
             if Self.shouldSuppressTerminalConsumerDependencyRetry(
                 cachedFingerprint: defaults.string(
                     forKey: Self.terminalConsumerDependencyMismatchKey
@@ -31653,6 +31770,109 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         let age = now.timeIntervalSince(cachedAt)
         return age >= 0 && age < retryInterval
+    }
+
+    nonisolated static func
+        shouldSuppressUnchangedTerminalConsumerCoverageFailure(
+            cachedFingerprint: String?,
+            currentFingerprint: String?
+        ) -> Bool {
+        guard let cachedFingerprint,
+              let currentFingerprint else {
+            return false
+        }
+        return cachedFingerprint == currentFingerprint
+    }
+
+    nonisolated static func
+        shouldSeedTerminalConsumerCoverageFailureFromDiagnostic(
+            cachedFingerprint: String?,
+            currentFingerprint: String?,
+            persistedFailureDiagnostic: String?
+        ) -> Bool {
+        guard cachedFingerprint == nil,
+              currentFingerprint != nil,
+              let persistedFailureDiagnostic else {
+            return false
+        }
+        return persistedFailureDiagnostic.contains(
+            "completionCoverageMismatch"
+        )
+    }
+
+    private func terminalConsumerCoverageFailureFingerprint(
+        authority: AtriaHistoricalFullDrainCoverageStore.Authority
+    ) -> String? {
+        guard let dependencyFingerprint =
+                Self.terminalConsumerDependencyFingerprint(
+                    authority: authority,
+                    timeZoneIdentifier: TimeZone.current.identifier
+                ),
+              let fullScan = try? historicalFullScanCompletionStore
+                .loadLatest(),
+              let catalogFingerprint = HistoricalArchive
+                .terminalConsumerRetryCatalogFingerprint() else {
+            return nil
+        }
+        return Self.terminalConsumerCoverageFailureFingerprint(
+            dependencyFingerprint: dependencyFingerprint,
+            fullScanVersion: fullScan.version,
+            fullScanGeneration: fullScan.generation,
+            fullScanTransportGeneration: fullScan.transportGeneration,
+            sourceChunkID: fullScan.sourceChunkID,
+            sourceRawSHA256: fullScan.sourceRawSHA256,
+            observedArchiveFirstTimestamp:
+                fullScan.observedArchiveFirstTimestamp,
+            cursorWatermark: fullScan.cursorWatermark,
+            catalogGeneration: fullScan.catalogGeneration,
+            catalogSnapshotSHA256: fullScan.catalogSnapshotSHA256,
+            aggregateSnapshotSHA256: fullScan.aggregateSnapshotSHA256,
+            currentCatalogFingerprint: catalogFingerprint
+        )
+    }
+
+    nonisolated static func terminalConsumerCoverageFailureFingerprint(
+        dependencyFingerprint: String?,
+        fullScanVersion: Int,
+        fullScanGeneration: UInt64,
+        fullScanTransportGeneration: UInt64,
+        sourceChunkID: String,
+        sourceRawSHA256: String,
+        observedArchiveFirstTimestamp: Date,
+        cursorWatermark: Date,
+        catalogGeneration: UInt64,
+        catalogSnapshotSHA256: String,
+        aggregateSnapshotSHA256: String,
+        currentCatalogFingerprint: String?
+    ) -> String? {
+        guard let dependencyFingerprint,
+              !dependencyFingerprint.isEmpty,
+              fullScanGeneration > 0,
+              !sourceChunkID.isEmpty,
+              !sourceRawSHA256.isEmpty,
+              let currentCatalogFingerprint,
+              !currentCatalogFingerprint.isEmpty else {
+            return nil
+        }
+        return [
+            "terminal_consumer_coverage_failure_v1",
+            dependencyFingerprint,
+            String(fullScanVersion),
+            String(fullScanGeneration),
+            String(fullScanTransportGeneration),
+            sourceChunkID,
+            sourceRawSHA256,
+            String(Int64((
+                observedArchiveFirstTimestamp.timeIntervalSince1970 * 1_000
+            ).rounded())),
+            String(Int64((
+                cursorWatermark.timeIntervalSince1970 * 1_000
+            ).rounded())),
+            String(catalogGeneration),
+            catalogSnapshotSHA256,
+            aggregateSnapshotSHA256,
+            currentCatalogFingerprint,
+        ].joined(separator: "|")
     }
 
     nonisolated private static func terminalConsumerDependencyFingerprint(

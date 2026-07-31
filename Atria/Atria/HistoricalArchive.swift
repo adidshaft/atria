@@ -1334,6 +1334,52 @@ enum HistoricalArchive {
         )
     }
 
+    /// Cheap retry identity for terminal consumer publication admission.
+    ///
+    /// This intentionally hashes only immutable sealed catalog identity from
+    /// the already-loaded image; it does not verify raw files or load aggregate
+    /// manifests. Ordinary live appends mutate the active chunk byte count and
+    /// must not re-arm a watchdog-producing scan. Sealing/rotation, retention,
+    /// or repaired immutable metadata advances the generation/sealed identity,
+    /// so genuinely new consumer input invalidates the cached failure.
+    static func terminalConsumerRetryCatalogFingerprint() -> String? {
+        guard let catalog = try? catalogStoreLocked().snapshot() else {
+            return nil
+        }
+        let sealedIdentity = catalog.chunks
+            .filter { $0.state == .sealed }
+            .sorted { $0.id < $1.id }
+            .map { chunk in
+                [
+                    chunk.id,
+                    chunk.contentSHA256 ?? "missing",
+                    String(chunk.byteCount),
+                    chunk.rowCount.map(String.init) ?? "unknown",
+                    chunk.firstTimestamp.map {
+                        String(Int64((
+                            $0.timeIntervalSince1970 * 1_000
+                        ).rounded()))
+                    } ?? "unknown",
+                    chunk.lastTimestamp.map {
+                        String(Int64((
+                            $0.timeIntervalSince1970 * 1_000
+                        ).rounded()))
+                    } ?? "unknown",
+                    chunk.compressedStorage?.storedSHA256 ?? "plain",
+                ].joined(separator: ":")
+            }
+            .joined(separator: "|")
+        let digest = AtriaHistoricalDrainCompletionGenerationStore.sha256(
+            Data(sealedIdentity.utf8)
+        )
+        return [
+            "terminal_retry_catalog_v1",
+            String(catalog.generation),
+            catalog.activeChunkID,
+            digest,
+        ].joined(separator: "|")
+    }
+
     private static func currentFullScanSnapshotEvidence(
         sourceChunkID: String,
         sourceRawSHA256: String,
