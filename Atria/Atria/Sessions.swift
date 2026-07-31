@@ -21750,6 +21750,23 @@ final class SessionStore: ObservableObject {
                         && isUnsettled($0)
                 }
             )
+        } else if let preferredCandidate {
+            // The preferred main was settled by DISMISSAL alone — no
+            // confirmed sleep overlaps it. A dismissal is the user's verdict
+            // on that exact window, not on the whole day: physical 2026-07-31
+            // evidence showed an HR-only overnight aggregate whose start was
+            // pinned to strap re-wear (20:47) being dismissed as mis-bounded,
+            // after which this branch hid the genuinely distinct late-morning
+            // resumed sleep and the day lost all sleep, HRV and recovery
+            // evidence. Fall back to the best still-unsettled candidate of
+            // the same day. Every candidate here re-passes `isUnsettled`, so
+            // the rejected window itself (or anything ≥70% overlapping it)
+            // cannot resurface, and older days stay hidden.
+            aggregateCandidate = preferredSleepCandidateForReview(
+                from: candidates.filter {
+                    $0.day == preferredCandidate.day && isUnsettled($0)
+                }
+            )
         } else {
             aggregateCandidate = nil
         }

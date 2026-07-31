@@ -620,6 +620,41 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
             historicalMotionPolicy: .sessionOnly
         ).contains { $0.kind == "resumed_sleep_candidate" },
         "a resumed-sleep review may tolerate the physical 81.86s reconnect seam, but not a >90s accepted-HR outage")
+
+        // Physical 2026-07-31 regression: the user dismissed the mis-bounded
+        // overnight aggregate WITHOUT confirming any sleep. The distinct
+        // late-morning resumed segment must still surface for review — a
+        // dismissal settles one window, not the whole day.
+        let dismissalOnlyReview = try XCTUnwrap(SessionStore.makeSleepReviewNightForCache(
+            snapshot: .empty,
+            canonicalSessions: sessions,
+            confirmedSleeps: [],
+            dismissedCandidates: [
+                AtriaDismissedSleepCandidate(start: mainStart, end: mainEnd)
+            ],
+            rest: 56,
+            maxHR: 190,
+            calendar: Self.indiaCalendar
+        ), "dismissing the overnight window must not hide the distinct resumed-sleep review")
+        XCTAssertEqual(dismissalOnlyReview.source, "resumed_sleep_candidate")
+        XCTAssertEqual(dismissalOnlyReview.start, resumedStart)
+        XCTAssertEqual(dismissalOnlyReview.end, wakeBoundary)
+        XCTAssertFalse(dismissalOnlyReview.confirmed)
+
+        // The dismissed window itself must stay suppressed: with no other
+        // unsettled candidate on that day, the review is empty rather than
+        // resurfacing the rejected overnight aggregate.
+        XCTAssertNil(SessionStore.makeSleepReviewNightForCache(
+            snapshot: .empty,
+            canonicalSessions: [main],
+            confirmedSleeps: [],
+            dismissedCandidates: [
+                AtriaDismissedSleepCandidate(start: mainStart, end: mainEnd)
+            ],
+            rest: 56,
+            maxHR: 190,
+            calendar: Self.indiaCalendar
+        ), "a dismissed window with no distinct later evidence must not come back")
     }
 
     func testConfirmedResumedSleepAddsOnlyObservedDurationToCycle() throws {
