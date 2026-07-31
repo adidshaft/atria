@@ -355,13 +355,12 @@ struct AtriaOnboardingFlow: View {
             }
         }
 
-        var centerValue: String {
-            switch self {
-            case .recovery: return "64%"
-            case .sleep: return "7h 42m"
-            case .strain: return "13.1"
-            }
-        }
+        // No sample numbers anywhere in the product (2026-07-31): the
+        // onboarding ring shows the same honest pre-data state the Home ring
+        // uses — "--" centers and dashed learning bands — so the first thing
+        // a new user sees is exactly what the app will look like until real
+        // nights arrive, not a fabricated 64%.
+        var centerValue: String { "--" }
     }
 
     private enum Step: Int, CaseIterable {
@@ -573,7 +572,7 @@ struct AtriaOnboardingFlow: View {
             // them as their own readings before ever wearing the strap —
             // exactly the fabrication the honesty rule exists to prevent. The
             // ring is a layout preview; label it as one.
-            Text("Sample numbers, so you can see the layout. Yours start after your first night.")
+            Text("Your numbers appear here after your first night of wear.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -848,22 +847,21 @@ struct AtriaOnboardingFlow: View {
 
     private var onboardingRingSlots: [AtriaTriRingSlotContent] {
         [
-            AtriaTriRingSlotContent(slot: .sleep,
-                                    metric: onboardingMetric(.sleep, fill: focusMetric == .sleep ? 0.92 : 0.72)),
-            AtriaTriRingSlotContent(slot: .recovery,
-                                    metric: onboardingMetric(.recovery, fill: focusMetric == .recovery ? 0.78 : 0.58)),
-            AtriaTriRingSlotContent(slot: .strain,
-                                    metric: onboardingMetric(.strain, fill: focusMetric == .strain ? 0.66 : 0.42))
+            AtriaTriRingSlotContent(slot: .sleep, metric: onboardingMetric(.sleep)),
+            AtriaTriRingSlotContent(slot: .recovery, metric: onboardingMetric(.recovery)),
+            AtriaTriRingSlotContent(slot: .strain, metric: onboardingMetric(.strain))
         ]
     }
 
-    private func onboardingMetric(_ metric: OnboardingFocusMetric, fill: Double) -> AtriaTriRingMetric {
+    private func onboardingMetric(_ metric: OnboardingFocusMetric) -> AtriaTriRingMetric {
+        // `fill: nil` is the learning sentinel — the ring draws its dashed
+        // pre-data band, identical to a genuinely fresh install's Home ring.
         AtriaTriRingMetric(title: metric.title,
                            value: metric.centerValue,
                            detail: metric.detail,
                            systemImage: metric.icon,
                            tint: metric.tint,
-                           fill: fill)
+                           fill: nil)
     }
 
     private var expectationsPage: some View {
