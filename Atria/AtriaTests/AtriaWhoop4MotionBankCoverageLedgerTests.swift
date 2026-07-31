@@ -1134,6 +1134,63 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
         ))
     }
 
+    func testDisconnectClosedBankPersistsFirstAttemptMaintenanceAuthority()
+        throws
+    {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(
+            of: "// Firmware bank state dies with the physical BLE connection."
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "defaults.removeObject(",
+            range: start.upperBound..<source.endIndex
+        ))
+        let disconnectClose = String(source[start.lowerBound..<end.lowerBound])
+
+        let close = try XCTUnwrap(disconnectClose.range(
+            of: "AtriaWhoop4MotionBankCoverageLedger.close("
+        ))
+        let persist = try XCTUnwrap(disconnectClose.range(
+            of: "persistNextUnattemptedMotionBankMaintenanceTicketIfNeeded("
+        ))
+        XCTAssertLessThan(close.lowerBound, persist.lowerBound)
+
+        let helperStart = try XCTUnwrap(source.range(
+            of: "private func persistNextUnattemptedMotionBankMaintenanceTicketIfNeeded("
+        ))
+        let helperEnd = try XCTUnwrap(source.range(
+            of: "private func pendingWorkoutHistoricalMotionBankMaintenanceTicket(",
+            range: helperStart.upperBound..<source.endIndex
+        ))
+        let helper = String(source[helperStart.lowerBound..<helperEnd.lowerBound])
+        XCTAssertTrue(helper.contains("nextPendingOffload("))
+        XCTAssertTrue(helper.contains("ticket.attempts == 0"))
+        XCTAssertTrue(helper.contains(
+            "workoutHistoricalMotionBankMaintenanceTicketIDKey"
+        ))
+
+        let acceptedStart = try XCTUnwrap(source.range(
+            of: "// Give a previously closed durable bank first refusal"
+        ))
+        let acceptedEnd = try XCTUnwrap(source.range(
+            of: "let bankOffloadStarted =",
+            range: acceptedStart.upperBound..<source.endIndex
+        ))
+        let acceptedPath = String(
+            source[acceptedStart.lowerBound..<acceptedEnd.lowerBound]
+        )
+        XCTAssertTrue(acceptedPath.contains(
+            "if !workoutHistoricalMotionBankArmed"
+        ))
+        XCTAssertTrue(acceptedPath.contains(
+            "persistNextUnattemptedMotionBankMaintenanceTicketIfNeeded("
+        ))
+    }
+
     func testBankThermalDeferralRetainsBankAuthorityWithoutAttendedUpgrade()
         throws
     {
