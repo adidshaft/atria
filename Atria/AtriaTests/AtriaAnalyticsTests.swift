@@ -5654,6 +5654,10 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertNotNil(result, "wear alone should be enough to settle today's morning row")
         XCTAssertNotNil(result?.restingHR)
         XCTAssertNil(result?.sleepDuration, "no confirmed sleep and no dailyRollup sleep evidence exists for today")
+        XCTAssertNil(
+            result?.strain,
+            "quiet overnight wear must not reappear as strain through the morning fallback"
+        )
     }
 
     func testCleanQualifiedUnconfirmedWearYieldsOnlyUnverifiedRecovery() throws {
