@@ -2686,7 +2686,10 @@ struct IMUAuditSummary: Equatable {
                 }
                 return "Sleep-only signal; no absolute temperature."
             }
-            return "Relative sleep-only deviation from \(baselineSessions) prior local sessions; no absolute temperature."
+            if baselineSessions > 0 {
+                return "Relative sleep-only deviation from \(baselineSessions) prior local sessions; no absolute temperature."
+            }
+            return "Relative sleep-only deviation from a persisted qualified sleep baseline; no absolute temperature."
         }
 
         var isReady: Bool {
@@ -7142,7 +7145,11 @@ final class SessionStore: ObservableObject {
         guard let finalizedDeviationCelsius else { return fallback }
         return IMUAuditSummary.SkinTemperatureDeviationSummary(
             latestDeltaCelsius: finalizedDeviationCelsius,
-            baselineSessions: max(fallback.baselineSessions, 3),
+            // The finalized deviation proves a qualified baseline existed; it
+            // does not encode how many sessions backed it. Preserve only the
+            // count still present in the loaded source instead of inventing a
+            // minimum of three after session compaction or relaunch.
+            baselineSessions: fallback.baselineSessions,
             candidateFrames: fallback.candidateFrames,
             candidateValues: fallback.candidateValues)
     }
