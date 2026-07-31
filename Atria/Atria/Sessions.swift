@@ -27758,15 +27758,27 @@ final class SessionStore: ObservableObject {
         let cadenceKey = Self.biologicalAgeWeeklyCadenceKey(profile: profile,
                                                             sessionsLoaded: hasCompletedDeferredSessionLoad,
                                                             now: now)
+        let prerequisitesReady = biologicalAgePrerequisitesReady(
+            vo2MaxEstimate: vo2MaxEstimate,
+            now: now
+        )
         if let cached = cachedBiologicalAge,
            Self.isBiologicalAgeCacheCadenceFresh(cached,
                                                  profile: profile,
                                                  sessionsLoaded: hasCompletedDeferredSessionLoad,
-                                                 now: now) {
+                                                 now: now),
+           Self.shouldReuseBiologicalAgeCadenceSummary(
+               cached.summary,
+               prerequisitesReady: prerequisitesReady
+           ) {
             return cached.summary
         }
         if let weekly = cachedBiologicalAgeWeeklySummary,
-           Self.isBiologicalAgeWeeklyCadenceFresh(weekly, cadenceKey: cadenceKey) {
+           Self.isBiologicalAgeWeeklyCadenceFresh(weekly, cadenceKey: cadenceKey),
+           Self.shouldReuseBiologicalAgeCadenceSummary(
+               weekly.summary,
+               prerequisitesReady: prerequisitesReady
+           ) {
             return weekly.summary
         }
         // Ordinary source/signature churn stays on the one-computation-per-week
@@ -27797,6 +27809,13 @@ final class SessionStore: ObservableObject {
                                      cadenceKey: cadenceKey,
                                      now: now)
 
+        // A same-week calibrating record may have been written before the last
+        // prerequisite became qualified. Once the inputs are ready, never keep
+        // presenting that stale blocker while its bounded off-main replacement
+        // is running.
+        if prerequisitesReady {
+            return BiologicalAgeSummary.refreshing(chronologicalAge: profile.age)
+        }
         if let cached = cachedBiologicalAge,
            Self.biologicalAgeCacheMatchesProfile(cached, profile: profile) {
             return cached.summary
@@ -27809,6 +27828,31 @@ final class SessionStore: ObservableObject {
             return weekly.summary
         }
         return BiologicalAgeSummary.refreshing(chronologicalAge: profile.age)
+    }
+
+    private func biologicalAgePrerequisitesReady(
+        vo2MaxEstimate: VO2MaxEstimateSummary,
+        now: Date
+    ) -> Bool {
+        guard vo2MaxEstimate.value != nil,
+              baseline.hasTrustedRestingBaseline(now: now),
+              baseline.hasTrustedHRVBaseline(now: now),
+              trainingLoadSummarySnapshot.confidence == "local" else {
+            return false
+        }
+        let overnightSleepCount = cachedConfirmedSleeps.reduce(into: 0) { count, sleep in
+            if !Self.confirmedSleepSourceIsNap(source: sleep.source, duration: sleep.duration) {
+                count += 1
+            }
+        }
+        return overnightSleepCount >= 3
+    }
+
+    nonisolated static func shouldReuseBiologicalAgeCadenceSummary(
+        _ summary: BiologicalAgeSummary,
+        prerequisitesReady: Bool
+    ) -> Bool {
+        summary.isReady || !prerequisitesReady
     }
 
     /// The Healthspan detail history prepared with the current weekly
