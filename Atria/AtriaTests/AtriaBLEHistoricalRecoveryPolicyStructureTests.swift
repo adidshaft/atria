@@ -556,6 +556,46 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         )
     }
 
+    func testChangedCatalogCoverageFailureRetriesAtMostDaily() {
+        // Physical 2026-07-31: background drains advance the catalog identity
+        // continuously; each fingerprint change re-armed the doomed archive
+        // projection in the foreground until the frontmost app hit its 3.4 GB
+        // jetsam limit. A changed catalog within 24h of the last identical
+        // failure stays suppressed; the daily window (failure timestamp
+        // refreshes on each failure) and the projection-model escape remain.
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        XCTAssertTrue(
+            AtriaBLEManager
+                .shouldSuppressUnchangedTerminalConsumerCoverageFailure(
+                    cachedFingerprint: "catalog-a",
+                    currentFingerprint: "catalog-b",
+                    cachedAt: now.addingTimeInterval(-60 * 60),
+                    now: now
+                ),
+            "a catalog change one hour after an identical failure must not re-run the projection"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .shouldSuppressUnchangedTerminalConsumerCoverageFailure(
+                    cachedFingerprint: "catalog-a",
+                    currentFingerprint: "catalog-b",
+                    cachedAt: now.addingTimeInterval(-25 * 60 * 60),
+                    now: now
+                ),
+            "after the daily window one bounded retry is allowed"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .shouldSuppressUnchangedTerminalConsumerCoverageFailure(
+                    cachedFingerprint: "catalog-a",
+                    currentFingerprint: "catalog-b",
+                    cachedAt: nil,
+                    now: now
+                ),
+            "no failure timestamp keeps the pre-aging behavior: changed catalog retries"
+        )
+    }
+
     func testTerminalCoverageFailureRetriesForChangedCatalogFullScanOrModel() throws {
         let original = try XCTUnwrap(
             terminalCoverageFailureFingerprint()
