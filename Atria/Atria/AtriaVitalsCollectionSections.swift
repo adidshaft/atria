@@ -2859,7 +2859,7 @@ enum AtriaExperimentalSensorCopy {
         guard hasValidatedSkinTemperatureReading(summary: summary,
                                                   decoderAvailable: decoderAvailable) else {
             return decoderAvailable
-                ? "Wrist temperature deviation is waiting for enough sleep data."
+                ? "Wrist temperature deviation is \(summary.detailText.lowercased())."
                 : "Wrist temperature deviation is not available yet."
         }
         return "Wrist temperature relative sleep signal \(summary.valueText) delta C from baseline, \(summary.footnoteText)."

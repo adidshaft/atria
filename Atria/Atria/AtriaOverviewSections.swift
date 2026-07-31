@@ -11346,7 +11346,10 @@ private struct AtriaMetricMeaningInline: View {
         case .sleepEfficiency:
             return "Sleep efficiency estimates time asleep versus time in bed from duration, not a checked sleep study."
         case .skinTemperature:
-            return "Atria can't read skin temperature from this strap yet, so it shows no value."
+            if AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable {
+                return "Atria validates this strap's wrist-temperature signal, builds a personal sleep baseline, then shows a relative deviation—not an absolute or core-temperature reading."
+            }
+            return "Atria cannot validate wrist temperature from this strap yet, so it shows no value."
         case .fitnessAge:
             return "Fitness age blends VO2max-adjacent fitness signals into a single younger/older-than-your-years estimate."
         case .hrZones:

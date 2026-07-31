@@ -294,12 +294,14 @@ final class AtriaRecoveredRRProjectionTests: XCTestCase {
             ))
         }
 
-        let result = SessionStore.finalizedSkinTemperatureDeviationByMorningDay(
+        let projection = SessionStore.recoveredSkinTemperatureProjection(
             points: points,
             confirmedSleeps: sleeps,
             calendar: calendar
         )
+        let result = projection.deviations
         let fourthDay = calendar.startOfDay(for: sleeps[3].end)
+        XCTAssertEqual(projection.baselineNightCount, 4)
         XCTAssertEqual(result.count, 1)
         XCTAssertEqual(result[fourthDay] ?? .nan, 4.0, accuracy: 0.000_001)
     }
