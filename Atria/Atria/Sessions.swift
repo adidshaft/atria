@@ -27829,11 +27829,36 @@ final class SessionStore: ObservableObject {
             vo2MaxEstimate: vo2MaxEstimate,
             now: now
         )
+        let cachedLearningProgressChanged = cachedBiologicalAge.map {
+            !$0.summary.isReady
+                && Self.biologicalAgeLearningProgressChanged(
+                    cached: $0.signature,
+                    vo2MaxEstimate: vo2MaxEstimate,
+                    dailyMetricCount: dailyMetricHistory.count,
+                    confirmedSleeps: cachedConfirmedSleeps,
+                    baseline: baseline,
+                    trainingLoadSummary: trainingLoadSummarySnapshot,
+                    now: now
+                )
+        } ?? false
+        let weeklyLearningProgressChanged = cachedBiologicalAgeWeeklySummary.map {
+            !$0.summary.isReady
+                && Self.biologicalAgeLearningProgressChanged(
+                    cached: $0.signature,
+                    vo2MaxEstimate: vo2MaxEstimate,
+                    dailyMetricCount: dailyMetricHistory.count,
+                    confirmedSleeps: cachedConfirmedSleeps,
+                    baseline: baseline,
+                    trainingLoadSummary: trainingLoadSummarySnapshot,
+                    now: now
+                )
+        } ?? false
         if let cached = cachedBiologicalAge,
            Self.isBiologicalAgeCacheCadenceFresh(cached,
                                                  profile: profile,
                                                  sessionsLoaded: hasCompletedDeferredSessionLoad,
                                                  now: now),
+           !cachedLearningProgressChanged,
            Self.shouldReuseBiologicalAgeCadenceSummary(
                cached.summary,
                prerequisitesReady: prerequisitesReady
@@ -27842,6 +27867,7 @@ final class SessionStore: ObservableObject {
         }
         if let weekly = cachedBiologicalAgeWeeklySummary,
            Self.isBiologicalAgeWeeklyCadenceFresh(weekly, cadenceKey: cadenceKey),
+           !weeklyLearningProgressChanged,
            Self.shouldReuseBiologicalAgeCadenceSummary(
                weekly.summary,
                prerequisitesReady: prerequisitesReady
@@ -27857,13 +27883,13 @@ final class SessionStore: ObservableObject {
                 recordWeekStart: Self.biologicalAgeCacheWeekStart(for: $0.computedAt),
                 recordCadenceKey: $0.cadenceKey,
                 requestedCadenceKey: cadenceKey
-            )
+            ) && !cachedLearningProgressChanged
         }) == true || cachedBiologicalAgeWeeklySummary.map({
             $0.schema == Self.biologicalAgeCacheSchema && Self.shouldDeferBiologicalAgeRefreshUntilNextWeek(
                 recordWeekStart: $0.weekStart,
                 recordCadenceKey: $0.cadenceKey,
                 requestedCadenceKey: cadenceKey
-            )
+            ) && !weeklyLearningProgressChanged
         }) == true {
             return BiologicalAgeSummary.refreshing(chronologicalAge: profile.age)
         }
@@ -27920,6 +27946,33 @@ final class SessionStore: ObservableObject {
         prerequisitesReady: Bool
     ) -> Bool {
         summary.isReady || !prerequisitesReady
+    }
+
+    /// A weekly ready Fitness Age remains intentionally stable. A not-ready
+    /// cache is different: it is progress UI, and must not keep saying 0/14
+    /// after confirmed nights have populated the baseline. This comparison is
+    /// deliberately count-only so foreground reads never rescan session rows.
+    nonisolated static func biologicalAgeLearningProgressChanged(
+        cached: BiologicalAgeCacheSignature,
+        vo2MaxEstimate: VO2MaxEstimateSummary,
+        dailyMetricCount: Int,
+        confirmedSleeps: [UserConfirmedSleep],
+        baseline: PersonalBaseline,
+        trainingLoadSummary: TrainingLoadSummary,
+        now: Date = Date()
+    ) -> Bool {
+        let confirmedOvernightSleepCount = confirmedSleeps.reduce(0) { count, sleep in
+            count + (confirmedSleepSourceIsNap(source: sleep.source, duration: sleep.duration) ? 0 : 1)
+        }
+        return cached.vo2MaxValueTenth != scaledInt(vo2MaxEstimate.value, scale: 10)
+            || cached.vo2MaxConfidence != vo2MaxEstimate.confidence
+            || cached.dailyMetricCount != dailyMetricCount
+            || cached.confirmedOvernightSleepCount != confirmedOvernightSleepCount
+            || cached.baselineRestingHR != baseline.restingInt
+            || cached.baselineHRV != baseline.hrvInt
+            || cached.baselineFreshRestingDays != baseline.freshRestingSampleCount(now: now)
+            || cached.baselineFreshHRVDays != baseline.freshHRVSampleCount(now: now)
+            || cached.trainingLoadConfidence != trainingLoadSummary.confidence
     }
 
     /// The Healthspan detail history prepared with the current weekly

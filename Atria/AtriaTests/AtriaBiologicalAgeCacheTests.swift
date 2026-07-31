@@ -22,6 +22,53 @@ final class AtriaBiologicalAgeCacheTests: XCTestCase {
         )
     }
 
+    func testSameWeekBuildingCacheRefreshesWhenBaselineProgressChanges() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let samples = (0..<5).map { index in
+            PersonalBaseline.BaselineSample(
+                date: now.addingTimeInterval(Double(-index) * 86_400),
+                restingHR: 58 + Double(index % 2),
+                rmssd: nil,
+                overnight: true
+            )
+        }
+        let baseline = PersonalBaseline(
+            restingHR: 58,
+            hrvEMA: nil,
+            sessions: samples.count,
+            updated: now,
+            samples: samples
+        )
+        let stale = biologicalAgeSignature(
+            vo2MaxConfidence: "learning",
+            baselineRestingHR: 58,
+            baselineFreshRestingDays: 0,
+            baselineFreshHRVDays: 0,
+            trainingLoadConfidence: "learning"
+        )
+        let vo2 = VO2MaxEstimateSummary(
+            value: nil,
+            confidence: "learning",
+            detail: "5/14 RHR",
+            narrative: "Learning",
+            trendText: "Learning",
+            trendDetail: "Learning",
+            trendDelta: nil
+        )
+
+        XCTAssertTrue(
+            SessionStore.biologicalAgeLearningProgressChanged(
+                cached: stale,
+                vo2MaxEstimate: vo2,
+                dailyMetricCount: stale.dailyMetricCount,
+                confirmedSleeps: [],
+                baseline: baseline,
+                trainingLoadSummary: .learning,
+                now: now
+            )
+        )
+    }
+
     func testSameWeekReadyFitnessAgeSurvivesOrdinarySourceChurn() {
         let ready = BiologicalAgeSummary(
             biologicalAge: 28,
@@ -732,6 +779,9 @@ final class AtriaBiologicalAgeCacheTests: XCTestCase {
                                         sleepHistoryFingerprint: UInt64 = 0,
                                         confirmedSleepFingerprint: UInt64 = 0,
                                         canonicalSessionFingerprint: UInt64 = 0,
+                                        baselineRestingHR: Int? = nil,
+                                        baselineFreshRestingDays: Int = 0,
+                                        baselineFreshHRVDays: Int = 0,
                                         baselineHRV: Int? = nil,
                                         trainingLoadConfidence: String = "") -> SessionStore.BiologicalAgeCacheSignature {
         SessionStore.BiologicalAgeCacheSignature(profileAge: profileAge,
@@ -744,7 +794,10 @@ final class AtriaBiologicalAgeCacheTests: XCTestCase {
                                                  sleepHistoryFingerprint: sleepHistoryFingerprint,
                                                  confirmedSleepFingerprint: confirmedSleepFingerprint,
                                                  canonicalSessionFingerprint: canonicalSessionFingerprint,
+                                                 baselineRestingHR: baselineRestingHR,
                                                  baselineHRV: baselineHRV,
+                                                 baselineFreshRestingDays: baselineFreshRestingDays,
+                                                 baselineFreshHRVDays: baselineFreshHRVDays,
                                                  trainingLoadConfidence: trainingLoadConfidence)
     }
 }
