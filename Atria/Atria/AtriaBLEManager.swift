@@ -2543,7 +2543,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let protectedR10ResponseEventDataConnectionCutoverKey = "atria.protectedR10.responseEventDataConnectionCutoverV9"
     nonisolated private static let protectedR10ResponseEventDataSequenceSentKey = "atria.protectedR10.responseEventDataSequenceSentV9"
     nonisolated private static let protectedR10PureHRV10InProcessCutoverKey = "atria.protectedR10.pureHRV10InProcessCutover"
-    nonisolated private static let protectedR10PeripheralRetainerRequalificationMigrationKey = "atria.protectedR10.peripheralRetainerRequalificationV1"
     /// The workout-start cutover is keyed to the persisted workout start, not
     /// a process-wide boolean: one explicit workout earns one fresh v9 owner
     /// attempt, while a later workout may be considered independently.
@@ -2934,62 +2933,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return true
     }
 
-    /// Repairs only the stale fallback verdict produced before the peripheral
-    /// lifetime fix. The migration re-arms the existing bounded v9 proof; it
-    /// never promotes the owner directly to `qualified`.
-    nonisolated static func shouldRearmBoundedV9AfterPeripheralRetainerFix(
-        owner: ProtectedR10CleanOwner,
-        state: ProtectedR10CleanOwnerState,
-        streamSuppressed: Bool,
-        priorQualifiedAt: Double?,
-        failureReason: String?
-    ) -> Bool {
-        owner == .pureHRV10
-            && (state == .fallbackActive || state == .fallbackPending)
-            && streamSuppressed
-            && priorQualifiedAt != nil
-            && failureReason == "lease_released_before_density_proof"
-    }
-
-    @discardableResult
-    nonisolated private static func migratePeripheralRetainerRequalificationIfNeeded(
-        defaults: UserDefaults,
-        now: Date
-    ) -> Bool {
-        guard !defaults.bool(
-            forKey: protectedR10PeripheralRetainerRequalificationMigrationKey
-        ) else { return false }
-        defaults.set(
-            true,
-            forKey: protectedR10PeripheralRetainerRequalificationMigrationKey
-        )
-        let owner = ProtectedR10CleanOwner(
-            rawValue: defaults.string(forKey: protectedR10CleanOwnerKey) ?? ""
-        ) ?? .legacy
-        let state = ProtectedR10CleanOwnerState(
-            rawValue: defaults.string(forKey: protectedR10CleanOwnerStateKey) ?? ""
-        ) ?? .none
-        guard shouldRearmBoundedV9AfterPeripheralRetainerFix(
-            owner: owner,
-            state: state,
-            streamSuppressed: defaults.bool(forKey: protectedR10StreamSuppressedKey),
-            priorQualifiedAt: defaults.object(
-                forKey: protectedR10StableTransportQualifiedAtKey
-            ) as? Double,
-            failureReason: defaults.string(
-                forKey: protectedR10CleanOwnerFailureReasonKey
-            )
-        ) else { return false }
-
-        promoteFallbackToProtectedV9ForLaunch(defaults: defaults, now: now)
-        defaults.set(0, forKey: protectedR10PassiveReprobeFailureCountKey)
-        defaults.set(
-            "retainer_fix_bounded_v9_requalification",
-            forKey: RadioDefaults.passiveR10Status
-        )
-        return true
-    }
-
     /// The only in-process escalation allowed from a pure-HR fallback owner.
     /// It is intentionally more restrictive than normal launch preparation:
     /// a user must have a durable, active manual workout and a previous dense
@@ -3057,12 +3000,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         now: Date = Date()
     ) -> ProtectedR10LaunchPreparation {
         migrateLegacyFalseR10StormSuppressionIfNeeded(defaults: defaults)
-        if migratePeripheralRetainerRequalificationIfNeeded(
-            defaults: defaults,
-            now: now
-        ) {
-            return .requalifiedProtectedV9FromFallback
-        }
         let owner = ProtectedR10CleanOwner(
             rawValue: defaults.string(forKey: protectedR10CleanOwnerKey) ?? ""
         ) ?? .legacy
