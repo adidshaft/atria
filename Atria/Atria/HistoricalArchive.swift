@@ -4087,6 +4087,16 @@ enum HistoricalArchive {
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
+    /// Holding `archiveCatalogInitializationLock` across `loadOrRecover` is
+    /// deliberate and safe for the 1 Hz path: initialization must be exclusive
+    /// (exactly one store may publish the recovered catalog), it runs at most
+    /// once per process lifetime, and the recovery walk only reads file
+    /// attributes and performs one durable catalog write — it never streams
+    /// SHA256 over chunk contents or decompresses artifacts. In steady state
+    /// this function is lock / cached-store check / unlock, so it cannot
+    /// stall main-thread callers the way in-lock verification did
+    /// (priority-inversion freeze fixed 2026-08-01 in
+    /// `snapshotVerifiedAgainstFiles`).
     private static func catalogStoreLocked() throws -> AtriaHistoricalArchiveCatalogStore {
         archiveCatalogInitializationLock.lock()
         defer { archiveCatalogInitializationLock.unlock() }
