@@ -4168,3 +4168,35 @@ POSITIVE STILL REQUIRED**
 - Protocol cross-check: `ryanbr/noop`, WHOOP 4 v24 schema and skin-temperature
   conversion tests at repository commit
   `04ef00f9a47a835bb46cafdee502751656607076`.
+
+## 2026-07-31 — reconnect-closed v24 banks require durable first-drain priority
+
+- A real physical-day audit found 46 durable WHOOP 4 v24 bank tickets. Normal
+  BLE loss correctly closed each connection-scoped bank, but 44 tickets still
+  had `attempts == 0`. An older attempted ticket remained the active binding,
+  so accepted HR reopened present capture without ever admitting the newer
+  factual intervals to their first drain.
+- An hourly `69/00` close already persisted a maintenance ticket. A disconnect
+  close did not. That scheduling difference—not the gait classifier or receipt
+  store—was why all-day strap steps remained stale after otherwise healthy
+  reconnects.
+- Production now persists the highest-priority existing `attempts == 0` ticket
+  after every real disconnect close. The first accepted HR of a replacement
+  connection also repairs the same hint after process termination/relaunch.
+  This changes scheduling authority only: it does not create coverage, alter a
+  ticket window, move the strap cursor, or count a step.
+- **PHYSICAL PASS:** after installing the signed Release in place, ticket
+  `C125...|1785470859373|1785472821702` advanced from attempt 0 to attempt 1.
+  Live HR remained available at 56–58 bpm, the compact motion store advanced,
+  and the UI reported `Syncing strap history · 600 saved`.
+- The durable current-cycle receipt advanced from 20,361 to 20,784 decoded
+  rows and from 18,450 to 18,856 known seconds. It truthfully published the
+  partial lower bound of 1,363 steps; no phone source, estimate, or
+  extrapolation was used.
+- The physical strap cursor remained behind present time: receipt coverage
+  ended at `2026-07-31 03:41 IST` while its physiological window extended to
+  `12:07 IST`. Therefore this proves reconnect scheduling and partial
+  publication, not complete all-day coverage. Sequential FIFO catch-up remains
+  required before the value can be presented as exact.
+- Evidence:
+  `evidence/2026-07-31-reconnect-motion-maintenance-physical/`.
