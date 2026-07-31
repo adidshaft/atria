@@ -269,7 +269,9 @@ final class AtriaRecoveryProjectionCadenceTests: XCTestCase {
             percent: 66,
             confidence: .unverified,
             usesHRV: false,
-            detail: "Limited confidence · sleep and HRV unavailable · conservative RHR-only estimate",
+            // Migrated 2026-07-31 (device review): mirrors the production
+            // plain-language limited-evidence detail.
+            detail: "Limited confidence · sleep and HRV unavailable · from resting HR only — confirm a sleep to add HRV",
             contributors: [
                 .init(kind: .hrv,
                       zScore: 0,
@@ -303,7 +305,8 @@ final class AtriaRecoveryProjectionCadenceTests: XCTestCase {
         XCTAssertEqual(projected, rhrOnlyNoSleep)
         XCTAssertEqual(projected.percent, 66)
         XCTAssertEqual(projected.confidence, .unverified)
-        XCTAssertTrue(projected.detail.contains("RHR-only"))
+        // Migrated 2026-07-31 (device review): plain-language detail copy.
+        XCTAssertTrue(projected.detail.contains("resting HR only"))
     }
 
     func testPendingReviewCanNeverOverrideConfirmedOrFrozenRecovery() {

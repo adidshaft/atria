@@ -23,6 +23,27 @@ enum AtriaWorkoutMetricPresentation {
         let includesZoneMinutes: Bool
     }
 
+    /// Presentation-only fragment gate (2026-07-31, device review): a manual
+    /// live workout the user started and stopped within one minute is an
+    /// accidental tap, not a training session. Rendering it produced rows like
+    /// "Walking · 0.0 strain · 54", which read as broken data. The stored
+    /// record is untouched (analytics, export, and recovery still see it);
+    /// only list/summary surfaces drop it.
+    static let minimumPresentableLiveWorkoutSeconds: TimeInterval = 60
+
+    static func isAccidentalLiveFragment(_ workout: UserConfirmedWorkout) -> Bool {
+        workout.source == "live_workout_window"
+            && workout.duration < minimumPresentableLiveWorkoutSeconds
+    }
+
+    /// Shared list filter for every workout list/summary surface (Activity
+    /// list, overview workout rows, History day sheets, chart markers).
+    static func presentableWorkouts(
+        _ workouts: [UserConfirmedWorkout]
+    ) -> [UserConfirmedWorkout] {
+        workouts.filter { !isAccidentalLiveFragment($0) }
+    }
+
     static func heartRateState(_ workout: UserConfirmedWorkout) -> HeartRatePresentationState {
         guard workout.samples > 0, workout.avgHR > 0 else { return .unavailable }
         guard workout.samples >= 2,

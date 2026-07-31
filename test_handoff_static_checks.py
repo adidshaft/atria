@@ -4635,7 +4635,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "latest.isNapEvidence ? \"Separate\" : \"Recovery\"",
             "lensPill(title: \"Type\", value: latest?.evidenceLabel ?? \"Learning\", tint: .cyan)",
             "lensPill(title: \"Recovery\", value: recoveryImpactText, tint: .blue)",
-            "lensPill(title: \"Routine\", value: snapshot.sleepConsistencyText, tint: .mint)",
+            # Migrated 2026-07-31 (device review): pill names the measurement
+            # ("Consistency") instead of the developer word "Routine".
+            "lensPill(title: \"Consistency\", value: snapshot.sleepConsistencyText, tint: .mint)",
             "let sleepHistory = fixtureSleepHistory ?? vitals.sleepHistorySnapshot",
             "arguments[valueIndex] == \"sleep-history-context-lens\"",
             "debug-ui-fixture-sleep-history-context-lens-\\(index)",

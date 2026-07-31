@@ -2747,7 +2747,9 @@ struct IMUAuditSummary: Equatable {
                 if candidateFrames > 0 {
                     return "\(candidateFrames) candidates · baseline needed"
                 }
-                return "Sleep signal"
+                // Plain-language pass (2026-07-31 device review): "Sleep
+                // signal" beside "--" explained nothing. Say what unlocks it.
+                return "Needs 3 nights of sleep data"
             }
             return "vs sleep baseline"
         }
@@ -3967,6 +3969,12 @@ struct VO2MaxEstimateSummary: Equatable {
     let trendText: String
     let trendDetail: String
     let trendDelta: Double?
+    /// 7–13 qualified RHR days behind a published preliminary estimate.
+    /// `nil` once the 14-day resting baseline is trusted (or while no value
+    /// is published at all). Defaulted so every existing construction stays
+    /// valid. (2026-07-31 device review: a preliminary value labelled just
+    /// "Estimate" hid that it is still improving day by day.)
+    var preliminaryRestingDayCount: Int? = nil
 
     /// Presentation only -- no estimator input. Falls back to the deterministic
     /// no-value token so VO2 max stops being the last value line saying
@@ -3982,7 +3990,15 @@ struct VO2MaxEstimateSummary: Equatable {
     /// the producer's real blocker instead of replacing every not-ready state
     /// with a generic "Learning" label.
     var compactStatusText: String {
-        guard value == nil else { return "Estimate" }
+        guard value == nil else {
+            // Calibration progress (2026-07-31 device review): a preliminary
+            // value is real but still improving; show the day count instead of
+            // a settled-sounding "Estimate".
+            if let day = preliminaryRestingDayCount {
+                return "Improving · day \(day) of \(PersonalBaseline.trustedMinimumSamples)"
+            }
+            return "Estimate"
+        }
         switch detail {
         case "Need RHR":
             return "Needs resting HR"

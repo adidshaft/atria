@@ -337,7 +337,10 @@ enum AtriaActivityTimelineAxis {
 enum AtriaActivitySelectedDayWorkouts {
     static func overlapping(_ workouts: [UserConfirmedWorkout],
                             interval: DateInterval) -> [UserConfirmedWorkout] {
-        workouts.filter { $0.end > $0.start && $0.end > interval.start && $0.start < interval.end }
+        // Sub-minute accidental live fragments never render as Activity rows
+        // or timeline spans (2026-07-31 device review); the record stays saved.
+        AtriaWorkoutMetricPresentation.presentableWorkouts(workouts)
+            .filter { $0.end > $0.start && $0.end > interval.start && $0.start < interval.end }
     }
     static func overlapping(_ workouts: [UserConfirmedWorkout],
                             selectedDay: Date,
@@ -346,7 +349,7 @@ enum AtriaActivitySelectedDayWorkouts {
         guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else {
             return []
         }
-        return workouts.filter {
+        return AtriaWorkoutMetricPresentation.presentableWorkouts(workouts).filter {
             $0.end > $0.start && $0.end > dayStart && $0.start < dayEnd
         }
     }

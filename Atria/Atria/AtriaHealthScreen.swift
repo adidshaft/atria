@@ -550,9 +550,14 @@ enum AtriaHealthMetricEvidencePresentation {
                                  now: Date = Date(),
                                  calendar: Calendar = .current) -> String {
         guard (rollup.sleepSeconds ?? 0) > 0 else { return "limited signal" }
-        return settledMorningAgeDetail(day: rollup.day,
-                                       now: now,
-                                       calendar: calendar)
+        let age = settledMorningAgeDetail(day: rollup.day,
+                                          now: now,
+                                          calendar: calendar)
+        // Stale-carry hint (2026-07-31 device review): "72 · 2d ago" was
+        // honest about age but offered no next step. A carried HRV only
+        // refreshes after another confirmed sleep, so say so.
+        guard age.hasSuffix("d ago") else { return age }
+        return "\(age) · confirm a sleep to update"
     }
 
     /// Saved morning vitals may intentionally be carried until another

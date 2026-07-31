@@ -174,7 +174,9 @@ struct AtriaVitalsTrendChartHost: View, Equatable {
     }
 
     private var trendEvents: [AtriaChartEvent] {
-        var events = state.confirmedWorkouts.map { workout in
+        // Presentation gate (2026-07-31): accidental sub-minute live fragments
+        // are not chart-worthy workout events.
+        var events = AtriaWorkoutMetricPresentation.presentableWorkouts(state.confirmedWorkouts).map { workout in
             AtriaChartEvent(id: "workout-\(workout.id)",
                             day: workout.start,
                             label: workout.activitySubtype ?? workout.activityType ?? "Workout",
@@ -5951,7 +5953,9 @@ private struct AtriaSleepContextLens: View, Equatable {
             HStack(spacing: 8) {
                 lensPill(title: "Type", value: latest?.evidenceLabel ?? "Learning", tint: .cyan)
                 lensPill(title: "Recovery", value: recoveryImpactText, tint: .blue)
-                lensPill(title: "Routine", value: snapshot.sleepConsistencyText, tint: .mint)
+                // Plain-language pass (2026-07-31 device review): "Routine 46%"
+                // did not say what it measures; the pill now names it.
+                lensPill(title: "Consistency", value: snapshot.sleepConsistencyText, tint: .mint)
             }
         }
         .padding(12)

@@ -37,6 +37,80 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertEqual(sleepingStore.state.kind, .asleep)
     }
 
+    // Added 2026-07-31 (device review: stress tile stuck at "collecting 2 min
+    // of live signal"): warm-up is anchored to accepted-HR continuity. A brief
+    // contact flicker must not restart the 2-minute clock; a sustained loss
+    // (longer than the 30s grace) must.
+    @MainActor
+    func testWarmUpSurvivesBriefContactFlicker() {
+        let baseline = makeBaseline(restingMean: 60, restingSD: 4)
+        let store = AtriaStressMonitorStore()
+
+        func tick(atOffset offset: TimeInterval, hasContact: Bool) {
+            store.update(heartRate: hasContact ? 62 : 0,
+                         hasContact: hasContact,
+                         recentRRSamples: [],
+                         isRecording: false,
+                         zoneIndex: 0,
+                         hrvSnapshot: nil,
+                         baseline: baseline,
+                         restingMaxHR: restingMaxHR,
+                         hasActiveSleepEvidence: false,
+                         now: now.addingTimeInterval(offset))
+        }
+
+        tick(atOffset: 0, hasContact: true)
+        XCTAssertEqual(store.state.kind, .warmingUp)
+        tick(atOffset: 50, hasContact: true)
+        XCTAssertEqual(store.state.kind, .warmingUp)
+
+        // 100s in, one flicker (single zero-contact tick), contact resumes.
+        tick(atOffset: 100, hasContact: false)
+        XCTAssertEqual(store.state.kind, .noSignal)
+        tick(atOffset: 106, hasContact: true)
+
+        // 125s after first contact: warm-up completes because the flicker did
+        // not restart the clock.
+        tick(atOffset: 125, hasContact: true)
+        XCTAssertEqual(store.state.kind, .scored)
+    }
+
+    @MainActor
+    func testWarmUpRestartsAfterSustainedContactLoss() {
+        let baseline = makeBaseline(restingMean: 60, restingSD: 4)
+        let store = AtriaStressMonitorStore()
+
+        func tick(atOffset offset: TimeInterval, hasContact: Bool) {
+            store.update(heartRate: hasContact ? 62 : 0,
+                         hasContact: hasContact,
+                         recentRRSamples: [],
+                         isRecording: false,
+                         zoneIndex: 0,
+                         hrvSnapshot: nil,
+                         baseline: baseline,
+                         restingMaxHR: restingMaxHR,
+                         hasActiveSleepEvidence: false,
+                         now: now.addingTimeInterval(offset))
+        }
+
+        tick(atOffset: 0, hasContact: true)
+        tick(atOffset: 50, hasContact: true)
+        tick(atOffset: 100, hasContact: true)
+        // A 75s outage — past the 60s continuity grace.
+        tick(atOffset: 130, hasContact: false)
+        tick(atOffset: 175, hasContact: false)
+        // Contact returns: this is fresh contact and warm-up restarts, so at
+        // +40s of the new epoch the tile is still honestly warming up.
+        tick(atOffset: 180, hasContact: true)
+        tick(atOffset: 220, hasContact: true)
+        XCTAssertEqual(store.state.kind, .warmingUp)
+        // ...and completes 120s after the new contact epoch (ticks stay inside
+        // the production <=30s evaluation cadence).
+        tick(atOffset: 260, hasContact: true)
+        tick(atOffset: 301, hasContact: true)
+        XCTAssertEqual(store.state.kind, .scored)
+    }
+
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
     private let restingMaxHR: (rest: Int, max: Int) = (rest: 60, max: 190)
 

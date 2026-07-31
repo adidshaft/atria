@@ -4328,7 +4328,19 @@ struct AtriaHomeView: View {
                     AtriaHomeRecoveryStatusHost(
                         coreLiveStore: model.coreLiveStore,
                         maturityText: { store.baseline.restingBaselineMaturityQualifierText() },
-                        hrvMaturityText: { store.baseline.hrvBaselineMaturityQualifierText() }
+                        hrvMaturityText: { store.baseline.hrvBaselineMaturityQualifierText() },
+                        vo2MaturityText: {
+                            // Preliminary VO₂ progress (2026-07-31 device
+                            // review): nil (no notice) until a preliminary
+                            // value is actually published, and again once the
+                            // 14-day resting baseline is trusted.
+                            let summary = store.vo2MaxEstimateSummary(
+                                rest: store.baseline.restingInt ?? 0,
+                                maxHR: store.profile.maxHR
+                            )
+                            guard let day = summary.preliminaryRestingDayCount else { return nil }
+                            return "VO₂ max estimating · day \(day) of \(PersonalBaseline.trustedMinimumSamples)"
+                        }
                     )
                     if showConnectivityPill {
                         connectivityPill
@@ -4530,6 +4542,10 @@ struct AtriaHomeView: View {
         /// shown wherever it is computable and this row discloses how far the
         /// calibration has to go.
         var hrvMaturityText: () -> String? = { nil }
+        /// VO₂ max publishes a visibly preliminary value from 7 qualified RHR
+        /// days; this row discloses the remaining calibration (2026-07-31
+        /// device review), mirroring the two maturity cards above.
+        var vo2MaturityText: () -> String? = { nil }
 
         /// Refresh the notice set periodically while keeping cards user-
         /// controlled: multiple notices are paged horizontally instead of
@@ -4542,7 +4558,15 @@ struct AtriaHomeView: View {
                 if !notices.isEmpty {
                     GlassEffectContainer(spacing: 10) {
                         ScrollView(.horizontal, showsIndicators: false) {
-                            LazyHStack(spacing: 10) {
+                            // Page spacing must be >= 2x the 16pt content
+                            // margin (2026-07-31 device review: "leaking from
+                            // both sides"). Each page is container-width minus
+                            // the margins, so a 10pt gap left the neighboring
+                            // pages' edges visible inside the margin band on
+                            // both sides of the screen; 32pt puts each
+                            // neighbor exactly offscreen and keeps the paging
+                            // stride equal to the viewport width.
+                            LazyHStack(spacing: 32) {
                                 ForEach(Array(notices.enumerated()), id: \.offset) { index, status in
                                     HStack(spacing: 8) {
                                         Label(status.title, systemImage: status.symbol)
@@ -4613,6 +4637,11 @@ struct AtriaHomeView: View {
                 result.append(Status(title: hrvMaturity,
                                      symbol: "waveform.path.ecg",
                                      accessibilityLabel: "\(hrvMaturity). Recovery gains HRV evidence as calibration nights accumulate."))
+            }
+            if let vo2Maturity = vo2MaturityText() {
+                result.append(Status(title: vo2Maturity,
+                                     symbol: "lungs.fill",
+                                     accessibilityLabel: "\(vo2Maturity). The estimate keeps improving as qualified resting-HR days accumulate."))
             }
             return result
         }

@@ -2109,7 +2109,11 @@ struct AtriaTodayScreen: View {
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
                                         value: consistency,
-                                        detail: legendDetail(consistency == "--" ? "Needs 2 nights" : "Routine"),
+                                        // Plain-language pass (2026-07-31 device
+                                        // review): "Routine" beside a bare
+                                        // percentage did not say what the
+                                        // number measures.
+                                        detail: legendDetail(consistency == "--" ? "Needs 2 nights" : "Routine consistency"),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
                                         layoutSize: layoutSize(for: metric))
@@ -2118,9 +2122,11 @@ struct AtriaTodayScreen: View {
                                         metricKey: metric.rawValue,
                                         value: latestSleep?.sleepEfficiencyText ?? "--",
                                         // Empty-state honesty (2026-07-08): efficiency = time asleep /
-                                        // time in bed, so until a night has a known in-bed span it reads
-                                        // "Needs time in bed" rather than a bare category label.
-                                        detail: legendDetail(latestSleep?.sleepEfficiency == nil ? "Needs time in bed" : "Sleep"),
+                                        // time in bed, so until a night has a known in-bed span there is
+                                        // genuinely no number. Plain-language pass (2026-07-31 device
+                                        // review): say when it appears instead of the cryptic
+                                        // "Needs time in bed".
+                                        detail: legendDetail(latestSleep?.sleepEfficiency == nil ? "After a confirmed sleep" : "Sleep"),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
                                         layoutSize: layoutSize(for: metric))
@@ -2168,7 +2174,13 @@ struct AtriaTodayScreen: View {
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
                                         value: vo2.valueText,
-                                        detail: legendDetail(vo2.value == nil ? vo2.detail : "Estimate"),
+                                        // Calibration progress (2026-07-31 device
+                                        // review): compactStatusText shows
+                                        // "Improving · day N of 14" while the
+                                        // estimate is preliminary, "Estimate"
+                                        // once trusted, and the real blocker
+                                        // when there is no value.
+                                        detail: legendDetail(vo2.value == nil ? vo2.detail : vo2.compactStatusText),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricGreen,
                                         layoutSize: layoutSize(for: metric))
@@ -2180,7 +2192,12 @@ struct AtriaTodayScreen: View {
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
                                         value: bioAge.valueText,
-                                        detail: legendDetail(bioAge.isReady ? "Estimate" : bioAge.narrative),
+                                        // Calibration progress (2026-07-31
+                                        // device review): the blocked state
+                                        // names its real blocker ("Building
+                                        // resting HR baseline") instead of the
+                                        // generic building narrative.
+                                        detail: legendDetail(bioAge.isReady ? "Estimate" : bioAge.compactStatusText),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricGreen,
                                         layoutSize: layoutSize(for: metric))
@@ -2269,7 +2286,11 @@ struct AtriaTodayScreen: View {
         let calendar = Calendar.current
         let weekStart = calendar.dateInterval(of: .weekOfYear, for: Date())?.start ?? calendar.startOfDay(for: Date())
         guard glanceMemo.workoutsRevision != revision || glanceMemo.workoutsWeekStart != weekStart else { return }
-        let workouts = sessionProjectionStore.state.confirmedWorkouts
+        // Presentation gate (2026-07-31): accidental sub-minute live fragments
+        // must not become the glance count or the "latest workout" one-liner.
+        let workouts = AtriaWorkoutMetricPresentation.presentableWorkouts(
+            sessionProjectionStore.state.confirmedWorkouts
+        )
         // Sorted start-descending, so everything still "this week" is a
         // contiguous run at the front -- no need to walk the rest of a
         // years-long workout history every eval.
@@ -2333,7 +2354,10 @@ struct AtriaTodayScreen: View {
     }
 
     private var strainCompareDetailText: String {
-        guard let median = strainCompareMedian else { return "Building baseline" }
+        // Plain-language pass (2026-07-31 device review): mirrors
+        // AtriaOverviewSections.strainCompareDetailText — "Building baseline"
+        // told a first-time user nothing.
+        guard let median = strainCompareMedian else { return "Still learning your typical day" }
         let medianText = String(format: "%.1f", median)
         guard !metricIsPending(displayHero.strainValue) else {
             return "14-day median \(medianText)"

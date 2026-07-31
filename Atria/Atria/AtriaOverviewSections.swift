@@ -2635,6 +2635,9 @@ private final class AtriaOverviewWorkoutsMemo {
             return value
         }
 
+        // Presentation gate (2026-07-31): accidental sub-minute live fragments
+        // must not become the week count or the "latest workout" one-liner.
+        let workouts = AtriaWorkoutMetricPresentation.presentableWorkouts(workouts)
         let weekCount = workouts.prefix(while: { $0.start >= currentWeekStart }).count
         let latestOneLiner: String
         if let latest = workouts.first {
@@ -3992,7 +3995,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             AtriaGlanceMetricCard(title: "Sleep eff",
                                   value: currentMainSleep?.sleepEfficiencyText
                                     ?? AtriaCompactMetricPresentation.noValue,
-                                  detail: currentMainSleep?.sleepEfficiency == nil ? "Needs time in bed" : "Duration-based",
+                                  // Plain-language pass (2026-07-31 device review):
+                                  // "Needs time in bed" read as a command; say
+                                  // when the number appears instead.
+                                  detail: currentMainSleep?.sleepEfficiency == nil ? "After a confirmed sleep" : "Duration-based",
                                   systemImage: metric.systemImage,
                                   tint: sleepEfficiencyZone?.tint
                                     ?? (currentMainSleep?.sleepEfficiency == nil ? .secondary : .cyan),
@@ -4262,7 +4268,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var strainCompareDetailText: String {
-        guard let median = strainCompareMedian else { return "Building baseline" }
+        // Plain-language pass (2026-07-31 device review): "Building baseline"
+        // under "Strain vs typical" told a first-time user nothing. Say what
+        // the card is waiting for in plain words.
+        guard let median = strainCompareMedian else { return "Still learning your typical day" }
         let medianText = String(format: "%.1f", median)
         guard !metricIsPending(hero.strainValue) else { return "14-day median \(medianText)" }
         let delta = hero.strain - median
@@ -4299,6 +4308,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var vo2MaxDetailText: String {
+        // Calibration progress (2026-07-31 device review): a preliminary
+        // estimate names its real day count instead of a bare "Preliminary".
+        if let day = vo2MaxEstimate.preliminaryRestingDayCount {
+            return "Improving · day \(day) of \(PersonalBaseline.trustedMinimumSamples)"
+        }
         let confidence = vo2MaxEstimate.confidence.capitalized
         guard vo2MaxEstimate.trendText != "Learning" else { return confidence }
         return "\(confidence) · \(vo2MaxEstimate.trendText)"
@@ -7773,9 +7787,11 @@ struct AtriaOverviewGuidanceSection: View, Equatable {
     }
 
     private var sleepPlanRoutineText: String {
+        // Plain-language pass (2026-07-31 device review): "Routine 46%" did
+        // not say what the percentage measures. Name the measurement.
         sleepHistory.sleepConsistencyText == "--"
-            ? "Routine Building"
-            : "Routine \(sleepHistory.sleepConsistencyText)"
+            ? "Routine consistency building"
+            : "Routine consistency \(sleepHistory.sleepConsistencyText)"
     }
 
     private var sleepPlanBedtimeText: String? {
@@ -8342,7 +8358,9 @@ struct AtriaTodayWorkoutZoneSummary: Equatable {
                                            calendar: calendar)
         var todayWorkouts: [UserConfirmedWorkout] = []
         var totals: [String: TimeInterval] = [:]
-        for workout in workouts {
+        // Presentation gate (2026-07-31): accidental sub-minute live fragments
+        // never become overview workout rows or zone-histogram contributors.
+        for workout in AtriaWorkoutMetricPresentation.presentableWorkouts(workouts) {
             guard today.overlaps(start: workout.start, end: workout.end) else { continue }
             todayWorkouts.append(workout)
             guard !AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout) else { continue }
