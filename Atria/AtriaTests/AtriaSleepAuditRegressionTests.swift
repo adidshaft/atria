@@ -657,6 +657,80 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         ), "a dismissed window with no distinct later evidence must not come back")
     }
 
+    func testLongBiphasicMiddayResumedSleepIsRepresentableAcrossReconnectSeam() throws {
+        // Physical 2026-07-31 magnitude: a late-morning biphasic sleep ran
+        // ~4 h 26 m captured across one ~4.5-minute reconnect seam. The old
+        // 3-hour resumed cap made that day's real sleep unrepresentable.
+        // Anchoring here uses the wear-gap rule (strap charged after the main
+        // wake); the continuous-wear anchor deliberately does not exist yet —
+        // see the note at the separation guard in Sessions.swift.
+        let tz = "Asia/Kolkata"
+        let mainStart = date(2032, 1, 1, 21, 0, timeZoneIdentifier: tz)
+        let mainEnd = date(2032, 1, 2, 5, 5, timeZoneIdentifier: tz)
+        let main = denseHRRRSession(start: mainStart, end: mainEnd, bpm: 61,
+                                    eventTimeZoneIdentifier: tz)
+        let middayAStart = date(2032, 1, 2, 8, 39, 42, timeZoneIdentifier: tz)
+        let middayAEnd = date(2032, 1, 2, 11, 11, 27, timeZoneIdentifier: tz)
+        let middayBStart = date(2032, 1, 2, 11, 16, 7, timeZoneIdentifier: tz)
+        let middayBEnd = date(2032, 1, 2, 13, 10, 0, timeZoneIdentifier: tz)
+        let middayA = denseHRRRSession(start: middayAStart, end: middayAEnd,
+                                       bpm: 60, eventTimeZoneIdentifier: tz)
+        let middayB = denseHRRRSession(start: middayBStart, end: middayBEnd,
+                                       bpm: 58, eventTimeZoneIdentifier: tz)
+
+        let sessions = [main, middayA, middayB]
+        let candidates = SessionStore.aggregateSleepCandidates(
+            in: sessions,
+            rest: 56,
+            maxHR: 190,
+            calendar: Self.indiaCalendar,
+            historicalMotionPolicy: .sessionOnly
+        )
+        let resumed = try XCTUnwrap(
+            candidates.first { $0.kind == "resumed_sleep_candidate" },
+            "a wear-gap-anchored 4.5-hour biphasic episode must be representable"
+        )
+        XCTAssertEqual(resumed.start, middayAStart)
+        XCTAssertEqual(resumed.sessions, 2)
+        XCTAssertEqual(
+            resumed.duration,
+            middayAEnd.timeIntervalSince(middayAStart)
+                + middayBEnd.timeIntervalSince(middayBStart),
+            accuracy: 5,
+            "both halves of the seam-split midday sleep must be represented"
+        )
+        XCTAssertFalse(resumed.motionEvidenceValidated)
+        XCTAssertFalse(SessionStore.autoSleepClassification(
+            for: resumed,
+            baselineRestingIsTrusted: true
+        ).allowsAutomaticPersistence,
+        "a five-hour-class resumed episode remains review-only")
+
+        // Dismissing the overnight window must still leave the midday block
+        // reviewable (the 2026-07-31 dismissal fallback).
+        let review = try XCTUnwrap(SessionStore.makeSleepReviewNightForCache(
+            snapshot: .empty,
+            canonicalSessions: sessions,
+            confirmedSleeps: [],
+            dismissedCandidates: [
+                AtriaDismissedSleepCandidate(start: mainStart, end: mainEnd)
+            ],
+            rest: 56,
+            maxHR: 190,
+            calendar: Self.indiaCalendar
+        ))
+        // The dense-morning tier may legitimately outrank the resumed
+        // classification for the same window; either way the block must be
+        // reviewable with its real bounds after the overnight dismissal.
+        XCTAssertTrue(
+            review.source == "resumed_sleep_candidate"
+                || review.source == "aggregate_sleep",
+            "unexpected review source \(review.source)"
+        )
+        XCTAssertEqual(review.start, middayAStart)
+        XCTAssertFalse(review.confirmed)
+    }
+
     func testConfirmedResumedSleepAddsOnlyObservedDurationToCycle() throws {
         let mainStart = date(2032, 1, 2, 0, 45, timeZoneIdentifier: "Asia/Kolkata")
         let mainEnd = date(2032, 1, 2, 4, 23, timeZoneIdentifier: "Asia/Kolkata")
