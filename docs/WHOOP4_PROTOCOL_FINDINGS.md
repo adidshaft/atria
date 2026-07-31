@@ -4168,3 +4168,24 @@ POSITIVE STILL REQUIRED**
 - Protocol cross-check: `ryanbr/noop`, WHOOP 4 v24 schema and skin-temperature
   conversion tests at repository commit
   `04ef00f9a47a835bb46cafdee502751656607076`.
+
+## 2026-07-31 — stale pure-HR fallback after peripheral-retention repair
+
+- A physical install could retain `cleanOwner=pure_hr_v10`,
+  `state=fallback_active`, `streamSuppressed=true`, and
+  `failureReason=lease_released_before_density_proof` even after the
+  CoreBluetooth peripheral-lifetime repair in `80defc75`.
+- That state is intentionally sticky: ordinary all-day launches do not opt
+  into the bounded v9 qualification reserved for explicit workouts. As a
+  result, accepted HR continues while realtime R10 motion remains suppressed;
+  compact motion stops advancing and durable motion-bank tickets cannot safely
+  seize the connected pure-HR link.
+- This is a stale verdict, not a reason to weaken history interlocks. The
+  repair is a one-time migration limited to a previously physically qualified
+  v10 fallback with the exact pre-fix failure reason. It re-arms the existing
+  `protected_launch_pending` v9 proof and clears the obsolete reprobe-failure
+  count.
+- The migration never writes `qualified`, never touches a never-qualified
+  strap or a genuine disconnect-storm fallback, and cannot run again if the
+  post-fix bounded proof fails. The existing 75 fresh-frame density proof
+  remains the sole authority for restoring realtime motion.
