@@ -318,7 +318,10 @@ struct AtriaHealthspanDetailView: View {
 
     private var ageComparisonText: String {
         guard let delta = model.summary.ageDelta else {
-            return model.summary.isRefreshing ? "Updating weekly estimate" : "Building your baseline"
+            // Calibration progress (2026-07-31 device review): show the real
+            // blocker ("Building resting HR baseline", "3 sleep nights
+            // required") instead of a generic "Building your baseline".
+            return model.summary.isRefreshing ? "Updating weekly estimate" : model.summary.compactStatusText
         }
         guard delta != 0 else { return "Matches age \(model.summary.chronologicalAge)" }
         return "\(abs(delta)) yr\(abs(delta) == 1 ? "" : "s") \(delta < 0 ? "younger" : "older") than \(model.summary.chronologicalAge)"

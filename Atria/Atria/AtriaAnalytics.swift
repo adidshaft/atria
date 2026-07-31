@@ -1347,7 +1347,10 @@ enum AtriaAnalytics {
                 percent: logisticRecoveryPercent(z: restingWeight * -restingZ),
                 confidence: .unverified,
                 usesHRV: false,
-                detail: "Limited confidence · sleep and HRV unavailable · conservative RHR-only estimate",
+                // Plain-language pass (2026-07-31 device review): keep the
+                // load-bearing "HRV unavailable" phrase (overview sniffs it),
+                // but state the evidence and the next step in plain words.
+                detail: "Limited confidence · sleep and HRV unavailable · from resting HR only — confirm a sleep to add HRV",
                 contributors: [
                     Estimate.Contributor(kind: .hrv,
                                          zScore: 0,
@@ -1625,7 +1628,11 @@ enum AtriaAnalytics {
                                             : "\(restingSamples)/\(PersonalBaseline.trustedMinimumSamples) qualified RHR days · preliminary estimate from measured max HR.",
                                          trendText: trend.text,
                                          trendDetail: trend.detail,
-                                         trendDelta: trend.delta)
+                                         trendDelta: trend.delta,
+                                         // 2026-07-31: surfaces show real
+                                         // "day N of 14" progress while the
+                                         // resting baseline is still maturing.
+                                         preliminaryRestingDayCount: baselineIsTrusted ? nil : restingSamples)
         }
 
         static func estimate(rest: Int, maxHR: Int) -> Double? {

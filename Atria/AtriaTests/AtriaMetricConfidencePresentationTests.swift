@@ -39,7 +39,9 @@ final class AtriaMetricConfidencePresentationTests: XCTestCase {
         XCTAssertEqual(presentation.value, "75%")
         // The score is complete for the evidence it used; name the actual
         // provenance instead of implying that the numeric result is pending.
-        XCTAssertEqual(presentation.marker, "RHR-only")
+        // Migrated 2026-07-31 (device review): "RHR-only" was developer
+        // shorthand; the marker now names the evidence in plain words.
+        XCTAssertEqual(presentation.marker, "resting HR")
     }
 
     func testRecoveryProvisionalKeepsValueAndIsMarkedProvisional() {

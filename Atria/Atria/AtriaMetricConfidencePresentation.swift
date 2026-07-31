@@ -224,7 +224,14 @@ extension AtriaCompactMetricPresentation {
         // A numeric score with `usesHRV == false` is already computed from RHR.
         // Calling it "HRV pending" makes a real, settled RHR-only estimate look
         // like an unfinished job and hides which evidence actually produced it.
-        if !usesHRV { return "RHR-only" }
+        // Plain-language pass (2026-07-31 device review): "RHR-only" was
+        // developer shorthand a first-time user cannot decode. The compact
+        // marker now names the evidence in plain words — "resting HR" is the
+        // longest phrasing that fits the one-line chip bound; the expanded
+        // detail (AtriaAnalytics limited-evidence estimate) carries the full
+        // "resting HR only — confirm a sleep to add HRV" explanation, which
+        // cannot fit these chips.
+        if !usesHRV { return "resting HR" }
         switch level {
         case .high: return nil
         case .moderate: return nil

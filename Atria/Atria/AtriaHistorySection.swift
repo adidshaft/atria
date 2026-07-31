@@ -103,6 +103,10 @@ struct AtriaHistoryModel: Equatable {
         let rollupsByDay = Dictionary(grouping: rollups) {
             calendar.startOfDay(for: $0.day)
         }.compactMapValues(\.first)
+        // Presentation gate (2026-07-31): accidental sub-minute live fragments
+        // must not mint History day rows, counts, or saved-duration totals.
+        // The store record itself is untouched.
+        let workouts = AtriaWorkoutMetricPresentation.presentableWorkouts(workouts)
         let workoutsByDay = Dictionary(grouping: workouts) {
             EventCivilTime.day(containing: $0.start,
                                eventTimeZoneIdentifier: $0.eventTimeZoneIdentifier,

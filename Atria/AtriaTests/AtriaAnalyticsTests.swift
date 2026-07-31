@@ -1566,7 +1566,8 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertNotNil(estimate.percent)
         XCTAssertEqual(estimate.confidence, .unverified)
         XCTAssertFalse(estimate.usesHRV)
-        XCTAssertTrue(estimate.detail.contains("RHR-only"))
+        // Migrated 2026-07-31 (device review): plain-language detail copy.
+        XCTAssertTrue(estimate.detail.contains("resting HR only"))
         XCTAssertEqual(estimate.contributors.first(where: { $0.kind == .restingHeartRate })?.weight,
                        0.20)
         XCTAssertEqual(estimate.contributors.first(where: { $0.kind == .sleep })?.weight,
@@ -2649,11 +2650,13 @@ final class AtriaAnalyticsTests: XCTestCase {
                                           sleepSeconds: 7.16 * 3_600,
                                           calendar: calendar)
 
+        // Migrated 2026-07-31 (device review): a multi-day-old carried HRV now
+        // tells the user how to refresh it.
         XCTAssertEqual(AtriaHealthMetricEvidencePresentation.settledHRVDetail(
             rollup: rollup,
             now: now,
             calendar: calendar
-        ), "9d ago")
+        ), "9d ago · confirm a sleep to update")
         XCTAssertEqual(AtriaHealthMetricEvidencePresentation.settledRestingHeartRateDetail(
             rollup: rollup,
             now: now,

@@ -456,6 +456,10 @@ final class AtriaStressMonitorStore: ObservableObject {
 
     private var hrBuffer: [(t: Date, bpm: Int)] = []
     private var contactStartedAt: Date?
+    /// Clock of the last tick that carried live contact. Used to distinguish a
+    /// brief flicker (single zero-contact sample, one missed ~6s freshness
+    /// window) from a sustained loss of signal.
+    private var lastContactAt: Date?
     private var wasRecording = false
     private var lastWorkoutEndAt: Date?
 
@@ -467,6 +471,17 @@ final class AtriaStressMonitorStore: ObservableObject {
 
     private static let hrWindowSeconds: TimeInterval = 60
     private static let rrWindowSeconds: TimeInterval = 180
+    /// Warm-up continuity grace (2026-07-31 device review): the tile sat at
+    /// "collecting 2 min of live signal" indefinitely because ANY single tick
+    /// without contact — one zero-HR skin-contact flicker, or one HR sample
+    /// aging past the 6s live-freshness window between throttled updates —
+    /// nilled `contactStartedAt` and restarted the full 2-minute clock. Warm-up
+    /// is now anchored to accepted-HR continuity: only a sustained gap longer
+    /// than this restarts it. Must stay comfortably above
+    /// `unchangedInputEvaluationInterval` (30s): with unchanged inputs, ticks
+    /// legitimately arrive ~30s apart, and a grace at or below that cadence
+    /// would restart warm-up on every quiet tick — the exact stall this fixes.
+    private static let warmUpContactGraceSeconds: TimeInterval = 60
     private static let activationEMAAlpha = 0.2
     private static let hysteresisMargin = 0.05
     private static let hysteresisHoldTicks = 2
@@ -523,10 +538,24 @@ final class AtriaStressMonitorStore: ObservableObject {
                 hasActiveSleepEvidence: Bool = false,
                 now: Date = Date()) {
 
-        if !hasContact {
+        if hasContact {
+            if let lastContactAt,
+               now.timeIntervalSince(lastContactAt) > Self.warmUpContactGraceSeconds {
+                // Sustained outage: this is genuinely fresh contact, so the
+                // warm-up clock restarts honestly from here.
+                contactStartedAt = now
+            } else if contactStartedAt == nil {
+                contactStartedAt = now
+            }
+            lastContactAt = now
+        } else if let lastContactAt,
+                  now.timeIntervalSince(lastContactAt) > Self.warmUpContactGraceSeconds {
+            // Only a sustained loss resets warm-up; brief flickers (single
+            // zero-contact sample, one missed freshness window) keep the
+            // accepted-HR continuity anchor. Scoring itself still suppresses
+            // to "No signal" on every tick without contact.
             contactStartedAt = nil
-        } else if contactStartedAt == nil {
-            contactStartedAt = now
+            self.lastContactAt = nil
         }
 
         if wasRecording, !isRecording {
