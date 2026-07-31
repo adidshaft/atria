@@ -2,6 +2,46 @@ import XCTest
 @testable import Atria
 
 final class AtriaBiologicalAgeCacheTests: XCTestCase {
+    func testSameWeekBuildingCacheIsInvalidatedWhenPrerequisitesBecomeReady() {
+        let building = BiologicalAgeSummary.building(
+            chronologicalAge: 30,
+            blockers: ["vo2max_learning", "training_load_learning"]
+        )
+
+        XCTAssertTrue(
+            SessionStore.shouldReuseBiologicalAgeCadenceSummary(
+                building,
+                prerequisitesReady: false
+            )
+        )
+        XCTAssertFalse(
+            SessionStore.shouldReuseBiologicalAgeCadenceSummary(
+                building,
+                prerequisitesReady: true
+            )
+        )
+    }
+
+    func testSameWeekReadyFitnessAgeSurvivesOrdinarySourceChurn() {
+        let ready = BiologicalAgeSummary(
+            biologicalAge: 28,
+            chronologicalAge: 30,
+            ageDelta: -2,
+            agingPaceText: "Fitness age",
+            agingPaceDetail: "Qualified weekly estimate",
+            factors: [],
+            blockers: [],
+            footnote: BiologicalAgeSummary.footnoteText
+        )
+
+        XCTAssertTrue(
+            SessionStore.shouldReuseBiologicalAgeCadenceSummary(
+                ready,
+                prerequisitesReady: true
+            )
+        )
+    }
+
     func testUnavailableFitnessAgeNamesItsFirstRealBlocker() {
         let summary = BiologicalAgeSummary.building(
             chronologicalAge: 30,
