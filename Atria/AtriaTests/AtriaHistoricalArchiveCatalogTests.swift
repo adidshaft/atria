@@ -520,6 +520,183 @@ final class AtriaHistoricalArchiveCatalogTests: XCTestCase {
         XCTAssertEqual(read.points.map(\.bpm), Array(110...119))
     }
 
+    // MARK: - Lock-scope regression (2026-08-01 priority-inversion freeze)
+
+    /// The store lock must never be held across whole-file verification.
+    /// While a `snapshotVerifiedAgainstFiles` call is deterministically parked
+    /// mid-verification, a catalog mutation (`recordAppendCompleted`) and a
+    /// plain `snapshot()` must both complete immediately — the pre-fix
+    /// implementation deadlocked here for the duration of the verification.
+    /// The mutation that raced the verify must then surface as a re-verified
+    /// consistent snapshot, never a torn one.
+    func testVerifiedSnapshotReleasesLockDuringVerificationAndReverifiesRacingMutation() throws {
+        let root = try temporaryDirectory()
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let gated = GatedFileManager()
+        let store = AtriaHistoricalArchiveCatalogStore(
+            rootURL: root,
+            fileManager: gated,
+            makeIdentifier: IdentifierSource(["active-a"]).next
+        )
+        _ = try store.loadOrRecover(discoveredLegacyURLs: [], now: now)
+        let activeURL = try store.writableChunkURL(now: now)
+        try FileManager.default.createDirectory(at: activeURL.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try Data("one-row\n".utf8).write(to: activeURL)
+        try store.recordAppendCompleted(at: activeURL)
+
+        gated.armGate(forPath: activeURL.path, triggers: 1)
+        let verifiedResult = ResultBox()
+        let verifyDone = expectation(description: "verified snapshot returned")
+        DispatchQueue(label: "atria.test.verify", qos: .utility).async {
+            verifiedResult.set(Result { try store.snapshotVerifiedAgainstFiles() })
+            verifyDone.fulfill()
+        }
+        XCTAssertEqual(gated.waitForVerificationEntered(timeout: .now() + 5), .success,
+                       "verifier must reach file verification")
+
+        // The verifier is parked inside file verification. Mutating the
+        // catalog and taking a plain snapshot must not block behind it.
+        let mutationDone = expectation(description: "mutation completed during verification")
+        DispatchQueue(label: "atria.test.mutate", qos: .userInitiated).async {
+            do {
+                let handle = try FileHandle(forWritingTo: activeURL)
+                try handle.seekToEnd()
+                try handle.write(contentsOf: Data("two\n".utf8))
+                try handle.close()
+                try store.recordAppendCompleted(at: activeURL)
+                _ = try store.snapshot()
+                mutationDone.fulfill()
+            } catch {
+                XCTFail("catalog mutation must not fail: \(error)")
+            }
+        }
+        wait(for: [mutationDone], timeout: 5)
+
+        gated.releaseGate()
+        wait(for: [verifyDone], timeout: 5)
+
+        // The stale first copy (8 bytes) can no longer verify; the bounded
+        // retry must return the re-verified post-mutation value.
+        let verified = try XCTUnwrap(verifiedResult.take()).get()
+        XCTAssertEqual(verified.activeChunk?.byteCount, 12)
+        XCTAssertEqual(verified, try store.snapshot(),
+                       "verified snapshot must equal the store's current value — never torn")
+    }
+
+    /// When a mutation races every bounded verification attempt, the call
+    /// must terminate with the existing verification error instead of
+    /// spinning forever or returning a torn snapshot.
+    func testVerifiedSnapshotThrowsAfterBoundedRetriesWhenMutationRacesEveryAttempt() throws {
+        let root = try temporaryDirectory()
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let gated = GatedFileManager()
+        let store = AtriaHistoricalArchiveCatalogStore(
+            rootURL: root,
+            fileManager: gated,
+            makeIdentifier: IdentifierSource(["active-a"]).next
+        )
+        _ = try store.loadOrRecover(discoveredLegacyURLs: [], now: now)
+        let activeURL = try store.writableChunkURL(now: now)
+        try FileManager.default.createDirectory(at: activeURL.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try Data("row-0\n".utf8).write(to: activeURL)
+        try store.recordAppendCompleted(at: activeURL)
+
+        var racedMutations = 0
+        gated.onGatedAccess = {
+            racedMutations += 1
+            do {
+                let handle = try FileHandle(forWritingTo: activeURL)
+                try handle.seekToEnd()
+                try handle.write(contentsOf: Data("more\n".utf8))
+                try handle.close()
+                try store.recordAppendCompleted(at: activeURL)
+            } catch {
+                XCTFail("racing mutation must not fail: \(error)")
+            }
+        }
+        gated.armGate(forPath: activeURL.path, triggers: 3)
+
+        XCTAssertThrowsError(try store.snapshotVerifiedAgainstFiles()) { error in
+            XCTAssertEqual(error as? AtriaHistoricalArchiveCatalogStore.StoreError,
+                           .catalogFileMismatch)
+        }
+        XCTAssertEqual(racedMutations, 3,
+                       "every bounded attempt must have observed a racing mutation")
+        // The store itself stays consistent and verifiable once quiescent.
+        XCTAssertEqual(try store.snapshotVerifiedAgainstFiles().activeChunk?.byteCount,
+                       6 + 3 * 5)
+    }
+
+    private final class ResultBox {
+        private let lock = NSLock()
+        private var value: Result<AtriaHistoricalArchiveCatalog, Error>?
+        func set(_ result: Result<AtriaHistoricalArchiveCatalog, Error>) {
+            lock.lock()
+            value = result
+            lock.unlock()
+        }
+        func take() -> Result<AtriaHistoricalArchiveCatalog, Error>? {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+    }
+
+    /// Deterministically interposes on the catalog store's file-attribute
+    /// reads for one specific path. Each armed trigger either parks the
+    /// calling thread (semaphore mode) or synchronously runs `onGatedAccess`
+    /// (callback mode) before delegating to the real file system. Reentrant
+    /// calls made while a trigger is being handled pass straight through so
+    /// racing mutations can read the same path.
+    private final class GatedFileManager: FileManager {
+        private let stateLock = NSLock()
+        private var gatedPath: String?
+        private var remainingTriggers = 0
+        private var handlingTrigger = false
+        private let entered = DispatchSemaphore(value: 0)
+        private let release = DispatchSemaphore(value: 0)
+        var onGatedAccess: (() -> Void)?
+
+        func armGate(forPath path: String, triggers: Int) {
+            stateLock.lock()
+            gatedPath = path
+            remainingTriggers = triggers
+            stateLock.unlock()
+        }
+
+        func waitForVerificationEntered(timeout: DispatchTime) -> DispatchTimeoutResult {
+            entered.wait(timeout: timeout)
+        }
+
+        func releaseGate() {
+            release.signal()
+        }
+
+        override func attributesOfItem(atPath path: String) throws -> [FileAttributeKey: Any] {
+            stateLock.lock()
+            let shouldTrigger = !handlingTrigger && path == gatedPath && remainingTriggers > 0
+            if shouldTrigger {
+                remainingTriggers -= 1
+                handlingTrigger = true
+            }
+            stateLock.unlock()
+            if shouldTrigger {
+                if let onGatedAccess {
+                    onGatedAccess()
+                } else {
+                    entered.signal()
+                    release.wait()
+                }
+                stateLock.lock()
+                handlingTrigger = false
+                stateLock.unlock()
+            }
+            return try super.attributesOfItem(atPath: path)
+        }
+    }
+
     private final class IdentifierSource {
         private var values: [String]
         init(_ values: [String]) { self.values = values }

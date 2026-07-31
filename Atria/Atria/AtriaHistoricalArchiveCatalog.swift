@@ -275,10 +275,61 @@ final class AtriaHistoricalArchiveCatalogStore {
     /// A snapshot is proof input only when every live file still has the byte
     /// size recorded by that generation and every sealed digest still matches.
     /// This catches appends to the new active chunk after a terminal record.
+    ///
+    /// Concurrency (2026-08-01): whole-archive hashing/decompression runs for
+    /// hundreds of megabytes on utility-QoS queues, and `NSLock` donates no
+    /// priority, so verification must never run inside the store's critical
+    /// section — a main-thread `snapshot()` caller would freeze behind it.
+    /// The lock is therefore taken only twice per attempt: once to copy the
+    /// current catalog value, once to confirm the store still holds exactly
+    /// that value after the unlocked verification. Sealed chunks are immutable
+    /// by design, and `verifyFiles(match:)` reads only the copied value plus
+    /// immutable configuration, so releasing the lock cannot tear anything.
+    /// If a mutation (seal/rotate/retire/compress or an active byte-count
+    /// repair) lands mid-verification, the recheck fails value equality and
+    /// the whole verification retries on a fresh copy — bounded, then the
+    /// existing verification error is thrown rather than looping forever.
     func snapshotVerifiedAgainstFiles() throws -> AtriaHistoricalArchiveCatalog {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let catalog else { throw StoreError.catalogNotLoaded }
+        let maximumAttempts = 3
+        for attempt in 1...maximumAttempts {
+            let candidate = try snapshot()
+            do {
+                try verifyFiles(match: candidate)
+            } catch {
+                // A mutation racing the unlocked verification can make files
+                // legitimately disagree with the stale copy — a state the
+                // fully locked implementation could never observe. Surface
+                // the failure only when the store provably still holds the
+                // verified value; otherwise re-verify a fresh copy. Full
+                // value equality (not just the generation) is required here:
+                // `recordAppendCompleted` and the non-rotating path of
+                // `writableChunkURL` update the active chunk's byte-count
+                // hint without bumping the generation.
+                let current = try snapshot()
+                if attempt == maximumAttempts || current == candidate {
+                    throw error
+                }
+                continue
+            }
+            let current = try snapshot()
+            if current == candidate {
+                return candidate
+            }
+            // A mutation landed between the copy and the recheck, so the
+            // verified bytes may no longer describe the store's current
+            // value. Retry against the new value.
+        }
+        // Bounded staleness: a mutation raced every attempt. Report the
+        // existing verification error instead of looping forever.
+        throw StoreError.catalogFileMismatch
+    }
+
+    /// Verifies a copied catalog value against on-disk files. Deliberately
+    /// touches neither `catalog` nor `lock` — only the passed value and
+    /// immutable configuration — so callers may (and do) run the expensive
+    /// hashing outside the critical section. Verification semantics are
+    /// identical to the pre-2026-08-01 in-lock loop.
+    private func verifyFiles(match catalog: AtriaHistoricalArchiveCatalog) throws {
         for chunk in catalog.chunks where chunk.state != .retired {
             let url = rootURL.appendingPathComponent(chunk.relativePath)
             let actualBytes = ((try? fileManager.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?
@@ -298,7 +349,6 @@ final class AtriaHistoricalArchiveCatalogStore {
                 }
             }
         }
-        return catalog
     }
 
     /// Returns the currently authoritative physical representation. Plain
