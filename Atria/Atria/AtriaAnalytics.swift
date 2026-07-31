@@ -1244,27 +1244,43 @@ enum AtriaAnalytics {
                 confidence = .unverified
                 hrvDetail = String(format: "HRV provisional %.1fσ", hrvZ)
             } else {
-                hrvZ = 0
-                confidence = .unverified
-                hrvDetail = "HRV provisional baseline"
+                // A current RMSSD without any comparator is evidence awaiting
+                // calibration, not a neutral 60%-weight recovery signal.
+                return limitedEvidenceEstimateWithoutHRV(
+                    sleepZ: sleepZ,
+                    sleepDurationHours: sleepDurationHours,
+                    restingNow: restingNow,
+                    baseline: baseline,
+                    respiratoryRate: respiratoryRate,
+                    respiratoryBaseline: respiratoryBaseline
+                )
             }
 
             let respirationZ = respiratoryRecoveryZ(rate: respiratoryRate,
                                                     baseline: respiratoryBaseline)
+            let respirationQualified = hasQualifiedRespiratoryEvidence(
+                rate: respiratoryRate,
+                baseline: respiratoryBaseline
+            )
+            let observedWeight = 0.95 + (respirationQualified ? 0.05 : 0)
+            let hrvWeight = 0.60 / observedWeight
+            let restingWeight = 0.20 / observedWeight
+            let sleepWeight = 0.15 / observedWeight
+            let respirationWeight = respirationQualified ? 0.05 / observedWeight : 0
             let contributors = [
                 Estimate.Contributor(kind: .hrv,
                                      zScore: hrvZ,
-                                     weight: 0.60,
+                                     weight: hrvWeight,
                                      detail: hrvDetail,
                                      displayValue: String(format: "HRV %+.1fσ", hrvZ)),
                 Estimate.Contributor(kind: .restingHeartRate,
                                      zScore: -restingZ,
-                                     weight: 0.20,
+                                     weight: restingWeight,
                                      detail: String(format: "RHR %.1fσ", -restingZ),
                                      displayValue: String(format: "Resting HR %+.1fσ", -restingZ)),
                 Estimate.Contributor(kind: .sleep,
                                      zScore: sleepZ,
-                                     weight: 0.15,
+                                     weight: sleepWeight,
                                      // Unlike HRV/RHR, the sleep z is anchored
                                      // to population norms (7 h, 85% eff), not
                                      // a personal baseline — disclose that.
@@ -1272,17 +1288,31 @@ enum AtriaAnalytics {
                                      displayValue: sleepDurationHours.map { "\(AtriaMetricFormat.sleepHours($0)) ✓" } ?? String(format: "Sleep %+.1fσ", sleepZ)),
                 Estimate.Contributor(kind: .respiration,
                                      zScore: respirationZ,
-                                     weight: 0.05,
-                                     detail: respirationZ == 0
-                                        ? "Resp neutral"
-                                        : String(format: "Resp %.1fσ", respirationZ),
-                                     displayValue: respirationZ == 0 ? "Respiration typical" : String(format: "Respiration %+.1fσ", respirationZ))
+                                     weight: respirationWeight,
+                                     detail: !respirationQualified
+                                        ? "Resp unavailable; excluded"
+                                        : (respirationZ == 0
+                                           ? "Resp neutral"
+                                           : String(format: "Resp %.1fσ", respirationZ)),
+                                     displayValue: !respirationQualified
+                                        ? "Respiration unavailable"
+                                        : (respirationZ == 0
+                                           ? "Respiration typical"
+                                           : String(format: "Respiration %+.1fσ", respirationZ)),
+                                     direction: respirationQualified ? nil : 0)
             ]
-            let blendedZ = 0.60 * hrvZ - 0.20 * restingZ + 0.15 * sleepZ + 0.05 * respirationZ
+            let blendedZ = (
+                0.60 * hrvZ
+                    - 0.20 * restingZ
+                    + 0.15 * sleepZ
+                    + (respirationQualified ? 0.05 * respirationZ : 0)
+            ) / observedWeight
             let percent = logisticRecoveryPercent(z: blendedZ)
-            let respirationDetail = respirationZ == 0
-                ? "Resp neutral"
-                : String(format: "Resp z %.1f", respirationZ)
+            let respirationDetail = !respirationQualified
+                ? "Resp unavailable"
+                : (respirationZ == 0
+                   ? "Resp neutral"
+                   : String(format: "Resp z %.1f", respirationZ))
             return Estimate(percent: percent, confidence: confidence,
                             usesHRV: true,
                             detail: String(format: "lnRMSSD z %.1f · RHR z %.1f · Sleep z %.1f · %@", hrvZ, restingZ, sleepZ, respirationDetail),
@@ -1423,9 +1453,9 @@ enum AtriaAnalytics {
         }
 
         /// Sleep-missing path: requires BOTH trusted baselines, then blends
-        /// HRV/RHR/respiration with weights renormalized over the missing 0.15
-        /// sleep share (0.60/0.85, 0.20/0.85, 0.05/0.85). Confidence is capped
-        /// at .unverified so the UI shows the reduced-evidence state honestly.
+        /// HRV/RHR and, only when qualified, respiration with weights
+        /// renormalized over the evidence that actually exists. Confidence is
+        /// capped at .unverified so reduced evidence stays explicit.
         private static func sleepMissingEstimate(hrvSnapshot: HRVSnapshot?,
                                                  fallbackRMSSD: Int?,
                                                  restingNow: Int,
@@ -1446,17 +1476,26 @@ enum AtriaAnalytics {
             let hrvZ = zScore(log(rmssdNow), mean: hrvStats.mean, sd: hrvStats.sd, minSD: 0.05)
             let respirationZ = respiratoryRecoveryZ(rate: respiratoryRate,
                                                     baseline: respiratoryBaseline)
-            let blendedZ = (0.60 * hrvZ - 0.20 * restingZ + 0.05 * respirationZ) / 0.85
+            let respirationQualified = hasQualifiedRespiratoryEvidence(
+                rate: respiratoryRate,
+                baseline: respiratoryBaseline
+            )
+            let observedWeight = 0.80 + (respirationQualified ? 0.05 : 0)
+            let blendedZ = (
+                0.60 * hrvZ
+                    - 0.20 * restingZ
+                    + (respirationQualified ? 0.05 * respirationZ : 0)
+            ) / observedWeight
             let percent = logisticRecoveryPercent(z: blendedZ)
             let contributors = [
                 Estimate.Contributor(kind: .hrv,
                                      zScore: hrvZ,
-                                     weight: 0.60 / 0.85,
+                                     weight: 0.60 / observedWeight,
                                      detail: String(format: "HRV %.1fσ", hrvZ),
                                      displayValue: String(format: "HRV %+.1fσ", hrvZ)),
                 Estimate.Contributor(kind: .restingHeartRate,
                                      zScore: -restingZ,
-                                     weight: 0.20 / 0.85,
+                                     weight: 0.20 / observedWeight,
                                      detail: String(format: "RHR %.1fσ", -restingZ),
                                      displayValue: String(format: "Resting HR %+.1fσ", -restingZ)),
                 Estimate.Contributor(kind: .sleep,
@@ -1466,9 +1505,18 @@ enum AtriaAnalytics {
                                      displayValue: "Sleep not captured"),
                 Estimate.Contributor(kind: .respiration,
                                      zScore: respirationZ,
-                                     weight: 0.05 / 0.85,
-                                     detail: respirationZ == 0 ? "Resp neutral" : String(format: "Resp %.1fσ", respirationZ),
-                                     displayValue: respirationZ == 0 ? "Respiration typical" : String(format: "Respiration %+.1fσ", respirationZ))
+                                     weight: respirationQualified ? 0.05 / observedWeight : 0,
+                                     detail: !respirationQualified
+                                        ? "Resp unavailable; excluded"
+                                        : (respirationZ == 0
+                                           ? "Resp neutral"
+                                           : String(format: "Resp %.1fσ", respirationZ)),
+                                     displayValue: !respirationQualified
+                                        ? "Respiration unavailable"
+                                        : (respirationZ == 0
+                                           ? "Respiration typical"
+                                           : String(format: "Respiration %+.1fσ", respirationZ)),
+                                     direction: respirationQualified ? nil : 0)
             ]
             return Estimate(percent: percent,
                             confidence: .unverified,
@@ -1515,12 +1563,22 @@ enum AtriaAnalytics {
 
         private static func respiratoryRecoveryZ(rate: Double?,
                                                  baseline: (mean: Double, sd: Double, count: Int)?) -> Double {
+            guard hasQualifiedRespiratoryEvidence(rate: rate, baseline: baseline),
+                  let rate,
+                  let baseline else { return 0 }
+            return min(max(-zScore(rate, mean: baseline.mean, sd: baseline.sd), -2), 2)
+        }
+
+        private static func hasQualifiedRespiratoryEvidence(
+            rate: Double?,
+            baseline: (mean: Double, sd: Double, count: Int)?
+        ) -> Bool {
             guard let rate,
                   rate > 0,
                   let baseline,
                   baseline.count >= PersonalBaseline.trustedMinimumSamples,
-                  baseline.sd > 0.1 else { return 0 }
-            return min(max(-zScore(rate, mean: baseline.mean, sd: baseline.sd), -2), 2)
+                  baseline.sd > 0.1 else { return false }
+            return true
         }
     }
 
@@ -1811,10 +1869,23 @@ enum AtriaAnalytics {
             guard maxHR > rest else { return .learning }
             var trimpByDay: [Date: Double] = [:]
             for session in sessions where session.points.count >= 2 {
-                let day = EventCivilTime.day(containing: session.start,
-                                             eventTimeZoneIdentifier: session.eventTimeZoneIdentifier,
-                                             outputCalendar: calendar)
-                trimpByDay[day, default: 0] += session.trimp(rest: rest, max: maxHR)
+                for day in EventCivilTime.days(
+                    overlappedBy: session.start,
+                    end: session.end,
+                    eventTimeZoneIdentifier: session.eventTimeZoneIdentifier,
+                    outputCalendar: calendar
+                ) {
+                    guard let interval = EventCivilTime.interval(
+                        forCivilDay: day,
+                        eventTimeZoneIdentifier: session.eventTimeZoneIdentifier,
+                        outputCalendar: calendar
+                    ) else { continue }
+                    trimpByDay[day, default: 0] += session.dailyLoadTRIMP(
+                        rest: rest,
+                        max: maxHR,
+                        within: interval
+                    )
+                }
             }
             let dailyStrains = trimpByDay
                 .sorted { $0.key > $1.key }

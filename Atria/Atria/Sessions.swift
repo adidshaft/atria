@@ -10837,14 +10837,44 @@ final class SessionStore: ObservableObject {
                                     maxHR: maxHR,
                                     calendar: calendar)
         let rowsByDay = Dictionary(grouping: rows, by: \.day)
+        var dailyLoadByDay: [Date: (trimp: Double, sourceID: UUID)] = [:]
+        for session in recent {
+            for day in EventCivilTime.days(
+                overlappedBy: session.start,
+                end: session.end,
+                eventTimeZoneIdentifier: session.eventTimeZoneIdentifier,
+                outputCalendar: calendar
+            ) {
+                guard let interval = EventCivilTime.interval(
+                    forCivilDay: day,
+                    eventTimeZoneIdentifier: session.eventTimeZoneIdentifier,
+                    outputCalendar: calendar
+                ) else { continue }
+                let load = session.dailyLoadTRIMP(
+                    rest: rest,
+                    max: maxHR,
+                    within: interval
+                )
+                let existing = dailyLoadByDay[day]
+                let stableID = existing.map {
+                    $0.sourceID.uuidString <= session.id.uuidString
+                        ? $0.sourceID
+                        : session.id
+                } ?? session.id
+                dailyLoadByDay[day] = (
+                    trimp: (existing?.trimp ?? 0) + load,
+                    sourceID: stableID
+                )
+            }
+        }
 
         // Overview charts and their "days" labels require one point per event-
         // aware civil day, not one point per reconnect-fragmented session.
         // Aggregate load in TRIMP space before applying the nonlinear strain
         // scale. RHR uses only baseline-qualified rest evidence; HRV uses only
         // locally qualified RMSSD, so persisted-but-unproven values stay absent.
-        return rowsByDay.keys.sorted().compactMap { day in
-            guard let dayRows = rowsByDay[day], !dayRows.isEmpty else { return nil }
+        return Set(rowsByDay.keys).union(dailyLoadByDay.keys).sorted().compactMap { day in
+            let dayRows = rowsByDay[day] ?? []
             let orderedRows = dayRows.sorted {
                 if $0.session.start != $1.session.start {
                     return $0.session.start < $1.session.start
@@ -10853,11 +10883,11 @@ final class SessionStore: ObservableObject {
             }
             let qualifiedHRVs = orderedRows.compactMap(\.localRMSSD).filter { $0 > 0 }
             let acceptedRestingHRs = orderedRows.compactMap(\.acceptedRestingHR).filter { $0 > 0 }
-            let dayTRIMP = orderedRows.reduce(0.0) {
-                $0 + $1.session.trimp(rest: rest, max: maxHR)
-            }
+            guard let sourceID = orderedRows.first?.session.id
+                    ?? dailyLoadByDay[day]?.sourceID else { return nil }
+            let dayTRIMP = dailyLoadByDay[day]?.trimp ?? 0
             return AtriaTrendPoint(
-                id: orderedRows[0].session.id,
+                id: sourceID,
                 date: day,
                 restingHR: acceptedRestingHRs.min(),
                 strain: Metrics.strain(fromTRIMP: dayTRIMP),
@@ -11547,9 +11577,11 @@ final class SessionStore: ObservableObject {
                     eventTimeZoneIdentifier: session.eventTimeZoneIdentifier,
                     outputCalendar: calendar
                 ) else { continue }
-                trimpByDay[day, default: 0] += session.trimp(rest: rest,
-                                                            max: maxHR,
-                                                            within: interval)
+                trimpByDay[day, default: 0] += session.dailyLoadTRIMP(
+                    rest: rest,
+                    max: maxHR,
+                    within: interval
+                )
             }
         }
         return trimpByDay.values.map { Metrics.strain(fromTRIMP: $0) }

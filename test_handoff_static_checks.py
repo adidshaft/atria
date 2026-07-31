@@ -847,7 +847,8 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "struct Contributor: Equatable, Identifiable",
             "let contributors: [Contributor]",
-            "0.60 * hrvZ - 0.20 * restingZ + 0.15 * sleepZ + 0.05 * respirationZ",
+            "let observedWeight = 0.95 + (respirationQualified ? 0.05 : 0)",
+            "respirationQualified ? 0.05 * respirationZ : 0",
         ]:
             assert_contains(self, analytics, needle)
 
@@ -9927,11 +9928,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "guard let sleepZ = sleepRecoveryZ(efficiency: sleepEfficiency,",
             "detail: \"learning: need saved sleep\"",
             "let respirationZ = respiratoryRecoveryZ(rate: respiratoryRate,",
-            "0.60 * hrvZ - 0.20 * restingZ + 0.15 * sleepZ + 0.05 * respirationZ",
+            "let observedWeight = 0.95 + (respirationQualified ? 0.05 : 0)",
+            "respirationQualified ? 0.05 * respirationZ : 0",
             "let percent = logisticRecoveryPercent(z: blendedZ)",
             "private static func logisticRecoveryPercent(z: Double) -> Int",
             "100.0 / (1.0 + exp(-k * (z - z0)))",
             "private static func respiratoryRecoveryZ(rate: Double?,",
+            "private static func hasQualifiedRespiratoryEvidence(",
             "baseline.count >= PersonalBaseline.trustedMinimumSamples",
             "-zScore(rate, mean: baseline.mean, sd: baseline.sd)",
             "? \"Resp neutral\"",

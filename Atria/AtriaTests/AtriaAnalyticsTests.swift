@@ -1590,6 +1590,75 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(resting?.displayValue, "Resting HR \(String(format: "%+.1fσ", resting?.zScore ?? 0))")
     }
 
+    func testRecoveryExcludesUnavailableRespirationInsteadOfInjectingNeutralWeight() {
+        let now = Date()
+        let baseline = PersonalBaseline(
+            restingHR: 60,
+            hrvEMA: 50,
+            sessions: PersonalBaseline.trustedMinimumSamples,
+            updated: now,
+            samples: baselineSamples(
+                count: PersonalBaseline.trustedMinimumSamples,
+                now: now
+            )
+        )
+
+        let estimate = AtriaAnalytics.Recovery.estimate(
+            hrvSnapshot: nil,
+            fallbackRMSSD: 56,
+            restingNow: 58,
+            baseline: baseline,
+            sleepEfficiency: 0.91,
+            sleepDurationHours: 7.6,
+            respiratoryRate: nil,
+            respiratoryBaseline: nil
+        )
+
+        let respiration = estimate.contributors.first { $0.kind == .respiration }
+        XCTAssertEqual(respiration?.weight, 0)
+        XCTAssertEqual(respiration?.displayValue, "Respiration unavailable")
+        XCTAssertEqual(
+            estimate.contributors.reduce(0) { $0 + $1.weight },
+            1,
+            accuracy: 0.000_001
+        )
+    }
+
+    func testCurrentHRVWithoutComparatorDoesNotOwnSixtyPercentOfRecovery() {
+        let now = Date()
+        let restingOnlySamples = (0..<PersonalBaseline.trustedMinimumSamples).map { index in
+            PersonalBaseline.BaselineSample(
+                date: now.addingTimeInterval(Double(-index * 86_400)),
+                restingHR: [58.0, 60.0, 62.0][index % 3],
+                rmssd: nil,
+                overnight: true
+            )
+        }
+        let baseline = PersonalBaseline(
+            restingHR: 60,
+            hrvEMA: nil,
+            sessions: restingOnlySamples.count,
+            updated: now,
+            samples: restingOnlySamples
+        )
+
+        let estimate = AtriaAnalytics.Recovery.estimate(
+            hrvSnapshot: nil,
+            fallbackRMSSD: 56,
+            restingNow: 58,
+            baseline: baseline,
+            sleepEfficiency: 0.91,
+            sleepDurationHours: 7.6
+        )
+
+        XCTAssertFalse(estimate.usesHRV)
+        XCTAssertEqual(
+            estimate.contributors.first { $0.kind == .hrv }?.weight,
+            0
+        )
+        XCTAssertTrue(estimate.detail.contains("HRV unavailable"))
+    }
+
     func testSleepBudgetNeedCapsFloorsStrainAndNapCredit() {
         XCTAssertEqual(AtriaSleepBudget.sleepNeed(baseHours: 11,
                                                   yesterdayStrain: 16,
