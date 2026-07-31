@@ -30846,20 +30846,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 }
             } catch AtriaHistoricalActivityInspectionProofFactory
                 .FactoryError.completionCoverageMismatch {
-                if let self,
-                   let fingerprint = self
-                    .terminalConsumerCoverageFailureFingerprint(
-                        authority: authority
-                    ) {
-                    UserDefaults.standard.set(
-                        fingerprint,
-                        forKey: Self.terminalConsumerCoverageFailureKey
-                    )
-                    UserDefaults.standard.set(
-                        Date(),
-                        forKey: Self.terminalConsumerCoverageFailureAtKey
-                    )
-                }
                 UserDefaults.standard.set(
                     String(
                         reflecting:
@@ -30878,7 +30864,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     transportGeneration
                 )
                 Task { @MainActor [weak self] in
-                    self?.finishHistoricalConsumerMaterialization(
+                    guard let self else { return }
+                    if let fingerprint = self
+                        .terminalConsumerCoverageFailureFingerprint(
+                            authority: authority
+                        ) {
+                        UserDefaults.standard.set(
+                            fingerprint,
+                            forKey: Self.terminalConsumerCoverageFailureKey
+                        )
+                        UserDefaults.standard.set(
+                            Date(),
+                            forKey: Self.terminalConsumerCoverageFailureAtKey
+                        )
+                    }
+                    self.finishHistoricalConsumerMaterialization(
                         reason: "terminal_completion_coverage_mismatch"
                     )
                 }
