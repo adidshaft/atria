@@ -9607,7 +9607,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "enum Direction: String, Equatable",
             "let direction: Direction",
             "static let footnoteText = AtriaFitnessAge.footnoteText",
-            "guard isReady else { return \"Calibrating 28-day baseline\" }",
+            "guard isReady else { return \"Building required fitness-age inputs\" }",
+            "var availabilityDetailText: String",
+            "blockers.map(Self.humanBlocker).joined(separator: \" · \")",
             "nonisolated static let biologicalAgeCacheSchema = 5",
             "nonisolated static let biologicalAgeCacheTTL: TimeInterval = 7 * 24 * 60 * 60",
             "struct BiologicalAgeCacheSignature: Codable, Equatable",
@@ -9882,7 +9884,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "targetMetric: .bioAge",
             "AtriaMetricTile(label: \"Top driver\"",
             "biologicalAgeSummary.agingPaceText",
-            "biologicalAgeSummary.agingPaceDetail",
+            "biologicalAgeSummary.availabilityDetailText",
             "state: biologicalAgeSummary.isReady ? .estimate : .learning",
             "AtriaPanelSectionHeader(title: \"Body Age\", subtitle: biologicalAgeSummary.narrative)",
             "ForEach(biologicalAgeSummary.factors)",
@@ -9893,7 +9895,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaPanelSectionHeader(title: \"Body Age\", subtitle: summary.narrative)",
             "AtriaMetricTile(label: \"Pace\"",
             "value: summary.agingPaceText",
-            "footnote: summary.agingPaceDetail",
+            "footnote: summary.availabilityDetailText",
             "ForEach(summary.factors)",
             "AtriaBioAgeFactorRow(factor: factor)",
             "private struct AtriaBioAgeFactorRow: View, Equatable",
@@ -11841,8 +11843,8 @@ class HandoffStaticChecks(unittest.TestCase):
             'Text("Fitness age")',
             # Migrated: the static "Ny younger/older" subtitle was replaced by
             # an animated arrow + count-up delta reveal (spring, reduce-motion
-            # aware); "Calibrating 28-day baseline" still renders unchanged
-            # while not ready.
+            # aware); the unavailable state still renders the compact, real
+            # blocker while the source inputs are not ready.
             "Text(summary.compactStatusText)",
             "Text(summary.footnote)",
             '"Fitness age. \\(summary.valueText).',

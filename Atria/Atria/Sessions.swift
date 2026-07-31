@@ -3965,7 +3965,7 @@ struct BiologicalAgeSummary: Equatable, Codable {
                              chronologicalAge: chronologicalAge,
                              ageDelta: nil,
                              agingPaceText: "Calibrating",
-                             agingPaceDetail: "Needs 28 days before showing a fitness-age estimate.",
+                             agingPaceDetail: "Building the required fitness-age inputs.",
                              factors: [],
                              blockers: blockers,
                              footnote: footnoteText)
@@ -4009,8 +4009,22 @@ struct BiologicalAgeSummary: Equatable, Codable {
 
     var narrative: String {
         if isRefreshing { return "Updating weekly estimate" }
-        guard isReady else { return "Calibrating 28-day baseline" }
+        guard isReady else { return "Building required fitness-age inputs" }
         return "Five-input fitness estimate"
+    }
+
+    /// A cached calibrating summary may outlive the exact source progress that
+    /// produced its stored `agingPaceDetail`. Build unavailable-state copy from
+    /// the durable blocker tokens at presentation time so an old generic
+    /// "28 days" message cannot contradict the actual gates. Ready weekly
+    /// estimates keep their persisted pace detail unchanged.
+    var availabilityDetailText: String {
+        if isRefreshing { return "Refreshing the weekly fitness-age estimate." }
+        guard !isReady else { return agingPaceDetail }
+        guard !blockers.isEmpty else {
+            return "Building the required fitness-age inputs."
+        }
+        return "Needs " + blockers.map(Self.humanBlocker).joined(separator: " · ") + "."
     }
 
     var blockerText: String {
