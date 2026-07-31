@@ -14,6 +14,10 @@ struct AtriaTodaySessionState: Equatable {
     let dailyRollupHistoryRevision: Int
     let confirmedWorkouts: [UserConfirmedWorkout]
     let confirmedWorkoutsRevision: Int
+    /// Confirmed sleeps for the metric-detail day sheet's history model
+    /// (2026-07-31 audit item 11). Change-tracked by
+    /// `sleepHistorySnapshotRevision`, which every confirmed-sleep write bumps.
+    let confirmedSleeps: [UserConfirmedSleep]
     let behaviorImpactSummaries: [BehaviorImpactSummary]
     let baseline: PersonalBaseline
     let sleepHistorySnapshot: SleepHistorySnapshot
@@ -32,6 +36,7 @@ struct AtriaTodaySessionState: Equatable {
         dailyRollupHistoryRevision = store.dailyRollupHistoryRevision
         confirmedWorkouts = store.confirmedWorkouts
         confirmedWorkoutsRevision = store.confirmedWorkoutsRevision
+        confirmedSleeps = store.confirmedSleeps
         behaviorImpactSummaries = store.behaviorImpactSummariesCache
         baseline = store.baseline
         baselineSamplesKey = store.baseline.samples.map {
@@ -297,6 +302,7 @@ struct AtriaTodayScreen: View {
                                        rollupsRevision: sessionProjectionStore.state.dailyRollupHistoryRevision,
                                        confirmedWorkouts: debugMetricDetailWorkouts ?? sessionProjectionStore.state.confirmedWorkouts,
                                        confirmedWorkoutsRevision: debugMetricDetailWorkouts == nil ? sessionProjectionStore.state.confirmedWorkoutsRevision : nil,
+                                       confirmedSleeps: sessionProjectionStore.state.confirmedSleeps,
                                        behaviorImpacts: sessionProjectionStore.state.behaviorImpactSummaries,
                                        baseline: AtriaBaselineTargetSnapshot(sessionProjectionStore.state.baseline),
                                        sleepHistory: sessionProjectionStore.state.sleepHistorySnapshot,

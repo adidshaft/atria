@@ -17,10 +17,11 @@ struct AtriaTrendChartCard: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var metric: AtriaTrendMetric = .restingHR
-    // The first value people need after opening a metric is today’s measured
-    // context. Week/month remain one tap away; starting on a month average
-    // obscures an important daily change.
-    @State private var range: AtriaTrendRange = .day
+    // This card plots ONE point per civil day (makeOverviewTrendPoints), so a
+    // one-day window can never reach the 2-point line gate — a "D" segment
+    // here was a permanently empty chart. Default to the shortest range that
+    // can actually draw (2026-07-31 audit item 1).
+    @State private var range: AtriaTrendRange = .week
     @State private var prepared = AtriaTrendPreparedSeries.empty
     // Tap-to-expand + drag-to-scrub (docs/24 §14 UI direction): the compact
     // card opens a large inspection sheet; both share native chartXSelection.
@@ -83,7 +84,9 @@ struct AtriaTrendChartCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Trends", subtitle: "\(range.headerLabel) · \(prepared.series.count) days")
+                // "N days" read as calendar coverage; the count is days WITH
+                // data in the window (2026-07-31 audit item 13).
+                AtriaPanelSectionHeader(title: "Trends", subtitle: "\(range.headerLabel) · \(prepared.series.count)d of data")
                 Spacer(minLength: 0)
                 // Expanding an empty series rendered a full-screen chart with
                 // a fabricated 0…1 axis and "1 of 1 days visible". Mirror the
@@ -102,7 +105,7 @@ struct AtriaTrendChartCard: View {
 
             VStack(spacing: 8) {
                 Picker("Range", selection: $range) {
-                    ForEach(AtriaTrendRange.primarySegments) { item in
+                    ForEach(AtriaTrendRange.trendCardSegments) { item in
                         Text(item.segmentedLabel)
                             .tag(item)
                             .accessibilityLabel(item.menuLabel)
@@ -232,10 +235,14 @@ struct AtriaTrendChartCard: View {
     }
 
     /// The focused metric's real daily values in the shared chart-point
-    /// shape. Days without a value are simply absent.
+    /// shape, limited to the range the compact card is showing — expanding a
+    /// "last week" chart must not silently widen it to the full 92-day
+    /// series. Days without a value are simply absent.
     private var expandedChartPoints: [AtriaDetailChartPoint] {
-        points.compactMap { point in
-            point.value(for: metric).map {
+        let cutoff = range.cutoffDate()
+        return points.compactMap { point in
+            guard point.date >= cutoff else { return nil }
+            return point.value(for: metric).map {
                 AtriaDetailChartPoint(day: point.date, value: $0, tint: metric.tint)
             }
         }
@@ -554,7 +561,7 @@ struct AtriaTrendChartCard: View {
     }
 
     private var chartAccessibilityLabel: String {
-        let base = "\(metric.shortLabel) trend, \(range.headerLabel.lowercased()), \(prepared.series.count) days in view."
+        let base = "\(metric.shortLabel) trend, \(range.headerLabel.lowercased()), \(prepared.series.count) days of data."
         var combined = base
         if let summary = prepared.summary {
             combined += " Latest \(summary.latestText), average \(summary.averageText), range \(summary.rangeText), \(summary.comparisonAccessibilityText)."
@@ -1864,8 +1871,10 @@ private struct AtriaTrendRangeLens: View, Equatable {
     }
 
     private var coverageLabel: String {
+        // "in view" implied visible calendar days; the count is data samples
+        // (2026-07-31 audit item 13).
         if sampleCount >= range.confidenceTargetPoints {
-            return "\(sampleCount)d in view"
+            return "\(sampleCount)d of data"
         }
         if sampleCount >= max(2, range.confidenceTargetPoints / 2) {
             return "\(sampleCount)d forming"
@@ -2358,7 +2367,7 @@ private struct AtriaTrendSessionDotStrip: View, Equatable {
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 8)
-                Text("\(samples.count)d")
+                Text("\(samples.count)d of data")
                     .font(.caption2.monospacedDigit().weight(.semibold))
                     .foregroundStyle(.secondary)
             }
@@ -2383,7 +2392,7 @@ private struct AtriaTrendSessionDotStrip: View, Equatable {
                 .stroke(metric.tint.opacity(0.12), lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Day pattern for \(metric.shortLabel), \(samples.count) days in view.")
+        .accessibilityLabel("Day pattern for \(metric.shortLabel), \(samples.count) days of data.")
     }
 
     private static func normalized(_ value: Double, domain: ClosedRange<Double>) -> Double {
@@ -2576,6 +2585,12 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable, Sendable {
     /// (2026-07-08: declutter the range bar to D/W/M per user request; the range
     /// selector stays a segmented control, never a Menu, per the readability guard).
     static let primarySegments: [AtriaTrendRange] = [.day, .week, .month]
+
+    /// The Trends card aggregates to one point per civil day, so `.day` can
+    /// never form a line there (its chart requires ≥2 points). Day stays in
+    /// `primarySegments` for the calendar-period metric-detail surfaces,
+    /// where a single-day view is real and navigable (2026-07-31 audit).
+    static let trendCardSegments: [AtriaTrendRange] = [.week, .month]
 
     var days: Int {
         switch self {

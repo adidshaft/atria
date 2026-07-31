@@ -652,7 +652,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "var narrativeLabel: String",
             'case .quarter: return "3 months"',
             'case .sixMonths: return "6 months"',
-            'AtriaPanelSectionHeader(title: "Trends", subtitle: "\\(range.headerLabel) · \\(prepared.series.count) days")',
+            # 2026-07-31 audit item 13: sample counts are labeled "Nd of data"
+            # instead of implying N calendar days.
+            'AtriaPanelSectionHeader(title: "Trends", subtitle: "\\(range.headerLabel) · \\(prepared.series.count)d of data")',
             "case .strain: return Metrics.electricStrain",
             "func cutoffDate(now: Date = Date(), calendar: Calendar = .current) -> Date",
             "return calendar.startOfDay(for: now)",
@@ -6926,7 +6928,8 @@ class HandoffStaticChecks(unittest.TestCase):
             ".accessibilityLabel(item.menuLabel)",
             ".accessibilityLabel(chartAccessibilityLabel)",
             "private var chartAccessibilityLabel: String",
-            "\\(prepared.series.count) days in view.",
+            # 2026-07-31 audit item 13: honest sample-count wording.
+            "\\(prepared.series.count) days of data.",
             # 2026-07-07 dedup audit: Latest/Range pills removed from the
             # summary strip (position band owns them).
             "Average \\(summary.averageText)",
@@ -6974,7 +6977,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "private var coverageProgress: Double",
             "Double(sampleCount) / Double(range.confidenceTargetPoints)",
             "private var coverageLabel: String",
-            "return \"\\(sampleCount)d in view\"",
+            # 2026-07-31 audit item 13: honest sample-count wording.
+            "return \"\\(sampleCount)d of data\"",
             "return \"\\(sampleCount)d forming\"",
             "return sampleCount == 1 ? \"1d started\" : \"\\(sampleCount)d started\"",
             "Trend period rail.",
@@ -7033,11 +7037,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "let samples = visibleSamples",
             "let domain = Self.domain(for: samples)",
             "Text(\"Day pattern\")",
-            "Text(\"\\(samples.count)d\")",
+            # 2026-07-31 audit item 13: honest sample-count wording.
+            "Text(\"\\(samples.count)d of data\")",
             "let normalized = Self.normalized(sample.value, domain: domain)",
             "Self.opacity(for: normalized)",
             "Self.height(for: normalized)",
-            "Day pattern for \\(metric.shortLabel), \\(samples.count) days in view.",
+            # 2026-07-31 audit item 13: honest sample-count wording.
+            "Day pattern for \\(metric.shortLabel), \\(samples.count) days of data.",
             "private static func normalized(_ value: Double, domain: ClosedRange<Double>) -> Double",
             "private struct AtriaTrendActionReadout: Equatable",
             "private struct AtriaTrendActionReadoutCard: View",

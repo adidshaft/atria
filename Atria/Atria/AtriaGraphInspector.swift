@@ -104,9 +104,28 @@ struct AtriaInspectableGraph {
     func nearestReadings(to date: Date) -> [Reading] {
         guard case let .timeSeries(series) = content else { return [] }
         return series.compactMap { item in
-            guard let point = Self.nearestPoint(in: item.points, to: date) else { return nil }
+            guard let point = Self.nearestPoint(in: item.points, to: date),
+                  abs(point.date.timeIntervalSince(date)) <= Self.snapCeiling(for: item.points) else {
+                return nil
+            }
             return Reading(series: item, point: point)
         }
+    }
+
+    /// Scrubbing inside a multi-day observation gap must not read out a value
+    /// recorded days away as if it were measured at the scrubbed moment. A
+    /// point only counts as "at" the selection within one typical sampling
+    /// interval (median inter-point spacing — one day for sparse daily
+    /// series), floored at a minute so dense live series stay scrubbable.
+    private static func snapCeiling(for points: [Point]) -> TimeInterval {
+        guard points.count >= 2 else { return 86_400 }
+        var spacings: [TimeInterval] = []
+        spacings.reserveCapacity(points.count - 1)
+        for index in 1..<points.count {
+            spacings.append(points[index].date.timeIntervalSince(points[index - 1].date))
+        }
+        let sorted = spacings.sorted()
+        return max(sorted[sorted.count / 2], 60)
     }
 
     /// Interval charts need a real selection result, not a guessed nearest
@@ -369,12 +388,21 @@ private struct AtriaGraphInspectorView: View {
         case .timeSeries:
             HStack(spacing: 14) {
                 if let selectedDate {
-                    Text(selectedDate.formatted(date: .abbreviated, time: .shortened))
-                        .font(.caption.monospacedDigit())
-                    ForEach(graph.nearestReadings(to: selectedDate)) { reading in
-                        Text("\(reading.series.title) \(Self.valueText(reading.point.value, unit: reading.series.unit))")
-                            .font(.caption.weight(.semibold).monospacedDigit())
-                            .foregroundStyle(reading.series.tint)
+                    let readings = graph.nearestReadings(to: selectedDate)
+                    if readings.isEmpty {
+                        // Selection landed inside a real observation gap —
+                        // same honest presentation the interval branch uses.
+                        Text("No recorded activity at \(selectedDate.formatted(date: .omitted, time: .shortened))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(selectedDate.formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption.monospacedDigit())
+                        ForEach(readings) { reading in
+                            Text("\(reading.series.title) \(Self.valueText(reading.point.value, unit: reading.series.unit))")
+                                .font(.caption.weight(.semibold).monospacedDigit())
+                                .foregroundStyle(reading.series.tint)
+                        }
                     }
                 } else {
                     Text("Drag across the graph to inspect real recorded values")
@@ -484,9 +512,10 @@ private struct AtriaGraphInspectorView: View {
     }
 
     private static func timeRangeText(start: Date, end: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm a"
-        return "\(formatter.string(from: start))–\(formatter.string(from: end))"
+        // .shortened honors the user's locale and 12/24-hour setting; the
+        // pinned "h:mm a" pattern forced 12-hour AM/PM for everyone
+        // (2026-07-31 audit item 12).
+        "\(start.formatted(date: .omitted, time: .shortened))–\(end.formatted(date: .omitted, time: .shortened))"
     }
 
     private func axisLabel(for date: Date, duration: TimeInterval) -> String {
