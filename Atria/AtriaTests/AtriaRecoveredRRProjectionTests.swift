@@ -221,6 +221,89 @@ final class AtriaRecoveredRRProjectionTests: XCTestCase {
         XCTAssertTrue(doffSnapshot.skinTemperatureRawPoints.isEmpty)
     }
 
+    func testConfirmedSleepWindowsPublishRecoveredTemperatureWithoutSleepTaggedSessions() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let firstMorning = Date(timeIntervalSince1970: 1_780_000_000)
+        let nightlyRaw = [800, 820, 840, 900]
+        var points: [HistoricalArchive.SkinTemperatureRawPoint] = []
+        var sleeps: [UserConfirmedSleep] = []
+
+        for (night, raw) in nightlyRaw.enumerated() {
+            let end = firstMorning.addingTimeInterval(TimeInterval(night) * 86_400)
+            let start = end.addingTimeInterval(-8 * 60 * 60)
+            sleeps.append(UserConfirmedSleep(
+                id: "night-\(night)",
+                createdAt: end,
+                start: start,
+                end: end,
+                source: "manual_sleep",
+                confidence: "user_confirmed_hr_only",
+                sessions: 1,
+                samples: 100,
+                avgHR: 60,
+                peakHR: 75,
+                restingHR: 55,
+                hrv: nil,
+                hrvWindowCount: nil,
+                duration: 8 * 60 * 60,
+                span: 8 * 60 * 60,
+                reason: "test",
+                motionSource: "user_review",
+                motionValidated: false,
+                stageSegments: nil,
+                eventTimeZoneIdentifier: "UTC"
+            ))
+            for sample in 0..<100 {
+                points.append(.init(
+                    t: start.addingTimeInterval(TimeInterval(sample) * 60),
+                    raw: raw,
+                    strapIdentifier: "strap-a"
+                ))
+            }
+        }
+        let napStart = sleeps[3].end.addingTimeInterval(60 * 60)
+        let napEnd = napStart.addingTimeInterval(30 * 60)
+        sleeps.append(UserConfirmedSleep(
+            id: "nap",
+            createdAt: napEnd,
+            start: napStart,
+            end: napEnd,
+            source: "nap_candidate",
+            confidence: "user_confirmed_hr_only",
+            sessions: 1,
+            samples: 100,
+            avgHR: 60,
+            peakHR: 75,
+            restingHR: 55,
+            hrv: nil,
+            hrvWindowCount: nil,
+            duration: 30 * 60,
+            span: 30 * 60,
+            reason: "test",
+            motionSource: "user_review",
+            motionValidated: false,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: "UTC"
+        ))
+        for sample in 0..<100 {
+            points.append(.init(
+                t: napStart.addingTimeInterval(TimeInterval(sample) * 10),
+                raw: 600,
+                strapIdentifier: "strap-a"
+            ))
+        }
+
+        let result = SessionStore.finalizedSkinTemperatureDeviationByMorningDay(
+            points: points,
+            confirmedSleeps: sleeps,
+            calendar: calendar
+        )
+        let fourthDay = calendar.startOfDay(for: sleeps[3].end)
+        XCTAssertEqual(result.count, 1)
+        XCTAssertEqual(result[fourthDay] ?? .nan, 4.0, accuracy: 0.000_001)
+    }
+
     func testTemperatureBudgetFailsOnlyTemperatureChannel() {
         func temperatureRecord(counter: UInt32, timestamp: UInt32, raw: UInt16)
             -> HistoricalArchive.Record {

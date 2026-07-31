@@ -6791,6 +6791,11 @@ final class SessionStore: ObservableObject {
     private var biologicalAgeRefreshGeneration = 0
     private(set) var biologicalAgeSummaryRevision = 0
     private var cachedSkinTemperatureDeviationSummary: SkinTemperatureDeviationSummaryCache?
+    /// Nightly WHOOP 4 temperature deviations are derived from the
+    /// authoritative confirmed-sleep windows, not from the recovered
+    /// all-day session label. Recovered sessions intentionally remain
+    /// all-day wear containers on devices where sleep was confirmed later.
+    private var cachedRecoveredSkinTemperatureDeviationByDay: [Date: Double] = [:]
     private var hasCompletedDeferredSessionLoad = false
     /// The daily-metric file is decoded independently of the much larger
     /// session source. Until this becomes true, Recovery can only be a live
@@ -6957,6 +6962,7 @@ final class SessionStore: ObservableObject {
         let pendingBiologicalAgeRefreshKey: BiologicalAgeRefreshRequestKey?
         let biologicalAgeSummaryRevision: Int
         let skinTemperatureDeviationSummary: SkinTemperatureDeviationSummaryCache?
+        let recoveredSkinTemperatureDeviationByDay: [Date: Double]
         let sessionBackupStatus: SessionBackupStatus
         let autoSleepLoggedBanner: AutoSleepLoggedBanner?
         let lastForegroundSleepAutoConfirmAt: Date?
@@ -7960,6 +7966,8 @@ final class SessionStore: ObservableObject {
         let baselineSnapshot = baseline
         let maxHR = profile.maxHR
         let confirmedSleeps = cachedConfirmedSleeps
+        let recoveredSkinTemperatureDeviationByDay =
+            cachedRecoveredSkinTemperatureDeviationByDay
         let archiveHeartRatePoints = cachedHistoricalTodayHeartRatePoints
         let biologicalSex = profile.biologicalSex
         let activeSessionID = Self.freshActiveSessionIDForResearchSummary()
@@ -7973,6 +7981,7 @@ final class SessionStore: ObservableObject {
                                                      baselineSnapshot,
                                                      maxHR,
                                                      confirmedSleeps,
+                                                     recoveredSkinTemperatureDeviationByDay,
                                                      archiveHeartRatePoints,
                                                      biologicalSex,
                                                      activeSessionID,
@@ -7987,6 +7996,8 @@ final class SessionStore: ObservableObject {
                                                                           baseline: baselineSnapshot,
                                                                           maxHR: maxHR,
                                                                           confirmedSleeps: confirmedSleeps,
+                                                                          recoveredSkinTemperatureDeviationByDay:
+                                                                            recoveredSkinTemperatureDeviationByDay,
                                                                           archiveHeartRatePoints: archiveHeartRatePoints,
                                                                           biologicalSex: biologicalSex,
                                                                           activeSessionID: activeSessionID,
@@ -8266,6 +8277,7 @@ final class SessionStore: ObservableObject {
                                                                             baseline: PersonalBaseline,
                                                                             maxHR: Int,
                                                                             confirmedSleeps: [UserConfirmedSleep],
+                                                                            recoveredSkinTemperatureDeviationByDay: [Date: Double] = [:],
                                                                             archiveHeartRatePoints: [HistoricalArchive.HeartRatePoint],
                                                                             biologicalSex: AthleteProfile.BiologicalSex,
                                                                             activeSessionID: UUID?,
@@ -8276,12 +8288,17 @@ final class SessionStore: ObservableObject {
         let skinTemperatureDeviationByDay = finalizedSkinTemperatureDeviationByMorningDay(sessions: sourceSessions,
                                                                                           activeSessionID: activeSessionID,
                                                                                           calendar: calendar)
+        let resolvedSkinTemperatureDeviationByDay =
+            skinTemperatureDeviationByDay.merging(
+                recoveredSkinTemperatureDeviationByDay,
+                uniquingKeysWith: { sessionValue, _ in sessionValue }
+            )
         let savedDailyMetrics = makeSavedDailyMetrics(rollups: history.rollups,
                                                       sleep: sleep,
                                                       baseline: baseline,
                                                       sessions: sourceSessions,
                                                       activeSessionID: activeSessionID,
-                                                      skinTemperatureDeviationByDay: skinTemperatureDeviationByDay,
+                                                      skinTemperatureDeviationByDay: resolvedSkinTemperatureDeviationByDay,
                                                       calendar: calendar)
         let mergedDailyMetrics = mergeDailyMetricHistory(existing: existingDailyMetrics,
                                                          computed: savedDailyMetrics,
@@ -8290,7 +8307,7 @@ final class SessionStore: ObservableObject {
                                                          baseline: baseline,
                                                          maxHR: maxHR,
                                                          now: now,
-                                                         skinTemperatureDeviationByDay: skinTemperatureDeviationByDay,
+                                                         skinTemperatureDeviationByDay: resolvedSkinTemperatureDeviationByDay,
                                                          authoritativeDays: invalidatedDays,
                                                          calendar: calendar)
         return makeDailyMetricRollupPreparation(metrics: mergedDailyMetrics,
@@ -8883,9 +8900,11 @@ final class SessionStore: ObservableObject {
         }
 
         let policy = AtriaRecoveredDataTimeoutPolicy.physicalSessionStore
+        let confirmedSleeps = cachedConfirmedSleeps
         var lastOfferedProgressBytes = 0
         var lastOfferedProgressUptime = DispatchTime.now().uptimeNanoseconds
-        let workItem = DispatchWorkItem { [weak self, livePoints, cutoff, ticket] in
+        let workItem = DispatchWorkItem {
+            [weak self, livePoints, cutoff, ticket, confirmedSleeps] in
             let diagnostics = HistoricalArchive.diagnostics()
             guard !diagnostics.exists || diagnostics.parseOK else {
                 DispatchQueue.main.async { [weak self, ticket] in
@@ -9006,6 +9025,14 @@ final class SessionStore: ObservableObject {
                     to: recoveredSessions
                 )
             }
+            let recoveredSkinTemperatureDeviationByDay =
+                recoveredSnapshot.skinTemperatureCompleteness == .complete
+                ? Self.finalizedSkinTemperatureDeviationByMorningDay(
+                    points: recoveredSnapshot.skinTemperatureRawPoints,
+                    confirmedSleeps: confirmedSleeps,
+                    calendar: .current
+                )
+                : [:]
             Task { @MainActor [weak self, ticket] in
                 self?.renewRecoveredProjectionLease(
                     ticket: ticket,
@@ -9013,7 +9040,15 @@ final class SessionStore: ObservableObject {
                 )
             }
 
-            Task { @MainActor [weak self, archivePoints, recoveredSessions, projection, rrProjection, ticket] in
+            Task { @MainActor [
+                weak self,
+                archivePoints,
+                recoveredSessions,
+                recoveredSkinTemperatureDeviationByDay,
+                projection,
+                rrProjection,
+                ticket
+            ] in
                 guard let self,
                       case let .projecting(active) = self.recoveredDataRecompute.phase,
                       active == ticket else { return }
@@ -9038,6 +9073,8 @@ final class SessionStore: ObservableObject {
 
                 let previous = self.cachedRecoveredHeartRateSessions
                 self.cachedRecoveredHeartRateSessions = recoveredSessions
+                self.cachedRecoveredSkinTemperatureDeviationByDay =
+                    recoveredSkinTemperatureDeviationByDay
                 self.cachedRecoveredArchiveHeartRatePoints = archivePoints
                 let cacheInterval = Self.historicalStrainCacheInterval(
                     now: Date(),
@@ -9444,6 +9481,8 @@ final class SessionStore: ObservableObject {
             pendingBiologicalAgeRefreshKey: pendingBiologicalAgeRefreshKey,
             biologicalAgeSummaryRevision: biologicalAgeSummaryRevision,
             skinTemperatureDeviationSummary: cachedSkinTemperatureDeviationSummary,
+            recoveredSkinTemperatureDeviationByDay:
+                cachedRecoveredSkinTemperatureDeviationByDay,
             sessionBackupStatus: cachedSessionBackupStatus,
             autoSleepLoggedBanner: autoSleepLoggedBanner,
             lastForegroundSleepAutoConfirmAt: lastForegroundSleepAutoConfirmAt,
@@ -9569,6 +9608,8 @@ final class SessionStore: ObservableObject {
         pendingBiologicalAgeRefreshKey = snapshot.pendingBiologicalAgeRefreshKey
         biologicalAgeSummaryRevision &+= 1
         cachedSkinTemperatureDeviationSummary = snapshot.skinTemperatureDeviationSummary
+        cachedRecoveredSkinTemperatureDeviationByDay =
+            snapshot.recoveredSkinTemperatureDeviationByDay
         cachedSessionBackupStatus = snapshot.sessionBackupStatus
         autoSleepLoggedBanner = snapshot.autoSleepLoggedBanner
         lastForegroundSleepAutoConfirmAt = snapshot.lastForegroundSleepAutoConfirmAt
@@ -12080,6 +12121,101 @@ final class SessionStore: ObservableObject {
         return deviations
     }
 
+    /// Recovered WHOOP rows are stored in all-day wear sessions, while sleep
+    /// confirmation is durable in `UserConfirmedSleep`. Join those two
+    /// authorities directly so a confirmed night does not lose valid
+    /// temperature merely because the containing session is not itself tagged
+    /// as a sleep-research session.
+    nonisolated static func finalizedSkinTemperatureDeviationByMorningDay(
+        points: [HistoricalArchive.SkinTemperatureRawPoint],
+        confirmedSleeps: [UserConfirmedSleep],
+        calendar: Calendar = .current
+    ) -> [Date: Double] {
+        guard !points.isEmpty, !confirmedSleeps.isEmpty else { return [:] }
+        let unknownDevice = "<unknown>"
+        func deviceKey(_ identifier: String?) -> String {
+            let normalized = identifier?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased() ?? ""
+            return normalized.isEmpty ? unknownDevice : normalized
+        }
+        let pointsByDevice = Dictionary(grouping: points) {
+            deviceKey($0.strapIdentifier)
+        }.mapValues { $0.sorted { $0.t < $1.t } }
+        let anchors = pointsByDevice.compactMapValues {
+            AtriaResearchProbe.whoop4SkinTemperatureAnchorRaw($0.map(\.raw))
+        }
+        guard !anchors.isEmpty else { return [:] }
+
+        func lowerBound(
+            _ values: [HistoricalArchive.SkinTemperatureRawPoint],
+            _ target: Date
+        ) -> Int {
+            var low = 0
+            var high = values.count
+            while low < high {
+                let middle = low + (high - low) / 2
+                if values[middle].t < target {
+                    low = middle + 1
+                } else {
+                    high = middle
+                }
+            }
+            return low
+        }
+
+        var temperatureByDay: [Date: (sum: Double, count: Int)] = [:]
+        for sleep in confirmedSleeps
+        where sleep.end > sleep.start
+            && !sleep.source.lowercased().contains("nap") {
+            let candidates = pointsByDevice.compactMap { key, values
+                -> (key: String, value: ArraySlice<HistoricalArchive.SkinTemperatureRawPoint>)? in
+                let start = lowerBound(values, sleep.start)
+                let end = lowerBound(values, sleep.end.addingTimeInterval(0.001))
+                guard end > start, anchors[key] != nil else { return nil }
+                return (key, values[start..<end])
+            }
+            guard let selected = candidates.sorted(by: {
+                if $0.value.count != $1.value.count {
+                    return $0.value.count > $1.value.count
+                }
+                return $0.key < $1.key
+            }).first,
+            let anchor = anchors[selected.key] else { continue }
+
+            let decoded = selected.value.compactMap {
+                AtriaResearchProbe.decodeWhoop4SkinTemperatureRaw(
+                    $0.raw,
+                    sameDeviceAnchorRaw: anchor
+                )
+            }.filter(\.isAggregationEligible)
+            guard !decoded.isEmpty else { continue }
+            let day = calendar.startOfDay(for: sleep.end)
+            var bucket = temperatureByDay[day] ?? (sum: 0, count: 0)
+            bucket.sum += decoded.reduce(0) { $0 + $1.celsius }
+            bucket.count += decoded.count
+            temperatureByDay[day] = bucket
+        }
+
+        let dayMeans = temperatureByDay.compactMap {
+            day, bucket -> (day: Date, meanCelsius: Double)? in
+            guard bucket.count > 0 else { return nil }
+            return (day, bucket.sum / Double(bucket.count))
+        }.sorted { $0.day < $1.day }
+        var deviations: [Date: Double] = [:]
+        var baselineMeanSum = 0.0
+        var baselineDayCount = 0
+        for dayMean in dayMeans {
+            if baselineDayCount >= 3 {
+                deviations[dayMean.day] =
+                    dayMean.meanCelsius - baselineMeanSum / Double(baselineDayCount)
+            }
+            baselineMeanSum += dayMean.meanCelsius
+            baselineDayCount += 1
+        }
+        return deviations
+    }
+
     nonisolated static func makeSavedDailyMetrics(rollups: [DailyRollup],
                                                           sleep: SleepHistorySnapshot,
                                                           baseline: PersonalBaseline,
@@ -12946,6 +13082,7 @@ final class SessionStore: ObservableObject {
         self.cachedBiologicalAgeWeeklySummary = nil
         self.cachedBiologicalAgeSignatureMemo = nil
         self.cachedSkinTemperatureDeviationSummary = nil
+        self.cachedRecoveredSkinTemperatureDeviationByDay = [:]
         self.lastLiveHRVCheckpointRefreshAt = Self.readLiveHRVCheckpointRefreshDate()
         self.pendingSleepReviewNightForUI = nil
         self.dailyRollupHistory = recoveryBlocked ? [] : dailyRollupStore.rollups(last: 400)
@@ -13079,6 +13216,7 @@ final class SessionStore: ObservableObject {
             cachedWeeklyPlanWeekStart = nil
             cachedWeeklyPlanValue = nil
             cachedSkinTemperatureDeviationSummary = nil
+            cachedRecoveredSkinTemperatureDeviationByDay = [:]
         }
         invalidateSleepReviewCache(reason: "system_timezone")
     }
@@ -13113,6 +13251,7 @@ final class SessionStore: ObservableObject {
         biologicalAgeRefreshGeneration &+= 1
         biologicalAgeSummaryRevision = 0
         cachedSkinTemperatureDeviationSummary = nil
+        cachedRecoveredSkinTemperatureDeviationByDay = [:]
     }
 
     #endif
