@@ -4328,7 +4328,8 @@ struct AtriaHomeView: View {
                     // chrome above it, so it takes no inset or gap of its own.
                     AtriaHomeRecoveryStatusHost(
                         coreLiveStore: model.coreLiveStore,
-                        maturityText: { store.baseline.restingBaselineMaturityQualifierText() }
+                        maturityText: { store.baseline.restingBaselineMaturityQualifierText() },
+                        hrvMaturityText: { store.baseline.hrvBaselineMaturityQualifierText() }
                     )
                     if showConnectivityPill {
                         connectivityPill
@@ -4525,6 +4526,11 @@ struct AtriaHomeView: View {
         /// maturing baseline reaches the banner without depending on a
         /// publisher hop from the session store.
         var maturityText: () -> String? = { nil }
+        /// HRV matures much more slowly than resting HR (sleep-window-only
+        /// qualification), so it gets its own paged card here — the value is
+        /// shown wherever it is computable and this row discloses how far the
+        /// calibration has to go.
+        var hrvMaturityText: () -> String? = { nil }
 
         /// Refresh the notice set periodically while keeping cards user-
         /// controlled: multiple notices are paged horizontally instead of
@@ -4603,6 +4609,11 @@ struct AtriaHomeView: View {
                 result.append(Status(title: maturity,
                                      symbol: "chart.line.uptrend.xyaxis",
                                      accessibilityLabel: "\(maturity). Estimates improve as the baseline fills in."))
+            }
+            if let hrvMaturity = hrvMaturityText() {
+                result.append(Status(title: hrvMaturity,
+                                     symbol: "waveform.path.ecg",
+                                     accessibilityLabel: "\(hrvMaturity). Recovery gains HRV evidence as calibration nights accumulate."))
             }
             return result
         }

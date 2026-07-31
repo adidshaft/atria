@@ -15241,6 +15241,12 @@ final class SessionStore: ObservableObject {
     }
 
     func generateWeeklyReportProductionFixtureFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
+        // DEBUG-only: this forges the maintenance clock (2026-07-13) and
+        // persists a weekly report under the forged ISO week. The sibling
+        // notification fixtures already stub to no-ops in Release; a shipped
+        // binary must have a compile-time barrier here too, not just the
+        // launch-argument gate.
+        #if DEBUG
         guard arguments.contains("--atria-test-weekly-report-production-maintenance") else { return }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current
@@ -15248,6 +15254,9 @@ final class SessionStore: ObservableObject {
         performBackgroundMaintenance(reason: "debug_forced_monday_background_maintenance",
                                      now: forcedMonday,
                                      calendar: calendar)
+        #else
+        _ = arguments
+        #endif
     }
 
     private func generateWeeklyReportIfNeeded(now: Date = Date(),
