@@ -1190,6 +1190,7 @@ final class AtriaPerfFixesTests: XCTestCase {
                                                                 maxHR: 190,
                                                                 now: now,
                                                                 skinTemperatureDeviationByDay: [day: preparedDeviation],
+                                                                skinTemperatureSourceValidated: false,
                                                                 calendar: calendar)
 
         XCTAssertNil(settled)
@@ -1202,6 +1203,7 @@ final class AtriaPerfFixesTests: XCTestCase {
                                                           maxHR: 190,
                                                           now: now,
                                                           skinTemperatureDeviationByDay: [day: preparedDeviation],
+                                                          skinTemperatureSourceValidated: false,
                                                           calendar: calendar)
 
         XCTAssertTrue(merged.isEmpty)
@@ -1300,7 +1302,7 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertEqual(merged.strapStepResearchCount, 123)
         XCTAssertEqual(merged.strapStepResearchState, "r10_live_preliminary")
         XCTAssertFalse(AtriaResearchProbe.validatedSpO2DecoderAvailable)
-        XCTAssertFalse(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
+        XCTAssertTrue(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
     }
 
     func testAuthoritativeDeletedHistoricalDayDoesNotRestoreStaleMetric() {
@@ -1369,6 +1371,37 @@ final class AtriaPerfFixesTests: XCTestCase {
                                                           calendar: calendar)
 
         XCTAssertTrue(merged.isEmpty)
+    }
+
+    func testRecoveredSkinTemperatureRequiresDenseSameDeviceAnchorAndStoresMinuteMeans() throws {
+        let session = canonicalCacheSession(startOffset: 0, pointCount: 4)
+        let points = (0..<120).map { index in
+            HistoricalArchive.SkinTemperatureRawPoint(
+                t: session.start.addingTimeInterval(TimeInterval(index)),
+                raw: index < 60 ? 900 : 920,
+                strapIdentifier: "strap-a"
+            )
+        }
+
+        let attached = SessionStore.attachRecoveredSkinTemperature(points, to: [session])
+
+        XCTAssertEqual(attached.first?.skinTempResearchCandidateValueCount, 120)
+        XCTAssertEqual(attached.first?.decodedSkinTemperatureCelsius?.count, 2)
+        let decoded = try XCTUnwrap(attached.first?.decodedSkinTemperatureCelsius)
+        XCTAssertEqual(try XCTUnwrap(decoded.first).celsius,
+                       32.5,
+                       accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(decoded.last).celsius,
+                       33.5,
+                       accuracy: 1e-9)
+        XCTAssertTrue(attached.first?.decodedSkinTemperatureCelsius?
+            .allSatisfy(\.isAggregationEligible) == true)
+
+        let sparse = SessionStore.attachRecoveredSkinTemperature(
+            Array(points.prefix(99)),
+            to: [session]
+        )
+        XCTAssertNil(sparse.first?.decodedSkinTemperatureCelsius)
     }
 
     private func canonicalCacheSession(id: UUID = UUID(),

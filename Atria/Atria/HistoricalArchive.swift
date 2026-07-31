@@ -221,25 +221,30 @@ enum HistoricalArchive {
         static let production = RecoveredProjectionBudget(
             maximumHeartRatePoints: 1_500_000,
             maximumRRRecords: 250_000,
+            maximumSkinTemperaturePoints: 1_500_000,
             maximumGravitySamples: 750_000,
             maximumMotionReplayIdentities: 750_000
         )
 
         let maximumHeartRatePoints: Int
         let maximumRRRecords: Int
+        let maximumSkinTemperaturePoints: Int
         let maximumGravitySamples: Int
         let maximumMotionReplayIdentities: Int
 
         init(maximumHeartRatePoints: Int,
              maximumRRRecords: Int,
+             maximumSkinTemperaturePoints: Int = 1_500_000,
              maximumGravitySamples: Int,
              maximumMotionReplayIdentities: Int) {
             precondition(maximumHeartRatePoints > 0)
             precondition(maximumRRRecords > 0)
+            precondition(maximumSkinTemperaturePoints > 0)
             precondition(maximumGravitySamples > 0)
             precondition(maximumMotionReplayIdentities > 0)
             self.maximumHeartRatePoints = maximumHeartRatePoints
             self.maximumRRRecords = maximumRRRecords
+            self.maximumSkinTemperaturePoints = maximumSkinTemperaturePoints
             self.maximumGravitySamples = maximumGravitySamples
             self.maximumMotionReplayIdentities = maximumMotionReplayIdentities
         }
@@ -249,6 +254,7 @@ enum HistoricalArchive {
         enum Channel: String, Equatable, Hashable, Sendable {
             case heartRate = "heart_rate"
             case rrRecords = "rr_records"
+            case skinTemperature = "skin_temperature"
             case gravity = "gravity"
             case motionReplayIdentity = "motion_replay_identity"
         }
@@ -277,6 +283,7 @@ enum HistoricalArchive {
     struct RecoveredDataSnapshot {
         let heartRatePoints: [HeartRatePoint]
         let rrRecords: [Record]
+        let skinTemperatureRawPoints: [SkinTemperatureRawPoint]
         let motion: MotionArchiveSnapshot
         let scan: RecoveredArchiveScanDiagnostics
         /// Truthful completeness across every decoded channel. This must not
@@ -286,6 +293,7 @@ enum HistoricalArchive {
         /// exhaustion cannot discard fully scanned HR/RR, while either HR or RR
         /// exhaustion still withholds physiology as a unit.
         let physiologyCompleteness: RecoveredDataCompleteness
+        let skinTemperatureCompleteness: RecoveredDataCompleteness
         /// Every exhausted channel in deterministic order, retaining the exact
         /// bound that caused partial publication.
         let budgetLimitations: [RecoveredDataBudgetLimitation]
@@ -324,6 +332,12 @@ enum HistoricalArchive {
     struct HeartRatePoint: Equatable, Sendable {
         let t: Date
         let bpm: Int
+    }
+
+    struct SkinTemperatureRawPoint: Equatable, Sendable {
+        let t: Date
+        let raw: Int
+        let strapIdentifier: String?
     }
 
     struct HeartRateWindowRead: Equatable, Sendable {
@@ -3290,11 +3304,13 @@ enum HistoricalArchive {
         let coveredSince = cutoff
         var heartRate = reusableCache?.heartRatePoints ?? []
         var rrRecords = reusableCache?.rrRecords ?? []
+        var skinTemperatureRawPoints = reusableCache?.skinTemperatureRawPoints ?? []
         var gravity = reusableCache?.gravitySamples ?? []
         var motionRecordIdentities = reusableCache?.motionRecordIdentities ?? []
         var limitations = recoveredBudgetLimitations(
             heartRateCount: heartRate.count,
             rrRecordCount: rrRecords.count,
+            skinTemperatureCount: skinTemperatureRawPoints.count,
             gravityCount: gravity.count,
             motionIdentityCount: motionRecordIdentities.count,
             budget: budget
@@ -3309,6 +3325,7 @@ enum HistoricalArchive {
         if case .rebuild = plan {
             heartRate.removeAll(keepingCapacity: true)
             rrRecords.removeAll(keepingCapacity: true)
+            skinTemperatureRawPoints.removeAll(keepingCapacity: true)
             gravity.removeAll(keepingCapacity: true)
             motionRecordIdentities.removeAll(keepingCapacity: true)
         }
@@ -3326,11 +3343,13 @@ enum HistoricalArchive {
                                   limitations: &limitations,
                                   heartRate: &heartRate,
                                   rrRecords: &rrRecords,
+                                  skinTemperatureRawPoints: &skinTemperatureRawPoints,
                                   gravity: &gravity,
                                   motionRecordIdentities: &motionRecordIdentities)
         }
         sortRecoveredData(heartRate: &heartRate,
                           rrRecords: &rrRecords,
+                          skinTemperatureRawPoints: &skinTemperatureRawPoints,
                           gravity: &gravity)
 
         var fileStates: [String: AtriaHistoricalJSONLRecentScanner.FileState]
@@ -3345,6 +3364,7 @@ enum HistoricalArchive {
                                        fileStates: fileStates,
                                        heartRatePoints: heartRate,
                                        rrRecords: rrRecords,
+                                       skinTemperatureRawPoints: skinTemperatureRawPoints,
                                        gravitySamples: gravity,
                                        motionRecordIdentities: motionRecordIdentities)
         if scanResult.complete, limitations.isEmpty {
@@ -3373,6 +3393,7 @@ enum HistoricalArchive {
         limitations: inout [RecoveredDataCompleteness.Channel: Int],
         heartRate: inout [HeartRatePoint],
         rrRecords: inout [Record],
+        skinTemperatureRawPoints: inout [SkinTemperatureRawPoint],
         gravity: inout [GravitySample],
         motionRecordIdentities: inout Set<AtriaRecoveredMotionReplayIdentity>
     ) {
@@ -3403,6 +3424,18 @@ enum HistoricalArchive {
               metricLayoutValidated(record.layoutVersion),
               record.clockCorrectionStatus == "clock_ref_present",
               record.clockCorrectedUnix7 != nil else { return }
+        if let raw = whoop4SkinTemperatureRaw(from: record),
+           limitations[.skinTemperature] == nil {
+            if skinTemperatureRawPoints.count >= budget.maximumSkinTemperaturePoints {
+                limitations[.skinTemperature] = budget.maximumSkinTemperaturePoints
+            } else {
+                skinTemperatureRawPoints.append(.init(
+                    t: Date(timeIntervalSince1970: timestamp),
+                    raw: raw,
+                    strapIdentifier: record.strapIdentifier
+                ))
+            }
+        }
         if (35...240).contains(record.whoofHR17) {
             if limitations[.heartRate] == nil {
                 if heartRate.count >= budget.maximumHeartRatePoints {
@@ -3427,6 +3460,7 @@ enum HistoricalArchive {
     private static func sortRecoveredData(
         heartRate: inout [HeartRatePoint],
         rrRecords: inout [Record],
+        skinTemperatureRawPoints: inout [SkinTemperatureRawPoint],
         gravity: inout [GravitySample]
     ) {
         heartRate.sort {
@@ -3440,10 +3474,30 @@ enum HistoricalArchive {
             if $0.subsec11 != $1.subsec11 { return $0.subsec11 < $1.subsec11 }
             return $0.flash13 < $1.flash13
         }
+        skinTemperatureRawPoints.sort { $0.t < $1.t }
         gravity.sort {
             if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
             return $0.sequence < $1.sequence
         }
+    }
+
+    private static func whoop4SkinTemperatureRaw(from record: Record) -> Int? {
+        guard record.layoutVersion == layoutVersion(for: 24),
+              record.gravityValidated,
+              let payload = bytes(fromHex: record.rawPayloadHex),
+              payload.count > AtriaResearchProbe.whoop4SkinTemperatureRawOffset + 1,
+              payload[0] == 0x2f,
+              payload[1] == 24 else { return nil }
+        // Frame-absolute skin-contact offset 55 maps to payload-relative 51.
+        // A non-zero contact byte is necessary but not sufficient; the ADC
+        // range below also excludes the observed doff floor and saturation.
+        guard payload.count > 51, payload[51] != 0 else { return nil }
+        let offset = AtriaResearchProbe.whoop4SkinTemperatureRawOffset
+        let raw = Int(UInt16(payload[offset]) | (UInt16(payload[offset + 1]) << 8))
+        guard AtriaResearchProbe.whoop4SkinTemperatureWornRawRange.contains(raw) else {
+            return nil
+        }
+        return raw
     }
 
     private static func prunedRecoveredCache(
@@ -3461,6 +3515,9 @@ enum HistoricalArchive {
                 let unix = $0.clockCorrectedUnix7 ?? $0.unix7
                 return TimeInterval(unix) + TimeInterval($0.subsec11) / 32_768 >= cutoff
             },
+            skinTemperatureRawPoints: cache.skinTemperatureRawPoints.filter {
+                $0.t.timeIntervalSince1970 >= cutoff
+            },
             gravitySamples: cache.gravitySamples.filter { $0.timestamp >= cutoff },
             motionRecordIdentities: Set(cache.motionRecordIdentities.filter {
                 $0.projectedTimestamp >= cutoff
@@ -3469,7 +3526,7 @@ enum HistoricalArchive {
     }
 
     private static let recoveredBudgetChannelOrder: [RecoveredDataCompleteness.Channel] = [
-        .heartRate, .rrRecords, .gravity, .motionReplayIdentity
+        .heartRate, .rrRecords, .skinTemperature, .gravity, .motionReplayIdentity
     ]
 
     private static func recoveredBudgetLimitations(
@@ -3478,6 +3535,7 @@ enum HistoricalArchive {
     ) -> [RecoveredDataCompleteness.Channel: Int] {
         recoveredBudgetLimitations(heartRateCount: cache.heartRatePoints.count,
                                    rrRecordCount: cache.rrRecords.count,
+                                   skinTemperatureCount: cache.skinTemperatureRawPoints.count,
                                    gravityCount: cache.gravitySamples.count,
                                    motionIdentityCount: cache.motionRecordIdentities.count,
                                    budget: budget)
@@ -3486,6 +3544,7 @@ enum HistoricalArchive {
     private static func recoveredBudgetLimitations(
         heartRateCount: Int,
         rrRecordCount: Int,
+        skinTemperatureCount: Int,
         gravityCount: Int,
         motionIdentityCount: Int,
         budget: RecoveredProjectionBudget
@@ -3496,6 +3555,9 @@ enum HistoricalArchive {
         }
         if rrRecordCount > budget.maximumRRRecords {
             limitations[.rrRecords] = budget.maximumRRRecords
+        }
+        if skinTemperatureCount > budget.maximumSkinTemperaturePoints {
+            limitations[.skinTemperature] = budget.maximumSkinTemperaturePoints
         }
         if gravityCount > budget.maximumGravitySamples {
             limitations[.gravity] = budget.maximumGravitySamples
@@ -3535,6 +3597,7 @@ enum HistoricalArchive {
         )
         return .init(heartRatePoints: cache.heartRatePoints,
                      rrRecords: cache.rrRecords,
+                     skinTemperatureRawPoints: cache.skinTemperatureRawPoints,
                      motion: .init(samples: cache.gravitySamples,
                                    completeness: motionCompleteness),
                      scan: scan,
@@ -3542,6 +3605,10 @@ enum HistoricalArchive {
                      physiologyCompleteness: recoveredCompleteness(
                         limitations: limitations,
                         channels: [.heartRate, .rrRecords]
+                     ),
+                     skinTemperatureCompleteness: recoveredCompleteness(
+                        limitations: limitations,
+                        channels: [.skinTemperature]
                      ),
                      budgetLimitations: orderedLimitations)
     }
@@ -3559,6 +3626,7 @@ enum HistoricalArchive {
         let cutoff = since.timeIntervalSince1970
         var heartRate: [HeartRatePoint] = []
         var rrRecords: [Record] = []
+        var skinTemperatureRawPoints: [SkinTemperatureRawPoint] = []
         var gravity: [GravitySample] = []
         var motionRecordIdentities = Set<AtriaRecoveredMotionReplayIdentity>()
         var limitations: [RecoveredDataCompleteness.Channel: Int] = [:]
@@ -3569,17 +3637,20 @@ enum HistoricalArchive {
                                   limitations: &limitations,
                                   heartRate: &heartRate,
                                   rrRecords: &rrRecords,
+                                  skinTemperatureRawPoints: &skinTemperatureRawPoints,
                                   gravity: &gravity,
                                   motionRecordIdentities: &motionRecordIdentities)
         }
         sortRecoveredData(heartRate: &heartRate,
                           rrRecords: &rrRecords,
+                          skinTemperatureRawPoints: &skinTemperatureRawPoints,
                           gravity: &gravity)
         let cache = RecoveredDataCache(coveredSince: cutoff,
                                        budget: budget,
                                        fileStates: [:],
                                        heartRatePoints: heartRate,
                                        rrRecords: rrRecords,
+                                       skinTemperatureRawPoints: skinTemperatureRawPoints,
                                        gravitySamples: gravity,
                                        motionRecordIdentities: motionRecordIdentities)
         return recoveredSnapshot(
@@ -4660,6 +4731,7 @@ enum HistoricalArchive {
         let fileStates: [String: AtriaHistoricalJSONLRecentScanner.FileState]
         let heartRatePoints: [HeartRatePoint]
         let rrRecords: [Record]
+        let skinTemperatureRawPoints: [SkinTemperatureRawPoint]
         let gravitySamples: [GravitySample]
         let motionRecordIdentities: Set<AtriaRecoveredMotionReplayIdentity>
     }

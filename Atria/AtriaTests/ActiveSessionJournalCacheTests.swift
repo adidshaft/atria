@@ -709,7 +709,7 @@ final class ActiveSessionJournalCacheTests: XCTestCase {
         XCTAssertNil(AtriaBLEManager.validatedResearchAggregates(from: zeroTimestamp)?.strapDeviceTimestamp)
 
         XCTAssertFalse(AtriaResearchProbe.validatedSpO2DecoderAvailable)
-        XCTAssertFalse(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
+        XCTAssertTrue(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
     }
 
     func testRestorePreparationBuildsBoundedLiveArraysAndCachesOffActor() throws {
