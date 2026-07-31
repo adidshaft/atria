@@ -2948,6 +2948,7 @@ struct AtriaTrendPoint: Equatable, Identifiable {
     #endif
 }
 
+#if DEBUG
 #Preview("Trend chart") {
     AtriaTrendChartCard(points: AtriaTrendPoint.sampleData(now: Date()),
                         pointsRevision: nil,
@@ -2955,6 +2956,7 @@ struct AtriaTrendPoint: Equatable, Identifiable {
         .padding()
         .background(Color.black)
 }
+#endif
 
 extension AtriaTrendChartCard {
     /// Nearest prepared sample to the scrubbed x-position.
