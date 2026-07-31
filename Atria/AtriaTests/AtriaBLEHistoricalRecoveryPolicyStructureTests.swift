@@ -861,8 +861,17 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         let finalizer = String(manager[finalizerStart..<finalizerEnd])
         XCTAssertTrue(finalizer.contains("offlineHistoricalSyncReachedTerminal"))
         XCTAssertTrue(finalizer.contains("OfflineSyncDefaults.noRowsGapFingerprint"))
-        XCTAssertTrue(finalizer.contains("!noRowsForDurableGap"),
-                      "a no-rows result must not schedule an automatic reentry")
+        // 2026-07-31: 0f30390c moved the no-rows reentry guard into the typed
+        // policy below; pin the finalizer's use of it plus the policy's own
+        // `!noRowsForDurableGap` term instead of the old inline literal.
+        XCTAssertTrue(finalizer.contains(
+            "Self.shouldRetryUnresolvedRangeLossAfterTerminal("
+        ), "a no-rows result must not schedule an automatic reentry")
+        XCTAssertTrue(finalizer.contains(
+            "noRowsForDurableGap: noRowsForDurableGap"
+        ), "the finalizer must feed the durable no-rows fact into the policy")
+        XCTAssertTrue(manager.contains("&& !noRowsForDurableGap"),
+                      "the retry policy itself must veto no-rows reentry")
         XCTAssertTrue(finalizer.contains(
             "OfflineSyncDefaults.historyStartTimeoutGapFingerprint"
         ), "successful coverage must release only the matching timeout circuit")

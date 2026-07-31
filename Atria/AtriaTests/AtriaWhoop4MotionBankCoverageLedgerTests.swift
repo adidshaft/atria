@@ -924,16 +924,30 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
         )
     }
 
-    func testBackgroundMotionBankGetsOneAttemptButNoRetryLoop() {
+    func testBackgroundMotionBankRetriesStayBoundedByExhaustCap() {
         XCTAssertTrue(
             AtriaBLEManager.historicalMotionBankTicketAttemptEligible(
                 attempts: 0,
                 applicationIsActive: false
             )
         )
-        XCTAssertFalse(
+        // 2026-07-31: locked-overnight phones must be able to credit banked
+        // coverage; retries below the exhaust cap run in background too.
+        XCTAssertTrue(
             AtriaBLEManager.historicalMotionBankTicketAttemptEligible(
                 attempts: 1,
+                applicationIsActive: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.historicalMotionBankTicketAttemptEligible(
+                attempts: 3,
+                applicationIsActive: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.historicalMotionBankTicketAttemptEligible(
+                attempts: 4,
                 applicationIsActive: false
             )
         )

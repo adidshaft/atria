@@ -120,6 +120,18 @@ private final class PowerThermalGovernor {
         mode == .serious || mode == .critical
     }
 
+    /// True only under genuine device heat. `mode` deliberately maps Low
+    /// Power Mode to `.serious` so analysis cadence slows on a draining
+    /// battery, but LPM is a user battery preference, not thermal danger:
+    /// an overnight phone left in Low Power Mode must still be allowed to
+    /// admit the durable history drain that credits its banked coverage.
+    /// The 2026-07-28 locked-phone strand proof concerned real `.serious`
+    /// heat and remains honored by callers using this property.
+    var shouldDeferDurableHistoryAdmissionForHeat: Bool {
+        let thermal = ProcessInfo.processInfo.thermalState
+        return thermal == .serious || thermal == .critical
+    }
+
     private func refresh(notify: Bool) {
         let next = Self.mode(thermalState: ProcessInfo.processInfo.thermalState,
                              lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled)
@@ -1412,6 +1424,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// synchronous/MainActor-scoped, so it cannot suppress a later ordinary
     /// terminal publication retry.
     private var terminalMaterializationMotionBankReleaseInProgress = false
+    /// Transport generation whose terminal consumer materialization lanes were
+    /// deferred because the drain reached terminal while backgrounded. The
+    /// journals and authority those lanes consume are already durable; only
+    /// the CPU-heavy local projection waits for an active foreground. If the
+    /// process dies first, the existing durable-authority resume and
+    /// crash-reconciliation paths cover the same work.
+    private var deferredTerminalMaterializationTransportGeneration: UInt64?
     /// Last compact decision record for the persisted-drain recovery bridge.
     /// This is intentionally state-change-only (not per-HR) so field
     /// diagnostics can identify a parked recovery without growing storage.
@@ -1772,6 +1791,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// window; disconnect callbacks still interrupt immediately.
     private var offlineHistoricalSyncLastProgressUptime: TimeInterval?
     private let offlineHistoricalSyncIdleTimeout: TimeInterval = 30 * 60
+    /// The 30-minute window above is justified only after the strap has
+    /// acknowledged the drain with HISTORY_START: physical WHOOP 4 serves the
+    /// first row up to ~1,100 s later. Before that acknowledgment the
+    /// generation owns transport speculatively — while it holds ownership,
+    /// 0x69 bank arming and the R10 step lease stay suspended, so a request
+    /// the strap never answers must fail closed quickly instead of parking
+    /// all-day capture for the full silent window. 2026-07-31 physical
+    /// evidence: one wedged pre-start generation kept capture disabled
+    /// 13:27→14:24 IST.
+    private let offlineHistoricalSyncPreStartIdleTimeout: TimeInterval = 180
+    private var offlineHistoricalSyncHistoryStartObserved = false
     private let offlineHistoricalSyncWatchdogPollInterval: TimeInterval = 15
     private var protocolPacketCount = 0
     private var protocolIMUFrameCount = 0
@@ -2496,12 +2526,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// as missing coverage while allowing the next factual bank to open.
     nonisolated static let workoutHistoricalMotionBankMaximumOffloadAttempts = 4
     /// Exact-window motion-bank jobs are maintenance hints, not permission to
-    /// disable present capture indefinitely. Six hours leaves ample time for
-    /// ordinary reconnect/history recovery, while bounding a restored legacy
-    /// queue that could otherwise take days to cycle. The ledger retains every
-    /// stale interval as missing coverage after its retry job is retired.
+    /// disable present capture indefinitely. The ledger retains every stale
+    /// interval as missing coverage after its retry job is retired.
+    ///
+    /// Six hours proved too aggressive for real wear: a phone that stays
+    /// locked through a workday plus a night exhausted its tickets before the
+    /// first drain opportunity, permanently forfeiting seconds the strap
+    /// still held. Thirty-six hours spans a full locked day-and-night while
+    /// still bounding a restored legacy queue; present capture no longer
+    /// depends on this bound because arming trusts the durable reservation.
     nonisolated static let workoutHistoricalMotionBankMaximumBlockingAge:
-        TimeInterval = 6 * 60 * 60
+        TimeInterval = 36 * 60 * 60
     private var workoutHistoricalMotionBankDailyCheckpointInterval:
         TimeInterval {
 #if DEBUG
@@ -4674,9 +4709,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         #endif
         restoreStrapStepLedgerAtLaunch()
-        _ = reconcileConsumedHistoricalTerminalPublicationIfNeeded(
-            reason: "ble_manager_init"
-        )
+        // A CoreBluetooth restoration relaunch is CPU-budgeted background
+        // time; the crash-resume re-verification below re-hashes the sealed
+        // five-artifact set and has produced cpu_resource_fatal terminations
+        // when it consumed that budget. The pending job is durable: it is
+        // reconciled again before the next history generation arms, or on the
+        // next genuinely active launch.
+        if UIApplication.shared.applicationState == .active {
+            _ = reconcileConsumedHistoricalTerminalPublicationIfNeeded(
+                reason: "ble_manager_init"
+            )
+        }
     }
 
 #if DEBUG
@@ -6130,6 +6173,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
         scheduleStaleArmedRangeLossBackfillReconciliation(reason: "scene_active")
+        resumeDeferredTerminalConsumerMaterializationIfNeeded(
+            reason: "scene_active"
+        )
+        _ = reconcileConsumedHistoricalTerminalPublicationIfNeeded(
+            reason: "scene_active"
+        )
         resumeForegroundScanIfNeeded(reason: "scene_active")
         restoreActiveSessionJournalIfNeeded(reason: "scene_active_foreground")
         // Arm the silent-link safety net whenever we are foreground + long-wear,
@@ -8420,8 +8469,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // stranded the transport before its first stream-5 frame. Preserve the
         // durable request and live radio until pressure recovers. Never abort a
         // transaction already in progress here.
+        //
+        // Genuine heat only: the governor's mode also flags Low Power Mode as
+        // `.serious`, which silently parked every overnight drain whenever the
+        // user toggled LPM — banked coverage then waited for a morning unlock.
         if Self.shouldDeferAutomaticOfflineSyncForThermalPressure(
-            thermalPressure: powerThermalGovernor.shouldDeferNonEssentialAnalysis,
+            thermalPressure:
+                powerThermalGovernor.shouldDeferDurableHistoryAdmissionForHeat,
             explicitUserRequest: explicitUserRequest || explicitResearchRequest
         ), !offlineHistoricalSyncInProgress {
             retainPendingOfflineHistoricalSyncRequest(
@@ -10955,6 +11009,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             usesExplicitHistoryProfile: explicitRequest
         )
         offlineHistoricalSyncInProgress = true
+        offlineHistoricalSyncHistoryStartObserved = false
         markActiveWorkoutHistoricalMotionBankAttemptForStartedGeneration(
             at: attemptAt,
             generation: syncGeneration
@@ -11553,6 +11608,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             historicalPageContinuationGeneration = nil
             historicalPageContinuationBoundaryID = nil
             historicalPageContinuationHasFutureAttempt = false
+            // Strap history payload proves the drain actually started; only
+            // then is the long post-start silent window justified.
+            offlineHistoricalSyncHistoryStartObserved = true
         }
         offlineHistoricalSyncLastProgressUptime = ProcessInfo.processInfo.systemUptime
         if reason != "historical_frame" {
@@ -11583,7 +11641,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               Self.historicalSyncHasStalled(
                 lastProgressUptime: lastProgress,
                 nowUptime: nowUptime,
-                idleTimeout: offlineHistoricalSyncIdleTimeout
+                idleTimeout: offlineHistoricalSyncHistoryStartObserved
+                    ? offlineHistoricalSyncIdleTimeout
+                    : offlineHistoricalSyncPreStartIdleTimeout
               ),
               let stalledPeripheral = peripheral,
               stalledPeripheral.state == .connected else { return }
@@ -11744,7 +11804,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 guard Self.historicalSyncHasStalled(
                     lastProgressUptime: self.offlineHistoricalSyncLastProgressUptime,
                     nowUptime: now,
-                    idleTimeout: self.offlineHistoricalSyncIdleTimeout
+                    idleTimeout: self.offlineHistoricalSyncHistoryStartObserved
+                        ? self.offlineHistoricalSyncIdleTimeout
+                        : self.offlineHistoricalSyncPreStartIdleTimeout
                 ) else { continue }
                 let idle = self.offlineHistoricalSyncLastProgressUptime.map {
                     max(0, now - $0)
@@ -12325,13 +12387,32 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 || activeHistoricalRequestBinding?.transportGeneration == generation {
                 historicalConsumerReceiptRequiredGenerations.insert(generation)
             }
-            scheduleFullDrainConsumerMaterialization(transportGeneration: generation)
-            schedulePendingConsumerFollowupScanMaterialization(
-                transportGeneration: generation
-            )
-            scheduleTerminalConsumerMaterializationIfAuthorized(
-                transportGeneration: generation
-            )
+            // With background ticket retries enabled, drains now routinely
+            // reach terminal on a locked phone. The three lanes below run
+            // whole-archive projections on `historicalArchiveQueue`; in plain
+            // background that CPU profile is the documented
+            // `cpu_resource_fatal` watchdog signature. Every input is already
+            // fsynced, so defer only the local projection to the next active
+            // foreground.
+            if UIApplication.shared.applicationState == .active {
+                scheduleFullDrainConsumerMaterialization(transportGeneration: generation)
+                schedulePendingConsumerFollowupScanMaterialization(
+                    transportGeneration: generation
+                )
+                scheduleTerminalConsumerMaterializationIfAuthorized(
+                    transportGeneration: generation
+                )
+            } else {
+                deferredTerminalMaterializationTransportGeneration = generation
+                UserDefaults.standard.set(
+                    "terminal_consumer_materialization_deferred_foreground",
+                    forKey: OfflineSyncDefaults.lastStatus
+                )
+                AtriaDebugLog(
+                    "ATRIADBG historical_full_drain_publish status=deferred generation=%llu reason=background_terminal_cpu_budget action=materialize_on_active_foreground",
+                    generation
+                )
+            }
         }
         if Self.shouldRetryUnresolvedRangeLossAfterTerminal(
             rangeLossResolved: rangeLossResolved,
@@ -12386,6 +12467,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             reason: "offline_sync_terminal_\(reason)"
         )
         onHistoricalTransportOwnershipReleased?("offline_sync_terminal_\(reason)")
+    }
+
+    /// Runs the terminal consumer materialization lanes that a
+    /// background-terminal drain deferred. Each lane revalidates its own
+    /// durable authority/journal and no-ops if a newer generation superseded
+    /// the deferred one, so replaying all three here is safe.
+    private func resumeDeferredTerminalConsumerMaterializationIfNeeded(
+        reason: String
+    ) {
+        guard let generation =
+                deferredTerminalMaterializationTransportGeneration else { return }
+        deferredTerminalMaterializationTransportGeneration = nil
+        AtriaDebugLog(
+            "ATRIADBG historical_full_drain_publish status=resuming_deferred_terminal_materialization generation=%llu reason=%@",
+            generation,
+            reason
+        )
+        scheduleFullDrainConsumerMaterialization(transportGeneration: generation)
+        schedulePendingConsumerFollowupScanMaterialization(
+            transportGeneration: generation
+        )
+        scheduleTerminalConsumerMaterializationIfAuthorized(
+            transportGeneration: generation
+        )
     }
 
     /// Emits only read-only per-gap coverage evidence at a history
@@ -22191,12 +22296,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // remains durable for the next maintenance boundary, while keeping
         // 0x69 disabled would lose every new all-day second for work that is
         // not currently using the radio.
+        //
+        // The reservation is durable on purpose. Requiring it to postdate the
+        // current process launch parked capture after every relaunch until a
+        // full re-reservation cycle could run — 2026-07-31 physical evidence:
+        // the 13:45 IST relaunch left `enabled=false, prearmRequested=true`
+        // for 57 minutes while a launch-time history generation held
+        // transport. A post-close reservation from an earlier process is the
+        // same fact: this exact ticket already received its transport chance.
         let firstAttemptTransportDeferred =
             selectedPendingOffload?.attempts == 0
                 && bound?.id == selectedPendingOffload?.id
                 && lastStartedAt.map {
                     $0 >= (selectedPendingOffload?.end ?? .distantFuture)
-                        && $0 >= processLaunchStartedAt
                 } == true
         if let selectedPendingOffload,
            !manualWorkoutActive,
@@ -22796,7 +22908,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         attempts: Int,
         applicationIsActive: Bool
     ) -> Bool {
-        attempts == 0 || applicationIsActive
+        // Bounded background retries. Retries are already fenced by the
+        // maintenance-window rule, the fifteen-minute offload cadence, the
+        // per-attempt delay ladder and the exhaust cap, so a locked phone
+        // performs at most one bounded retry per checkpoint boundary.
+        // Requiring foreground on top of those fences meant an overnight
+        // phone could never credit its banked coverage: every ticket waited
+        // for a morning unlock while its data sat drained-ready on the strap.
+        applicationIsActive
+            || attempts < workoutHistoricalMotionBankMaximumOffloadAttempts
     }
 
     nonisolated static func shouldGracefullyExhaustHistoricalMotionBankOffload(
