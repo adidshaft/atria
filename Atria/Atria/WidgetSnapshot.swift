@@ -505,7 +505,7 @@ enum WidgetSnapshotPublisher {
                 + Double(ble.session.count),
             dayElapsedSeconds: now.timeIntervalSince(savedAggregate.day)
         )
-        var strainConfidence = AtriaHomeModel.strainConfidence(
+        let baseStrainConfidence = AtriaHomeModel.strainConfidence(
             hasRestingHeartRateEvidence: rest != nil,
             maxHRSource: store.profile.maxHRSource,
             hasLoadEvidence:
@@ -514,14 +514,18 @@ enum WidgetSnapshotPublisher {
             maxHR: store.profile.maxHR,
             wearCoverageFraction: wearCoverage
         )
-        if AtriaWorkoutMetricPresentation.cycleStrainIsIncomplete(
+        let strainPresentation = Metrics.StrainPresentation.resolve(
+            value: strain,
+            coverageFraction: wearCoverage,
+            baseConfidence: baseStrainConfidence,
+            additionalIncompleteEvidence: AtriaWorkoutMetricPresentation.cycleStrainIsIncomplete(
                 start: physiologicalCycle.start,
                 end: now,
                 strain: strain,
                 workouts: store.confirmedWorkouts
-           ), !strainConfidence.localizedCaseInsensitiveContains("partial") {
-            strainConfidence += " · partial sparse HR"
-        }
+            )
+        )
+        let strainConfidence = strainPresentation.confidence
         let strainIsCredible =
             !strainConfidence.localizedCaseInsensitiveContains("learning")
                 && !strainConfidence.localizedCaseInsensitiveContains("standby")
@@ -529,9 +533,7 @@ enum WidgetSnapshotPublisher {
             strainConfidence.localizedCaseInsensitiveContains("partial")
         let strainDetail: String? = strainIsCredible
             ? (strainIsPartial
-                ? wearCoverage.map {
-                    "Partial · \(Int(($0 * 100).rounded()))% wear"
-                } ?? "Partial · sparse HR"
+                ? strainPresentation.coverageText ?? "Partial · sparse HR"
                 : "Current cycle")
             : nil
         let strapStepsToday = AtriaHomeModel.mergedStrapStepResearchCount(

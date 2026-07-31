@@ -8382,6 +8382,8 @@ private struct AtriaMetricDetailPreparationInput: Equatable, Sendable {
         let sleepSeconds: TimeInterval?
         let sleepPerformance: Int?
         let strain: Double?
+        let strainCoverageFraction: Double?
+        let strainEvidenceQuality: Metrics.StrainEvidenceQuality?
         let respiratoryRate: Double?
         let fitnessAgeDelta: Int?
 
@@ -8393,6 +8395,8 @@ private struct AtriaMetricDetailPreparationInput: Equatable, Sendable {
             sleepSeconds = entry.sleepSeconds
             sleepPerformance = entry.sleepPerformance
             strain = entry.strain
+            strainCoverageFraction = entry.strainCoverageFraction
+            strainEvidenceQuality = entry.strainEvidenceQuality
             respiratoryRate = entry.respiratoryRate
             fitnessAgeDelta = entry.fitnessAgeDelta
         }
@@ -12885,17 +12889,25 @@ private struct AtriaPreparedMetricHistory: Sendable {
             sleepComparisonByRange[range] = AtriaDetailComparisonSummary(current: sleepPoints, prior: priorSleepPoints, unit: "h")
 
             let strainPoints: [AtriaDetailChartPoint] = filtered.compactMap { item in
-                item.strain.map { AtriaDetailChartPoint(day: item.day, value: $0, tint: Metrics.electricStrain) }
+                guard item.strainEvidenceQuality == .exact else { return nil }
+                return item.strain.map {
+                    AtriaDetailChartPoint(day: item.day, value: $0, tint: Metrics.electricStrain)
+                }
             }
             let priorStrainPoints: [AtriaDetailChartPoint] = priorFiltered.compactMap { item in
-                item.strain.map { AtriaDetailChartPoint(day: item.day, value: $0, tint: Metrics.electricStrain) }
+                guard item.strainEvidenceQuality == .exact else { return nil }
+                return item.strain.map {
+                    AtriaDetailChartPoint(day: item.day, value: $0, tint: Metrics.electricStrain)
+                }
             }
             strainByRange[range] = Self.bucketedForDisplay(strainPoints, range: range, calendar: calendar)
             strainRawByRange[range] = strainPoints
             strainPriorByRange[range] = Self.ghostSeries(priorStrainPoints, range: range, calendar: calendar)
             strainSummaryByRange[range] = AtriaDetailPeriodSummary(points: strainPoints, unit: "")
             strainComparisonByRange[range] = AtriaDetailComparisonSummary(current: strainPoints, prior: priorStrainPoints, unit: "")
-            latestStrainByRange[range] = filtered.last?.strain
+            latestStrainByRange[range] = filtered.last(where: {
+                $0.strainEvidenceQuality == .exact
+            })?.strain
 
             let sleepPerformancePoints: [AtriaDetailChartPoint] = filtered.compactMap { item in
                 item.sleepPerformance.map { AtriaDetailChartPoint(day: item.day, value: Double($0), tint: Metrics.electricSleep) }

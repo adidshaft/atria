@@ -8322,22 +8322,13 @@ final class AtriaHomeModel {
         }
 
         var strainValue: String {
-            // Not-computable, not merely uncertain: TRIMP is a Banister
-            // integration over heart-rate reserve, so without resting evidence,
-            // load evidence, or a max HR above rest there is no number to show
-            // (see strainConfidence). The token is `noValue` rather than the
-            // word "Learning" so the value line only ever carries a numeral or
-            // "--", and confidence lives in the marker instead. The detail hero
-            // already rendered "--" for this same state, so this also removes a
-            // contradiction between the compact card and its own detail sheet.
-            guard !strainConfidence.localizedCaseInsensitiveContains("learning"),
-                  !strainConfidence.localizedCaseInsensitiveContains("standby") else {
-                return AtriaCompactMetricPresentation.noValue
-            }
-            let numeric = String(format: "%.1f", strain)
-            return strainConfidence.localizedCaseInsensitiveContains("partial")
-                ? "≥ \(numeric)"
-                : numeric
+            Metrics.StrainPresentation.resolve(
+                value: strain,
+                coverageFraction: dayWearCoverageFraction,
+                baseConfidence: strainConfidence,
+                additionalIncompleteEvidence:
+                    strainConfidence.localizedCaseInsensitiveContains("partial")
+            ).valueText
         }
 
         var strainDetail: String {
@@ -9660,12 +9651,11 @@ final class AtriaHomeModel {
         let base = maxHRSource == .measured
             ? "local"
             : "provisional · age-estimated max HR"
-        // A sparsely-worn day integrates real but under-representative TRIMP.
-        // Disclose partial evidence instead of presenting it as the whole day.
-        if let wearCoverageFraction, wearCoverageFraction < 0.5 {
-            return base + " · partial-day wear"
-        }
-        return base
+        return Metrics.StrainPresentation.resolve(
+            value: 0,
+            coverageFraction: wearCoverageFraction,
+            baseConfidence: base
+        ).confidence
     }
 
     /// Union length in seconds of session intervals clipped to the window.
@@ -10065,7 +10055,7 @@ final class AtriaHomeModel {
                 + Double(live.sessionSampleCount),
             dayElapsedSeconds: now.timeIntervalSince(savedAggregate.cycleStart)
         )
-        var strainConfidence = strainConfidence(
+        let baseStrainConfidence = strainConfidence(
             hasRestingHeartRateEvidence: hasRestEvidence,
             maxHRSource: store.profile.maxHRSource,
             hasLoadEvidence: savedAggregate.hasSavedToday || live.sessionSampleCount >= 60,
@@ -10073,14 +10063,18 @@ final class AtriaHomeModel {
             maxHR: maxHR,
             wearCoverageFraction: wearCoverage
         )
-        if AtriaWorkoutMetricPresentation.cycleStrainIsIncomplete(
+        let strainPresentation = Metrics.StrainPresentation.resolve(
+            value: strain,
+            coverageFraction: wearCoverage,
+            baseConfidence: baseStrainConfidence,
+            additionalIncompleteEvidence: AtriaWorkoutMetricPresentation.cycleStrainIsIncomplete(
             start: physiologicalCycle.start,
             end: now,
             strain: strain,
             workouts: store.confirmedWorkouts
-        ), !strainConfidence.localizedCaseInsensitiveContains("partial") {
-            strainConfidence += " · partial sparse HR"
-        }
+            )
+        )
+        let strainConfidence = strainPresentation.confidence
 
         let recoveryIsAttributedToCurrentDay = physiologicalCycle.boundaryKind == .noSleepFallback
             || storedRecovery != nil

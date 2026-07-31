@@ -1652,6 +1652,8 @@ struct DailyRollup {
     let sleepSource: String?
     let sleepStageSegments: [SleepStageSegment]
     let strain: Double
+    var strainCoverageFraction: Double? = nil
+    var strainEvidenceQuality: Metrics.StrainEvidenceQuality? = nil
     let avgHRV: Int?
     /// Exact count of qualified five-minute HRV windows contributing to this
     /// rollup. Zero is both the safe legacy default and the representation for
@@ -1678,6 +1680,12 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
     let sleepStageSegments: [SleepStageSegment]
     let sleepConsistencyPercent: Int?
     let strain: Double?
+    /// Accepted strap-HR coverage for the strain window. Optional so rows
+    /// written before the quality model remain decodable.
+    let strainCoverageFraction: Double?
+    /// Persisted qualification prevents a partial lower bound from becoming an
+    /// exact value after relaunch.
+    let strainEvidenceQuality: Metrics.StrainEvidenceQuality?
     let skinTemperatureDeviationCelsius: Double?
     let recoverySummary: FrozenRecoverySummary?
 
@@ -1697,6 +1705,8 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
          sleepStageSegments: [SleepStageSegment],
          sleepConsistencyPercent: Int?,
          strain: Double?,
+         strainCoverageFraction: Double? = nil,
+         strainEvidenceQuality: Metrics.StrainEvidenceQuality? = nil,
          skinTemperatureDeviationCelsius: Double? = nil,
          recoverySummary: FrozenRecoverySummary? = nil) {
         let coherentSummary = recoverySummary.flatMap { summary in
@@ -1718,6 +1728,8 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
         self.sleepStageSegments = sleepStageSegments
         self.sleepConsistencyPercent = sleepConsistencyPercent
         self.strain = strain
+        self.strainCoverageFraction = strainCoverageFraction.map { min(1, max(0, $0)) }
+        self.strainEvidenceQuality = strainEvidenceQuality
         self.skinTemperatureDeviationCelsius = skinTemperatureDeviationCelsius
         self.recoverySummary = coherentSummary
     }
@@ -1739,6 +1751,8 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
         case sleepStageSegments
         case sleepConsistencyPercent
         case strain
+        case strainCoverageFraction
+        case strainEvidenceQuality
         case skinTemperatureDeviationCelsius
         case recoverySummary
     }
@@ -1766,6 +1780,14 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
         sleepStageSegments = try container.decode([SleepStageSegment].self, forKey: .sleepStageSegments)
         sleepConsistencyPercent = try container.decodeIfPresent(Int.self, forKey: .sleepConsistencyPercent)
         strain = try container.decodeIfPresent(Double.self, forKey: .strain)
+        strainCoverageFraction = try container.decodeIfPresent(
+            Double.self,
+            forKey: .strainCoverageFraction
+        ).map { min(1, max(0, $0)) }
+        strainEvidenceQuality = try container.decodeIfPresent(
+            Metrics.StrainEvidenceQuality.self,
+            forKey: .strainEvidenceQuality
+        )
         skinTemperatureDeviationCelsius = try container.decodeIfPresent(
             Double.self,
             forKey: .skinTemperatureDeviationCelsius
@@ -1803,6 +1825,8 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
         try container.encode(sleepStageSegments, forKey: .sleepStageSegments)
         try container.encodeIfPresent(sleepConsistencyPercent, forKey: .sleepConsistencyPercent)
         try container.encodeIfPresent(strain, forKey: .strain)
+        try container.encodeIfPresent(strainCoverageFraction, forKey: .strainCoverageFraction)
+        try container.encodeIfPresent(strainEvidenceQuality, forKey: .strainEvidenceQuality)
         try container.encodeIfPresent(skinTemperatureDeviationCelsius,
                                       forKey: .skinTemperatureDeviationCelsius)
         try container.encodeIfPresent(recoverySummary, forKey: .recoverySummary)
@@ -8293,6 +8317,8 @@ final class SessionStore: ObservableObject {
                                     sleepStageSegments: metric.sleepStageSegments,
                                     sleepConsistencyPercent: metric.sleepConsistencyPercent,
                                     strain: strain,
+                                    strainCoverageFraction: metric.strainCoverageFraction,
+                                    strainEvidenceQuality: metric.strainEvidenceQuality,
                                     skinTemperatureDeviationCelsius: metric.skinTemperatureDeviationCelsius,
                                     recoverySummary: metric.recoverySummary)
         }
@@ -8475,6 +8501,8 @@ final class SessionStore: ObservableObject {
                                            sleepPerformance: existing?.sleepPerformance,
                                            bedtimeMinutes: existing?.bedtimeMinutes,
                                            strain: existing?.strain,
+                                           strainCoverageFraction: existing?.strainCoverageFraction,
+                                           strainEvidenceQuality: existing?.strainEvidenceQuality,
                                            respiratoryRate: existing?.respiratoryRate,
                                            skinTemperatureDeviationCelsius: existing?.skinTemperatureDeviationCelsius,
                                            vitals: existing?.vitals,
@@ -11629,6 +11657,22 @@ final class SessionStore: ObservableObject {
                                                 rest: rest,
                                                 maxHR: maxHR,
                                                 biologicalSex: biologicalSex)
+            let strainWindowEnd = min(localDayEnd, Date())
+            let strainElapsed = max(0, strainWindowEnd.timeIntervalSince(day))
+            let strainObserved = AtriaHomeModel.observedHeartRateUnionSeconds(
+                sessions: dayLoadSessions,
+                windowStart: day,
+                windowEnd: strainWindowEnd
+            )
+            let strainCoverage = strainElapsed > 0
+                ? min(1, max(0, strainObserved / strainElapsed))
+                : nil
+            let strainValue = Metrics.strain(fromTRIMP: strainTRIMP + archiveTRIMP)
+            let strainPresentation = Metrics.StrainPresentation.resolve(
+                value: strainValue,
+                coverageFraction: strainCoverage,
+                baseConfidence: "local"
+            )
             let hrvs = daySessions.compactMap(\.localRMSSD).filter { $0 > 0 }
             let hrvWindowCount = daySessions.reduce(0) {
                 $0 + $1.localHRVWindowCount
@@ -11652,7 +11696,9 @@ final class SessionStore: ObservableObject {
                                sleepEnd: sleepEnd,
                                sleepSource: aggregateSleep?.kind,
                                sleepStageSegments: sleepStageSegments,
-                               strain: Metrics.strain(fromTRIMP: strainTRIMP + archiveTRIMP),
+                               strain: strainValue,
+                               strainCoverageFraction: strainCoverage,
+                               strainEvidenceQuality: strainPresentation.quality,
                                avgHRV: averageIntSnapshot(hrvs),
                                hrvWindowCount: hrvWindowCount,
                                restingHR: aggregateSleep?.restingHR ?? fallbackRHRs.min(),
@@ -12362,6 +12408,8 @@ final class SessionStore: ObservableObject {
                                             calendar: calendar
                                         ),
                                         strain: rollup.strain > 0 ? rollup.strain : nil,
+                                        strainCoverageFraction: rollup.strainCoverageFraction,
+                                        strainEvidenceQuality: rollup.strainEvidenceQuality,
                                         skinTemperatureDeviationCelsius: resolvedSkinTemperatureDeviationByDay[day],
                                         recoverySummary: FrozenRecoverySummary(estimate: recovery, scoredDay: day))
             }
@@ -12500,6 +12548,10 @@ final class SessionStore: ObservableObject {
                                              sleepStageSegments: base.sleepStageSegments,
                                              sleepConsistencyPercent: base.sleepConsistencyPercent,
                                              strain: freshToday?.strain ?? base.strain,
+                                             strainCoverageFraction: freshToday?.strainCoverageFraction
+                                                ?? base.strainCoverageFraction,
+                                             strainEvidenceQuality: freshToday?.strainEvidenceQuality
+                                                ?? base.strainEvidenceQuality,
                                              skinTemperatureDeviationCelsius: todayIsAuthoritative
                                                 ? freshMorning?.skinTemperatureDeviationCelsius
                                                 : (freshToday?.skinTemperatureDeviationCelsius ?? base.skinTemperatureDeviationCelsius),
@@ -12577,6 +12629,8 @@ final class SessionStore: ObservableObject {
                                                                                        sameDayNapHours: sameDayNapHours),
                                          bedtimeMinutes: metric.sleepStart.map { bedtimeMinutes(from: $0, calendar: calendar) },
                                          strain: metric.strain,
+                                         strainCoverageFraction: metric.strainCoverageFraction,
+                                         strainEvidenceQuality: metric.strainEvidenceQuality,
                                          respiratoryRate: resolvedRespRate,
                                          skinTemperatureDeviationCelsius: metric.skinTemperatureDeviationCelsius,
                                          vitals: DailyRollupVitals(
@@ -12835,6 +12889,25 @@ final class SessionStore: ObservableObject {
             calendar: calendar
         )
         let strain = computedToday?.strain ?? wearStrain
+        let strainDayEnd = min(
+            now,
+            calendar.date(byAdding: .day, value: 1, to: day)
+                ?? day.addingTimeInterval(24 * 60 * 60)
+        )
+        let strainElapsed = max(0, strainDayEnd.timeIntervalSince(day))
+        let strainObserved = AtriaHomeModel.observedHeartRateUnionSeconds(
+            sessions: sessions,
+            windowStart: day,
+            windowEnd: strainDayEnd
+        )
+        let strainCoverage = computedToday?.strainCoverageFraction
+            ?? (strainElapsed > 0 ? min(1, max(0, strainObserved / strainElapsed)) : nil)
+        let strainPresentation = Metrics.StrainPresentation.resolve(
+            value: strain,
+            coverageFraction: strainCoverage,
+            baseConfidence: strain == nil ? "learning" : "local",
+            persistedQuality: computedToday?.strainEvidenceQuality
+        )
         let skinTemperatureDeviation = morningSkinTemperatureDeviation(
             for: day,
             computedToday: computedToday,
@@ -12877,6 +12950,8 @@ final class SessionStore: ObservableObject {
                                 sleepStageSegments: sleepSegments,
                                 sleepConsistencyPercent: sleepConsistencyPercent,
                                 strain: strain,
+                                strainCoverageFraction: strainCoverage,
+                                strainEvidenceQuality: strainPresentation.quality,
                                 skinTemperatureDeviationCelsius: skinTemperatureDeviation,
                                 recoverySummary: FrozenRecoverySummary(estimate: recovery, scoredDay: day))
     }

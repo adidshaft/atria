@@ -561,6 +561,8 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
     var sleepPerformance: Int?
     var bedtimeMinutes: Int?
     var strain: Double?
+    var strainCoverageFraction: Double?
+    var strainEvidenceQuality: Metrics.StrainEvidenceQuality?
     var respiratoryRate: Double?
     /// Relative sleep skin-temperature deviation in Celsius, finalized into the
     /// morning/day rollup so product surfaces do not drift with live sessions.
@@ -587,6 +589,8 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         case sleepPerformance
         case bedtimeMinutes
         case strain
+        case strainCoverageFraction
+        case strainEvidenceQuality
         case respiratoryRate
         case skinTemperatureDeviationCelsius
         case vitals
@@ -604,6 +608,8 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
          sleepPerformance: Int? = nil,
          bedtimeMinutes: Int? = nil,
          strain: Double? = nil,
+         strainCoverageFraction: Double? = nil,
+         strainEvidenceQuality: Metrics.StrainEvidenceQuality? = nil,
          respiratoryRate: Double? = nil,
          skinTemperatureDeviationCelsius: Double? = nil,
          vitals: DailyRollupVitals? = nil,
@@ -622,6 +628,8 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         self.sleepPerformance = sleepPerformance
         self.bedtimeMinutes = bedtimeMinutes
         self.strain = strain
+        self.strainCoverageFraction = strainCoverageFraction.map { min(1, max(0, $0)) }
+        self.strainEvidenceQuality = strainEvidenceQuality
         self.respiratoryRate = respiratoryRate
         self.skinTemperatureDeviationCelsius = skinTemperatureDeviationCelsius
         self.vitals = vitals
@@ -651,6 +659,14 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         sleepPerformance = try container.decodeIfPresent(Int.self, forKey: .sleepPerformance)
         bedtimeMinutes = try container.decodeIfPresent(Int.self, forKey: .bedtimeMinutes)
         strain = try container.decodeIfPresent(Double.self, forKey: .strain)
+        strainCoverageFraction = try container.decodeIfPresent(
+            Double.self,
+            forKey: .strainCoverageFraction
+        ).map { min(1, max(0, $0)) }
+        strainEvidenceQuality = try container.decodeIfPresent(
+            Metrics.StrainEvidenceQuality.self,
+            forKey: .strainEvidenceQuality
+        )
         respiratoryRate = try container.decodeIfPresent(Double.self, forKey: .respiratoryRate)
         skinTemperatureDeviationCelsius = try container.decodeIfPresent(Double.self, forKey: .skinTemperatureDeviationCelsius)
         vitals = try container.decodeIfPresent(DailyRollupVitals.self, forKey: .vitals)
@@ -676,6 +692,8 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         try container.encodeIfPresent(sleepPerformance, forKey: .sleepPerformance)
         try container.encodeIfPresent(bedtimeMinutes, forKey: .bedtimeMinutes)
         try container.encodeIfPresent(strain, forKey: .strain)
+        try container.encodeIfPresent(strainCoverageFraction, forKey: .strainCoverageFraction)
+        try container.encodeIfPresent(strainEvidenceQuality, forKey: .strainEvidenceQuality)
         try container.encodeIfPresent(respiratoryRate, forKey: .respiratoryRate)
         try container.encodeIfPresent(skinTemperatureDeviationCelsius, forKey: .skinTemperatureDeviationCelsius)
         try container.encodeIfPresent(vitals, forKey: .vitals)
@@ -768,6 +786,8 @@ final class DailyRollupStore {
                                                    sleepPerformance: entry.sleepPerformance,
                                                    bedtimeMinutes: entry.bedtimeMinutes,
                                                    strain: entry.strain,
+                                                   strainCoverageFraction: entry.strainCoverageFraction,
+                                                   strainEvidenceQuality: entry.strainEvidenceQuality,
                                                    respiratoryRate: entry.respiratoryRate,
                                                    skinTemperatureDeviationCelsius: entry.skinTemperatureDeviationCelsius,
                                                    vitals: entry.vitals,
@@ -949,6 +969,8 @@ final class DailyRollupStore {
                               sleepPerformance: rollup.sleepPerformance,
                               bedtimeMinutes: rollup.bedtimeMinutes,
                               strain: rollup.strain,
+                              strainCoverageFraction: rollup.strainCoverageFraction,
+                              strainEvidenceQuality: rollup.strainEvidenceQuality,
                               respiratoryRate: rollup.respiratoryRate,
                               skinTemperatureDeviationCelsius: rollup.skinTemperatureDeviationCelsius,
                               vitals: rollup.vitals,
