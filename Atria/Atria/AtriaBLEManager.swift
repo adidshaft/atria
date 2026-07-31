@@ -31711,11 +31711,39 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                               authority.attempt.transportGeneration)
                 return
             }
+            let defaults = UserDefaults.standard
+            // A fresh cached failure suppresses regardless of what the
+            // fingerprint would say (the daily bound), so short-circuit
+            // BEFORE computing it: the fingerprint acquires the shared
+            // archive-catalog lock, and taking that lock on the main thread
+            // while the .utility archive lane holds it through hundreds of
+            // megabytes of hashing was the 2026-07-31 foreground hang —
+            // NSLock donates no priority, so the UI froze without a watchdog
+            // kill. Two UserDefaults reads settle the common case instead.
+            if let freshCachedAt = defaults.object(
+                forKey: Self.terminalConsumerCoverageFailureAtKey
+            ) as? Date,
+               defaults.string(
+                   forKey: Self.terminalConsumerCoverageFailureKey
+               ) != nil,
+               Date().timeIntervalSince(freshCachedAt) >= 0,
+               Date().timeIntervalSince(freshCachedAt)
+                   < Self.terminalConsumerCoverageFailureRetryInterval {
+                defaults.set(
+                    "terminal_consumer_coverage_snapshot_unchanged",
+                    forKey: OfflineSyncDefaults.lastStatus
+                )
+                defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+                AtriaDebugLog(
+                    "ATRIADBG historical_full_drain_publish status=deferred generation=%llu reason=coverage_failure_daily_bound action=skip_fingerprint_and_archive_rescan",
+                    authority.attempt.transportGeneration
+                )
+                return
+            }
             let terminalCoverageFailureFingerprint =
                 terminalConsumerCoverageFailureFingerprint(
                     authority: authority
                 )
-            let defaults = UserDefaults.standard
             var cachedTerminalCoverageFailureFingerprint =
                 defaults.string(
                     forKey: Self.terminalConsumerCoverageFailureKey

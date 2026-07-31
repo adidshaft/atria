@@ -676,9 +676,40 @@ enum AtriaWhoop4MotionBankCoverageLedger {
 
     static func reset(defaults: UserDefaults = .standard) {
         defaults.removeObject(forKey: stateKey)
+        if defaults === UserDefaults.standard {
+            cacheLock.lock()
+            cachedStandardState = nil
+            cacheLock.unlock()
+        }
     }
 
+    /// The 1 Hz accepted-HR path reads this ledger up to ~10 times per
+    /// second from the main actor, and every read previously decoded the
+    /// full JSON blob (512-interval / 128-ticket cap). Memoize the decoded
+    /// state for the standard-defaults instance only — the app process is
+    /// its sole writer, tests inject their own suites and bypass the cache,
+    /// and `State` is a value type so callers always get copies.
+    private static let cacheLock = NSLock()
+    nonisolated(unsafe) private static var cachedStandardState: State?
+
     private static func load(defaults: UserDefaults) -> State {
+        let cacheable = defaults === UserDefaults.standard
+        if cacheable {
+            cacheLock.lock()
+            let cached = cachedStandardState
+            cacheLock.unlock()
+            if let cached { return cached }
+        }
+        let loaded = decodeState(defaults: defaults)
+        if cacheable {
+            cacheLock.lock()
+            cachedStandardState = loaded
+            cacheLock.unlock()
+        }
+        return loaded
+    }
+
+    private static func decodeState(defaults: UserDefaults) -> State {
         guard let data = defaults.data(forKey: stateKey),
               let decoded = try? JSONDecoder().decode(State.self, from: data),
               decoded.schema == schema else {
@@ -705,6 +736,11 @@ enum AtriaWhoop4MotionBankCoverageLedger {
     private static func save(_ state: State, defaults: UserDefaults) {
         guard let data = try? JSONEncoder().encode(state) else { return }
         defaults.set(data, forKey: stateKey)
+        if defaults === UserDefaults.standard {
+            cacheLock.lock()
+            cachedStandardState = state
+            cacheLock.unlock()
+        }
     }
 
     private static func merged(_ values: [Interval]) -> [Interval] {
