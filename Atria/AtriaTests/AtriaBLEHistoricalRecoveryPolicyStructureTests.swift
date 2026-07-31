@@ -521,6 +521,198 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         )
     }
 
+    func testUnchangedTerminalCoverageFailureSuppressesRepeatFullScan() throws {
+        let first = try XCTUnwrap(
+            terminalCoverageFailureFingerprint()
+        )
+        let same = try XCTUnwrap(
+            terminalCoverageFailureFingerprint()
+        )
+
+        XCTAssertEqual(first, same)
+        XCTAssertTrue(
+            AtriaBLEManager
+                .shouldSuppressUnchangedTerminalConsumerCoverageFailure(
+                    cachedFingerprint: first,
+                    currentFingerprint: same
+                )
+        )
+        // This deterministic failure has no time-based expiry: elapsed wall
+        // time cannot change immutable terminal/archive authority.
+        XCTAssertTrue(
+            AtriaBLEManager
+                .shouldSuppressUnchangedTerminalConsumerCoverageFailure(
+                    cachedFingerprint: first,
+                    currentFingerprint: same
+                )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .shouldSuppressUnchangedTerminalConsumerCoverageFailure(
+                    cachedFingerprint: nil,
+                    currentFingerprint: same
+                ),
+            "missing durable failure identity must fail open"
+        )
+    }
+
+    func testTerminalCoverageFailureRetriesForChangedCatalogFullScanOrModel() throws {
+        let original = try XCTUnwrap(
+            terminalCoverageFailureFingerprint()
+        )
+        let changedCatalog = try XCTUnwrap(
+            terminalCoverageFailureFingerprint(
+                currentCatalogFingerprint: "catalog-v2"
+            )
+        )
+        let changedFullScan = try XCTUnwrap(
+            terminalCoverageFailureFingerprint(
+                fullScanGeneration: 8
+            )
+        )
+        let changedCursor = try XCTUnwrap(
+            terminalCoverageFailureFingerprint(
+                cursorWatermark: Date(timeIntervalSince1970: 2_100)
+            )
+        )
+        let changedModel = try XCTUnwrap(
+            terminalCoverageFailureFingerprint(
+                dependencyFingerprint: "projection-model-v3"
+            )
+        )
+
+        for changed in [
+            changedCatalog,
+            changedFullScan,
+            changedCursor,
+            changedModel,
+        ] {
+            XCTAssertNotEqual(original, changed)
+            XCTAssertFalse(
+                AtriaBLEManager
+                    .shouldSuppressUnchangedTerminalConsumerCoverageFailure(
+                        cachedFingerprint: original,
+                        currentFingerprint: changed
+                    )
+            )
+        }
+    }
+
+    func testPersistedCompletionMismatchDiagnosticSeedsWithoutFirstRescan() {
+        XCTAssertTrue(
+            AtriaBLEManager
+                .shouldSeedTerminalConsumerCoverageFailureFromDiagnostic(
+                    cachedFingerprint: nil,
+                    currentFingerprint: "current-terminal-snapshot",
+                    persistedFailureDiagnostic:
+                        "AtriaHistoricalActivityInspectionProofFactory.FactoryError.completionCoverageMismatch"
+                )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .shouldSeedTerminalConsumerCoverageFailureFromDiagnostic(
+                    cachedFingerprint: "already-seeded",
+                    currentFingerprint: "current-terminal-snapshot",
+                    persistedFailureDiagnostic:
+                        "AtriaHistoricalActivityInspectionProofFactory.FactoryError.completionCoverageMismatch"
+                )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .shouldSeedTerminalConsumerCoverageFailureFromDiagnostic(
+                    cachedFingerprint: nil,
+                    currentFingerprint: "current-terminal-snapshot",
+                    persistedFailureDiagnostic: "transientIOFailure"
+                )
+        )
+    }
+
+    func testCompletionCoverageMismatchIsCachedBeforeGenericTerminalFailure() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria")
+        let manager = try String(
+            contentsOf: appDirectory.appendingPathComponent(
+                "AtriaBLEManager.swift"
+            ),
+            encoding: .utf8
+        )
+        let materializationStart = try XCTUnwrap(manager.range(
+            of: "private func scheduleFullDrainConsumerMaterialization("
+        )?.lowerBound)
+        let materializationEnd = try XCTUnwrap(manager.range(
+            of: "private func finishHistoricalConsumerMaterialization(",
+            range: materializationStart..<manager.endIndex
+        )?.lowerBound)
+        let materialization = String(
+            manager[materializationStart..<materializationEnd]
+        )
+        let typedCatch = try XCTUnwrap(materialization.range(
+            of: "FactoryError.completionCoverageMismatch"
+        ))
+        let genericCatch = try XCTUnwrap(materialization.range(
+            of: "} catch {\n                UserDefaults.standard.set(",
+            options: .backwards
+        ))
+
+        XCTAssertLessThan(typedCatch.lowerBound, genericCatch.lowerBound)
+        XCTAssertTrue(materialization.contains(
+            "terminalConsumerCoverageFailureFingerprint("
+        ))
+        XCTAssertTrue(materialization.contains(
+            "cache_unchanged_terminal_snapshot_release_archive_lane"
+        ))
+
+        let resumeStart = try XCTUnwrap(manager.range(
+            of: "func resumePendingFullDrainPublicationIfNeeded("
+        )?.lowerBound)
+        let resumeEnd = try XCTUnwrap(manager.range(
+            of: "nonisolated static func shouldRunTerminalConsumerMaterialization(",
+            range: resumeStart..<manager.endIndex
+        )?.lowerBound)
+        let resume = String(manager[resumeStart..<resumeEnd])
+        let suppression = try XCTUnwrap(resume.range(
+            of: "shouldSuppressUnchangedTerminalConsumerCoverageFailure("
+        ))
+        let fullScan = try XCTUnwrap(resume.range(
+            of: "scheduleFullDrainConsumerMaterialization("
+        ))
+        XCTAssertLessThan(suppression.lowerBound, fullScan.lowerBound)
+        XCTAssertTrue(resume.contains(
+            "shouldSeedTerminalConsumerCoverageFailureFromDiagnostic("
+        ))
+        XCTAssertTrue(resume.contains(
+            "seed_unchanged_terminal_snapshot_without_rescan"
+        ))
+        XCTAssertTrue(resume.contains(
+            "skip_full_archive_rescan"
+        ))
+    }
+
+    private func terminalCoverageFailureFingerprint(
+        dependencyFingerprint: String = "projection-model-v2",
+        fullScanGeneration: UInt64 = 7,
+        cursorWatermark: Date = Date(timeIntervalSince1970: 2_000),
+        currentCatalogFingerprint: String = "catalog-v1"
+    ) -> String? {
+        AtriaBLEManager.terminalConsumerCoverageFailureFingerprint(
+            dependencyFingerprint: dependencyFingerprint,
+            fullScanVersion: 1,
+            fullScanGeneration: fullScanGeneration,
+            fullScanTransportGeneration: 6,
+            sourceChunkID: "source-chunk",
+            sourceRawSHA256: String(repeating: "a", count: 64),
+            observedArchiveFirstTimestamp:
+                Date(timeIntervalSince1970: 1_000),
+            cursorWatermark: cursorWatermark,
+            catalogGeneration: 3,
+            catalogSnapshotSHA256: String(repeating: "b", count: 64),
+            aggregateSnapshotSHA256: String(repeating: "c", count: 64),
+            currentCatalogFingerprint: currentCatalogFingerprint
+        )
+    }
+
     func testNoRowsFingerprintSuppressesOnlyAutomaticRetryForUnchangedGap() {
         let fingerprint = "gap-v1"
 
