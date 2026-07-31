@@ -98,6 +98,12 @@ final class AtriaBiologicalAgeCacheTests: XCTestCase {
         XCTAssertFalse(summary.isReady)
         XCTAssertEqual(summary.valueText, "--")
         XCTAssertEqual(summary.compactStatusText, "VO₂ max is still learning")
+        XCTAssertEqual(
+            summary.availabilityDetailText,
+            "Needs VO₂ max learning · HRV baseline."
+        )
+        XCTAssertFalse(summary.availabilityDetailText.contains("28 days"))
+        XCTAssertEqual(summary.narrative, "Building required fitness-age inputs")
     }
 
     func testRefreshingFitnessAgeHasDeterministicCompactStatus() {
