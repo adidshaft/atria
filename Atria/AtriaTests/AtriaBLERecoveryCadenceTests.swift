@@ -2748,7 +2748,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), "an unverified decoder must never seize the live pipe")
     }
 
-    func testAutomaticConnectedHistoryHandoffRequiresStalledLiveOwnerAndBackoff() {
+    func testAutomaticConnectedHistoryHandoffRequiresHealthyLiveOwnerAndBackoff() {
         let now = Date(timeIntervalSince1970: 50_000)
         let eligible: (Bool, Bool, Date?, Date?, Date?, Date?) -> Bool = {
             workout, verified, connectedAt, acceptedAt, requestedAt, lastAttemptAt in
@@ -2768,12 +2768,12 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             )
         }
 
-        XCTAssertFalse(eligible(false, true,
+        XCTAssertTrue(eligible(false, true,
                                 now.addingTimeInterval(-61),
                                 now.addingTimeInterval(-5),
                                 now.addingTimeInterval(-91),
                                 now.addingTimeInterval(-121)),
-                       "fresh accepted HR must never authorize a background history cutover")
+                      "a stable fresh live epoch may admit one bounded history slice")
         XCTAssertFalse(eligible(true, true,
                                 now.addingTimeInterval(-61),
                                 now.addingTimeInterval(-5),
@@ -2786,11 +2786,11 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                                 now.addingTimeInterval(-20),
                                 now.addingTimeInterval(-5),
                                 now.addingTimeInterval(-91), nil))
-        XCTAssertTrue(eligible(false, true,
+        XCTAssertFalse(eligible(false, true,
                                 now.addingTimeInterval(-61),
                                 now.addingTimeInterval(-50),
                                 now.addingTimeInterval(-91), nil),
-                      "a verified gap may use the connected owner only after realtime is already stale")
+                       "a stale live owner must recover realtime before history can borrow the pipe")
         XCTAssertFalse(eligible(false, true,
                                 now.addingTimeInterval(-61),
                                 now.addingTimeInterval(-5),
@@ -3029,7 +3029,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(transactionReady)
 
         let now = Date(timeIntervalSince1970: 100_000)
-        XCTAssertFalse(AtriaBLEManager.shouldAttemptAutomaticConnectedHistoricalHandoff(
+        XCTAssertTrue(AtriaBLEManager.shouldAttemptAutomaticConnectedHistoricalHandoff(
             linkConnected: true,
             exactGapPending: true,
             verifiedMetricRecovery: transactionReady,
@@ -3042,8 +3042,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             requestedAt: now.addingTimeInterval(-120),
             lastAttemptAt: nil,
             now: now
-        ), "fresh accepted HR must keep the realtime owner even for a qualified exact gap")
-        XCTAssertTrue(AtriaBLEManager.shouldAttemptAutomaticConnectedHistoricalHandoff(
+        ), "fresh accepted HR proves the bounded connected slice has a healthy owner to protect")
+        XCTAssertFalse(AtriaBLEManager.shouldAttemptAutomaticConnectedHistoricalHandoff(
             linkConnected: true,
             exactGapPending: true,
             verifiedMetricRecovery: transactionReady,
@@ -3056,7 +3056,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             requestedAt: now.addingTimeInterval(-120),
             lastAttemptAt: nil,
             now: now
-        ), "the bounded handoff becomes eligible only after realtime is already stale")
+        ), "an already-stale owner must restore realtime before history starts")
         XCTAssertFalse(AtriaBLEManager.shouldDeferAutomaticOfflineSyncForConnectedLink(
             linkConnected: true,
             explicitUserRequest: false,
@@ -4720,7 +4720,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 connectedAt: now.addingTimeInterval(-600),
                 hasContact: true,
                 acceptedSampleCount: 100,
-                lastAcceptedHRAt: now.addingTimeInterval(-50),
+                lastAcceptedHRAt: now.addingTimeInterval(-5),
                 requestedAt: now.addingTimeInterval(-3_600),
                 lastAttemptAt: lastAttemptAt,
                 now: now,
