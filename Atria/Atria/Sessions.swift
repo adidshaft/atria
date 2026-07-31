@@ -2671,6 +2671,12 @@ struct IMUAuditSummary: Equatable {
 
         var detailText: String {
             guard latestDeltaCelsius != nil else {
+                if baselineSessions >= 3 {
+                    return "\(baselineSessions) baseline nights · next sleep unlocks"
+                }
+                if baselineSessions > 0 {
+                    return "\(baselineSessions) of 3 baseline nights"
+                }
                 if candidateFrames > 0 {
                     return "\(candidateFrames) candidates · baseline needed"
                 }
@@ -2681,6 +2687,9 @@ struct IMUAuditSummary: Equatable {
 
         var footnoteText: String {
             guard latestDeltaCelsius != nil else {
+                if baselineSessions > 0 {
+                    return "Relative sleep baseline building from \(baselineSessions) qualified night\(baselineSessions == 1 ? "" : "s"); no absolute temperature."
+                }
                 if candidateFrames > 0 {
                     return "\(candidateFrames) candidate frames; relative baseline building, no absolute temperature."
                 }
@@ -6421,7 +6430,19 @@ final class SessionStore: ObservableObject {
     /// marker changes so SwiftUI renders read O(1) values.
     @Published private(set) var imuAuditSummary = IMUAuditSummary(sessions: [])
     var skinTemperatureDeviationSummary: IMUAuditSummary.SkinTemperatureDeviationSummary {
-        let fallback = imuAuditSummary.skinTemperatureDeviation
+        let researchFallback = imuAuditSummary.skinTemperatureDeviation
+        let fallback = IMUAuditSummary.SkinTemperatureDeviationSummary(
+            latestDeltaCelsius: researchFallback.latestDeltaCelsius,
+            baselineSessions: max(
+                researchFallback.baselineSessions,
+                cachedRecoveredSkinTemperatureBaselineNightCount
+            ),
+            candidateFrames: max(
+                researchFallback.candidateFrames,
+                cachedRecoveredSkinTemperatureCandidateFrameCount
+            ),
+            candidateValues: researchFallback.candidateValues
+        )
         if let cached = cachedSkinTemperatureDeviationSummary,
            Self.isSkinTemperatureDeviationSummaryCacheFresh(cached,
                                                             dailyMetricRevision: dailyMetricHistoryRevision,
@@ -6796,6 +6817,8 @@ final class SessionStore: ObservableObject {
     /// all-day session label. Recovered sessions intentionally remain
     /// all-day wear containers on devices where sleep was confirmed later.
     private var cachedRecoveredSkinTemperatureDeviationByDay: [Date: Double] = [:]
+    private var cachedRecoveredSkinTemperatureBaselineNightCount = 0
+    private var cachedRecoveredSkinTemperatureCandidateFrameCount = 0
     private var hasCompletedDeferredSessionLoad = false
     /// The daily-metric file is decoded independently of the much larger
     /// session source. Until this becomes true, Recovery can only be a live
@@ -6963,6 +6986,8 @@ final class SessionStore: ObservableObject {
         let biologicalAgeSummaryRevision: Int
         let skinTemperatureDeviationSummary: SkinTemperatureDeviationSummaryCache?
         let recoveredSkinTemperatureDeviationByDay: [Date: Double]
+        let recoveredSkinTemperatureBaselineNightCount: Int
+        let recoveredSkinTemperatureCandidateFrameCount: Int
         let sessionBackupStatus: SessionBackupStatus
         let autoSleepLoggedBanner: AutoSleepLoggedBanner?
         let lastForegroundSleepAutoConfirmAt: Date?
@@ -9025,14 +9050,18 @@ final class SessionStore: ObservableObject {
                     to: recoveredSessions
                 )
             }
-            let recoveredSkinTemperatureDeviationByDay =
+            let recoveredSkinTemperatureProjection =
                 recoveredSnapshot.skinTemperatureCompleteness == .complete
-                ? Self.finalizedSkinTemperatureDeviationByMorningDay(
+                ? Self.recoveredSkinTemperatureProjection(
                     points: recoveredSnapshot.skinTemperatureRawPoints,
                     confirmedSleeps: confirmedSleeps,
                     calendar: .current
                 )
-                : [:]
+                : .empty
+            let recoveredSkinTemperatureCandidateFrameCount =
+                recoveredSnapshot.skinTemperatureCompleteness == .complete
+                ? recoveredSnapshot.skinTemperatureRawPoints.count
+                : 0
             Task { @MainActor [weak self, ticket] in
                 self?.renewRecoveredProjectionLease(
                     ticket: ticket,
@@ -9044,7 +9073,8 @@ final class SessionStore: ObservableObject {
                 weak self,
                 archivePoints,
                 recoveredSessions,
-                recoveredSkinTemperatureDeviationByDay,
+                recoveredSkinTemperatureProjection,
+                recoveredSkinTemperatureCandidateFrameCount,
                 projection,
                 rrProjection,
                 ticket
@@ -9074,7 +9104,12 @@ final class SessionStore: ObservableObject {
                 let previous = self.cachedRecoveredHeartRateSessions
                 self.cachedRecoveredHeartRateSessions = recoveredSessions
                 self.cachedRecoveredSkinTemperatureDeviationByDay =
-                    recoveredSkinTemperatureDeviationByDay
+                    recoveredSkinTemperatureProjection.deviations
+                self.cachedRecoveredSkinTemperatureBaselineNightCount =
+                    recoveredSkinTemperatureProjection.baselineNightCount
+                self.cachedRecoveredSkinTemperatureCandidateFrameCount =
+                    recoveredSkinTemperatureCandidateFrameCount
+                self.cachedSkinTemperatureDeviationSummary = nil
                 self.cachedRecoveredArchiveHeartRatePoints = archivePoints
                 let cacheInterval = Self.historicalStrainCacheInterval(
                     now: Date(),
@@ -9483,6 +9518,10 @@ final class SessionStore: ObservableObject {
             skinTemperatureDeviationSummary: cachedSkinTemperatureDeviationSummary,
             recoveredSkinTemperatureDeviationByDay:
                 cachedRecoveredSkinTemperatureDeviationByDay,
+            recoveredSkinTemperatureBaselineNightCount:
+                cachedRecoveredSkinTemperatureBaselineNightCount,
+            recoveredSkinTemperatureCandidateFrameCount:
+                cachedRecoveredSkinTemperatureCandidateFrameCount,
             sessionBackupStatus: cachedSessionBackupStatus,
             autoSleepLoggedBanner: autoSleepLoggedBanner,
             lastForegroundSleepAutoConfirmAt: lastForegroundSleepAutoConfirmAt,
@@ -9610,6 +9649,10 @@ final class SessionStore: ObservableObject {
         cachedSkinTemperatureDeviationSummary = snapshot.skinTemperatureDeviationSummary
         cachedRecoveredSkinTemperatureDeviationByDay =
             snapshot.recoveredSkinTemperatureDeviationByDay
+        cachedRecoveredSkinTemperatureBaselineNightCount =
+            snapshot.recoveredSkinTemperatureBaselineNightCount
+        cachedRecoveredSkinTemperatureCandidateFrameCount =
+            snapshot.recoveredSkinTemperatureCandidateFrameCount
         cachedSessionBackupStatus = snapshot.sessionBackupStatus
         autoSleepLoggedBanner = snapshot.autoSleepLoggedBanner
         lastForegroundSleepAutoConfirmAt = snapshot.lastForegroundSleepAutoConfirmAt
@@ -12126,12 +12169,22 @@ final class SessionStore: ObservableObject {
     /// authorities directly so a confirmed night does not lose valid
     /// temperature merely because the containing session is not itself tagged
     /// as a sleep-research session.
-    nonisolated static func finalizedSkinTemperatureDeviationByMorningDay(
+    struct RecoveredSkinTemperatureProjection: Equatable {
+        let deviations: [Date: Double]
+        let baselineNightCount: Int
+
+        static let empty = RecoveredSkinTemperatureProjection(
+            deviations: [:],
+            baselineNightCount: 0
+        )
+    }
+
+    nonisolated static func recoveredSkinTemperatureProjection(
         points: [HistoricalArchive.SkinTemperatureRawPoint],
         confirmedSleeps: [UserConfirmedSleep],
         calendar: Calendar = .current
-    ) -> [Date: Double] {
-        guard !points.isEmpty, !confirmedSleeps.isEmpty else { return [:] }
+    ) -> RecoveredSkinTemperatureProjection {
+        guard !points.isEmpty, !confirmedSleeps.isEmpty else { return .empty }
         let unknownDevice = "<unknown>"
         func deviceKey(_ identifier: String?) -> String {
             let normalized = identifier?
@@ -12145,7 +12198,7 @@ final class SessionStore: ObservableObject {
         let anchors = pointsByDevice.compactMapValues {
             AtriaResearchProbe.whoop4SkinTemperatureAnchorRaw($0.map(\.raw))
         }
-        guard !anchors.isEmpty else { return [:] }
+        guard !anchors.isEmpty else { return .empty }
 
         func lowerBound(
             _ values: [HistoricalArchive.SkinTemperatureRawPoint],
@@ -12213,7 +12266,22 @@ final class SessionStore: ObservableObject {
             baselineMeanSum += dayMean.meanCelsius
             baselineDayCount += 1
         }
-        return deviations
+        return RecoveredSkinTemperatureProjection(
+            deviations: deviations,
+            baselineNightCount: dayMeans.count
+        )
+    }
+
+    nonisolated static func finalizedSkinTemperatureDeviationByMorningDay(
+        points: [HistoricalArchive.SkinTemperatureRawPoint],
+        confirmedSleeps: [UserConfirmedSleep],
+        calendar: Calendar = .current
+    ) -> [Date: Double] {
+        recoveredSkinTemperatureProjection(
+            points: points,
+            confirmedSleeps: confirmedSleeps,
+            calendar: calendar
+        ).deviations
     }
 
     nonisolated static func makeSavedDailyMetrics(rollups: [DailyRollup],
@@ -13083,6 +13151,8 @@ final class SessionStore: ObservableObject {
         self.cachedBiologicalAgeSignatureMemo = nil
         self.cachedSkinTemperatureDeviationSummary = nil
         self.cachedRecoveredSkinTemperatureDeviationByDay = [:]
+        self.cachedRecoveredSkinTemperatureBaselineNightCount = 0
+        self.cachedRecoveredSkinTemperatureCandidateFrameCount = 0
         self.lastLiveHRVCheckpointRefreshAt = Self.readLiveHRVCheckpointRefreshDate()
         self.pendingSleepReviewNightForUI = nil
         self.dailyRollupHistory = recoveryBlocked ? [] : dailyRollupStore.rollups(last: 400)
@@ -13217,6 +13287,8 @@ final class SessionStore: ObservableObject {
             cachedWeeklyPlanValue = nil
             cachedSkinTemperatureDeviationSummary = nil
             cachedRecoveredSkinTemperatureDeviationByDay = [:]
+            cachedRecoveredSkinTemperatureBaselineNightCount = 0
+            cachedRecoveredSkinTemperatureCandidateFrameCount = 0
         }
         invalidateSleepReviewCache(reason: "system_timezone")
     }
@@ -13252,6 +13324,8 @@ final class SessionStore: ObservableObject {
         biologicalAgeSummaryRevision = 0
         cachedSkinTemperatureDeviationSummary = nil
         cachedRecoveredSkinTemperatureDeviationByDay = [:]
+        cachedRecoveredSkinTemperatureBaselineNightCount = 0
+        cachedRecoveredSkinTemperatureCandidateFrameCount = 0
     }
 
     #endif

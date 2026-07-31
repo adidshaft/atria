@@ -55,6 +55,28 @@ final class AtriaExperimentalSensorCopyTests: XCTestCase {
             decoderAvailable: false).contains("building a sleep baseline"))
     }
 
+    func testValidatedSkinTemperatureCopyShowsExactBaselineProgress() {
+        let summary = IMUAuditSummary.SkinTemperatureDeviationSummary(
+            latestDeltaCelsius: nil,
+            baselineSessions: 3,
+            candidateFrames: 47_921,
+            candidateValues: 0)
+
+        XCTAssertEqual(
+            AtriaExperimentalSensorCopy.skinTemperatureStatus(
+                summary: summary,
+                decoderAvailable: true
+            ),
+            "3 baseline nights · next sleep unlocks"
+        )
+        XCTAssertTrue(
+            AtriaExperimentalSensorCopy.skinTemperatureAccessibilityDetail(
+                summary: summary,
+                decoderAvailable: true
+            ).contains("3 baseline nights")
+        )
+    }
+
     func testStaleSkinTemperatureSummaryCannotEscapeDecoderGate() {
         let staleReadySummary = IMUAuditSummary.SkinTemperatureDeviationSummary(
             latestDeltaCelsius: 0.7,
