@@ -12458,8 +12458,17 @@ final class SessionStore: ObservableObject {
         // baseline.restingInt ?? 60), so today's strain is identical whether it
         // comes from computedToday or this wear fallback. Previously this branch
         // added `?? wearRestingHR`, diverging when no baseline exists yet.
-        let wearStrainTRIMP = wearSessionsToday.reduce(0.0) {
-            $0 + $1.trimp(rest: baseline.restingInt ?? 60, max: maxHR)
+        let wearStrainTRIMP = wearSessionsToday.reduce(0.0) { total, session in
+            guard let interval = EventCivilTime.interval(
+                forCivilDay: day,
+                eventTimeZoneIdentifier: session.eventTimeZoneIdentifier,
+                outputCalendar: calendar
+            ) else { return total }
+            return total + session.dailyLoadTRIMP(
+                rest: baseline.restingInt ?? 60,
+                max: maxHR,
+                within: interval
+            )
         }
         let wearStrain = wearStrainTRIMP > 0 ? Metrics.strain(fromTRIMP: wearStrainTRIMP) : nil
         let reducedConfidenceInput = confirmedMainSleep == nil && hasAnyConfirmedMainSleep
