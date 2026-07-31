@@ -9353,12 +9353,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func automaticConnectedHistoricalHandoffIsEligible(
         now: Date
     ) -> Bool {
-        // A genuine reconnect is a recovery opportunity for an overnight gap,
-        // but fresh accepted HR means realtime currently owns a healthy pipe.
-        // The policy below therefore admits an automatic cutover only after
-        // that stream has already gone stale. This prevents history recovery
-        // from manufacturing a live-data outage while preserving the exact
-        // durable gap for a stalled-link or explicit recovery opportunity.
+        // A genuine reconnect is a recovery opportunity for an overnight gap.
+        // Admit one bounded cutover only from a stable epoch with fresh
+        // accepted HR. The connected-slice watchdog keeps 2A37 subscribed and
+        // relinquishes history if HR becomes stale; starting from an already
+        // stale stream would hide a live-link failure and could churn forever.
         let defaults = UserDefaults.standard
         let currentPeripheralID = peripheral?.identifier.uuidString
         let verifiedPeripheralID = defaults.string(

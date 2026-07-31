@@ -513,11 +513,12 @@ extension AtriaBLEManager {
             || (linkConnected && !explicitUserRequest && !verifiedAutomaticHandoff)
     }
 
-    /// Admits one journal-checkpointed owner handoff only after the connected
-    /// realtime stream has already gone stale. Fresh accepted HR is evidence
-    /// that the live owner is healthy, not permission to preempt it. The exact
-    /// gap remains durable while live capture continues and may be serviced by
-    /// this path only after the stream stalls, or by an explicit user request.
+    /// Admits one journal-checkpointed owner handoff from a proven healthy
+    /// realtime epoch. The connected history slice keeps standard 2A37
+    /// subscribed and releases the transport if accepted HR becomes stale, so
+    /// a fresh sample is the safety precondition rather than a reason to starve
+    /// the durable gap forever. A stale owner must first recover realtime; it
+    /// cannot grant history ownership merely because its samples stopped.
     nonisolated static func shouldAttemptAutomaticConnectedHistoricalHandoff(
         linkConnected: Bool,
         exactGapPending: Bool,
@@ -551,7 +552,8 @@ extension AtriaBLEManager {
         let acceptedAge = now.timeIntervalSince(lastAcceptedHRAt)
         let requestAge = now.timeIntervalSince(requestedAt)
         guard connectionAge >= stableConnectionInterval,
-              acceptedAge > acceptedFreshnessWindow,
+              acceptedAge >= 0,
+              acceptedAge <= acceptedFreshnessWindow,
               requestAge >= minimumGapAge else { return false }
         if let lastAttemptAt {
             let attemptAge = now.timeIntervalSince(lastAttemptAt)
