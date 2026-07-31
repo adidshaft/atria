@@ -31760,7 +31760,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             if Self.shouldSuppressUnchangedTerminalConsumerCoverageFailure(
                 cachedFingerprint:
                     cachedTerminalCoverageFailureFingerprint,
-                currentFingerprint: terminalCoverageFailureFingerprint
+                currentFingerprint: terminalCoverageFailureFingerprint,
+                cachedAt: defaults.object(
+                    forKey: Self.terminalConsumerCoverageFailureAtKey
+                ) as? Date,
+                now: Date()
             ) {
                 defaults.set(
                     "terminal_consumer_coverage_snapshot_unchanged",
@@ -31892,16 +31896,39 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return age >= 0 && age < retryInterval
     }
 
+    /// One coverage-mismatch retry per day at most. The unchanged-fingerprint
+    /// rule alone was not enough on real hardware: every background drain that
+    /// seals a chunk advances the catalog identity, which re-armed the full
+    /// archive projection on the next foreground. For an authority whose gap
+    /// rows the strap has never served, each of those retries allocates the
+    /// whole projection working set and fails identically — physical
+    /// 2026-07-31 20:30 IST evidence: Atria frontmost at ~3.4 GB against its
+    /// per-process jetsam limit, hanging until force-quit. Catalog growth from
+    /// live capture is not new evidence about a historical gap; a bounded
+    /// daily retry (the failure timestamp refreshes on every failure) plus
+    /// the existing projection-model escape keeps an eventual real recovery
+    /// reachable without letting the doomed path own the foreground.
+    nonisolated static let terminalConsumerCoverageFailureRetryInterval:
+        TimeInterval = 24 * 60 * 60
+
     nonisolated static func
         shouldSuppressUnchangedTerminalConsumerCoverageFailure(
             cachedFingerprint: String?,
-            currentFingerprint: String?
+            currentFingerprint: String?,
+            cachedAt: Date? = nil,
+            now: Date = Date()
         ) -> Bool {
         guard let cachedFingerprint,
               let currentFingerprint else {
             return false
         }
-        return cachedFingerprint == currentFingerprint
+        if cachedFingerprint == currentFingerprint {
+            return true
+        }
+        guard let cachedAt else { return false }
+        let age = now.timeIntervalSince(cachedAt)
+        return age >= 0
+            && age < Self.terminalConsumerCoverageFailureRetryInterval
     }
 
     nonisolated static func
