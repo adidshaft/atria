@@ -789,7 +789,7 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             "exactRecoveryProjectionOwnsArchivePriority"
         ))
         XCTAssertTrue(sessions.contains(
-            "reason: \"verified_bank_offload\""
+            "reason: \"finalized_bank_offload\""
         ))
         XCTAssertTrue(sessions.contains(
             "reason: \"session_store_init\""
@@ -869,7 +869,7 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             "prepareCurrentCycleStrapStepReceipt(\n                reason: \"session_store_init\""
         ))
         XCTAssertTrue(sessions.contains(
-            "prepareCurrentCycleStrapStepReceipt(\n                    reason: \"verified_bank_offload\""
+            "prepareCurrentCycleStrapStepReceipt(\n                    reason: \"finalized_bank_offload\""
         ))
     }
 
