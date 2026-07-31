@@ -6653,14 +6653,27 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                        "cached isNotifying must never clear a prior transport error")
         XCTAssertTrue(body.contains("restoredCachedBatteryNotificationCanReuseEpoch"))
         XCTAssertTrue(body.contains("setNotifyValue(false, for: cachedBattery)"))
-        XCTAssertTrue(body.contains("var cachedBatteryStatus: CBCharacteristic?"))
-        XCTAssertTrue(body.contains("Self.UUIDs.batteryLevelStatus"))
-        XCTAssertTrue(body.contains("batteryStatusCharacteristic = cachedBatteryStatus"))
-        XCTAssertTrue(body.contains("ensureBatteryStatusNotificationForCurrentEpoch("),
+        let restoredBatteryStatusStart = try XCTUnwrap(source.range(
+            of: "if let cachedBatteryStatus {",
+            range: start.upperBound..<source.endIndex
+        ))
+        let restoredBatteryStatusEnd = try XCTUnwrap(source.range(
+            of: "ATRIADBG protected_r10 status=restored_cache_rehydrated",
+            range: restoredBatteryStatusStart.upperBound..<source.endIndex
+        ))
+        let restoredBatteryStatus = String(
+            source[restoredBatteryStatusStart.lowerBound..<restoredBatteryStatusEnd.lowerBound]
+        )
+        XCTAssertTrue(source.contains("var cachedBatteryStatus: CBCharacteristic?"))
+        XCTAssertTrue(source.contains("Self.UUIDs.batteryLevelStatus"))
+        XCTAssertTrue(source.contains("batteryStatusCharacteristic = cachedBatteryStatus"))
+        XCTAssertTrue(restoredBatteryStatus.contains("ensureBatteryStatusNotificationForCurrentEpoch("),
                       "restoration must re-establish the independent standard charger-state subscription")
-        XCTAssertTrue(body.contains("history_transport_owned=%d no_read=1"),
+        XCTAssertTrue(restoredBatteryStatus.contains("requestBatteryStatusReadForCurrentEpoch("),
+                      "restoration may request only the bounded standard 2A1B charger-state fallback")
+        XCTAssertTrue(source.contains("history_transport_owned=%d no_read=1"),
                       "history ownership may subscribe the independent standard charger-state characteristic without a read or proprietary mutation")
-        XCTAssertTrue(body.contains("detail=history_transport_owned"),
+        XCTAssertTrue(source.contains("detail=history_transport_owned"),
                       "the bounded 2A1B read fallback must stay blocked while history owns the link")
     }
 
@@ -7555,8 +7568,14 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
 
         XCTAssertTrue(policySource.contains("explicitReadResearchEnabled: Bool = false"))
         XCTAssertFalse(policySource.contains("explicitReadResearchEnabled: true"))
-        XCTAssertFalse(managerSource.contains("readValue(for: batteryStatusCharacteristic)"))
-        XCTAssertTrue(managerSource.contains("return [UUIDs.batteryLevel]"))
+        XCTAssertTrue(managerSource.contains("let action = Self.standardBatteryRefreshAction("))
+        XCTAssertFalse(managerSource.contains("explicitReadResearchEnabled: true"))
+        XCTAssertTrue(managerSource.contains("requestBatteryStatusReadForCurrentEpoch("),
+                      "the independent standard 2A1B charger-state fallback remains allowed")
+        XCTAssertTrue(managerSource.contains("guard !recoveredDataProjectionDeferralIsActive else"))
+        XCTAssertTrue(managerSource.contains(
+            "return [UUIDs.batteryLevel, UUIDs.batteryLevelStatus]"
+        ))
         XCTAssertFalse(managerSource.contains("detail=protected_r10_minimal_no_battery_gatt"))
         XCTAssertTrue(managerSource.contains("source=2A19_existing_subscription"))
     }
@@ -9102,15 +9121,18 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let request = try XCTUnwrap(body.range(
             of: "let started = requestOfflineHistoricalSyncIfNeeded("
         ))
-        let attempt = try XCTUnwrap(body.range(
-            of: "AtriaWhoop4MotionBankCoverageLedger.markOffloadAttempt("
+        let attemptEvidence = try XCTUnwrap(body.range(
+            of: "let updatedAttempts ="
         ))
         XCTAssertLessThan(
             request.lowerBound,
-            attempt.lowerBound,
-            "a thermally deferred/non-admitted request must not consume a retry"
+            attemptEvidence.lowerBound,
+            "attempt evidence must be read only after the transport request"
         )
-        XCTAssertTrue(body.contains("if started {"))
+        XCTAssertFalse(body.contains(
+            "AtriaWhoop4MotionBankCoverageLedger.markOffloadAttempt("
+        ), "the coordinator must not consume an attempt before transport starts")
+        XCTAssertTrue(body.contains("if generationStarted || started {"))
     }
 
     func testAllDayMotionWantsHoldUsesV24BatteryFloorWithResumeHysteresis() {
