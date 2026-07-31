@@ -191,6 +191,11 @@ struct AtriaWidgetSnapshot: Codable {
     var stepsAuthorityVersion: String? = nil
     var stepsCycleStart: Date? = nil
     var stepsCycleExpiresAt: Date? = nil
+    /// 2026-07-31: additive prior-cycle disclosure. Only written while `steps`
+    /// is nil; the widget may name the prior count in its detail line but the
+    /// step value itself stays "--".
+    var stepsPriorCycleSteps: Int? = nil
+    var stepsPriorCycleEndedAt: Date? = nil
     var dailyStepGoal: Int? = nil
     let heartRate: Int?
     let heartRateCapturedAt: Date?
@@ -1926,7 +1931,15 @@ enum AtriaWidgetMetric: String, Identifiable {
                 return "Verified complete day"
             }
             guard let capturedAt = snapshot.stepsCapturedAt else {
-                return snapshot.steps == nil ? "Waiting for strap" : "Step signal stale"
+                guard snapshot.steps == nil else { return "Step signal stale" }
+                // 2026-07-31: after a no-sleep cycle rollover the new cycle
+                // honestly has no count yet; name the prior cycle's verified
+                // lower bound instead of an unexplained wait state.
+                if let priorSteps = snapshot.stepsPriorCycleSteps,
+                   let priorEndedAt = snapshot.stepsPriorCycleEndedAt {
+                    return "Prior cycle: ≥\(priorSteps) · ended \(atriaCaptureTimeText(priorEndedAt))"
+                }
+                return "Waiting for strap"
             }
             guard let steps = atriaFreshStaticSensorValue(snapshot.steps,
                                                            capturedAt: capturedAt,

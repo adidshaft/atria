@@ -25,11 +25,24 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     enum UnavailabilityReason: Equatable, Sendable {
         case none
         case noCurrentCycleReceipt
+        /// 2026-07-31: the open cycle has no receipt or fresh live sample yet,
+        /// but the preceding cycle closed with a verified receipt. The count
+        /// stays nil — prior-cycle steps are disclosed in copy only and are
+        /// never attributed to today.
+        case priorCycleReceiptOnly
         case staleLiveReceipt
         case unvalidatedLiveReceipt
         case motionObservedCountUnresolved
         case conflictingExactReceipts
         case stepModelNotQualified
+    }
+
+    /// Disclosure-only summary of the newest receipt that ended at or before
+    /// the current wake boundary. Carried alongside a nil `count` so rings,
+    /// zones, and widget step values remain honestly empty.
+    struct PriorCycleReceipt: Equatable, Sendable {
+        let steps: Int
+        let endedAt: Date
     }
 
     let day: Date
@@ -49,6 +62,8 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     /// but it no longer describes the current edge of an open physiological
     /// cycle. Keep the count and make that time boundary explicit in copy.
     var openCycleReceiptIsCurrent: Bool = false
+    /// Set only with `unavailabilityReason == .priorCycleReceiptOnly`.
+    var priorCycleReceipt: PriorCycleReceipt? = nil
 
     var valueText: String {
         guard let count else { return "--" }
@@ -77,6 +92,17 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             return isValidated ? "Today so far · live" : "Today so far · estimate"
         default:
             switch unavailabilityReason {
+            case .priorCycleReceiptOnly:
+                guard let priorCycleReceipt else {
+                    return "No verified receipt for this cycle"
+                }
+                // The prior count is a lower bound: its cycle may have ended
+                // with unbanked motion. Never present it as today's value.
+                return "Prior cycle: ≥\(priorCycleReceipt.steps) · ended "
+                    + priorCycleReceipt.endedAt.formatted(
+                        date: .omitted,
+                        time: .shortened
+                    )
             case .staleLiveReceipt:
                 return "Last strap movement is no longer live"
             case .unvalidatedLiveReceipt:
@@ -134,6 +160,9 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         /// preceding civil date; a fresh post-midnight sample must still be
         /// eligible to keep the active day visible.
         physiologicalDayStart: Date? = nil,
+        /// 2026-07-31: newest receipt ending before the current wake boundary,
+        /// disclosed in copy only when the open cycle has nothing to show.
+        priorCycleReceipt: PriorCycleReceipt? = nil,
         calendar: Calendar = .current
     ) -> Self {
         let dayStart = calendar.startOfDay(for: day)
@@ -247,6 +276,27 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                          coverageFraction: nil,
                          isOpenCycle: isOpenDay)
         }
+        let emptyReason: UnavailabilityReason =
+            !liveAuthorityQualified
+                ? .stepModelNotQualified
+                : (hasUnresolvedMotionReceipt
+                ? .motionObservedCountUnresolved
+                : (liveCapturedAt == nil
+                    ? .noCurrentCycleReceipt
+                    : (liveBelongsToDay
+                       ? .unvalidatedLiveReceipt
+                       : .staleLiveReceipt)))
+        // 2026-07-31: when the no-sleep fallback rolls the wake boundary, the
+        // fresh cycle legitimately has no receipt and no live sample yet.
+        // Disclose the prior cycle's verified subtotal in copy instead of an
+        // unexplained "--", while the count itself stays nil so prior steps
+        // are never attributed to today. A live sample captured before the
+        // boundary is that same prior cycle, not a stale sample of this one.
+        let staleLiveIsFromPriorCycle = emptyReason == .staleLiveReceipt
+            && liveCapturedAt.map { $0 < activeWindowStart } == true
+        let disclosesPriorCycle = priorCycleReceipt != nil
+            && (emptyReason == .noCurrentCycleReceipt
+                || staleLiveIsFromPriorCycle)
         return .init(day: dayStart,
                      count: nil,
                      completeness: .unavailable,
@@ -254,16 +304,12 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                      isValidated: false,
                      capturedAt: nil,
                      coverageFraction: nil,
-                     unavailabilityReason:
-                        !liveAuthorityQualified
-                            ? .stepModelNotQualified
-                            : (hasUnresolvedMotionReceipt
-                            ? .motionObservedCountUnresolved
-                            : (liveCapturedAt == nil
-                                ? .noCurrentCycleReceipt
-                                : (liveBelongsToDay
-                                   ? .unvalidatedLiveReceipt
-                                   : .staleLiveReceipt))),
-                     isOpenCycle: isOpenDay)
+                     unavailabilityReason: disclosesPriorCycle
+                        ? .priorCycleReceiptOnly
+                        : emptyReason,
+                     isOpenCycle: isOpenDay,
+                     priorCycleReceipt: disclosesPriorCycle
+                        ? priorCycleReceipt
+                        : nil)
     }
 }

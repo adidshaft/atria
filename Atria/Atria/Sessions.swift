@@ -184,6 +184,49 @@ struct AtriaPhysiologicalCycle: Equatable {
         return nextCivilWake.addingTimeInterval(noSleepSettlementGrace)
     }
 
+    /// 2026-07-31: the next instant at which `current` would report a new
+    /// cycle start if no further main sleep is confirmed — the moment the
+    /// no-sleep fallback silently rolls the wake boundary. No notification
+    /// fires at that instant, so receipt/presentation refresh must schedule
+    /// its own check against this boundary.
+    static func nextNoSleepRollover(
+        now: Date,
+        confirmedSleeps: [UserConfirmedSleep],
+        calendar: Calendar = .current
+    ) -> Date? {
+        let cycle = current(
+            now: now,
+            confirmedSleeps: confirmedSleeps,
+            calendar: calendar
+        )
+        switch cycle.boundaryKind {
+        case .mainSleep:
+            let anchorTimeZoneIdentifier = confirmedSleeps
+                .first { $0.id == cycle.anchorSleepID }?
+                .eventTimeZoneIdentifier
+            return firstNoSleepFallback(
+                after: cycle.start,
+                eventTimeZoneIdentifier: anchorTimeZoneIdentifier,
+                calendar: calendar
+            )
+        case .noSleepFallback:
+            let anchorTimeZoneIdentifier = confirmedSleeps
+                .first { $0.id == cycle.anchorSleepID }?
+                .eventTimeZoneIdentifier
+            let eventCalendar = EventCivilTime.eventCalendar(
+                timeZoneIdentifier: anchorTimeZoneIdentifier,
+                fallback: calendar
+            )
+            return eventCalendar.date(
+                byAdding: .day,
+                value: 1,
+                to: cycle.start
+            )
+        case .initialFallback:
+            return calendar.date(byAdding: .day, value: 1, to: cycle.start)
+        }
+    }
+
     /// Returns the latest completed fallback without inventing a sleep record.
     /// Repeated civil-day advancement prevents an indefinitely open cycle even
     /// when the user remains awake for multiple days.
@@ -6951,6 +6994,12 @@ final class SessionStore: ObservableObject {
     private var currentCycleStepCompactMigrationInFlight = false
     private var currentCycleStepCompactMigrationNeedsRerun = false
     private var currentCycleStepReceiptDeferredUntilForeground = false
+    /// 2026-07-31: cancellable sleep-until-boundary task for the no-sleep
+    /// physiological rollover. The fallback moves the wake boundary with no
+    /// notification of its own; without this check every step surface froze
+    /// on the pre-rollover projection until an unrelated event fired.
+    private var physiologicalCycleRolloverTask: Task<Void, Never>?
+    private var scheduledPhysiologicalCycleRolloverBoundary: Date?
     private var workoutStepEvidenceDeferredUntilForeground = false
     private var workoutRehydrationDeferredUntilForeground = false
     private var archiveCompactionDeferredUntilForeground = false
@@ -7390,15 +7439,34 @@ final class SessionStore: ObservableObject {
                     forKey: AtriaBLEManager.OfflineSyncDefaults
                         .verifiedHistoryPeripheralID
                 )
-                let motionTickDayEvidence =
+                // 2026-07-31: rehydrate the recent day-keyed receipts, not
+                // only the exact current-window one, so verified prior days
+                // survive a relaunch that lands after a cycle rollover.
+                let motionTickReceiptHistory:
+                    [HistoricalArchive.MotionTickDayEvidence] =
                     AtriaWhoop4GravityCadenceStepModel
                         .releaseDailyAuthorityQualified
-                    ? motionStrapIdentifier.flatMap { strapIdentifier in
-                        AtriaWhoop4MotionTickDailyStore.shared.load(
+                    ? motionStrapIdentifier.map { strapIdentifier in
+                        AtriaWhoop4MotionTickDailyStore.shared.recentReceipts(
                             strapIdentifier: strapIdentifier,
-                            windowStart: physiologicalDayStart
+                            limit: 14
                         )
-                    } : nil
+                    } ?? [] : []
+                let motionTickDayEvidence = motionTickReceiptHistory.first {
+                    abs($0.windowStart.timeIntervalSince(
+                        physiologicalDayStart
+                    )) < 1
+                }
+                // Only receipts that closed at or before the current wake
+                // boundary are eligible as prior days; anything overlapping
+                // the open cycle stays governed by the exact-window rule so a
+                // prior-cycle subtotal can never masquerade as today.
+                let priorMotionTickDayEvidence = motionTickReceiptHistory
+                    .filter {
+                        $0.windowStart < physiologicalDayStart
+                            && $0.windowEnd <= physiologicalDayStart
+                                .addingTimeInterval(1)
+                    }
                 let incremental = recoveredAffectedDays.flatMap { affectedDays in
                     SessionStore.makeIncrementalRecoveredHistorySnapshots(
                         previous: previousHistorySnapshot,
@@ -7425,6 +7493,7 @@ final class SessionStore: ObservableObject {
                     canonicalHistory: canonicalHistory,
                     additionalStepEvidenceDays: preservedStepEvidenceDays,
                     motionTickDayEvidence: motionTickDayEvidence,
+                    priorMotionTickDayEvidence: priorMotionTickDayEvidence,
                     canonicalPageCursor: canonicalPageCursor,
                     canonicalHistoryHasMore: canonicalHistoryHasMore,
                     biologicalSex: biologicalSex,
@@ -7638,6 +7707,53 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// 2026-07-31: schedules one cancellable check at the next no-sleep
+    /// rollover boundary. When the boundary passes, the receipt refresh and
+    /// the daily-store invalidation run so Home, History, and widgets move to
+    /// the new cycle (disclosing the prior-cycle receipt) instead of showing
+    /// yesterday's count or a frozen "--".
+    func schedulePhysiologicalCycleRolloverCheck(reason: String) {
+        physiologicalCycleRolloverTask?.cancel()
+        physiologicalCycleRolloverTask = nil
+        let now = Date()
+        guard let boundary = AtriaPhysiologicalCycle.nextNoSleepRollover(
+            now: now,
+            confirmedSleeps: cachedConfirmedSleeps,
+            calendar: .current
+        ) else {
+            scheduledPhysiologicalCycleRolloverBoundary = nil
+            return
+        }
+        scheduledPhysiologicalCycleRolloverBoundary = boundary
+        // A short grace keeps the check strictly after the boundary so the
+        // recomputed cycle start has actually moved when the task wakes.
+        let delay = max(1, boundary.timeIntervalSince(now) + 1)
+        AtriaDebugLog(
+            "ATRIADBG whoop4_daily_steps status=cycle_rollover_scheduled reason=%@ boundary=%.3f delay=%.0f",
+            reason,
+            boundary.timeIntervalSince1970,
+            delay
+        )
+        physiologicalCycleRolloverTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(
+                nanoseconds: UInt64(delay * 1_000_000_000)
+            )
+            guard !Task.isCancelled else { return }
+            self?.handlePhysiologicalCycleRollover(reason: reason)
+        }
+    }
+
+    private func handlePhysiologicalCycleRollover(reason: String) {
+        AtriaDebugLog(
+            "ATRIADBG whoop4_daily_steps status=cycle_rollover_fired reason=%@",
+            reason
+        )
+        prepareCurrentCycleStrapStepReceipt(
+            reason: "physiological_cycle_rollover"
+        )
+        schedulePhysiologicalCycleRolloverCheck(reason: reason)
+    }
+
     /// Publishes the current physiological cycle's strap-only step receipt
     /// without waiting for the much broader recovered-history transaction.
     ///
@@ -7685,9 +7801,21 @@ final class SessionStore: ObservableObject {
             )
         guard !coverage.isEmpty, let coverageAuthority else {
             AtriaDebugLog(
-                "ATRIADBG whoop4_daily_steps status=receipt_refresh_skipped reason=%@ detail=missing_bank_coverage",
-                reason
+                "ATRIADBG whoop4_daily_steps status=receipt_refresh_skipped reason=%@ detail=no_bank_coverage_this_cycle cycle_start=%.3f",
+                reason,
+                cycleStart.timeIntervalSince1970
             )
+            // 2026-07-31: a freshly rolled cycle legitimately has no banked
+            // coverage yet. Returning silently froze every surface on the
+            // pre-rollover projection; post the lightweight invalidation so
+            // Home and widgets re-resolve and can disclose the prior-cycle
+            // receipt honestly instead of an unexplained "--".
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: AtriaWhoop4MotionTickDailyStore.didSaveNotification,
+                    object: nil
+                )
+            }
             return
         }
         Self.currentCycleStepReceiptQueue.async { [weak self] in
@@ -10941,6 +11069,17 @@ final class SessionStore: ObservableObject {
                 reason: "foreground_\(reason)"
             )
         }
+        // 2026-07-31: Task sleeps do not run while suspended; if the no-sleep
+        // boundary passed in the background, roll the cycle now, otherwise
+        // re-arm against the current confirmed-sleep state.
+        if let rolloverBoundary = scheduledPhysiologicalCycleRolloverBoundary,
+           rolloverBoundary <= Date() {
+            handlePhysiologicalCycleRollover(reason: "foreground_\(reason)")
+        } else {
+            schedulePhysiologicalCycleRolloverCheck(
+                reason: "foreground_\(reason)"
+            )
+        }
         if archiveCompactionDeferredUntilForeground {
             archiveCompactionDeferredUntilForeground = false
             compactHistoricalArchiveIfUseful(
@@ -11111,6 +11250,7 @@ final class SessionStore: ObservableObject {
                                                          canonicalHistory: [HistoricalArchive.VerifiedCanonicalConsumerSource] = [],
                                                          additionalStepEvidenceDays: [AtriaHistoricalDailyConsumerProjection.StepDay] = [],
                                                          motionTickDayEvidence: HistoricalArchive.MotionTickDayEvidence? = nil,
+                                                         priorMotionTickDayEvidence: [HistoricalArchive.MotionTickDayEvidence] = [],
                                                          canonicalPageCursor: AtriaHistoricalAggregateReader.PageCursor? = nil,
                                                          canonicalHistoryHasMore: Bool = false,
                                                          biologicalSex: AthleteProfile.BiologicalSex = .unspecified,
@@ -11166,6 +11306,42 @@ final class SessionStore: ObservableObject {
                 )
             )
         }
+        // 2026-07-31: closed prior-cycle receipts stay in History across a
+        // relaunch. An exact canonical day remains authoritative; a rehydrated
+        // receipt may only fill a missing day or replace weaker partial
+        // coverage, using the daily store's own weaker-record rule.
+        for priorEvidence in priorMotionTickDayEvidence {
+            let matching = stepEvidenceDays.filter {
+                abs($0.dayStart.timeIntervalSince(
+                    priorEvidence.windowStart
+                )) < 1
+            }
+            if matching.contains(where: {
+                ($0.state == .available || $0.state == .knownEmpty)
+                    && $0.stepCount != nil
+            }) {
+                continue
+            }
+            let receiptDay = motionTickStepDay(
+                evidence: priorEvidence,
+                calendar: calendar
+            )
+            if let strongestExisting = matching.max(by: {
+                AtriaWhoop4MotionTickDailyStore.isWeaker($0, $1)
+            }), !AtriaWhoop4MotionTickDailyStore.isWeaker(
+                strongestExisting,
+                receiptDay
+            ) {
+                continue
+            }
+            stepEvidenceDays.removeAll {
+                abs($0.dayStart.timeIntervalSince(
+                    priorEvidence.windowStart
+                )) < 1
+            }
+            stepEvidenceDays.append(receiptDay)
+        }
+        stepEvidenceDays.sort { $0.dayStart > $1.dayStart }
         let history = HistorySnapshot(sessions: canonical,
                                       detections: detections,
                                       trends: trends,
@@ -13354,6 +13530,11 @@ final class SessionStore: ObservableObject {
             self.prepareCurrentCycleStrapStepReceipt(
                 reason: "session_store_init"
             )
+            // 2026-07-31: arm the no-sleep rollover boundary check; nothing
+            // else fires when the fallback silently moves the cycle start.
+            self.schedulePhysiologicalCycleRolloverCheck(
+                reason: "session_store_init"
+            )
         }
         refreshHistorySnapshotCache(deferred: true)
         refreshOverviewTrendPointsCache(deferred: true)
@@ -13451,6 +13632,7 @@ final class SessionStore: ObservableObject {
         recoveredDataDerivedLeaseRenewals.removeAll()
         recoveredDataDerivedCompletedStages.removeAll()
         pendingWorkoutStepEvidenceWorkItem?.cancel()
+        physiologicalCycleRolloverTask?.cancel()
         deferredLaunchCardSettlementRetryTask?.cancel()
         pendingSleepReadinessRetry?.cancel()
         pendingSleepSettlementRetry?.cancel()
@@ -24714,6 +24896,11 @@ final class SessionStore: ObservableObject {
                 )
             }
         }
+        // 2026-07-31: the next no-sleep boundary is derived from confirmed
+        // sleeps, so any change here re-arms the rollover check.
+        schedulePhysiologicalCycleRolloverCheck(
+            reason: "confirmed_sleep_change"
+        )
         if let transactionTicket = recoveredDataMutationTransaction.activeTicket {
             _ = recoveredDataMutationTransaction.registerCommit(ticket: transactionTicket) { [weak self] in
                 self?.writeDutyCycleSleepWindow(from: sorted)

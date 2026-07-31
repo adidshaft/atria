@@ -52,6 +52,12 @@ struct WidgetSnapshot: Codable {
     var stepsAuthorityVersion: String? = nil
     var stepsCycleStart: Date? = nil
     var stepsCycleExpiresAt: Date? = nil
+    /// 2026-07-31: additive disclosure of the newest receipt that closed
+    /// before the current wake boundary. Present only while `steps` is nil so
+    /// a prior-cycle subtotal can be named in the detail line without ever
+    /// masquerading as today's count.
+    var stepsPriorCycleSteps: Int? = nil
+    var stepsPriorCycleEndedAt: Date? = nil
     /// Optional so schema-4 snapshots written before goals were added still
     /// decode. This is the user's all-day strap-step goal, never a workout
     /// session delta.
@@ -264,6 +270,12 @@ enum WidgetSnapshotPublisher {
                 steps == nil ? nil : stepsAuthorityVersion,
             stepsCycleStart: steps == nil ? nil : current.stepsCycleStart,
             stepsCycleExpiresAt: steps == nil ? nil : current.stepsCycleExpiresAt,
+            // Prior-cycle disclosure only exists while today's value is nil;
+            // a live patch that publishes a current count clears it.
+            stepsPriorCycleSteps: steps == nil
+                ? current.stepsPriorCycleSteps : nil,
+            stepsPriorCycleEndedAt: steps == nil
+                ? current.stepsPriorCycleEndedAt : nil,
             dailyStepGoal: current.dailyStepGoal,
             heartRate: heartRate,
             heartRateCapturedAt: heartRate == nil ? nil : heartRateCapturedAt,
@@ -358,6 +370,8 @@ enum WidgetSnapshotPublisher {
                                         snapshot.stepsAuthorityVersion,
                                        stepsCycleStart: snapshot.stepsCycleStart,
                                        stepsCycleExpiresAt: snapshot.stepsCycleExpiresAt,
+                                       stepsPriorCycleSteps: snapshot.stepsPriorCycleSteps,
+                                       stepsPriorCycleEndedAt: snapshot.stepsPriorCycleEndedAt,
                                        dailyStepGoal: snapshot.dailyStepGoal,
                                        heartRate: snapshot.heartRate,
                                        heartRateCapturedAt: snapshot.heartRateCapturedAt,
@@ -565,6 +579,15 @@ enum WidgetSnapshotPublisher {
         } else {
             projectedStepDays = qualifiedHistoricalStepDays
         }
+        // 2026-07-31: disclosure-only prior-cycle receipt. Kept out of
+        // projectedStepDays so `steps` stays nil (honest) after a no-sleep
+        // rollover; only the widget's detail line may name the prior count.
+        let priorCycleReceipt = strapIdentifiers.isEmpty
+            ? nil
+            : AtriaWhoop4MotionTickDailyStore.shared.latestReceipt(
+                before: savedAggregate.day,
+                strapIdentifiers: strapIdentifiers
+            )
         let dailySteps = resolvedDailySteps(
             day: now,
             now: now,
@@ -576,6 +599,9 @@ enum WidgetSnapshotPublisher {
                 AtriaWhoop4GravityCadenceStepModel
                     .releaseDailyAuthorityQualified,
             physiologicalDayStart: savedAggregate.day,
+            priorCycleReceipt: priorCycleReceipt.map {
+                .init(steps: $0.steps, endedAt: $0.capturedThrough)
+            },
             calendar: calendar
         )
         let liveHeartRate = AtriaHomeModel.resolvedLiveHeartRate(
@@ -686,6 +712,10 @@ enum WidgetSnapshotPublisher {
                                         ? nil : qualifiedStepAuthorityVersion,
                                       stepsCycleStart: publishedSteps == nil ? nil : physiologicalCycle.start,
                                       stepsCycleExpiresAt: publishedSteps == nil ? nil : strainCycleExpiresAt,
+                                      stepsPriorCycleSteps: dailySteps
+                                        .priorCycleReceipt?.steps,
+                                      stepsPriorCycleEndedAt: dailySteps
+                                        .priorCycleReceipt?.endedAt,
                                       dailyStepGoal: dailyStepGoal,
                                       heartRate: liveHeartRate > 0 ? liveHeartRate : nil,
                                       heartRateCapturedAt: liveHeartRateCapturedAt,
@@ -791,6 +821,7 @@ enum WidgetSnapshotPublisher {
         canonicalDays: [AtriaHistoricalDailyConsumerProjection.StepDay] = [],
         liveAuthorityQualified: Bool = true,
         physiologicalDayStart: Date? = nil,
+        priorCycleReceipt: AtriaDailyStepPresentation.PriorCycleReceipt? = nil,
         calendar: Calendar = .current
     ) -> AtriaDailyStepPresentation {
         AtriaDailyStepPresentation.resolve(
@@ -802,6 +833,7 @@ enum WidgetSnapshotPublisher {
             canonicalDays: canonicalDays,
             liveAuthorityQualified: liveAuthorityQualified,
             physiologicalDayStart: physiologicalDayStart,
+            priorCycleReceipt: priorCycleReceipt,
             calendar: calendar
         )
     }
