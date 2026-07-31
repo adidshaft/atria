@@ -190,6 +190,75 @@ final class AtriaRecoveredRRProjectionTests: XCTestCase {
                        "one raw RTC+flash gravity identity is one physical frame")
     }
 
+    func testUnifiedRecoveredSnapshotCarriesWearGatedWhoop4TemperatureRaw() throws {
+        let base = makeRecord()
+        var payload = decodeHex(base.rawPayloadHex)
+        payload[51] = 1
+        replaceUInt16LE(900, at: 68, in: &payload)
+        let record = makeRecord(payload: payload)
+        let timestamp = TimeInterval(try XCTUnwrap(record.clockCorrectedUnix7))
+            + TimeInterval(record.subsec11) / 32_768
+
+        let snapshot = HistoricalArchive.makeRecoveredDataSnapshot(
+            records: [record],
+            since: Date(timeIntervalSince1970: timestamp - 1)
+        )
+
+        XCTAssertEqual(snapshot.skinTemperatureRawPoints.count, 1)
+        XCTAssertEqual(snapshot.skinTemperatureRawPoints.first?.raw, 900)
+        XCTAssertEqual(
+            try XCTUnwrap(snapshot.skinTemperatureRawPoints.first).t.timeIntervalSince1970,
+            timestamp,
+            accuracy: 1e-6
+        )
+
+        payload[51] = 0
+        let doff = makeRecord(payload: payload)
+        let doffSnapshot = HistoricalArchive.makeRecoveredDataSnapshot(
+            records: [doff],
+            since: Date(timeIntervalSince1970: timestamp - 1)
+        )
+        XCTAssertTrue(doffSnapshot.skinTemperatureRawPoints.isEmpty)
+    }
+
+    func testTemperatureBudgetFailsOnlyTemperatureChannel() {
+        func temperatureRecord(counter: UInt32, timestamp: UInt32, raw: UInt16)
+            -> HistoricalArchive.Record {
+            var payload = makePayload(counter: counter,
+                                      timestamp: timestamp,
+                                      subsecond: 0,
+                                      heartRate: 70,
+                                      intervals: [800])
+            payload[51] = 1
+            replaceUInt16LE(raw, at: 68, in: &payload)
+            return makeRecord(counter: counter,
+                              timestamp: timestamp,
+                              subsecond: 0,
+                              intervals: [800],
+                              payload: payload)
+        }
+        let first = temperatureRecord(counter: 100, timestamp: 1_781_626_500, raw: 900)
+        let second = temperatureRecord(counter: 101, timestamp: 1_781_626_501, raw: 901)
+        let budget = HistoricalArchive.RecoveredProjectionBudget(
+            maximumHeartRatePoints: 10,
+            maximumRRRecords: 10,
+            maximumSkinTemperaturePoints: 1,
+            maximumGravitySamples: 10,
+            maximumMotionReplayIdentities: 10
+        )
+
+        let snapshot = HistoricalArchive.makeRecoveredDataSnapshot(
+            records: [first, second],
+            since: Date(timeIntervalSince1970: 1_781_626_000),
+            budget: budget
+        )
+
+        XCTAssertEqual(snapshot.physiologyCompleteness, .complete)
+        XCTAssertEqual(snapshot.skinTemperatureCompleteness,
+                       .budgetExceeded(channel: .skinTemperature, limit: 1))
+        XCTAssertEqual(snapshot.skinTemperatureRawPoints.count, 1)
+    }
+
     func testMotionDedupDoesNotCollapseTimestampCollisionWithDifferentRawPayload() throws {
         let first = makeRecord()
         var changedPayload = decodeHex(first.rawPayloadHex)

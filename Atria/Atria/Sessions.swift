@@ -9000,6 +9000,12 @@ final class SessionStore: ObservableObject {
                 recoveredSessions[index].imuValidationState = fields.imuValidationState
                 recoveredSessions[index].strapStepResearchCount = fields.strapStepResearchCount
             }
+            if recoveredSnapshot.skinTemperatureCompleteness == .complete {
+                recoveredSessions = Self.attachRecoveredSkinTemperature(
+                    recoveredSnapshot.skinTemperatureRawPoints,
+                    to: recoveredSessions
+                )
+            }
             Task { @MainActor [weak self, ticket] in
                 self?.renewRecoveredProjectionLease(
                     ticket: ticket,
@@ -11951,6 +11957,91 @@ final class SessionStore: ObservableObject {
         return out
     }
 
+    nonisolated static func attachRecoveredSkinTemperature(
+        _ points: [HistoricalArchive.SkinTemperatureRawPoint],
+        to sessions: [SavedSession]
+    ) -> [SavedSession] {
+        guard !points.isEmpty, !sessions.isEmpty else { return sessions }
+        let unknownDevice = "<unknown>"
+        func deviceKey(_ identifier: String?) -> String {
+            let normalized = identifier?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased() ?? ""
+            return normalized.isEmpty ? unknownDevice : normalized
+        }
+
+        let pointsByDevice = Dictionary(grouping: points) {
+            deviceKey($0.strapIdentifier)
+        }.mapValues { $0.sorted { $0.t < $1.t } }
+        let rawByDevice = pointsByDevice.mapValues { $0.map(\.raw) }
+        let anchors = rawByDevice.compactMapValues {
+            AtriaResearchProbe.whoop4SkinTemperatureAnchorRaw($0)
+        }
+        guard !anchors.isEmpty else { return sessions }
+
+        func lowerBound(
+            _ values: [HistoricalArchive.SkinTemperatureRawPoint],
+            _ target: Date
+        ) -> Int {
+            var low = 0
+            var high = values.count
+            while low < high {
+                let middle = low + (high - low) / 2
+                if values[middle].t < target {
+                    low = middle + 1
+                } else {
+                    high = middle
+                }
+            }
+            return low
+        }
+
+        return sessions.map { source in
+            let candidates = pointsByDevice.compactMap { key, values
+                -> (key: String, value: ArraySlice<HistoricalArchive.SkinTemperatureRawPoint>)? in
+                let start = lowerBound(values, source.start)
+                let end = lowerBound(values, source.end.addingTimeInterval(0.001))
+                guard end > start else { return nil }
+                return (key, values[start..<end])
+            }
+            guard let selected = candidates
+                .sorted(by: {
+                    if $0.value.count != $1.value.count {
+                        return $0.value.count > $1.value.count
+                    }
+                    return $0.key < $1.key
+                })
+                .first,
+                let anchor = anchors[selected.key] else { return source }
+
+            // Persist minute means, not every 1 Hz ADC row. This preserves the
+            // sleep-baseline signal while keeping session JSON bounded.
+            let minuteBuckets = Dictionary(grouping: selected.value) {
+                Int($0.t.timeIntervalSince1970 / 60)
+            }
+            let decoded = minuteBuckets.keys.sorted().compactMap { minute in
+                guard let bucket = minuteBuckets[minute], !bucket.isEmpty else {
+                    return nil as AtriaResearchProbe.DecodedSkinTemperatureCelsius?
+                }
+                let meanRaw = Double(bucket.reduce(0) { $0 + $1.raw })
+                    / Double(bucket.count)
+                return AtriaResearchProbe.decodeWhoop4SkinTemperatureRaw(
+                    Int(meanRaw.rounded()),
+                    sameDeviceAnchorRaw: anchor
+                )
+            }
+            guard !decoded.isEmpty else { return source }
+            var updated = source
+            updated.skinTempResearchCandidateFrames = selected.value.count
+            updated.skinTempResearchCandidateValueSum = selected.value.reduce(0) {
+                $0 + $1.raw
+            }
+            updated.skinTempResearchCandidateValueCount = selected.value.count
+            updated.decodedSkinTemperatureCelsius = decoded
+            return updated
+        }
+    }
+
     nonisolated static func finalizedSkinTemperatureDeviationByMorningDay(sessions: [SavedSession],
                                                                           activeSessionID: UUID? = nil,
                                                                           calendar: Calendar = .current) -> [Date: Double] {
@@ -12092,6 +12183,7 @@ final class SessionStore: ObservableObject {
                                                             maxHR: Int,
                                                             now: Date,
                                                             skinTemperatureDeviationByDay: [Date: Double]? = nil,
+                                                            skinTemperatureSourceValidated: Bool = AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable,
                                                             authoritativeDays: Set<Date> = [],
                                                             calendar: Calendar = .current) -> [SavedDailyMetric] {
         let today = calendar.startOfDay(for: now)
@@ -12159,6 +12251,7 @@ final class SessionStore: ObservableObject {
                                                maxHR: maxHR,
                                                now: now,
                                                skinTemperatureDeviationByDay: skinTemperatureDeviationByDay,
+                                               skinTemperatureSourceValidated: skinTemperatureSourceValidated,
                                                calendar: calendar)
                 : nil
             if todayIsAuthoritative, freshMorning == nil {
@@ -12201,6 +12294,7 @@ final class SessionStore: ObservableObject {
                                                                     maxHR: maxHR,
                                                                     now: now,
                                                                     skinTemperatureDeviationByDay: skinTemperatureDeviationByDay,
+                                                                    skinTemperatureSourceValidated: skinTemperatureSourceValidated,
                                                                     calendar: calendar) {
             merged[today] = settledMorning
         } else {
@@ -12411,6 +12505,7 @@ final class SessionStore: ObservableObject {
                                                                  maxHR: Int,
                                                                  now: Date,
                                                                  skinTemperatureDeviationByDay: [Date: Double]? = nil,
+                                                                 skinTemperatureSourceValidated: Bool = AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable,
                                                                  calendar: Calendar = .current) -> SavedDailyMetric? {
         let hour = calendar.component(.hour, from: now)
         let confirmedMainSleep = sleep.nights.first {
@@ -12528,7 +12623,8 @@ final class SessionStore: ObservableObject {
             skinTemperatureDeviationByDay: skinTemperatureDeviationByDay,
             sessions: sessions,
             activeSessionID: freshActiveSessionIDForResearchSummary(now: now),
-            calendar: calendar
+            calendar: calendar,
+            validatedSource: skinTemperatureSourceValidated
         )
 
         guard hrv != nil

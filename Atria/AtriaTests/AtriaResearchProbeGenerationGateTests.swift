@@ -2,7 +2,7 @@ import XCTest
 @testable import Atria
 
 final class AtriaResearchProbeGenerationGateTests: XCTestCase {
-    func testV24HistoricalRecordExposesFixedRawOffsetHypotheses() {
+    func testV24HistoricalRecordExposesFixedRawOffsetHypotheses() throws {
         var payload = Array(repeating: UInt8(0), count: 84)
         payload[0] = 0x2f
         payload[1] = 24
@@ -22,12 +22,15 @@ final class AtriaResearchProbeGenerationGateTests: XCTestCase {
         XCTAssertEqual(summary.temperatureWordCandidates,
                        [.init(offset: 68, value: 826)])
         XCTAssertFalse(AtriaResearchProbe.validatedSpO2DecoderAvailable)
-        XCTAssertFalse(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
-        XCTAssertNil(AtriaResearchProbe.decodeSkinTemperatureCelsius(
+        XCTAssertTrue(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
+        let decoded = AtriaResearchProbe.decodeSkinTemperatureCelsius(
             payload: payload,
             source: .historical,
-            modelGeneration: .strap4
-        ), "raw offset hypotheses must remain unavailable as Celsius")
+            modelGeneration: .strap4,
+            sameDeviceAnchorRaw: 826
+        )
+        XCTAssertEqual(try XCTUnwrap(decoded).celsius, 33, accuracy: 1e-9)
+        XCTAssertTrue(try XCTUnwrap(decoded).isAggregationEligible)
     }
 
     func testCalibratedSkinTemperatureFixtureCarriesTypedDecoderIdentity() throws {
@@ -46,7 +49,7 @@ final class AtriaResearchProbeGenerationGateTests: XCTestCase {
         XCTAssertEqual(decoded.decoder.source, .historical)
         XCTAssertEqual(decoded.decoder.calibrationProvenance, .calibratedFixture)
         XCTAssertTrue(decoded.isAggregationEligible)
-        XCTAssertNil(AtriaResearchProbe.productionSkinTemperatureDecoder)
+        XCTAssertNotNil(AtriaResearchProbe.productionSkinTemperatureDecoder)
     }
 
     func testUnknownHistoricalVersionDoesNotUseWhoop4FixedOffsets() {
@@ -144,6 +147,41 @@ final class AtriaResearchProbeGenerationGateTests: XCTestCase {
         )
         XCTAssertFalse(gate.acceptsForCandidateCounting(emptyBinary))
         XCTAssertFalse(AtriaResearchProbe.validatedSpO2DecoderAvailable)
-        XCTAssertFalse(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
+        XCTAssertTrue(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
+    }
+
+    func testWhoop4RelativeTemperatureRequiresSameDeviceAnchor() {
+        var payload = Array(repeating: UInt8(0), count: 84)
+        payload[0] = 0x2f
+        payload[1] = 24
+        payload[68] = 0x3a
+        payload[69] = 0x03
+
+        XCTAssertNil(AtriaResearchProbe.decodeSkinTemperatureCelsius(
+            payload: payload,
+            source: .historical,
+            modelGeneration: .strap4,
+            sameDeviceAnchorRaw: nil
+        ))
+        XCTAssertNil(AtriaResearchProbe.decodeSkinTemperatureCelsius(
+            payload: payload,
+            source: .historical,
+            modelGeneration: .strap5,
+            sameDeviceAnchorRaw: 826
+        ))
+    }
+
+    func testWhoop4AnchorRejectsSparseAndDoffRows() throws {
+        let worn = Array(repeating: 900, count: 100)
+        XCTAssertNil(AtriaResearchProbe.whoop4SkinTemperatureAnchorRaw(
+            Array(repeating: 900, count: 99)
+        ))
+        XCTAssertEqual(
+            try XCTUnwrap(AtriaResearchProbe.whoop4SkinTemperatureAnchorRaw(
+                worn + Array(repeating: 510, count: 100)
+            )),
+            900,
+            accuracy: 1e-9
+        )
     }
 }

@@ -4144,3 +4144,27 @@ POSITIVE STILL REQUIRED**
   retained and no second BLE drain is armed. Evidence:
   `/tmp/atria-exact-progress-release-v6.log` and the physical container copy
   `/tmp/atria-metric-audit.z8LXVj`.
+
+## 2026-07-31 — WHOOP 4 v24 nightly skin-temperature signal
+
+- The retained `0x2f` v24 record carries a little-endian raw
+  skin-temperature ADC at payload-relative bytes `68...69` (frame-absolute
+  offset 72). The contact byte is payload-relative 51 (frame-absolute 55).
+- This is **not** centidegrees. Independent WHOOP 4 captures show a doff floor
+  around 510, an 11-bit saturation near 2047, and device-specific worn bands.
+  A fixed absolute conversion is therefore not defensible across straps.
+- Atria's production-safe use is limited to nightly deviation from the same
+  strap's own baseline:
+  - require the validated v24 layout, corrected timestamp, validated gravity,
+    non-zero contact, and raw `550...2040`;
+  - learn a per-device median anchor from at least 100 admitted samples;
+  - store timestamped evidence and minute means, never a session-wide
+    undated counter;
+  - publish only relative sleep-baseline change, never core or absolute
+    temperature.
+- The provisional relative scale is `0.05 °C/raw`. Because the public protocol
+  evidence does not establish a universal absolute transfer function, UI and
+  exports must retain the relative/approximate qualification.
+- Protocol cross-check: `ryanbr/noop`, WHOOP 4 v24 schema and skin-temperature
+  conversion tests at repository commit
+  `04ef00f9a47a835bb46cafdee502751656607076`.
