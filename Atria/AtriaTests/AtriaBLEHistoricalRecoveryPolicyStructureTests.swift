@@ -224,6 +224,109 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         }
     }
 
+    func testTerminalProjectionFailureReleasesOnlyAuthorizedMotionBankRequest() {
+        typealias Status =
+            AtriaHistoricalFullDrainCoverageStore.Authority.Status
+        typealias Disposition =
+            AtriaBLEManager.TerminalMaterializationReleaseDisposition
+
+        for status in [
+            Status.historyComplete,
+            .coverageProven,
+            .gapResolvedConsumersPending,
+            .consumersCommitted
+        ] {
+            XCTAssertEqual(
+                AtriaBLEManager.terminalMaterializationReleaseDisposition(
+                    wasInFlight: true,
+                    rangeLossBackfillPending: true,
+                    offlineHistoricalSyncInProgress: false,
+                    authorityStatus: status,
+                    hasPendingMotionBankRequest: false
+                ),
+                Disposition.retainTerminalJournal
+            )
+            XCTAssertEqual(
+                AtriaBLEManager.terminalMaterializationReleaseDisposition(
+                    wasInFlight: true,
+                    rangeLossBackfillPending: true,
+                    offlineHistoricalSyncInProgress: false,
+                    authorityStatus: status,
+                    hasPendingMotionBankRequest: true
+                ),
+                Disposition.resumePendingMotionBank
+            )
+        }
+
+        XCTAssertEqual(
+            AtriaBLEManager.terminalMaterializationReleaseDisposition(
+                wasInFlight: true,
+                rangeLossBackfillPending: true,
+                offlineHistoricalSyncInProgress: false,
+                authorityStatus: .draining,
+                hasPendingMotionBankRequest: true
+            ),
+            Disposition.scheduleRangeLossBackfill
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.terminalMaterializationReleaseDisposition(
+                wasInFlight: false,
+                rangeLossBackfillPending: true,
+                offlineHistoricalSyncInProgress: false,
+                authorityStatus: .gapResolvedConsumersPending,
+                hasPendingMotionBankRequest: true
+            ),
+            Disposition.noAction
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.terminalMaterializationReleaseDisposition(
+                wasInFlight: true,
+                rangeLossBackfillPending: true,
+                offlineHistoricalSyncInProgress: true,
+                authorityStatus: .gapResolvedConsumersPending,
+                hasPendingMotionBankRequest: true
+            ),
+            Disposition.noAction
+        )
+    }
+
+    func testReleasedMotionBankBypassesOnlyTheFailedLocalProjection() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria")
+        let manager = try String(
+            contentsOf: appDirectory.appendingPathComponent(
+                "AtriaBLEManager.swift"
+            ),
+            encoding: .utf8
+        )
+        let finishStart = try XCTUnwrap(manager.range(
+            of: "private func finishHistoricalConsumerMaterialization("
+        )?.lowerBound)
+        let finishEnd = try XCTUnwrap(manager.range(
+            of: "private func schedulePendingConsumerFollowupScanMaterialization(",
+            range: finishStart..<manager.endIndex
+        )?.lowerBound)
+        let finish = String(manager[finishStart..<finishEnd])
+
+        XCTAssertTrue(finish.contains(
+            "terminalMaterializationReleaseDisposition("
+        ))
+        XCTAssertTrue(finish.contains(
+            "takePendingOfflineHistoricalSyncRequest()"
+        ))
+        XCTAssertTrue(finish.contains(
+            "terminalMaterializationMotionBankReleaseInProgress = true"
+        ))
+        XCTAssertTrue(finish.contains(
+            "release_authorized_motion_bank_no_local_projection_retry"
+        ))
+        XCTAssertTrue(finish.contains(
+            "action=retain_terminal_journal_preserve_live_no_ble_rearm"
+        ))
+    }
+
     func testTerminalJournalMotionBankExceptionStaysInsideNormalAdmissionGates() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

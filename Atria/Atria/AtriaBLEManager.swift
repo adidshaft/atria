@@ -1407,6 +1407,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         AtriaHistoricalFullDrainCoverageStore.EventIdentity?
     private var activeHistoricalRequestBinding: AtriaBLEHistoryRequestAuthorityStore.Binding?
     private var historicalConsumerMaterializationInFlight = false
+    /// Set only while a failed local terminal projection releases a newer,
+    /// authorized motion-bank ticket through normal BLE admission.  It is
+    /// synchronous/MainActor-scoped, so it cannot suppress a later ordinary
+    /// terminal publication retry.
+    private var terminalMaterializationMotionBankReleaseInProgress = false
     /// Last compact decision record for the persisted-drain recovery bridge.
     /// This is intentionally state-change-only (not per-HR) so field
     /// diagnostics can identify a parked recovery without growing storage.
@@ -8057,6 +8062,40 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case resumeLocalPublicationAndContinueMotionBank
     }
 
+    /// A failed terminal *local* projection must release a newer, already
+    /// authorized motion-bank request.  The old terminal journal remains the
+    /// authority for its own raw rows and consumers; this only prevents that
+    /// local retry from indefinitely monopolising the BLE admission lane.
+    enum TerminalMaterializationReleaseDisposition: Equatable {
+        case noAction
+        case retainTerminalJournal
+        case resumePendingMotionBank
+        case scheduleRangeLossBackfill
+    }
+
+    nonisolated static func terminalMaterializationReleaseDisposition(
+        wasInFlight: Bool,
+        rangeLossBackfillPending: Bool,
+        offlineHistoricalSyncInProgress: Bool,
+        authorityStatus: AtriaHistoricalFullDrainCoverageStore.Authority.Status?,
+        hasPendingMotionBankRequest: Bool
+    ) -> TerminalMaterializationReleaseDisposition {
+        guard wasInFlight,
+              rangeLossBackfillPending,
+              !offlineHistoricalSyncInProgress else {
+            return .noAction
+        }
+        switch authorityStatus {
+        case .historyComplete?, .coverageProven?,
+             .gapResolvedConsumersPending?, .consumersCommitted?:
+            return hasPendingMotionBankRequest
+                ? .resumePendingMotionBank
+                : .retainTerminalJournal
+        case .draining?, .resolved?, nil:
+            return .scheduleRangeLossBackfill
+        }
+    }
+
     /// A terminal exact-gap journal owns only its remaining local publication,
     /// not every future piece of strap history. In particular, WHOOP 4's
     /// low-bandwidth 0x69 bank closes into a durable, same-strap ticket before
@@ -8213,14 +8252,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     forKey: OfflineSyncDefaults.lastStatus
                 )
                 defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
-                AtriaDebugLog(
-                    "ATRIADBG offline_sync status=terminal_consumer_materialization reason=%@ stage=%@ action=preserve_live_resume_local_publication",
-                    reason,
-                    authority.status.rawValue
-                )
-                resumePendingFullDrainPublicationIfNeeded(
-                    reason: "transport_request_\(reason)"
-                )
+                if !terminalMaterializationMotionBankReleaseInProgress {
+                    AtriaDebugLog(
+                        "ATRIADBG offline_sync status=terminal_consumer_materialization reason=%@ stage=%@ action=preserve_live_resume_local_publication",
+                        reason,
+                        authority.status.rawValue
+                    )
+                    resumePendingFullDrainPublicationIfNeeded(
+                        reason: "transport_request_\(reason)"
+                    )
+                } else {
+                    AtriaDebugLog(
+                        "ATRIADBG offline_sync status=terminal_consumer_materialization_bypassed reason=%@ stage=%@ action=release_authorized_motion_bank_without_restarting_local_projection",
+                        reason,
+                        authority.status.rawValue
+                    )
+                }
                 if terminalDisposition == .resumeLocalPublicationAndReturn {
                     return false
                 }
@@ -30848,34 +30895,67 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func finishHistoricalConsumerMaterialization(reason: String) {
         let wasInFlight = historicalConsumerMaterializationInFlight
         historicalConsumerMaterializationInFlight = false
-        guard wasInFlight,
-              UserDefaults.standard.bool(
-                forKey: OfflineSyncDefaults.rangeLossBackfillPending
-              ),
-              !offlineHistoricalSyncInProgress else { return }
-        if let authority = try? historicalFullDrainCoverageStore.load(),
-           authority.status == .historyComplete
-            || authority.status == .coverageProven
-            || authority.status == .gapResolvedConsumersPending
-            || authority.status == .consumersCommitted {
+        let defaults = UserDefaults.standard
+        let authorityStatus =
+            (try? historicalFullDrainCoverageStore.load())?.status
+        let releaseDisposition =
+            Self.terminalMaterializationReleaseDisposition(
+                wasInFlight: wasInFlight,
+                rangeLossBackfillPending: defaults.bool(
+                    forKey: OfflineSyncDefaults.rangeLossBackfillPending
+                ),
+                offlineHistoricalSyncInProgress: offlineHistoricalSyncInProgress,
+                authorityStatus: authorityStatus,
+                hasPendingMotionBankRequest:
+                    pendingOfflineHistoricalSyncRequest?
+                        .explicitPostWorkoutBankRequest == true
+            )
+        switch releaseDisposition {
+        case .noAction:
+            return
+        case .retainTerminalJournal:
             UserDefaults.standard.set(
                 "terminal_consumer_materialization_deferred",
                 forKey: OfflineSyncDefaults.lastStatus
             )
-            UserDefaults.standard.set(
+            defaults.set(
                 reason,
                 forKey: OfflineSyncDefaults.lastReason
             )
             AtriaDebugLog(
                 "ATRIADBG historical_full_drain_publish status=deferred stage=%@ reason=%@ action=retain_terminal_journal_preserve_live_no_ble_rearm",
-                authority.status.rawValue,
+                authorityStatus?.rawValue ?? "none",
                 reason
             )
             return
+        case .resumePendingMotionBank:
+            guard let pending = takePendingOfflineHistoricalSyncRequest() else {
+                return
+            }
+            defaults.set(
+                "terminal_consumer_materialization_releasing_motion_bank",
+                forKey: OfflineSyncDefaults.lastStatus
+            )
+            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            AtriaDebugLog(
+                "ATRIADBG historical_full_drain_publish status=deferred stage=%@ reason=%@ action=retain_terminal_journal_release_authorized_motion_bank_no_local_projection_retry",
+                authorityStatus?.rawValue ?? "none",
+                reason
+            )
+            terminalMaterializationMotionBankReleaseInProgress = true
+            defer { terminalMaterializationMotionBankReleaseInProgress = false }
+            _ = requestOfflineHistoricalSyncIfNeeded(
+                reason: pending.reason,
+                force: pending.force,
+                explicitResearchRequest: pending.explicitRequest,
+                explicitPostWorkoutBankRequest:
+                    pending.explicitPostWorkoutBankRequest
+            )
+        case .scheduleRangeLossBackfill:
+            scheduleRangeLossBackfillIfNeeded(
+                reason: "terminal_materialization_finished_\(reason)"
+            )
         }
-        scheduleRangeLossBackfillIfNeeded(
-            reason: "terminal_materialization_finished_\(reason)"
-        )
     }
 
     /// Turns a later ordinary full drain into immutable scan evidence for an
