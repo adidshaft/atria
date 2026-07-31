@@ -75,9 +75,31 @@ final class AtriaMetricTruthGateTests: XCTestCase {
 
         XCTAssertEqual(projected.latestDeltaCelsius, 0.4)
         XCTAssertTrue(projected.isReady)
-        XCTAssertGreaterThanOrEqual(projected.baselineSessions, 3)
+        XCTAssertEqual(projected.baselineSessions, 2)
         XCTAssertEqual(projected.candidateFrames, 84)
         XCTAssertEqual(projected.candidateValues, 12)
+    }
+
+    func testValidatedSkinTemperatureDoesNotInventCompactedBaselineCount() {
+        let compacted = IMUAuditSummary.SkinTemperatureDeviationSummary(
+            latestDeltaCelsius: nil,
+            baselineSessions: 0,
+            candidateFrames: 84,
+            candidateValues: 12
+        )
+
+        let projected = SessionStore.skinTemperatureDeviationSummary(
+            finalizedDeviationCelsius: 0.4,
+            fallback: compacted,
+            validatedSource: true
+        )
+
+        XCTAssertEqual(projected.latestDeltaCelsius, 0.4)
+        XCTAssertEqual(projected.baselineSessions, 0)
+        XCTAssertEqual(
+            projected.footnoteText,
+            "Relative sleep-only deviation from a persisted qualified sleep baseline; no absolute temperature."
+        )
     }
 
     func testExperimentalRespirationUsesOneCurrentConfirmedMainSleepForValueAndZone() {
