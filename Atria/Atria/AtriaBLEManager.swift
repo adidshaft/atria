@@ -19592,6 +19592,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // link. Opening a new bank immediately before that offload seizes the
         // radio made each intentional history cutover close a seconds-long
         // bank and create another ticket.
+        if !workoutHistoricalMotionBankArmed,
+           let strapIdentifier = peripheral?.identifier.uuidString {
+            // Also repairs an app termination/relaunch where the old process
+            // could not observe didDisconnect and persist the scheduling hint.
+            // The ledger remains authoritative; this only admits an existing
+            // attempts == 0 interval to its first asynchronous drain.
+            persistNextUnattemptedMotionBankMaintenanceTicketIfNeeded(
+                strapIdentifier: strapIdentifier
+            )
+        }
         let bankOffloadStarted =
             resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             reason: "fresh_accepted_hr"
@@ -22687,27 +22697,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 workoutHistoricalMotionBankArmedConnectionStartedAt
         )
         let strapIdentifier = peripheral.identifier.uuidString
-        let existingMaintenanceTicket =
-            pendingWorkoutHistoricalMotionBankMaintenanceTicket(
-                strapIdentifier: strapIdentifier,
-                defaults: defaults
-            )
-        let maintenanceTicket = existingMaintenanceTicket
-            ?? AtriaWhoop4MotionBankCoverageLedger.nextPendingOffload(
-                strapIdentifier: strapIdentifier
-            ).flatMap { $0.attempts == 0 ? $0 : nil }
-        if let maintenanceTicket {
-            // Do not make the one-second task below the authority. It may run
-            // before the post-workout HR stream is fresh, while the device is
-            // thermally constrained, or after the process is suspended.
-            // Persist the exact ticket until its transport generation actually
-            // starts; never let another interval spend this priority.
-            defaults.set(
-                maintenanceTicket.id,
-                forKey:
-                    Self.workoutHistoricalMotionBankMaintenanceTicketIDKey
-            )
-        }
+        persistNextUnattemptedMotionBankMaintenanceTicketIfNeeded(
+            strapIdentifier: strapIdentifier,
+            defaults: defaults
+        )
         workoutHistoricalMotionBankArmed = false
         workoutHistoricalMotionBankArmedConnectionStartedAt = nil
         defaults.set(false, forKey: Self.workoutHistoricalMotionBankEnabledKey)
@@ -22798,6 +22791,33 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         deferred: Bool
     ) -> Bool {
         requested || deferred
+    }
+
+    /// A closed bank must receive one first-attempt offload even when the close
+    /// came from an ordinary BLE loss instead of the hourly timer. Without
+    /// this durable hint, an older attempted binding wins every reconnect and
+    /// newly closed all-day intervals accumulate forever at attempts == 0.
+    private func persistNextUnattemptedMotionBankMaintenanceTicketIfNeeded(
+        strapIdentifier: String,
+        defaults: UserDefaults = .standard
+    ) {
+        if pendingWorkoutHistoricalMotionBankMaintenanceTicket(
+            strapIdentifier: strapIdentifier,
+            defaults: defaults
+        ) != nil {
+            return
+        }
+        guard let ticket =
+                AtriaWhoop4MotionBankCoverageLedger.nextPendingOffload(
+                    strapIdentifier: strapIdentifier
+                ),
+              ticket.attempts == 0 else {
+            return
+        }
+        defaults.set(
+            ticket.id,
+            forKey: Self.workoutHistoricalMotionBankMaintenanceTicketIDKey
+        )
     }
 
     private func pendingWorkoutHistoricalMotionBankMaintenanceTicket(
@@ -36201,6 +36221,10 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     armedConnectionStartedAt:
                         workoutHistoricalMotionBankArmedConnectionStartedAt
                             ?? connectedAt
+                )
+                persistNextUnattemptedMotionBankMaintenanceTicketIfNeeded(
+                    strapIdentifier: peripheral.identifier.uuidString,
+                    defaults: defaults
                 )
                 defaults.set(
                     false,
