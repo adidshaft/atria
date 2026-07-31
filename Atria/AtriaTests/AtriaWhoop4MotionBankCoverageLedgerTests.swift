@@ -568,7 +568,10 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
             forNotification: AtriaWhoop4MotionBankCoverageLedger
                 .didResolveOffloadNotification,
             object: nil
-        )
+        ) { note in
+            note.object as? String == ticket.id
+                || (note.object as? [String])?.contains(ticket.id) == true
+        }
         falselyResolved.isInverted = true
 
         XCTAssertTrue(
@@ -621,11 +624,25 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
                 defaults: defaults
             )
         }
+        let expectedIDs = Set(
+            AtriaWhoop4MotionBankCoverageLedger.pendingOffloads(
+                strapIdentifier: strap,
+                defaults: defaults
+            ).map(\.id)
+        )
         let falselyResolved = expectation(
             forNotification: AtriaWhoop4MotionBankCoverageLedger
                 .didResolveOffloadNotification,
             object: nil
-        )
+        ) { note in
+            if let id = note.object as? String {
+                return expectedIDs.contains(id)
+            }
+            if let ids = note.object as? [String] {
+                return !expectedIDs.isDisjoint(with: ids)
+            }
+            return false
+        }
         falselyResolved.isInverted = true
 
         let exhausted =
