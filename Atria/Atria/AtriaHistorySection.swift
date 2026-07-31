@@ -353,7 +353,10 @@ struct AtriaHistorySection: View, Equatable {
                 Text("Activity rhythm")
                     .font(.subheadline.weight(.semibold))
                 Spacer(minLength: 0)
-                Text("14d")
+                // The strip shows the last N days WITH activity data, which
+                // is not necessarily the last 14 calendar days (2026-07-31
+                // audit item 13).
+                Text("\(rhythmWindow.count)d of data")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -388,7 +391,9 @@ struct AtriaHistorySection: View, Equatable {
                     AtriaDetectionRow(event: event)
                 }
             }
-            if model.detections.count > 5 {
+            // Gate at the preview length so rows 4–5 stay reachable
+            // (2026-07-31 audit item 2).
+            if model.detections.count > 3 {
                 Button {
                     showAllDetections = true
                 } label: {
@@ -426,7 +431,9 @@ struct AtriaHistorySection: View, Equatable {
                     .buttonStyle(.plain)
                 }
             }
-            if model.days.count > 14 {
+            // Gate at the preview length: the old count > 14 threshold left
+            // days 8–14 unreachable from any surface (2026-07-31 audit item 2).
+            if model.days.count > 7 {
                 NavigationLink {
                     AtriaHistoryFullScreen(model: model, onSelect: { selectedDay = $0 })
                 } label: {
@@ -1139,11 +1146,14 @@ struct AtriaHistoryFullScreen: View {
     }
 
     private static let monthFormatter: DateFormatter = {
+        // Locale-aware month header. The old en_US_POSIX + "LLLL yyyy" pin
+        // froze English month names for every locale (2026-07-31 audit
+        // item 12).
         let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar.current
+        formatter.locale = Locale.autoupdatingCurrent
         formatter.timeZone = .current
-        formatter.dateFormat = "LLLL yyyy"
+        formatter.setLocalizedDateFormatFromTemplate("yMMMM")
         return formatter
     }()
 

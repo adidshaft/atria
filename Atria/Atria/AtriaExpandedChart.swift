@@ -80,9 +80,19 @@ struct AtriaExpandedChartView: View {
 
                 VStack(spacing: 10) {
                     header
-                    chartBody
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    footer
+                    if points.isEmpty {
+                        // Honest no-data state (2026-07-31 audit item 6): an
+                        // empty series used to fabricate dataStart = dataEnd =
+                        // now with a 0…1 y-axis and a "1 of 1 days visible"
+                        // footer. Same rule as the brush summary's "No data in
+                        // selection": say there is nothing, draw no axes.
+                        emptyState
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        chartBody
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        footer
+                    }
                 }
                 .frame(width: landscapeWidth, height: landscapeHeight)
                 // Landscape canvas on a portrait screen: rotate the whole
@@ -135,6 +145,20 @@ struct AtriaExpandedChartView: View {
             }
             .accessibilityLabel("Close expanded chart")
         }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "chart.line.uptrend.xyaxis")
+                .font(.title2)
+                .foregroundStyle(tint.opacity(0.7))
+            Text("No data in this range")
+                .font(.subheadline.weight(.semibold))
+            Text("\(title) has no recorded values here, so nothing is drawn.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private var chartBody: some View {
@@ -279,8 +303,8 @@ struct AtriaExpandedChartView: View {
                         .foregroundStyle(.tertiary)
                 }
             }
-            if !events.isEmpty {
-                Label("\(events.count) activities marked", systemImage: "flag.fill")
+            if visibleEventCount > 0 {
+                Label("\(visibleEventCount) activities marked", systemImage: "flag.fill")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
@@ -293,6 +317,15 @@ struct AtriaExpandedChartView: View {
 
     private var activeOverlay: AtriaExpandedChartPreparedOverlay? {
         prepared.overlay(title: activeOverlayTitle)
+    }
+
+    /// Only events inside the chart's x-domain: the marker lane clips to it,
+    /// so counting the full unfiltered list over-reported what is actually
+    /// marked (2026-07-31 audit item 10).
+    private var visibleEventCount: Int {
+        events.reduce(into: 0) { count, event in
+            if prepared.xDomain.contains(event.day) { count += 1 }
+        }
     }
 
     /// Honest summary of the brushed window: only real points inside it.

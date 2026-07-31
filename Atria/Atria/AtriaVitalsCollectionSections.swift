@@ -321,6 +321,7 @@ struct AtriaVitalsTabContent: View {
                                    rollupsRevision: vitals.dailyRollupHistoryRevision,
                                    confirmedWorkouts: vitals.confirmedWorkouts,
                                    confirmedWorkoutsRevision: vitals.confirmedWorkoutsRevision,
+                                   confirmedSleeps: vitals.confirmedSleeps,
                                    behaviorImpacts: vitals.behaviorImpactSummaries,
                                    baseline: AtriaBaselineTargetSnapshot(vitals.baseline),
                                    sleepHistory: vitals.sleepHistorySnapshot,
