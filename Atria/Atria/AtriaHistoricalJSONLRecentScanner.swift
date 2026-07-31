@@ -116,6 +116,7 @@ struct AtriaHistoricalJSONLRecentScanner {
         sources: [Source],
         cutoff: TimeInterval,
         chunkSize: Int = 64 * 1024,
+        onProgress: ((Statistics) -> Void)? = nil,
         consumeCandidate: (Data) -> Void
     ) -> Result {
         precondition(chunkSize > 0)
@@ -171,6 +172,11 @@ struct AtriaHistoricalJSONLRecentScanner {
                         carry.removeSubrange(carry.startIndex..<lineStart)
                         processedOffset = readOffset - UInt64(carry.count)
                     }
+                    // Progress is emitted only after this chunk has been fully
+                    // consumed. Callers may renew a finite inactivity lease
+                    // from the monotonic byte count; a queued or stalled scan
+                    // therefore cannot manufacture progress.
+                    onProgress?(statistics)
                 }
 
                 if source.descriptor.isCompressed {

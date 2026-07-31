@@ -162,6 +162,55 @@ final class AtriaHistoricalFullScanCompletionStore: @unchecked Sendable {
                          reusedExistingGeneration: false)
     }
 
+    /// Publishes a factual scan whose archive completion sequence may lag this
+    /// store's independent latest-pointer sequence. `transportGeneration` and
+    /// the immutable source/catalog hashes remain the scan authority;
+    /// `generation` is only this journal's monotonic ordering key.
+    ///
+    /// A terminal journal can legitimately settle after a later scan has
+    /// already advanced the pointer. Rejecting that record as stale wedges all
+    /// five local consumers even though its raw seal and transport identity are
+    /// durable. Rebase only the local sequence, never any observed scan fact.
+    @discardableResult
+    func recordCompletionAdvancingLatest(_ record: Record) throws -> Published {
+        // Compare the exact form this store persists. Raw scan timestamps can
+        // retain sub-second precision while the canonical journal is
+        // whole-second ISO-8601. Without this round-trip, retrying the same
+        // delayed scan can look factually different and mint a new generation.
+        var candidate: Record
+        do {
+            candidate = try JSONDecoder.fullScanISO8601.decode(
+                Record.self,
+                from: Self.canonicalData(record)
+            )
+        } catch {
+            throw StoreError.invalidRecord
+        }
+        for _ in 0..<3 {
+            do {
+                return try recordCompletion(candidate)
+            } catch StoreError.staleGeneration,
+                    StoreError.generationConflict {
+                let latest = try loadLatest()
+                if Self.sameCompletionFacts(candidate, latest) {
+                    candidate = Self.replacingGeneration(
+                        of: candidate,
+                        with: latest.generation
+                    )
+                } else {
+                    guard latest.generation < UInt64.max else {
+                        throw StoreError.staleGeneration
+                    }
+                    candidate = Self.replacingGeneration(
+                        of: candidate,
+                        with: latest.generation + 1
+                    )
+                }
+            }
+        }
+        throw StoreError.staleGeneration
+    }
+
     func loadLatest() throws -> Record {
         lock.lock()
         defer { lock.unlock() }
@@ -215,6 +264,38 @@ final class AtriaHistoricalFullScanCompletionStore: @unchecked Sendable {
     private func recordURL(forDigest digest: String) -> URL {
         directoryURL.appendingPathComponent(
             "historical-full-scan-completion-\(digest).json"
+        )
+    }
+
+    private static func sameCompletionFacts(
+        _ lhs: Record,
+        _ rhs: Record
+    ) -> Bool {
+        replacingGeneration(of: lhs, with: rhs.generation) == rhs
+    }
+
+    private static func replacingGeneration(
+        of record: Record,
+        with generation: UInt64
+    ) -> Record {
+        Record(
+            version: record.version,
+            generation: generation,
+            transportGeneration: record.transportGeneration,
+            transportNonce: record.transportNonce,
+            peripheralIdentifier: record.peripheralIdentifier,
+            strapIdentity: record.strapIdentity,
+            cursorWatermark: record.cursorWatermark,
+            terminalAt: record.terminalAt,
+            sourceChunkID: record.sourceChunkID,
+            sourceRawSHA256: record.sourceRawSHA256,
+            sourceFirstTimestamp: record.sourceFirstTimestamp,
+            sourceLastTimestamp: record.sourceLastTimestamp,
+            observedArchiveFirstTimestamp:
+                record.observedArchiveFirstTimestamp,
+            catalogGeneration: record.catalogGeneration,
+            catalogSnapshotSHA256: record.catalogSnapshotSHA256,
+            aggregateSnapshotSHA256: record.aggregateSnapshotSHA256
         )
     }
 

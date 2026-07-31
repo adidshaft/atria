@@ -96,11 +96,19 @@ private final class AtriaAppDependencies {
             AtriaPendingWorkoutIntentStore.shared.beginPreparing()
         }
         let ble = AtriaBLEManager(startsBluetooth: !store.restoreInitializationBlocked)
-        store.installRecoveredDataRecomputationDeferralProvider { [weak ble] in
-            ble?.recoveredDataProjectionDeferralIsActive ?? false
+        store.installRecoveredDataRecomputationDeferralProvider {
+            [weak ble] isExactRecoveryPublication in
+            guard let ble else { return false }
+            return AtriaBLEManager.recoveredDataProjectionShouldDefer(
+                isExactRecoveryPublication: isExactRecoveryPublication,
+                broadHistoricalOwnershipActive:
+                    ble.recoveredDataProjectionDeferralIsActive,
+                radioHistoricalOwnershipActive:
+                    ble.historicalRadioTransportOwnsLink
+            )
         }
         ble.onHistoricalTransportOwnershipReleased = { [weak store] reason in
-            store?.resumeDeferredRecoveredDataRecomputation(reason: reason)
+            store?.resumeDeferredForegroundArchiveWork(reason: reason)
         }
         let workoutRouteRecorder = AtriaWorkoutRouteRecorder()
         let workoutRuntime = AtriaWorkoutRuntime(ble: ble,
@@ -289,6 +297,9 @@ struct AtriaApp: App {
                         foregroundBLETransitionTask?.cancel()
                         foregroundBLETransitionTask = nil
                         recordScenePhase("background", reason: "scene_background")
+                        store.suspendRecoveredDataPublicationLeaseForBackground(
+                            reason: "scene_background"
+                        )
                         AtriaStrapCalibrationArchive.shared.flush()
                         inactiveFlushTask?.cancel()
                         inactiveFlushTask = nil
@@ -321,6 +332,9 @@ struct AtriaApp: App {
                         }
                     case .active:
                         recordScenePhase("active", reason: "scene_active")
+                        store.resumeRecoveredDataPublicationLeaseForForeground(
+                            reason: "scene_active"
+                        )
                         store.resumeDeferredSessionBoundaryDerivedPublicationIfNeeded(
                             reason: "scene_active"
                         )

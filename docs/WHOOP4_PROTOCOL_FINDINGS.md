@@ -4119,3 +4119,28 @@ POSITIVE STILL REQUIRED**
   showed fresh live HR at 73 bpm. Evidence:
   `/tmp/atria-bank-rearm.GcCSvN/prefs.plist` and
   `/tmp/atria-bank-rearm-release-build.log`.
+
+## 2026-07-31 — exact recovered-data publication must be incremental
+
+- A full exact projection over the retained archive is viable off the main
+  thread. The physical Release decoded 553,379,651 bytes into 368,987 archive
+  HR points, 181,209 live points, 240,457 RR beats, 16 sessions, and 380,958
+  admitted rows without interrupting live HR.
+- Re-reading the same archive independently for each derived consumer is not
+  viable. Confirmed-workout rehydration now reuses the already-qualified
+  projected HR points, and exact history publication recomputes only civil
+  days touched by the recovered gap plus the active physiological cycle.
+  Untouched verified daily rows remain authoritative.
+- Foreground CPU leases are resumable. iPhone Mirroring/backgrounding paused
+  the transaction without rolling back or restarting its archive scan; the
+  same generation resumed when the scene became active.
+- Exactness is retained while requests coalesce. A later generic archive
+  notification cannot downgrade a deferred exact-recovery request into a
+  best-effort refresh.
+- **PHYSICAL PASS:** generation 1 completed all derived consumers and durably
+  committed 21 daily metric rows. The transaction published at
+  `2026-07-31 07:35:21 IST`. The terminal journal honestly remains
+  `gap_resolved_consumers_pending` with zero typed receipts; raw evidence is
+  retained and no second BLE drain is armed. Evidence:
+  `/tmp/atria-exact-progress-release-v6.log` and the physical container copy
+  `/tmp/atria-metric-audit.z8LXVj`.

@@ -7920,6 +7920,57 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testExactRecoveryDefersOnlyForActiveRadioOwnership() {
+        func radioActive(
+            offlineSyncInProgress: Bool = false,
+            historyProbeEnabled: Bool = false,
+            historyPhaseActive: Bool = false,
+            readOnlyRequested: Bool = false,
+            readOnlyActive: Bool = false,
+            postHistoryLiveRestorationPending: Bool = false,
+            freshOwnerCutoverPending: Bool = false,
+            freshOwnerConnectionArmed: Bool = false
+        ) -> Bool {
+            AtriaBLEManager.historicalRadioTransportOwnershipIsActive(
+                offlineSyncInProgress: offlineSyncInProgress,
+                historyProbeEnabled: historyProbeEnabled,
+                historyPhaseActive: historyPhaseActive,
+                readOnlyRequested: readOnlyRequested,
+                readOnlyActive: readOnlyActive,
+                postHistoryLiveRestorationPending:
+                    postHistoryLiveRestorationPending,
+                freshOwnerCutoverPending: freshOwnerCutoverPending,
+                freshOwnerConnectionArmed: freshOwnerConnectionArmed
+            )
+        }
+
+        XCTAssertFalse(radioActive())
+        XCTAssertTrue(radioActive(offlineSyncInProgress: true))
+        XCTAssertTrue(radioActive(historyProbeEnabled: true))
+        XCTAssertTrue(radioActive(historyPhaseActive: true))
+        XCTAssertTrue(radioActive(readOnlyRequested: true))
+        XCTAssertTrue(radioActive(readOnlyActive: true))
+        XCTAssertTrue(radioActive(postHistoryLiveRestorationPending: true))
+        XCTAssertTrue(radioActive(freshOwnerCutoverPending: true))
+        XCTAssertTrue(radioActive(freshOwnerConnectionArmed: true))
+
+        XCTAssertFalse(AtriaBLEManager.recoveredDataProjectionShouldDefer(
+            isExactRecoveryPublication: true,
+            broadHistoricalOwnershipActive: true,
+            radioHistoricalOwnershipActive: false
+        ))
+        XCTAssertTrue(AtriaBLEManager.recoveredDataProjectionShouldDefer(
+            isExactRecoveryPublication: false,
+            broadHistoricalOwnershipActive: true,
+            radioHistoricalOwnershipActive: false
+        ))
+        XCTAssertTrue(AtriaBLEManager.recoveredDataProjectionShouldDefer(
+            isExactRecoveryPublication: true,
+            broadHistoricalOwnershipActive: true,
+            radioHistoricalOwnershipActive: true
+        ))
+    }
+
     func testInterruptedHistoryOwnerCannotSuppressLiveReconnectDiscovery() {
         XCTAssertTrue(
             AtriaBLEManager.shouldReleaseInterruptedHistoryOwnerForLiveReconnect(

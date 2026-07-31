@@ -785,11 +785,11 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
         XCTAssertNil(pending.consumerCommit)
         XCTAssertNotNil(pending.resolvedAtUnix)
         XCTAssertEqual(pending.pendingConsumerDependency, dependency)
-        XCTAssertTrue(
+        XCTAssertFalse(
             HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority(
                 archiveRoot: root
             ),
-            "future-dependent consumers still need the shared archive lane until their publication fence commits"
+            "the exact gap is closed; future-dependent typed consumers must not starve ordinary archive work"
         )
 
         store = Store(
