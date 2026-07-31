@@ -83,18 +83,31 @@ final class AtriaStrainDetailPresentationTests: XCTestCase {
         let end = try XCTUnwrap(source.range(of: "var strainDetail: String", range: start.upperBound..<source.endIndex))
         let projection = String(source[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(projection.contains("strainConfidence.localizedCaseInsensitiveContains(\"learning\")"))
-        // 2026-07-28 deterministic-presentation pass: the not-computable token
-        // moved from the word "Learning" to "--" so the value line only ever
-        // carries a numeral or a dash. The invariant this test is named for is
-        // unchanged and still enforced -- no evidence must never become an
-        // invented zero -- and noValue is "--", not "0.0". The detail hero
-        // already rendered "--" for this same state, so this also removed a
-        // contradiction between a card and the sheet it opens.
-        XCTAssertTrue(projection.contains("return AtriaCompactMetricPresentation.noValue"))
-        XCTAssertFalse(projection.contains("return \"0\""),
+        // 2026-07-31: 81eea260 moved the value composition into the single
+        // Metrics.StrainPresentation authority; the home projection must
+        // delegate to it rather than reimplement the tokens locally.
+        XCTAssertTrue(projection.contains("Metrics.StrainPresentation.resolve("))
+        XCTAssertTrue(projection.contains(".valueText"))
+
+        // The invariant this test is named for is unchanged and now enforced
+        // inside the shared authority: no evidence must never become an
+        // invented zero — learning/standby resolves to `nil`, and the value
+        // line only ever carries a numeral, a `≥` lower bound, or "--".
+        let metricsURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/Metrics.swift")
+        let metrics = try String(contentsOf: metricsURL, encoding: .utf8)
+        let presentationStart = try XCTUnwrap(metrics.range(of: "struct StrainPresentation"))
+        let presentationEnd = try XCTUnwrap(metrics.range(
+            of: "var coverageText: String?",
+            range: presentationStart.upperBound..<metrics.endIndex
+        ))
+        let presentation = String(metrics[presentationStart.lowerBound..<presentationEnd.lowerBound])
+        XCTAssertTrue(presentation.contains("localizedCaseInsensitiveContains(\"learning\")"))
+        XCTAssertTrue(presentation.contains("return AtriaCompactMetricPresentation.noValue"))
+        XCTAssertFalse(presentation.contains("return \"0\""),
                        "no evidence must never be presented as a measured zero")
-        XCTAssertTrue(projection.contains("String(format: \"%.1f\", strain)"))
-        XCTAssertTrue(projection.contains("? \"≥ \\(numeric)\""))
+        XCTAssertTrue(presentation.contains("String(format: \"%.1f\", value)"))
+        XCTAssertTrue(presentation.contains("? \"≥ \\(numeric)\""))
     }
 }

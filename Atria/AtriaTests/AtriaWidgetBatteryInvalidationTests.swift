@@ -807,8 +807,14 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("Atria/WidgetSnapshot.swift")
         let source = try String(contentsOf: url, encoding: .utf8)
+        // 2026-07-31: 81eea260 renamed the raw label to baseStrainConfidence
+        // and routed it through the Metrics.StrainPresentation authority; the
+        // credibility gate reads the resolved confidence, not the raw one.
         let confidence = try XCTUnwrap(source.range(
-            of: "var strainConfidence = AtriaHomeModel.strainConfidence("
+            of: "let baseStrainConfidence = AtriaHomeModel.strainConfidence("
+        ))
+        let resolved = try XCTUnwrap(source.range(
+            of: "let strainPresentation = Metrics.StrainPresentation.resolve("
         ))
         let gate = try XCTUnwrap(source.range(
             of: "let strainIsCredible =\n            !strainConfidence.localizedCaseInsensitiveContains(\"learning\")"
@@ -816,7 +822,8 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         let captured = try XCTUnwrap(source.range(
             of: "strainCapturedAt: strainIsCredible ? now : nil"
         ))
-        XCTAssertLessThan(confidence.lowerBound, gate.lowerBound)
+        XCTAssertLessThan(confidence.lowerBound, resolved.lowerBound)
+        XCTAssertLessThan(resolved.lowerBound, gate.lowerBound)
         XCTAssertLessThan(gate.lowerBound, captured.lowerBound)
         // All three clock fields gate together: the widget's freshness guard
         // requires the full set, so a partial gate would leak a confident 0.0.
@@ -860,8 +867,17 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(publisher.contains("sleepHours: latestDisplaySleep?.durationHours"))
         XCTAssertTrue(publisher.contains("? \"Review nap\" : \"Review sleep\""))
         XCTAssertTrue(publisher.contains("strainConfidence.localizedCaseInsensitiveContains(\"partial\")"))
-        XCTAssertTrue(publisher.contains("\"Partial · \\(Int(($0 * 100).rounded()))% wear\""))
-        XCTAssertTrue(publisher.contains("?? \"Partial · sparse HR\""))
+        // 2026-07-31: 81eea260 moved the percent disclosure into the shared
+        // StrainPresentation.coverageText ("% covered", matching the step
+        // card's wording) with the sparse-HR fallback kept in the publisher.
+        XCTAssertTrue(publisher.contains("strainPresentation.coverageText ?? \"Partial · sparse HR\""))
+        let metricsURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/Metrics.swift")
+        let metrics = try String(contentsOf: metricsURL, encoding: .utf8)
+        XCTAssertTrue(metrics.contains(
+            "\"Partial · \\(Int((coverageFraction * 100).rounded()))% covered\""
+        ), "the partial percent disclosure must survive in the shared authority")
         XCTAssertTrue(widget.contains("snapshot.strainDetail ?? \"Updated"))
         XCTAssertTrue(widget.contains("? \"≥ \\(numeric)\""))
         XCTAssertTrue(widget.contains("sleepDetail.localizedCaseInsensitiveContains(\"review\")"))

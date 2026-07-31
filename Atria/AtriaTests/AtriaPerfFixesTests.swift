@@ -1987,14 +1987,18 @@ final class AtriaPerfFixesTests: XCTestCase {
     }
 
     func testStrainConfidenceDisclosesPartialDayWear() {
-        // Half-worn day keeps the base label; below half discloses.
+        // 2026-07-31: 81eea260 routed the label through the single
+        // Metrics.StrainPresentation authority. Strain is an integral over
+        // observed HR, so anything below the strong-coverage tier (95%) now
+        // discloses `· partial` — including a half-worn day that the old
+        // 50% threshold silently presented as complete.
         XCTAssertEqual(AtriaHomeModel.strainConfidence(
             hasRestingHeartRateEvidence: true,
             maxHRSource: .measured,
             hasLoadEvidence: true,
             resolvedRest: 58,
             maxHR: 192,
-            wearCoverageFraction: 0.5
+            wearCoverageFraction: 0.96
         ), "local")
         XCTAssertEqual(AtriaHomeModel.strainConfidence(
             hasRestingHeartRateEvidence: true,
@@ -2002,8 +2006,16 @@ final class AtriaPerfFixesTests: XCTestCase {
             hasLoadEvidence: true,
             resolvedRest: 58,
             maxHR: 192,
+            wearCoverageFraction: 0.5
+        ), "local · partial")
+        XCTAssertEqual(AtriaHomeModel.strainConfidence(
+            hasRestingHeartRateEvidence: true,
+            maxHRSource: .measured,
+            hasLoadEvidence: true,
+            resolvedRest: 58,
+            maxHR: 192,
             wearCoverageFraction: 0.2
-        ), "local · partial-day wear")
+        ), "local · partial")
         XCTAssertEqual(AtriaHomeModel.strainConfidence(
             hasRestingHeartRateEvidence: true,
             maxHRSource: .ageEstimate,
@@ -2011,7 +2023,7 @@ final class AtriaPerfFixesTests: XCTestCase {
             resolvedRest: 58,
             maxHR: 187,
             wearCoverageFraction: 0.1
-        ), "provisional · age-estimated max HR · partial-day wear")
+        ), "provisional · age-estimated max HR · partial")
         // Unknown coverage and learning states are unchanged.
         XCTAssertEqual(AtriaHomeModel.strainConfidence(
             hasRestingHeartRateEvidence: true,
