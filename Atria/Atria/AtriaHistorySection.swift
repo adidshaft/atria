@@ -310,7 +310,9 @@ struct AtriaHistorySection: View, Equatable {
             }
         }
         .sheet(item: $selectedDay) { day in
-            AtriaHistoryDayDetailSheet(day: day, medians: model.medianWindow(around: day))
+            AtriaHistoryDayDetailSheet(day: day,
+                                       medians: model.medianWindow(around: day),
+                                       nights: store.sleepHistorySnapshot.confirmedNights(on: day.date))
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -1312,6 +1314,14 @@ private struct AtriaHistoryStatRow: View {
 struct AtriaHistoryDayDetailSheet: View {
     let day: AtriaHistoryDay
     let medians: AtriaHistoryMedians
+    /// The day's confirmed sleeps/naps (from the sleep-history snapshot).
+    /// Optional so the two pre-existing call sites can adopt independently;
+    /// with entries, each row is tappable and opens the shared stage-timeline
+    /// hypnogram for that sleep.
+    var nights: [SleepHistorySnapshot.Night] = []
+    /// nil = default (first night open). The empty string is the explicit
+    /// "everything collapsed" marker — night ids are never empty.
+    @State private var expandedNightID: String?
 
     var body: some View {
         ScrollView {
@@ -1325,9 +1335,80 @@ struct AtriaHistoryDayDetailSheet: View {
                     sleepRow
                     strainRow
                 }
+                sleepNightsSection
             }
             .padding(20)
         }
+    }
+
+    private var effectiveExpandedNightID: String? {
+        expandedNightID ?? nights.first?.id
+    }
+
+    @ViewBuilder
+    private var sleepNightsSection: some View {
+        if !nights.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Sleep this day")
+                    .font(.subheadline.weight(.semibold))
+                ForEach(nights) { night in
+                    sleepNightEntry(night)
+                }
+            }
+        }
+    }
+
+    private func sleepNightEntry(_ night: SleepHistorySnapshot.Night) -> some View {
+        let expanded = effectiveExpandedNightID == night.id
+        return VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
+                    expandedNightID = expanded ? "" : night.id
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: night.isNapEvidence ? "moon.zzz.fill" : "moon.fill")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(Metrics.electricSleep)
+                        .frame(width: 24, height: 24)
+                        .background(AtriaIconTileBackground(cornerRadius: 8, tint: Metrics.electricSleep))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(night.confirmationText)
+                            .font(.caption.weight(.semibold))
+                        Text("\(nightWindowText(night)) · \(night.durationText)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(expanded ? 180 : 0))
+                }
+                .padding(10)
+                .atriaInsetCard(tint: Metrics.electricSleep)
+                .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset,
+                                               style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(expanded ? "Hides the sleep-stages hypnogram"
+                                        : "Shows the sleep-stages hypnogram")
+
+            if expanded {
+                AtriaSleepHypnogramCard(night: night)
+            }
+        }
+    }
+
+    private func nightWindowText(_ night: SleepHistorySnapshot.Night) -> String {
+        guard let start = night.start, let end = night.end else { return "Window building" }
+        let calendar = EventCivilTime.eventCalendar(timeZoneIdentifier: night.eventTimeZoneIdentifier,
+                                                    fallback: .current)
+        var style = Date.FormatStyle(date: .omitted, time: .shortened)
+        style.timeZone = calendar.timeZone
+        return "\(start.formatted(style)) – \(end.formatted(style))"
     }
 
     private var recoveryRow: some View {
@@ -1388,5 +1469,24 @@ struct AtriaHistoryDayDetailSheet: View {
                                                           median: medians.strain,
                                                           goodDirection: .neutral,
                                                           formatMagnitude: { String(format: "%.1f", $0) }))
+    }
+}
+
+extension SleepHistorySnapshot {
+    /// The confirmed sleeps/naps attributed to one civil day (main +
+    /// additional-main + naps), oldest first — the feed for the History day
+    /// sheet's tappable sleep rows. Candidates stay out: an unconfirmed
+    /// window must not present a hypnogram from the History surface.
+    func confirmedNights(on day: Date, calendar: Calendar = .current) -> [Night] {
+        // The lightweight snapshot init mirrors naps into both `nights` and
+        // `napNights`; de-dupe by id so a nap never renders two rows.
+        (nights + additionalMainNights + napNights)
+            .filter { $0.confirmed && calendar.isDate($0.day, inSameDayAs: day) }
+            .reduce(into: [Night]()) { result, night in
+                if !result.contains(where: { $0.id == night.id }) {
+                    result.append(night)
+                }
+            }
+            .sorted { ($0.start ?? $0.day) < ($1.start ?? $1.day) }
     }
 }
