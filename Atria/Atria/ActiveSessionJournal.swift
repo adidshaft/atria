@@ -31,6 +31,13 @@ struct ActiveSessionJournalRecord: Codable {
     var skinTempResearchCandidateFrames: Int? = nil
     var skinTempResearchCandidateValueSum: Int? = nil
     var skinTempResearchCandidateValueCount: Int? = nil
+    /// RESEARCH-ONLY SpO2 candidate byte-value capture at the two historical
+    /// hypotheses (offsets 64/66). Optional so journals written before the
+    /// capture existed remain decodable. Never rendered as an SpO2 value.
+    var spo2ResearchCandidateOffset64ValueSum: Int? = nil
+    var spo2ResearchCandidateOffset64ValueCount: Int? = nil
+    var spo2ResearchCandidateOffset66ValueSum: Int? = nil
+    var spo2ResearchCandidateOffset66ValueCount: Int? = nil
     /// Cumulative, calibration-gated R10 detector state for this live segment.
     /// Optional so journals written before step capture remain decodable.
     var strapStepResearchCount: Int? = nil
@@ -107,6 +114,10 @@ private struct ActiveSessionJournalSegment: Codable {
     var skinTempResearchCandidateFrames: Int? = nil
     var skinTempResearchCandidateValueSum: Int? = nil
     var skinTempResearchCandidateValueCount: Int? = nil
+    var spo2ResearchCandidateOffset64ValueSum: Int? = nil
+    var spo2ResearchCandidateOffset64ValueCount: Int? = nil
+    var spo2ResearchCandidateOffset66ValueSum: Int? = nil
+    var spo2ResearchCandidateOffset66ValueCount: Int? = nil
     var strapStepResearchCount: Int? = nil
     var strapStepResearchRawCount: Int? = nil
     var strapStepResearchDeviceTimestamp: UInt32? = nil
@@ -460,6 +471,10 @@ enum ActiveSessionJournal {
             skinTempResearchCandidateFrames: record.skinTempResearchCandidateFrames,
             skinTempResearchCandidateValueSum: record.skinTempResearchCandidateValueSum,
             skinTempResearchCandidateValueCount: record.skinTempResearchCandidateValueCount,
+            spo2ResearchCandidateOffset64ValueSum: record.spo2ResearchCandidateOffset64ValueSum,
+            spo2ResearchCandidateOffset64ValueCount: record.spo2ResearchCandidateOffset64ValueCount,
+            spo2ResearchCandidateOffset66ValueSum: record.spo2ResearchCandidateOffset66ValueSum,
+            spo2ResearchCandidateOffset66ValueCount: record.spo2ResearchCandidateOffset66ValueCount,
             strapStepResearchCount: record.strapStepResearchCount,
             strapStepResearchRawCount: record.strapStepResearchRawCount,
             strapStepResearchDeviceTimestamp: record.strapStepResearchDeviceTimestamp,
@@ -686,6 +701,10 @@ enum ActiveSessionJournal {
             skinTempResearchCandidateFrames: record.skinTempResearchCandidateFrames,
             skinTempResearchCandidateValueSum: record.skinTempResearchCandidateValueSum,
             skinTempResearchCandidateValueCount: record.skinTempResearchCandidateValueCount,
+            spo2ResearchCandidateOffset64ValueSum: record.spo2ResearchCandidateOffset64ValueSum,
+            spo2ResearchCandidateOffset64ValueCount: record.spo2ResearchCandidateOffset64ValueCount,
+            spo2ResearchCandidateOffset66ValueSum: record.spo2ResearchCandidateOffset66ValueSum,
+            spo2ResearchCandidateOffset66ValueCount: record.spo2ResearchCandidateOffset66ValueCount,
             strapStepResearchCount: record.strapStepResearchCount,
             strapStepResearchRawCount: record.strapStepResearchRawCount,
             strapStepResearchDeviceTimestamp: record.strapStepResearchDeviceTimestamp,
@@ -833,6 +852,10 @@ enum ActiveSessionJournal {
             skinTempResearchCandidateFrames: segment.skinTempResearchCandidateFrames,
             skinTempResearchCandidateValueSum: segment.skinTempResearchCandidateValueSum,
             skinTempResearchCandidateValueCount: segment.skinTempResearchCandidateValueCount,
+            spo2ResearchCandidateOffset64ValueSum: segment.spo2ResearchCandidateOffset64ValueSum,
+            spo2ResearchCandidateOffset64ValueCount: segment.spo2ResearchCandidateOffset64ValueCount,
+            spo2ResearchCandidateOffset66ValueSum: segment.spo2ResearchCandidateOffset66ValueSum,
+            spo2ResearchCandidateOffset66ValueCount: segment.spo2ResearchCandidateOffset66ValueCount,
             strapStepResearchCount: segment.strapStepResearchCount,
             strapStepResearchRawCount: segment.strapStepResearchRawCount,
             strapStepResearchDeviceTimestamp: segment.strapStepResearchDeviceTimestamp,
@@ -891,6 +914,10 @@ enum ActiveSessionJournal {
         record.skinTempResearchCandidateFrames = segment.skinTempResearchCandidateFrames
         record.skinTempResearchCandidateValueSum = segment.skinTempResearchCandidateValueSum
         record.skinTempResearchCandidateValueCount = segment.skinTempResearchCandidateValueCount
+        record.spo2ResearchCandidateOffset64ValueSum = segment.spo2ResearchCandidateOffset64ValueSum
+        record.spo2ResearchCandidateOffset64ValueCount = segment.spo2ResearchCandidateOffset64ValueCount
+        record.spo2ResearchCandidateOffset66ValueSum = segment.spo2ResearchCandidateOffset66ValueSum
+        record.spo2ResearchCandidateOffset66ValueCount = segment.spo2ResearchCandidateOffset66ValueCount
         let previousStepCount = record.strapStepResearchCount
         let incomingStepCount = segment.strapStepResearchCount
         let previousStepState = record.strapStepResearchState

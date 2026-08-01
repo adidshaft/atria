@@ -33,6 +33,66 @@ final class AtriaResearchProbeGenerationGateTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(decoded).isAggregationEligible)
     }
 
+    func testOxygenCandidateValueCaptureAccumulatesPerOffsetMeanWithoutDisplayGating() throws {
+        // RESEARCH-ONLY capture: two synthetic 0x2f v24 records with known u16
+        // values at the offset 64/66 hypotheses. Confirms analyze() exposes the
+        // per-offset value and that the sum/count accumulation the BLE manager
+        // performs yields the correct mean. Capture must never flip SpO2 display.
+        func makeHistoricalRecord(offset64: Int, offset66: Int) -> [UInt8] {
+            var payload = Array(repeating: UInt8(0), count: 84)
+            payload[0] = 0x2f
+            payload[1] = 24
+            payload[64] = UInt8(offset64 & 0xff)
+            payload[65] = UInt8((offset64 >> 8) & 0xff)
+            payload[66] = UInt8(offset66 & 0xff)
+            payload[67] = UInt8((offset66 >> 8) & 0xff)
+            payload[68] = 0x3a
+            payload[69] = 0x03 // raw u16 at offset 68 = 826 (temperature hypothesis)
+            return payload
+        }
+
+        let firstSummary = AtriaResearchProbe.analyze(
+            payload: makeHistoricalRecord(offset64: 18_000, offset66: 17_000),
+            source: .historical
+        )
+        let secondSummary = AtriaResearchProbe.analyze(
+            payload: makeHistoricalRecord(offset64: 16_000, offset66: 15_000),
+            source: .historical
+        )
+
+        XCTAssertEqual(firstSummary.oxygenValue(atOffset: 64), 18_000)
+        XCTAssertEqual(firstSummary.oxygenValue(atOffset: 66), 17_000)
+        XCTAssertEqual(secondSummary.oxygenValue(atOffset: 64), 16_000)
+        XCTAssertEqual(secondSummary.oxygenValue(atOffset: 66), 15_000)
+        XCTAssertNil(firstSummary.oxygenValue(atOffset: 65))
+
+        // Mirror the BLE manager per-offset sum/count accumulation.
+        var offset64Sum = 0
+        var offset64Count = 0
+        var offset66Sum = 0
+        var offset66Count = 0
+        for summary in [firstSummary, secondSummary] {
+            if let value = summary.oxygenValue(atOffset: 64) {
+                offset64Sum += value
+                offset64Count += 1
+            }
+            if let value = summary.oxygenValue(atOffset: 66) {
+                offset66Sum += value
+                offset66Count += 1
+            }
+        }
+
+        XCTAssertEqual(offset64Sum, 34_000)
+        XCTAssertEqual(offset64Count, 2)
+        XCTAssertEqual(offset64Sum / offset64Count, 17_000)
+        XCTAssertEqual(offset66Sum, 32_000)
+        XCTAssertEqual(offset66Count, 2)
+        XCTAssertEqual(offset66Sum / offset66Count, 16_000)
+
+        // Capture-only: the display gate must remain closed.
+        XCTAssertFalse(AtriaResearchProbe.validatedSpO2DecoderAvailable)
+    }
+
     func testCalibratedSkinTemperatureFixtureCarriesTypedDecoderIdentity() throws {
         let decoded = try XCTUnwrap(
             AtriaResearchProbe.DecodedSkinTemperatureCelsius.calibratedFixture(

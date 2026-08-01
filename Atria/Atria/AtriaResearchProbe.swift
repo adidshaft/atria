@@ -203,6 +203,14 @@ enum AtriaResearchProbe {
             Self.offsetSummary(oxygenByteCandidates)
         }
 
+        /// RESEARCH-ONLY: the observed candidate byte value at a hypothesized
+        /// offset (64/66 for historical 0x2f records). This is a raw capture for
+        /// later cross-checking against a reference app; it is never an SpO2
+        /// percentage and never drives display.
+        func oxygenValue(atOffset offset: Int) -> Int? {
+            oxygenByteCandidates.first { $0.offset == offset }?.value
+        }
+
         var temperatureOffsetSummary: String {
             Self.offsetSummary(temperatureWordCandidates)
         }
