@@ -10511,6 +10511,21 @@ class HandoffStaticChecks(unittest.TestCase):
             # profile and expectations (WHOOP-style journal opt-in).
             "case behaviors",
             "case expectations",
+            # 2026-08-01 (design-parity slice 6): nickname (P1), rings (P2) and
+            # cycle (P3) pages were woven into the flow. whatThisIs stays first,
+            # expectations stays last; research (P4) keeps its post-flow consent
+            # step. Each new control binds to its real backing store.
+            "case nickname",
+            "case rings",
+            "case cycle",
+            "Welcome to Atria",
+            "Choose your rings",
+            "Center number",
+            "Enable cycle tracking",
+            "AtriaOnboardingPersonalization.persistNickname",
+            "AtriaOnboardingPersonalization.persistRingSlots",
+            "AtriaOnboardingPersonalization.persistRingCenterMetric",
+            "AtriaCycleTracking.setEnabled(enabled)",
             "Your strap. Your data.",
             "Close WHOOP",
             "Wear it tonight",
@@ -10531,6 +10546,13 @@ class HandoffStaticChecks(unittest.TestCase):
 
     # 2026-07-16: onboarding grew from four to five pages — added a
     # "What to track" journal-behavior selection step before expectations.
+    # 2026-08-01 (design-parity slice 6): the single flow grew again to eight
+    # pages — nickname (P1), rings (P2) and cycle (P3) were woven in between the
+    # existing pages. whatThisIs stays first and expectations stays last; the
+    # research choice (P4) keeps its existing inspector-gated post-flow consent
+    # step (AtriaOnboardingSharingChoiceStep in ContentView), so it is not
+    # duplicated inside the flow. The method name is kept for stable test
+    # identity even though the page count is now eight.
     def test_onb1_uses_single_five_page_onboarding_flow(self):
         content = source(ROOT / "Atria" / "Atria" / "ContentView.swift")
         onboarding = source(ROOT / "Atria" / "Atria" / "AtriaOnboardingFlow.swift")
@@ -10549,6 +10571,13 @@ class HandoffStaticChecks(unittest.TestCase):
             # profile and expectations (WHOOP-style journal opt-in).
             "case behaviors",
             "case expectations",
+            # 2026-08-01: the three woven-in personalization/consent pages.
+            "case nickname",
+            "case rings",
+            "case cycle",
+            "Welcome to Atria",
+            "Choose your rings",
+            "Enable cycle tracking",
             "Your strap. Your data.",
             "WHOOP insights without the subscription.",
             "Close WHOOP",

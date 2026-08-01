@@ -251,6 +251,10 @@ struct AtriaStressDetailView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @State private var freshnessNow = Date()
+    // Knowledge slice 5 (2026-08-01): the ⓘ presents the richer spec §20
+    // "About Stress" education sheet directly, self-contained. `onInfo` is kept
+    // for source compatibility with existing call sites.
+    @State private var showAbout = false
 
     init(input: AtriaStressDetailInput,
          onDismiss: @escaping () -> Void,
@@ -306,6 +310,9 @@ struct AtriaStressDetailView: View {
             // a per-second timer invalidating the entire chart hierarchy.
             freshnessNow = Date()
         }
+        .sheet(isPresented: $showAbout) {
+            AtriaAboutMetricSheet(metric: .stress)
+        }
     }
 
     private var background: Color {
@@ -331,14 +338,12 @@ struct AtriaStressDetailView: View {
 
             Spacer(minLength: 8)
 
-            if let onInfo {
-                Button(action: onInfo) {
-                    Image(systemName: "info.circle")
-                        .frame(width: 40, height: 40)
-                }
-                .atriaGlassIconAction(tint: .primary, size: 40)
-                .accessibilityLabel("About Stress")
+            Button { showAbout = true } label: {
+                Image(systemName: "info.circle")
+                    .frame(width: 40, height: 40)
             }
+            .atriaGlassIconAction(tint: .primary, size: 40)
+            .accessibilityLabel("About Stress")
 
             if stressFreshness == .live {
                 Label("Live", systemImage: "circle.fill")
