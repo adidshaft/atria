@@ -6588,6 +6588,13 @@ final class SessionStore: ObservableObject {
     /// Fully prepared review candidate. Candidate aggregation and stage
     /// construction happen off-main; render and notification paths only read it.
     @Published private(set) var pendingSleepReviewNightForUI: SleepHistorySnapshot.Night?
+    /// Review-worthy daytime nap candidates surfaced as their own detection
+    /// rows (2026-08-01). `pendingSleepReviewNightForUI` deliberately carries a
+    /// single main-sleep-biased card, so a real nap would otherwise lose its
+    /// row to a same-day confirmed main sleep. These stay review-only (never
+    /// auto-confirmed) and honor the same dismissal store; built off-main in the
+    /// sleep-review worker alongside the main review candidate.
+    @Published private(set) var napReviewCandidateNightsForUI: [SleepHistorySnapshot.Night] = []
     /// Persisted one-value-per-day readiness history used by chart detail sheets.
     /// Derived off the render path and saved locally so the UI never rebuilds it.
     @Published private(set) var dailyMetricHistory: [SavedDailyMetric] = [] {
@@ -21930,6 +21937,7 @@ final class SessionStore: ObservableObject {
         // Keeping the prior value visible could leave a just-confirmed or newly
         // overlapping sleep actionable for another frame.
         pendingSleepReviewNightForUI = nil
+        napReviewCandidateNightsForUI = []
         scheduleSleepReviewCacheRefresh(rest: baseline.restingInt ?? 60,
                                         calendar: .current,
                                         reason: reason)
@@ -21990,6 +21998,17 @@ final class SessionStore: ObservableObject {
                     confirmedSleeps: confirmedSleeps,
                     dismissedCandidates: dismissedCandidates
                 )
+            // A nap keeps its own reviewable detection row even when a same-day
+            // main sleep is already confirmed, so it is built separately from
+            // the single main-sleep-biased `result` card above.
+            let napReviewNights = SessionStore.makeNapReviewNightsForCache(
+                canonicalSessions: sourceSessions,
+                confirmedSleeps: confirmedSleeps,
+                dismissedCandidates: dismissedCandidates,
+                rest: rest,
+                maxHR: maxHR,
+                calendar: calendar
+            )
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 guard SessionStore.shouldPublishSleepReviewCache(
@@ -22016,6 +22035,7 @@ final class SessionStore: ObservableObject {
                 self.sleepReviewCacheKey = requestedKey
                 self.sleepReviewCacheInputKey = requestedInputKey
                 self.pendingSleepReviewNightForUI = result
+                self.napReviewCandidateNightsForUI = napReviewNights
                 self.pendingSleepReviewCacheInputKey = nil
                 self.pendingSleepReviewCacheGeneration = nil
                 self.pendingSleepReviewCacheWorkItem = nil
@@ -22187,6 +22207,73 @@ final class SessionStore: ObservableObject {
             return latest
         }
         return aggregateReview ?? physiologicalReview
+    }
+
+    /// Every review-worthy daytime nap candidate, as unconfirmed nap `Night`s
+    /// for the detections list (2026-08-01). Unlike `makeSleepReviewNightForCache`
+    /// — which surfaces exactly one main-sleep-biased card — a genuine nap must
+    /// keep its own reviewable row even when a same-day main sleep is already
+    /// confirmed. Real data only: sourced from the same aggregate detector, not
+    /// fabricated. HR-only naps (no validated motion) still surface because naps
+    /// are review-only; they carry a `review_needed` confidence and read as a
+    /// nap. Confirmed/dismissed windows are excluded so a dismissed nap stays
+    /// gone and a confirmed nap never duplicates. These rows never auto-confirm.
+    nonisolated static func makeNapReviewNightsForCache(
+        canonicalSessions: [SavedSession],
+        confirmedSleeps: [UserConfirmedSleep],
+        dismissedCandidates: [AtriaDismissedSleepCandidate] = [],
+        rest: Int,
+        maxHR: Int,
+        calendar: Calendar = .current
+    ) -> [SleepHistorySnapshot.Night] {
+        let candidates = aggregateSleepCandidates(in: canonicalSessions,
+                                                  rest: rest,
+                                                  maxHR: maxHR,
+                                                  calendar: calendar,
+                                                  historicalMotionPolicy: .boundedRecent)
+        return candidates.filter { candidate in
+            guard candidate.kind == "nap_candidate",
+                  isReviewWorthySleepCandidate(candidate) else { return false }
+            let overlapsConfirmed = confirmedSleeps.contains {
+                sleepWindowsOverlap($0, candidate: candidate)
+            }
+            let dismissed = dismissedCandidates.contains {
+                $0.suppresses(start: candidate.start, end: candidate.end)
+            }
+            return !overlapsConfirmed && !dismissed
+        }.map { candidate -> SleepHistorySnapshot.Night in
+            let metrics = confirmedSleepWindowMetrics(from: canonicalSessions,
+                                                      start: candidate.start,
+                                                      end: candidate.end,
+                                                      rest: candidate.restingHR)
+            let sleepEfficiency = candidate.span > 0
+                ? min(max(candidate.duration / candidate.span, 0), 1)
+                : nil
+            return SleepHistorySnapshot.Night(
+                id: "nap-review-\(Int(candidate.start.timeIntervalSince1970))-\(Int(candidate.end.timeIntervalSince1970))",
+                day: candidate.day,
+                start: candidate.start,
+                end: candidate.end,
+                duration: candidate.duration,
+                restingHR: candidate.restingHR > 0 ? candidate.restingHR : nil,
+                hrv: metrics.hrv,
+                hrvWindowCount: metrics.hrvWindowCount,
+                respiratoryRate: confirmedSleepRespiratoryRate(from: canonicalSessions,
+                                                               start: candidate.start,
+                                                               end: candidate.end),
+                sleepEfficiency: sleepEfficiency,
+                confidence: candidate.motionEvidenceValidated ? candidate.confidence.rawValue : "review_needed",
+                source: "nap_candidate",
+                confirmed: false,
+                stageSegments: sleepStageResearchSegments(from: canonicalSessions,
+                                                          start: candidate.start,
+                                                          end: candidate.end,
+                                                          restingHR: candidate.restingHR,
+                                                          isNap: true,
+                                                          motionValidated: candidate.motionEvidenceValidated),
+                motionValidated: candidate.motionEvidenceValidated
+            )
+        }.sorted { ($0.start ?? $0.day) > ($1.start ?? $1.day) }
     }
 
     /// A provisional daily-rollup candidate is a snapshot, not an immutable

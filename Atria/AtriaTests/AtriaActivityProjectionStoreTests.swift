@@ -11,6 +11,7 @@ final class AtriaActivityProjectionStoreTests: XCTestCase {
         AtriaHomeModel.ActivityState(sleepHistorySnapshot: .empty,
                                      sleepHistorySnapshotRevision: sleepRevision,
                                      pendingSleepReview: nil,
+                                     napReviewCandidates: [],
                                      confirmedWorkouts: [],
                                      confirmedWorkoutsRevision: workoutsRevision,
                                      workoutReviewCandidate: nil,

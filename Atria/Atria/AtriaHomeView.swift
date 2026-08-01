@@ -8562,6 +8562,7 @@ final class AtriaHomeModel {
         let sleepHistorySnapshot: SleepHistorySnapshot
         let sleepHistorySnapshotRevision: Int
         let pendingSleepReview: SleepHistorySnapshot.Night?
+        let napReviewCandidates: [SleepHistorySnapshot.Night]
         let confirmedWorkouts: [UserConfirmedWorkout]
         let confirmedWorkoutsRevision: Int
         let workoutReviewCandidate: WorkoutReviewCandidate?
@@ -9267,9 +9268,10 @@ final class AtriaHomeModel {
             }
             .store(in: &cancellables)
 
-        Publishers.Merge(
+        Publishers.Merge3(
             store.$sleepHistorySnapshot.map { _ in () }.eraseToAnyPublisher(),
-            store.$pendingSleepReviewNightForUI.map { _ in () }.eraseToAnyPublisher()
+            store.$pendingSleepReviewNightForUI.map { _ in () }.eraseToAnyPublisher(),
+            store.$napReviewCandidateNightsForUI.map { _ in () }.eraseToAnyPublisher()
         )
             .sink { [weak self] _ in
                 self?.requestActivityProjectionRefresh()
@@ -9525,20 +9527,24 @@ final class AtriaHomeModel {
 
     private static func makeActivityState(store: SessionStore) -> ActivityState {
         let pendingSleep = store.pendingSleepReviewNightForUI
+        let napReviewCandidates = store.napReviewCandidateNightsForUI
         let workoutReview = store.latestWorkoutReviewCandidate(rest: store.baseline.restingInt ?? 60,
                                                                 maxHR: store.profile.maxHR,
                                                                 source: "activity_projection")
         let detections = store.activityDetectionsForUI
         let detectionsRevision = activityDetectionsFingerprint(detections)
-        let reviewFingerprint = [
+        let reviewFingerprint = ([
             pendingSleep?.id ?? "no-sleep-review",
             workoutReview?.id ?? "no-workout-review",
             workoutReview?.suggestedActivityType?.rawValue ?? "no-workout-type-hint",
             String(detectionsRevision)
-        ].joined(separator: "|")
+        ] + (napReviewCandidates.isEmpty
+             ? ["no-nap-review"]
+             : napReviewCandidates.map(\.id))).joined(separator: "|")
         return ActivityState(sleepHistorySnapshot: store.sleepHistorySnapshot,
                              sleepHistorySnapshotRevision: store.sleepHistorySnapshotRevision,
                              pendingSleepReview: pendingSleep,
+                             napReviewCandidates: napReviewCandidates,
                              confirmedWorkouts: store.confirmedWorkouts,
                              confirmedWorkoutsRevision: store.confirmedWorkoutsRevision,
                              workoutReviewCandidate: workoutReview,

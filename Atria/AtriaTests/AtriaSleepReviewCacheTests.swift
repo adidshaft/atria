@@ -261,6 +261,110 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
         XCTAssertEqual(result, cachedNap)
     }
 
+    // MARK: - Nap detection rows (2026-08-01)
+
+    func testNapCandidateBecomesNapReviewNight() throws {
+        let napStart = date(day: 12, hour: 14)
+        let nap = daytimeLowHRSession(start: napStart, validatedMotion: true)
+
+        let rows = SessionStore.makeNapReviewNightsForCache(
+            canonicalSessions: [nap],
+            confirmedSleeps: [],
+            rest: 62,
+            maxHR: 190,
+            calendar: calendar
+        )
+
+        let row = try XCTUnwrap(rows.first, "a review-worthy nap must surface as its own review night")
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertTrue(row.isNapEvidence, "the row must read as a nap")
+        XCTAssertFalse(row.confirmed, "nap rows are review-only, never auto-confirmed")
+        XCTAssertEqual(row.source, "nap_candidate")
+    }
+
+    func testHROnlyNapNightReadsAsAReviewableNap() {
+        // Naps are review-only: the surfacing helper imposes no extra motion
+        // gate, so an HR-only nap (confidence "review_needed", no validated
+        // motion) must still read as a nap needing review — never a confident
+        // sleep. This is the presentation contract the nap rows depend on.
+        let start = date(day: 12, hour: 14)
+        let hrOnlyNap = SleepHistorySnapshot.Night(id: "hr-only-nap",
+                                                   day: calendar.startOfDay(for: start),
+                                                   start: start,
+                                                   end: start.addingTimeInterval(40 * 60),
+                                                   duration: 40 * 60,
+                                                   restingHR: 62,
+                                                   hrv: nil,
+                                                   respiratoryRate: nil,
+                                                   sleepEfficiency: 1,
+                                                   confidence: "review_needed",
+                                                   source: "nap_candidate",
+                                                   confirmed: false,
+                                                   stageSegments: [],
+                                                   motionValidated: false)
+
+        XCTAssertTrue(hrOnlyNap.isNapEvidence)
+        XCTAssertFalse(hrOnlyNap.confirmed)
+        XCTAssertFalse(hrOnlyNap.hasValidatedMotionEvidence)
+        XCTAssertEqual(hrOnlyNap.confirmationText, "Nap candidate")
+        XCTAssertEqual(AtriaActivitySleepStatusPresentation.badge(
+            confirmed: hrOnlyNap.confirmed,
+            confidence: hrOnlyNap.confidence
+        ), "Review")
+    }
+
+    func testDismissedNapExcludedFromNapReviewNights() throws {
+        let napStart = date(day: 12, hour: 14)
+        let nap = daytimeLowHRSession(start: napStart, validatedMotion: true)
+        let dismissal = AtriaDismissedSleepCandidate(start: nap.start, end: nap.end)
+
+        let rows = SessionStore.makeNapReviewNightsForCache(
+            canonicalSessions: [nap],
+            confirmedSleeps: [],
+            dismissedCandidates: [dismissal],
+            rest: 62,
+            maxHR: 190,
+            calendar: calendar
+        )
+
+        XCTAssertTrue(rows.isEmpty, "a dismissed nap must stay gone")
+    }
+
+    func testConfirmedNapExcludedFromNapReviewNights() throws {
+        let napStart = date(day: 12, hour: 14)
+        let nap = daytimeLowHRSession(start: napStart, validatedMotion: true)
+        let confirmed = confirmedSleep(overlapping: nap)
+
+        let rows = SessionStore.makeNapReviewNightsForCache(
+            canonicalSessions: [nap],
+            confirmedSleeps: [confirmed],
+            rest: 62,
+            maxHR: 190,
+            calendar: calendar
+        )
+
+        XCTAssertTrue(rows.isEmpty, "a confirmed nap must not resurface as a review row")
+    }
+
+    func testMainSleepDoesNotBecomeNapReviewNight() {
+        // A full overnight main sleep must never leak into the nap rows; main
+        // sleep keeps its own single review card.
+        let mainSleep = sleepSession(day: 12, startHour: 23, durationHours: 6, bpm: 52)
+
+        let rows = SessionStore.makeNapReviewNightsForCache(
+            canonicalSessions: [mainSleep],
+            confirmedSleeps: [],
+            rest: 55,
+            maxHR: 190,
+            calendar: calendar
+        )
+
+        XCTAssertTrue(rows.allSatisfy { $0.isNapEvidence },
+                      "only naps may appear in the nap review rows")
+        XCTAssertFalse(rows.contains { $0.duration >= AggregateSleepCandidate.strictMinimumDuration },
+                       "a main-sleep-sized window must not appear as a nap row")
+    }
+
     func testGrowingResidentJournalAggregateReplacesFirstWakeSnapshot() throws {
         let staleStart = date(day: 10, hour: 3).addingTimeInterval(16 * 60)
         let staleEnd = date(day: 10, hour: 9).addingTimeInterval(15 * 60)

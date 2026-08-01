@@ -481,6 +481,91 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertEqual(Set(visible.map(\.id)), [saved.id, pendingNap.id])
     }
 
+    func testNapReviewCandidateSurvivesAlongsideConfirmedMainSleep() throws {
+        // The exact 2026-08-01 gap: a real daytime nap must keep its own
+        // reviewable row even when the same day already has a confirmed main
+        // sleep (which owns the single main-sleep review card).
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026,
+                                                                   month: 8,
+                                                                   day: 1)))
+        let mainStart = day.addingTimeInterval(-1 * 3_600)
+        let mainEnd = day.addingTimeInterval(6 * 3_600)
+        let mainSleep = activitySleep(id: "confirmed-main",
+                                      day: day,
+                                      start: mainStart,
+                                      end: mainEnd,
+                                      confirmed: true)
+        let nap = napNight(id: "nap-1405",
+                           day: day,
+                           start: day.addingTimeInterval(14 * 3_600 + 5 * 60),
+                           end: day.addingTimeInterval(16 * 3_600 + 40 * 60))
+        let snapshot = SleepHistorySnapshot(nights: [mainSleep],
+                                            confirmedCount: 1,
+                                            candidateCount: 0)
+
+        let rows = AtriaActivitySelectedDaySleeps.overlapping(
+            snapshot: snapshot,
+            pendingReview: nil,
+            napReviewCandidates: [nap],
+            selectedDay: day,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(Set(rows.map(\.id)), [mainSleep.id, nap.id],
+                       "the nap keeps its own row next to the confirmed main sleep")
+        let napRow = try XCTUnwrap(rows.first { $0.id == nap.id })
+        XCTAssertTrue(napRow.isNapEvidence)
+        XCTAssertFalse(napRow.confirmed)
+    }
+
+    func testNapReviewCandidateDoesNotDuplicateOverlappingPendingReview() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026,
+                                                                   month: 8,
+                                                                   day: 1)))
+        let start = day.addingTimeInterval(14 * 3_600)
+        let end = day.addingTimeInterval(15 * 3_600)
+        let pending = napNight(id: "pending-nap", day: day, start: start, end: end)
+        let duplicate = napNight(id: "duplicate-nap",
+                                 day: day,
+                                 start: start.addingTimeInterval(3 * 60),
+                                 end: end.addingTimeInterval(-3 * 60))
+        let snapshot = SleepHistorySnapshot(nights: [], confirmedCount: 0, candidateCount: 0)
+
+        let rows = AtriaActivitySelectedDaySleeps.overlapping(
+            snapshot: snapshot,
+            pendingReview: pending,
+            napReviewCandidates: [duplicate],
+            selectedDay: day,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(rows.map(\.id), [pending.id],
+                       "an overlapping nap must not be drawn twice through both surfaces")
+    }
+
+    private func napNight(id: String,
+                          day: Date,
+                          start: Date,
+                          end: Date) -> SleepHistorySnapshot.Night {
+        SleepHistorySnapshot.Night(id: id,
+                                   day: day,
+                                   start: start,
+                                   end: end,
+                                   duration: max(0, end.timeIntervalSince(start)),
+                                   restingHR: 62,
+                                   hrv: nil,
+                                   respiratoryRate: nil,
+                                   sleepEfficiency: 1,
+                                   confidence: "review_needed",
+                                   source: "nap_candidate",
+                                   confirmed: false,
+                                   stageSegments: [])
+    }
+
     func testSleepStatusUsesCompactHumanCopyInsteadOfRawEnumText() {
         XCTAssertEqual(AtriaActivitySleepStatusPresentation.badge(
             confirmed: false,
