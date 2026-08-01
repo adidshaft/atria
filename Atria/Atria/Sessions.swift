@@ -7896,13 +7896,30 @@ final class SessionStore: ObservableObject {
                     bankCoverage: coverage,
                     strapIdentifier: strapIdentifier
                 )
-            // The compact v24 shard is synchronized at the same durability
-            // boundary as accepted motion rows. Receipt publication must never
-            // reopen the lifetime JSONL archive from a launch, reconnect, or
-            // foreground refresh; on a compact miss we retain the honest
-            // unavailable/partial state until explicit bounded migration has
-            // populated the shard.
-            let read = compactRead
+            // The compact v24 shard is the durable fast path and is preferred
+            // whenever it already covers the cycle. But when the shard has not
+            // yet been migrated for the CURRENT cycle, relying on it alone froze
+            // today's strap steps at "--" for the whole day (the shard could lag
+            // a full day behind banked motion). On a compact miss we now fall
+            // back to `HistoricalArchive.motionTickDayEvidenceRead`, which is
+            // WINDOWED to the current cycle only ([cycleStart, now] — it scans
+            // just the recent motion files intersecting that window, off the
+            // main thread). This is bounded (no whole-archive reopen, so it does
+            // not reintroduce the foreground memory balloon) and uses the exact
+            // same decode that produces the verified prior-day count — so today
+            // surfaces a real "today so far" partial within the refresh cadence
+            // instead of waiting for the shard migration.
+            let read: HistoricalArchive.MotionTickDayEvidenceRead
+            if case .qualified = compactRead {
+                read = compactRead
+            } else {
+                read = HistoricalArchive.motionTickDayEvidenceRead(
+                    start: cycleStart,
+                    end: now,
+                    bankCoverage: coverage,
+                    strapIdentifier: strapIdentifier
+                )
+            }
             let fingerprintAfter =
                 HistoricalArchive.consumerSourceFingerprint()
             let compactFingerprintAfter =

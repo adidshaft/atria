@@ -66,12 +66,12 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     var priorCycleReceipt: PriorCycleReceipt? = nil
 
     var valueText: String {
+        // Strap steps are ~2% accurate, so the card shows a clean number rather
+        // than a "≥"/"~" qualifier. The partial/live/estimate nuance lives in
+        // `detailText` (shown when the user taps the metric) and in
+        // `accessibilityText`.
         guard let count else { return "--" }
-        switch (source, completeness, isValidated) {
-        case (.verifiedCanonical, .partial, _): return "≥\(count)"
-        case (_, _, false): return "~\(count)"
-        default: return "\(count)"
-        }
+        return "\(count)"
     }
 
     var detailText: String {

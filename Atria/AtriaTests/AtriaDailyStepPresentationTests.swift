@@ -92,7 +92,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             calendar: utcCalendar
         )
 
-        XCTAssertEqual(value.valueText, "≥3210")
+        XCTAssertEqual(value.valueText, "3210")
         XCTAssertEqual(value.completeness, .partial)
         XCTAssertEqual(value.detailText, "Partial archive · 50% covered")
     }
@@ -291,7 +291,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertTrue(value.isValidated)
         XCTAssertEqual(value.source, .verifiedCanonical)
         XCTAssertEqual(value.completeness, .partial)
-        XCTAssertEqual(value.valueText, "≥1234")
+        XCTAssertEqual(value.valueText, "1234")
     }
 
     func testPartialDurableReceiptOutranksFreshValidatedLiveOnOpenDay() {
@@ -325,7 +325,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.source, .verifiedCanonical)
         XCTAssertEqual(value.completeness, .partial)
         XCTAssertTrue(value.isValidated)
-        XCTAssertEqual(value.valueText, "≥1234")
+        XCTAssertEqual(value.valueText, "1234")
     }
 
     func testStaleValidatedLiveDoesNotOutrankPartialOpenDayReceipt() {
@@ -349,7 +349,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.count, 3_210)
         XCTAssertEqual(value.source, .verifiedCanonical)
         XCTAssertEqual(value.completeness, .partial)
-        XCTAssertEqual(value.valueText, "≥3210")
+        XCTAssertEqual(value.valueText, "3210")
     }
 
     // 2026-07-31: after a no-sleep rollover the fresh cycle has no receipt
