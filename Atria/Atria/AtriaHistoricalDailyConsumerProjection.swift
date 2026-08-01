@@ -499,36 +499,42 @@ enum AtriaHistoricalDailyConsumerProjection {
         chunks: [AtriaHistoricalAggregateChunk],
         timeZoneIdentifier: String
     ) throws -> [DailyMetric] {
-        try days.map { day in
-            let facts = chunks.flatMap(\.heartRateMinutes).filter {
-                $0.minuteStart >= day.start && $0.minuteStart < day.end
-            }.sorted { $0.minuteStart < $1.minuteStart }
-            let sampleCount = try safeSum(facts.map(\.sampleCount))
-            let distribution: HeartRateDistribution? = sampleCount > 0 ? .init(
-                sampleCount: sampleCount,
-                sumBPM: try safeSum(facts.map(\.sumBPM)),
-                minimumBPM: facts.filter { $0.sampleCount > 0 }.map(\.minimumBPM).min(),
-                maximumBPM: facts.filter { $0.sampleCount > 0 }.map(\.maximumBPM).max(),
-                samplesByBPM: try mergedIntegerMaps(facts.map(\.samplesByBPM)),
-                terminalBPMSeconds: try mergedDoubleMaps(facts.map(\.terminalBPMSeconds)),
-                transitionHalfBPMSeconds: try mergedDoubleMaps(facts.map(\.transitionHalfBPMSeconds)),
-                coveredSeconds: facts.reduce(0) { $0 + $1.coveredSeconds },
-                droppedGapSeconds: facts.reduce(0) { $0 + $1.droppedGapSeconds }
-            ) : nil
-            let representedMinutes = Set(facts.map { Int64(floor($0.minuteStart.timeIntervalSince1970 / 60)) }).count
-            let totalMinutes = Int(day.duration / 60)
-            let state: EvidenceState
-            if sampleCount > 0 { state = .available }
-            else if representedMinutes == totalMinutes { state = .knownEmpty }
-            else { state = .missing }
-            return .init(localDay: localDay(day.start,
-                                            timeZoneIdentifier: timeZoneIdentifier),
-                         dayStart: day.start,
-                         dayEnd: day.end,
-                         heartRateState: state,
-                         observedHeartRate: distribution,
-                         representedMinuteCount: representedMinutes,
-                         missingMinuteCount: max(0, totalMinutes - representedMinutes))
+        // Flatten once before the day loop instead of O(days x facts) per day.
+        let allHeartRateMinutes = chunks.flatMap(\.heartRateMinutes)
+        return try days.map { day in
+            // Bound the per-day Foundation/CryptoKit temporaries so they do not
+            // accumulate across a long multi-day projection pass.
+            try autoreleasepool {
+                let facts = allHeartRateMinutes.filter {
+                    $0.minuteStart >= day.start && $0.minuteStart < day.end
+                }.sorted { $0.minuteStart < $1.minuteStart }
+                let sampleCount = try safeSum(facts.map(\.sampleCount))
+                let distribution: HeartRateDistribution? = sampleCount > 0 ? .init(
+                    sampleCount: sampleCount,
+                    sumBPM: try safeSum(facts.map(\.sumBPM)),
+                    minimumBPM: facts.filter { $0.sampleCount > 0 }.map(\.minimumBPM).min(),
+                    maximumBPM: facts.filter { $0.sampleCount > 0 }.map(\.maximumBPM).max(),
+                    samplesByBPM: try mergedIntegerMaps(facts.map(\.samplesByBPM)),
+                    terminalBPMSeconds: try mergedDoubleMaps(facts.map(\.terminalBPMSeconds)),
+                    transitionHalfBPMSeconds: try mergedDoubleMaps(facts.map(\.transitionHalfBPMSeconds)),
+                    coveredSeconds: facts.reduce(0) { $0 + $1.coveredSeconds },
+                    droppedGapSeconds: facts.reduce(0) { $0 + $1.droppedGapSeconds }
+                ) : nil
+                let representedMinutes = Set(facts.map { Int64(floor($0.minuteStart.timeIntervalSince1970 / 60)) }).count
+                let totalMinutes = Int(day.duration / 60)
+                let state: EvidenceState
+                if sampleCount > 0 { state = .available }
+                else if representedMinutes == totalMinutes { state = .knownEmpty }
+                else { state = .missing }
+                return DailyMetric(localDay: localDay(day.start,
+                                                      timeZoneIdentifier: timeZoneIdentifier),
+                                   dayStart: day.start,
+                                   dayEnd: day.end,
+                                   heartRateState: state,
+                                   observedHeartRate: distribution,
+                                   representedMinuteCount: representedMinutes,
+                                   missingMinuteCount: max(0, totalMinutes - representedMinutes))
+            }
         }
     }
 
@@ -537,59 +543,67 @@ enum AtriaHistoricalDailyConsumerProjection {
         chunks: [AtriaHistoricalAggregateChunk],
         timeZoneIdentifier: String
     ) throws -> [StepDay] {
-        try days.map { day in
-            let epochs = chunks.flatMap(\.motionEpochs).filter {
-                $0.end > day.start && $0.start < day.end
-            }.sorted {
-                if $0.start != $1.start { return $0.start < $1.start }
-                return $0.end < $1.end
-            }
-            var accepted: [(DateInterval, Int)] = []
-            var rejected = 0
-            for epoch in epochs {
-                guard epoch.start >= day.start,
-                      epoch.end <= day.end,
-                      epoch.measurementValidated,
-                      let delta = epoch.stepDelta,
-                      delta >= 0 else {
-                    rejected += 1
-                    continue
+        // Flatten once before the day loop instead of O(days x epochs) per day.
+        let allMotionEpochs = chunks.flatMap(\.motionEpochs)
+        return try days.map { day in
+            // Bound the per-day temporaries across a long projection pass. The
+            // inner `continue`/`throw` stay within this closure: `continue`
+            // targets the local `for epoch` loop and `throw` rethrows out of
+            // `autoreleasepool`.
+            try autoreleasepool {
+                let epochs = allMotionEpochs.filter {
+                    $0.end > day.start && $0.start < day.end
+                }.sorted {
+                    if $0.start != $1.start { return $0.start < $1.start }
+                    return $0.end < $1.end
                 }
-                let interval = DateInterval(start: epoch.start, end: epoch.end)
-                if let previous = accepted.last, interval.start < previous.0.end {
-                    // Overlapping known deltas cannot be summed safely.
-                    throw ProjectionError.invalidStepEvidence
+                var accepted: [(DateInterval, Int)] = []
+                var rejected = 0
+                for epoch in epochs {
+                    guard epoch.start >= day.start,
+                          epoch.end <= day.end,
+                          epoch.measurementValidated,
+                          let delta = epoch.stepDelta,
+                          delta >= 0 else {
+                        rejected += 1
+                        continue
+                    }
+                    let interval = DateInterval(start: epoch.start, end: epoch.end)
+                    if let previous = accepted.last, interval.start < previous.0.end {
+                        // Overlapping known deltas cannot be summed safely.
+                        throw ProjectionError.invalidStepEvidence
+                    }
+                    accepted.append((interval, delta))
                 }
-                accepted.append((interval, delta))
+                let knownDuration = accepted.reduce(0.0) { $0 + $1.0.duration }
+                guard knownDuration.isFinite,
+                      knownDuration >= 0,
+                      knownDuration <= Double(Int.max),
+                      day.duration.isFinite,
+                      day.duration >= 0,
+                      day.duration <= Double(Int.max) else {
+                    throw ProjectionError.arithmeticOverflow
+                }
+                let knownSeconds = Int(knownDuration.rounded())
+                let daySeconds = Int(day.duration.rounded())
+                let fullyCovered = accepted.first?.0.start == day.start
+                    && accepted.last?.0.end == day.end
+                    && zip(accepted, accepted.dropFirst()).allSatisfy { $0.0.0.end == $0.1.0.start }
+                    && knownSeconds == daySeconds
+                let sum = try safeSum(accepted.map { $0.1 })
+                let state: EvidenceState = fullyCovered ? (sum == 0 ? .knownEmpty : .available) : .missing
+                return StepDay(localDay: localDay(day.start,
+                                                  timeZoneIdentifier: timeZoneIdentifier),
+                               dayStart: day.start,
+                               dayEnd: day.end,
+                               state: state,
+                               stepCount: fullyCovered ? sum : nil,
+                               knownStepDeltaSum: sum,
+                               knownEpochCount: accepted.count,
+                               rejectedOrUnknownEpochCount: rejected,
+                               knownCoverageSeconds: min(daySeconds, knownSeconds),
+                               missingCoverageSeconds: max(0, daySeconds - knownSeconds))
             }
-            let knownDuration = accepted.reduce(0.0) { $0 + $1.0.duration }
-            guard knownDuration.isFinite,
-                  knownDuration >= 0,
-                  knownDuration <= Double(Int.max),
-                  day.duration.isFinite,
-                  day.duration >= 0,
-                  day.duration <= Double(Int.max) else {
-                throw ProjectionError.arithmeticOverflow
-            }
-            let knownSeconds = Int(knownDuration.rounded())
-            let daySeconds = Int(day.duration.rounded())
-            let fullyCovered = accepted.first?.0.start == day.start
-                && accepted.last?.0.end == day.end
-                && zip(accepted, accepted.dropFirst()).allSatisfy { $0.0.0.end == $0.1.0.start }
-                && knownSeconds == daySeconds
-            let sum = try safeSum(accepted.map { $0.1 })
-            let state: EvidenceState = fullyCovered ? (sum == 0 ? .knownEmpty : .available) : .missing
-            return .init(localDay: localDay(day.start,
-                                            timeZoneIdentifier: timeZoneIdentifier),
-                         dayStart: day.start,
-                         dayEnd: day.end,
-                         state: state,
-                         stepCount: fullyCovered ? sum : nil,
-                         knownStepDeltaSum: sum,
-                         knownEpochCount: accepted.count,
-                         rejectedOrUnknownEpochCount: rejected,
-                         knownCoverageSeconds: min(daySeconds, knownSeconds),
-                         missingCoverageSeconds: max(0, daySeconds - knownSeconds))
         }
     }
 

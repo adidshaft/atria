@@ -104,7 +104,7 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
         verifiedCatalog: AtriaHistoricalArchiveCatalog,
         catalogData: Data,
         aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
-        aggregateData: Data,
+        aggregateSnapshotDigest: String,
         configuration: Configuration,
         lane: String = "consumer_projection",
         shouldAbortBetweenSources: () -> Bool = {
@@ -112,7 +112,7 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
         }
     ) throws -> Report {
         try publishEligibleReceipts(
-            evidence: .hoisted(verifiedCatalog, catalogData, aggregateData),
+            evidence: .hoisted(verifiedCatalog, catalogData, aggregateSnapshotDigest),
             aggregateSnapshot: aggregateSnapshot,
             configuration: configuration,
             selectedChunkID: nil,
@@ -147,11 +147,11 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
         verifiedCatalog: AtriaHistoricalArchiveCatalog,
         catalogData: Data,
         aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
-        aggregateData: Data,
+        aggregateSnapshotDigest: String,
         configuration: Configuration
     ) throws -> Report {
         try publishEligibleReceipts(
-            evidence: .hoisted(verifiedCatalog, catalogData, aggregateData),
+            evidence: .hoisted(verifiedCatalog, catalogData, aggregateSnapshotDigest),
             aggregateSnapshot: aggregateSnapshot,
             configuration: configuration,
             selectedChunkID: chunkID,
@@ -166,7 +166,7 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
     /// computed exactly once below, never once per source.
     private enum CanonicalEvidenceInput {
         case store(AtriaHistoricalArchiveCatalogStore)
-        case hoisted(AtriaHistoricalArchiveCatalog, Data, Data)
+        case hoisted(AtriaHistoricalArchiveCatalog, Data, String)
     }
 
     private func publishEligibleReceipts(
@@ -192,19 +192,20 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
             .sorted(by: sourceOrder)
 
         // Hoisted loop invariants: one file re-verified catalog snapshot, one
-        // canonical catalog encoding, and one canonical aggregate-snapshot
-        // encoding per pass instead of one per source. The bytes are the exact
-        // `canonicalCatalogData`/`canonicalAggregateSnapshotData` output that
-        // persisted completion SHA-256s compare against; only the frequency
-        // changes.
+        // canonical catalog encoding, and one streamed aggregate-snapshot
+        // digest per pass instead of one per source. The catalog bytes are the
+        // exact `canonicalCatalogData` output and the aggregate digest is the
+        // byte-identical `streamedAggregateSnapshotDigest` that persisted
+        // completion SHA-256s compare against; only the frequency changes and
+        // the whole re-encoded aggregate `Data` is never materialized.
         let catalog: AtriaHistoricalArchiveCatalog
         let catalogData: Data
-        let aggregateData: Data
+        let aggregateSnapshotDigest: String
         switch evidenceInput {
-        case .hoisted(let hoistedCatalog, let hoistedCatalogData, let hoistedAggregateData):
+        case .hoisted(let hoistedCatalog, let hoistedCatalogData, let hoistedAggregateDigest):
             catalog = hoistedCatalog
             catalogData = hoistedCatalogData
-            aggregateData = hoistedAggregateData
+            aggregateSnapshotDigest = hoistedAggregateDigest
         case .store(let catalogStore):
             do {
                 let verified = try catalogStore.snapshotVerifiedAgainstFiles()
@@ -212,8 +213,8 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
                 catalog = verified
                 catalogData = try AtriaHistoricalActivityInspectionProofFactory
                     .canonicalCatalogData(verified)
-                aggregateData = try AtriaHistoricalActivityInspectionProofFactory
-                    .canonicalAggregateSnapshotData(aggregateSnapshot)
+                aggregateSnapshotDigest = try AtriaHistoricalActivityInspectionProofFactory
+                    .streamedAggregateSnapshotDigest(aggregateSnapshot)
             } catch {
                 // Identical deferral semantics to the previous per-iteration
                 // evidence computation: every source defers with the evidence
@@ -267,7 +268,7 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
                         verifiedCatalog: catalog,
                         catalogData: catalogData,
                         aggregateSnapshot: aggregateSnapshot,
-                        aggregateData: aggregateData,
+                        aggregateSnapshotDigest: aggregateSnapshotDigest,
                         requestedStart: range.lowerBound,
                         requestedEnd: range.upperBound
                     )

@@ -480,7 +480,8 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
                 verifiedCatalog: catalog,
                 catalogData: hoistedCatalogData,
                 aggregateSnapshot: fixture.snapshot,
-                aggregateData: hoistedAggregateData,
+                aggregateSnapshotDigest: AtriaHistoricalActivityInspectionProofFactory
+                    .streamedAggregateSnapshotDigest(fixture.snapshot),
                 requestedStart: requiredStart,
                 requestedEnd: requiredEnd
             )

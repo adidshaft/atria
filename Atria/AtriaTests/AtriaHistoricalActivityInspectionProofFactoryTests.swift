@@ -10,6 +10,155 @@ final class AtriaHistoricalActivityInspectionProofFactoryTests: XCTestCase {
         roots.removeAll()
     }
 
+    // MARK: - Streamed aggregate-snapshot digest byte-identity (2026-08-01)
+
+    /// The streamed digest MUST be byte-identical to hashing the whole
+    /// re-encoded `canonicalAggregateSnapshotData` buffer. This is the memory
+    /// bound behind Phase 1: the streamed path never materializes the whole
+    /// archive `Data` yet the persisted SHA-256 must never change.
+    func testStreamedAggregateSnapshotDigestEqualsWholeBufferDigest() throws {
+        // Empty aggregates (prefix + suffix only, no elements).
+        try assertStreamedDigestMatchesWholeBuffer(
+            makeStreamSnapshot(aggregates: [], diagnostics: (0, 0, 0)),
+            "empty aggregates must hash identically"
+        )
+
+        // Single element (prefix + one element + suffix, no separators).
+        try assertStreamedDigestMatchesWholeBuffer(
+            makeStreamSnapshot(
+                aggregates: [makeStreamChunk(chunkID: "chunk-a", firstOffset: 0)],
+                diagnostics: (1, 1, 0)
+            ),
+            "single aggregate must hash identically"
+        )
+
+        // Multiple elements already in canonical order (comma separators).
+        try assertStreamedDigestMatchesWholeBuffer(
+            makeStreamSnapshot(
+                aggregates: [
+                    makeStreamChunk(chunkID: "chunk-a", firstOffset: 0),
+                    makeStreamChunk(chunkID: "chunk-b", firstOffset: 3_600),
+                    makeStreamChunk(chunkID: "chunk-c", firstOffset: 7_200),
+                ],
+                diagnostics: (3, 3, 0)
+            ),
+            "multiple ordered aggregates must hash identically"
+        )
+
+        // Reverse-sorted input: both paths sort by (firstTimestamp, chunkID)
+        // before encoding, so the digest must be independent of input order.
+        try assertStreamedDigestMatchesWholeBuffer(
+            makeStreamSnapshot(
+                aggregates: [
+                    makeStreamChunk(chunkID: "chunk-c", firstOffset: 7_200),
+                    makeStreamChunk(chunkID: "chunk-b", firstOffset: 3_600),
+                    makeStreamChunk(chunkID: "chunk-a", firstOffset: 0),
+                ],
+                diagnostics: (3, 3, 1)
+            ),
+            "reverse-sorted input must hash identically"
+        )
+
+        // Same firstTimestamp, reversed chunkID order exercises the chunkID
+        // tie-break of the shared sort.
+        try assertStreamedDigestMatchesWholeBuffer(
+            makeStreamSnapshot(
+                aggregates: [
+                    makeStreamChunk(chunkID: "chunk-z", firstOffset: 1_000),
+                    makeStreamChunk(chunkID: "chunk-a", firstOffset: 1_000),
+                ],
+                diagnostics: (2, 2, 0)
+            ),
+            "chunkID tie-break must hash identically"
+        )
+
+        // A real multi-source committed on-disk fixture.
+        let committed = try makeCommittedFixture()
+        try assertStreamedDigestMatchesWholeBuffer(
+            committed.snapshot,
+            "committed on-disk snapshot must hash identically"
+        )
+        XCTAssertFalse(committed.snapshot.aggregates.isEmpty)
+    }
+
+    private func assertStreamedDigestMatchesWholeBuffer(
+        _ snapshot: AtriaHistoricalAggregateReader.Snapshot,
+        _ message: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let wholeBuffer = try AtriaHistoricalActivityInspectionProofFactory
+            .canonicalAggregateSnapshotData(snapshot)
+        let wholeBufferDigest = AtriaHistoricalDrainCompletionGenerationStore
+            .sha256(wholeBuffer)
+        let streamed = try AtriaHistoricalActivityInspectionProofFactory
+            .streamedAggregateSnapshotDigest(snapshot)
+        XCTAssertEqual(streamed, wholeBufferDigest, message, file: file, line: line)
+    }
+
+    private func makeStreamSnapshot(
+        aggregates: [AtriaHistoricalAggregateChunk],
+        diagnostics: (committed: Int, accepted: Int, rejected: Int)
+    ) -> AtriaHistoricalAggregateReader.Snapshot {
+        .init(
+            aggregates: aggregates,
+            diagnostics: .init(committedManifests: diagnostics.committed,
+                               acceptedAggregates: diagnostics.accepted,
+                               rejectedManifests: diagnostics.rejected)
+        )
+    }
+
+    private func makeStreamChunk(chunkID: String,
+                                 firstOffset: TimeInterval) -> AtriaHistoricalAggregateChunk {
+        let first = start.addingTimeInterval(firstOffset)
+        // A populated HeartRateMinute forces nested dictionary encoding so the
+        // "standalone element == its slice inside the full array" claim is
+        // exercised, not just flat scalar fields.
+        let minute = AtriaHistoricalAggregateChunk.HeartRateMinute(
+            minuteStart: first,
+            sampleCount: 2,
+            sumBPM: 140,
+            minimumBPM: 60,
+            maximumBPM: 80,
+            samplesByBPM: [60: 1, 80: 1],
+            terminalBPMSeconds: [80: 10],
+            transitionHalfBPMSeconds: [140: 10],
+            coveredSeconds: 10,
+            droppedGapSeconds: 0,
+            firstSampleUnix: first.timeIntervalSince1970,
+            firstSampleBPM: 60,
+            lastSampleUnix: first.addingTimeInterval(10).timeIntervalSince1970,
+            lastSampleBPM: 80
+        )
+        return .init(
+            schema: AtriaHistoricalAggregateChunk.currentSchema,
+            createdAt: first.addingTimeInterval(10),
+            source: .init(chunkID: chunkID,
+                          rawSHA256: String(repeating: "a", count: 64),
+                          rawByteCount: 128,
+                          rawRowCount: 4,
+                          firstTimestamp: first,
+                          lastTimestamp: first.addingTimeInterval(600),
+                          decoderSchema: HistoricalArchive.schema,
+                          validatedLayouts: [HistoricalArchive.layoutVersion]),
+            heartRateMinutes: [minute],
+            rrEpochs: [],
+            motionEpochs: [],
+            materializedProjections: [],
+            parity: .init(rawRows: 4,
+                          decodedRows: 4,
+                          undecodableRowsRetainedRaw: 0,
+                          metricUsableRows: 4,
+                          heartRateSamples: 2,
+                          heartRateSumBPM: 140,
+                          acceptedRRBeats: 0,
+                          acceptedRRSumMilliseconds: 0,
+                          validatedGravityRows: 0,
+                          motionEpochs: 0,
+                          projectionReceipts: 0)
+        )
+    }
+
     func testFactoryUsesActualCatalogAndCommittedAggregateSnapshot() throws {
         let fixture = try makeCommittedFixture()
         let completionStore = makeCompletionStore(root: fixture.root)

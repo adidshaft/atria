@@ -86,8 +86,8 @@ final class AtriaHistoricalDrainCompletionGenerationStore {
         let catalog = try catalogStore.snapshotVerifiedAgainstFiles()
         try catalog.validate()
         let catalogData = try AtriaHistoricalActivityInspectionProofFactory.canonicalCatalogData(catalog)
-        let aggregateData = try AtriaHistoricalActivityInspectionProofFactory
-            .canonicalAggregateSnapshotData(aggregateSnapshot)
+        let aggregateSnapshotDigest = try AtriaHistoricalActivityInspectionProofFactory
+            .streamedAggregateSnapshotDigest(aggregateSnapshot)
         return try recordTerminal(generation: generation,
                                   terminalBatchNumber: terminalBatchNumber,
                                   durableSequence: durableSequence,
@@ -96,15 +96,16 @@ final class AtriaHistoricalDrainCompletionGenerationStore {
                                   completedAt: completedAt,
                                   verifiedCatalog: catalog,
                                   catalogData: catalogData,
-                                  aggregateData: aggregateData)
+                                  aggregateSnapshotDigest: aggregateSnapshotDigest)
     }
 
     /// Memory-shape overload for flows that already hold the file-verified
-    /// catalog and both canonical evidence encodings from the same archive
-    /// pass. The persisted record's digests are computed from the exact same
-    /// `canonicalCatalogData`/`canonicalAggregateSnapshotData` bytes the
-    /// store-based overload would produce; only the recomputation frequency
-    /// changes.
+    /// catalog, its canonical encoding, and the streamed aggregate-snapshot
+    /// digest from the same archive pass. The persisted record's digests are
+    /// computed from the exact same `canonicalCatalogData` bytes and the
+    /// byte-identical streamed aggregate digest the store-based overload would
+    /// produce; only the recomputation frequency changes and the whole
+    /// re-encoded aggregate `Data` is never materialized.
     func recordTerminal(
         generation: UInt64,
         terminalBatchNumber: UInt64,
@@ -114,7 +115,7 @@ final class AtriaHistoricalDrainCompletionGenerationStore {
         completedAt: Date,
         verifiedCatalog catalog: AtriaHistoricalArchiveCatalog,
         catalogData: Data,
-        aggregateData: Data
+        aggregateSnapshotDigest: String
     ) throws -> Published {
         try catalog.validate()
         let record = Record(version: Record.currentVersion,
@@ -126,7 +127,7 @@ final class AtriaHistoricalDrainCompletionGenerationStore {
                             completedAt: completedAt,
                             catalogGeneration: catalog.generation,
                             catalogSnapshotSHA256: Self.sha256(catalogData),
-                            aggregateSnapshotSHA256: Self.sha256(aggregateData),
+                            aggregateSnapshotSHA256: aggregateSnapshotDigest,
                             disposition: .terminal)
         return try publish(record)
     }
@@ -325,6 +326,7 @@ struct AtriaHistoricalActivityInspectionProofFactory {
         case aggregateNotInCatalog(String)
         case aggregateCatalogMismatch(String)
         case duplicateCommittedAggregate(String)
+        case malformedAggregateSnapshotWrapper
     }
 
     let completionStore: AtriaHistoricalDrainCompletionGenerationStore
@@ -347,12 +349,12 @@ struct AtriaHistoricalActivityInspectionProofFactory {
         let catalog = try catalogStore.snapshotVerifiedAgainstFiles()
         try catalog.validate()
         let catalogData = try Self.canonicalCatalogData(catalog)
-        let aggregateData = try Self.canonicalAggregateSnapshotData(aggregateSnapshot)
+        let aggregateSnapshotDigest = try Self.streamedAggregateSnapshotDigest(aggregateSnapshot)
         return try prepare(
             verifiedCatalog: catalog,
             catalogData: catalogData,
             aggregateSnapshot: aggregateSnapshot,
-            aggregateData: aggregateData,
+            aggregateSnapshotDigest: aggregateSnapshotDigest,
             requestedStart: requestedStart,
             requestedEnd: requestedEnd
         )
@@ -361,15 +363,16 @@ struct AtriaHistoricalActivityInspectionProofFactory {
     /// Memory-shape overload of `prepare` for multi-source publication passes
     /// whose catalog and aggregate snapshot are provably invariant across the
     /// pass. The caller supplies the file-verified catalog together with the
-    /// exact `canonicalCatalogData`/`canonicalAggregateSnapshotData` bytes
-    /// computed once; every validation and error below is identical to
-    /// `prepare(catalogStore:...)`, so the persisted completion SHA-256s
-    /// compare against unchanged bytes.
+    /// exact `canonicalCatalogData` bytes and the byte-identical streamed
+    /// aggregate-snapshot digest computed once; every validation and error
+    /// below is identical to `prepare(catalogStore:...)`, so the persisted
+    /// completion SHA-256s compare against unchanged bytes while the whole
+    /// re-encoded aggregate `Data` is never materialized.
     func prepare(
         verifiedCatalog catalog: AtriaHistoricalArchiveCatalog,
         catalogData: Data,
         aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
-        aggregateData: Data,
+        aggregateSnapshotDigest: String,
         requestedStart: Date,
         requestedEnd: Date
     ) throws -> Prepared {
@@ -405,8 +408,7 @@ struct AtriaHistoricalActivityInspectionProofFactory {
                 == AtriaHistoricalDrainCompletionGenerationStore.sha256(catalogData) else {
             throw FactoryError.catalogSnapshotMismatch
         }
-        guard completion.aggregateSnapshotSHA256
-                == AtriaHistoricalDrainCompletionGenerationStore.sha256(aggregateData) else {
+        guard completion.aggregateSnapshotSHA256 == aggregateSnapshotDigest else {
             throw FactoryError.aggregateSnapshotMismatch
         }
 
@@ -445,7 +447,7 @@ struct AtriaHistoricalActivityInspectionProofFactory {
         let catalog = try catalogStore.snapshotVerifiedAgainstFiles()
         try catalog.validate()
         let catalogData = try Self.canonicalCatalogData(catalog)
-        let aggregateData = try Self.canonicalAggregateSnapshotData(aggregateSnapshot)
+        let aggregateSnapshotDigest = try Self.streamedAggregateSnapshotDigest(aggregateSnapshot)
         guard aggregateSnapshot.aggregates.contains(where: {
             $0.source.chunkID == scan.sourceChunkID
                 && $0.source.rawSHA256 == scan.sourceRawSHA256
@@ -475,8 +477,7 @@ struct AtriaHistoricalActivityInspectionProofFactory {
                 || scan.catalogSnapshotSHA256 == currentCatalogSHA256 else {
             throw FactoryError.catalogSnapshotMismatch
         }
-        guard scan.aggregateSnapshotSHA256
-                == AtriaHistoricalDrainCompletionGenerationStore.sha256(aggregateData) else {
+        guard scan.aggregateSnapshotSHA256 == aggregateSnapshotDigest else {
             throw FactoryError.aggregateSnapshotMismatch
         }
         return try Self.prepareVerified(
@@ -597,27 +598,104 @@ struct AtriaHistoricalActivityInspectionProofFactory {
         return try JSONEncoder.iso8601.encode(catalog)
     }
 
-    static func canonicalAggregateSnapshotData(
+    /// Canonical wrapper shape for the aggregate snapshot. Both the whole-buffer
+    /// `canonicalAggregateSnapshotData` (kept as the parity reference for tests)
+    /// and the streaming `streamedAggregateSnapshotDigest` encode this exact
+    /// struct under the same `JSONEncoder.iso8601` options, so their bytes — and
+    /// therefore their SHA-256 — are identical.
+    private struct CanonicalAggregateSnapshot: Codable {
+        let aggregates: [AtriaHistoricalAggregateChunk]
+        let committedManifests: Int
+        let acceptedAggregates: Int
+        let rejectedManifests: Int
+    }
+
+    /// Sole canonical ordering shared by both digest paths: firstTimestamp
+    /// ascending, then chunkID ascending.
+    private static func sortedAggregates(
         _ snapshot: AtriaHistoricalAggregateReader.Snapshot
-    ) throws -> Data {
-        struct Canonical: Codable {
-            let aggregates: [AtriaHistoricalAggregateChunk]
-            let committedManifests: Int
-            let acceptedAggregates: Int
-            let rejectedManifests: Int
-        }
-        let sorted = snapshot.aggregates.sorted {
+    ) -> [AtriaHistoricalAggregateChunk] {
+        snapshot.aggregates.sorted {
             if $0.source.firstTimestamp != $1.source.firstTimestamp {
                 return $0.source.firstTimestamp < $1.source.firstTimestamp
             }
             return $0.source.chunkID < $1.source.chunkID
         }
-        return try JSONEncoder.iso8601.encode(Canonical(
-            aggregates: sorted,
+    }
+
+    static func canonicalAggregateSnapshotData(
+        _ snapshot: AtriaHistoricalAggregateReader.Snapshot
+    ) throws -> Data {
+        try JSONEncoder.iso8601.encode(CanonicalAggregateSnapshot(
+            aggregates: sortedAggregates(snapshot),
             committedManifests: snapshot.diagnostics.committedManifests,
             acceptedAggregates: snapshot.diagnostics.acceptedAggregates,
             rejectedManifests: snapshot.diagnostics.rejectedManifests
         ))
+    }
+
+    /// Computes the SHA-256 of `canonicalAggregateSnapshotData` WITHOUT ever
+    /// materializing the whole re-encoded archive `Data`. This is the memory
+    /// bound that keeps the foreground publication passes from ballooning.
+    ///
+    /// Byte-identity recipe (proven byte-for-byte equal to hashing the whole
+    /// buffer): encode the canonical wrapper with an EMPTY aggregates array via
+    /// the same encoder, then split it at the sole `[]` literal — everything up
+    /// to and including `[` is the prefix, everything from `]` onward is the
+    /// suffix. This reuses `JSONEncoder`'s own key names and punctuation exactly.
+    /// Each aggregate element is then encoded standalone (byte-identical to its
+    /// slice inside the full array under these options) and folded into the hash
+    /// with `,` separators between elements (none before the first). Every
+    /// per-element encode is wrapped in an `autoreleasepool` so no whole-archive
+    /// `Data` is ever resident.
+    static func streamedAggregateSnapshotDigest(
+        _ snapshot: AtriaHistoricalAggregateReader.Snapshot
+    ) throws -> String {
+        let encoder = JSONEncoder.iso8601
+        let wrapper = try encoder.encode(CanonicalAggregateSnapshot(
+            aggregates: [],
+            committedManifests: snapshot.diagnostics.committedManifests,
+            acceptedAggregates: snapshot.diagnostics.acceptedAggregates,
+            rejectedManifests: snapshot.diagnostics.rejectedManifests
+        ))
+        guard let openBraceIndex = soleEmptyArrayOpenBracketIndex(in: wrapper) else {
+            throw FactoryError.malformedAggregateSnapshotWrapper
+        }
+        let prefix = wrapper[wrapper.startIndex...openBraceIndex]
+        let suffix = wrapper[wrapper.index(after: openBraceIndex)..<wrapper.endIndex]
+
+        var hasher = SHA256()
+        hasher.update(data: prefix)
+        let comma = Data([0x2C]) // ","
+        for (index, aggregate) in sortedAggregates(snapshot).enumerated() {
+            try autoreleasepool {
+                if index > 0 {
+                    hasher.update(data: comma)
+                }
+                let element = try encoder.encode(aggregate)
+                hasher.update(data: element)
+            }
+        }
+        hasher.update(data: suffix)
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Returns the index of the `[` of the sole empty-array literal `[]` in the
+    /// canonical wrapper, or `nil` if it is absent or not unique (malformed).
+    private static func soleEmptyArrayOpenBracketIndex(in data: Data) -> Data.Index? {
+        var found: Data.Index?
+        var index = data.startIndex
+        while index < data.endIndex {
+            if data[index] == 0x5B { // "["
+                let next = data.index(after: index)
+                if next < data.endIndex, data[next] == 0x5D { // "]"
+                    if found != nil { return nil }
+                    found = index
+                }
+            }
+            index = data.index(after: index)
+        }
+        return found
     }
 
     private static func closedCoverageIntervals(
