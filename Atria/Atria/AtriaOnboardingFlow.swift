@@ -553,6 +553,15 @@ struct AtriaOnboardingFlow: View {
                             move(to: Step(rawValue: step.rawValue + 1) ?? .expectations)
                         }
                     }
+                    if stepIsSkippablePersonalization {
+                        Button("Skip for now") {
+                            move(to: Step(rawValue: step.rawValue + 1) ?? .expectations)
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(minHeight: 44)
+                        .accessibilityHint("Skips this optional setup step. You can set it later in Settings.")
+                    }
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
@@ -562,6 +571,14 @@ struct AtriaOnboardingFlow: View {
     }
 
     private var onboardingStrapIsReady: Bool { historyBootstrap.isCompleteForCurrentStrap }
+
+    /// The three design-adopted personalization pages are optional: each persists
+    /// continuously with a sensible default (blank nickname, default ring layout,
+    /// cycle off), so a "Skip for now" simply advances and leaves the defaults in
+    /// place. Everything here is changeable later from Settings/Customize.
+    private var stepIsSkippablePersonalization: Bool {
+        step == .nickname || step == .rings || step == .cycle
+    }
 
     private func move(to next: Step) {
         if reduceMotion {
