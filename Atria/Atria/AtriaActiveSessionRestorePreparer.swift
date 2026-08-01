@@ -12,6 +12,13 @@ enum AtriaActiveSessionRestorePreparer {
         let skinTempCandidateFrames: Int
         let skinTempCandidateValueSum: Int
         let skinTempCandidateValueCount: Int
+        /// RESEARCH-ONLY SpO2 candidate byte-value capture at the two historical
+        /// hypotheses (offsets 64/66). Sum+count so a mean can be computed and
+        /// cross-checked against a reference app. Never an SpO2 percentage.
+        let spo2Offset64ValueSum: Int
+        let spo2Offset64ValueCount: Int
+        let spo2Offset66ValueSum: Int
+        let spo2Offset66ValueCount: Int
         let strapSteps: Int
         let strapRawSteps: Int
         let strapDeviceTimestamp: UInt32?
@@ -29,6 +36,10 @@ enum AtriaActiveSessionRestorePreparer {
              skinTempCandidateFrames: Int,
              skinTempCandidateValueSum: Int,
              skinTempCandidateValueCount: Int,
+             spo2Offset64ValueSum: Int = 0,
+             spo2Offset64ValueCount: Int = 0,
+             spo2Offset66ValueSum: Int = 0,
+             spo2Offset66ValueCount: Int = 0,
              strapSteps: Int = 0,
              strapRawSteps: Int = 0,
              strapDeviceTimestamp: UInt32? = nil,
@@ -40,6 +51,10 @@ enum AtriaActiveSessionRestorePreparer {
             self.skinTempCandidateFrames = skinTempCandidateFrames
             self.skinTempCandidateValueSum = skinTempCandidateValueSum
             self.skinTempCandidateValueCount = skinTempCandidateValueCount
+            self.spo2Offset64ValueSum = spo2Offset64ValueSum
+            self.spo2Offset64ValueCount = spo2Offset64ValueCount
+            self.spo2Offset66ValueSum = spo2Offset66ValueSum
+            self.spo2Offset66ValueCount = spo2Offset66ValueCount
             self.strapSteps = strapSteps
             self.strapRawSteps = strapRawSteps
             self.strapDeviceTimestamp = strapDeviceTimestamp
@@ -52,7 +67,11 @@ enum AtriaActiveSessionRestorePreparer {
                                              spo2CandidateFrames: 0,
                                              skinTempCandidateFrames: 0,
                                              skinTempCandidateValueSum: 0,
-                                             skinTempCandidateValueCount: 0)
+                                             skinTempCandidateValueCount: 0,
+                                             spo2Offset64ValueSum: 0,
+                                             spo2Offset64ValueCount: 0,
+                                             spo2Offset66ValueSum: 0,
+                                             spo2Offset66ValueCount: 0)
     }
 
     /// Fully prepared restore output produced away from the MainActor. The
@@ -151,11 +170,37 @@ enum AtriaActiveSessionRestorePreparer {
         default:
             return nil
         }
+
+        let oxygenOffset64Values: (sum: Int, count: Int)
+        switch (record.spo2ResearchCandidateOffset64ValueSum,
+                record.spo2ResearchCandidateOffset64ValueCount) {
+        case (nil, nil):
+            oxygenOffset64Values = (0, 0)
+        case let (sum?, count?) where sum >= 0 && count >= 0 && (count > 0 || sum == 0):
+            oxygenOffset64Values = (sum, count)
+        default:
+            return nil
+        }
+
+        let oxygenOffset66Values: (sum: Int, count: Int)
+        switch (record.spo2ResearchCandidateOffset66ValueSum,
+                record.spo2ResearchCandidateOffset66ValueCount) {
+        case (nil, nil):
+            oxygenOffset66Values = (0, 0)
+        case let (sum?, count?) where sum >= 0 && count >= 0 && (count > 0 || sum == 0):
+            oxygenOffset66Values = (sum, count)
+        default:
+            return nil
+        }
         return ResearchAggregates(sensorProbeFrames: sensorFrames,
                                   spo2CandidateFrames: spo2Frames,
                                   skinTempCandidateFrames: skinTempFrames,
                                   skinTempCandidateValueSum: temperatureValues.sum,
                                   skinTempCandidateValueCount: temperatureValues.count,
+                                  spo2Offset64ValueSum: oxygenOffset64Values.sum,
+                                  spo2Offset64ValueCount: oxygenOffset64Values.count,
+                                  spo2Offset66ValueSum: oxygenOffset66Values.sum,
+                                  spo2Offset66ValueCount: oxygenOffset66Values.count,
                                   strapSteps: strap.steps,
                                   strapRawSteps: strap.raw,
                                   strapDeviceTimestamp: record.strapStepResearchDeviceTimestamp
@@ -255,6 +300,10 @@ enum AtriaActiveSessionRestorePreparer {
                 skinTempResearchCandidateFrames: researchAggregates?.skinTempCandidateFrames,
                 skinTempResearchCandidateValueSum: researchAggregates?.skinTempCandidateValueSum,
                 skinTempResearchCandidateValueCount: researchAggregates?.skinTempCandidateValueCount,
+                spo2ResearchCandidateOffset64ValueSum: researchAggregates?.spo2Offset64ValueSum,
+                spo2ResearchCandidateOffset64ValueCount: researchAggregates?.spo2Offset64ValueCount,
+                spo2ResearchCandidateOffset66ValueSum: researchAggregates?.spo2Offset66ValueSum,
+                spo2ResearchCandidateOffset66ValueCount: researchAggregates?.spo2Offset66ValueCount,
                 biologicalSex: biologicalSex,
                 hrRaw2A37: record.rawHRNotifications,
                 hrAccepted: record.acceptedHRSamples,

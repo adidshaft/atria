@@ -1879,6 +1879,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// device; the parallel acceleration-peak counter remains diagnostic.
     private var researchProbeFrameCount = 0
     private var researchProbeOxygenCandidateFrames = 0
+    // RESEARCH-ONLY SpO2 candidate byte-value capture at the two historical
+    // hypotheses (offsets 64/66). Accumulated purely so a later cross-check
+    // against a reference app can confirm which offset is real SpO2. Never
+    // displayed and never promoted; validatedSpO2DecoderAvailable stays false.
+    private var researchProbeOxygenOffset64ValueSum = 0
+    private var researchProbeOxygenOffset64ValueCount = 0
+    private var researchProbeOxygenOffset66ValueSum = 0
+    private var researchProbeOxygenOffset66ValueCount = 0
     private var researchProbeTemperatureCandidateFrames = 0
     private var researchProbeTemperatureCandidateValueSum = 0
     private var researchProbeTemperatureCandidateValueCount = 0
@@ -9100,6 +9108,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             skinTempCandidateFrames: researchProbeTemperatureCandidateFrames,
             skinTempCandidateValueSum: researchProbeTemperatureCandidateValueSum,
             skinTempCandidateValueCount: researchProbeTemperatureCandidateValueCount,
+            spo2Offset64ValueSum: researchProbeOxygenOffset64ValueSum,
+            spo2Offset64ValueCount: researchProbeOxygenOffset64ValueCount,
+            spo2Offset66ValueSum: researchProbeOxygenOffset66ValueSum,
+            spo2Offset66ValueCount: researchProbeOxygenOffset66ValueCount,
             strapSteps: strapStepResearchCount,
             strapRawSteps: strapStepResearchPeakCount,
             strapDeviceTimestamp: strapStepResearchDeviceTimestamp,
@@ -9197,6 +9209,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             && saved.skinTempCandidateFrames >= target.skinTempCandidateFrames
             && saved.skinTempCandidateValueSum >= target.skinTempCandidateValueSum
             && saved.skinTempCandidateValueCount >= target.skinTempCandidateValueCount
+            && saved.spo2Offset64ValueSum >= target.spo2Offset64ValueSum
+            && saved.spo2Offset64ValueCount >= target.spo2Offset64ValueCount
+            && saved.spo2Offset66ValueSum >= target.spo2Offset66ValueSum
+            && saved.spo2Offset66ValueCount >= target.spo2Offset66ValueCount
             && saved.strapSteps >= target.strapSteps
             && saved.strapRawSteps >= target.strapRawSteps
             && saved.gyroCadenceResearchSteps >= target.gyroCadenceResearchSteps
@@ -13663,6 +13679,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         researchProbeTemperatureCandidateFrames = researchAggregates.skinTempCandidateFrames
         researchProbeTemperatureCandidateValueSum = researchAggregates.skinTempCandidateValueSum
         researchProbeTemperatureCandidateValueCount = researchAggregates.skinTempCandidateValueCount
+        researchProbeOxygenOffset64ValueSum = researchAggregates.spo2Offset64ValueSum
+        researchProbeOxygenOffset64ValueCount = researchAggregates.spo2Offset64ValueCount
+        researchProbeOxygenOffset66ValueSum = researchAggregates.spo2Offset66ValueSum
+        researchProbeOxygenOffset66ValueCount = researchAggregates.spo2Offset66ValueCount
         // Never splice a legacy acceleration-peak subtotal into the promoted
         // gyro coordinate. A journal that predates gyro evidence contributes
         // no daily steps here; the durable ledger seed carries a validated
@@ -13725,6 +13745,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             skinTempCandidateFrames: researchProbeTemperatureCandidateFrames,
             skinTempCandidateValueSum: researchProbeTemperatureCandidateValueSum,
             skinTempCandidateValueCount: researchProbeTemperatureCandidateValueCount,
+            spo2Offset64ValueSum: researchProbeOxygenOffset64ValueSum,
+            spo2Offset64ValueCount: researchProbeOxygenOffset64ValueCount,
+            spo2Offset66ValueSum: researchProbeOxygenOffset66ValueSum,
+            spo2Offset66ValueCount: researchProbeOxygenOffset66ValueCount,
             strapSteps: strapStepResearchCount,
             strapRawSteps: strapStepResearchPeakCount,
             strapDeviceTimestamp: strapStepResearchDeviceTimestamp,
@@ -13865,6 +13889,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 skinTempResearchCandidateFrames: researchAggregates.skinTempCandidateFrames,
                 skinTempResearchCandidateValueSum: researchAggregates.skinTempCandidateValueSum,
                 skinTempResearchCandidateValueCount: researchAggregates.skinTempCandidateValueCount,
+                spo2ResearchCandidateOffset64ValueSum: researchAggregates.spo2Offset64ValueSum,
+                spo2ResearchCandidateOffset64ValueCount: researchAggregates.spo2Offset64ValueCount,
+                spo2ResearchCandidateOffset66ValueSum: researchAggregates.spo2Offset66ValueSum,
+                spo2ResearchCandidateOffset66ValueCount: researchAggregates.spo2Offset66ValueCount,
                 strapStepResearchCount: researchAggregates.strapSteps > 0 ? researchAggregates.strapSteps : nil,
                 strapStepResearchRawCount: researchAggregates.strapRawSteps > 0 ? researchAggregates.strapRawSteps : nil,
                 strapStepResearchDeviceTimestamp: researchAggregates.strapRawSteps > 0
@@ -28703,6 +28731,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         researchProbeFrameCount += 1
         if supportsSpO2Probe, !summary.oxygenByteCandidates.isEmpty {
             researchProbeOxygenCandidateFrames += 1
+            if let offset64 = summary.oxygenValue(atOffset: 64) {
+                researchProbeOxygenOffset64ValueSum += offset64
+                researchProbeOxygenOffset64ValueCount += 1
+            }
+            if let offset66 = summary.oxygenValue(atOffset: 66) {
+                researchProbeOxygenOffset66ValueSum += offset66
+                researchProbeOxygenOffset66ValueCount += 1
+            }
         }
         if supportsSkinTempProbe, !summary.temperatureWordCandidates.isEmpty {
             researchProbeTemperatureCandidateFrames += 1
@@ -34602,6 +34638,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             skinTempResearchCandidateFrames: researchProbeTemperatureCandidateFrames > 0 ? researchProbeTemperatureCandidateFrames : nil,
                             skinTempResearchCandidateValueSum: researchProbeTemperatureCandidateValueCount > 0 ? researchProbeTemperatureCandidateValueSum : nil,
                             skinTempResearchCandidateValueCount: researchProbeTemperatureCandidateValueCount > 0 ? researchProbeTemperatureCandidateValueCount : nil,
+                            spo2ResearchCandidateOffset64ValueSum: researchProbeOxygenOffset64ValueCount > 0 ? researchProbeOxygenOffset64ValueSum : nil,
+                            spo2ResearchCandidateOffset64ValueCount: researchProbeOxygenOffset64ValueCount > 0 ? researchProbeOxygenOffset64ValueCount : nil,
+                            spo2ResearchCandidateOffset66ValueSum: researchProbeOxygenOffset66ValueCount > 0 ? researchProbeOxygenOffset66ValueSum : nil,
+                            spo2ResearchCandidateOffset66ValueCount: researchProbeOxygenOffset66ValueCount > 0 ? researchProbeOxygenOffset66ValueCount : nil,
                             biologicalSex: profile.biologicalSex,
                             activeCalories: activeCalories,
                             caloriesConfidence: caloriesConfidence,
@@ -35483,6 +35523,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if resetResearchAggregates {
             researchProbeFrameCount = 0
             researchProbeOxygenCandidateFrames = 0
+            researchProbeOxygenOffset64ValueSum = 0
+            researchProbeOxygenOffset64ValueCount = 0
+            researchProbeOxygenOffset66ValueSum = 0
+            researchProbeOxygenOffset66ValueCount = 0
             researchProbeTemperatureCandidateFrames = 0
             researchProbeTemperatureCandidateValueSum = 0
             researchProbeTemperatureCandidateValueCount = 0

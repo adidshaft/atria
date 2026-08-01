@@ -691,6 +691,13 @@ struct SavedSession: Codable, Identifiable {
     var skinTempResearchCandidateFrames: Int? = nil
     var skinTempResearchCandidateValueSum: Int? = nil
     var skinTempResearchCandidateValueCount: Int? = nil
+    /// RESEARCH-ONLY SpO2 candidate byte-value capture at the two historical
+    /// hypotheses (offsets 64/66). Sum+count so a mean can be computed and
+    /// cross-checked against a reference app. Never rendered as an SpO2 value.
+    var spo2ResearchCandidateOffset64ValueSum: Int? = nil
+    var spo2ResearchCandidateOffset64ValueCount: Int? = nil
+    var spo2ResearchCandidateOffset66ValueSum: Int? = nil
+    var spo2ResearchCandidateOffset66ValueCount: Int? = nil
     /// Generation/version/provenance-aware Celsius samples produced only by a
     /// calibrated decoder. Raw research candidate words remain separate above
     /// and can never be interpreted as Celsius by session aggregation.
@@ -15805,6 +15812,24 @@ final class SessionStore: ObservableObject {
         }
         merged.skinTempResearchCandidateValueSum = selectedTemperature?.sum
         merged.skinTempResearchCandidateValueCount = selectedTemperature?.count
+
+        let selectedOxygenOffset64 = Self.preferredResearchValueTuple(
+            incomingSum: incoming.spo2ResearchCandidateOffset64ValueSum,
+            incomingCount: incoming.spo2ResearchCandidateOffset64ValueCount,
+            existingSum: existing.spo2ResearchCandidateOffset64ValueSum,
+            existingCount: existing.spo2ResearchCandidateOffset64ValueCount
+        )
+        merged.spo2ResearchCandidateOffset64ValueSum = selectedOxygenOffset64?.sum
+        merged.spo2ResearchCandidateOffset64ValueCount = selectedOxygenOffset64?.count
+
+        let selectedOxygenOffset66 = Self.preferredResearchValueTuple(
+            incomingSum: incoming.spo2ResearchCandidateOffset66ValueSum,
+            incomingCount: incoming.spo2ResearchCandidateOffset66ValueCount,
+            existingSum: existing.spo2ResearchCandidateOffset66ValueSum,
+            existingCount: existing.spo2ResearchCandidateOffset66ValueCount
+        )
+        merged.spo2ResearchCandidateOffset66ValueSum = selectedOxygenOffset66?.sum
+        merged.spo2ResearchCandidateOffset66ValueCount = selectedOxygenOffset66?.count
         let incomingStrapSteps = incoming.strapStepResearchCount.flatMap { $0 >= 0 ? $0 : nil }
         let existingStrapSteps = existing.strapStepResearchCount.flatMap { $0 >= 0 ? $0 : nil }
         merged.strapStepResearchCount = monotonicOptionalCount(incomingStrapSteps,
@@ -15846,6 +15871,31 @@ final class SessionStore: ObservableObject {
     private nonisolated static func validResearchTemperatureTuple(sum: Int?, count: Int?) -> (sum: Int, count: Int)? {
         guard let sum, let count, sum >= 0, count >= 0, count > 0 || sum == 0 else { return nil }
         return (sum, count)
+    }
+
+    /// RESEARCH-ONLY: pick the higher-evidence sum/count capture between two
+    /// segments, mirroring the skin-temperature value-tuple selection. Prefers
+    /// the larger sample count, then the larger sum. Used for the SpO2
+    /// candidate byte-value captures at offsets 64/66; never an SpO2 value.
+    private nonisolated static func preferredResearchValueTuple(
+        incomingSum: Int?, incomingCount: Int?,
+        existingSum: Int?, existingCount: Int?
+    ) -> (sum: Int, count: Int)? {
+        let incoming = validResearchTemperatureTuple(sum: incomingSum, count: incomingCount)
+        let existing = validResearchTemperatureTuple(sum: existingSum, count: existingCount)
+        switch (incoming, existing) {
+        case let (incoming?, existing?):
+            return incoming.count > existing.count
+                || (incoming.count == existing.count && incoming.sum >= existing.sum)
+                ? incoming
+                : existing
+        case let (incoming?, nil):
+            return incoming
+        case let (nil, existing?):
+            return existing
+        case (nil, nil):
+            return nil
+        }
     }
 
     func homeDashboardDiagnostics() -> HomeDashboardDiagnostics {
@@ -16300,6 +16350,10 @@ final class SessionStore: ObservableObject {
                             skinTempResearchCandidateFrames: researchAggregates?.skinTempCandidateFrames,
                             skinTempResearchCandidateValueSum: researchAggregates?.skinTempCandidateValueSum,
                             skinTempResearchCandidateValueCount: researchAggregates?.skinTempCandidateValueCount,
+                            spo2ResearchCandidateOffset64ValueSum: researchAggregates?.spo2Offset64ValueSum,
+                            spo2ResearchCandidateOffset64ValueCount: researchAggregates?.spo2Offset64ValueCount,
+                            spo2ResearchCandidateOffset66ValueSum: researchAggregates?.spo2Offset66ValueSum,
+                            spo2ResearchCandidateOffset66ValueCount: researchAggregates?.spo2Offset66ValueCount,
                             hrRaw2A37: record.rawHRNotifications,
                             hrAccepted: record.acceptedHRSamples,
                             hrZero: record.zeroHRSamples,
@@ -26344,7 +26398,9 @@ final class SessionStore: ObservableObject {
                             session.imuFrameCount, session.imuActivityBursts,
                             session.strapStepResearchCount, session.sensorResearchProbeFrames,
                             session.spo2ResearchCandidateFrames, session.skinTempResearchCandidateFrames,
-                            session.skinTempResearchCandidateValueCount, session.hrRaw2A37,
+                            session.skinTempResearchCandidateValueCount,
+                            session.spo2ResearchCandidateOffset64ValueCount,
+                            session.spo2ResearchCandidateOffset66ValueCount, session.hrRaw2A37,
                             session.hrAccepted, session.hrZero, session.hrArtifactHeld,
                             session.hrArtifactDropped, session.hrRawGaps, session.hrAcceptedGaps,
                             session.hrRRMismatch].compactMap { $0 }
