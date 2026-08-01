@@ -8824,13 +8824,15 @@ struct AtriaMetricDetailSheet: View {
                                        baselineBand: config.band,
                                        events: expandedChartEvents,
                                        overlays: expandedChartOverlays,
+                                       comparisonPeriodNoun: range.narrativeLabel,
                                        onDismiss: { showExpandedChart = false })
             }
         }
         .sheet(isPresented: $showChartOptions) {
-            AtriaChartOptionsSheet(bucketOverride: $bucketOverride,
+            AtriaChartOptionsSheet(window: $range,
+                                   bucketOverride: $bucketOverride,
                                    showMinMaxBand: $showMinMaxBand)
-                .presentationDetents([.height(300)])
+                .presentationDetents([.height(380)])
                 .presentationDragIndicator(.visible)
         }
         .sheet(item: $openedHistoryDay) { day in
@@ -10370,6 +10372,18 @@ struct AtriaMetricDetailSheet: View {
                 range: range,
                 calendar: input.calendar,
                 forceWeekly: true,
+                within: range.periodInterval(containing: input.referenceDate,
+                                             calendar: input.calendar)
+            )
+        case .monthlyAverage:
+            // 2026-08-01 (graph grammar slice 4): month buckets use the shared
+            // pure envelope — value = the month's real average, band = its real
+            // min–max. Same visible-period clamp as the weekly path.
+            let input = preparation.valueKey ?? preparationInput
+            base = AtriaGraphMinMaxEnvelope.bucketed(
+                raw,
+                by: .month,
+                calendar: input.calendar,
                 within: range.periodInterval(containing: input.referenceDate,
                                              calendar: input.calendar)
             )
@@ -15532,36 +15546,76 @@ private struct AtriaDisconnectedOverviewSavedStateCard: View, Equatable {
 /// interval"). .auto keeps the shipped behavior: raw daily points on short
 /// ranges, weekly buckets past 90 days.
 enum AtriaChartBucketOverride: String, CaseIterable, Identifiable {
-    case auto, daily, weeklyAverage
+    case auto, daily, weeklyAverage, monthlyAverage
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .auto: return "Auto"
-        case .daily: return "Daily"
+        // 2026-08-01 (graph grammar slice 4): the design's pattern-3 bucket set
+        // is Day / Week avg / Month avg; "Daily" now reads "Day" to match, and
+        // Month avg was added alongside.
+        case .daily: return "Day"
         case .weeklyAverage: return "Week avg"
+        case .monthlyAverage: return "Month avg"
         }
     }
 }
 
-/// Bottom sheet controlling how detail-chart points are bucketed and whether
-/// the weekly min-max band shows. The range picker on the sheet itself is
-/// the window control -- this deliberately controls bucketing only.
+/// Bottom sheet controlling the chart WINDOW (design pattern 3: W/M/3M/6M/1Y/
+/// All), the BUCKET each point is aggregated by, and the real per-bucket
+/// min-max band. Edits are held in draft state and only take effect on Apply,
+/// so previewing a wider window doesn't reload data mid-scroll. The deeper
+/// windows (3M/6M/1Y/All) are already computed in the prepared history but are
+/// not offered in the inline D/W/M bar — this sheet surfaces them.
 struct AtriaChartOptionsSheet: View {
+    @Binding var window: AtriaTrendRange
     @Binding var bucketOverride: AtriaChartBucketOverride
     @Binding var showMinMaxBand: Bool
     @Environment(\.dismiss) private var dismiss
+
+    @State private var draftWindow: AtriaTrendRange
+    @State private var draftBucket: AtriaChartBucketOverride
+    @State private var draftShowBand: Bool
+
+    /// The full window set the design's pattern-3 sheet exposes.
+    private static let windowOptions: [AtriaTrendRange] =
+        [.week, .month, .quarter, .sixMonths, .year, .all]
+
+    init(window: Binding<AtriaTrendRange>,
+         bucketOverride: Binding<AtriaChartBucketOverride>,
+         showMinMaxBand: Binding<Bool>) {
+        _window = window
+        _bucketOverride = bucketOverride
+        _showMinMaxBand = showMinMaxBand
+        _draftWindow = State(initialValue: window.wrappedValue)
+        _draftBucket = State(initialValue: bucketOverride.wrappedValue)
+        _draftShowBand = State(initialValue: showMinMaxBand.wrappedValue)
+    }
 
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 8) {
+                    Text("WINDOW")
+                        .font(.caption2.weight(.black))
+                        .foregroundStyle(.tertiary)
+                        .kerning(0.8)
+                    Picker("Window", selection: $draftWindow) {
+                        ForEach(Self.windowOptions) { option in
+                            Text(option.segmentedLabel).tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
                     Text("BUCKET EACH POINT BY")
                         .font(.caption2.weight(.black))
                         .foregroundStyle(.tertiary)
                         .kerning(0.8)
-                    Picker("Bucket", selection: $bucketOverride) {
+                    Picker("Bucket", selection: $draftBucket) {
                         ForEach(AtriaChartBucketOverride.allCases) { option in
                             Text(option.label).tag(option)
                         }
@@ -15573,25 +15627,36 @@ struct AtriaChartOptionsSheet: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                Toggle(isOn: $showMinMaxBand) {
+                Toggle(isOn: $draftShowBand) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Show min\u{2013}max band")
                             .font(.subheadline.weight(.semibold))
-                        Text("Shades each week's real range around its average.")
+                        Text("Shades each bucket's real range around its average.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
 
                 Spacer(minLength: 0)
+
+                Button {
+                    window = draftWindow
+                    bucketOverride = draftBucket
+                    showMinMaxBand = draftShowBand
+                    dismiss()
+                } label: {
+                    Text("Apply")
+                        .font(.body.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                }
+                .atriaCardAction(prominent: true, tint: .accentColor)
             }
             .padding(18)
             .navigationTitle("Range & interval")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                        .font(.body.weight(.semibold))
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
                 }
             }
         }
