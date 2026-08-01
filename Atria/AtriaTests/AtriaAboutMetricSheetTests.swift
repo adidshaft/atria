@@ -56,11 +56,18 @@ final class AtriaAboutMetricSheetTests: XCTestCase {
         }
     }
 
-    func testCanonicalSpO2ConstantsMatchDesign() {
+    // 2026-08-01: SpO2 copy reframed from a strap/hardware limitation to an app
+    // limitation — the WHOOP 4 carries the SpO2 sensor (supportsSpO2 == true),
+    // Atria just has no validated decoder yet. The honesty invariant (never a
+    // fabricated %) is unchanged; only the availability framing moved.
+    func testCanonicalSpO2ConstantsUseAppLimitationFraming() {
         XCTAssertEqual(AtriaSpO2Copy.wontFakeAPercentage, "Atria won't fake a percentage.")
-        XCTAssertEqual(AtriaSpO2Copy.notAvailableOnStrap, "Not available on this strap.")
+        XCTAssertEqual(AtriaSpO2Copy.notAvailableOnStrap, "Not available in Atria yet.")
         XCTAssertEqual(AtriaSpO2Copy.longUnavailable,
-                       "This strap's sensor can't produce a validated SpO2 reading. Rather than estimate, Atria leaves it blank — and tells you why.")
+                       "Atria can't yet produce a validated SpO2 reading from this strap's sensor. Rather than estimate, it leaves this blank — and tells you why.")
+        // The framing must NOT claim the hardware lacks the sensor.
+        XCTAssertFalse(AtriaSpO2Copy.notAvailableOnStrap.contains("on this strap"))
+        XCTAssertFalse(AtriaSpO2Copy.longUnavailable.contains("can't produce"))
     }
 
     func testOnlyBloodOxygenIsHardwareUnavailable() {
