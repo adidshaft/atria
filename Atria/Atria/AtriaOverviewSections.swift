@@ -8833,7 +8833,8 @@ struct AtriaMetricDetailSheet: View {
             AtriaHistoryDayDetailSheet(day: day,
                                        medians: AtriaHistoryModel.make(rollups: rollups,
                                                                        workouts: confirmedWorkouts,
-                                                                       sleeps: confirmedSleeps).medianWindow(around: day))
+                                                                       sleeps: confirmedSleeps).medianWindow(around: day),
+                                       nights: sleepHistory.confirmedNights(on: day.date))
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -9031,12 +9032,16 @@ struct AtriaMetricDetailSheet: View {
                                       heroState: sleepHeroState,
                                       tint: Metrics.electricSleep) {
                 if let latest = sleepHistory.latestMainSleep {
-                    AtriaSleepHypnogramCard(night: latest,
-                                            neededHours: sleepHistory.sleepNeedHours(for: latest,
-                                                                                    baseNeedHours: sleepBaseNeedHours,
-                                                                                    yesterdayStrain: yesterdayStrainForLatestNight),
-                                            consistencyPercent: sleepHistory.sleepConsistencyPercent,
-                                            nightEfficiencies: confirmedNightEfficiencies)
+                    // Shared stage-timeline hypnogram (design "STAGES ·
+                    // HYPNOGRAM" card); renders the honest needs-motion /
+                    // building states itself for unvalidated nights.
+                    AtriaSleepHypnogramCard(night: latest)
+                    AtriaSleepPlanCard(night: latest,
+                                       neededHours: sleepHistory.sleepNeedHours(for: latest,
+                                                                                baseNeedHours: sleepBaseNeedHours,
+                                                                                yesterdayStrain: yesterdayStrainForLatestNight),
+                                       consistencyPercent: sleepHistory.sleepConsistencyPercent,
+                                       nightEfficiencies: confirmedNightEfficiencies)
                     sleepNeedLedgerCard(for: latest)
                     sleepDebtTrendCard
                 }
@@ -13158,7 +13163,11 @@ struct AtriaDetailBaselineBand {
     let tint: Color
 }
 
-private struct AtriaSleepHypnogramCard: View {
+/// Wake alarm + planner + need/consistency context for the sleep detail
+/// sheet. The stage display itself moved to the shared
+/// `AtriaSleepHypnogramCard` (2026-08-01) — this card no longer renders any
+/// stage bar of its own.
+private struct AtriaSleepPlanCard: View {
     let night: SleepHistorySnapshot.Night
     let neededHours: Double
     let consistencyPercent: Int?
@@ -13180,54 +13189,11 @@ private struct AtriaSleepHypnogramCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Header duration removed (dedup audit 2026-07-07): the sheet
-            // hero owns the duration readout.
-            Text("Sleep estimate")
+            // hero owns the duration readout. The stage bar moved to the
+            // shared AtriaSleepHypnogramCard rendered above this card.
+            Text("Sleep plan")
                 .font(.subheadline.weight(.semibold))
                 .lineLimit(1)
-
-            if night.displayStageSegments.isEmpty {
-                Text("Stages are still building. Atria labels this as a heart-rate and motion estimate, not EEG.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                GeometryReader { proxy in
-                    let total = max(night.duration, 1)
-                    HStack(spacing: 2) {
-                        ForEach(night.displayStageSegments) { stage in
-                            Rectangle()
-                                .fill(stageTint(stage.stage))
-                                .frame(width: max(6, proxy.size.width * CGFloat(stage.duration / total)))
-                        }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                }
-                .frame(height: 42)
-
-                // Legend so the colored bar is self-explanatory (2026-07-08 UX
-                // audit: it was an unlabeled two-tone bar).
-                let presentStages = SleepStageKind.displayOrder.filter { stage in
-                    night.displayStageSegments.contains { $0.stage == stage }
-                }
-                if !presentStages.isEmpty {
-                    HStack(spacing: 12) {
-                        ForEach(presentStages) { stage in
-                            HStack(spacing: 5) {
-                                Circle()
-                                    .fill(stageTint(stage))
-                                    .frame(width: 8, height: 8)
-                                Text(stage.label)
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        Spacer(minLength: 0)
-                    }
-                }
-
-                Text("Heart-rate and motion estimate — useful for trend context, not an EEG sleep study.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
 
             // Performance/Consistency pills removed (dedup audit): the
             // contributor rows below the chart own both values. The footer
@@ -13383,38 +13349,6 @@ private struct AtriaSleepHypnogramCard: View {
         }
     }
 
-    private var sleepPerformanceText: String {
-        "\(AtriaSleepBudget.performancePercent(slept: night.durationHours, needed: neededHours))%"
-    }
-
-    private var sleepConsistencyText: String {
-        consistencyPercent.map { "\($0)%" } ?? "Building"
-    }
-
-    private func stageTint(_ stage: SleepStageKind) -> Color {
-        switch stage {
-        case .awake: return .orange
-        case .light: return .cyan.opacity(0.65)
-        case .rem: return .blue
-        case .sws, .deep: return .indigo
-        }
-    }
-
-    private func metricPill(title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Text(value)
-                .font(.subheadline.weight(.semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
 }
 
 struct AtriaStrainBandGauge: View {
