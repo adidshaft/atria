@@ -361,7 +361,8 @@ enum AtriaActivitySelectedDayWorkouts {
 /// selectable on every day where its timeline marker is visible.
 enum AtriaActivitySelectedDaySleeps {
     static func canonical(snapshot: SleepHistorySnapshot,
-                          pendingReview: SleepHistorySnapshot.Night?) -> [SleepHistorySnapshot.Night] {
+                          pendingReview: SleepHistorySnapshot.Night?,
+                          napReviewCandidates: [SleepHistorySnapshot.Night] = []) -> [SleepHistorySnapshot.Night] {
         var byID = (snapshot.nights + snapshot.additionalMainNights + snapshot.napNights)
             .reduce(into: [String: SleepHistorySnapshot.Night]()) { result, night in
                 result[night.id] = night
@@ -370,6 +371,13 @@ enum AtriaActivitySelectedDaySleeps {
            !pendingReview.confirmed,
            !byID.values.contains(where: { substantiallyOverlaps($0, pendingReview) }) {
             byID[pendingReview.id] = pendingReview
+        }
+        // Review-worthy naps surface as their own detection rows. A nap that
+        // already maps to a confirmed/candidate night (or the main-sleep review
+        // card) is deduped so a single window is never shown twice.
+        for nap in napReviewCandidates where !nap.confirmed {
+            guard !byID.values.contains(where: { substantiallyOverlaps($0, nap) }) else { continue }
+            byID[nap.id] = nap
         }
         return byID.values.sorted {
             let lhs = $0.start ?? $0.day
@@ -381,11 +389,14 @@ enum AtriaActivitySelectedDaySleeps {
 
     static func overlapping(snapshot: SleepHistorySnapshot,
                             pendingReview: SleepHistorySnapshot.Night?,
+                            napReviewCandidates: [SleepHistorySnapshot.Night] = [],
                             selectedDay: Date,
                             calendar: Calendar) -> [SleepHistorySnapshot.Night] {
         let dayStart = calendar.startOfDay(for: selectedDay)
         guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else { return [] }
-        return canonical(snapshot: snapshot, pendingReview: pendingReview).filter { night in
+        return canonical(snapshot: snapshot,
+                         pendingReview: pendingReview,
+                         napReviewCandidates: napReviewCandidates).filter { night in
             if let start = night.start, let end = night.end, end > start {
                 return end > dayStart && start < dayEnd
             }
@@ -397,9 +408,12 @@ enum AtriaActivitySelectedDaySleeps {
 
     static func overlapping(snapshot: SleepHistorySnapshot,
                             pendingReview: SleepHistorySnapshot.Night?,
+                            napReviewCandidates: [SleepHistorySnapshot.Night] = [],
                             interval: DateInterval,
                             calendar: Calendar) -> [SleepHistorySnapshot.Night] {
-        canonical(snapshot: snapshot, pendingReview: pendingReview).filter { night in
+        canonical(snapshot: snapshot,
+                  pendingReview: pendingReview,
+                  napReviewCandidates: napReviewCandidates).filter { night in
             if let start = night.start, let end = night.end, end > start {
                 return end > interval.start && start < interval.end
             }
@@ -683,6 +697,7 @@ struct AtriaActivityMonitorTab: View {
         let sleepSnapshot: SleepHistorySnapshot
         let workouts: [UserConfirmedWorkout]
         let pendingSleepReview: SleepHistorySnapshot.Night?
+        let napReviewCandidates: [SleepHistorySnapshot.Night]
         let workoutReview: WorkoutReviewCandidate?
         let detections: [ActivityDetection]
         let rollups: [DailyRollupStoreEntry]
@@ -873,6 +888,7 @@ struct AtriaActivityMonitorTab: View {
         let source = DaySectionsSourceSnapshot(sleepSnapshot: activity.sleepHistorySnapshot,
                                                workouts: activity.confirmedWorkouts,
                                                pendingSleepReview: activity.pendingSleepReview,
+                                               napReviewCandidates: activity.napReviewCandidates,
                                                workoutReview: activity.workoutReviewCandidate,
                                                detections: activity.activityDetections,
                                                rollups: activity.dailyRollupHistory,
@@ -916,6 +932,7 @@ struct AtriaActivityMonitorTab: View {
         let sleeps = AtriaActivitySelectedDaySleeps.overlapping(
             snapshot: source.sleepSnapshot,
             pendingReview: source.pendingSleepReview,
+            napReviewCandidates: source.napReviewCandidates,
             interval: source.interval,
             calendar: source.calendar
         )
@@ -990,6 +1007,7 @@ struct AtriaActivityMonitorTab: View {
                                           displayWindow: window,
                                           sleepSnapshot: activity.sleepHistorySnapshot,
                                           pendingSleepReview: activity.pendingSleepReview,
+                                          napReviewCandidates: activity.napReviewCandidates,
                                           workouts: activity.confirmedWorkouts,
                                           workoutReview: activity.workoutReviewCandidate,
                                           detections: activity.activityDetections,
@@ -1397,6 +1415,7 @@ struct AtriaActivityMonitorTab: View {
                            displayWindow: AtriaActivityDisplayWindow,
                            sleepSnapshot: SleepHistorySnapshot,
                            pendingSleepReview: SleepHistorySnapshot.Night?,
+                           napReviewCandidates: [SleepHistorySnapshot.Night],
                            workouts: [UserConfirmedWorkout],
                            workoutReview: WorkoutReviewCandidate?,
                            detections: [ActivityDetection],
@@ -1418,6 +1437,7 @@ struct AtriaActivityMonitorTab: View {
             let visibleSleeps = AtriaActivitySelectedDaySleeps.overlapping(
                 snapshot: sleepSnapshot,
                 pendingReview: pendingSleepReview,
+                napReviewCandidates: napReviewCandidates,
                 interval: displayWindow.interval,
                 calendar: calendar
             ).compactMap { night -> (SleepHistorySnapshot.Night, Date, Date)? in
