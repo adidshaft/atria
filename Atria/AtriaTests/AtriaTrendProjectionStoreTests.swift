@@ -153,6 +153,11 @@ final class AtriaTrendProjectionStoreTests: XCTestCase {
         XCTAssertEqual(Set(compact).count, compact.count)
     }
 
+    // 2026-08-01 migration: the parallel Spacer-based label HStack (guessed
+    // 34pt inset, equal spacing) is gone — it rendered duplicated/misaligned
+    // date labels under true-position gridlines on gappy series (History
+    // audit, 2026-07-31). Labels now ride the SAME AxisMarks values as the
+    // gridlines, so this pin asserts the axis-attached pattern instead.
     func testCompactTrendXAxisKeepsEdgeLabelsInsideClippedChart() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceURL = testsDirectory
@@ -165,13 +170,38 @@ final class AtriaTrendProjectionStoreTests: XCTestCase {
                 ".chartXScale(range: .plotDimension(startPadding: 18, endPadding: 18))"
             )
         )
-        XCTAssertTrue(source.contains("private var compactXAxisLabelRow: some View"))
-        XCTAssertTrue(source.contains("ForEach(Array(chartXAxisDates.enumerated())"))
+        XCTAssertTrue(source.contains("AxisMarks(preset: .aligned, values: chartXAxisDates)"))
+        XCTAssertTrue(source.contains("chartXAxisLabels[date]"))
+        XCTAssertFalse(source.contains("private var compactXAxisLabelRow"))
         XCTAssertFalse(
             source.contains(
                 "AxisValueLabel(format: .dateTime.month(.abbreviated).day())"
             )
         )
+    }
+
+    func testCompactTrendXAxisLabelTextsDedupSameLabelTicks() {
+        // Four real instants inside one civil day format to one visible label:
+        // the map keeps the first tick's label and drops the repeats, so the
+        // chart can never render "Jul 27 Jul 27 Jul 27" (nor the Vitals
+        // timeline's duplicated "11a"-style variant of the same defect).
+        // Midday-UTC instants so every zone within UTC-10...UTC+10 keeps all
+        // four on the same civil day (the formatter runs in device-local time).
+        let sameDay = [
+            date(2026, 7, 27, 10),
+            date(2026, 7, 27, 11),
+            date(2026, 7, 27, 12),
+            date(2026, 7, 27, 13),
+        ]
+        let deduped = AtriaTrendChartCard.compactXAxisLabelTexts(sameDay)
+        XCTAssertEqual(deduped.count, 1)
+        XCTAssertEqual(deduped.keys.first, sameDay.first)
+
+        // Distinct days keep one label per tick, all distinct.
+        let distinct = [date(2026, 7, 27, 12), date(2026, 7, 28, 12), date(2026, 7, 30, 12)]
+        let labels = AtriaTrendChartCard.compactXAxisLabelTexts(distinct)
+        XCTAssertEqual(labels.count, distinct.count)
+        XCTAssertEqual(Set(labels.values).count, distinct.count)
     }
 
     func testTrendHostUsesNarrowProjectionInsteadOfWholeSessionStoreObservation() throws {

@@ -227,6 +227,13 @@ struct AtriaTriRing: View, Equatable {
     let slots: [AtriaTriRingSlotContent]
     let centerValue: String
     let centerState: String
+    /// Which metric the center numeral describes ("Recovery", "Sleep", ...).
+    /// The hero's "61% / Fair" read named its zone but not its metric
+    /// (2026-08-01 ring-presentation fix); when neither the value nor the
+    /// state line already says the name, a small caption states it. Nil keeps
+    /// call sites that bake the name into `centerState` (onboarding, the
+    /// customize preview) rendering exactly as before.
+    var centerMetricName: String? = nil
     /// Tiny, honest delta vs. the prior day (e.g. "+4% vs yesterday").
     /// Nil -- and simply omitted -- whenever there isn't a real prior-day
     /// value to compare against.
@@ -242,12 +249,14 @@ struct AtriaTriRing: View, Equatable {
     init(slots: [AtriaTriRingSlotContent],
          centerValue: String,
          centerState: String,
+         centerMetricName: String? = nil,
          centerDelta: String? = nil,
          accessibilitySummary: String,
          actions: [AtriaTriRingSlot: () -> Void]) {
         self.slots = Array(slots.prefix(3))
         self.centerValue = centerValue
         self.centerState = centerState
+        self.centerMetricName = centerMetricName
         self.centerDelta = centerDelta
         self.accessibilitySummary = accessibilitySummary
         self.actions = actions
@@ -263,6 +272,7 @@ struct AtriaTriRing: View, Equatable {
          strain: AtriaTriRingMetric,
          centerValue: String,
          centerState: String,
+         centerMetricName: String? = nil,
          centerDelta: String? = nil,
          accessibilitySummary: String,
          ringOrder: [AtriaTriRingSlot] = AtriaTriRingSlot.defaultOrder,
@@ -285,6 +295,7 @@ struct AtriaTriRing: View, Equatable {
         self.init(slots: order.prefix(3).map { AtriaTriRingSlotContent(slot: $0, metric: metric(for: $0)) },
                   centerValue: centerValue,
                   centerState: centerState,
+                  centerMetricName: centerMetricName,
                   centerDelta: centerDelta,
                   accessibilitySummary: accessibilitySummary,
                   actions: [.sleep: onSleep, .recovery: onRecovery, .strain: onStrain])
@@ -294,6 +305,7 @@ struct AtriaTriRing: View, Equatable {
         lhs.slots == rhs.slots
             && lhs.centerValue == rhs.centerValue
             && lhs.centerState == rhs.centerState
+            && lhs.centerMetricName == rhs.centerMetricName
             && lhs.centerDelta == rhs.centerDelta
             && lhs.accessibilitySummary == rhs.accessibilitySummary
     }
@@ -422,6 +434,14 @@ struct AtriaTriRing: View, Equatable {
         slots.map { $0.metric.fill ?? -1 }
     }
 
+    /// The caption renders only when neither existing center line already
+    /// carries the metric's name — never a second statement of it.
+    private var showsCenterMetricName: Bool {
+        guard let centerMetricName, !centerMetricName.isEmpty else { return false }
+        return !centerValue.localizedCaseInsensitiveContains(centerMetricName)
+            && !centerState.localizedCaseInsensitiveContains(centerMetricName)
+    }
+
     private var centerContent: some View {
         VStack(spacing: 2) {
             Text(centerValue)
@@ -430,6 +450,18 @@ struct AtriaTriRing: View, Equatable {
                 .minimumScaleFactor(0.7)
                 .lineLimit(1)
                 .contentTransition(reduceMotion ? .identity : .numericText())
+            if showsCenterMetricName, let centerMetricName {
+                // Names WHICH metric the numeral describes ("61% / RECOVERY /
+                // Fair" instead of the ambiguous "61% / Fair") — ring
+                // presentation fix, 2026-08-01.
+                Text(centerMetricName)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.tertiary)
+                    .textCase(.uppercase)
+                    .kerning(0.8)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
             Text(centerState)
                 .font(.caption.weight(.bold))
                 .foregroundStyle(.secondary)

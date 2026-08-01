@@ -2966,6 +2966,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                          strain: triRingStrainMetric,
                          centerValue: triRingCenterValue,
                          centerState: triRingCenterState,
+                         // The center numeral is always the recovery score
+                         // here (triRingCenterValue), but "61% / Fair" never
+                         // said so — name the metric (2026-08-01 ring fix).
+                         centerMetricName: AtriaTriRingSlot.recovery.label,
                          accessibilitySummary: triRingAccessibilitySummary,
                          onSleep: { metricDetail = .sleep },
                          onRecovery: { metricDetail = .recovery },
@@ -8845,6 +8849,24 @@ struct AtriaMetricDetailSheet: View {
         return preparation.value!
     }
 
+    /// Anchor of the history the chart is ACTUALLY plotting right now — the
+    /// accepted preparation's reference date, not the live `periodAnchor`,
+    /// which runs ahead of the plot during an async prepare (2026-08-01
+    /// stale-title fix; History audit item 5).
+    private var displayedPeriodAnchor: Date {
+        preparation.valueKey?.referenceDate ?? periodAnchor
+    }
+
+    /// True while the user's selected period differs from the prepared one —
+    /// exactly the window in which title-vs-plot disagreement was possible.
+    /// Compares anchors only (day-normalized, as `anchored(at:)` stores them)
+    /// rather than whole preparation inputs, so this stays O(1) per body
+    /// evaluation instead of re-comparing every rollup.
+    private var isPreparingSelectedPeriod: Bool {
+        displayedPeriodAnchor
+            != preparationBaseInput.calendar.startOfDay(for: periodAnchor)
+    }
+
     private var preparationShell: some View {
         VStack(alignment: .leading, spacing: 12) {
             ProgressView()
@@ -9502,9 +9524,23 @@ struct AtriaMetricDetailSheet: View {
                 }
                 .accessibilityLabel("Previous \(range.narrativeLabel)")
 
-                Text(range.periodLabel(containing: periodAnchor))
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
+                // Titled from the PREPARED period, not the live anchor
+                // (2026-08-01): while an async prepare is in flight the plot
+                // still shows the previously prepared period, so labelling it
+                // with the freshly tapped anchor made the title and the data
+                // disagree. The label always describes what is actually
+                // plotted; the small spinner says a newer period is coming.
+                HStack(spacing: 6) {
+                    Text(range.periodLabel(containing: displayedPeriodAnchor))
+                        .font(.subheadline.weight(.semibold))
+                    if isPreparingSelectedPeriod {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .tint(.secondary)
+                            .accessibilityLabel("Loading the selected period")
+                    }
+                }
+                .frame(maxWidth: .infinity)
 
                 Button {
                     periodAnchor = range.adjacentPeriodAnchor(
