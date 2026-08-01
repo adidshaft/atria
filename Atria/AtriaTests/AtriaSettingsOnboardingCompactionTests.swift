@@ -61,7 +61,14 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
     func testSettingsDestinationsPreserveEveryFunctionalSection() throws {
         let source = try source("AtriaSettingsView.swift")
         let start = try XCTUnwrap(source.range(of: "private var personalSettingsPage"))
-        let end = try XCTUnwrap(source.range(of: "/// Entry to the leaderboard demo",
+        // 2026-08-01: the old end anchor "/// Entry to the leaderboard demo" and
+        // the leaderboardRow/sparringRow destinations were removed when the
+        // leaderboard/sparring demo screens were deleted earlier on this branch.
+        // Re-anchor the destinations region to the compactSettingsForm helper
+        // (which follows every settings page) and drop the two deleted rows from
+        // the expected set. This corrects a stale pin to match the deliberate
+        // deletion — the remaining functional sections are still all asserted.
+        let end = try XCTUnwrap(source.range(of: "private func compactSettingsForm<Content: View>(",
                                               range: start.upperBound..<source.endIndex))
         let destinations = String(source[start.lowerBound..<end.lowerBound])
 
@@ -70,7 +77,7 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
             "AtriaAdvancedTargetsSettingsView()",
             "radioModeSection", "heartRateBroadcastSection", "deviceSection",
             "sensorAvailabilitySection", "alertsSection", "dataSection",
-            "AtriaResearchSharingSection", "leaderboardRow", "sparringRow", "aboutSection",
+            "AtriaResearchSharingSection", "aboutSection",
             "researchValidationSection"
         ] {
             XCTAssertTrue(destinations.contains(section), "Missing settings section: \(section)")
