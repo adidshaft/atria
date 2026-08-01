@@ -304,6 +304,14 @@ struct AtriaOnboardingFlow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var step: Step = .whatThisIs
     @State private var focusMetric: OnboardingFocusMetric = .recovery
+    // Design-parity slice 6 (2026-08-01) page state. Each is seeded from — and
+    // written back to — the real backing store via AtriaOnboardingPersonalization
+    // (nickname / ring slots / ring center) and AtriaCycleTracking (cycle), so
+    // the onboarding choice takes effect the moment it is made.
+    @State private var nicknameDraft = ""
+    @State private var ringSlots: [AtriaTriRingSlot] = AtriaTriRingSlot.defaultOrder
+    @State private var ringCenterMetric: AtriaHomeLayoutConfig.RingCenterMetric = .recovery
+    @State private var cycleTrackingEnabled = false
     @State private var backupImportPresented = false
     @State private var restoreMessage: String?
     @State private var restoreInProgress = false
@@ -365,9 +373,18 @@ struct AtriaOnboardingFlow: View {
 
     private enum Step: Int, CaseIterable {
         case whatThisIs
+        // 2026-08-01 (design-parity slice 6): nickname (P1), rings (P2), and
+        // cycle (P3) pages were woven INTO this flow. They sit between the
+        // existing pages rather than replacing any of them, so whatThisIs stays
+        // first and expectations stays last exactly as before. Research (P4)
+        // keeps its existing inspector-gated post-flow consent step so the user
+        // is never asked to consent twice.
+        case nickname
         case strap
         case you
+        case rings
         case behaviors
+        case cycle
         case expectations
 
         var isFirst: Bool { self == .whatThisIs }
@@ -377,9 +394,12 @@ struct AtriaOnboardingFlow: View {
             guard let debugName else { return nil }
             switch debugName.lowercased() {
             case "welcome", "what-this-is", "what": self = .whatThisIs
+            case "nickname", "name", "you-name": self = .nickname
             case "strap", "connect": self = .strap
             case "you", "profile": self = .you
+            case "rings", "ring": self = .rings
             case "behaviors", "track", "tracking": self = .behaviors
+            case "cycle", "womens-health", "cycle-tracking": self = .cycle
             case "expectations", "expect", "tomorrow": self = .expectations
             default: return nil
             }
@@ -409,13 +429,16 @@ struct AtriaOnboardingFlow: View {
         private var title: String {
             switch step {
             case .whatThisIs: return "Get started"
+            case .nickname: return "Continue"
             case .strap:
                 if strapIsReady { return "Continue" }
                 if historyBootstrap.isWorking { return "Preparing your strap…" }
                 if historyBootstrap.snapshot.phase == .failed { return "Retry secure import" }
                 return ble.status == .connected ? "Waiting for live data…" : "Connect"
             case .you: return "Continue"
+            case .rings: return "Continue"
             case .behaviors: return "Continue"
+            case .cycle: return "Continue"
             case .expectations:
                 return strapIsReady ? "Start using Atria" : "Finish strap setup"
             }
@@ -469,12 +492,18 @@ struct AtriaOnboardingFlow: View {
                 TabView(selection: $step) {
                     page { whatThisIsPage }
                         .tag(Step.whatThisIs)
+                    page { nicknamePage }
+                        .tag(Step.nickname)
                     page { strapPage }
                         .tag(Step.strap)
                     page { youPage }
                         .tag(Step.you)
+                    page { ringsPage }
+                        .tag(Step.rings)
                     page { behaviorsPage }
                         .tag(Step.behaviors)
+                    page { cyclePage }
+                        .tag(Step.cycle)
                     page { expectationsPage }
                         .tag(Step.expectations)
                 }
@@ -617,6 +646,251 @@ struct AtriaOnboardingFlow: View {
                 }
                 .padding(.top, 8)
             }
+        }
+    }
+
+    // MARK: - Design-parity slice 6 pages (2026-08-01)
+
+    /// P1 Welcome + nickname. Binds to the real "atria.user.nickname" store the
+    /// Today screen reads for its greeting (via AtriaOnboardingPersonalization) —
+    /// leaving it blank removes the key, so skipping looks like skipping.
+    private var nicknamePage: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            onboardingGradientTile(systemImage: "sparkles",
+                                   colors: [Color.purple.opacity(0.35), Color.blue.opacity(0.25)])
+            Text("Welcome to Atria")
+                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Your strap becomes a calm, honest readiness coach. What should we call you?")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 8) {
+                TextField("Nickname", text: $nicknameDraft)
+                    .textInputAutocapitalization(.words)
+                    .autocorrectionDisabled()
+                    .submitLabel(.done)
+                    .frame(minHeight: 44)
+                    .onChange(of: nicknameDraft) { _, newValue in
+                        AtriaOnboardingPersonalization.persistNickname(newValue)
+                    }
+            }
+            .padding(16)
+            .atriaCard(emphasis: .soft)
+
+            Text("Optional — used only for a friendlier greeting on this phone.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .onAppear {
+            nicknameDraft = AtriaOnboardingPersonalization.loadNickname()
+        }
+    }
+
+    /// P2 Choose your rings. Ring assignment + CENTER NUMBER picker wired to the
+    /// SAME real stores the Today screen and Customize sheet use: the
+    /// "atria.today.ringMetrics" CSV and `ringCenterMetric` inside the
+    /// AtriaHomeLayoutConfig JSON blob. The preview ring stays in the honest
+    /// pre-data state (dashed learning bands, "--" center) — no sample numbers.
+    private var ringsPage: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ringsPreviewCard
+            Text("Choose your rings")
+                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Pick what the three rings track, and which one sits in the center. You can change this anytime from Customize Today.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 14) {
+                ForEach(Array(ringSlots.enumerated()), id: \.offset) { index, slot in
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(ringSlotTint(slot))
+                            .frame(width: 10, height: 10)
+                            .accessibilityHidden(true)
+                        Text(Self.ringPositionLabels[index])
+                            .font(.subheadline.weight(.semibold))
+                        Spacer(minLength: 8)
+                        Picker(Self.ringPositionLabels[index], selection: Binding(
+                            get: { slot },
+                            set: { assignRing($0, toPosition: index) }
+                        )) {
+                            ForEach(AtriaTriRingSlot.allCases, id: \.self) { option in
+                                Text(option.label).tag(option)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                    }
+                }
+            }
+            .padding(16)
+            .atriaCard(emphasis: .soft)
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Center number")
+                    .font(.subheadline.weight(.semibold))
+                Picker("Center metric", selection: Binding(
+                    get: { ringCenterMetric },
+                    set: { setRingCenterMetric($0) }
+                )) {
+                    ForEach(AtriaHomeLayoutConfig.RingCenterMetric.allCases, id: \.self) { metric in
+                        Text(ringCenterMetricLabel(metric)).tag(metric)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityHint("Selects the metric shown in the center of the ring")
+            }
+            .padding(16)
+            .atriaCard(emphasis: .soft)
+        }
+        .onAppear {
+            ringSlots = AtriaOnboardingPersonalization.loadRingSlots()
+            ringCenterMetric = AtriaOnboardingPersonalization.loadRingCenterMetric()
+        }
+    }
+
+    private var ringsPreviewCard: some View {
+        AtriaTriRing(slots: ringSlots.map { slot in
+                         // fill: nil is the learning sentinel — the preview shows
+                         // the same honest dashed pre-data band the live Home ring
+                         // uses before real nights arrive.
+                         AtriaTriRingSlotContent(slot: slot,
+                                                 metric: AtriaTriRingMetric(title: slot.label,
+                                                                            value: "--",
+                                                                            detail: "Preview",
+                                                                            systemImage: ringSlotIcon(slot),
+                                                                            tint: ringSlotTint(slot),
+                                                                            fill: nil))
+                     },
+                     centerValue: "--",
+                     centerState: ringCenterMetricLabel(ringCenterMetric),
+                     accessibilitySummary: "Preview of your ring choices. Real numbers appear after your first night of wear.",
+                     actions: [:])
+            .frame(maxWidth: 240)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 12)
+            .atriaCard(emphasis: .soft)
+    }
+
+    /// P3 Cycle tracking opt-in. Toggle wired to the real AtriaCycleTracking
+    /// enable flag through its canonical `setEnabled` path (default OFF), so
+    /// enabling it here is exactly the same action Settings/Journal perform.
+    private var cyclePage: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            onboardingGradientTile(systemImage: "calendar.circle.fill",
+                                   colors: [Self.cycleHue.opacity(0.38),
+                                            Color.red.opacity(0.22)])
+            Text("Cycle tracking")
+                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Track your cycle alongside recovery. Your own store, kept separate from research sharing — always.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(isOn: Binding(
+                    get: { cycleTrackingEnabled },
+                    set: { setCycleTracking($0) }
+                )) {
+                    Label("Enable cycle tracking", systemImage: "calendar.circle.fill")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .tint(Self.cycleHue)
+                Text("Off by default.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(16)
+            .atriaCard(emphasis: .soft)
+
+            DisclosureGroup {
+                Text("Turn it on any time from Journal. Phase-aware notes are estimates, never a diagnosis, and never leave this phone.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 6)
+            } label: {
+                Label("How it works", systemImage: "questionmark.circle")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .tint(.secondary)
+        }
+        .onAppear {
+            cycleTrackingEnabled = AtriaCycleTracking.isEnabled
+        }
+    }
+
+    // MARK: - Slice 6 helpers
+
+    private static let ringPositionLabels = ["Outer ring", "Middle ring", "Inner ring"]
+    /// Design cycle hue #FF6482 (spec §0 · Cycle #FF6482). Kept local so this
+    /// slice never edits the shared Metrics palette.
+    private static let cycleHue = Color(red: 1.0, green: 0.392, blue: 0.51)
+
+    private func onboardingGradientTile(systemImage: String, colors: [Color]) -> some View {
+        RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile, style: .continuous)
+            .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+            .frame(width: 84, height: 84)
+            .overlay {
+                Image(systemName: systemImage)
+                    .font(.system(size: 36, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .symbolRenderingMode(.hierarchical)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile, style: .continuous)
+                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
+            }
+            .accessibilityHidden(true)
+    }
+
+    private func assignRing(_ slot: AtriaTriRingSlot, toPosition position: Int) {
+        let updated = AtriaOnboardingPersonalization.assign(slot, toPosition: position, in: ringSlots)
+        ringSlots = updated
+        AtriaOnboardingPersonalization.persistRingSlots(updated)
+    }
+
+    private func setRingCenterMetric(_ metric: AtriaHomeLayoutConfig.RingCenterMetric) {
+        ringCenterMetric = metric
+        AtriaOnboardingPersonalization.persistRingCenterMetric(metric)
+    }
+
+    private func setCycleTracking(_ enabled: Bool) {
+        cycleTrackingEnabled = enabled
+        AtriaCycleTracking.setEnabled(enabled)
+    }
+
+    private func ringCenterMetricLabel(_ metric: AtriaHomeLayoutConfig.RingCenterMetric) -> String {
+        switch metric {
+        case .recovery: return "Recovery"
+        case .sleep: return "Sleep"
+        case .strain: return "Strain"
+        }
+    }
+
+    private func ringSlotTint(_ slot: AtriaTriRingSlot) -> Color {
+        switch slot {
+        case .sleep: return Metrics.electricSleep
+        case .recovery: return Metrics.electricGreen
+        case .strain: return Metrics.electricStrain
+        case .hrv: return Metrics.electricHRV
+        case .rhr: return Metrics.electricRHR
+        }
+    }
+
+    private func ringSlotIcon(_ slot: AtriaTriRingSlot) -> String {
+        switch slot {
+        case .sleep: return "bed.double.fill"
+        case .recovery: return "heart.fill"
+        case .strain: return "flame.fill"
+        case .hrv: return "waveform.path.ecg"
+        case .rhr: return "heart.circle.fill"
         }
     }
 

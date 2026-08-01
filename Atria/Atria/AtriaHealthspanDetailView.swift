@@ -110,6 +110,9 @@ struct AtriaHealthspanDetailView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @State private var orbExpanded = false
+    // Knowledge slice 5 (2026-08-01): ⓘ presents the spec §20 "About Body Age
+    // & VO₂max" education sheet.
+    @State private var showAbout = false
     @ScaledMetric(relativeTo: .largeTitle) private var orbSize: CGFloat = 190
 
     init(model: AtriaHealthspanDetailModel,
@@ -158,6 +161,9 @@ struct AtriaHealthspanDetailView: View {
             .scrollIndicators(.hidden)
         }
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showAbout) {
+            AtriaAboutMetricSheet(metric: .vo2max)
+        }
         .onAppear(perform: startOrbAnimation)
         .onChange(of: reduceMotion) { _, _ in
             startOrbAnimation()
@@ -189,6 +195,13 @@ struct AtriaHealthspanDetailView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
+            Button { showAbout = true } label: {
+                Image(systemName: "info.circle")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(width: 34, height: 34)
+            }
+            .atriaGlassIconAction(tint: .primary, size: 34)
+            .accessibilityLabel("About Body Age and VO2max")
             Image(systemName: "heart.text.clipboard")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Metrics.electricStrain)
