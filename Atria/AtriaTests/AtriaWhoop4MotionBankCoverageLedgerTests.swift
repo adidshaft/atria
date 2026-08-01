@@ -1310,6 +1310,56 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
         )
     }
 
+    // Drain-on-glance (2026-08-01): opening the app closes a >10-minute bank
+    // immediately so fresh steps credit within ~1-2 minutes, bounded by a
+    // persisted 10-minute glance fence and blocked while a history sync owns
+    // the radio or the live link lacks accepted HR.
+    func testGlanceCheckpointRequiresTenMinutesOfBankedMotion() {
+        XCTAssertTrue(AtriaBLEManager.historicalMotionBankGlanceCheckpointEligible(
+            bankOpenSeconds: 11 * 60,
+            secondsSinceLastGlanceCheckpoint: nil,
+            historySyncInProgress: false,
+            connectedWithAcceptedHR: true))
+        XCTAssertFalse(AtriaBLEManager.historicalMotionBankGlanceCheckpointEligible(
+            bankOpenSeconds: 10 * 60,
+            secondsSinceLastGlanceCheckpoint: nil,
+            historySyncInProgress: false,
+            connectedWithAcceptedHR: true),
+                       "exactly ten minutes is not yet >10 minutes of banked motion")
+        XCTAssertFalse(AtriaBLEManager.historicalMotionBankGlanceCheckpointEligible(
+            bankOpenSeconds: 4 * 60,
+            secondsSinceLastGlanceCheckpoint: nil,
+            historySyncInProgress: false,
+            connectedWithAcceptedHR: true))
+    }
+
+    func testGlanceCheckpointKeepsTenMinuteCooldownBetweenGlances() {
+        XCTAssertFalse(AtriaBLEManager.historicalMotionBankGlanceCheckpointEligible(
+            bankOpenSeconds: 45 * 60,
+            secondsSinceLastGlanceCheckpoint: 9 * 60,
+            historySyncInProgress: false,
+            connectedWithAcceptedHR: true),
+                       "repeated app opens must not churn the bank")
+        XCTAssertTrue(AtriaBLEManager.historicalMotionBankGlanceCheckpointEligible(
+            bankOpenSeconds: 45 * 60,
+            secondsSinceLastGlanceCheckpoint: 10 * 60,
+            historySyncInProgress: false,
+            connectedWithAcceptedHR: true))
+    }
+
+    func testGlanceCheckpointYieldsToHistorySyncAndRequiresAcceptedHR() {
+        XCTAssertFalse(AtriaBLEManager.historicalMotionBankGlanceCheckpointEligible(
+            bankOpenSeconds: 45 * 60,
+            secondsSinceLastGlanceCheckpoint: nil,
+            historySyncInProgress: true,
+            connectedWithAcceptedHR: true))
+        XCTAssertFalse(AtriaBLEManager.historicalMotionBankGlanceCheckpointEligible(
+            bankOpenSeconds: 45 * 60,
+            secondsSinceLastGlanceCheckpoint: nil,
+            historySyncInProgress: false,
+            connectedWithAcceptedHR: false))
+    }
+
     private func offloadTicket(
         id: String,
         start: TimeInterval,

@@ -3997,15 +3997,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                     ?? AtriaCompactMetricPresentation.noValue,
                                   // Plain-language pass (2026-07-31 device review):
                                   // "Needs time in bed" read as a command; say
-                                  // when the number appears instead.
-                                  detail: currentMainSleep?.sleepEfficiency == nil ? "After a confirmed sleep" : "Duration-based",
+                                  // when the number appears instead. HR-only
+                                  // honesty (2026-08-01): a night without
+                                  // validated motion shows "--" and says why.
+                                  detail: sleepEfficiencyGlanceDetail,
                                   systemImage: metric.systemImage,
                                   tint: sleepEfficiencyZone?.tint
-                                    ?? (currentMainSleep?.sleepEfficiency == nil ? .secondary : .cyan),
+                                    ?? (currentMainSleep?.displaySleepEfficiency == nil ? .secondary : .cyan),
                                   zone: sleepEfficiencyZone,
-                                  accessibilityDetail: currentMainSleep?.sleepEfficiency == nil
-                                    ? "Sleep efficiency is building from saved sleep duration."
-                                    : "Sleep efficiency duration-based estimate \(currentMainSleep?.sleepEfficiencyText ?? AtriaCompactMetricPresentation.noValue).",
+                                  accessibilityDetail: sleepEfficiencyGlanceAccessibilityDetail,
                                   calibratingDay: sleepEfficiencyCalibratingDay)
         case .sleepPerformance:
             detailButton(.sleepPerformance) {
@@ -4541,9 +4541,28 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var sleepEfficiencyZone: AtriaMetricZone? {
-        Metrics.sleepEfficiencyZone(currentMainSleep?.sleepEfficiency,
+        // Display authority: no zone color for an HR-only coverage number.
+        Metrics.sleepEfficiencyZone(currentMainSleep?.displaySleepEfficiency,
                                     greenLower: sleepEfficiencyGreenLower,
                                     yellowLower: sleepEfficiencyYellowLower)
+    }
+
+    private var sleepEfficiencyGlanceDetail: String {
+        guard let night = currentMainSleep else { return "After a confirmed sleep" }
+        if night.displaySleepEfficiency != nil { return "Duration-based" }
+        return night.sleepEfficiency == nil ? "After a confirmed sleep" : "Needs motion data"
+    }
+
+    private var sleepEfficiencyGlanceAccessibilityDetail: String {
+        guard let night = currentMainSleep else {
+            return "Sleep efficiency is building from saved sleep duration."
+        }
+        if night.displaySleepEfficiency != nil {
+            return "Sleep efficiency duration-based estimate \(night.sleepEfficiencyText)."
+        }
+        return night.sleepEfficiency == nil
+            ? "Sleep efficiency is building from saved sleep duration."
+            : "Sleep efficiency needs motion data for this night."
     }
 
     private var sleepDurationZone: AtriaMetricZone? {

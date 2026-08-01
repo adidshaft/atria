@@ -5619,7 +5619,8 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     }
 
     private var sleepEfficiencyZone: AtriaMetricZone? {
-        Metrics.sleepEfficiencyZone(zonedLatestEvidence?.sleepEfficiency,
+        // Display authority: no zone color for an HR-only coverage number.
+        Metrics.sleepEfficiencyZone(zonedLatestEvidence?.displaySleepEfficiency,
                                     greenLower: sleepEfficiencyGreenLower,
                                     yellowLower: sleepEfficiencyYellowLower)
     }
@@ -5751,9 +5752,13 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                     targetMetric: .rhr)
                     AtriaMetricTile(label: "Efficiency",
                                     value: latestEvidence?.sleepEfficiencyText ?? "--",
-                                    state: latestEvidence?.sleepEfficiency == nil ? .learning : .research,
+                                    // HR-only honesty (2026-08-01): an HR-only
+                                    // night's stored value is span coverage,
+                                    // not efficiency — stay in learning with a
+                                    // "Needs motion data" footnote.
+                                    state: latestEvidence?.displaySleepEfficiency == nil ? .learning : .research,
                                     tint: sleepEfficiencyZone?.tint ?? .cyan,
-                                    footnote: "Duration-based estimate",
+                                    footnote: latestEvidence?.sleepEfficiencyFootnote ?? "Duration-based estimate",
                                     zone: sleepEfficiencyZone,
                                     targetMetric: .sleepEfficiency)
                     AtriaMetricTile(label: "\(latestEvidence?.evidenceLabel ?? "Sleep") HRV",
@@ -6116,7 +6121,11 @@ struct AtriaSleepStageBuildingSummary: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Stages building")
+                // HR-only honesty (2026-08-01): a night without validated
+                // motion is not "building" toward stages — it needs motion.
+                Text(night.stageEvidence == .hrOnlyEstimate
+                     ? "Stages need motion data"
+                     : "Stages building")
                     .font(.caption.weight(.semibold))
                 Spacer(minLength: 0)
                 Text(night.evidenceLabel)
@@ -6149,7 +6158,9 @@ struct AtriaSleepStageBuildingSummary: View, Equatable {
                 }
             }
 
-            Text("Stages need checked evidence. Duration and overnight vitals remain available while Atria learns.")
+            Text(night.stageEvidence == .hrOnlyEstimate
+                 ? "Heart rate alone can't separate sleep stages. Duration and overnight vitals remain available."
+                 : "Stages need checked evidence. Duration and overnight vitals remain available while Atria learns.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

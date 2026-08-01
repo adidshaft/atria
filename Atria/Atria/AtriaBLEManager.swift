@@ -2507,6 +2507,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         "atria.workoutHistoricalMotionBank.armedAt"
     nonisolated private static let workoutHistoricalMotionBankLastDailyCheckpointAtKey =
         "atria.workoutHistoricalMotionBank.lastDailyCheckpointAt"
+    /// Drain-on-glance (2026-08-01): last glance-triggered checkpoint close.
+    /// Persisted so repeated app opens cannot turn the hourly all-day bank
+    /// into a per-launch offload churn; see
+    /// `historicalMotionBankGlanceCheckpointEligible`.
+    nonisolated private static let workoutHistoricalMotionBankLastGlanceCheckpointAtKey =
+        "atria.workoutHistoricalMotionBank.lastGlanceCheckpointAt.v1"
+    /// A glance checkpoint needs enough banked motion to be worth a close
+    /// (ten minutes) and keeps at least ten minutes between glance-triggered
+    /// closes.
+    nonisolated static let workoutHistoricalMotionBankGlanceMinimumOpenSeconds:
+        TimeInterval = 10 * 60
+    nonisolated static let workoutHistoricalMotionBankGlanceMinimumInterval:
+        TimeInterval = 10 * 60
     nonisolated private static let workoutHistoricalMotionBankRearmNotBeforeKey =
         "atria.workoutHistoricalMotionBank.rearmNotBefore"
     nonisolated private static let workoutHistoricalMotionBankLastOffloadStartedAtKey =
@@ -6173,6 +6186,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
         scheduleStaleArmedRangeLossBackfillReconciliation(reason: "scene_active")
+        // Drain-on-glance (2026-08-01): a bank that has been quietly banking
+        // steps for >10 minutes closes and offloads now, so the step tile
+        // credits within a minute or two of the user opening the app instead
+        // of waiting for the hourly maintenance close. Bounded by its own
+        // persisted ten-minute glance fence; fast workout resume above
+        // deliberately never reaches this path.
+        checkpointHistoricalMotionBankOnGlanceIfNeeded(
+            at: now,
+            reason: "interactive_foreground"
+        )
         resumeDeferredTerminalConsumerMaterializationIfNeeded(
             reason: "scene_active"
         )
@@ -22085,6 +22108,34 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             && batteryAllows
     }
 
+    /// Drain-on-glance (2026-08-01): opening the app is the user asking
+    /// "where am I now?", so a bank that has been quietly accumulating for
+    /// over ten minutes closes and offloads immediately instead of waiting
+    /// out the hourly maintenance fence — fresh steps credit within a minute
+    /// or two of the glance. Pure so the eligibility is unit-testable:
+    /// requires a healthy live link (connected + accepted HR), no history
+    /// sync owning the radio, a bank open longer than `minimumOpenSeconds`,
+    /// and at least `minimumGlanceInterval` since the previous
+    /// glance-triggered close (persisted, so relaunches keep the fence).
+    nonisolated static func historicalMotionBankGlanceCheckpointEligible(
+        bankOpenSeconds: TimeInterval,
+        secondsSinceLastGlanceCheckpoint: TimeInterval?,
+        historySyncInProgress: Bool,
+        connectedWithAcceptedHR: Bool,
+        minimumOpenSeconds: TimeInterval =
+            workoutHistoricalMotionBankGlanceMinimumOpenSeconds,
+        minimumGlanceInterval: TimeInterval =
+            workoutHistoricalMotionBankGlanceMinimumInterval
+    ) -> Bool {
+        guard !historySyncInProgress, connectedWithAcceptedHR else { return false }
+        guard bankOpenSeconds > minimumOpenSeconds else { return false }
+        if let secondsSinceLastGlanceCheckpoint,
+           secondsSinceLastGlanceCheckpoint < minimumGlanceInterval {
+            return false
+        }
+        return true
+    }
+
     nonisolated static func historicalMotionBankOffloadEligible(
         manualWorkoutActive: Bool,
         calibrationHoldActive: Bool,
@@ -22480,6 +22531,77 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       Int(date.timeIntervalSince1970 - armedAt))
         stopWorkoutHistoricalMotionBankIfPossible(
             reason: "daily_checkpoint_\(reason)"
+        )
+    }
+
+    /// Drain-on-glance (2026-08-01): a bounded variant of the hourly daily
+    /// checkpoint that runs when the app becomes interactively foreground.
+    /// Shares every safety gate of the hourly close (higher-priority owners,
+    /// battery, armed bank) but replaces the hourly armed-duration fence with
+    /// the ten-minute glance policy, so steps banked since the last close
+    /// credit within ~1-2 minutes of opening the app. Re-arm happens through
+    /// the existing offload finalizer, exactly like the hourly path.
+    private func checkpointHistoricalMotionBankOnGlanceIfNeeded(
+        at date: Date,
+        reason: String
+    ) {
+        let calibrationHoldActive =
+            workoutMotionCalibrationHoldUntil.map { date < $0 } == true
+        let historySyncInProgress =
+            historyOnlyProbeMode || offlineHistoricalSyncInProgress
+        guard Self.historicalMotionBankDailyCheckpointEligible(
+            manualWorkoutActive:
+                AtriaPendingWorkoutIntent.isActiveForBLEContinuity(now: date),
+            calibrationHoldActive: calibrationHoldActive,
+            historyOwnerActive: historySyncInProgress,
+            bankArmed: workoutHistoricalMotionBankArmed,
+            batteryAllows:
+                batteryLevel < 0 || batteryLevel >= 10 || batteryIsCharging
+        ) else {
+            return
+        }
+        let defaults = UserDefaults.standard
+        guard defaults.bool(
+            forKey: Self.workoutHistoricalMotionBankEnabledKey
+        ) else { return }
+        let armedAt = defaults.double(
+            forKey: Self.workoutHistoricalMotionBankArmedAtKey
+        )
+        guard armedAt > 0 else { return }
+        let lastGlance = defaults.double(
+            forKey: Self.workoutHistoricalMotionBankLastGlanceCheckpointAtKey
+        )
+        // Same live-link facts the offload path derives (peripheral actually
+        // connected, and an accepted HR sample within this connection).
+        let peripheralConnected = peripheral?.state == .connected
+        let acceptedCurrentConnectionHR =
+            connectedAt.flatMap { connectionStart in
+                lastAcceptedHRAt.map { $0 >= connectionStart }
+            } == true
+        guard Self.historicalMotionBankGlanceCheckpointEligible(
+            bankOpenSeconds: date.timeIntervalSince1970 - armedAt,
+            secondsSinceLastGlanceCheckpoint: lastGlance > 0
+                ? date.timeIntervalSince1970 - lastGlance
+                : nil,
+            historySyncInProgress: historySyncInProgress,
+            connectedWithAcceptedHR:
+                peripheralConnected && acceptedCurrentConnectionHR
+        ) else { return }
+        defaults.set(
+            date.timeIntervalSince1970,
+            forKey: Self.workoutHistoricalMotionBankLastGlanceCheckpointAtKey
+        )
+        // Also stamp the daily-checkpoint fence so the hourly path's 5-minute
+        // re-entry guard cannot double-close immediately after the glance.
+        defaults.set(
+            date.timeIntervalSince1970,
+            forKey: Self.workoutHistoricalMotionBankLastDailyCheckpointAtKey
+        )
+        AtriaDebugLog("ATRIADBG workout_motion_bank status=glance_checkpoint_due reason=%@ armed_seconds=%d action=async_close_and_offload",
+                      reason,
+                      Int(date.timeIntervalSince1970 - armedAt))
+        stopWorkoutHistoricalMotionBankIfPossible(
+            reason: "glance_checkpoint_\(reason)"
         )
     }
 

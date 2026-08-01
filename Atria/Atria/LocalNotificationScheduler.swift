@@ -41,6 +41,13 @@ enum LocalNotificationScheduler {
     private static let sleepReviewReminderCooldown: TimeInterval = 4 * 60 * 60
     private static let sleepReviewMaximumSchedulesPerCandidate = 2
     private static let sleepReviewDismissedIDKey = "atria.sleepReview.dismissedID"
+    /// Window-start debounce (2026-08-01): [startKey: lastNotifiedEnd-unix].
+    /// A growing sleep candidate keeps its start while the end jitters by a
+    /// few minutes; each jitter used to mint a new candidate id and re-fire
+    /// (observed 04:50/04:56/04:57 triple). See
+    /// `AtriaSleepReviewNotificationDebounce`.
+    static let sleepReviewNotifiedEndByStartKey =
+        "atria.notification.sleepReview.notifiedEndByStart.v1"
     private static let workoutReviewLastCandidateIDKey = "atria.notification.workoutReview.lastCandidateID"
     private static let workoutReviewDismissedIDKey = "atria.workoutReview.dismissedID"
     /// One process-wide reservation covers both launch maintenance and the
@@ -1364,6 +1371,35 @@ enum LocalNotificationScheduler {
             )
         }
 
+        // Window-start debounce (2026-08-01): a NEW candidate id whose start
+        // matches an already-notified window is the same physical episode
+        // with a jittering end — never re-fire unless the end grew >= 30 min
+        // beyond what the user was already told. Same-id reminders below keep
+        // their existing count/cooldown gates unchanged; a different start is
+        // a separate episode and stays independent.
+        if latest.id != defaults.string(forKey: sleepReviewLastCandidateIDKey),
+           let candidateStart = latest.start,
+           let candidateEnd = latest.end {
+            let notifiedEnds = (defaults.dictionary(
+                forKey: sleepReviewNotifiedEndByStartKey
+            ) as? [String: Double]) ?? [:]
+            guard AtriaSleepReviewNotificationDebounce.shouldNotify(
+                start: candidateStart,
+                end: candidateEnd,
+                lastNotifiedEndByStart: notifiedEnds
+            ) else {
+                return NotificationDecision(
+                    kind: "sleep_review",
+                    identifier: Identifier.sleepReview,
+                    title: "",
+                    body: "",
+                    reason: "window_end_jitter_debounced",
+                    shouldSchedule: false,
+                    delay: 0
+                )
+            }
+        }
+
         if latest.id == defaults.string(forKey: sleepReviewLastCandidateIDKey) {
             let count = defaults.integer(forKey: sleepReviewCandidateScheduleCountPrefix + latest.id)
             let lastScheduledAt = defaults.double(forKey: sleepReviewCandidateScheduledAtPrefix + latest.id)
@@ -1403,7 +1439,9 @@ enum LocalNotificationScheduler {
             reason: "candidate_\(latest.id)",
             shouldSchedule: true,
             delay: 6,
-            userInfo: ["deepLink": "atria://sleep-review"]
+            userInfo: ["deepLink": "atria://sleep-review"],
+            sleepReviewWindowStart: latest.start,
+            sleepReviewWindowEnd: latest.end
         )
     }
 
@@ -1828,7 +1866,9 @@ enum LocalNotificationScheduler {
                                         shouldSchedule: decision.shouldSchedule,
                                         delay: quietHoursAdjustedDelay(kind: decision.kind, delay: decision.delay),
                                         categoryIdentifier: decision.categoryIdentifier,
-                                        userInfo: decision.userInfo)
+                                        userInfo: decision.userInfo,
+                                        sleepReviewWindowStart: decision.sleepReviewWindowStart,
+                                        sleepReviewWindowEnd: decision.sleepReviewWindowEnd)
         recordLedgerEntry(kind: decision.kind, action: "scheduled", detail: decision.identifier)
         let content = UNMutableNotificationContent()
         content.title = decision.title
@@ -1854,6 +1894,23 @@ enum LocalNotificationScheduler {
             defaults.set(Date().timeIntervalSince1970, forKey: sleepReviewCandidateScheduledAtPrefix + id)
             let countKey = sleepReviewCandidateScheduleCountPrefix + id
             defaults.set(defaults.integer(forKey: countKey) + 1, forKey: countKey)
+            // Window-start debounce ledger (2026-08-01): record the end the
+            // user was actually notified about, keyed by the window START,
+            // bounded to the newest eight windows.
+            if let windowStart = decision.sleepReviewWindowStart,
+               let windowEnd = decision.sleepReviewWindowEnd {
+                let stored = (defaults.dictionary(
+                    forKey: sleepReviewNotifiedEndByStartKey
+                ) as? [String: Double]) ?? [:]
+                defaults.set(
+                    AtriaSleepReviewNotificationDebounce.recordingNotifiedEnd(
+                        start: windowStart,
+                        end: windowEnd,
+                        in: stored
+                    ),
+                    forKey: sleepReviewNotifiedEndByStartKey
+                )
+            }
         }
         if decision.kind == "workout_review",
            let candidateID = decision.reason.split(separator: "_", maxSplits: 1).dropFirst().first {
@@ -1971,6 +2028,60 @@ enum LocalNotificationScheduler {
         let delay: TimeInterval
         var categoryIdentifier: String?
         var userInfo: [String: String] = [:]
+        /// Sleep-review only (2026-08-01): the candidate window carried to the
+        /// actual delivery site so the start-keyed debounce ledger records the
+        /// end the user was genuinely told about — never a decision that a
+        /// later budget/quiet-hours gate dropped.
+        var sleepReviewWindowStart: Date?
+        var sleepReviewWindowEnd: Date?
+    }
+}
+
+/// User-specified sleep-review dedupe semantics (2026-08-01): the durable key
+/// is the candidate WINDOW START, not the start-end candidate id. A growing
+/// sleep episode keeps its start while the detector's end jitters by a few
+/// minutes; each jitter minted a fresh start-end id and re-fired the review
+/// notification (observed 04:50/04:56/04:57 triple-fire). Policy:
+///  - first offer for a start always notifies;
+///  - afterwards only a material end extension (>= 30 min beyond the end the
+///    user was last notified about) re-notifies;
+///  - end jitter below that stays silent;
+///  - a separate later episode has a different start and is fully independent.
+/// Pure and persisted as a bounded [startKey: lastNotifiedEnd-unix] ledger.
+enum AtriaSleepReviewNotificationDebounce {
+    static let minimumEndGrowth: TimeInterval = 30 * 60
+    static let maximumTrackedStarts = 8
+
+    /// Starts are keyed to the minute so sub-minute detector float noise
+    /// cannot mint a fresh key for the same physical window.
+    static func startKey(for start: Date) -> String {
+        String(Int((start.timeIntervalSince1970 / 60).rounded(.down)))
+    }
+
+    static func shouldNotify(start: Date,
+                             end: Date,
+                             lastNotifiedEndByStart: [String: Double],
+                             minimumGrowth: TimeInterval = minimumEndGrowth) -> Bool {
+        guard let lastNotifiedEnd = lastNotifiedEndByStart[startKey(for: start)] else {
+            return true
+        }
+        return end.timeIntervalSince1970 - lastNotifiedEnd >= minimumGrowth
+    }
+
+    /// Bounded ledger update after a real delivery: keeps the newest
+    /// `maximumTrackedStarts` windows by start, and never lets a stale
+    /// shorter end overwrite a longer one already notified for this start.
+    static func recordingNotifiedEnd(start: Date,
+                                     end: Date,
+                                     in lastNotifiedEndByStart: [String: Double]) -> [String: Double] {
+        var updated = lastNotifiedEndByStart
+        let key = startKey(for: start)
+        updated[key] = max(updated[key] ?? 0, end.timeIntervalSince1970)
+        guard updated.count > maximumTrackedStarts else { return updated }
+        let keep = Set(updated.keys
+            .sorted { (Double($0) ?? 0) > (Double($1) ?? 0) }
+            .prefix(maximumTrackedStarts))
+        return updated.filter { keep.contains($0.key) }
     }
 }
 

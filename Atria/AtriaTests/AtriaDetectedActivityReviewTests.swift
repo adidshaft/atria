@@ -168,6 +168,90 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
                             hrMaxAcceptedGap: 2)
     }
 
+    /// Physical 2026-07-31 shape (IST evening): 75 minutes of genuine
+    /// intervals to a ~155 peak, then 3.5 hours of ordinary mildly-elevated
+    /// (~90-95 bpm) non-exertion in the same continuous session. RR agrees
+    /// with HR throughout, so the whole-session window is detector-ready and
+    /// previously surfaced as one 4h45m+ candidate ending only at the
+    /// session boundary (sleep-onset HR decay on device).
+    private func eveningLiftThenElevatedEvening(start: Date) -> SavedSession {
+        var points: [SavedSession.Point] = []
+        var rrPoints: [SavedSession.RRPoint] = []
+        var cursor: TimeInterval = 0
+        func appendPhase(duration: TimeInterval, bpmAt: (TimeInterval) -> Int) {
+            let phaseStart = cursor
+            while cursor < phaseStart + duration {
+                let bpm = bpmAt(cursor - phaseStart)
+                points.append(SavedSession.Point(t: cursor, bpm: bpm))
+                rrPoints.append(SavedSession.RRPoint(
+                    t: cursor,
+                    ms: Int((60_000.0 / Double(bpm)).rounded()),
+                    source: .standardHeartRateMeasurement2A37
+                ))
+                cursor += 2
+            }
+        }
+        appendPhase(duration: 5 * 60) { t in 95 + Int((t / (5 * 60)) * 55) }
+        for block in 0..<4 {
+            appendPhase(duration: 12 * 60) { _ in block == 3 ? 155 : 148 }
+            appendPhase(duration: 3 * 60) { _ in 112 }
+        }
+        appendPhase(duration: 10 * 60) { _ in 145 }
+        appendPhase(duration: 3.5 * 3_600) { t in Int(t) % 120 < 60 ? 90 : 95 }
+        return SavedSession(id: UUID(),
+                            start: start,
+                            end: start.addingTimeInterval(cursor),
+                            label: "Evening wear",
+                            points: points,
+                            rrPoints: rrPoints,
+                            hrRaw2A37: points.count,
+                            hrAccepted: points.count,
+                            hrZero: 0,
+                            hrArtifactHeld: 0,
+                            hrArtifactDropped: 0,
+                            hrAcceptedGaps: 0,
+                            hrMaxAcceptedGap: 2)
+    }
+
+    /// End-bound regression (2026-07-31 physical case): the candidate must
+    /// close within ~15 minutes of the last real sustained bout — never hours
+    /// later when an ordinary elevated evening keeps whole-session HR above
+    /// resting until sleep onset.
+    func testEveningEffortCandidateEndsNearLastSustainedBoutNotAtSleepOnset() throws {
+        let start = Date(timeIntervalSince1970: 1_800_300_000)
+        let session = eveningLiftThenElevatedEvening(start: start)
+        // The final 10-minute 145 bpm block ends exactly 75 minutes in.
+        let lastBoutEnd = start.addingTimeInterval(75 * 60)
+
+        let candidate = try XCTUnwrap(SessionStore.makeWorkoutReviewCandidateForCache(
+            sessions: [session],
+            confirmedWorkouts: [],
+            rest: rest,
+            maxHR: maxHR
+        ))
+
+        XCTAssertLessThanOrEqual(candidate.end.timeIntervalSince(lastBoutEnd), 15 * 60,
+                                 "the candidate must close within ~15 min of the last real bout, not at sleep onset hours later")
+        XCTAssertGreaterThanOrEqual(candidate.end, lastBoutEnd,
+                                    "the recovery tail must never cut into the real effort")
+        XCTAssertLessThan(candidate.duration, 2 * 3_600,
+                          "a 75-minute effort must never present as a multi-hour candidate")
+        XCTAssertGreaterThan(candidate.avgHR, 120,
+                             "trimmed display stats must describe the effort, not the mild evening tail")
+
+        let listed = SessionStore.makeWorkoutReviewCandidatesForCache(
+            sessions: [session],
+            confirmedWorkouts: [],
+            rest: rest,
+            maxHR: maxHR
+        )
+        XCTAssertFalse(listed.isEmpty)
+        for offered in listed {
+            XCTAssertLessThanOrEqual(offered.end.timeIntervalSince(lastBoutEnd), 15 * 60,
+                                     "every offered window shares the same honest end bound")
+        }
+    }
+
     /// A clean, RR-agreeing Strength-shaped effort that sits three bpm below
     /// the HRR50 workout band. It is intentionally review-worthy but not ready:
     /// enough sustained borderline evidence to offer for review, never enough

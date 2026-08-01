@@ -98,6 +98,13 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                 }
                 // The prior count is a lower bound: its cycle may have ended
                 // with unbanked motion. Never present it as today's value.
+                // Plain-language pass (2026-08-01): when the prior cycle ended
+                // on the previous civil day — or overnight today before 6 AM,
+                // which humans still read as "yesterday's total" — say
+                // "Yesterday" instead of the technical "Prior cycle … ended".
+                if priorCycleReadsAsYesterday(priorCycleReceipt) {
+                    return "Yesterday: ≥\(priorCycleReceipt.steps)"
+                }
                 return "Prior cycle: ≥\(priorCycleReceipt.steps) · ended "
                     + priorCycleReceipt.endedAt.formatted(
                         date: .omitted,
@@ -136,6 +143,23 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         default:
             return "Step count unavailable."
         }
+    }
+
+    /// The prior cycle reads as "yesterday's total" when its END fell on the
+    /// previous civil day, or on today's civil day before 6 AM (an overnight
+    /// close like 1:44 AM is still last night's total to a human). Any older
+    /// or later end keeps the precise "Prior cycle … ended" disclosure.
+    /// Pure and calendar-injectable so the boundary is unit-testable.
+    func priorCycleReadsAsYesterday(_ receipt: PriorCycleReceipt,
+                                    calendar: Calendar = .current) -> Bool {
+        guard let yesterday = calendar.date(byAdding: .day, value: -1, to: day) else {
+            return false
+        }
+        if calendar.isDate(receipt.endedAt, inSameDayAs: yesterday) { return true }
+        guard calendar.isDate(receipt.endedAt, inSameDayAs: day),
+              let sixAM = calendar.date(byAdding: .hour, value: 6, to: calendar.startOfDay(for: day))
+        else { return false }
+        return receipt.endedAt < sixAM
     }
 
     private var verifiedThroughText: String {
