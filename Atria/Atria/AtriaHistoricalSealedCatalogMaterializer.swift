@@ -54,7 +54,7 @@ enum AtriaHistoricalSealedCatalogMaterializer {
             // Pay the global verification cost exactly once, only at the
             // transition to complete. Until then each bounded turn touches
             // just one source and one committed artifact pair.
-            let verified = try fullyVerifiedAggregateSnapshot(
+            let verifiedCount = try fullyVerifiedAggregateCount(
                 catalog: catalog,
                 aggregateDirectoryURL: aggregateDirectoryURL,
                 manifestDirectoryURL: manifestDirectoryURL
@@ -63,7 +63,7 @@ enum AtriaHistoricalSealedCatalogMaterializer {
                 materializedChunkID: nil,
                 remainingChunkCount: 0,
                 catalogGeneration: catalog.generation,
-                aggregateCount: verified.count
+                aggregateCount: verifiedCount
             )
         }
 
@@ -140,11 +140,11 @@ enum AtriaHistoricalSealedCatalogMaterializer {
         )
         let aggregateCount: Int
         if remaining.isEmpty {
-            aggregateCount = try fullyVerifiedAggregateSnapshot(
+            aggregateCount = try fullyVerifiedAggregateCount(
                 catalog: verifiedCatalog,
                 aggregateDirectoryURL: aggregateDirectoryURL,
                 manifestDirectoryURL: manifestDirectoryURL
-            ).count
+            )
         } else {
             aggregateCount = committedArtifactPairCount(
                 catalog: verifiedCatalog,
@@ -214,25 +214,45 @@ enum AtriaHistoricalSealedCatalogMaterializer {
         return aggregate
     }
 
-    private static func fullyVerifiedAggregateSnapshot(
+    /// Bounded whole-archive completeness verification. The old form decoded
+    /// every aggregate into one resident `[String: AtriaHistoricalAggregateChunk]`
+    /// just to (a) count accepted aggregates and (b) confirm every sealed chunk
+    /// has a complete committed aggregate — the heavy per-minute/epoch arrays
+    /// were never read. `streamedWholeArchiveDigest` reproduces the exact
+    /// accepted-set and rejection state while holding one decoded aggregate at a
+    /// time, and completeness needs only each source's lightweight identity.
+    /// Returns the accepted aggregate count (the only value callers consume).
+    private static func fullyVerifiedAggregateCount(
         catalog: AtriaHistoricalArchiveCatalog,
         aggregateDirectoryURL: URL,
         manifestDirectoryURL: URL
-    ) throws -> [String: AtriaHistoricalAggregateChunk] {
-        let snapshot = AtriaHistoricalAggregateReader(
+    ) throws -> Int {
+        guard let streamed = AtriaHistoricalAggregateReader(
             aggregateDirectoryURL: aggregateDirectoryURL,
             manifestDirectoryURL: manifestDirectoryURL
-        ).load()
-        try validate(snapshot)
-        let aggregateByID = try aggregatesByID(snapshot.aggregates)
+        ).streamedWholeArchiveDigest(
+            limits: AtriaHistoricalAggregateReader.LoadLimits.unboundedConsumerProjection
+        ) else {
+            throw MaterializationError.rejectedAggregateCatalog
+        }
+        guard !streamed.diagnostics.limitExceeded,
+              streamed.diagnostics.rejectedManifests == 0 else {
+            throw MaterializationError.rejectedAggregateCatalog
+        }
+        var sourceByID: [String: AtriaHistoricalAggregateChunk.Source] = [:]
+        for source in streamed.sources {
+            guard sourceByID.updateValue(source, forKey: source.chunkID) == nil else {
+                throw MaterializationError.duplicateAggregate(source.chunkID)
+            }
+        }
         if let incomplete = catalog.chunks
             .filter({ $0.state == .sealed && $0.byteCount > 0 })
             .first(where: {
-                !isComplete(chunk: $0, aggregate: aggregateByID[$0.id])
+                !isComplete(chunk: $0, source: sourceByID[$0.id])
             }) {
             throw MaterializationError.repairedChunkUnavailable(incomplete.id)
         }
-        return aggregateByID
+        return streamed.sources.count
     }
 
     private static func committedArtifactPairCount(
@@ -269,32 +289,6 @@ enum AtriaHistoricalSealedCatalogMaterializer {
         )
     }
 
-    private static func validate(
-        _ snapshot: AtriaHistoricalAggregateReader.Snapshot
-    ) throws {
-        guard !snapshot.diagnostics.limitExceeded,
-              snapshot.diagnostics.rejectedManifests == 0 else {
-            throw MaterializationError.rejectedAggregateCatalog
-        }
-    }
-
-    private static func aggregatesByID(
-        _ aggregates: [AtriaHistoricalAggregateChunk]
-    ) throws -> [String: AtriaHistoricalAggregateChunk] {
-        var result: [String: AtriaHistoricalAggregateChunk] = [:]
-        for aggregate in aggregates {
-            guard result.updateValue(
-                aggregate,
-                forKey: aggregate.source.chunkID
-            ) == nil else {
-                throw MaterializationError.duplicateAggregate(
-                    aggregate.source.chunkID
-                )
-            }
-        }
-        return result
-    }
-
     private static func hasCompleteMetadata(
         _ chunk: AtriaHistoricalArchiveCatalog.RawChunk
     ) -> Bool {
@@ -311,17 +305,26 @@ enum AtriaHistoricalSealedCatalogMaterializer {
         chunk: AtriaHistoricalArchiveCatalog.RawChunk,
         aggregate: AtriaHistoricalAggregateChunk?
     ) -> Bool {
+        isComplete(chunk: chunk, source: aggregate?.source)
+    }
+
+    /// Completeness needs only the source identity, never the heavy aggregate
+    /// arrays — so the streaming path can verify from `Source` alone.
+    private static func isComplete(
+        chunk: AtriaHistoricalArchiveCatalog.RawChunk,
+        source: AtriaHistoricalAggregateChunk.Source?
+    ) -> Bool {
         guard hasCompleteMetadata(chunk),
-              let aggregate,
-              chunk.contentSHA256 == aggregate.source.rawSHA256,
-              chunk.byteCount == aggregate.source.rawByteCount,
-              chunk.rowCount == aggregate.source.rawRowCount,
+              let source,
+              chunk.contentSHA256 == source.rawSHA256,
+              chunk.byteCount == source.rawByteCount,
+              chunk.rowCount == source.rawRowCount,
               HistoricalArchive.catalogTimestampMatches(
-                raw: aggregate.source.firstTimestamp,
+                raw: source.firstTimestamp,
                 catalog: chunk.firstTimestamp
               ),
               HistoricalArchive.catalogTimestampMatches(
-                raw: aggregate.source.lastTimestamp,
+                raw: source.lastTimestamp,
                 catalog: chunk.lastTimestamp
               ) else { return false }
         return true

@@ -77,9 +77,18 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
     /// complete history/look-ahead interval is covered by the latest durable
     /// terminal record. Sources that are too recent or lack committed neighbor
     /// aggregates are deferred, never interpreted as empty.
+    ///
+    /// Takes the reader (never a pre-loaded whole-archive snapshot) so the
+    /// whole-archive aggregate-snapshot digest can be streamed once at bounded
+    /// memory and each source's dependency window can be loaded one at a time
+    /// inside the existing per-source `autoreleasepool`. This is the fix for
+    /// the foreground reopen memory balloon: previously every decoded
+    /// aggregate (per-minute HR dictionaries, RR/motion epochs, for the whole
+    /// committed archive) stayed resident for the entire multi-source pass.
     func publishEligibleReceipts(
         catalogStore: AtriaHistoricalArchiveCatalogStore,
-        aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
+        aggregateReader: AtriaHistoricalAggregateReader,
+        limits: AtriaHistoricalAggregateReader.LoadLimits = .unboundedConsumerProjection,
         configuration: Configuration,
         lane: String = "consumer_projection",
         shouldAbortBetweenSources: () -> Bool = {
@@ -88,7 +97,8 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
     ) throws -> Report {
         try publishEligibleReceipts(
             evidence: .store(catalogStore),
-            aggregateSnapshot: aggregateSnapshot,
+            aggregateReader: aggregateReader,
+            limits: limits,
             configuration: configuration,
             selectedChunkID: nil,
             lane: lane,
@@ -97,14 +107,17 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
     }
 
     /// Memory-shape overload for flows that already hold the file-verified
-    /// catalog and both canonical evidence encodings for this exact pass. The
-    /// digests and every validation are identical to the store-based entry;
-    /// only the per-source recomputation frequency changes.
+    /// catalog and its canonical encoding for this exact pass. Every
+    /// validation is identical to the store-based entry; only the catalog
+    /// recomputation frequency changes. The whole-archive aggregate-snapshot
+    /// digest is still streamed fresh from `aggregateReader` below — it is
+    /// cheap at bounded memory and keeps this overload's digest guarantee
+    /// identical to the store-based entry's.
     func publishEligibleReceipts(
         verifiedCatalog: AtriaHistoricalArchiveCatalog,
         catalogData: Data,
-        aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
-        aggregateSnapshotDigest: String,
+        aggregateReader: AtriaHistoricalAggregateReader,
+        limits: AtriaHistoricalAggregateReader.LoadLimits = .unboundedConsumerProjection,
         configuration: Configuration,
         lane: String = "consumer_projection",
         shouldAbortBetweenSources: () -> Bool = {
@@ -112,8 +125,9 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
         }
     ) throws -> Report {
         try publishEligibleReceipts(
-            evidence: .hoisted(verifiedCatalog, catalogData, aggregateSnapshotDigest),
-            aggregateSnapshot: aggregateSnapshot,
+            evidence: .hoisted(verifiedCatalog, catalogData),
+            aggregateReader: aggregateReader,
+            limits: limits,
             configuration: configuration,
             selectedChunkID: nil,
             lane: lane,
@@ -130,7 +144,7 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
         aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
         configuration: Configuration
     ) throws -> Report {
-        try publishEligibleReceipts(
+        try publishEligibleReceiptsFromSnapshot(
             evidence: .store(catalogStore),
             aggregateSnapshot: aggregateSnapshot,
             configuration: configuration,
@@ -150,7 +164,7 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
         aggregateSnapshotDigest: String,
         configuration: Configuration
     ) throws -> Report {
-        try publishEligibleReceipts(
+        try publishEligibleReceiptsFromSnapshot(
             evidence: .hoisted(verifiedCatalog, catalogData, aggregateSnapshotDigest),
             aggregateSnapshot: aggregateSnapshot,
             configuration: configuration,
@@ -160,52 +174,94 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
         )
     }
 
-    /// The catalog snapshot, its canonical encoding, and the canonical
-    /// aggregate-snapshot encoding are invariant across one publication pass.
-    /// They are either hoisted by the caller from the same archive flow or
-    /// computed exactly once below, never once per source.
+    /// Reader-based single-source overload. Streams the whole-archive digest
+    /// once and window-loads only the selected source's dependency range
+    /// (`requiredRange`, which the core computes internally — wider than the
+    /// chunk's own bounds) instead of accepting a whole-archive snapshot. This
+    /// is the bounded-memory form for the crash-resume and pending-consumer
+    /// maintenance paths; every validation is identical to the snapshot-based
+    /// overload above, only the decode is windowed.
+    func publishReceiptSet(
+        for chunkID: String,
+        verifiedCatalog: AtriaHistoricalArchiveCatalog,
+        catalogData: Data,
+        aggregateReader: AtriaHistoricalAggregateReader,
+        limits: AtriaHistoricalAggregateReader.LoadLimits = .unboundedConsumerProjection,
+        configuration: Configuration
+    ) throws -> Report {
+        try publishEligibleReceipts(
+            evidence: .hoisted(verifiedCatalog, catalogData),
+            aggregateReader: aggregateReader,
+            limits: limits,
+            configuration: configuration,
+            selectedChunkID: chunkID,
+            lane: "consumer_projection",
+            shouldAbortBetweenSources: { false }
+        )
+    }
+
+    /// The catalog snapshot and its canonical encoding are invariant across
+    /// one publication pass. They are either hoisted by the caller from the
+    /// same archive flow or computed exactly once below, never once per
+    /// source. The whole-archive aggregate-snapshot digest is always streamed
+    /// fresh from `aggregateReader` in the core function below, exactly once
+    /// per pass either way.
     private enum CanonicalEvidenceInput {
         case store(AtriaHistoricalArchiveCatalogStore)
-        case hoisted(AtriaHistoricalArchiveCatalog, Data, String)
+        case hoisted(AtriaHistoricalArchiveCatalog, Data)
     }
 
     private func publishEligibleReceipts(
         evidence evidenceInput: CanonicalEvidenceInput,
-        aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
+        aggregateReader: AtriaHistoricalAggregateReader,
+        limits: AtriaHistoricalAggregateReader.LoadLimits,
         configuration: Configuration,
         selectedChunkID: String?,
         lane: String,
         shouldAbortBetweenSources: () -> Bool
     ) throws -> Report {
-        guard !aggregateSnapshot.diagnostics.limitExceeded,
-              aggregateSnapshot.diagnostics.rejectedManifests == 0 else {
-            throw CoordinatorError.rejectedAggregateManifest
-        }
         let completion = try completionStore.loadLatest()
         let factory = AtriaHistoricalActivityInspectionProofFactory(
             completionStore: completionStore
         )
+
+        // Stream the whole-archive digest exactly once per pass, at bounded
+        // memory: peak residency is one decoded aggregate at a time (see
+        // `AtriaHistoricalAggregateReader.streamedWholeArchiveDigest`).
+        // `streamed.sources` below is the lightweight per-source identity
+        // list (canonical order, no per-minute HR dictionaries or RR/motion
+        // epoch arrays), so nothing heavy stays resident across the
+        // multi-source loop — only the current source's windowed aggregates
+        // do, inside the existing `autoreleasepool`.
+        guard let streamed = aggregateReader.streamedWholeArchiveDigest(limits: limits) else {
+            // A committed aggregate file changed between the streaming
+            // digest's two verification passes. Fail closed exactly like the
+            // whole-archive rejected-manifest guard immediately below: this
+            // pass cannot trust the digest it would publish against.
+            throw CoordinatorError.rejectedAggregateManifest
+        }
+        guard !streamed.diagnostics.limitExceeded,
+              streamed.diagnostics.rejectedManifests == 0 else {
+            throw CoordinatorError.rejectedAggregateManifest
+        }
+
         var published: [AtriaHistoricalConsumerReceiptLedger.Published] = []
         var deferred: [DeferredSource] = []
-        let sources = aggregateSnapshot.aggregates
-            .filter { selectedChunkID == nil || $0.source.chunkID == selectedChunkID }
+        let sources = streamed.sources
+            .filter { selectedChunkID == nil || $0.chunkID == selectedChunkID }
             .sorted(by: sourceOrder)
 
-        // Hoisted loop invariants: one file re-verified catalog snapshot, one
-        // canonical catalog encoding, and one streamed aggregate-snapshot
-        // digest per pass instead of one per source. The catalog bytes are the
-        // exact `canonicalCatalogData` output and the aggregate digest is the
-        // byte-identical `streamedAggregateSnapshotDigest` that persisted
-        // completion SHA-256s compare against; only the frequency changes and
-        // the whole re-encoded aggregate `Data` is never materialized.
+        // Hoisted loop invariant: one file re-verified catalog snapshot and
+        // one canonical catalog encoding per pass instead of one per source.
+        // The catalog bytes are the exact `canonicalCatalogData` output that
+        // persisted completion SHA-256s compare against; only the
+        // recomputation frequency changes.
         let catalog: AtriaHistoricalArchiveCatalog
         let catalogData: Data
-        let aggregateSnapshotDigest: String
         switch evidenceInput {
-        case .hoisted(let hoistedCatalog, let hoistedCatalogData, let hoistedAggregateDigest):
+        case .hoisted(let hoistedCatalog, let hoistedCatalogData):
             catalog = hoistedCatalog
             catalogData = hoistedCatalogData
-            aggregateSnapshotDigest = hoistedAggregateDigest
         case .store(let catalogStore):
             do {
                 let verified = try catalogStore.snapshotVerifiedAgainstFiles()
@@ -213,8 +269,6 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
                 catalog = verified
                 catalogData = try AtriaHistoricalActivityInspectionProofFactory
                     .canonicalCatalogData(verified)
-                aggregateSnapshotDigest = try AtriaHistoricalActivityInspectionProofFactory
-                    .streamedAggregateSnapshotDigest(aggregateSnapshot)
             } catch {
                 // Identical deferral semantics to the previous per-iteration
                 // evidence computation: every source defers with the evidence
@@ -225,10 +279,10 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
                     do {
                         _ = try requiredRange(for: source,
                                               dailyConfiguration: configuration.daily)
-                        deferred.append(.init(chunkID: source.source.chunkID,
+                        deferred.append(.init(chunkID: source.chunkID,
                                               reason: String(reflecting: error)))
                     } catch let rangeError {
-                        deferred.append(.init(chunkID: source.source.chunkID,
+                        deferred.append(.init(chunkID: source.chunkID,
                                               reason: String(reflecting: rangeError)))
                     }
                 }
@@ -250,7 +304,7 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
                               sources.count)
                 for remaining in sources[index...] {
                     deferred.append(.init(
-                        chunkID: remaining.source.chunkID,
+                        chunkID: remaining.chunkID,
                         reason: "deferredBackgroundAbortBetweenSources"
                     ))
                 }
@@ -259,7 +313,175 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
             // Foundation/CryptoKit temporaries from one source's typed proof
             // and five receipts must not accumulate across a 40-60 source
             // pass (see AtriaHistoricalJSONLRecentScanner for the on-device
-            // evidence behind this pattern).
+            // evidence behind this pattern). The windowed aggregate load
+            // below is now ALSO inside this pool: only the chunks that
+            // intersect this one source's dependency range are decoded, and
+            // they are released before the next source's iteration begins.
+            autoreleasepool {
+                do {
+                    let range = try requiredRange(for: source,
+                                                  dailyConfiguration: configuration.daily)
+                    // `load(since:until:)` treats `until` as EXCLUSIVE
+                    // (`sourceFirstTimestamp >= until` is skipped), but
+                    // `prepareVerified` selects dependency chunks with an
+                    // INCLUSIVE `firstTimestamp <= requestedEnd`. The old
+                    // whole-archive path loaded every chunk, so a dependency
+                    // whose firstTimestamp lands exactly on `range.upperBound`
+                    // was always present; a naive windowed `until:
+                    // range.upperBound` would drop it and defer the source.
+                    // Nudging `until` up by one ULP makes the windowed set an
+                    // exact superset of `prepareVerified`'s inclusive filter
+                    // (which then re-selects authoritatively), with no extra
+                    // chunks beyond a bit-identical boundary match.
+                    let windowUntil = Date(timeIntervalSinceReferenceDate:
+                        range.upperBound.timeIntervalSinceReferenceDate.nextUp)
+                    let windowed = aggregateReader.load(since: range.lowerBound,
+                                                        until: windowUntil,
+                                                        limits: limits)
+                    guard !windowed.diagnostics.limitExceeded else {
+                        throw CoordinatorError.windowedAggregateLoadLimitExceeded
+                    }
+                    guard let fullSource = windowed.aggregates.first(where: {
+                        $0.source.chunkID == source.chunkID
+                    }) else {
+                        // The source itself always intersects its own
+                        // required range, so its windowed load must contain
+                        // it. Not finding it means the committed aggregate
+                        // changed underneath this pass; defer rather than
+                        // publish from a mismatched dependency set.
+                        throw CoordinatorError.sourceIdentityMismatch
+                    }
+                    // WINDOWED aggregates (only the chunks this source's
+                    // dependency range needs) paired with the WHOLE-archive
+                    // diagnostics streamed above: `prepare`'s
+                    // limitExceeded/rejectedManifests guards must see
+                    // whole-archive state, and `prepareVerified`'s
+                    // `relevantAggregates` filter still yields exactly the
+                    // right subset from the smaller windowed array.
+                    let windowedSnapshot = AtriaHistoricalAggregateReader.Snapshot(
+                        aggregates: windowed.aggregates,
+                        diagnostics: streamed.diagnostics
+                    )
+                    let prepared = try factory.prepare(
+                        verifiedCatalog: catalog,
+                        catalogData: catalogData,
+                        aggregateSnapshot: windowedSnapshot,
+                        aggregateSnapshotDigest: streamed.digest,
+                        requestedStart: range.lowerBound,
+                        requestedEnd: range.upperBound
+                    )
+                    guard prepared.completionGeneration == completion.generation else {
+                        throw CoordinatorError.completionChangedDuringPublication
+                    }
+                    let sourcePublished = try publishReceiptSet(
+                        source: fullSource,
+                        prepared: prepared,
+                        configuration: configuration,
+                        settledAt: completion.completedAt
+                    )
+                    published.append(contentsOf: sourcePublished)
+                } catch {
+                    deferred.append(.init(chunkID: source.chunkID,
+                                          reason: String(reflecting: error)))
+                }
+            }
+        }
+
+        return .init(completionGeneration: completion.generation,
+                     inspectedSourceCount: sources.count,
+                     published: published,
+                     deferredSources: deferred)
+    }
+
+    /// Legacy whole-snapshot evidence shape, retained only for the bounded
+    /// single-source `publishReceiptSet` overloads below (maintenance/cutover
+    /// callers that already hold one already-decoded `Snapshot` for the one
+    /// chunk they care about, not the multi-source foreground pass this file
+    /// was ballooning on). Unlike `CanonicalEvidenceInput` above, the digest
+    /// is either caller-supplied (hoisted) or computed once from the supplied
+    /// snapshot (store) — there is no reader here to stream it from.
+    private enum SnapshotEvidenceInput {
+        case store(AtriaHistoricalArchiveCatalogStore)
+        case hoisted(AtriaHistoricalArchiveCatalog, Data, String)
+    }
+
+    /// Unchanged pre-streaming implementation: iterates a caller-supplied,
+    /// already-decoded `aggregateSnapshot` directly. Kept verbatim for the
+    /// single-source `publishReceiptSet` overloads, which are out of scope
+    /// for the whole-archive streaming fix above (a bounded, already
+    /// one-chunk-at-a-time caller, not the multi-source foreground pass).
+    private func publishEligibleReceiptsFromSnapshot(
+        evidence evidenceInput: SnapshotEvidenceInput,
+        aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
+        configuration: Configuration,
+        selectedChunkID: String?,
+        lane: String,
+        shouldAbortBetweenSources: () -> Bool
+    ) throws -> Report {
+        guard !aggregateSnapshot.diagnostics.limitExceeded,
+              aggregateSnapshot.diagnostics.rejectedManifests == 0 else {
+            throw CoordinatorError.rejectedAggregateManifest
+        }
+        let completion = try completionStore.loadLatest()
+        let factory = AtriaHistoricalActivityInspectionProofFactory(
+            completionStore: completionStore
+        )
+        var published: [AtriaHistoricalConsumerReceiptLedger.Published] = []
+        var deferred: [DeferredSource] = []
+        let sources = aggregateSnapshot.aggregates
+            .filter { selectedChunkID == nil || $0.source.chunkID == selectedChunkID }
+            .sorted(by: sourceOrder)
+
+        let catalog: AtriaHistoricalArchiveCatalog
+        let catalogData: Data
+        let aggregateSnapshotDigest: String
+        switch evidenceInput {
+        case .hoisted(let hoistedCatalog, let hoistedCatalogData, let hoistedAggregateDigest):
+            catalog = hoistedCatalog
+            catalogData = hoistedCatalogData
+            aggregateSnapshotDigest = hoistedAggregateDigest
+        case .store(let catalogStore):
+            do {
+                let verified = try catalogStore.snapshotVerifiedAgainstFiles()
+                try verified.validate()
+                catalog = verified
+                catalogData = try AtriaHistoricalActivityInspectionProofFactory
+                    .canonicalCatalogData(verified)
+                aggregateSnapshotDigest = try AtriaHistoricalActivityInspectionProofFactory
+                    .streamedAggregateSnapshotDigest(aggregateSnapshot)
+            } catch {
+                for source in sources {
+                    do {
+                        _ = try requiredRange(for: source,
+                                              dailyConfiguration: configuration.daily)
+                        deferred.append(.init(chunkID: source.source.chunkID,
+                                              reason: String(reflecting: error)))
+                    } catch let rangeError {
+                        deferred.append(.init(chunkID: source.source.chunkID,
+                                              reason: String(reflecting: rangeError)))
+                    }
+                }
+                return .init(completionGeneration: completion.generation,
+                             inspectedSourceCount: sources.count,
+                             published: published,
+                             deferredSources: deferred)
+            }
+        }
+
+        for (index, source) in sources.enumerated() {
+            if index > 0, shouldAbortBetweenSources() {
+                AtriaDebugLog("ATRIADBG historical_consumer_projection status=background_abort lane=%@ completed=%d total=%d action=resume_between_sources_from_durable_journals",
+                              lane,
+                              index,
+                              sources.count)
+                for remaining in sources[index...] {
+                    deferred.append(.init(
+                        chunkID: remaining.source.chunkID,
+                        reason: "deferredBackgroundAbortBetweenSources"
+                    ))
+                }
+                break
+            }
             autoreleasepool {
                 do {
                     let range = try requiredRange(for: source,
@@ -365,6 +587,93 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
         )
     }
 
+    /// Reader-based bounded overload of `publishReceiptSetUsingFullScan`.
+    /// Streams the whole-archive digest once (one decoded aggregate resident at
+    /// a time), derives the dependency range from the streamed source identity,
+    /// and window-loads only that range — instead of accepting a whole-archive
+    /// snapshot. Every validation is identical to the snapshot-based entry.
+    func publishReceiptSetUsingFullScan(
+        for chunkID: String,
+        expectedRawSHA256: String,
+        requiredStart: Date,
+        requiredEnd: Date,
+        fullScanStore: AtriaHistoricalFullScanCompletionStore,
+        catalogStore: AtriaHistoricalArchiveCatalogStore,
+        aggregateReader: AtriaHistoricalAggregateReader,
+        limits: AtriaHistoricalAggregateReader.LoadLimits = .unboundedConsumerProjection,
+        configuration: Configuration
+    ) throws -> Report {
+        guard let streamed = aggregateReader.streamedWholeArchiveDigest(limits: limits),
+              !streamed.diagnostics.limitExceeded,
+              streamed.diagnostics.rejectedManifests == 0 else {
+            throw CoordinatorError.rejectedAggregateManifest
+        }
+        guard let sourceIdentity = streamed.sources.first(where: {
+            $0.chunkID == chunkID
+        }), sourceIdentity.rawSHA256 == expectedRawSHA256 else {
+            throw CoordinatorError.sourceIdentityMismatch
+        }
+        let canonicalRange = try requiredRange(
+            for: sourceIdentity,
+            dailyConfiguration: configuration.daily
+        )
+        guard Self.persistedDependencyBoundMatches(
+                canonical: canonicalRange.lowerBound,
+                checkpointed: requiredStart
+              ),
+              Self.persistedDependencyBoundMatches(
+                canonical: canonicalRange.upperBound,
+                checkpointed: requiredEnd
+              ) else {
+            throw CoordinatorError.pendingDependencyMismatch
+        }
+        let windowed = aggregateReader.load(
+            since: canonicalRange.lowerBound,
+            until: Date(timeIntervalSinceReferenceDate:
+                canonicalRange.upperBound.timeIntervalSinceReferenceDate.nextUp)
+        )
+        guard let source = windowed.aggregates.first(where: {
+            $0.source.chunkID == chunkID
+        }), source.source.rawSHA256 == expectedRawSHA256 else {
+            throw CoordinatorError.sourceIdentityMismatch
+        }
+        let windowedSnapshot = AtriaHistoricalAggregateReader.Snapshot(
+            aggregates: windowed.aggregates,
+            diagnostics: streamed.diagnostics
+        )
+        let catalog = try catalogStore.snapshotVerifiedAgainstFiles()
+        try catalog.validate()
+        let catalogData = try AtriaHistoricalActivityInspectionProofFactory
+            .canonicalCatalogData(catalog)
+        let scan = try fullScanStore.loadLatest()
+        let prepared = try AtriaHistoricalActivityInspectionProofFactory(
+            completionStore: completionStore
+        ).prepareUsingFullScan(
+            verifiedCatalog: catalog,
+            catalogData: catalogData,
+            aggregateSnapshot: windowedSnapshot,
+            aggregateSnapshotDigest: streamed.digest,
+            scan: scan,
+            requestedStart: canonicalRange.lowerBound,
+            requestedEnd: canonicalRange.upperBound
+        )
+        guard prepared.completionGeneration == scan.generation else {
+            throw CoordinatorError.completionChangedDuringPublication
+        }
+        let published = try publishReceiptSet(
+            source: source,
+            prepared: prepared,
+            configuration: configuration,
+            settledAt: scan.terminalAt
+        )
+        return .init(
+            completionGeneration: scan.generation,
+            inspectedSourceCount: 1,
+            published: published,
+            deferredSources: []
+        )
+    }
+
     private func publishReceiptSet(
         source: AtriaHistoricalAggregateChunk,
         prepared: AtriaHistoricalActivityInspectionProofFactory.Prepared,
@@ -436,6 +745,10 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
         case completionChangedDuringPublication
         case sourceIdentityMismatch
         case pendingDependencyMismatch
+        /// The per-source windowed `aggregateReader.load(since:until:)` hit
+        /// its byte/count limits. Unlike the whole-archive streamed digest
+        /// guard above, this defers only the one source, not the whole pass.
+        case windowedAggregateLoadLimitExceeded
     }
 
     /// Tells the full-drain authority whether its exact closed interval can
@@ -517,6 +830,19 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
                                dailyConfiguration: dailyConfiguration)
     }
 
+    /// Lightweight-source overload: the multi-source `publishEligibleReceipts`
+    /// loop iterates the streamed digest's `Source` list (no heavy per-minute
+    /// arrays resident), so it needs a source's required range before it has
+    /// decoded any full `AtriaHistoricalAggregateChunk` for that source.
+    private func requiredRange(
+        for source: AtriaHistoricalAggregateChunk.Source,
+        dailyConfiguration: AtriaHistoricalDailyConsumerProjection.Configuration
+    ) throws -> ClosedRange<Date> {
+        try Self.requiredRange(sourceFirstTimestamp: source.firstTimestamp,
+                               sourceLastTimestamp: source.lastTimestamp,
+                               dailyConfiguration: dailyConfiguration)
+    }
+
     private func makeDailyProof(
         _ prepared: AtriaHistoricalActivityInspectionProofFactory.Prepared
     ) throws -> AtriaHistoricalDailyConsumerProjection.InspectionProof {
@@ -551,4 +877,33 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
         }
         return lhs.source.chunkID < rhs.source.chunkID
     }
+
+    /// Lightweight-source overload; same canonical order as above, applied to
+    /// the streamed digest's `Source` list.
+    private func sourceOrder(
+        _ lhs: AtriaHistoricalAggregateChunk.Source,
+        _ rhs: AtriaHistoricalAggregateChunk.Source
+    ) -> Bool {
+        if lhs.firstTimestamp != rhs.firstTimestamp {
+            return lhs.firstTimestamp < rhs.firstTimestamp
+        }
+        return lhs.chunkID < rhs.chunkID
+    }
+}
+
+extension AtriaHistoricalAggregateReader.LoadLimits {
+    /// Practically unbounded whole-archive limits for the foreground consumer
+    /// projection lanes above, matching the completely unbounded
+    /// `aggregateReader.load()` calls their production call sites made before
+    /// this streaming digest existed. `streamedWholeArchiveDigest`'s memory
+    /// bound comes from decoding one aggregate at a time, not from these
+    /// totals, so the headroom here is deliberately generous — a real archive
+    /// should never legitimately hit it. A caller with a narrower memory
+    /// budget can still pass its own tighter `LoadLimits`.
+    static let unboundedConsumerProjection = AtriaHistoricalAggregateReader.LoadLimits(
+        maximumManifestCount: 10_000_000,
+        maximumManifestBytes: 64 * 1_024 * 1_024,
+        maximumAggregateBytes: 8 * 1_024 * 1_024 * 1_024,
+        maximumTotalAggregateBytes: 4 * 1_024 * 1_024 * 1_024 * 1_024
+    )
 }

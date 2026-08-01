@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Reads only aggregates with a valid committed manifest. Orphan/torn/tampered
@@ -43,6 +44,16 @@ struct AtriaHistoricalAggregateReader {
         let chunkIDs: Set<String>
         let rejectedManifests: Int
         let limitExceeded: Bool
+    }
+
+    /// Result of `streamedWholeArchiveDigest`. `sources` is the lightweight,
+    /// canonically ordered accepted-source list (no per-minute/epoch arrays),
+    /// so a caller can iterate every committed source and window-load only
+    /// the one it needs next instead of keeping the whole archive resident.
+    struct StreamedWholeArchiveDigest: Sendable {
+        let digest: String
+        let sources: [AtriaHistoricalAggregateChunk.Source]
+        let diagnostics: Diagnostics
     }
 
     struct LoadLimits: Equatable, Sendable {
@@ -220,6 +231,251 @@ struct AtriaHistoricalAggregateReader {
                                            acceptedAggregates: accepted.count,
                                            rejectedManifests: rejected,
                                            limitExceeded: limitExceeded))
+    }
+
+    /// Computes the byte-identical whole-archive aggregate-snapshot SHA-256
+    /// (`AtriaHistoricalActivityInspectionProofFactory
+    /// .streamedAggregateSnapshotDigest`, byte-for-byte equal to hashing
+    /// `AtriaHistoricalActivityInspectionProofFactory
+    /// .canonicalAggregateSnapshotData`) WITHOUT ever holding every decoded
+    /// aggregate resident at once. Peak residency is one decoded aggregate at
+    /// a time: each committed manifest/aggregate pair is decoded, its
+    /// lightweight `Source` extracted, and the full decode released (via
+    /// `autoreleasepool`) before the next.
+    ///
+    /// Two passes are required because the canonical wrapper's three counts
+    /// (`committedManifests`/`acceptedAggregates`/`rejectedManifests`) sit in
+    /// the JSON prefix/suffix that must be hashed before any per-aggregate
+    /// element, yet acceptance can only be known after decoding every
+    /// aggregate. Pass one walks manifests in FILENAME order — mirroring
+    /// `load(limits:)` exactly, so the accept/reject decisions and the
+    /// running total-byte accounting are identical — and keeps only each
+    /// accepted aggregate's manifest identity and lightweight `Source`. Pass
+    /// two re-reads and re-validates each accepted aggregate in CANONICAL
+    /// order (firstTimestamp asc, then chunkID asc) and folds its encoding
+    /// into the hash; if any file changed between the two passes this
+    /// returns `nil` so the caller fails closed instead of publishing from an
+    /// unverifiable digest. The 2x decode is CPU accepted in exchange for the
+    /// memory bound.
+    ///
+    /// The parity guarantee holds only when the returned `diagnostics
+    /// .limitExceeded == false`. `load(limits:)` breaks out of its manifest
+    /// loop in FILENAME order when the running byte budget is exhausted, so
+    /// which aggregates are included under a hit limit is filename-order
+    /// dependent and does not match canonical order. Callers must pass
+    /// limits generous enough that a real archive never legitimately hits
+    /// them, and must treat a `limitExceeded` result as a deferral, never as
+    /// a digest to trust.
+    func streamedWholeArchiveDigest(limits: LoadLimits) -> StreamedWholeArchiveDigest? {
+        var manifestURLs: [URL] = []
+        if let enumerator = fileManager.enumerator(
+            at: manifestDirectoryURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+        ) {
+            for case let url as URL in enumerator where url.pathExtension == "json" {
+                manifestURLs.append(url)
+                if manifestURLs.count > limits.maximumManifestCount {
+                    return StreamedWholeArchiveDigest(
+                        digest: "",
+                        sources: [],
+                        diagnostics: .init(committedManifests: manifestURLs.count,
+                                           acceptedAggregates: 0,
+                                           rejectedManifests: 0,
+                                           limitExceeded: true)
+                    )
+                }
+            }
+        }
+        guard limits.isValid else {
+            return StreamedWholeArchiveDigest(
+                digest: "",
+                sources: [],
+                diagnostics: .init(committedManifests: manifestURLs.count,
+                                   acceptedAggregates: 0,
+                                   rejectedManifests: 0,
+                                   limitExceeded: true)
+            )
+        }
+
+        struct AcceptedManifest {
+            let manifest: AtriaHistoricalRetentionTransaction.Manifest
+            let aggregateURL: URL
+            let source: AtriaHistoricalAggregateChunk.Source
+        }
+        enum PassValidationFailed: Error { case mismatch }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var acceptedInFilenameOrder: [AcceptedManifest] = []
+        var rejected = 0
+        var totalAggregateBytes: UInt64 = 0
+        var limitExceeded = false
+
+        for manifestURL in manifestURLs.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            do {
+                let manifestData = try boundedData(at: manifestURL,
+                                                   maximumBytes: limits.maximumManifestBytes)
+                let manifest = try decoder.decode(AtriaHistoricalRetentionTransaction.Manifest.self,
+                                                  from: manifestData)
+                guard manifest.version == AtriaHistoricalRetentionTransaction.Manifest.currentVersion,
+                      safeFilename(manifest.aggregateFilename) else {
+                    rejected += 1
+                    continue
+                }
+                let aggregateURL = aggregateDirectoryURL.appendingPathComponent(manifest.aggregateFilename)
+                guard fileManager.fileExists(atPath: aggregateURL.path) else {
+                    rejected += 1
+                    continue
+                }
+                let actualAggregateBytes = try fileByteCount(at: aggregateURL)
+                guard actualAggregateBytes == manifest.aggregateByteCount else {
+                    rejected += 1
+                    continue
+                }
+                let (nextTotal, overflow) = totalAggregateBytes
+                    .addingReportingOverflow(actualAggregateBytes)
+                guard !overflow,
+                      actualAggregateBytes <= limits.maximumAggregateBytes,
+                      nextTotal <= limits.maximumTotalAggregateBytes else {
+                    limitExceeded = true
+                    break
+                }
+                let aggregateReadLimit = min(limits.maximumAggregateBytes,
+                                             limits.maximumTotalAggregateBytes - totalAggregateBytes)
+                let aggregateData = try boundedData(at: aggregateURL, maximumBytes: aggregateReadLimit)
+                guard UInt64(aggregateData.count) == actualAggregateBytes,
+                      AtriaHistoricalRetentionTransaction.sha256(of: aggregateData)
+                        == manifest.aggregateSHA256 else {
+                    rejected += 1
+                    continue
+                }
+                totalAggregateBytes = nextTotal
+                do {
+                    let source = try autoreleasepool {
+                        () throws -> AtriaHistoricalAggregateChunk.Source in
+                        let aggregate = try decoder.decode(AtriaHistoricalAggregateChunk.self,
+                                                           from: aggregateData)
+                        try aggregate.validateForCommit()
+                        guard aggregate.schema == manifest.aggregateSchema,
+                              aggregate.source.chunkID == manifest.sourceChunkID,
+                              aggregate.source.rawSHA256 == manifest.sourceSHA256,
+                              aggregate.source.rawByteCount == manifest.sourceByteCount,
+                              aggregate.source.rawRowCount == manifest.sourceRowCount,
+                              aggregate.source.firstTimestamp == manifest.sourceFirstTimestamp,
+                              aggregate.source.lastTimestamp == manifest.sourceLastTimestamp,
+                              aggregate.heartRateMinutes.count == manifest.heartRateMinuteCount,
+                              aggregate.rrEpochs.count == manifest.rrEpochCount,
+                              aggregate.motionEpochs.count == manifest.motionEpochCount,
+                              AtriaHistoricalAggregateBuilder.semanticParityReceipt(for: aggregate)
+                                == manifest.semanticParityReceipt else {
+                            throw PassValidationFailed.mismatch
+                        }
+                        return aggregate.source
+                    }
+                    acceptedInFilenameOrder.append(.init(manifest: manifest,
+                                                         aggregateURL: aggregateURL,
+                                                         source: source))
+                } catch {
+                    rejected += 1
+                }
+            } catch BoundedReadError.limitExceeded {
+                limitExceeded = true
+                break
+            } catch {
+                rejected += 1
+            }
+        }
+
+        let canonicalOrder = acceptedInFilenameOrder.sorted {
+            if $0.source.firstTimestamp != $1.source.firstTimestamp {
+                return $0.source.firstTimestamp < $1.source.firstTimestamp
+            }
+            return $0.source.chunkID < $1.source.chunkID
+        }
+
+        if limitExceeded {
+            return StreamedWholeArchiveDigest(
+                digest: "",
+                sources: canonicalOrder.map(\.source),
+                diagnostics: .init(committedManifests: manifestURLs.count,
+                                   acceptedAggregates: acceptedInFilenameOrder.count,
+                                   rejectedManifests: rejected,
+                                   limitExceeded: true)
+            )
+        }
+
+        let diagnostics = Diagnostics(committedManifests: manifestURLs.count,
+                                      acceptedAggregates: canonicalOrder.count,
+                                      rejectedManifests: rejected,
+                                      limitExceeded: false)
+
+        guard let split = try? AtriaHistoricalActivityInspectionProofFactory
+            .canonicalAggregateSnapshotWrapperSplit(
+                committedManifests: diagnostics.committedManifests,
+                acceptedAggregates: diagnostics.acceptedAggregates,
+                rejectedManifests: diagnostics.rejectedManifests
+            ) else {
+            return nil
+        }
+
+        var hasher = SHA256()
+        hasher.update(data: split.prefix)
+        let comma = Data([0x2C]) // ","
+        for (index, entry) in canonicalOrder.enumerated() {
+            do {
+                let elementData = try autoreleasepool { () throws -> Data in
+                    // Pass two: re-read and re-verify straight from disk. If
+                    // the file changed since pass one — a different byte
+                    // count, a different SHA-256, or a validation guard that
+                    // no longer holds — this throws and the whole primitive
+                    // fails closed (returns `nil`) rather than folding in an
+                    // aggregate that no longer matches what pass one counted.
+                    let actualBytes = try fileByteCount(at: entry.aggregateURL)
+                    guard actualBytes == entry.manifest.aggregateByteCount else {
+                        throw PassValidationFailed.mismatch
+                    }
+                    let data = try boundedData(at: entry.aggregateURL,
+                                               maximumBytes: limits.maximumAggregateBytes)
+                    guard UInt64(data.count) == actualBytes,
+                          AtriaHistoricalRetentionTransaction.sha256(of: data)
+                            == entry.manifest.aggregateSHA256 else {
+                        throw PassValidationFailed.mismatch
+                    }
+                    let aggregate = try decoder.decode(AtriaHistoricalAggregateChunk.self, from: data)
+                    try aggregate.validateForCommit()
+                    guard aggregate.schema == entry.manifest.aggregateSchema,
+                          aggregate.source.chunkID == entry.manifest.sourceChunkID,
+                          aggregate.source.rawSHA256 == entry.manifest.sourceSHA256,
+                          aggregate.source.rawByteCount == entry.manifest.sourceByteCount,
+                          aggregate.source.rawRowCount == entry.manifest.sourceRowCount,
+                          aggregate.source.firstTimestamp == entry.manifest.sourceFirstTimestamp,
+                          aggregate.source.lastTimestamp == entry.manifest.sourceLastTimestamp,
+                          aggregate.heartRateMinutes.count == entry.manifest.heartRateMinuteCount,
+                          aggregate.rrEpochs.count == entry.manifest.rrEpochCount,
+                          aggregate.motionEpochs.count == entry.manifest.motionEpochCount,
+                          aggregate.source == entry.source,
+                          AtriaHistoricalAggregateBuilder.semanticParityReceipt(for: aggregate)
+                            == entry.manifest.semanticParityReceipt else {
+                        throw PassValidationFailed.mismatch
+                    }
+                    return try AtriaHistoricalActivityInspectionProofFactory
+                        .canonicalAggregateElementData(aggregate)
+                }
+                if index > 0 { hasher.update(data: comma) }
+                hasher.update(data: elementData)
+            } catch {
+                return nil
+            }
+        }
+        hasher.update(data: split.suffix)
+        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+
+        return StreamedWholeArchiveDigest(
+            digest: digest,
+            sources: canonicalOrder.map(\.source),
+            diagnostics: diagnostics
+        )
     }
 
     /// Reads at most one bounded page of aggregate payloads. Manifest commit
