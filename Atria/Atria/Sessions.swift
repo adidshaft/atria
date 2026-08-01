@@ -16734,6 +16734,7 @@ final class SessionStore: ObservableObject {
             refreshTodayHRZoneMinutesCache(deferred: true)
         }
         runResidentMorningSettlementIfUseful(now: now)
+        runResidentSleepReviewRefreshIfUseful(now: now)
         if let detection = Self.checkpointDiagnosticValue(loggingEnabled: AtriaDebugLogging.isEnabled, makeValue: {
             s.detectedActivity(rest: baseline.restingInt ?? s.restingStable,
                                maxHR: profile.maxHR)
@@ -16843,6 +16844,51 @@ final class SessionStore: ObservableObject {
         }
         return nowMinute >= WakeBoundaryDefaults.fallbackMorningCoreStartMin
             && nowMinute <= WakeBoundaryDefaults.fallbackMorningCoreEndMin
+    }
+
+    private var lastResidentSleepReviewRefreshAt: Date?
+
+    /// Keeps the pending sleep-review cache current in the background so a
+    /// settled nap surfaces on its own, without waiting for the next app open.
+    ///
+    /// The two existing settlement triggers both miss a daytime nap: the
+    /// main-sleep auto-confirm only handles `isAutoConfirmableMainSleepCandidate`
+    /// (naps are review-only), and `runResidentMorningSettlementIfUseful` is
+    /// gated to the post-wake morning window. The review-cache pipeline that
+    /// *does* surface naps (`scheduleSleepReviewCacheRefresh`) is deliberately
+    /// suppressed on the live checkpoint (`scheduleSleepReviewRefresh: false`)
+    /// to keep per-sample cost off the background path. The net effect, verified
+    /// on-device 2026-08-01, was a 14:05-16:40 nap that produced no detection at
+    /// all while the app stayed backgrounded — the app depended on a manual
+    /// foreground to do its own work.
+    ///
+    /// This reuses that exact pipeline on a throttled cadence. It changes only
+    /// *when* the evaluation runs, never *what* qualifies, so it cannot surface
+    /// a candidate a foreground refresh would not — the false-nap specificity is
+    /// unchanged. `scheduleSleepReviewCacheRefresh` is itself input-key-deduped
+    /// and bounded to the recent-session evaluation set, so a throttled call is
+    /// cheap when nothing has changed.
+    private func runResidentSleepReviewRefreshIfUseful(now: Date) {
+        guard hasCompletedDeferredSessionLoad else { return }
+        guard Self.shouldAttemptResidentSleepReviewRefresh(
+            now: now,
+            lastAttemptAt: lastResidentSleepReviewRefreshAt
+        ) else { return }
+        lastResidentSleepReviewRefreshAt = now
+        scheduleSleepReviewCacheRefresh(rest: baseline.restingInt ?? 60,
+                                        calendar: .current,
+                                        reason: "resident_review_checkpoint")
+    }
+
+    nonisolated static func shouldAttemptResidentSleepReviewRefresh(
+        now: Date,
+        lastAttemptAt: Date?,
+        minimumInterval: TimeInterval = 15 * 60
+    ) -> Bool {
+        if let lastAttemptAt, now.timeIntervalSince(lastAttemptAt) < minimumInterval {
+            return false
+        }
+        return true
     }
 
     func delete(_ offsets: IndexSet) {
