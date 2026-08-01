@@ -6,6 +6,10 @@ struct AtriaJournalProjectionState: Equatable {
     let journalAnswersRevision: Int
     let typedInsights: [JournalInsight]
     let dailyRollupHistoryRevision: Int
+    /// Keys the Behavior Impact / Impact map memo (design slice 3): those cards
+    /// read `dailyMetricHistory` for real recovery + vitals per night, which the
+    /// journal revision alone does not cover.
+    let dailyMetricHistoryRevision: Int
     let localDay: Date
 }
 
@@ -75,7 +79,8 @@ final class AtriaJournalProjectionStore: ObservableObject {
             store.$dashboardRevision.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$journalAnswersRevision.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$journalInsightsCache.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            store.$dailyRollupHistory.dropFirst().map { _ in () }.eraseToAnyPublisher()
+            store.$dailyRollupHistory.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            store.$dailyMetricHistory.dropFirst().map { _ in () }.eraseToAnyPublisher()
         ])
         // @Published emits before assignment. Coalescing onto the next run-loop
         // turn guarantees revisions and their backing snapshots agree.
@@ -95,6 +100,7 @@ final class AtriaJournalProjectionStore: ObservableObject {
             journalAnswersRevision: store.journalAnswersRevision,
             typedInsights: Array(store.journalInsightsCache.prefix(3)),
             dailyRollupHistoryRevision: store.dailyRollupHistoryRevision,
+            dailyMetricHistoryRevision: store.dailyMetricHistoryRevision,
             localDay: calendar.startOfDay(for: now)
         )
     }
@@ -108,6 +114,7 @@ final class AtriaJournalProjectionStore: ObservableObject {
             journalAnswersRevision: state.journalAnswersRevision,
             typedInsights: state.typedInsights,
             dailyRollupHistoryRevision: state.dailyRollupHistoryRevision,
+            dailyMetricHistoryRevision: state.dailyMetricHistoryRevision,
             localDay: localDay
         )
         return true
@@ -124,6 +131,7 @@ struct AtriaJournalTab: View {
     /// check-in deck, or typed-pattern section.
     let store: SessionStore
     @StateObject private var projectionStore: AtriaJournalProjectionStore
+    @State private var behaviorImpactMemo = AtriaBehaviorImpactMemo()
 
     init(store: SessionStore) {
         self.store = store
@@ -134,10 +142,23 @@ struct AtriaJournalTab: View {
         let _ = AtriaBodyEvalProbe.tick("AtriaJournalTab")
         let projection = projectionStore.state
         let localDay = projection.localDay
+        // Design slice 3: one gated model feeds BOTH the diverging chart and the
+        // impact map, so the two cards can never disagree about a behavior.
+        // Memoized on the journal + daily-metric revisions — never recomputed
+        // by a live BLE publish.
+        let impactModel = behaviorImpactMemo.model(behaviorJournalRevision: projection.behaviorJournalRevision,
+                                                   dailyMetricHistoryRevision: projection.dailyMetricHistoryRevision,
+                                                   localDay: localDay,
+                                                   store: store)
         Group {
             AtriaJournalCheckInDeck(store: store, projection: projection)
             AtriaJournalTypedInsightsSection(insights: projection.typedInsights)
-            AtriaOverviewBehaviorJournalSection(store: store)
+            AtriaBehaviorImpactCard(model: impactModel)
+            AtriaBehaviorImpactMapCard(model: impactModel)
+            // De-dup 2026-08-01: the full diverging chart + impact map above
+            // supersede the compact behavior strip on the Journal tab (it now
+            // reads as three impact surfaces). The strip stays on Overview,
+            // where it's the only behavior surface.
             // Heat strip rides directly under the behavior-impact section it
             // visualizes (UX audit 2026-07-07) instead of orphaned mid-stack.
             AtriaJournalHeatStrip(entries: store.behaviorJournalEntries,
@@ -1232,6 +1253,42 @@ private final class AtriaJournalEntryMemo {
         day = today
         value = snapshot
         return snapshot
+    }
+}
+
+/// Behavior Impact / Impact map model cache (design slice 3). The gated
+/// statistics walk the full 90-day journal + daily-metric history, which must
+/// never happen inside a view body — this recomputes only when the journal or
+/// the daily metric history actually changes, or the local day rolls over.
+private final class AtriaBehaviorImpactMemo {
+    private var behaviorJournalRevision: Int?
+    private var dailyMetricHistoryRevision: Int?
+    private var localDay: Date?
+    private var cached = AtriaBehaviorImpactPresentation.Model.empty
+
+    @MainActor
+    func model(behaviorJournalRevision: Int,
+               dailyMetricHistoryRevision: Int,
+               localDay: Date,
+               store: SessionStore,
+               calendar: Calendar = .current) -> AtriaBehaviorImpactPresentation.Model {
+        if self.behaviorJournalRevision == behaviorJournalRevision,
+           self.dailyMetricHistoryRevision == dailyMetricHistoryRevision,
+           self.localDay == localDay {
+            return cached
+        }
+
+        let nights = AtriaBehaviorImpactPresentation.nights(from: store.dailyMetricHistory,
+                                                            calendar: calendar)
+        let model = AtriaBehaviorImpactPresentation.model(nights: nights,
+                                                          journalEntries: store.behaviorJournalEntries,
+                                                          referenceDate: localDay,
+                                                          calendar: calendar)
+        self.behaviorJournalRevision = behaviorJournalRevision
+        self.dailyMetricHistoryRevision = dailyMetricHistoryRevision
+        self.localDay = localDay
+        cached = model
+        return model
     }
 }
 

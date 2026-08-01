@@ -5541,7 +5541,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "private func deleteLoggedSet(_ set: LoggedSet)",
             "loggedSets.removeAll { $0.id == set.id }",
             'Image(systemName: "trash.circle.fill")',
-            'Label(editingSetID == nil ? "Save set" : "Update set", systemImage: "checkmark.circle.fill")',
+            # Pin migrated 2026-08-01 (design-parity slice 2 -- Strength Log):
+            # the primary CTA now names both halves of what the tap does, per
+            # design 7a "Log set - start rest". Editing an existing set still
+            # reads "Update set" because no rest starts on an edit.
+            'Label(editingSetID == nil ? "Log set \\u{00B7} start rest" : "Update set",',
             "restTimerEndsAt = Date().addingTimeInterval(restSeconds(for: selectedExercise))",
             "private func updateRestOverride(_ seconds: TimeInterval)",
             "AtriaStrengthLog.setRestSeconds(seconds, for: selectedExercise)",
@@ -5569,8 +5573,100 @@ class HandoffStaticChecks(unittest.TestCase):
             "latestPRSetID = loggedSets.last?.id",
             "restTimerEndsAt = Date().addingTimeInterval(91)",
             "pauseStartedAt = Date().addingTimeInterval(-74)",
+            # Pins added 2026-08-01 (design-parity slice 2 -- Strength Log):
+            # the live logging sheet renders the design's set table, rest ring
+            # and amber steppers, and opens the e1RM progress and catalog
+            # surfaces. RPE is optional and reaches the saved set.
+            "AtriaStrengthLoggingHeader(exercise: selectedExercise,",
+            "AtriaStrengthRestHeartRateHost(pulseStore: pulseStore,",
+            "AtriaStrengthSetTable(rows: strengthSetTableRows,",
+            "private var strengthSetTableRows: [AtriaStrengthSetTablePresentation.Row]",
+            "AtriaStrengthSetTablePresentation.rows(sets: loggedSets,",
+            "records: personalRecords(for: selectedExercise),",
+            'loggerStepperRow(title: "RPE"',
+            "@State private var loggerRPE: Double?",
+            "rpe: loggerRPE,",
+            "loggerRPE = set.rpe",
+            "private func adjustRPE(by delta: Double)",
+            "private func shortenRest(by seconds: TimeInterval)",
+            "AtriaStrengthCatalogView(projection: strengthHistory)",
+            "AtriaStrengthProgressView(exercise: selectedExercise,",
+            "history: strengthHistory.fullHistory(for: selectedExercise),",
         ]:
             assert_contains(self, live_workout, needle)
+
+        # Pins added 2026-08-01 (design-parity slice 2 -- Strength Log): the
+        # e1RM progress chart (7b) and exercise catalog (7c) read the real
+        # saved history only. Days without a usable Epley estimate are not
+        # plotted, fewer than three sessions withholds the line, and the
+        # 90-day delta stays away until a session exists that far back.
+        strength_progress = source(ROOT / "Atria" / "Atria" / "AtriaStrengthProgress.swift")
+        strength_progress_view = source(ROOT / "Atria" / "Atria" / "AtriaStrengthProgressView.swift")
+        strength_catalog = source(ROOT / "Atria" / "Atria" / "AtriaStrengthCatalogView.swift")
+        strength_logging = source(ROOT / "Atria" / "Atria" / "AtriaStrengthSetLogging.swift")
+        strength_tests = source(ROOT / "Atria" / "AtriaTests" / "AtriaStrengthProgressPresentationTests.swift")
+
+        for needle in [
+            "static let minimumSessions = 3",
+            "static let deltaWindowDays = 90",
+            "case month = \"M\"",
+            "case all = \"All\"",
+            "static func timeline(_ history: [StrengthHistoryDay]) -> [Session]",
+            "guard let e1RM = AtriaStrengthLog.estimatedOneRepMax(weightKg: entry.best.weightKg,",
+            "let isRecord = e1RM > runningMax",
+            "guard sessions.count >= minimumSessions else { return nil }",
+            "isNewestPersonalRecord: session.isPersonalRecord",
+            "guard let baseline = timeline.last(where: { $0.day <= cutoff }) else { return nil }",
+            "static func catalogRows(groups: [AtriaWorkoutExerciseGroup],",
+            "sparkline: enough ? sparkline(sessions) : []",
+            "static func needMoreText(sessions: Int) -> String",
+        ]:
+            assert_contains(self, strength_progress, needle)
+
+        for needle in [
+            "struct AtriaStrengthProgressView: View",
+            'Text("Estimated 1RM \\u{00B7} Epley")',
+            'Text("CURRENT e1RM")',
+            "private var learningCard: some View",
+            "struct AtriaStrengthE1RMChart: View",
+            "if item.isNewestPersonalRecord {",
+            "static let recordGold = Color(red: 1.0, green: 0.839, blue: 0.039)",
+            "static let amber = Color(red: 1.0, green: 0.624, blue: 0.039)",
+        ]:
+            assert_contains(self, strength_progress_view, needle)
+
+        for needle in [
+            "struct AtriaStrengthCatalogView: View",
+            'TextField("Search or add custom", text: $search)',
+            "AtriaWorkoutExerciseCatalog.addCustomExercise(name)",
+            "AtriaStrengthProgressPresentation.catalogRows(",
+            "struct AtriaStrengthCatalogRow: View",
+            ".opacity(row.hasEnoughHistory ? 1 : 0.55)",
+            "struct AtriaStrengthSparkline: View",
+        ]:
+            assert_contains(self, strength_catalog, needle)
+
+        for needle in [
+            "enum AtriaStrengthSetTablePresentation",
+            "static func rows(sets: [LoggedSet],",
+            "let isRecord = AtriaStrengthLog.isPR(set, against: running)",
+            "struct AtriaStrengthSetTable: View",
+            'headerCell("RPE")',
+            "struct AtriaStrengthRestRing: View",
+            "struct AtriaStrengthRestHeartRateHost: View",
+            "@ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore",
+            'return "No live heart rate from the strap right now."',
+            "struct AtriaStrengthStepper: View",
+        ]:
+            assert_contains(self, strength_logging, needle)
+
+        for needle in [
+            "func testChartMarksOnlyTheNewestPersonalRecordSolid()",
+            "func testChartIsWithheldBelowThreeSessionsAndAppearsAtThree()",
+            "func testNinetyDayDeltaIsWithheldUntilASessionExistsThatFarBack()",
+            "func testCatalogRowWithholdsTheSparklineUntilTheGateClears()",
+        ]:
+            assert_contains(self, strength_tests, needle)
 
         for removed_copy in [
             'Text("Log sets without leaving the workout.")',
@@ -15113,5 +15209,155 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, persistence, "sleepSeconds: metric.sleepDuration")
 
 
+class BehaviorImpactDesignParityTests(unittest.TestCase):
+    """2026-08-01 design-parity slice 3 (spec 8 Behavior Impact + 9 Impact map).
+
+    The significance gate is printed on the card, so it is pinned here: the
+    surface may never widen, soften, or silently reuse a different threshold
+    than the sentence the user reads.
+    """
+
+    def test_significance_gate_is_the_printed_rule(self):
+        presentation = source(ROOT / "Atria" / "Atria" / "AtriaBehaviorImpactPresentation.swift")
+
+        for needle in [
+            # 2026-08-01: gate constants come from the frozen engine, never from
+            # a local literal that could drift away from AtriaBehaviorImpact.
+            "loggedNights >= AtriaBehaviorImpact.minimumLoggedDays",
+            "quietNights >= AtriaBehaviorImpact.minimumComparisonDays",
+            "return pValue < AtriaBehaviorImpact.maximumPValue",
+            "var passesSignificanceGate: Bool",
+            "AtriaBehaviorImpact.welchTwoSidedPValue(loggedRecovery, quietRecovery)",
+            # Sub-threshold rows are printed, not hidden -- with the app's
+            # canonical not-ready word in the p column.
+            'var evidencePText: String { passesSignificanceGate ? pText : "learning" }',
+            'guard let pValue else { return "learning" }',
+            # Verbatim design copy.
+            '"Only behaviors with ≥5 logged nights and p < 0.10 are shown. "',
+            '+ "Association, not proof — keep logging to sharpen it."',
+            '"Impact map appears once behaviors and outcomes overlap in your history."',
+            '"Next-day recovery · last 90 days"',
+            # Watch / Supports / No effect yet classification.
+            "case supports",
+            "case watch",
+            "case noEffectYet",
+            "guard passesSignificanceGate else { return .noEffectYet }",
+            "return impact >= 0 ? .supports : .watch",
+            # Real data only: an unscored night is a missing night, never a zero.
+            "guard let recovery = metric.recoveryPercent else { return nil }",
+            # Deep sleep may only be claimed from validated stage evidence
+            # (2026-08-01 HR-only presentation honesty pass).
+            'guard metric.sleepSource == "validated_sleep_stages"',
+        ]:
+            assert_contains(self, presentation, needle)
+
+        for forbidden in [
+            "pValue <= AtriaBehaviorImpact.maximumPValue",
+            "#if DEBUG",
+            "debugFixture",
+            "Screens in bed",
+        ]:
+            assert_not_contains(self, presentation, forbidden)
+
+    def test_behavior_impact_card_prints_footer_and_evidence_table(self):
+        chart = source(ROOT / "Atria" / "Atria" / "AtriaBehaviorImpactChart.swift")
+
+        for needle in [
+            "struct AtriaBehaviorImpactCard: View",
+            "let model: AtriaBehaviorImpactPresentation.Model",
+            "Text(AtriaBehaviorImpactPresentation.significanceFooter)",
+            'AtriaPanelSectionHeader(title: "Behavior impact",',
+            "subtitle: AtriaBehaviorImpactPresentation.framing)",
+            "AtriaBehaviorImpactDivergingChart(model: model)",
+            "AtriaBehaviorImpactTopMover(stat: mover)",
+            "AtriaBehaviorImpactEvidenceTable(rows: model.evidenceRows())",
+            "AtriaBehaviorImpactBuildingState(model: model)",
+            "if model.significant.isEmpty {",
+            # Evidence table columns: BEHAVIOR / NIGHTS / p.
+            'Text("BEHAVIOR")',
+            'Text("NIGHTS")',
+            'Text("p")',
+            "Text(row.evidencePText)",
+            # Diverging geometry: one center axis, positive right, negative left.
+            "let center = width / 2",
+            "offset(x: stat.impact >= 0 ? center : center - barWidth)",
+            "Color.primary.opacity(0.22)",
+            # Top mover carries the real p-badge and the real night counts.
+            'Text("Your biggest lever")',
+            "Text(stat.pText)",
+            "Text(stat.topMoverSentence)",
+            # Building state reports the two real counts the gate waits on.
+            "model.loggedNights == 0 ?",
+            "scored nights carry a behavior log.",
+        ]:
+            assert_contains(self, chart, needle)
+
+        # 2026-08-01: no design-comp sample values may survive into the app.
+        for forbidden in ["+5.8", "-4.9", "No caffeine after 2pm", "Set a goal"]:
+            assert_not_contains(self, chart, forbidden)
+
+    def test_impact_map_card_classifies_from_the_same_gate(self):
+        map_card = source(ROOT / "Atria" / "Atria" / "AtriaBehaviorImpactMapCard.swift")
+
+        for needle in [
+            "struct AtriaBehaviorImpactMapCard: View",
+            "let model: AtriaBehaviorImpactPresentation.Model",
+            "model.mapRows()",
+            "Text(AtriaBehaviorImpactPresentation.mapEmptyText)",
+            'AtriaPanelSectionHeader(title: "Impact map",',
+            "Text(classification.label)",
+            "case .watch: return Metrics.electricStress",
+            "case .supports: return Metrics.electricGreen",
+            "case .noEffectYet: return .secondary",
+            "Divider().opacity(0.4)",
+        ]:
+            assert_contains(self, map_card, needle)
+
+        # The map must never carry its own statistics.
+        for forbidden in ["welchTwoSidedPValue", "BehaviorCorrelationSummary"]:
+            assert_not_contains(self, map_card, forbidden)
+
+    def test_drill_in_withholds_thin_metrics_and_omits_the_absent_goal_action(self):
+        detail = source(ROOT / "Atria" / "Atria" / "AtriaBehaviorImpactDetail.swift")
+
+        for needle in [
+            "struct AtriaBehaviorImpactDetailSheet: View",
+            'AtriaPanelSectionHeader(title: "Logged vs quiet nights",',
+            'Text("WHAT SHIFTS ON THOSE NIGHTS")',
+            "if detail.shifts.isEmpty {",
+            "ForEach(detail.shifts) { shift in",
+            "Text(shift.deltaText)",
+            "case .hrv: return Metrics.electricHRV",
+            "case .deepSleep: return Metrics.electricSleep",
+            'Text("See nights")',
+            "ForEach(detail.loggedNightList) { night in",
+            "AtriaBehaviorImpactHistogram(title: \"Quiet nights\",",
+        ]:
+            assert_contains(self, detail, needle)
+
+        # 2026-08-01: the comp's goal-setting action is deliberately absent --
+        # there is no behavior-goal system for it to route to, and a button
+        # that leads nowhere is a promise the app cannot keep.
+        assert_not_contains(self, detail, "Set a goal")
+
+    def test_journal_tab_computes_the_impact_model_off_the_view_body(self):
+        journal_tab = source(ROOT / "Atria" / "Atria" / "AtriaJournalTab.swift")
+
+        for needle in [
+            "@State private var behaviorImpactMemo = AtriaBehaviorImpactMemo()",
+            "let impactModel = behaviorImpactMemo.model(behaviorJournalRevision: projection.behaviorJournalRevision,",
+            "dailyMetricHistoryRevision: projection.dailyMetricHistoryRevision,",
+            "AtriaBehaviorImpactCard(model: impactModel)",
+            "AtriaBehaviorImpactMapCard(model: impactModel)",
+            "private final class AtriaBehaviorImpactMemo",
+            "let dailyMetricHistoryRevision: Int",
+            "store.$dailyMetricHistory.dropFirst().map { _ in () }.eraseToAnyPublisher()",
+            "AtriaBehaviorImpactPresentation.nights(from: store.dailyMetricHistory,",
+        ]:
+            assert_contains(self, journal_tab, needle)
+
+        # The gated statistics must never run inside a SwiftUI body.
+        for block in swift_var_body_blocks(journal_tab):
+            assert_not_contains(self, block[1], "AtriaBehaviorImpactPresentation.model(")
 if __name__ == "__main__":
     unittest.main()
