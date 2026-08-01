@@ -1953,7 +1953,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "?? AtriaCompactMetricPresentation.noValue",
             "Duration-based",
             # 2026-07-12: accessibility copy follows the main-night metric.
-            "accessibilityDetail: currentMainSleep?.sleepEfficiency == nil",
+            # Pin migrated 2026-08-01 (sleep-stages hypnogram): the inline
+            # nil-check moved into sleepEfficiencyGlanceAccessibilityDetail,
+            # which now distinguishes the duration-based display estimate.
+            "accessibilityDetail: sleepEfficiencyGlanceAccessibilityDetail,",
+            "night.sleepEfficiency == nil",
             "Sleep efficiency is building from saved sleep duration",
             "title: sleepGlanceTitleText",
             "value: sleepGlanceValueText",
@@ -4549,7 +4553,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "Self.stageEvidence(source: source,",
             "AtriaSleepStageIntegrity.reconcilesForPresentation(",
             "effectiveSleepDuration: duration",
-            "self.displayStageSegments = evidence == .none",
+            # Pin migrated 2026-08-01 (sleep-stages hypnogram): HR-only
+            # estimates are also excluded from the displayed hypnogram now.
+            "self.displayStageSegments = (evidence == .none || evidence == .hrOnlyEstimate)",
             "private static func stageEvidence(source: String,",
             "if source == \"validated_sleep_stages\"",
             "return .sensorResearch",
@@ -4671,7 +4677,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "Text(night.stageEvidence.label)",
             "AtriaSleepStageHypnogram(segments: night.displayStageSegments,",
             "struct AtriaSleepStageBuildingSummary: View, Equatable",
-            "Text(\"Stages building\")",
+            # Pin migrated 2026-08-01 (sleep-stages hypnogram): an HR-only
+            # night honestly reads "Stages need motion data" instead of
+            # "building"; the building copy remains for every other state.
+            "Text(night.stageEvidence == .hrOnlyEstimate",
+            ": \"Stages building\")",
             "Stages need checked evidence. Duration and overnight vitals remain available while Atria learns.",
             "AtriaSleepStageBuildingSummary(night: latest)",
             "Awake, Light, REM, SWS, and Deep are not ready yet.",
@@ -4734,8 +4744,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaMetricTile(label: \"Efficiency\"",
             # 2026-07-19: review evidence shows numbers, while zones above stay confirmed-main-only.
             "value: latestEvidence?.sleepEfficiencyText ?? \"--\"",
-            "state: latestEvidence?.sleepEfficiency == nil ? .learning : .research",
-            "footnote: \"Duration-based estimate\"",
+            # Pin migrated 2026-08-01 (sleep-stages hypnogram): the learning
+            # state keys off the duration-based display estimate.
+            "state: latestEvidence?.displaySleepEfficiency == nil ? .learning : .research",
+            # Pin migrated 2026-08-01 (sleep-stages hypnogram): the footnote
+            # names the night's specific efficiency provenance when known.
+            "footnote: latestEvidence?.sleepEfficiencyFootnote ?? \"Duration-based estimate\"",
             'AtriaMetricTile(label: "\\(latestEvidence?.evidenceLabel ?? "Sleep") RHR"',
             'AtriaMetricTile(label: "\\(latestEvidence?.evidenceLabel ?? "Sleep") HRV"',
             "value: latestEvidence?.hrvText ?? \"--\"",
@@ -13917,7 +13931,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "return Metrics.sleepPerformanceZone(currentSleepPerformancePercent,",
             "neededHours: currentSleepNeedHours)",
             # 2026-07-12: zone color uses the same main night as the metric.
-            "Metrics.sleepEfficiencyZone(currentMainSleep?.sleepEfficiency,",
+            # Pin migrated 2026-08-01 (sleep-stages hypnogram): the zone now
+            # grades the duration-based display estimate for the same night.
+            "Metrics.sleepEfficiencyZone(currentMainSleep?.displaySleepEfficiency,",
             "greenLower: sleepEfficiencyGreenLower",
             "yellowLower: sleepEfficiencyYellowLower",
             "Metrics.stepsZone(sensorSummary.strapStepCount, goal: stepsGoal)",
@@ -14027,7 +14043,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "greenDelta: restingGreenDelta",
             "yellowDelta: restingYellowDelta",
             "Metrics.sleepDurationZone(zonedLatestEvidence?.durationHours, goalHours: sleepGoalHours)",
-            "Metrics.sleepEfficiencyZone(zonedLatestEvidence?.sleepEfficiency,",
+            # Pin migrated 2026-08-01 (sleep-stages hypnogram): vitals grades
+            # the duration-based display estimate for the zoned night.
+            "Metrics.sleepEfficiencyZone(zonedLatestEvidence?.displaySleepEfficiency,",
             "Metrics.hrvZone(zonedLatestEvidence?.hrv,",
             "baselineTrusted: hrvBaselineTrusted",
             "baselineTarget: baselineTarget",

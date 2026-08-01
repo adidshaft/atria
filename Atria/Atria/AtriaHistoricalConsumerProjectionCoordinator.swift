@@ -1,5 +1,31 @@
 import Foundation
 
+/// Process-wide foreground gate for the long historical projection lanes.
+///
+/// The archive lanes are admitted under a foreground-only entry gate, but a
+/// lane admitted while active keeps allocating on the archive queues after the
+/// scene backgrounds. The scene-phase handler flips this atomic Bool so
+/// multi-source projection loops can abort cleanly BETWEEN sources; every
+/// already-published receipt set is durable, so a partial pass resumes exactly
+/// like a crash on the next foreground pass.
+enum AtriaHistoricalProjectionForegroundGate {
+    private static let lock = NSLock()
+    private static var backgrounded = false
+
+    static var isBackgrounded: Bool {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return backgrounded
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            backgrounded = newValue
+        }
+    }
+}
+
 /// Production-safe publication of historical consumer artifacts.
 ///
 /// The coordinator accepts no caller-created inspection proof. Every typed
@@ -54,13 +80,44 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
     func publishEligibleReceipts(
         catalogStore: AtriaHistoricalArchiveCatalogStore,
         aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
-        configuration: Configuration
+        configuration: Configuration,
+        lane: String = "consumer_projection",
+        shouldAbortBetweenSources: () -> Bool = {
+            AtriaHistoricalProjectionForegroundGate.isBackgrounded
+        }
     ) throws -> Report {
         try publishEligibleReceipts(
-            catalogStore: catalogStore,
+            evidence: .store(catalogStore),
             aggregateSnapshot: aggregateSnapshot,
             configuration: configuration,
-            selectedChunkID: nil
+            selectedChunkID: nil,
+            lane: lane,
+            shouldAbortBetweenSources: shouldAbortBetweenSources
+        )
+    }
+
+    /// Memory-shape overload for flows that already hold the file-verified
+    /// catalog and both canonical evidence encodings for this exact pass. The
+    /// digests and every validation are identical to the store-based entry;
+    /// only the per-source recomputation frequency changes.
+    func publishEligibleReceipts(
+        verifiedCatalog: AtriaHistoricalArchiveCatalog,
+        catalogData: Data,
+        aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
+        aggregateData: Data,
+        configuration: Configuration,
+        lane: String = "consumer_projection",
+        shouldAbortBetweenSources: () -> Bool = {
+            AtriaHistoricalProjectionForegroundGate.isBackgrounded
+        }
+    ) throws -> Report {
+        try publishEligibleReceipts(
+            evidence: .hoisted(verifiedCatalog, catalogData, aggregateData),
+            aggregateSnapshot: aggregateSnapshot,
+            configuration: configuration,
+            selectedChunkID: nil,
+            lane: lane,
+            shouldAbortBetweenSources: shouldAbortBetweenSources
         )
     }
 
@@ -74,18 +131,51 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
         configuration: Configuration
     ) throws -> Report {
         try publishEligibleReceipts(
-            catalogStore: catalogStore,
+            evidence: .store(catalogStore),
             aggregateSnapshot: aggregateSnapshot,
             configuration: configuration,
-            selectedChunkID: chunkID
+            selectedChunkID: chunkID,
+            lane: "consumer_projection",
+            shouldAbortBetweenSources: { false }
         )
     }
 
+    /// Memory-shape single-source overload; see the hoisted
+    /// `publishEligibleReceipts` above for the evidence contract.
+    func publishReceiptSet(
+        for chunkID: String,
+        verifiedCatalog: AtriaHistoricalArchiveCatalog,
+        catalogData: Data,
+        aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
+        aggregateData: Data,
+        configuration: Configuration
+    ) throws -> Report {
+        try publishEligibleReceipts(
+            evidence: .hoisted(verifiedCatalog, catalogData, aggregateData),
+            aggregateSnapshot: aggregateSnapshot,
+            configuration: configuration,
+            selectedChunkID: chunkID,
+            lane: "consumer_projection",
+            shouldAbortBetweenSources: { false }
+        )
+    }
+
+    /// The catalog snapshot, its canonical encoding, and the canonical
+    /// aggregate-snapshot encoding are invariant across one publication pass.
+    /// They are either hoisted by the caller from the same archive flow or
+    /// computed exactly once below, never once per source.
+    private enum CanonicalEvidenceInput {
+        case store(AtriaHistoricalArchiveCatalogStore)
+        case hoisted(AtriaHistoricalArchiveCatalog, Data, Data)
+    }
+
     private func publishEligibleReceipts(
-        catalogStore: AtriaHistoricalArchiveCatalogStore,
+        evidence evidenceInput: CanonicalEvidenceInput,
         aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
         configuration: Configuration,
-        selectedChunkID: String?
+        selectedChunkID: String?,
+        lane: String,
+        shouldAbortBetweenSources: () -> Bool
     ) throws -> Report {
         guard !aggregateSnapshot.diagnostics.limitExceeded,
               aggregateSnapshot.diagnostics.rejectedManifests == 0 else {
@@ -101,29 +191,100 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
             .filter { selectedChunkID == nil || $0.source.chunkID == selectedChunkID }
             .sorted(by: sourceOrder)
 
-        for source in sources {
+        // Hoisted loop invariants: one file re-verified catalog snapshot, one
+        // canonical catalog encoding, and one canonical aggregate-snapshot
+        // encoding per pass instead of one per source. The bytes are the exact
+        // `canonicalCatalogData`/`canonicalAggregateSnapshotData` output that
+        // persisted completion SHA-256s compare against; only the frequency
+        // changes.
+        let catalog: AtriaHistoricalArchiveCatalog
+        let catalogData: Data
+        let aggregateData: Data
+        switch evidenceInput {
+        case .hoisted(let hoistedCatalog, let hoistedCatalogData, let hoistedAggregateData):
+            catalog = hoistedCatalog
+            catalogData = hoistedCatalogData
+            aggregateData = hoistedAggregateData
+        case .store(let catalogStore):
             do {
-                let range = try requiredRange(for: source,
-                                              dailyConfiguration: configuration.daily)
-                let prepared = try factory.prepare(
-                    catalogStore: catalogStore,
-                    aggregateSnapshot: aggregateSnapshot,
-                    requestedStart: range.lowerBound,
-                    requestedEnd: range.upperBound
-                )
-                guard prepared.completionGeneration == completion.generation else {
-                    throw CoordinatorError.completionChangedDuringPublication
-                }
-                let sourcePublished = try publishReceiptSet(
-                    source: source,
-                    prepared: prepared,
-                    configuration: configuration,
-                    settledAt: completion.completedAt
-                )
-                published.append(contentsOf: sourcePublished)
+                let verified = try catalogStore.snapshotVerifiedAgainstFiles()
+                try verified.validate()
+                catalog = verified
+                catalogData = try AtriaHistoricalActivityInspectionProofFactory
+                    .canonicalCatalogData(verified)
+                aggregateData = try AtriaHistoricalActivityInspectionProofFactory
+                    .canonicalAggregateSnapshotData(aggregateSnapshot)
             } catch {
-                deferred.append(.init(chunkID: source.source.chunkID,
-                                      reason: String(reflecting: error)))
+                // Identical deferral semantics to the previous per-iteration
+                // evidence computation: every source defers with the evidence
+                // error, except that a source whose required range itself is
+                // invalid keeps its own range error because `requiredRange`
+                // always ran before `factory.prepare`.
+                for source in sources {
+                    do {
+                        _ = try requiredRange(for: source,
+                                              dailyConfiguration: configuration.daily)
+                        deferred.append(.init(chunkID: source.source.chunkID,
+                                              reason: String(reflecting: error)))
+                    } catch let rangeError {
+                        deferred.append(.init(chunkID: source.source.chunkID,
+                                              reason: String(reflecting: rangeError)))
+                    }
+                }
+                return .init(completionGeneration: completion.generation,
+                             inspectedSourceCount: sources.count,
+                             published: published,
+                             deferredSources: deferred)
+            }
+        }
+
+        for (index, source) in sources.enumerated() {
+            if index > 0, shouldAbortBetweenSources() {
+                // The app left the foreground mid-lane. Receipt sets already
+                // published are durable, so aborting BETWEEN sources (never
+                // mid-source) resumes exactly like a crash next foreground.
+                AtriaDebugLog("ATRIADBG historical_consumer_projection status=background_abort lane=%@ completed=%d total=%d action=resume_between_sources_from_durable_journals",
+                              lane,
+                              index,
+                              sources.count)
+                for remaining in sources[index...] {
+                    deferred.append(.init(
+                        chunkID: remaining.source.chunkID,
+                        reason: "deferredBackgroundAbortBetweenSources"
+                    ))
+                }
+                break
+            }
+            // Foundation/CryptoKit temporaries from one source's typed proof
+            // and five receipts must not accumulate across a 40-60 source
+            // pass (see AtriaHistoricalJSONLRecentScanner for the on-device
+            // evidence behind this pattern).
+            autoreleasepool {
+                do {
+                    let range = try requiredRange(for: source,
+                                                  dailyConfiguration: configuration.daily)
+                    let prepared = try factory.prepare(
+                        verifiedCatalog: catalog,
+                        catalogData: catalogData,
+                        aggregateSnapshot: aggregateSnapshot,
+                        aggregateData: aggregateData,
+                        requestedStart: range.lowerBound,
+                        requestedEnd: range.upperBound
+                    )
+                    guard prepared.completionGeneration == completion.generation else {
+                        throw CoordinatorError.completionChangedDuringPublication
+                    }
+                    let sourcePublished = try publishReceiptSet(
+                        source: source,
+                        prepared: prepared,
+                        configuration: configuration,
+                        settledAt: completion.completedAt
+                    )
+                    published.append(contentsOf: sourcePublished)
+                } catch {
+                    deferred.append(.init(chunkID: source.source.chunkID,
+                                          reason: String(reflecting: error)))
+                }
             }
         }
 

@@ -1142,7 +1142,8 @@ enum HistoricalArchive {
         let consumers = try coordinator.publishEligibleReceipts(
             catalogStore: try catalogStoreLocked(),
             aggregateSnapshot: aggregateSnapshot,
-            configuration: configuration
+            configuration: configuration,
+            lane: "terminal_materialize_after_drain"
         )
         return .init(aggregateCommit: published.aggregateCommit,
                      completion: published.completion,
@@ -1232,6 +1233,10 @@ enum HistoricalArchive {
             catalogSnapshotSHA256: catalogSnapshotSHA256,
             aggregateSnapshotSHA256: aggregateSnapshotSHA256
         )
+        // The archive queue is the single writer here, so the catalog and
+        // aggregate snapshot verified above are invariant through this call.
+        // Reusing their canonical encodings avoids a second file re-stat and
+        // whole-snapshot encode; the persisted digest bytes are identical.
         let completion = try completionStore.recordTerminal(
             generation: generation,
             terminalBatchNumber: terminalBatchNumber,
@@ -1239,8 +1244,9 @@ enum HistoricalArchive {
             requestedStart: requestedStart,
             requestedEnd: requestedEnd,
             completedAt: completedAt,
-            catalogStore: catalogStore,
-            aggregateSnapshot: aggregateSnapshot
+            verifiedCatalog: catalog,
+            catalogData: catalogData,
+            aggregateData: aggregateData
         )
         return .init(aggregateCommit: aggregateCommit,
                      completion: completion)
@@ -1547,10 +1553,16 @@ enum HistoricalArchive {
                 isDirectory: true
             ))
         )
+        // The catalog was file-verified and canonically encoded above on the
+        // same serialized archive flow; reuse that evidence instead of
+        // re-stat/re-encode once per source inside the coordinator loop.
         let consumers = try coordinator.publishEligibleReceipts(
-            catalogStore: catalogStore,
+            verifiedCatalog: catalog,
+            catalogData: catalogData,
             aggregateSnapshot: aggregateSnapshot,
-            configuration: configuration
+            aggregateData: aggregateData,
+            configuration: configuration,
+            lane: "terminal_crash_resume"
         )
         guard FileManager.default.fileExists(atPath: sourceURL.path) else {
             throw TerminalConsumerProjectionError.rawSourceWasNotRetained
@@ -1653,8 +1665,10 @@ enum HistoricalArchive {
             ))
         ).publishReceiptSet(
             for: checkpoint.chunkID,
-            catalogStore: catalogStore,
+            verifiedCatalog: catalog,
+            catalogData: catalogData,
             aggregateSnapshot: aggregateSnapshot,
+            aggregateData: aggregateData,
             configuration: configuration
         )
         guard FileManager.default.fileExists(atPath: sourceURL.path) else {
