@@ -3935,11 +3935,23 @@ struct AtriaHomeView: View {
         settlingCandidateWindow: (start: Date, end: Date)
     ) async -> UserConfirmedWorkout? {
         let rest = store.baseline.restingInt ?? model.heroStore.state.restingHeartRate
+        // user_adjusted semantics (2026-08-01, mirrors sleep's
+        // user_adjusted_window): when the user moved either bound of the
+        // detected window by a minute or more, the persisted workout records
+        // user authorship of the window instead of detector authorship. The
+        // save path, settlement of the original detector window, and review
+        // lifecycle (reviewSource) are unchanged.
+        let windowWasUserAdjusted =
+            abs(result.start.timeIntervalSince(settlingCandidateWindow.start)) >= 60
+            || abs(result.end.timeIntervalSince(settlingCandidateWindow.end)) >= 60
+        let saveSource = windowWasUserAdjusted
+            ? "user_adjusted_workout_window"
+            : "guided_workout_review"
         let confirmed = await store.confirmWorkoutWindowForUI(start: result.start,
                                                         end: result.end,
                                                         rest: rest,
                                                         maxHR: store.profile.maxHR,
-                                                        source: "guided_workout_review",
+                                                        source: saveSource,
                                                         activityType: result.activityType,
                                                         activitySubtype: result.activitySubtype,
                                                         exerciseNames: result.exerciseNames,
@@ -6185,6 +6197,7 @@ private struct AtriaWorkoutReviewFlow: View {
     @State private var exerciseNameKeys: Set<String>
     @State private var filteredExerciseGroups: [AtriaWorkoutExerciseGroup]
     @State private var showsAllWorkoutTypes = false
+    @State private var typeSearch = ""
     @State private var summaryExerciseHistoryMemo = AtriaWorkoutSummaryExerciseHistoryMemo()
     @State private var isSaving = false
 
@@ -6212,12 +6225,24 @@ private struct AtriaWorkoutReviewFlow: View {
     }
 
     private var visibleWorkoutTypes: [AtriaWorkoutActivityType] {
+        // 2026-08-01 (gym-session review): the full catalog is long enough to
+        // need a plain text filter. Filtering only applies to the revealed
+        // full list; the compact suggested list stays untouched.
+        if showsAllWorkoutTypes, !trimmedTypeSearch.isEmpty {
+            return AtriaWorkoutActivityType.allCases.filter {
+                $0.rawValue.localizedCaseInsensitiveContains(trimmedTypeSearch)
+            }
+        }
         guard !showsAllWorkoutTypes else { return AtriaWorkoutActivityType.allCases }
         var types = draft.prompt.suggestedActivityTypes
         if !types.contains(selectedType) {
             types.append(selectedType)
         }
         return types
+    }
+
+    private var trimmedTypeSearch: String {
+        typeSearch.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var hiddenWorkoutTypeCount: Int {
@@ -6603,25 +6628,31 @@ private struct AtriaWorkoutReviewFlow: View {
         VStack(alignment: .leading, spacing: 10) {
             stepTitle("Activity", subtitle: "Choose the closest match.")
             typeRevealHeader
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 74), spacing: 6)], spacing: 6) {
+
+            if showsAllWorkoutTypes {
+                TextField("Search activity types", text: $typeSearch)
+                    .textInputAutocapitalization(.words)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 11)
+                    .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+
+            // Plain one-per-row selection list (2026-08-01 gym-session review):
+            // the adaptive chip grid cropped names like "Football / soccer" and
+            // relaid every chip on reveal, which made opening the full catalog
+            // slow. Full-width rows never truncate and stay cheap to build.
+            VStack(spacing: 2) {
                 ForEach(visibleWorkoutTypes) { type in
-                    Button {
-                        applyWorkoutType(type)
-                    } label: {
-                        VStack(spacing: 5) {
-                            Image(systemName: type.icon)
-                                .font(.caption.weight(.semibold))
-                            Text(type.rawValue)
-                                .font(.caption2.weight(.semibold))
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.76)
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                    }
-                    .atriaCardAction(prominent: selectedType == type, tint: selectedType == type ? .orange : .secondary)
+                    workoutTypeRow(type)
                 }
             }
-            .animation(.snappy(duration: AtriaDesignTokens.Motion.standard), value: showsAllWorkoutTypes)
+
+            if visibleWorkoutTypes.isEmpty {
+                Text("No activity types match \"\(trimmedTypeSearch)\".")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if !selectedType.subtypeOptions.isEmpty {
                 chipSection(title: "Style", values: selectedType.subtypeOptions, selected: selectedSubtype) { value in
@@ -6646,6 +6677,9 @@ private struct AtriaWorkoutReviewFlow: View {
                 withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                     showsAllWorkoutTypes.toggle()
                 }
+                if !showsAllWorkoutTypes {
+                    typeSearch = ""
+                }
             } label: {
                 Text(showsAllWorkoutTypes ? "Less" : "+\(hiddenWorkoutTypeCount)")
                     .font(.caption.weight(.black).monospacedDigit())
@@ -6659,6 +6693,39 @@ private struct AtriaWorkoutReviewFlow: View {
         }
         .padding(.horizontal, 2)
         .accessibilityElement(children: .contain)
+    }
+
+    /// One plain full-width row per activity type. Selection is marked in
+    /// place — the list order never changes on tap, and long names get the
+    /// whole row width instead of a cropped chip.
+    private func workoutTypeRow(_ type: AtriaWorkoutActivityType) -> some View {
+        let selected = selectedType == type
+        return Button {
+            applyWorkoutType(type)
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: type.icon)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(selected ? Color.orange : .secondary)
+                    .frame(width: 26)
+                Text(type.rawValue)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(selected ? Color.orange : Color.secondary.opacity(0.4))
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .padding(.horizontal, 10)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .background(selected ? Color.orange.opacity(0.10) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .accessibilityLabel(type.rawValue)
+        .accessibilityValue(selected ? "Selected" : "Not selected")
     }
 
     private var suggestedTypeRunway: some View {
@@ -7220,19 +7287,45 @@ private struct AtriaWorkoutReviewFlow: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 10) {
-            if step != visibleSteps.first {
-                Button("Back") {
-                    moveBack()
-                }
-                .atriaCardAction(prominent: false, tint: .secondary)
+        VStack(spacing: 8) {
+            if let reason = saveDisabledReason {
+                Label(reason, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Can't save yet. \(reason)")
             }
 
-            Button(isSaving ? "Saving…" : primaryActionTitle) {
-                primaryAction()
+            HStack(spacing: 10) {
+                if step != visibleSteps.first {
+                    Button("Back") {
+                        moveBack()
+                    }
+                    .atriaCardAction(prominent: false, tint: .secondary)
+                    .disabled(isSaving)
+                }
+
+                // Always-visible commit (2026-08-01 gym-session review): the
+                // user edited the detected window on the Time step and found no
+                // Save control — only "Continue". Save is now reachable from
+                // every step and commits the complete current draft.
+                if step != .summary {
+                    Button(isSaving ? "Saving…" : "Save") {
+                        commitSave()
+                    }
+                    .disabled(saveDisabledReason != nil || isSaving)
+                    .atriaCardAction(prominent: false, tint: .orange)
+                    .accessibilityLabel("Save workout now")
+                    .accessibilityHint("Saves the workout with the current time, activity, and exercises without visiting the remaining steps.")
+                }
+
+                Button(isSaving ? "Saving…" : primaryActionTitle) {
+                    primaryAction()
+                }
+                .disabled(saveDisabledReason != nil || isSaving)
+                .atriaCardAction(tint: .orange)
             }
-            .disabled(end <= start || isSaving)
-            .atriaCardAction(tint: .orange)
         }
         .padding(10)
         .frame(maxWidth: .infinity)
@@ -7240,6 +7333,13 @@ private struct AtriaWorkoutReviewFlow: View {
         .padding(.horizontal, 20)
         .padding(.top, 8)
         .padding(.bottom, 10)
+    }
+
+    /// Non-nil while the edited window cannot be saved, with the exact reason
+    /// shown next to the disabled Save/Continue buttons instead of a silently
+    /// dead control.
+    private var saveDisabledReason: String? {
+        end > start ? nil : "End must be after start"
     }
 
     private var primaryActionTitle: String {
@@ -7438,19 +7538,7 @@ private struct AtriaWorkoutReviewFlow: View {
 
     private func primaryAction() {
         if step == .summary {
-            guard !isSaving else { return }
-            isSaving = true
-            Task { @MainActor in
-                _ = await onSave(AtriaWorkoutReviewResult(
-                    start: start,
-                    end: end,
-                    activityType: selectedType.rawValue,
-                    activitySubtype: selectedSubtype,
-                    exerciseNames: selectedExerciseNames,
-                    strengthSets: draft.strengthSets
-                ))
-                isSaving = false
-            }
+            commitSave()
             return
         }
         if step == .type, !selectedType.supportsExerciseSelection {
@@ -7460,6 +7548,25 @@ private struct AtriaWorkoutReviewFlow: View {
         if let index = visibleSteps.firstIndex(of: step),
            visibleSteps.indices.contains(visibleSteps.index(after: index)) {
             step = visibleSteps[visibleSteps.index(after: index)]
+        }
+    }
+
+    /// The single commit path shared by the summary primary action and the
+    /// always-visible footer Save (2026-08-01): every save routes the complete
+    /// current draft through the same canonical onSave call.
+    private func commitSave() {
+        guard !isSaving, end > start else { return }
+        isSaving = true
+        Task { @MainActor in
+            _ = await onSave(AtriaWorkoutReviewResult(
+                start: start,
+                end: end,
+                activityType: selectedType.rawValue,
+                activitySubtype: selectedSubtype,
+                exerciseNames: selectedExerciseNames,
+                strengthSets: draft.strengthSets
+            ))
+            isSaving = false
         }
     }
 
