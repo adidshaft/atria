@@ -4112,11 +4112,13 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         case .bloodOxygen:
             AtriaGlanceMetricCard(title: "Blood oxygen",
                                   value: "--",
-                                  detail: "Not available yet",
+                                  // SpO2 copy consolidation (2026-08-01): canonical
+                                  // hardware-limitation copy, never a fabricated %.
+                                  detail: AtriaSpO2Copy.notAvailableOnStrap,
                                   systemImage: metric.systemImage,
                                   tint: .orange,
                                   zone: nil,
-                                  accessibilityDetail: "Blood oxygen is not available yet. Atria does not estimate a percentage.")
+                                  accessibilityDetail: "\(AtriaSpO2Copy.notAvailableOnStrap) \(AtriaSpO2Copy.wontFakeAPercentage)")
         case .bodyTemp:
             let decoderAvailable = AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
             AtriaGlanceMetricCard(title: "Wrist temp",
@@ -9228,10 +9230,12 @@ struct AtriaMetricDetailSheet: View {
                 aboutDisclosure
             }
         case .bloodOxygen:
+            // SpO2 copy consolidation (2026-08-01): canonical hardware-limitation
+            // copy; hero value stays an em dash, never a fabricated percentage.
             honestPartialDetail(heroValue: "\u{2014}",
-                                heroState: "Not available yet",
+                                heroState: AtriaSpO2Copy.notAvailableOnStrap,
                                 tint: .pink,
-                                bodyText: "Atria can't read blood oxygen from this strap yet, so it shows no percentage.")
+                                bodyText: AtriaSpO2Copy.longUnavailable)
         }
     }
 
@@ -11424,7 +11428,8 @@ private struct AtriaMetricMeaningInline: View {
         case .hrZones:
             return "Zone minutes split today's elevated heart rate into Z2 through Z5 bands."
         case .bloodOxygen:
-            return "Atria can't read blood oxygen from this strap yet, so it shows no percentage."
+            // SpO2 copy consolidation (2026-08-01): canonical hardware copy.
+            return AtriaSpO2Copy.longUnavailable
         }
     }
 
@@ -11849,7 +11854,8 @@ private struct AtriaMetricMeaningSheet: View {
         case .hrZones:
             return "HR zones split today's elevated heart rate into effort bands."
         case .bloodOxygen:
-            return "Blood oxygen is not available yet."
+            // SpO2 copy consolidation (2026-08-01): canonical hardware copy.
+            return AtriaSpO2Copy.notAvailableOnStrap
         }
     }
 
@@ -11882,7 +11888,8 @@ private struct AtriaMetricMeaningSheet: View {
         case .hrZones:
             return "Zone minutes are today's live total; Atria doesn't yet save a day-by-day zone-minutes history to chart."
         case .bloodOxygen:
-            return "Atria does not show raw sensor data as a percentage."
+            // SpO2 copy consolidation (2026-08-01): canonical honesty line.
+            return AtriaSpO2Copy.wontFakeAPercentage
         }
     }
 
@@ -11918,7 +11925,8 @@ private struct AtriaMetricMeaningSheet: View {
         case .hrZones:
             return "Zone minutes show how much of today was spent in each heart-rate effort band, from resting to max."
         case .bloodOxygen:
-            return "This metric stays empty until Atria can read it reliably."
+            // SpO2 copy consolidation (2026-08-01): canonical hardware copy.
+            return AtriaSpO2Copy.longUnavailable
         }
     }
 
