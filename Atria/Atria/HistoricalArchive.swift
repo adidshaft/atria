@@ -1198,12 +1198,10 @@ enum HistoricalArchive {
         try catalog.validate()
         let catalogData = try AtriaHistoricalActivityInspectionProofFactory
             .canonicalCatalogData(catalog)
-        let aggregateData = try AtriaHistoricalActivityInspectionProofFactory
-            .canonicalAggregateSnapshotData(aggregateSnapshot)
         let catalogSnapshotSHA256 =
             AtriaHistoricalDrainCompletionGenerationStore.sha256(catalogData)
-        let aggregateSnapshotSHA256 =
-            AtriaHistoricalDrainCompletionGenerationStore.sha256(aggregateData)
+        let aggregateSnapshotSHA256 = try AtriaHistoricalActivityInspectionProofFactory
+            .streamedAggregateSnapshotDigest(aggregateSnapshot)
         let persistedAggregate = try persistedISO8601Value(
             seal.aggregateBuild.aggregate
         )
@@ -1235,8 +1233,9 @@ enum HistoricalArchive {
         )
         // The archive queue is the single writer here, so the catalog and
         // aggregate snapshot verified above are invariant through this call.
-        // Reusing their canonical encodings avoids a second file re-stat and
-        // whole-snapshot encode; the persisted digest bytes are identical.
+        // Reusing the canonical catalog encoding and the streamed aggregate
+        // digest avoids a second file re-stat and whole-snapshot encode; the
+        // persisted digest bytes are identical.
         let completion = try completionStore.recordTerminal(
             generation: generation,
             terminalBatchNumber: terminalBatchNumber,
@@ -1246,7 +1245,7 @@ enum HistoricalArchive {
             completedAt: completedAt,
             verifiedCatalog: catalog,
             catalogData: catalogData,
-            aggregateData: aggregateData
+            aggregateSnapshotDigest: aggregateSnapshotSHA256
         )
         return .init(aggregateCommit: aggregateCommit,
                      completion: completion)
@@ -1423,10 +1422,8 @@ enum HistoricalArchive {
             catalogSnapshotSHA256: AtriaHistoricalDrainCompletionGenerationStore.sha256(
                 try AtriaHistoricalActivityInspectionProofFactory.canonicalCatalogData(catalog)
             ),
-            aggregateSnapshotSHA256: AtriaHistoricalDrainCompletionGenerationStore.sha256(
-                try AtriaHistoricalActivityInspectionProofFactory
-                    .canonicalAggregateSnapshotData(snapshot)
-            )
+            aggregateSnapshotSHA256: try AtriaHistoricalActivityInspectionProofFactory
+                .streamedAggregateSnapshotDigest(snapshot)
         )
     }
 
@@ -1531,8 +1528,8 @@ enum HistoricalArchive {
         let completion = try completionStore.loadLatest()
         let catalogData = try AtriaHistoricalActivityInspectionProofFactory
             .canonicalCatalogData(catalog)
-        let aggregateData = try AtriaHistoricalActivityInspectionProofFactory
-            .canonicalAggregateSnapshotData(aggregateSnapshot)
+        let aggregateSnapshotDigest = try AtriaHistoricalActivityInspectionProofFactory
+            .streamedAggregateSnapshotDigest(aggregateSnapshot)
         guard completion.terminalBatchNumber == job.terminalBatchNumber,
               completion.durableSequence == job.durableSequence,
               completion.requestedStart == job.exactRequest.requestedStart,
@@ -1541,8 +1538,7 @@ enum HistoricalArchive {
               completion.catalogGeneration == catalog.generation,
               completion.catalogSnapshotSHA256
                 == AtriaHistoricalDrainCompletionGenerationStore.sha256(catalogData),
-              completion.aggregateSnapshotSHA256
-                == AtriaHistoricalDrainCompletionGenerationStore.sha256(aggregateData) else {
+              completion.aggregateSnapshotSHA256 == aggregateSnapshotDigest else {
             throw TerminalConsumerProjectionError.resumeCompletionMismatch
         }
 
@@ -1554,13 +1550,14 @@ enum HistoricalArchive {
             ))
         )
         // The catalog was file-verified and canonically encoded above on the
-        // same serialized archive flow; reuse that evidence instead of
-        // re-stat/re-encode once per source inside the coordinator loop.
+        // same serialized archive flow; reuse that evidence plus the streamed
+        // aggregate digest instead of re-stat/re-encode once per source inside
+        // the coordinator loop.
         let consumers = try coordinator.publishEligibleReceipts(
             verifiedCatalog: catalog,
             catalogData: catalogData,
             aggregateSnapshot: aggregateSnapshot,
-            aggregateData: aggregateData,
+            aggregateSnapshotDigest: aggregateSnapshotDigest,
             configuration: configuration,
             lane: "terminal_crash_resume"
         )
@@ -1635,8 +1632,8 @@ enum HistoricalArchive {
         let completion = try completionStore.loadLatest()
         let catalogData = try AtriaHistoricalActivityInspectionProofFactory
             .canonicalCatalogData(catalog)
-        let aggregateData = try AtriaHistoricalActivityInspectionProofFactory
-            .canonicalAggregateSnapshotData(aggregateSnapshot)
+        let aggregateSnapshotDigest = try AtriaHistoricalActivityInspectionProofFactory
+            .streamedAggregateSnapshotDigest(aggregateSnapshot)
         guard completion.terminalBatchNumber == checkpoint.terminalBatchNumber,
               completion.durableSequence == checkpoint.durableSequence,
               catalogTimestampMatches(
@@ -1654,8 +1651,7 @@ enum HistoricalArchive {
               completion.catalogGeneration == catalog.generation,
               completion.catalogSnapshotSHA256
                 == AtriaHistoricalDrainCompletionGenerationStore.sha256(catalogData),
-              completion.aggregateSnapshotSHA256
-                == AtriaHistoricalDrainCompletionGenerationStore.sha256(aggregateData) else {
+              completion.aggregateSnapshotSHA256 == aggregateSnapshotDigest else {
             throw TerminalConsumerProjectionError.resumeCompletionMismatch
         }
         let consumers = try AtriaHistoricalConsumerProjectionCoordinator(
@@ -1668,7 +1664,7 @@ enum HistoricalArchive {
             verifiedCatalog: catalog,
             catalogData: catalogData,
             aggregateSnapshot: aggregateSnapshot,
-            aggregateData: aggregateData,
+            aggregateSnapshotDigest: aggregateSnapshotDigest,
             configuration: configuration
         )
         guard FileManager.default.fileExists(atPath: sourceURL.path) else {

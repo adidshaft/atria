@@ -580,6 +580,9 @@ struct AtriaHistoricalSleepProjection: Codable, Equatable, Sendable {
             }
         }
 
+        // Flatten once before the group loop instead of O(groups x facts) per
+        // group.
+        let allHeartRateMinutes = chunks.flatMap(\.heartRateMinutes)
         var result: [Candidate] = []
         for group in groups {
             guard let first = group.first, let last = group.last else { continue }
@@ -594,7 +597,7 @@ struct AtriaHistoricalSleepProjection: Codable, Equatable, Sendable {
             let motionRatio = roundedRatio(validatedSeconds, span)
             guard motionRatio >= configuration.minimumValidatedMotionCoverage else { continue }
             let expectedHRMinutes = max(1, Int(ceil(Double(span) / 60)))
-            let hrStarts = Set(chunks.flatMap(\.heartRateMinutes).filter {
+            let hrStarts = Set(allHeartRateMinutes.filter {
                 $0.minuteStart >= start && $0.minuteStart < end && $0.sampleCount > 0
             }.map { Int64(floor($0.minuteStart.timeIntervalSince1970 / 60)) })
             let hrRatio = roundedRatio(hrStarts.count, expectedHRMinutes)
@@ -986,6 +989,9 @@ struct AtriaHistoricalWorkoutProjection: Codable, Equatable, Sendable {
             }
         }
 
+        // Flatten once before the group loop instead of O(groups x epochs) per
+        // group.
+        let allMotionEpochs = chunks.flatMap(\.motionEpochs)
         var result: [Candidate] = []
         for group in groups {
             guard let first = group.first, let last = group.last else { continue }
@@ -1000,7 +1006,7 @@ struct AtriaHistoricalWorkoutProjection: Codable, Equatable, Sendable {
                   end >= sourceRange.lowerBound,
                   start <= sourceRange.upperBound else { continue }
 
-            let candidateMotionEpochs = chunks.flatMap(\.motionEpochs).filter { epoch in
+            let candidateMotionEpochs = allMotionEpochs.filter { epoch in
                 epoch.start >= start
                     && epoch.start < end
                     && epoch.measurementValidated
