@@ -782,6 +782,11 @@ struct AtriaTodayScreen: View {
                 AtriaTriRing(slots: resolvedSlots,
                              centerValue: centerValue,
                              centerState: centerState,
+                             // Name the center's metric (2026-08-01 ring fix):
+                             // the numeral follows the user's configurable
+                             // center pick, so "7h 42m / 96% of need" must say
+                             // it is Sleep the moment the state line doesn't.
+                             centerMetricName: centerMetricName,
                              centerDelta: centerDeltaText,
                              accessibilitySummary: accessibilitySummary,
                              actions: ringActions)
@@ -1817,6 +1822,18 @@ struct AtriaTodayScreen: View {
             return sleepMetric.value
         case .strain:
             return strainMetric.value
+        }
+    }
+
+    /// Which metric the hero's center numeral belongs to. The ring view only
+    /// renders it when neither center line already says the name, so a
+    /// learning state like "Learning / Save sleep to score" gains "RECOVERY"
+    /// while an explicit state line never repeats it (2026-08-01 ring fix).
+    private var centerMetricName: String {
+        switch layoutConfig.ringCenterMetric {
+        case .recovery: return AtriaTriRingSlot.recovery.label
+        case .sleep: return AtriaTriRingSlot.sleep.label
+        case .strain: return AtriaTriRingSlot.strain.label
         }
     }
 

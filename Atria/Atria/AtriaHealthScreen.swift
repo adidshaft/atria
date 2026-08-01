@@ -1044,9 +1044,13 @@ struct AtriaHealthScreen: View {
                 .background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
             }
 
-            // The design reference uses one Health Monitor surface rather than
-            // a card around every metric. Two compact groups preserve that
-            // hierarchy while avoiding a nine-card vertical wall.
+            // Vitals IA split (user-directed, 2026-08-01): one metric family
+            // per card. The former single Health Monitor surface stacked every
+            // aggregate behind one fill; each tile now carries its own flat
+            // card (dense content stays flat — no glass on this grid), a
+            // chevron affordance, and a tap into the metric's EXISTING detail
+            // sheet (the education copy lives on inside each detail sheet's
+            // info button). The compact grid grouping is kept for density.
             monitorGroupKicker("Readiness")
 
             LazyVGrid(columns: monitorGridColumns, alignment: .leading, spacing: 8) {
@@ -1057,7 +1061,7 @@ struct AtriaHealthScreen: View {
                                      tint: recoveryTint(live: live),
                                      hint: recoveryHint,
                                      layout: .compactTile,
-                                     onTap: { educationTopic = .recovery })
+                                     onTap: { metricDetail = .recovery })
                 AtriaHealthMetricRow(title: "Resting HR",
                                      value: restingHeartRateValue(live: live),
                                      detail: restingHeartRateDetail(live: live),
@@ -1066,7 +1070,7 @@ struct AtriaHealthScreen: View {
                                      rangeText: restingHeartRateRangeText,
                                      hint: restingHeartRateHint,
                                      layout: .compactTile,
-                                     onTap: { educationTopic = .restingHeartRate })
+                                     onTap: { metricDetail = .restingHeartRate })
                 AtriaHealthMetricRow(title: "HRV",
                                      value: hrvValue(live: live),
                                      detail: hrvDetail(live: live),
@@ -1075,7 +1079,7 @@ struct AtriaHealthScreen: View {
                                      rangeText: hrvRangeText,
                                      hint: hrvHint,
                                      layout: .compactTile,
-                                     onTap: { educationTopic = .hrv })
+                                     onTap: { metricDetail = .hrv })
             }
             .opacity(isDisconnected(live: live) && currentMetrics.hasEvidence ? 0.65 : 1)
 
@@ -1102,7 +1106,7 @@ struct AtriaHealthScreen: View {
                                      rangeText: respiratoryRangeText,
                                      hint: respiratoryHint,
                                      layout: .compactTile,
-                                     onTap: { educationTopic = .respiration })
+                                     onTap: { metricDetail = .respiratoryRate })
                 AtriaHealthMetricRow(title: "Sleep",
                                      value: sleepValue,
                                      detail: sleepDetail,
@@ -1110,7 +1114,7 @@ struct AtriaHealthScreen: View {
                                      tint: Metrics.electricSleep,
                                      hint: sleepHint,
                                      layout: .compactTile,
-                                     onTap: { educationTopic = .sleep })
+                                     onTap: { metricDetail = .sleep })
                 // Visibility/IA fix (2026-07-05): three rows that previously had
                 // no home on the live Vitals tab. Each opens the real detail
                 // sheet (section 3), not just the education sheet, per spec.
@@ -1155,9 +1159,10 @@ struct AtriaHealthScreen: View {
             // read (paired with the last-known row above).
             .opacity(isDisconnected(live: live) && currentMetrics.hasEvidence ? 0.65 : 1)
         }
-        .padding(16)
-        .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+        // No outer mega-card chrome (2026-08-01 Vitals IA split): the tiles
+        // are the cards now, so wrapping them in a second surface would
+        // reintroduce the box-inside-box stack this change removes.
+        .padding(.horizontal, 2)
     }
 
     /// Complete rows avoid the large half-empty grid rows visible on compact
@@ -2022,8 +2027,10 @@ private struct AtriaHealthMetricRow: View, Equatable {
     /// value in a suboptimal zone (e.g. elevated RHR, depressed HRV).
     var hint: String? = nil
     var layout: Layout = .row
-    /// Opens the compact "what it is / your typical range / how to improve"
-    /// education sheet for this metric.
+    /// Opens this metric's existing detail surface (2026-08-01 Vitals IA
+    /// split: taps route to the metric detail sheets; the "what it is / how
+    /// to improve" education copy remains one tap further, behind each detail
+    /// sheet's info button).
     var onTap: (() -> Void)? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -2048,7 +2055,7 @@ private struct AtriaHealthMetricRow: View, Equatable {
         .disabled(onTap == nil)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabelText)
-        .accessibilityHint(onTap == nil ? "" : "Opens what this means and how to improve it.")
+        .accessibilityHint(onTap == nil ? "" : "Opens this metric's detail and trend.")
     }
 
     private var accessibilityLabelText: String {
@@ -2095,6 +2102,10 @@ private struct AtriaHealthMetricRow: View, Equatable {
                 Spacer(minLength: 8)
 
                 metricValue
+
+                if onTap != nil {
+                    pressableChevron
+                }
             }
 
             if let hint {
@@ -2103,21 +2114,32 @@ private struct AtriaHealthMetricRow: View, Equatable {
             }
         }
         .frame(minHeight: 60)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(Color(uiColor: .tertiarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        // Family card treatment (2026-08-01 Vitals IA split): flat secondary
+        // fill + chip-token radius, replacing the stray radius-8 tertiary
+        // wash, so the full-width Stress row reads as its own pressable card.
+        .background(Color(uiColor: .secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: tint)
     }
 
     private var compactTileContent: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .center, spacing: 5) {
+            HStack(alignment: .center, spacing: 4) {
                 metricIcon
+                // 0.62 floor (was 0.78): the chevron affordance costs ~12pt of
+                // tile width, which truncated "Resting HR" to "Resting…" on the
+                // three-column grid (2026-08-01 screenshot check).
                 Text(title)
                     .font(.caption.weight(.bold))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.78)
+                    .minimumScaleFactor(0.62)
+                    .allowsTightening(true)
+                Spacer(minLength: 0)
+                if onTap != nil {
+                    pressableChevron
+                }
             }
 
             metricValue
@@ -2138,15 +2160,22 @@ private struct AtriaHealthMetricRow: View, Equatable {
             }
         }
         .frame(maxWidth: .infinity, minHeight: 72, alignment: .topLeading)
-        .padding(.horizontal, 1)
-        .padding(.vertical, 6)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color(uiColor: .separator).opacity(0.55))
-                .frame(maxWidth: .infinity)
-                .frame(height: 0.5)
-        }
+        // Vitals IA split (2026-08-01): each tile is its own flat card —
+        // hairline-separated rows inside one shared surface read as one
+        // aggregated block, not distinct pressable metrics. Flat fill on
+        // purpose (dense grid, no glass), chip radius from the token scale.
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color(uiColor: .secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: tint)
+    }
+
+    /// Small trailing chevron: the visible "this card presses" affordance.
+    private var pressableChevron: some View {
+        Image(systemName: "chevron.right")
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(.tertiary)
     }
 
     private var metricIcon: some View {

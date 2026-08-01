@@ -356,6 +356,9 @@ private struct AtriaCustomizePreview: View {
                          strain: strainMetric,
                          centerValue: centerValue,
                          centerState: centerState,
+                         // Previews the same named-center treatment the real
+                         // hero renders (2026-08-01 ring fix).
+                         centerMetricName: centerMetricName,
                          accessibilitySummary: "Customize preview",
                          onSleep: {},
                          onRecovery: {},
@@ -432,6 +435,14 @@ private struct AtriaCustomizePreview: View {
         switch config.ringCenterMetric {
         case .recovery, .sleep: return "Good"
         case .strain: return "Build"
+        }
+    }
+
+    private var centerMetricName: String {
+        switch config.ringCenterMetric {
+        case .recovery: return AtriaTriRingSlot.recovery.label
+        case .sleep: return AtriaTriRingSlot.sleep.label
+        case .strain: return AtriaTriRingSlot.strain.label
         }
     }
 

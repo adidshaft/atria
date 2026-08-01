@@ -409,11 +409,28 @@ struct AtriaTrendChartCard: View {
         Self.compactXAxisDates(prepared.series.map(\.date))
     }
 
-    private var chart: some View {
-        VStack(spacing: 4) {
-            coreChart
-            compactXAxisLabelRow
+    /// Visible text for each compact tick, deduped so two ticks that format to
+    /// the same string can never render as side-by-side identical labels — the
+    /// duplicated-axis-label defect from the 2026-07-31 History audit. A date
+    /// absent from this map still draws its gridline, just without a label.
+    nonisolated static func compactXAxisLabelTexts(_ dates: [Date]) -> [Date: String] {
+        var output: [Date: String] = [:]
+        var previous: String?
+        for date in dates.sorted() {
+            let label = date.formatted(.dateTime.month(.abbreviated).day())
+            guard label != previous else { continue }
+            output[date] = label
+            previous = label
         }
+        return output
+    }
+
+    private var chartXAxisLabels: [Date: String] {
+        Self.compactXAxisLabelTexts(chartXAxisDates)
+    }
+
+    private var chart: some View {
+        coreChart
     }
 
     private var coreChart: some View {
@@ -517,8 +534,20 @@ struct AtriaTrendChartCard: View {
         .chartXScale(range: .plotDimension(startPadding: 18, endPadding: 18))
         .chartYScale(domain: prepared.yDomain)
         .chartXAxis {
-            AxisMarks(values: chartXAxisDates) { _ in
+            // Labels ride the SAME axis marks as the gridlines (2026-08-01):
+            // the previous parallel Spacer-based HStack guessed a 34pt leading
+            // inset and spread labels evenly regardless of where the gridlines
+            // actually fell, so gappy/short series rendered duplicated or
+            // misaligned date labels under true-position gridlines.
+            AxisMarks(preset: .aligned, values: chartXAxisDates) { value in
                 AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
+                if let date = value.as(Date.self), let label = chartXAxisLabels[date] {
+                    AxisValueLabel(anchor: .top) {
+                        Text(label)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
         .chartYAxis {
@@ -530,27 +559,6 @@ struct AtriaTrendChartCard: View {
 
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(chartAccessibilityLabel)
-    }
-
-    /// Swift Charts may collision-prune the trailing label of a two-point
-    /// domain even when both observed dates are explicit. Render the compact
-    /// labels from those same dates so the physical graph always identifies
-    /// both edges without synthesizing intermediate ticks.
-    private var compactXAxisLabelRow: some View {
-        HStack(spacing: 0) {
-            ForEach(Array(chartXAxisDates.enumerated()), id: \.offset) { index, date in
-                if index > 0 {
-                    Spacer(minLength: 8)
-                }
-                Text(date, format: .dateTime.month(.abbreviated).day())
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
-        .padding(.leading, 34)
-        .padding(.trailing, 4)
-        .accessibilityHidden(true)
     }
 
     /// Honest gating for the ghost overlay: only draw it when the prior window

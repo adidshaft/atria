@@ -2099,6 +2099,60 @@ enum AtriaVitalsHeartRateTimeline {
         static let defaultWindow = Window.hour6
     }
 
+    /// One x-axis tick: a boundary-aligned instant plus the exact label the
+    /// chart draws for it. Labels are precomputed and deduped here so the axis
+    /// can never render consecutive identical strings — the live-confirmed
+    /// duplicate "11a" defect (2026-08-01): `.automatic` placement chose
+    /// sub-hour instants on short series, and the hour-precision label format
+    /// collapsed neighbouring ticks onto the same text.
+    struct AxisTickMark: Equatable {
+        let date: Date
+        let label: String
+    }
+
+    /// Boundary-aligned ticks across the plotted span. The stride is chosen so
+    /// roughly `desiredPerWindow` ticks fit one visible window (the full span
+    /// when the chart is not scrollable), snapped up to a clean clock unit;
+    /// labels include minutes only when the stride itself is sub-hour, so an
+    /// hour-only label can never repeat on adjacent ticks.
+    static func hourAlignedAxisTicks(from first: Date,
+                                     to last: Date,
+                                     visibleDomain: TimeInterval? = nil,
+                                     desiredPerWindow: Int = 4,
+                                     calendar: Calendar = .current) -> [AxisTickMark] {
+        let span = last.timeIntervalSince(first)
+        guard span > 0, desiredPerWindow > 0 else { return [] }
+        let window = min(max(visibleDomain ?? span, 60), span)
+        let raw = window / Double(desiredPerWindow)
+        let units: [TimeInterval] = [60, 2 * 60, 5 * 60, 10 * 60, 15 * 60,
+                                     30 * 60, 3_600, 2 * 3_600, 3 * 3_600,
+                                     4 * 3_600, 6 * 3_600, 12 * 3_600,
+                                     24 * 3_600]
+        var stride = units.first(where: { $0 >= raw }) ?? units[units.count - 1]
+        // A scrollable series carries ticks for its FULL span; keep the mark
+        // count bounded when a narrow window rides a long series.
+        while span / stride > 240, let next = units.first(where: { $0 > stride }) {
+            stride = next
+        }
+        let format: Date.FormatStyle = stride < 3_600
+            ? .dateTime.hour(.defaultDigits(amPM: .narrow)).minute()
+            : .dateTime.hour(.defaultDigits(amPM: .narrow))
+        let dayStart = calendar.startOfDay(for: first)
+        let firstOffset = (first.timeIntervalSince(dayStart) / stride).rounded(.up) * stride
+        var ticks: [AxisTickMark] = []
+        var tick = dayStart.addingTimeInterval(firstOffset)
+        var previousLabel: String?
+        while tick <= last {
+            let label = tick.formatted(format)
+            if label != previousLabel {
+                ticks.append(AxisTickMark(date: tick, label: label))
+                previousLabel = label
+            }
+            tick = tick.addingTimeInterval(stride)
+        }
+        return ticks
+    }
+
     /// Merged live + historical HR at full resolution (capped for safety) so
     /// the timeline can window + downsample PER zoom level — pre-downsampling
     /// here would destroy the seconds-resolution the 1-minute zoom needs.
@@ -5102,23 +5156,19 @@ struct AtriaHeartRateAxisChart: View, Equatable {
         .chartYScale(domain: yDomain)
         .chartXAxis {
             if showsXAxis {
-                AxisMarks(values: .automatic(desiredCount: 4)) { value in
+                // Explicit boundary-aligned ticks with precomputed, deduped
+                // labels (2026-08-01): `.automatic(desiredCount: 4)` placed
+                // sub-hour ticks on short series, and the hour-precision label
+                // (kept short on purpose — `1:00 PM` truncated to `1:00 P…` on
+                // the compact Vitals canvas) rendered the same "11a" text under
+                // several neighbouring gridlines.
+                AxisMarks(values: xAxisTicks.map(\.date)) { value in
                     AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
                     AxisTick().foregroundStyle(.secondary.opacity(0.45))
                     AxisValueLabel {
-                        if let time = value.as(Date.self) {
-                            // The compact Vitals canvas is only a few hundred
-                            // points wide. `1:00 PM` labels were truncated to
-                            // `1:00 P…`, which made the newly visible axis look
-                            // broken. Minute precision adds no information at
-                            // this scale; the inspector retains the detailed
-                            // time readout for selection.
-                            Text(
-                                time,
-                                format: .dateTime.hour(
-                                    .defaultDigits(amPM: .narrow)
-                                )
-                            )
+                        if let time = value.as(Date.self),
+                           let label = xAxisTickLabel(for: time) {
+                            Text(label)
                                 .font(.caption2.monospacedDigit())
                                 .foregroundStyle(.secondary)
                         }
@@ -5148,6 +5198,26 @@ struct AtriaHeartRateAxisChart: View, Equatable {
                 .clipped()
         }
         .mask(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    /// Ticks span whichever series actually plots (buckets when smoothing).
+    private var xAxisTicks: [AtriaVitalsHeartRateTimeline.AxisTickMark] {
+        let first = buckets?.first?.t ?? points.first?.t
+        let last = buckets?.last?.t ?? points.last?.t
+        guard let first, let last else { return [] }
+        return AtriaVitalsHeartRateTimeline.hourAlignedAxisTicks(from: first,
+                                                                 to: last,
+                                                                 visibleDomain: visibleDomain)
+    }
+
+    /// Nearest-tick match instead of exact Date equality: Swift Charts hands
+    /// explicit axis values back through its own numeric space, so an exact
+    /// Date-keyed lookup can silently miss and drop every label.
+    private func xAxisTickLabel(for time: Date) -> String? {
+        guard let nearest = xAxisTicks.min(by: {
+            abs($0.date.timeIntervalSince(time)) < abs($1.date.timeIntervalSince(time))
+        }) else { return nil }
+        return abs(nearest.date.timeIntervalSince(time)) < 1 ? nearest.label : nil
     }
 
     private func nearestPoint(to selectedTime: Date) -> AtriaHomeModel.HeartRateChartPoint? {
