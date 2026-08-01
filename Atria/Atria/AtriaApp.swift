@@ -291,6 +291,19 @@ struct AtriaApp: App {
                     }
                 }
                 .onChange(of: scenePhase) { _, phase in
+                    // Long archive-projection lanes admitted under a
+                    // foreground entry gate re-check this flag BETWEEN
+                    // sources. Flip it before the restore-blocked early
+                    // return so a blocked restore can never leave a
+                    // backgrounded lane looking foregrounded.
+                    switch phase {
+                    case .background:
+                        AtriaHistoricalProjectionForegroundGate.isBackgrounded = true
+                    case .active:
+                        AtriaHistoricalProjectionForegroundGate.isBackgrounded = false
+                    default:
+                        break
+                    }
                     guard !store.restoreInitializationBlocked else { return }
                     switch phase {
                     case .background:

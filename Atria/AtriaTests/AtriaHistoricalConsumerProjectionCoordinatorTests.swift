@@ -425,6 +425,145 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
         XCTAssertEqual(try restartedStore.load()?.status, .authorityConsumed)
     }
 
+    func testHoistedPrepareDigestsMatchPerCallPrepareOnMultiAggregateFixture() throws {
+        let fixture = try makeMultiSourceFixture()
+        XCTAssertEqual(fixture.snapshot.aggregates.count, 2)
+
+        // Frequency-only guarantee: recomputing the canonical evidence per
+        // call (the pre-hoist loop shape) must yield byte-identical output to
+        // computing it once and reusing it.
+        let catalog = try fixture.catalogStore.snapshotVerifiedAgainstFiles()
+        let recomputedCatalog = try fixture.catalogStore.snapshotVerifiedAgainstFiles()
+        let hoistedCatalogData = try AtriaHistoricalActivityInspectionProofFactory
+            .canonicalCatalogData(catalog)
+        let perCallCatalogData = try AtriaHistoricalActivityInspectionProofFactory
+            .canonicalCatalogData(recomputedCatalog)
+        let hoistedAggregateData = try AtriaHistoricalActivityInspectionProofFactory
+            .canonicalAggregateSnapshotData(fixture.snapshot)
+        let perCallAggregateData = try AtriaHistoricalActivityInspectionProofFactory
+            .canonicalAggregateSnapshotData(fixture.snapshot)
+        XCTAssertEqual(hoistedCatalogData, perCallCatalogData)
+        XCTAssertEqual(hoistedAggregateData, perCallAggregateData)
+
+        let completion = try fixture.completionStore.loadLatest()
+        XCTAssertEqual(
+            AtriaHistoricalDrainCompletionGenerationStore.sha256(hoistedCatalogData),
+            completion.catalogSnapshotSHA256
+        )
+        XCTAssertEqual(
+            AtriaHistoricalDrainCompletionGenerationStore.sha256(hoistedAggregateData),
+            completion.aggregateSnapshotSHA256
+        )
+
+        let factory = AtriaHistoricalActivityInspectionProofFactory(
+            completionStore: fixture.completionStore
+        )
+        for source in fixture.snapshot.aggregates {
+            let readiness = try AtriaHistoricalConsumerProjectionCoordinator
+                .settlementReadiness(
+                    sourceFirstTimestamp: source.source.firstTimestamp,
+                    sourceLastTimestamp: source.source.lastTimestamp,
+                    completionStart: completion.requestedStart,
+                    completionEnd: completion.requestedEnd,
+                    dailyConfiguration: configuration().daily
+                )
+            guard case .ready(let requiredStart, let requiredEnd) = readiness else {
+                return XCTFail("the fixture completion must cover both sources")
+            }
+            let perCall = try factory.prepare(
+                catalogStore: fixture.catalogStore,
+                aggregateSnapshot: fixture.snapshot,
+                requestedStart: requiredStart,
+                requestedEnd: requiredEnd
+            )
+            let hoisted = try factory.prepare(
+                verifiedCatalog: catalog,
+                catalogData: hoistedCatalogData,
+                aggregateSnapshot: fixture.snapshot,
+                aggregateData: hoistedAggregateData,
+                requestedStart: requiredStart,
+                requestedEnd: requiredEnd
+            )
+            XCTAssertEqual(hoisted.catalogSnapshot, perCall.catalogSnapshot)
+            XCTAssertEqual(
+                AtriaHistoricalDrainCompletionGenerationStore.sha256(hoisted.catalogSnapshot),
+                completion.catalogSnapshotSHA256,
+                "hoisted path digest must equal the persisted per-call digest"
+            )
+            XCTAssertEqual(hoisted.generationIdentifier, perCall.generationIdentifier)
+            XCTAssertEqual(hoisted.completionGeneration, perCall.completionGeneration)
+            XCTAssertEqual(hoisted.completionWatermark, perCall.completionWatermark)
+            XCTAssertEqual(hoisted.dependencyChunks, perCall.dependencyChunks)
+        }
+
+        // The full hoisted publication pass settles both sources exactly as
+        // the per-call pass did: five receipts per source, raw retained.
+        let report = try AtriaHistoricalConsumerProjectionCoordinator(
+            completionStore: fixture.completionStore,
+            receiptLedger: fixture.ledger
+        ).publishEligibleReceipts(
+            catalogStore: fixture.catalogStore,
+            aggregateSnapshot: fixture.snapshot,
+            configuration: configuration(),
+            shouldAbortBetweenSources: { false }
+        )
+        XCTAssertEqual(report.inspectedSourceCount, 2)
+        XCTAssertEqual(report.published.count, 10)
+        XCTAssertTrue(report.deferredSources.isEmpty)
+        XCTAssertTrue(report.hasCompleteConsumerCoverage)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.rawURL.path))
+    }
+
+    func testBackgroundAbortBetweenSourcesDefersRemainderAndResumesNextPass() throws {
+        let fixture = try makeMultiSourceFixture()
+        let coordinator = AtriaHistoricalConsumerProjectionCoordinator(
+            completionStore: fixture.completionStore,
+            receiptLedger: fixture.ledger
+        )
+
+        let aborted = try coordinator.publishEligibleReceipts(
+            catalogStore: fixture.catalogStore,
+            aggregateSnapshot: fixture.snapshot,
+            configuration: configuration(),
+            lane: "test_lane",
+            shouldAbortBetweenSources: { true }
+        )
+        XCTAssertEqual(aborted.inspectedSourceCount, 2)
+        XCTAssertEqual(aborted.published.count, 5,
+                       "the in-flight source finishes; the abort lands only between sources")
+        XCTAssertEqual(aborted.deferredSources.count, 1)
+        XCTAssertEqual(aborted.deferredSources.first?.reason,
+                       "deferredBackgroundAbortBetweenSources")
+        XCTAssertFalse(aborted.hasCompleteConsumerCoverage,
+                       "a background-aborted pass must never consume authority")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.rawURL.path))
+
+        // Durable receipts make the partial pass resumable exactly like a
+        // crash: the next foreground pass reuses the settled prefix and
+        // publishes only the deferred remainder.
+        let resumed = try coordinator.publishEligibleReceipts(
+            catalogStore: fixture.catalogStore,
+            aggregateSnapshot: fixture.snapshot,
+            configuration: configuration(),
+            shouldAbortBetweenSources: { false }
+        )
+        XCTAssertEqual(resumed.published.count, 10)
+        XCTAssertTrue(resumed.hasCompleteConsumerCoverage)
+        XCTAssertEqual(resumed.published.filter(\.reusedExistingReceipt).count, 5)
+
+        // The default abort closure reads the scene-phase-driven atomic gate.
+        AtriaHistoricalProjectionForegroundGate.isBackgrounded = true
+        defer { AtriaHistoricalProjectionForegroundGate.isBackgrounded = false }
+        let gateAborted = try coordinator.publishEligibleReceipts(
+            catalogStore: fixture.catalogStore,
+            aggregateSnapshot: fixture.snapshot,
+            configuration: configuration()
+        )
+        XCTAssertEqual(gateAborted.published.count, 5)
+        XCTAssertEqual(gateAborted.deferredSources.map(\.reason),
+                       ["deferredBackgroundAbortBetweenSources"])
+    }
+
     private enum SimulatedCrash: Error {
         case afterReceiptPrefix
     }
@@ -577,6 +716,98 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
             requiredStart: requiredStart,
             requiredEnd: requiredEnd
         )
+    }
+
+    private func makeMultiSourceFixture() throws -> Fixture {
+        let root = try temporaryRoot()
+        var identifiers = ["multi-sealed-a", "multi-sealed-b", "multi-active-tail"]
+        let catalogStore = AtriaHistoricalArchiveCatalogStore(
+            rootURL: root,
+            maximumActiveBytes: 1024,
+            calendar: utcCalendar(),
+            makeIdentifier: { identifiers.removeFirst() }
+        )
+        _ = try catalogStore.loadOrRecover(discoveredLegacyURLs: [], now: start)
+        let aggregates = root.appendingPathComponent("aggregates-v2")
+        let manifests = root.appendingPathComponent("retention-manifests-v2")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+
+        var firstAggregate: AtriaHistoricalAggregateChunk?
+        var firstRawURL: URL?
+        for offset in [TimeInterval(0), 7_200] {
+            let sourceStart = start.addingTimeInterval(offset)
+            let sourceEnd = sourceStart.addingTimeInterval(3_600)
+            let active = try catalogStore.activeChunkDescriptor()
+            try FileManager.default.createDirectory(
+                at: active.fileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let records = [historicalRecord(at: sourceStart),
+                           historicalRecord(at: sourceEnd)]
+            var raw = Data()
+            for record in records {
+                raw.append(try encoder.encode(record))
+                raw.append(0x0A)
+            }
+            try raw.write(to: active.fileURL)
+            try catalogStore.sealActiveChunkAtTerminal(
+                chunkID: active.chunkID,
+                rowCount: records.count,
+                firstTimestamp: sourceStart,
+                lastTimestamp: sourceEnd,
+                contentSHA256: AtriaHistoricalRetentionTransaction.sha256(of: raw),
+                now: sourceEnd
+            )
+            let aggregate = try AtriaHistoricalAggregateBuilder.build(
+                sourceURL: active.fileURL,
+                chunkID: active.chunkID,
+                createdAt: sourceEnd.addingTimeInterval(1)
+            ).aggregate
+            _ = try AtriaHistoricalRetentionTransaction(
+                now: { sourceEnd.addingTimeInterval(2) },
+                semanticVerifier: { _, _, _ in true }
+            ).commit(.init(
+                transactionID: active.chunkID,
+                sourceURL: active.fileURL,
+                aggregateDirectoryURL: aggregates,
+                manifestDirectoryURL: manifests,
+                aggregate: aggregate,
+                semanticParityReceipt: AtriaHistoricalAggregateBuilder
+                    .semanticParityReceipt(for: aggregate),
+                deleteSourceAfterCommit: false
+            ))
+            if firstAggregate == nil {
+                firstAggregate = aggregate
+                firstRawURL = active.fileURL
+            }
+        }
+        let snapshot = AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: aggregates,
+            manifestDirectoryURL: manifests
+        ).load()
+        let completionStore = AtriaHistoricalDrainCompletionGenerationStore(
+            directoryURL: root.appendingPathComponent("drain-completions-v1")
+        )
+        let requestedStart = start.addingTimeInterval(-48 * 60 * 60)
+        let requestedEnd = start.addingTimeInterval(7_200 + 3_600 + 48 * 60 * 60)
+        _ = try completionStore.recordTerminal(
+            generation: 1,
+            terminalBatchNumber: 2,
+            durableSequence: 1,
+            requestedStart: requestedStart,
+            requestedEnd: requestedEnd,
+            completedAt: requestedEnd,
+            catalogStore: catalogStore,
+            aggregateSnapshot: snapshot
+        )
+        return .init(root: root,
+                     catalogStore: catalogStore,
+                     aggregate: try XCTUnwrap(firstAggregate),
+                     snapshot: snapshot,
+                     completionStore: completionStore,
+                     ledger: .init(directoryURL: root.appendingPathComponent("consumer-receipts-v1")),
+                     rawURL: try XCTUnwrap(firstRawURL))
     }
 
     private func makeFixture(narrowCompletion: Bool = false) throws -> Fixture {

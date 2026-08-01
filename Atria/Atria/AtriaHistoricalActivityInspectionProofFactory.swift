@@ -88,6 +88,35 @@ final class AtriaHistoricalDrainCompletionGenerationStore {
         let catalogData = try AtriaHistoricalActivityInspectionProofFactory.canonicalCatalogData(catalog)
         let aggregateData = try AtriaHistoricalActivityInspectionProofFactory
             .canonicalAggregateSnapshotData(aggregateSnapshot)
+        return try recordTerminal(generation: generation,
+                                  terminalBatchNumber: terminalBatchNumber,
+                                  durableSequence: durableSequence,
+                                  requestedStart: requestedStart,
+                                  requestedEnd: requestedEnd,
+                                  completedAt: completedAt,
+                                  verifiedCatalog: catalog,
+                                  catalogData: catalogData,
+                                  aggregateData: aggregateData)
+    }
+
+    /// Memory-shape overload for flows that already hold the file-verified
+    /// catalog and both canonical evidence encodings from the same archive
+    /// pass. The persisted record's digests are computed from the exact same
+    /// `canonicalCatalogData`/`canonicalAggregateSnapshotData` bytes the
+    /// store-based overload would produce; only the recomputation frequency
+    /// changes.
+    func recordTerminal(
+        generation: UInt64,
+        terminalBatchNumber: UInt64,
+        durableSequence: UInt64,
+        requestedStart: Date,
+        requestedEnd: Date,
+        completedAt: Date,
+        verifiedCatalog catalog: AtriaHistoricalArchiveCatalog,
+        catalogData: Data,
+        aggregateData: Data
+    ) throws -> Published {
+        try catalog.validate()
         let record = Record(version: Record.currentVersion,
                             generation: generation,
                             terminalBatchNumber: terminalBatchNumber,
@@ -319,6 +348,41 @@ struct AtriaHistoricalActivityInspectionProofFactory {
         try catalog.validate()
         let catalogData = try Self.canonicalCatalogData(catalog)
         let aggregateData = try Self.canonicalAggregateSnapshotData(aggregateSnapshot)
+        return try prepare(
+            verifiedCatalog: catalog,
+            catalogData: catalogData,
+            aggregateSnapshot: aggregateSnapshot,
+            aggregateData: aggregateData,
+            requestedStart: requestedStart,
+            requestedEnd: requestedEnd
+        )
+    }
+
+    /// Memory-shape overload of `prepare` for multi-source publication passes
+    /// whose catalog and aggregate snapshot are provably invariant across the
+    /// pass. The caller supplies the file-verified catalog together with the
+    /// exact `canonicalCatalogData`/`canonicalAggregateSnapshotData` bytes
+    /// computed once; every validation and error below is identical to
+    /// `prepare(catalogStore:...)`, so the persisted completion SHA-256s
+    /// compare against unchanged bytes.
+    func prepare(
+        verifiedCatalog catalog: AtriaHistoricalArchiveCatalog,
+        catalogData: Data,
+        aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
+        aggregateData: Data,
+        requestedStart: Date,
+        requestedEnd: Date
+    ) throws -> Prepared {
+        guard requestedStart.timeIntervalSince1970.isFinite,
+              requestedEnd.timeIntervalSince1970.isFinite,
+              requestedEnd > requestedStart else {
+            throw FactoryError.invalidRequestedRange
+        }
+        guard !aggregateSnapshot.diagnostics.limitExceeded,
+              aggregateSnapshot.diagnostics.rejectedManifests == 0 else {
+            throw FactoryError.rejectedAggregateManifest
+        }
+        try catalog.validate()
         let completion = try completionStore.loadLatest()
         guard completion.catalogGeneration == catalog.generation else {
             throw FactoryError.staleCompletionGeneration

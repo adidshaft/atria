@@ -172,11 +172,20 @@ enum AtriaHistoricalAggregateBuilder {
                 actual: records.count + max(0, undecodableRowsRetainedRaw)
             )
         }
-        let hrMinutes = buildHeartRateMinutes(records: records)
-        let rrEpochs = buildRREpochs(records: records)
-        let motionEpochs = buildMotionEpochs(records: records,
-                                             start: source.firstTimestamp,
-                                             end: source.lastTimestamp)
+        // Each derivation is a whole-array pass over Foundation-backed record
+        // values; drain its autoreleased temporaries before the next pass so
+        // three passes never hold three files' worth of transients at once.
+        let hrMinutes = autoreleasepool {
+            buildHeartRateMinutes(records: records)
+        }
+        let rrEpochs = autoreleasepool {
+            buildRREpochs(records: records)
+        }
+        let motionEpochs = autoreleasepool {
+            buildMotionEpochs(records: records,
+                              start: source.firstTimestamp,
+                              end: source.lastTimestamp)
+        }
         let metricUsable = records.filter(\.metricUsable).count
         let hrCount = hrMinutes.reduce(0) { $0 + $1.sampleCount }
         let hrSum = hrMinutes.reduce(Int64(0)) { $0 + $1.sumBPM }
@@ -459,10 +468,16 @@ enum AtriaHistoricalAggregateBuilder {
             try AtriaHistoricalJSONLInput.forEachLine(at: url) { line in
                 guard !line.isEmpty else { return }
                 rowCount += 1
-                if let record = try? decoder.decode(HistoricalArchive.Record.self, from: line) {
-                    records.append(record)
-                } else {
-                    undecodable += 1
+                // Foundation's JSON decoder temporaries are Objective-C backed
+                // on device; without a per-line pool they survive until the
+                // whole file closes (see AtriaHistoricalJSONLRecentScanner for
+                // the documented on-device evidence behind this pattern).
+                autoreleasepool {
+                    if let record = try? decoder.decode(HistoricalArchive.Record.self, from: line) {
+                        records.append(record)
+                    } else {
+                        undecodable += 1
+                    }
                 }
             }
         } catch AtriaHistoricalSealedJSONLCompression.TransactionError.tornTrailingRow {
