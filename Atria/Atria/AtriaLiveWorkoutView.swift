@@ -2263,7 +2263,12 @@ struct AtriaLiveWorkoutView: View {
     @State private var loggerWeightKg = 60.0
     @State private var loggerReps = 8
     @State private var loggerRestSeconds: TimeInterval = 120
+    // RPE is optional in `LoggedSet` and stays nil until the wearer enters
+    // one; the set table renders "--" rather than assuming an effort.
+    @State private var loggerRPE: Double?
     @State private var restTimerEndsAt: Date?
+    @State private var showExerciseCatalog = false
+    @State private var showStrengthProgress = false
     @State private var editingSetID: UUID?
     @State private var latestPRSetID: UUID?
     @State private var showEndPersistenceError = false
@@ -2582,6 +2587,22 @@ struct AtriaLiveWorkoutView: View {
                         .contentShape(Rectangle())
                 }
 
+                AtriaStrengthLoggingHeader(exercise: selectedExercise,
+                                           setNumber: loggedSetsForSelectedExercise.count + 1,
+                                           isRecording: !isPaused)
+
+                AtriaStrengthRestHeartRateHost(pulseStore: pulseStore,
+                                               exercise: selectedExercise,
+                                               restEndsAt: restTimerEndsAt,
+                                               targetSeconds: loggerRestSeconds,
+                                               onSubtract15: { shortenRest(by: 15) },
+                                               onSkip: { restTimerEndsAt = nil })
+
+                AtriaStrengthSetTable(rows: strengthSetTableRows,
+                                      pendingWeightText: AtriaStrengthSetTablePresentation.weightCell(loggerWeightKg),
+                                      pendingRepsText: "\(loggerReps)",
+                                      pendingRPEText: AtriaStrengthSetTablePresentation.rpeText(loggerRPE))
+
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(loggerExerciseOptions, id: \.self) { exercise in
@@ -2604,61 +2625,132 @@ struct AtriaLiveWorkoutView: View {
                 }
 
                 loggerStepperRow(title: "Weight",
-                                 value: "\(Int(loggerWeightKg.rounded())) kg",
+                                 value: AtriaStrengthSetTablePresentation.weightCell(loggerWeightKg),
+                                 unit: "kg",
                                  decrement: { loggerWeightKg = max(0, loggerWeightKg - 2.5) },
                                  increment: { loggerWeightKg += 2.5 })
                 loggerStepperRow(title: "Reps",
                                  value: "\(loggerReps)",
                                  decrement: { loggerReps = max(1, loggerReps - 1) },
                                  increment: { loggerReps = min(99, loggerReps + 1) })
+                loggerStepperRow(title: "RPE",
+                                 value: AtriaStrengthSetTablePresentation.rpeText(loggerRPE),
+                                 decrement: { adjustRPE(by: -0.5) },
+                                 increment: { adjustRPE(by: 0.5) })
                 loggerStepperRow(title: "Rest",
                                  value: restOverrideText(loggerRestSeconds),
                                  decrement: { updateRestOverride(max(30, loggerRestSeconds - 15)) },
                                  increment: { updateRestOverride(min(600, loggerRestSeconds + 15)) })
 
                 exerciseHistoryPanel
+                strengthNavigationRow
 
                 Button {
                     saveLoggedSet()
                 } label: {
-                    Label(editingSetID == nil ? "Save set" : "Update set", systemImage: "checkmark.circle.fill")
+                    Label(editingSetID == nil ? "Log set \u{00B7} start rest" : "Update set",
+                          systemImage: "checkmark.circle.fill")
                         .font(.headline.weight(.black))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 7)
                 }
                 .buttonStyle(.glassProminent)
-                .tint(.mint)
+                .tint(AtriaStrengthPalette.amber)
             }
             .padding(18)
         }
+        .sheet(isPresented: $showExerciseCatalog) {
+            AtriaStrengthCatalogView(projection: strengthHistory) { exercise in
+                selectedExercise = exercise
+                primeLoggerFromLastSet(exercise: exercise)
+                loggerRestSeconds = AtriaStrengthLog.restSeconds(for: exercise)
+            }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+            .preferredColorScheme(.dark)
+        }
+        .sheet(isPresented: $showStrengthProgress) {
+            // Saved history only, records included: the chart and the PR chips
+            // must describe the same set of days. Sets from the workout in
+            // progress are not saved yet, so they belong to the live table
+            // above, not to this trend.
+            AtriaStrengthProgressView(exercise: selectedExercise,
+                                      history: strengthHistory.fullHistory(for: selectedExercise),
+                                      records: personalRecords(for: selectedExercise))
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .preferredColorScheme(.dark)
+        }
+    }
+
+    private var strengthNavigationRow: some View {
+        HStack(spacing: 10) {
+            Button {
+                showStrengthProgress = true
+            } label: {
+                Label("e1RM progress", systemImage: "chart.xyaxis.line")
+                    .font(.caption.weight(.bold))
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.glass)
+            .tint(AtriaStrengthPalette.amber)
+
+            Button {
+                showExerciseCatalog = true
+            } label: {
+                Label("Exercises", systemImage: "list.bullet")
+                    .font(.caption.weight(.bold))
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.glass)
+            .tint(AtriaStrengthPalette.amber)
+        }
+    }
+
+    private var loggedSetsForSelectedExercise: [LoggedSet] {
+        let key = AtriaStrengthLog.normalized(selectedExercise)
+        return loggedSets.filter { AtriaStrengthLog.normalized($0.exercise) == key }
+    }
+
+    private var strengthSetTableRows: [AtriaStrengthSetTablePresentation.Row] {
+        AtriaStrengthSetTablePresentation.rows(sets: loggedSets,
+                                               exercise: selectedExercise,
+                                               records: personalRecords(for: selectedExercise),
+                                               editingSetID: editingSetID)
     }
 
     private func loggerStepperRow(title: String,
                                   value: String,
+                                  unit: String? = nil,
                                   decrement: @escaping () -> Void,
                                   increment: @escaping () -> Void) -> some View {
-        HStack(spacing: 12) {
-            Text(title)
-                .font(.subheadline.weight(.bold))
-            Spacer()
-            Button(action: decrement) {
-                Image(systemName: "minus.circle.fill")
-                    .font(.title2)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            Text(value)
-                .font(.title3.weight(.black).monospacedDigit())
-                .frame(minWidth: 86)
-            Button(action: increment) {
-                Image(systemName: "plus.circle.fill")
-                    .font(.title2)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
+        AtriaStrengthStepper(title: title,
+                             value: value,
+                             unit: unit,
+                             decrement: decrement,
+                             increment: increment)
+    }
+
+    /// RPE walks 6…10 in half points and falls back to "no entry" below the
+    /// bottom of the scale, because a set without a reported effort must not
+    /// silently become a 6.
+    private func adjustRPE(by delta: Double) {
+        guard let current = loggerRPE else {
+            loggerRPE = delta > 0 ? 7 : nil
+            return
         }
-        .padding(10)
-        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        let next = current + delta
+        if next < 6 {
+            loggerRPE = nil
+        } else {
+            loggerRPE = min(10, next)
+        }
+    }
+
+    private func shortenRest(by seconds: TimeInterval) {
+        guard let restTimerEndsAt else { return }
+        let shortened = restTimerEndsAt.addingTimeInterval(-seconds)
+        self.restTimerEndsAt = shortened <= Date() ? nil : shortened
     }
 
     private var loggerExerciseOptions: [String] {
@@ -2719,7 +2811,7 @@ struct AtriaLiveWorkoutView: View {
         let set = LoggedSet(exercise: selectedExercise,
                             weightKg: loggerWeightKg > 0 ? loggerWeightKg : nil,
                             reps: loggerReps,
-                            rpe: nil,
+                            rpe: loggerRPE,
                             t: Date())
         let isNewPR = AtriaStrengthLog.isPR(set, against: personalRecordsIncludingCurrentWorkout(for: selectedExercise))
         if let editingSetID,
@@ -2741,6 +2833,7 @@ struct AtriaLiveWorkoutView: View {
         loggerRestSeconds = AtriaStrengthLog.restSeconds(for: set.exercise)
         loggerWeightKg = set.weightKg ?? loggerWeightKg
         loggerReps = set.reps ?? loggerReps
+        loggerRPE = set.rpe
         showSetLogger = true
     }
 

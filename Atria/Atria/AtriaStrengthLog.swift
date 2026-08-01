@@ -65,6 +65,8 @@ enum AtriaStrengthLog {
         let dayLimit = max(1, recentDaysPerExercise)
         var recordsByExercise: [String: StrengthPersonalRecords] = [:]
         var dailyBestByExercise: [String: [Date: LoggedSet]] = [:]
+        var dailySetCountByExercise: [String: [Date: Int]] = [:]
+        var displayNameByExercise: [String: (name: String, t: Date)] = [:]
 
         for session in sessions {
             guard let sets = session.strengthSets, !sets.isEmpty else { continue }
@@ -80,21 +82,37 @@ enum AtriaStrengthLog {
                 if existing == nil || setScore(existing!) < setScore(set) {
                     dailyBestByExercise[key, default: [:]][day] = set
                 }
+                dailySetCountByExercise[key, default: [:]][day, default: 0] += 1
+                if let seen = displayNameByExercise[key] {
+                    if set.t > seen.t {
+                        displayNameByExercise[key] = (set.exercise, set.t)
+                    }
+                } else {
+                    displayNameByExercise[key] = (set.exercise, set.t)
+                }
             }
         }
 
         var recentHistoryByExercise: [String: [StrengthHistoryDay]] = [:]
         recentHistoryByExercise.reserveCapacity(dailyBestByExercise.count)
+        // One row per exercise-day, so the lifetime series stays a few hundred
+        // small values even for years of lifting. It never carries HR/RR
+        // samples; the heavy session archive is still only scanned here, once.
+        var fullHistoryByExercise: [String: [StrengthHistoryDay]] = [:]
+        fullHistoryByExercise.reserveCapacity(dailyBestByExercise.count)
         for (key, bestByDay) in dailyBestByExercise {
-            let recent = bestByDay
-                .map { StrengthHistoryDay(day: $0.key, best: $0.value) }
+            let counts = dailySetCountByExercise[key] ?? [:]
+            let days = bestByDay
+                .map { StrengthHistoryDay(day: $0.key, best: $0.value, setCount: counts[$0.key] ?? 1) }
                 .sorted { $0.day < $1.day }
-                .suffix(dayLimit)
-            recentHistoryByExercise[key] = Array(recent)
+            fullHistoryByExercise[key] = days
+            recentHistoryByExercise[key] = Array(days.suffix(dayLimit))
         }
         return StrengthHistoryProjection(recordsByExercise: recordsByExercise,
                                          recentHistoryByExercise: recentHistoryByExercise,
-                                         recentDaysPerExercise: dayLimit)
+                                         recentDaysPerExercise: dayLimit,
+                                         fullHistoryByExercise: fullHistoryByExercise,
+                                         displayNamesByExercise: displayNameByExercise.mapValues(\.name))
     }
 
     static func isPR(_ set: LoggedSet, against records: StrengthPersonalRecords) -> Bool {
@@ -201,10 +219,21 @@ struct StrengthPersonalRecords: Equatable {
 struct StrengthHistoryDay: Equatable {
     let day: Date
     let best: LoggedSet
+    /// How many sets of this exercise were actually logged that day. The
+    /// learning copy ("2 sets logged") states real sets, not days.
+    let setCount: Int
+
+    init(day: Date, best: LoggedSet, setCount: Int = 1) {
+        self.day = day
+        self.best = best
+        self.setCount = max(1, setCount)
+    }
 }
 
 /// Small immutable projection passed into workout UI. PR aggregates cover all
-/// saved strength sets exactly; only display history is bounded.
+/// saved strength sets exactly; the recent list stays bounded for the live
+/// sheet, while `fullHistory` carries the day-level series the e1RM progress
+/// chart and the exercise catalog read (one small row per exercise-day).
 struct StrengthHistoryProjection: Equatable {
     static let empty = StrengthHistoryProjection(recordsByExercise: [:],
                                                  recentHistoryByExercise: [:],
@@ -212,14 +241,20 @@ struct StrengthHistoryProjection: Equatable {
 
     private let recordsByExercise: [String: StrengthPersonalRecords]
     private let recentHistoryByExercise: [String: [StrengthHistoryDay]]
+    private let fullHistoryByExercise: [String: [StrengthHistoryDay]]
+    private let displayNamesByExercise: [String: String]
     let recentDaysPerExercise: Int
 
     init(recordsByExercise: [String: StrengthPersonalRecords],
          recentHistoryByExercise: [String: [StrengthHistoryDay]],
-         recentDaysPerExercise: Int) {
+         recentDaysPerExercise: Int,
+         fullHistoryByExercise: [String: [StrengthHistoryDay]] = [:],
+         displayNamesByExercise: [String: String] = [:]) {
         self.recordsByExercise = recordsByExercise
         self.recentHistoryByExercise = recentHistoryByExercise
         self.recentDaysPerExercise = recentDaysPerExercise
+        self.fullHistoryByExercise = fullHistoryByExercise
+        self.displayNamesByExercise = displayNamesByExercise
     }
 
     func records(for exercise: String) -> StrengthPersonalRecords {
@@ -228,5 +263,18 @@ struct StrengthHistoryProjection: Equatable {
 
     func history(for exercise: String) -> [StrengthHistoryDay] {
         recentHistoryByExercise[AtriaStrengthLog.normalized(exercise)] ?? []
+    }
+
+    /// Every saved day for one exercise, oldest first. Empty when the exercise
+    /// has never been logged — the progress chart shows its learning state
+    /// rather than inventing a line.
+    func fullHistory(for exercise: String) -> [StrengthHistoryDay] {
+        fullHistoryByExercise[AtriaStrengthLog.normalized(exercise)] ?? []
+    }
+
+    /// Exercise names exactly as they were last logged, so the catalog can
+    /// list a lift that is no longer in the built-in groups.
+    var loggedExerciseNames: [String] {
+        Array(displayNamesByExercise.values)
     }
 }

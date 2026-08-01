@@ -9701,116 +9701,40 @@ struct AtriaMetricDetailSheet: View {
             .value
     }
 
-    /// "How much you needed" ledger (design handoff): itemizes the four real
-    /// terms of the sleep-need math. The total is the exact number the
-    /// hypnogram card's need uses -- never a separately computed figure.
-    /// One night's surplus/deficit vs the clamped base need, for the debt
-    /// trend card. Real confirmed nights only.
-    private var sleepDebtTrendPoints: [(day: Date, deltaHours: Double)] {
-        let clampedNeed = min(max(sleepBaseNeedHours, 6), 10)
-        return sleepHistory.nights
-            .filter { !$0.isNapEvidence }
-            .prefix(14)
-            .map { (day: $0.day, deltaHours: $0.durationHours - clampedNeed) }
-            .reversed()
-    }
-
-    /// Sleep-debt trend (design backlog item 4): nightly surplus/deficit
-    /// bars vs the base need, headlined by the SAME 7-night debt number the
-    /// need ledger uses — one math, two views of it.
-    @ViewBuilder
+    /// 7-night need-vs-slept debt chart (design 6b, 2026-08-01 parity slice):
+    /// paired bars per morning headlined by the SAME recency-weighted
+    /// `sleepBudgetDebtHours` number the need ledger uses — one math, two
+    /// views of it. Supersedes the old 14-night surplus/deficit bars.
     private var sleepDebtTrendCard: some View {
-        let points = sleepDebtTrendPoints
-        if points.count >= 3 {
-            let debt = sleepHistory.sleepBudgetDebtHours(baseNeedHours: sleepBaseNeedHours)
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("Sleep debt")
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                    Text(debt > 0.05 ? "\(AtriaMetricFormat.sleepHours(debt)) owed" : "None owed")
-                        .font(.caption.weight(.bold).monospacedDigit())
-                        .foregroundStyle(debt > 0.05 ? .orange : Metrics.electricGreen)
-                }
-
-                Chart(points, id: \.day) { point in
-                    BarMark(x: .value("Night", point.day, unit: .day),
-                            y: .value("vs need", point.deltaHours))
-                        .foregroundStyle(point.deltaHours >= 0 ? Metrics.electricSleep.opacity(0.85) : Color.orange.opacity(0.85))
-                        .cornerRadius(3)
-                    RuleMark(y: .value("Need met", 0))
-                        .foregroundStyle(.secondary.opacity(0.4))
-                        .lineStyle(StrokeStyle(lineWidth: 1))
-                }
-                .chartYAxis {
-                    AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { value in
-                        AxisGridLine()
-                        AxisValueLabel {
-                            if let hours = value.as(Double.self) {
-                                Text(String(format: "%+.0fh", hours))
-                            }
-                        }
-                    }
-                }
-                .frame(height: 96)
-                .clipped()
-
-                Text("Each bar: that night vs your base need (\(AtriaMetricFormat.sleepHours(min(max(sleepBaseNeedHours, 6), 10)))). Debt counts the last 7 nights.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(14)
-            .atriaInsetCard(tint: Metrics.electricSleep)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Sleep debt trend. \(debt > 0.05 ? AtriaMetricFormat.sleepHours(debt) + " owed" : "No debt owed"). Bars show each night versus base need.")
-        }
-    }
-
-    private func sleepNeedLedgerCard(for night: SleepHistorySnapshot.Night) -> some View {
-        let comps = sleepHistory.sleepNeedComponents(for: night,
+        let slots = AtriaSleepDebtChartPresentation.slots(nights: sleepHistory.nights,
+                                                          baseNeedHours: sleepBaseNeedHours)
+        let debt = sleepHistory.sleepBudgetDebtHours(baseNeedHours: sleepBaseNeedHours)
+        return AtriaSleepDebtChartCard(
+            slots: slots,
+            carriedDebtHours: debt,
+            weekDeltaText: AtriaSleepDebtChartPresentation.weekDeltaText(
+                currentDebtHours: debt,
+                weekAgoDebtHours: AtriaSleepDebtChartPresentation.weekAgoDebtHours(
+                    nights: sleepHistory.nights,
+                    baseNeedHours: sleepBaseNeedHours)),
+            fulfilledLastNightPercent: sleepHistory.latestMainSleep.map {
+                sleepHistory.sleepPerformancePercent(for: $0,
                                                      baseNeedHours: sleepBaseNeedHours,
                                                      yesterdayStrain: yesterdayStrainForLatestNight)
-        return VStack(alignment: .leading, spacing: 10) {
-            Text("How much you needed")
-                .font(.headline.weight(.semibold))
-            sleepLedgerRow(name: "Baseline need", value: AtriaMetricFormat.sleepHours(comps.baseHours))
-            sleepLedgerRow(name: "Sleep debt", value: "+\(sleepLedgerMinutes(comps.debtAdderHours))")
-            sleepLedgerRow(name: "Recent strain", value: "+\(sleepLedgerMinutes(comps.strainAdderHours))")
-            sleepLedgerRow(name: "Nap credit", value: "\u{2212}\(sleepLedgerMinutes(comps.napCreditHours))")
-            Divider()
-            HStack {
-                Text("Total need")
-                    .font(.subheadline.weight(.bold))
-                Spacer(minLength: 8)
-                Text(AtriaMetricFormat.sleepHours(comps.totalHours))
-                    .font(.subheadline.weight(.bold).monospacedDigit())
-                    .foregroundStyle(Metrics.electricSleep)
-            }
-            if comps.isClamped {
-                Text("Capped to the 6\u{2013}10h range.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(14)
-        .atriaInsetCard(tint: Metrics.electricSleep)
-        .accessibilityElement(children: .combine)
+            },
+            baseNeedHours: sleepBaseNeedHours)
     }
 
-    private func sleepLedgerRow(name: String, value: String) -> some View {
-        HStack {
-            Text(name)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Spacer(minLength: 8)
-            Text(value)
-                .font(.subheadline.weight(.semibold).monospacedDigit())
-        }
-    }
-
-    private func sleepLedgerMinutes(_ hours: Double) -> String {
-        "\(Int((hours * 60).rounded()))m"
+    /// "How we got <total>" ledger (design 6a, 2026-08-01 parity slice):
+    /// itemized stacked bar over the four real terms of the sleep-need math.
+    /// The total is the exact number the hypnogram card's need uses -- never
+    /// a separately computed figure.
+    private func sleepNeedLedgerCard(for night: SleepHistorySnapshot.Night) -> some View {
+        AtriaSleepNeedLedgerCard(
+            components: sleepHistory.sleepNeedComponents(for: night,
+                                                         baseNeedHours: sleepBaseNeedHours,
+                                                         yesterdayStrain: yesterdayStrainForLatestNight),
+            yesterdayStrain: yesterdayStrainForLatestNight)
     }
 
     private var sleepContributorRows: [AtriaMetricContributorRow] {
@@ -13212,6 +13136,7 @@ private struct AtriaSleepPlanCard: View {
     @AtriaDefault(AtriaWakeAlarmStore.wakeByMinutesKey) private var wakeByMinutes: Int = AtriaWakeAlarmPlan.defaultPlan.wakeByMinutes
     @AtriaDefault("atria.sleepPlanner.goal") private var plannerGoalRaw: String = AtriaSleepPlannerGoal.peak.rawValue
     @State private var alarmStatusText: String?
+    @State private var showsSmartWakeSheet = false
     /// Efficiencies of the user's real confirmed nights, for the planner's
     /// time-in-bed assumption. Passed in so this card stays store-free.
     var nightEfficiencies: [Double] = []
@@ -13313,6 +13238,22 @@ private struct AtriaSleepPlanCard: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
+                // Smart Wake screen (design 6c, 2026-08-01 parity slice):
+                // window axis, mode radios, wake-by editor, arm control.
+                Button {
+                    showsSmartWakeSheet = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Smart wake")
+                        Image(systemName: "chevron.right")
+                    }
+                    .font(.caption2.weight(.bold))
+                }
+                .atriaCardAction(prominent: false, tint: .cyan)
+                .sheet(isPresented: $showsSmartWakeSheet) {
+                    AtriaSmartWakeSheet()
+                        .presentationDetents([.medium, .large])
+                }
             }
 
             Picker("Wake mode", selection: $wakeAlarmMode) {
