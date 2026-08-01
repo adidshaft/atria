@@ -24,6 +24,11 @@ enum AtriaPendingSleepReviewStore {
         let stageSegments: [SleepStageSegment]
         let eventTimeZoneIdentifier: String?
         let savedAt: Date
+        /// Motion-validation provenance (2026-08-01, HR-only honesty).
+        /// Optional so pre-existing schema-1 records keep decoding; nil falls
+        /// back to the Night's confidence-based derivation, which fails
+        /// closed to "needs motion data".
+        let motionValidated: Bool?
     }
 
     private static let schema = 1
@@ -59,7 +64,8 @@ enum AtriaPendingSleepReviewStore {
             source: night.source,
             stageSegments: night.stageSegments,
             eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
-            savedAt: now
+            savedAt: now,
+            motionValidated: night.motionValidated
         )
         guard let data = try? JSONEncoder().encode(record) else { return }
         defaults.set(data, forKey: key)
@@ -107,7 +113,8 @@ enum AtriaPendingSleepReviewStore {
             source: record.source,
             confirmed: false,
             stageSegments: record.stageSegments,
-            eventTimeZoneIdentifier: record.eventTimeZoneIdentifier
+            eventTimeZoneIdentifier: record.eventTimeZoneIdentifier,
+            motionValidated: record.motionValidated
         )
     }
 

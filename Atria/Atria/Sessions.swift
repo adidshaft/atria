@@ -2059,6 +2059,10 @@ enum SleepStageEvidence: String, Codable, Equatable {
     case none
     case manualEstimate
     case sensorResearch
+    /// HR-only honesty (2026-08-01): sensor-research stages exist in storage
+    /// but lack validated motion, so no hypnogram is displayed — heart rate
+    /// alone cannot separate sleep stages.
+    case hrOnlyEstimate
     case validated
 
     var label: String {
@@ -2066,6 +2070,7 @@ enum SleepStageEvidence: String, Codable, Equatable {
         case .none: return "Stages not ready"
         case .manualEstimate: return "Manual estimate"
         case .sensorResearch: return "Estimated stages"
+        case .hrOnlyEstimate: return "Stages need motion data"
         case .validated: return "Checked stages"
         }
     }
@@ -12599,7 +12604,7 @@ final class SessionStore: ObservableObject {
                                         sleepStart: night?.start,
                                         sleepEnd: night?.end,
                                         sleepSource: night?.source,
-                                        sleepStageSegments: night?.displayStageSegments ?? [],
+                                        sleepStageSegments: night?.stageSegmentsForStorage ?? [],
                                         sleepConsistencyPercent: sleep.sleepConsistencyPercent(
                                             asOf: day,
                                             calendar: calendar
@@ -13076,7 +13081,7 @@ final class SessionStore: ObservableObject {
         let sleepStart = confirmedMainSleep?.start
         let sleepEnd = confirmedMainSleep?.end
         let sleepSource = confirmedMainSleep?.source
-        let sleepSegments = confirmedMainSleep?.displayStageSegments ?? []
+        let sleepSegments = confirmedMainSleep?.stageSegmentsForStorage ?? []
         // Consistency is a historical as-of-day metric. Reusing the current
         // snapshot's aggregate here copied today's value backward onto every
         // older daily row (including days before two nights existed). Rebuild
@@ -18838,13 +18843,23 @@ final class SessionStore: ObservableObject {
             return nil
         }
 
+        // Bound the displayed END to the last sustained elevated bout plus a
+        // short recovery tail before trimming the onset, so a mildly-elevated
+        // non-exertion evening can never keep the candidate open until
+        // sleep-onset HR decay (2026-07-31 physical case). Fails closed to
+        // the untrimmed end.
+        let displayEnd = sustainedWorkoutEndBound(in: sessions,
+                                                  start: start,
+                                                  end: end,
+                                                  rest: rest,
+                                                  maxHR: maxHR) ?? end
         let displayStart = sustainedWorkoutOnsetStart(in: sessions,
                                                       start: start,
-                                                      end: end,
+                                                      end: displayEnd,
                                                       rest: rest,
                                                       maxHR: maxHR) ?? start
-        let reviewStats = displayStart != start
-            ? workoutWindowHRStats(in: sessions, start: displayStart, end: end)
+        let reviewStats = (displayStart != start || displayEnd != end)
+            ? workoutWindowHRStats(in: sessions, start: displayStart, end: displayEnd)
             : nil
         let reviewConfidence: ActivityDetection.Confidence = summary.readySessions > 0
             ? .medium
@@ -18857,10 +18872,10 @@ final class SessionStore: ObservableObject {
         // and notification copy falsely claim "Workout found" from HR alone.
         return WorkoutReviewCandidate(id: id,
                                       start: displayStart,
-                                      end: end,
+                                      end: displayEnd,
                                       kind: .activityCandidate,
                                       confidence: reviewConfidence,
-                                      duration: end.timeIntervalSince(displayStart),
+                                      duration: displayEnd.timeIntervalSince(displayStart),
                                       avgHR: reviewStats?.avgHR ?? summary.bestAvgHR,
                                       peakHR: reviewStats?.peakHR ?? summary.bestPeakHR,
                                       streamCoveragePercent: reviewStats?.streamCoveragePercent ?? summary.bestStreamCoveragePercent,
@@ -18974,13 +18989,20 @@ final class SessionStore: ObservableObject {
             return nil
         }
 
+        // Same end-bound as the single-candidate path (2026-07-31): last
+        // sustained elevated bout + recovery tail; fails closed to untrimmed.
+        let displayEnd = sustainedWorkoutEndBound(in: sessions,
+                                                  start: start,
+                                                  end: end,
+                                                  rest: rest,
+                                                  maxHR: maxHR) ?? end
         let displayStart = sustainedWorkoutOnsetStart(in: sessions,
                                                       start: start,
-                                                      end: end,
+                                                      end: displayEnd,
                                                       rest: rest,
                                                       maxHR: maxHR) ?? start
-        let reviewStats = displayStart != start
-            ? workoutWindowHRStats(in: sessions, start: displayStart, end: end)
+        let reviewStats = (displayStart != start || displayEnd != end)
+            ? workoutWindowHRStats(in: sessions, start: displayStart, end: displayEnd)
             : nil
         let windowIsReady = summary.bestStatus == "ready"
         let reviewConfidence: ActivityDetection.Confidence = windowIsReady
@@ -18988,10 +19010,10 @@ final class SessionStore: ObservableObject {
             : .low
         return WorkoutReviewCandidate(id: id,
                                       start: displayStart,
-                                      end: end,
+                                      end: displayEnd,
                                       kind: .activityCandidate,
                                       confidence: reviewConfidence,
-                                      duration: end.timeIntervalSince(displayStart),
+                                      duration: displayEnd.timeIntervalSince(displayStart),
                                       avgHR: reviewStats?.avgHR ?? summary.bestAvgHR,
                                       peakHR: reviewStats?.peakHR ?? summary.bestPeakHR,
                                       streamCoveragePercent: reviewStats?.streamCoveragePercent ?? summary.bestStreamCoveragePercent,
@@ -19457,13 +19479,20 @@ final class SessionStore: ObservableObject {
         // is stable (no dismissed/confirmed workout resurfaces), and readiness
         // was already decided from the untrimmed window; only start + strain
         // tighten. Fails closed to bestStart when there's no honest onset.
-        let displayStart = sustainedWorkoutOnsetStart(start: bestStart, end: bestEnd, rest: rest, maxHR: maxHR) ?? bestStart
-        // When the start was trimmed, recompute the DISPLAYED HR stats over the
-        // trimmed window so avg/coverage/observed/percentiles match the shown
-        // start+duration+strain (honesty rule). nil = no trim -> summary values.
-        let trimmedStats = displayStart != bestStart ? workoutWindowHRStats(start: displayStart, end: bestEnd) : nil
+        // Same end-bound as the review cache (2026-07-31): close the saved
+        // window at the last sustained elevated bout plus the recovery tail
+        // instead of the session boundary hours later. Fails closed to bestEnd.
+        let displayEnd = sustainedWorkoutEndBound(start: bestStart, end: bestEnd, rest: rest, maxHR: maxHR) ?? bestEnd
+        let displayStart = sustainedWorkoutOnsetStart(start: bestStart, end: displayEnd, rest: rest, maxHR: maxHR) ?? bestStart
+        // When either boundary was trimmed, recompute the DISPLAYED HR stats
+        // over the trimmed window so avg/coverage/observed/percentiles match
+        // the shown start+duration+strain (honesty rule). nil = no trim ->
+        // summary values.
+        let trimmedStats = (displayStart != bestStart || displayEnd != bestEnd)
+            ? workoutWindowHRStats(start: displayStart, end: displayEnd)
+            : nil
         let enriched = confirmedWorkoutMetrics(start: displayStart,
-                                               end: bestEnd,
+                                               end: displayEnd,
                                                rest: rest,
                                                maxHR: maxHR,
                                                biologicalSex: profile.biologicalSex,
@@ -19471,7 +19500,7 @@ final class SessionStore: ObservableObject {
         let confirmed = UserConfirmedWorkout(id: id,
                                              createdAt: Date(),
                                              start: displayStart,
-                                             end: bestEnd,
+                                             end: displayEnd,
                                              label: summary.bestLabel,
                                              source: summary.bestSource,
                                              confidence: confidence,
@@ -20458,6 +20487,58 @@ final class SessionStore: ObservableObject {
               end.timeIntervalSince(onset) >= 5 * 60
         else { return nil }
         return onset
+    }
+
+    /// Short honest recovery tail kept after the last sustained elevated bout
+    /// when bounding a candidate's displayed end (see below).
+    nonisolated static let workoutReviewEndRecoveryTail: TimeInterval = 10 * 60
+
+    private func sustainedWorkoutEndBound(start: Date, end: Date, rest: Int, maxHR: Int) -> Date? {
+        // includeActiveJournal: true — same sample set as the save gate and
+        // the onset trim (audit #9).
+        Self.sustainedWorkoutEndBound(in: canonicalSessions(includeActiveJournal: true),
+                                      start: start,
+                                      end: end,
+                                      rest: rest,
+                                      maxHR: maxHR)
+    }
+
+    /// End-side counterpart of `sustainedWorkoutOnsetStart` (physical case
+    /// 2026-07-31): the replay window's end is a session/aggregate boundary,
+    /// so a real 75-minute lift followed by an ordinary mildly-elevated
+    /// evening surfaced as one 21:38->02:32 (4h53m) candidate that only
+    /// closed at sleep-onset HR decay. The displayed end is bounded to the
+    /// end of the LAST sustained elevated bout plus a short recovery tail.
+    /// Identity stays on the untrimmed window; readiness was already decided
+    /// from the untrimmed evidence. Fails closed (nil = keep the untrimmed
+    /// end) when there is no honest sustained bout, when the trim would not
+    /// be material (>60 s), or when it would leave less than five minutes of
+    /// displayed effort.
+    private nonisolated static func sustainedWorkoutEndBound(in sessions: [SavedSession],
+                                                             start: Date,
+                                                             end: Date,
+                                                             rest: Int,
+                                                             maxHR: Int) -> Date? {
+        let overlapping = sessions.filter { session in
+            session.end > start && session.start < end && !session.points.isEmpty
+        }
+        guard !overlapping.isEmpty else { return nil }
+        var samples: [(t: Date, bpm: Int)] = []
+        for session in overlapping {
+            for point in session.points where point.bpm > 0 {
+                let t = session.start.addingTimeInterval(max(0, point.t))
+                if t >= start, t <= end { samples.append((t, point.bpm)) }
+            }
+        }
+        samples.sort { $0.t < $1.t }
+        guard let boutEnd = AtriaWorkoutOnset.lastSustainedElevatedBoutEnd(samples: samples,
+                                                                           rest: rest,
+                                                                           maxHR: maxHR) else { return nil }
+        let bound = boutEnd.addingTimeInterval(workoutReviewEndRecoveryTail)
+        guard bound < end.addingTimeInterval(-60),
+              bound.timeIntervalSince(start) >= 5 * 60
+        else { return nil }
+        return bound
     }
 
     /// Displayed HR stats recomputed over an (onset-trimmed) window from the
@@ -22012,7 +22093,8 @@ final class SessionStore: ObservableObject {
                                                           end: candidate.end,
                                                           restingHR: candidate.restingHR,
                                                           isNap: candidate.kind == "nap_candidate",
-                                                          motionValidated: candidate.motionEvidenceValidated)
+                                                          motionValidated: candidate.motionEvidenceValidated),
+                motionValidated: candidate.motionEvidenceValidated
             )
         }
         if let latest = snapshot.latest,
@@ -22230,7 +22312,8 @@ final class SessionStore: ObservableObject {
                                                           end: end,
                                                           restingHR: weightedMedian,
                                                           isNap: nap,
-                                                          motionValidated: false)
+                                                          motionValidated: false),
+                motionValidated: false
             )
         }
         return reviewNights.max { lhs, rhs in
@@ -22329,9 +22412,8 @@ final class SessionStore: ObservableObject {
         // discard that evidence and visibly change recovery color. Finished
         // canonical sessions remain the fallback for older review records.
         let metrics = confirmedSleepWindowMetrics(start: confirmedStart, end: end, rest: rest)
-        let motionValidated = night.confidence.caseInsensitiveCompare("ready") == .orderedSame
-            || night.stageEvidence == .validated
-        let stageSegments = night.displayStageSegments.isEmpty ? nil : night.displayStageSegments
+        let motionValidated = night.hasValidatedMotionEvidence
+        let stageSegments = night.stageSegmentsForStorage.isEmpty ? nil : night.stageSegmentsForStorage
         let creditedDuration = UserConfirmedSleep.effectiveSleepDuration(
             source: sleepSource,
             observedDuration: observedDuration,
@@ -34688,6 +34770,12 @@ struct SleepHistorySnapshot: Equatable {
         let displayStageSegments: [SleepStageSegment]
         let stageEvidence: SleepStageEvidence
         let eventTimeZoneIdentifier: String?
+        /// Explicit motion-validation provenance where the builder knows it
+        /// (confirmed records carry `UserConfirmedSleep.motionValidated`;
+        /// review candidates carry `motionEvidenceValidated`). nil = unknown
+        /// legacy path; presentation then falls back to the same
+        /// confidence/stage derivation `resumedSleepCandidate` already uses.
+        let motionValidated: Bool?
         private let stageDurationsByStage: [SleepStageKind: TimeInterval]
 
         init(id: String,
@@ -34705,7 +34793,8 @@ struct SleepHistorySnapshot: Equatable {
              source: String,
              confirmed: Bool,
              stageSegments: [SleepStageSegment],
-             eventTimeZoneIdentifier: String? = nil) {
+             eventTimeZoneIdentifier: String? = nil,
+             motionValidated: Bool? = nil) {
             self.id = id
             self.day = day
             self.savedAt = savedAt
@@ -34722,6 +34811,7 @@ struct SleepHistorySnapshot: Equatable {
             self.confirmed = confirmed
             self.stageSegments = stageSegments
             self.eventTimeZoneIdentifier = eventTimeZoneIdentifier
+            self.motionValidated = motionValidated
 
             let stagesPassIntegrity: Bool
             if let start, let end, !stageSegments.isEmpty {
@@ -34740,14 +34830,71 @@ struct SleepHistorySnapshot: Equatable {
                     stageSegments,
                     effectiveSleepDuration: duration
                 )
-            let evidence = Self.stageEvidence(source: source,
+            var evidence = Self.stageEvidence(source: source,
                                               confirmed: confirmed,
                                               hasSegments: stagesReconcileWithEpisode)
+            // HR-only honesty (2026-08-01, presentation only — stored
+            // segments stay untouched): heart rate alone cannot separate
+            // sleep stages, so a sensor-research hypnogram without validated
+            // motion previously rendered as a confident all-deep band. Fold
+            // it into an explicit "needs motion data" state instead.
+            if evidence == .sensorResearch,
+               !Self.hasValidatedMotionEvidence(motionValidated: motionValidated,
+                                                confidence: confidence,
+                                                stageEvidence: evidence) {
+                evidence = .hrOnlyEstimate
+            }
             self.stageEvidence = evidence
-            self.displayStageSegments = evidence == .none
+            self.displayStageSegments = (evidence == .none || evidence == .hrOnlyEstimate)
                 ? []
                 : Self.foldedDisplaySegments(from: stageSegments)
             self.stageDurationsByStage = Self.stageDurations(from: displayStageSegments)
+        }
+
+        /// Single presentation authority for "does validated motion back this
+        /// night?". Explicit provenance wins; otherwise fall back to the same
+        /// confidence/stage derivation `resumeSleepCandidate` already trusts
+        /// ("ready" rollups are motion-ready; validated stages imply motion).
+        static func hasValidatedMotionEvidence(motionValidated: Bool?,
+                                               confidence: String,
+                                               stageEvidence: SleepStageEvidence) -> Bool {
+            if stageEvidence == .validated { return true }
+            if let motionValidated { return motionValidated }
+            return confidence.caseInsensitiveCompare("ready") == .orderedSame
+                || confidence.caseInsensitiveCompare("user_confirmed_motion_validated") == .orderedSame
+        }
+
+        var hasValidatedMotionEvidence: Bool {
+            Self.hasValidatedMotionEvidence(motionValidated: motionValidated,
+                                            confidence: confidence,
+                                            stageEvidence: stageEvidence)
+        }
+
+        /// Folded segments independent of the HR-only DISPLAY gate. Daily-
+        /// metric persistence and sleep-credit computation must keep storing
+        /// exactly what they stored before the 2026-08-01 presentation
+        /// honesty pass; only rendered hypnograms are withheld.
+        var stageSegmentsForStorage: [SleepStageSegment] {
+            stageEvidence == .hrOnlyEstimate
+                ? Self.foldedDisplaySegments(from: stageSegments)
+                : displayStageSegments
+        }
+
+        /// The stored `sleepEfficiency` for an HR-only night is captured/span
+        /// coverage, not sleep efficiency — an uninterrupted HR-only capture
+        /// showed a false "100%". Display surfaces must use this instead:
+        /// nil (rendered "--") until validated motion backs the number.
+        var displaySleepEfficiency: Double? {
+            hasValidatedMotionEvidence ? sleepEfficiency : nil
+        }
+
+        /// Plain-language companion for the efficiency tiles: says why the
+        /// value is withheld instead of leaving an unexplained "--".
+        var sleepEfficiencyFootnote: String {
+            if sleepEfficiency != nil, !hasValidatedMotionEvidence {
+                return "Needs motion data"
+            }
+            return "Duration-based estimate"
         }
 
         /// Collapses `.sws` into `.deep` for display and re-merges adjacent runs of the
@@ -34796,7 +34943,9 @@ struct SleepHistorySnapshot: Equatable {
         }
 
         var sleepEfficiencyText: String {
-            sleepEfficiency.map { "\(Int(($0 * 100).rounded()))%" } ?? "--"
+            // HR-only honesty (2026-08-01): without validated motion the
+            // stored value is span coverage, not efficiency — show "--".
+            displaySleepEfficiency.map { "\(Int(($0 * 100).rounded()))%" } ?? "--"
         }
 
         var confidenceText: String {
@@ -35048,7 +35197,8 @@ struct SleepHistorySnapshot: Equatable {
                               source: sleep.source,
                               confirmed: true,
                               stageSegments: stageSegments,
-                              eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier)
+                              eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+                              motionValidated: sleep.motionValidated)
             // Route confirmed naps into their own list, bypassing the day-keyed dict.
             // A same-calendar-day main sleep would otherwise last-writer-wins evict the
             // nap (or vice versa), silently dropping the nap credit from sameDayNapHours.
@@ -35269,7 +35419,8 @@ struct SleepHistorySnapshot: Equatable {
             source: main.source,
             confirmed: true,
             stageSegments: stageSegments,
-            eventTimeZoneIdentifier: main.eventTimeZoneIdentifier
+            eventTimeZoneIdentifier: main.eventTimeZoneIdentifier,
+            motionValidated: main.motionValidated
         )
     }
 
@@ -35290,7 +35441,8 @@ struct SleepHistorySnapshot: Equatable {
               source: night.source,
               confirmed: night.confirmed,
               stageSegments: night.stageSegments,
-              eventTimeZoneIdentifier: night.eventTimeZoneIdentifier)
+              eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
+              motionValidated: night.motionValidated)
     }
 
     private static func legacyConfirmedSleepStageCompatibility(start: Date,

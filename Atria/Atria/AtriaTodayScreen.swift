@@ -2125,8 +2125,14 @@ struct AtriaTodayScreen: View {
                                         // time in bed, so until a night has a known in-bed span there is
                                         // genuinely no number. Plain-language pass (2026-07-31 device
                                         // review): say when it appears instead of the cryptic
-                                        // "Needs time in bed".
-                                        detail: legendDetail(latestSleep?.sleepEfficiency == nil ? "After a confirmed sleep" : "Sleep"),
+                                        // "Needs time in bed". HR-only honesty (2026-08-01): a night
+                                        // without validated motion shows "--" and says why.
+                                        detail: legendDetail(
+                                            latestSleep?.displaySleepEfficiency != nil
+                                                ? "Sleep"
+                                                : (latestSleep?.sleepEfficiency == nil
+                                                    ? "After a confirmed sleep"
+                                                    : "Needs motion data")),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
                                         layoutSize: layoutSize(for: metric))

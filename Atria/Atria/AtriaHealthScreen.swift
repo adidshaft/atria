@@ -853,9 +853,12 @@ struct AtriaHealthScreen: View {
                                 footnote: "of nightly need")
                 AtriaMetricTile(label: "Efficiency",
                                 value: currentSleep?.sleepEfficiencyText ?? "--",
-                                state: currentSleep?.sleepEfficiency == nil ? .learning : .research,
+                                // HR-only honesty (2026-08-01): without
+                                // validated motion the stored value is span
+                                // coverage, not efficiency.
+                                state: currentSleep?.displaySleepEfficiency == nil ? .learning : .research,
                                 tint: .cyan,
-                                footnote: "Duration-based estimate")
+                                footnote: currentSleep?.sleepEfficiencyFootnote ?? "Duration-based estimate")
             }
 
             if currentSleep == nil {

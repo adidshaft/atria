@@ -428,7 +428,11 @@ struct AtriaManualSleepSheet: View {
                                            tint: Metrics.electricSleep)
 
                 if night.displayStageSegments.isEmpty {
-                    Text("Stages are still building for this night \u{2014} heart-rate estimate only.")
+                    // HR-only honesty (2026-08-01): say what is actually
+                    // missing instead of implying stages will appear.
+                    Text(night.stageEvidence == .hrOnlyEstimate
+                         ? "Stages need motion data \u{2014} heart rate alone can't separate sleep stages."
+                         : "Stages are still building for this night \u{2014} heart-rate estimate only.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
@@ -457,8 +461,17 @@ struct AtriaManualSleepSheet: View {
                             evidenceStatTile(title: "Performance", value: "\(performance)%")
                         }
                         if night.sleepEfficiency != nil {
+                            // HR-only honesty (2026-08-01): without validated
+                            // motion the stored value is capture coverage,
+                            // not efficiency — the text renders "--".
                             evidenceStatTile(title: "Efficiency", value: night.sleepEfficiencyText)
                         }
+                    }
+                    if night.sleepEfficiency != nil, !night.hasValidatedMotionEvidence {
+                        Text("Efficiency needs motion data \u{2014} the captured span alone can't tell sleep from still wakefulness.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }

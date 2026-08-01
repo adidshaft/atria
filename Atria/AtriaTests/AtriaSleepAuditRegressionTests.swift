@@ -1866,4 +1866,102 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertTrue(candidates([awake]).isEmpty,
                       "a sustained wake-shaped tail must be rejected before automatic anchoring")
     }
+
+    // HR-only presentation honesty (2026-08-01, physical device review): a
+    // confirmed/review sleep without validated motion showed "100%"
+    // efficiency (actually captured/span coverage) and an all-deep stage
+    // band. Both are withheld at display time; stored data is untouched.
+    func testHROnlyNightWithholdsEfficiencyAndStagesButKeepsStorage() {
+        let start = date(2026, 7, 31, 22, 0)
+        let end = date(2026, 8, 1, 6, 0)
+        let allDeep = [SleepStageSegment(id: "aggregate-hr-1",
+                                         start: start,
+                                         end: end,
+                                         stage: .deep)]
+        let night = SleepHistorySnapshot.Night(
+            id: "hr-only-night",
+            day: Self.utcCalendar.startOfDay(for: end),
+            start: start,
+            end: end,
+            duration: end.timeIntervalSince(start),
+            restingHR: 52,
+            hrv: nil,
+            respiratoryRate: nil,
+            sleepEfficiency: 1.0,
+            confidence: "user_confirmed_hr_only",
+            source: "aggregate_sleep",
+            confirmed: true,
+            stageSegments: allDeep,
+            eventTimeZoneIdentifier: "UTC",
+            motionValidated: false
+        )
+
+        XCTAssertFalse(night.hasValidatedMotionEvidence)
+        XCTAssertNil(night.displaySleepEfficiency,
+                     "captured/span coverage must not display as efficiency")
+        XCTAssertEqual(night.sleepEfficiencyText, "--")
+        XCTAssertEqual(night.sleepEfficiencyFootnote, "Needs motion data")
+        XCTAssertEqual(night.stageEvidence, .hrOnlyEstimate)
+        XCTAssertEqual(night.stageEvidence.label, "Stages need motion data")
+        XCTAssertTrue(night.displayStageSegments.isEmpty,
+                      "no confident hypnogram from heart rate alone")
+        XCTAssertEqual(night.stageSegmentsForStorage.count, 1,
+                       "presentation honesty must not rewrite stored/projected segments")
+    }
+
+    func testMotionValidatedNightKeepsEfficiencyAndStages() {
+        let start = date(2026, 7, 30, 22, 0)
+        let end = date(2026, 7, 31, 6, 0)
+        let stages = [SleepStageSegment(id: "validated-1",
+                                        start: start,
+                                        end: end,
+                                        stage: .light)]
+        let night = SleepHistorySnapshot.Night(
+            id: "motion-validated-night",
+            day: Self.utcCalendar.startOfDay(for: end),
+            start: start,
+            end: end,
+            duration: end.timeIntervalSince(start),
+            restingHR: 52,
+            hrv: 48,
+            respiratoryRate: 14.2,
+            sleepEfficiency: 0.94,
+            confidence: "user_confirmed_motion_validated",
+            source: "aggregate_sleep",
+            confirmed: true,
+            stageSegments: stages,
+            eventTimeZoneIdentifier: "UTC",
+            motionValidated: true
+        )
+
+        XCTAssertTrue(night.hasValidatedMotionEvidence)
+        XCTAssertEqual(night.sleepEfficiencyText, "94%")
+        XCTAssertEqual(night.sleepEfficiencyFootnote, "Duration-based estimate")
+        XCTAssertEqual(night.stageEvidence, .sensorResearch)
+        XCTAssertFalse(night.displayStageSegments.isEmpty)
+    }
+
+    func testLegacyReadyConfidenceStillCountsAsMotionValidated() {
+        let start = date(2026, 7, 29, 22, 0)
+        let end = date(2026, 7, 30, 6, 0)
+        let night = SleepHistorySnapshot.Night(
+            id: "legacy-ready-night",
+            day: Self.utcCalendar.startOfDay(for: end),
+            start: start,
+            end: end,
+            duration: end.timeIntervalSince(start),
+            restingHR: 52,
+            hrv: nil,
+            respiratoryRate: nil,
+            sleepEfficiency: 0.91,
+            confidence: "ready",
+            source: "validated_sleep_window",
+            confirmed: false,
+            stageSegments: []
+        )
+
+        XCTAssertTrue(night.hasValidatedMotionEvidence,
+                      "rollup 'ready' remains the legacy motion-ready marker")
+        XCTAssertEqual(night.sleepEfficiencyText, "91%")
+    }
 }

@@ -430,6 +430,100 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
                        "Last strap movement is no longer live")
     }
 
+    // 2026-08-01: a prior cycle that ended overnight (before 6 AM today) or
+    // on the previous civil day is "yesterday's total" to a human. Say
+    // "Yesterday: ≥N" instead of the technical "Prior cycle: ≥N · ended
+    // 1:44 AM". The count stays nil — prior steps are never today's value.
+    func testPriorCycleEndedOvernightBeforeSixAMReadsAsYesterday() {
+        // detailText classifies civil days with Calendar.current, so build
+        // the fixture in the same calendar to stay timezone-independent.
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_800_000_000))
+        let endedAt = today.addingTimeInterval(1 * 3_600 + 44 * 60) // 1:44 AM today
+        let value = AtriaDailyStepPresentation.resolve(
+            day: today,
+            now: today.addingTimeInterval(8 * 3_600),
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [],
+            physiologicalDayStart: today.addingTimeInterval(7 * 3_600),
+            priorCycleReceipt: .init(steps: 5_251, endedAt: endedAt),
+            calendar: calendar
+        )
+
+        XCTAssertNil(value.count)
+        XCTAssertEqual(value.unavailabilityReason, .priorCycleReceiptOnly)
+        XCTAssertEqual(value.detailText, "Yesterday: ≥5251")
+    }
+
+    func testPriorCycleEndedPreviousEveningReadsAsYesterday() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_800_000_000))
+        let endedAt = today.addingTimeInterval(-2 * 3_600) // yesterday 10 PM
+        let value = AtriaDailyStepPresentation.resolve(
+            day: today,
+            now: today.addingTimeInterval(9 * 3_600),
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [],
+            physiologicalDayStart: today.addingTimeInterval(7 * 3_600),
+            priorCycleReceipt: .init(steps: 5_251, endedAt: endedAt),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(value.unavailabilityReason, .priorCycleReceiptOnly)
+        XCTAssertEqual(value.detailText, "Yesterday: ≥5251")
+    }
+
+    func testPriorCycleEndedTodayAfternoonKeepsPreciseForm() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_800_000_000))
+        let endedAt = today.addingTimeInterval(14 * 3_600) // 2 PM today: not "yesterday"
+        let value = AtriaDailyStepPresentation.resolve(
+            day: today,
+            now: today.addingTimeInterval(16 * 3_600),
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [],
+            physiologicalDayStart: today.addingTimeInterval(15 * 3_600),
+            priorCycleReceipt: .init(steps: 5_251, endedAt: endedAt),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(value.unavailabilityReason, .priorCycleReceiptOnly)
+        XCTAssertTrue(value.detailText.hasPrefix("Prior cycle: ≥5251 · ended "),
+                      value.detailText)
+    }
+
+    func testPriorCycleYesterdayBoundaryIsExactlySixAM() {
+        let today = utcCalendar.startOfDay(for: day)
+        let presentation = AtriaDailyStepPresentation(
+            day: today,
+            count: nil,
+            completeness: .unavailable,
+            source: .none,
+            isValidated: false,
+            capturedAt: nil,
+            coverageFraction: nil
+        )
+        XCTAssertTrue(presentation.priorCycleReadsAsYesterday(
+            .init(steps: 10, endedAt: today.addingTimeInterval(6 * 3_600 - 1)),
+            calendar: utcCalendar
+        ))
+        XCTAssertFalse(presentation.priorCycleReadsAsYesterday(
+            .init(steps: 10, endedAt: today.addingTimeInterval(6 * 3_600)),
+            calendar: utcCalendar
+        ))
+        // Two civil days ago is not "yesterday" — keep the precise form.
+        XCTAssertFalse(presentation.priorCycleReadsAsYesterday(
+            .init(steps: 10, endedAt: today.addingTimeInterval(-30 * 3_600)),
+            calendar: utcCalendar
+        ))
+    }
+
     func testNoPriorReceiptKeepsExistingEmptyReason() {
         let cycleStart = day.addingTimeInterval(15 * 3_600)
         let value = AtriaDailyStepPresentation.resolve(
