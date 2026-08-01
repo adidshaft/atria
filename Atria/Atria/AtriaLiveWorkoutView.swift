@@ -1554,6 +1554,10 @@ struct AtriaWorkoutStartSheet: View {
     @State private var activitySearch = ""
     @State private var isStarting = false
     @State private var showStartError = false
+    /// Rail order is frozen when the sheet opens (2026-08-01 gym-session
+    /// review): tapping a chip must only mark the selection, never reorder the
+    /// rail underneath the user's finger.
+    @State private var compactActivityTypes: [AtriaWorkoutActivityType]
 
     init(initial: AtriaWorkoutStartConfiguration = .init(),
          onPrepare: @escaping () async -> Void = {},
@@ -1567,6 +1571,7 @@ struct AtriaWorkoutStartSheet: View {
         self.onPrepare = onPrepare
         self.onStart = onStart
         _configuration = State(initialValue: resolvedInitial)
+        _compactActivityTypes = State(initialValue: Self.railActivityTypes(initial: resolvedInitial.activityType))
     }
 
     var body: some View {
@@ -1577,9 +1582,12 @@ struct AtriaWorkoutStartSheet: View {
                         .font(.title2.weight(.bold))
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 10) {
+                            // Chips size to their content (2026-08-01
+                            // gym-session review): the old fixed 96-point width
+                            // cropped names like "Functional" to a scaled-down
+                            // sliver. Full names always render.
                             ForEach(compactActivityTypes) { type in
                                 activityButton(type)
-                                    .frame(width: activityButtonWidth)
                             }
                             Button {
                                 showAllActivityTypes = true
@@ -1775,11 +1783,17 @@ struct AtriaWorkoutStartSheet: View {
             .accessibilityLabel("Target heart rate \(selectedZoneRangeText)")
     }
 
-    private var compactActivityTypes: [AtriaWorkoutActivityType] {
+    /// The rail computed once at sheet open: initial selection, then recents,
+    /// then a preferred fallback set. It deliberately does NOT track the live
+    /// selection — reordering on tap moved the tapped chip out from under the
+    /// user's finger (2026-08-01 gym-session review). A type chosen from the
+    /// searchable catalog that is not on the rail is appended by
+    /// `selectActivity`, still without reshuffling existing chips.
+    private static func railActivityTypes(initial: AtriaWorkoutActivityType) -> [AtriaWorkoutActivityType] {
         let recent = AtriaWorkoutRecentActivityStore.activities()
-        let preferred: [AtriaWorkoutActivityType] = [configuration.activityType, .strength, .walking, .running, .cycling, .cardio]
+        let preferred: [AtriaWorkoutActivityType] = [initial, .strength, .walking, .running, .cycling, .cardio]
         var seen = Set<AtriaWorkoutActivityType>()
-        return ([configuration.activityType] + recent + preferred)
+        return ([initial] + recent + preferred)
             .filter { seen.insert($0).inserted }
             .prefix(6)
             .map { $0 }
@@ -1793,40 +1807,56 @@ struct AtriaWorkoutStartSheet: View {
         }
     }
 
-    private var activityButtonWidth: CGFloat {
-        dynamicTypeSize.isAccessibilitySize ? 132 : 96
-    }
-
     private var activityButtonHeight: CGFloat {
         dynamicTypeSize.isAccessibilitySize ? 52 : 48
     }
 
+    @ViewBuilder
     private func activityButton(_ type: AtriaWorkoutActivityType) -> some View {
-        Button { selectActivity(type) } label: {
-            HStack(spacing: 6) {
-                Image(systemName: type.icon).font(.callout.weight(.bold))
-                Text(type.rawValue)
-                    .font(.caption.weight(.bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-                if configuration.activityType == type {
-                    Image(systemName: "checkmark")
-                        .font(.caption2.weight(.black))
-                        .accessibilityHidden(true)
-                }
+        let isSelected = configuration.activityType == type
+        let label = HStack(spacing: 6) {
+            Image(systemName: type.icon).font(.callout.weight(.bold))
+            Text(type.rawValue)
+                .font(.caption.weight(.bold))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(.caption2.weight(.black))
+                    .accessibilityHidden(true)
             }
-            .foregroundStyle(configuration.activityType == type ? Color.white : Color.primary)
-            .frame(maxWidth: .infinity, minHeight: activityButtonHeight)
-            .contentShape(Capsule())
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.capsule)
-        .tint(configuration.activityType == type ? .cyan : .primary.opacity(0.08))
-        .accessibilityLabel(type.rawValue)
-        .accessibilityValue(configuration.activityType == type ? "Selected" : "Not selected")
+        .foregroundStyle(isSelected ? Color.white : Color.primary)
+        .padding(.horizontal, 14)
+        .frame(minHeight: activityButtonHeight)
+        .contentShape(Capsule())
+
+        // Selected must be PROMINENT glass: plain `.glass` keeps the capsule
+        // translucent, so the white label sat on a near-white surface in
+        // light mode (caught by the 2026-08-01 sheet render).
+        if isSelected {
+            Button { selectActivity(type) } label: { label }
+                .buttonStyle(.glassProminent)
+                .buttonBorderShape(.capsule)
+                .tint(.cyan)
+                .accessibilityLabel(type.rawValue)
+                .accessibilityValue("Selected")
+        } else {
+            Button { selectActivity(type) } label: { label }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.capsule)
+                .tint(.primary.opacity(0.08))
+                .accessibilityLabel(type.rawValue)
+                .accessibilityValue("Not selected")
+        }
     }
 
     private func selectActivity(_ type: AtriaWorkoutActivityType) {
+        // Keep the rail order stable; only append a catalog pick that is not
+        // already visible so the selection can be seen without reshuffling.
+        if !compactActivityTypes.contains(type) {
+            compactActivityTypes.append(type)
+        }
         configuration.activityType = type
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }

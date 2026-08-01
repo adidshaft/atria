@@ -3343,7 +3343,15 @@ class HandoffStaticChecks(unittest.TestCase):
             "reason=user_marked_not_workout",
             "private func saveWorkoutReview(",
             "settlingCandidateWindow: (start: Date, end: Date)",
-            "source: \"guided_workout_review\"",
+            # Pin migrated 2026-08-01 (gym-session workout-flow fixes): a
+            # review save whose window the user moved records user authorship
+            # (user_adjusted_workout_window, mirroring sleep's
+            # user_adjusted_window); an untouched window keeps the detector
+            # source. reviewSource stays guided_workout_review for both.
+            "let windowWasUserAdjusted",
+            "? \"user_adjusted_workout_window\"",
+            ": \"guided_workout_review\"",
+            "source: saveSource",
             "activityType: result.activityType",
             "exerciseNames: result.exerciseNames",
             "reviewSource: \"guided_workout_review\"",
