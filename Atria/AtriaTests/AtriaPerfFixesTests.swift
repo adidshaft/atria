@@ -867,6 +867,31 @@ final class AtriaPerfFixesTests: XCTestCase {
                                                                              calendar: calendar))
     }
 
+    // 2026-08-01: a daytime nap was invisible until foreground because both
+    // settlement triggers miss it (auto-confirm is main-sleep only; morning
+    // settlement is wake-window gated). The background review refresh must fire
+    // at any hour on a throttled cadence so a settled nap surfaces on its own.
+    func testResidentSleepReviewRefreshFiresAtAnyHourOnFifteenMinuteCadence() {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        // First attempt (no prior) is always allowed.
+        XCTAssertTrue(SessionStore.shouldAttemptResidentSleepReviewRefresh(
+            now: base, lastAttemptAt: nil))
+        // Within the 15-minute throttle: suppressed.
+        XCTAssertFalse(SessionStore.shouldAttemptResidentSleepReviewRefresh(
+            now: base.addingTimeInterval(14 * 60), lastAttemptAt: base))
+        // At/after the throttle: allowed again.
+        XCTAssertTrue(SessionStore.shouldAttemptResidentSleepReviewRefresh(
+            now: base.addingTimeInterval(15 * 60), lastAttemptAt: base))
+        // Unlike the morning settlement, it is NOT hour-gated — an afternoon nap
+        // (e.g. woke ~16:40) must be able to settle in the background.
+        let afternoon = base.addingTimeInterval(16 * 60 * 60 + 45 * 60)
+        XCTAssertTrue(SessionStore.shouldAttemptResidentSleepReviewRefresh(
+            now: afternoon, lastAttemptAt: nil))
+        XCTAssertTrue(SessionStore.shouldAttemptResidentSleepReviewRefresh(
+            now: afternoon.addingTimeInterval(20 * 60),
+            lastAttemptAt: afternoon))
+    }
+
     func testFailedConnectRecoveryRetainsSavedStrapAndBackoff() {
         XCTAssertEqual(AtriaBLEManager.failedConnectRecoveryDisposition(isSavedPeripheral: true,
                                                                          isActuallyConnecting: false),
