@@ -1123,10 +1123,15 @@ enum HistoricalArchive {
             "retention-manifests-v2",
             isDirectory: true
         )
-        let aggregateSnapshot = AtriaHistoricalAggregateReader(
+        // No whole-archive `.load()` here: the coordinator streams the
+        // whole-archive digest and window-loads each source's dependency
+        // range itself, so this foreground-reopen path (the one that used to
+        // balloon resident memory to the whole committed archive) never holds
+        // more than one decoded aggregate at a time.
+        let aggregateReader = AtriaHistoricalAggregateReader(
             aggregateDirectoryURL: aggregates,
             manifestDirectoryURL: manifests
-        ).load()
+        )
         let coordinator = AtriaHistoricalConsumerProjectionCoordinator(
             completionStore: AtriaHistoricalDrainCompletionGenerationStore(
                 directoryURL: archiveDirectory.appendingPathComponent(
@@ -1141,7 +1146,7 @@ enum HistoricalArchive {
         )
         let consumers = try coordinator.publishEligibleReceipts(
             catalogStore: try catalogStoreLocked(),
-            aggregateSnapshot: aggregateSnapshot,
+            aggregateReader: aggregateReader,
             configuration: configuration,
             lane: "terminal_materialize_after_drain"
         )
@@ -1189,10 +1194,19 @@ enum HistoricalArchive {
             throw TerminalConsumerProjectionError.rawSourceWasNotRetained
         }
 
-        let aggregateSnapshot = AtriaHistoricalAggregateReader(
+        // Bounded (was a whole-archive .load()): the whole-archive digest and
+        // rejection state come from the streaming primitive (one decoded
+        // aggregate resident at a time), and the just-committed seal aggregate
+        // is verified byte-identical via a windowed load of its own range.
+        let aggregateReader = AtriaHistoricalAggregateReader(
             aggregateDirectoryURL: aggregates,
             manifestDirectoryURL: manifests
-        ).load()
+        )
+        guard let streamedAggregate = aggregateReader.streamedWholeArchiveDigest(
+            limits: AtriaHistoricalAggregateReader.LoadLimits.unboundedConsumerProjection
+        ) else {
+            throw TerminalConsumerProjectionError.committedAggregateUnavailable
+        }
         let catalogStore = try catalogStoreLocked()
         let catalog = try catalogStore.snapshotVerifiedAgainstFiles()
         try catalog.validate()
@@ -1200,13 +1214,18 @@ enum HistoricalArchive {
             .canonicalCatalogData(catalog)
         let catalogSnapshotSHA256 =
             AtriaHistoricalDrainCompletionGenerationStore.sha256(catalogData)
-        let aggregateSnapshotSHA256 = try AtriaHistoricalActivityInspectionProofFactory
-            .streamedAggregateSnapshotDigest(aggregateSnapshot)
+        let aggregateSnapshotSHA256 = streamedAggregate.digest
         let persistedAggregate = try persistedISO8601Value(
             seal.aggregateBuild.aggregate
         )
-        guard aggregateSnapshot.diagnostics.rejectedManifests == 0,
-              aggregateSnapshot.aggregates.contains(where: {
+        let sealSource = seal.aggregateBuild.aggregate.source
+        let sealWindow = aggregateReader.load(
+            since: sealSource.firstTimestamp,
+            until: Date(timeIntervalSinceReferenceDate:
+                sealSource.lastTimestamp.timeIntervalSinceReferenceDate.nextUp)
+        )
+        guard streamedAggregate.diagnostics.rejectedManifests == 0,
+              sealWindow.aggregates.contains(where: {
                   $0.source.chunkID == seal.chunkID
                       && $0 == persistedAggregate
               }) else {
@@ -1396,16 +1415,25 @@ enum HistoricalArchive {
         let manifests = archiveDirectory.appendingPathComponent(
             "retention-manifests-v2", isDirectory: true
         )
-        let snapshot = AtriaHistoricalAggregateReader(
+        // Bounded (was a whole-archive .load()): this evidence needs only the
+        // whole-archive digest, whole-archive rejection state, the matched
+        // source IDENTITY (not its heavy sample arrays), and the minimum
+        // committed firstTimestamp — all provided by the streaming primitive
+        // (canonical order, one decoded aggregate resident at a time).
+        guard let streamed = AtriaHistoricalAggregateReader(
             aggregateDirectoryURL: aggregates,
             manifestDirectoryURL: manifests
-        ).load()
+        ).streamedWholeArchiveDigest(
+            limits: AtriaHistoricalAggregateReader.LoadLimits.unboundedConsumerProjection
+        ) else {
+            throw TerminalConsumerProjectionError.committedAggregateUnavailable
+        }
         let catalog = try catalogStoreLocked().snapshotVerifiedAgainstFiles()
-        guard !snapshot.diagnostics.limitExceeded,
-              snapshot.diagnostics.rejectedManifests == 0,
-              let source = snapshot.aggregates.first(where: {
-                  $0.source.chunkID == sourceChunkID
-                    && $0.source.rawSHA256 == sourceRawSHA256
+        guard !streamed.diagnostics.limitExceeded,
+              streamed.diagnostics.rejectedManifests == 0,
+              let source = streamed.sources.first(where: {
+                  $0.chunkID == sourceChunkID
+                    && $0.rawSHA256 == sourceRawSHA256
               }),
               catalog.chunks.contains(where: {
                   $0.id == sourceChunkID && $0.contentSHA256 == sourceRawSHA256
@@ -1414,20 +1442,27 @@ enum HistoricalArchive {
         }
         return .init(
             aggregateCommit: aggregateCommit,
-            source: source.source,
-            observedArchiveFirstTimestamp: snapshot.aggregates
-                .map(\.source.firstTimestamp).min()
-                ?? source.source.firstTimestamp,
+            source: source,
+            observedArchiveFirstTimestamp: streamed.sources.first?.firstTimestamp
+                ?? source.firstTimestamp,
             catalogGeneration: catalog.generation,
             catalogSnapshotSHA256: AtriaHistoricalDrainCompletionGenerationStore.sha256(
                 try AtriaHistoricalActivityInspectionProofFactory.canonicalCatalogData(catalog)
             ),
-            aggregateSnapshotSHA256: try AtriaHistoricalActivityInspectionProofFactory
-                .streamedAggregateSnapshotDigest(snapshot)
+            aggregateSnapshotSHA256: streamed.digest
         )
     }
 
     static func earliestCommittedAggregateTimestamp() -> Date? {
+        // Bounded: `streamedWholeArchiveDigest` returns the accepted committed
+        // sources in canonical (firstTimestamp asc, then chunkID) order while
+        // holding only one decoded aggregate at a time — so `.sources.first`
+        // is the exact minimum accepted firstTimestamp without decoding the
+        // whole archive into one resident array (was the old
+        // `.load().aggregates.map(...).min()` balloon). Accepted-only semantics
+        // are preserved (a rejected/corrupt chunk must not lower the observed
+        // archive coverage floor). nil (empty archive or a between-pass file
+        // change) falls back at the call site.
         AtriaHistoricalAggregateReader(
             aggregateDirectoryURL: archiveDirectory.appendingPathComponent(
                 "aggregates-v2", isDirectory: true
@@ -1435,7 +1470,9 @@ enum HistoricalArchive {
             manifestDirectoryURL: archiveDirectory.appendingPathComponent(
                 "retention-manifests-v2", isDirectory: true
             )
-        ).load().aggregates.map(\.source.firstTimestamp).min()
+        ).streamedWholeArchiveDigest(
+            limits: AtriaHistoricalAggregateReader.LoadLimits.unboundedConsumerProjection
+        )?.sources.first?.firstTimestamp
     }
 
     /// Resumes publication from an already-durable terminal completion without
@@ -1491,12 +1528,30 @@ enum HistoricalArchive {
             "retention-manifests-v2",
             isDirectory: true
         )
-        let aggregateSnapshot = AtriaHistoricalAggregateReader(
+        let aggregateReader = AtriaHistoricalAggregateReader(
             aggregateDirectoryURL: aggregates,
             manifestDirectoryURL: manifests
-        ).load()
-        guard aggregateSnapshot.diagnostics.rejectedManifests == 0,
-              let aggregate = aggregateSnapshot.aggregates.first(where: {
+        )
+        // This crash-resume path runs on foreground reopen (invoked from the
+        // BLE lifecycle), so it must never decode the whole committed archive
+        // — that whole `.load()` was a primary reopen memory balloon. Stream
+        // the whole-archive digest + diagnostics at bounded memory (peak: one
+        // decoded aggregate), then window-load only the target chunk's own
+        // range to re-verify its aggregate against the retained raw source.
+        guard let streamed = aggregateReader.streamedWholeArchiveDigest(
+                limits: .unboundedConsumerProjection),
+              !streamed.diagnostics.limitExceeded,
+              streamed.diagnostics.rejectedManifests == 0 else {
+            throw TerminalConsumerProjectionError.resumeAggregateUnavailable
+        }
+        let targetWindow = aggregateReader.load(
+            since: chunk.firstTimestamp!,
+            until: Date(timeIntervalSinceReferenceDate:
+                chunk.lastTimestamp!.timeIntervalSinceReferenceDate.nextUp),
+            limits: AtriaHistoricalAggregateReader.LoadLimits.unboundedConsumerProjection
+        )
+        guard !targetWindow.diagnostics.limitExceeded,
+              let aggregate = targetWindow.aggregates.first(where: {
                   $0.source.chunkID == job.chunkID
               }),
               aggregate.source.rawSHA256 == chunk.contentSHA256,
@@ -1528,8 +1583,9 @@ enum HistoricalArchive {
         let completion = try completionStore.loadLatest()
         let catalogData = try AtriaHistoricalActivityInspectionProofFactory
             .canonicalCatalogData(catalog)
-        let aggregateSnapshotDigest = try AtriaHistoricalActivityInspectionProofFactory
-            .streamedAggregateSnapshotDigest(aggregateSnapshot)
+        // Byte-identical to hashing the whole decoded snapshot, computed at
+        // bounded memory above (see `streamedWholeArchiveDigest`).
+        let aggregateSnapshotDigest = streamed.digest
         guard completion.terminalBatchNumber == job.terminalBatchNumber,
               completion.durableSequence == job.durableSequence,
               completion.requestedStart == job.exactRequest.requestedStart,
@@ -1550,14 +1606,15 @@ enum HistoricalArchive {
             ))
         )
         // The catalog was file-verified and canonically encoded above on the
-        // same serialized archive flow; reuse that evidence plus the streamed
-        // aggregate digest instead of re-stat/re-encode once per source inside
-        // the coordinator loop.
+        // same serialized archive flow; reuse that evidence instead of
+        // re-stat/re-encode once per source inside the coordinator loop. The
+        // whole-archive aggregate-snapshot digest is streamed fresh from
+        // `aggregateReader` inside the coordinator at bounded memory; it is
+        // byte-identical to `aggregateSnapshotDigest` computed above.
         let consumers = try coordinator.publishEligibleReceipts(
             verifiedCatalog: catalog,
             catalogData: catalogData,
-            aggregateSnapshot: aggregateSnapshot,
-            aggregateSnapshotDigest: aggregateSnapshotDigest,
+            aggregateReader: aggregateReader,
             configuration: configuration,
             lane: "terminal_crash_resume"
         )
@@ -1595,16 +1652,31 @@ enum HistoricalArchive {
         guard FileManager.default.fileExists(atPath: sourceURL.path) else {
             throw TerminalConsumerProjectionError.rawSourceWasNotRetained
         }
-        let aggregateSnapshot = AtriaHistoricalAggregateReader(
+        // Bounded (was a whole-archive .load(); this path runs on foreground
+        // reopen): whole-archive digest + rejection state come from the
+        // streaming primitive, and the target chunk's aggregate is verified
+        // via a windowed load of its own range.
+        let aggregateReader = AtriaHistoricalAggregateReader(
             aggregateDirectoryURL: archiveDirectory.appendingPathComponent(
                 "aggregates-v2", isDirectory: true
             ),
             manifestDirectoryURL: archiveDirectory.appendingPathComponent(
                 "retention-manifests-v2", isDirectory: true
             )
-        ).load()
-        guard aggregateSnapshot.diagnostics.rejectedManifests == 0,
-              let aggregate = aggregateSnapshot.aggregates.first(where: {
+        )
+        guard let streamedAggregate = aggregateReader.streamedWholeArchiveDigest(
+                limits: AtriaHistoricalAggregateReader.LoadLimits.unboundedConsumerProjection
+              ),
+              !streamedAggregate.diagnostics.limitExceeded,
+              streamedAggregate.diagnostics.rejectedManifests == 0 else {
+            throw TerminalConsumerProjectionError.resumeAggregateUnavailable
+        }
+        let targetWindow = aggregateReader.load(
+            since: chunk.firstTimestamp!,
+            until: Date(timeIntervalSinceReferenceDate:
+                chunk.lastTimestamp!.timeIntervalSinceReferenceDate.nextUp)
+        )
+        guard let aggregate = targetWindow.aggregates.first(where: {
                   $0.source.chunkID == checkpoint.chunkID
               }),
               aggregate.source.rawSHA256 == chunk.contentSHA256,
@@ -1632,8 +1704,7 @@ enum HistoricalArchive {
         let completion = try completionStore.loadLatest()
         let catalogData = try AtriaHistoricalActivityInspectionProofFactory
             .canonicalCatalogData(catalog)
-        let aggregateSnapshotDigest = try AtriaHistoricalActivityInspectionProofFactory
-            .streamedAggregateSnapshotDigest(aggregateSnapshot)
+        let aggregateSnapshotDigest = streamedAggregate.digest
         guard completion.terminalBatchNumber == checkpoint.terminalBatchNumber,
               completion.durableSequence == checkpoint.durableSequence,
               catalogTimestampMatches(
@@ -1663,8 +1734,7 @@ enum HistoricalArchive {
             for: checkpoint.chunkID,
             verifiedCatalog: catalog,
             catalogData: catalogData,
-            aggregateSnapshot: aggregateSnapshot,
-            aggregateSnapshotDigest: aggregateSnapshotDigest,
+            aggregateReader: aggregateReader,
             configuration: configuration
         )
         guard FileManager.default.fileExists(atPath: sourceURL.path) else {
@@ -1693,14 +1763,16 @@ enum HistoricalArchive {
         guard FileManager.default.fileExists(atPath: sourceURL.path) else {
             throw TerminalConsumerProjectionError.rawSourceWasNotRetained
         }
-        let aggregateSnapshot = AtriaHistoricalAggregateReader(
+        // Bounded (was a whole-archive .load()): the coordinator streams the
+        // digest once and window-loads only this dependency's range.
+        let aggregateReader = AtriaHistoricalAggregateReader(
             aggregateDirectoryURL: archiveDirectory.appendingPathComponent(
                 "aggregates-v2", isDirectory: true
             ),
             manifestDirectoryURL: archiveDirectory.appendingPathComponent(
                 "retention-manifests-v2", isDirectory: true
             )
-        ).load()
+        )
         return try AtriaHistoricalConsumerProjectionCoordinator(
             completionStore: AtriaHistoricalDrainCompletionGenerationStore(
                 directoryURL: archiveDirectory.appendingPathComponent(
@@ -1717,7 +1789,7 @@ enum HistoricalArchive {
             requiredEnd: Date(timeIntervalSince1970: dependency.requiredEndUnix),
             fullScanStore: fullScanStore,
             catalogStore: catalogStore,
-            aggregateSnapshot: aggregateSnapshot,
+            aggregateReader: aggregateReader,
             configuration: configuration
         )
     }
@@ -1744,7 +1816,19 @@ enum HistoricalArchive {
             aggregateDirectoryURL: aggregates,
             manifestDirectoryURL: manifests
         )
-        let snapshot = aggregateReader.load()
+        // Bounded (was a whole-archive .load()): the catalog gives the target
+        // chunk's exact range up front, so the aggregate is found via a windowed
+        // load of that range instead of decoding the whole archive. This cutover
+        // path runs during foreground compaction.
+        let catalog = try catalogStore.snapshotVerifiedAgainstFiles()
+        guard let rawChunk = catalog.chunks.first(where: { $0.id == chunkID }),
+              let chunkFirst = rawChunk.firstTimestamp,
+              let chunkLast = rawChunk.lastTimestamp else {
+            throw HistoricalConsumerCutoverError.committedShadowUnavailable
+        }
+        let chunkWindowEnd = Date(timeIntervalSinceReferenceDate:
+            chunkLast.timeIntervalSinceReferenceDate.nextUp)
+        let snapshot = aggregateReader.load(since: chunkFirst, until: chunkWindowEnd)
         let matchingAggregates = snapshot.aggregates.filter { $0.source.chunkID == chunkID }
         guard !snapshot.diagnostics.limitExceeded,
               snapshot.diagnostics.rejectedManifests == 0,
@@ -1753,9 +1837,7 @@ enum HistoricalArchive {
             throw HistoricalConsumerCutoverError.committedShadowUnavailable
         }
 
-        let catalog = try catalogStore.snapshotVerifiedAgainstFiles()
-        guard let rawChunk = catalog.chunks.first(where: { $0.id == chunkID }),
-              rawChunk.state == .sealed,
+        guard rawChunk.state == .sealed,
               rawChunk.contentSHA256 == aggregate.source.rawSHA256,
               rawChunk.byteCount == aggregate.source.rawByteCount,
               rawChunk.rowCount == aggregate.source.rawRowCount,
@@ -1810,8 +1892,10 @@ enum HistoricalArchive {
             receiptLedger: ledger
         ).publishReceiptSet(
             for: chunkID,
-            catalogStore: catalogStore,
-            aggregateSnapshot: snapshot,
+            verifiedCatalog: catalog,
+            catalogData: try AtriaHistoricalActivityInspectionProofFactory
+                .canonicalCatalogData(catalog),
+            aggregateReader: aggregateReader,
             configuration: configuration
         )
         let expectedKinds: Set<AtriaHistoricalConsumerReceiptLedger.ProjectionKind> = [
@@ -1947,7 +2031,11 @@ enum HistoricalArchive {
         // Close the audit with fresh file-backed evidence. No result escapes if
         // the aggregate/manifest, sealed catalog row, raw length, or raw digest
         // changed while the six artifacts were being published and re-read.
-        let finalSnapshot = aggregateReader.load()
+        // Bounded re-verify: window to the same target-chunk range as the
+        // opening load; the mutation check (`finalMatches.first == aggregate`)
+        // and windowed rejection state detect any change to this chunk during
+        // publication.
+        let finalSnapshot = aggregateReader.load(since: chunkFirst, until: chunkWindowEnd)
         let finalMatches = finalSnapshot.aggregates.filter { $0.source.chunkID == chunkID }
         let finalCatalog = try catalogStore.snapshotVerifiedAgainstFiles()
         guard !finalSnapshot.diagnostics.limitExceeded,
@@ -3070,20 +3158,31 @@ enum HistoricalArchive {
                 "retention-manifests-v2", isDirectory: true
             )
         )
-        let snapshot = aggregateReader.load()
-        guard !snapshot.diagnostics.limitExceeded,
-              snapshot.diagnostics.rejectedManifests == 0 else {
-            return .init(committedSourceCount: snapshot.aggregates.count,
+        // Bounded (was a whole-archive .load()): only the lightweight accepted
+        // source list is needed to choose which sources to read; each
+        // `reader.readSource` then window-loads its own dependency range.
+        guard let streamed = aggregateReader.streamedWholeArchiveDigest(
+            limits: AtriaHistoricalAggregateReader.LoadLimits.unboundedConsumerProjection
+        ) else {
+            return .init(committedSourceCount: 0,
                          attemptedSourceCount: 0,
                          deliveredSourceCount: 0,
-                         wasBounded: snapshot.diagnostics.limitExceeded,
-                         rejectedManifestCount: snapshot.diagnostics.rejectedManifests)
+                         wasBounded: true,
+                         rejectedManifestCount: 0)
         }
-        let sources = snapshot.aggregates.sorted {
-            if $0.source.lastTimestamp != $1.source.lastTimestamp {
-                return $0.source.lastTimestamp > $1.source.lastTimestamp
+        guard !streamed.diagnostics.limitExceeded,
+              streamed.diagnostics.rejectedManifests == 0 else {
+            return .init(committedSourceCount: streamed.diagnostics.acceptedAggregates,
+                         attemptedSourceCount: 0,
+                         deliveredSourceCount: 0,
+                         wasBounded: streamed.diagnostics.limitExceeded,
+                         rejectedManifestCount: streamed.diagnostics.rejectedManifests)
+        }
+        let sources = streamed.sources.sorted {
+            if $0.lastTimestamp != $1.lastTimestamp {
+                return $0.lastTimestamp > $1.lastTimestamp
             }
-            return $0.source.chunkID < $1.source.chunkID
+            return $0.chunkID < $1.chunkID
         }
         let selected = Array(sources.prefix(maximumSourceCount))
         let reader = AtriaHistoricalVerifiedConsumerReader(
@@ -3098,7 +3197,7 @@ enum HistoricalArchive {
         var delivered = 0
         for source in selected {
             autoreleasepool {
-                consume(reader.readSource(chunkID: source.source.chunkID,
+                consume(reader.readSource(chunkID: source.chunkID,
                                           catalogStore: catalogStore,
                                           configuration: configuration))
                 delivered += 1

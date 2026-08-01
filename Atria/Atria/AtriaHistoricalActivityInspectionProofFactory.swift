@@ -435,6 +435,36 @@ struct AtriaHistoricalActivityInspectionProofFactory {
         requestedStart: Date,
         requestedEnd: Date
     ) throws -> Prepared {
+        let catalog = try catalogStore.snapshotVerifiedAgainstFiles()
+        try catalog.validate()
+        let catalogData = try Self.canonicalCatalogData(catalog)
+        let aggregateSnapshotDigest = try Self.streamedAggregateSnapshotDigest(aggregateSnapshot)
+        return try prepareUsingFullScan(
+            verifiedCatalog: catalog,
+            catalogData: catalogData,
+            aggregateSnapshot: aggregateSnapshot,
+            aggregateSnapshotDigest: aggregateSnapshotDigest,
+            scan: scan,
+            requestedStart: requestedStart,
+            requestedEnd: requestedEnd
+        )
+    }
+
+    /// Memory-shape overload: the whole-archive aggregate-snapshot digest is
+    /// supplied (computed once via the bounded streaming primitive) and the
+    /// catalog is already file-verified, so `aggregateSnapshot` may be a
+    /// windowed subset (its diagnostics must still reflect WHOLE-archive
+    /// rejection state). Every validation is identical to the store-based
+    /// entry above; only the decode is bounded.
+    func prepareUsingFullScan(
+        verifiedCatalog catalog: AtriaHistoricalArchiveCatalog,
+        catalogData: Data,
+        aggregateSnapshot: AtriaHistoricalAggregateReader.Snapshot,
+        aggregateSnapshotDigest: String,
+        scan: AtriaHistoricalFullScanCompletionStore.Record,
+        requestedStart: Date,
+        requestedEnd: Date
+    ) throws -> Prepared {
         guard requestedStart.timeIntervalSince1970.isFinite,
               requestedEnd.timeIntervalSince1970.isFinite,
               requestedEnd > requestedStart else {
@@ -444,10 +474,7 @@ struct AtriaHistoricalActivityInspectionProofFactory {
               aggregateSnapshot.diagnostics.rejectedManifests == 0 else {
             throw FactoryError.rejectedAggregateManifest
         }
-        let catalog = try catalogStore.snapshotVerifiedAgainstFiles()
         try catalog.validate()
-        let catalogData = try Self.canonicalCatalogData(catalog)
-        let aggregateSnapshotDigest = try Self.streamedAggregateSnapshotDigest(aggregateSnapshot)
         guard aggregateSnapshot.aggregates.contains(where: {
             $0.source.chunkID == scan.sourceChunkID
                 && $0.source.rawSHA256 == scan.sourceRawSHA256
@@ -651,18 +678,11 @@ struct AtriaHistoricalActivityInspectionProofFactory {
     static func streamedAggregateSnapshotDigest(
         _ snapshot: AtriaHistoricalAggregateReader.Snapshot
     ) throws -> String {
-        let encoder = JSONEncoder.iso8601
-        let wrapper = try encoder.encode(CanonicalAggregateSnapshot(
-            aggregates: [],
+        let (prefix, suffix) = try canonicalAggregateSnapshotWrapperSplit(
             committedManifests: snapshot.diagnostics.committedManifests,
             acceptedAggregates: snapshot.diagnostics.acceptedAggregates,
             rejectedManifests: snapshot.diagnostics.rejectedManifests
-        ))
-        guard let openBraceIndex = soleEmptyArrayOpenBracketIndex(in: wrapper) else {
-            throw FactoryError.malformedAggregateSnapshotWrapper
-        }
-        let prefix = wrapper[wrapper.startIndex...openBraceIndex]
-        let suffix = wrapper[wrapper.index(after: openBraceIndex)..<wrapper.endIndex]
+        )
 
         var hasher = SHA256()
         hasher.update(data: prefix)
@@ -672,12 +692,44 @@ struct AtriaHistoricalActivityInspectionProofFactory {
                 if index > 0 {
                     hasher.update(data: comma)
                 }
-                let element = try encoder.encode(aggregate)
-                hasher.update(data: element)
+                hasher.update(data: try canonicalAggregateElementData(aggregate))
             }
         }
         hasher.update(data: suffix)
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Exposes the exact prefix/suffix split and per-element encoding that
+    /// `streamedAggregateSnapshotDigest` above uses, so `AtriaHistoricalAggregateReader
+    /// .streamedWholeArchiveDigest` can fold in aggregates it re-decodes one at
+    /// a time directly from manifests, WITHOUT ever building an
+    /// `AtriaHistoricalAggregateReader.Snapshot` that holds every decoded
+    /// aggregate resident. Both callers therefore share one implementation of
+    /// the canonical wrapper shape, encoder options, and `[]`-split technique;
+    /// any divergence here would change the persisted digest.
+    static func canonicalAggregateSnapshotWrapperSplit(
+        committedManifests: Int,
+        acceptedAggregates: Int,
+        rejectedManifests: Int
+    ) throws -> (prefix: Data, suffix: Data) {
+        let wrapper = try JSONEncoder.iso8601.encode(CanonicalAggregateSnapshot(
+            aggregates: [],
+            committedManifests: committedManifests,
+            acceptedAggregates: acceptedAggregates,
+            rejectedManifests: rejectedManifests
+        ))
+        guard let openBracketIndex = soleEmptyArrayOpenBracketIndex(in: wrapper) else {
+            throw FactoryError.malformedAggregateSnapshotWrapper
+        }
+        let prefix = wrapper[wrapper.startIndex...openBracketIndex]
+        let suffix = wrapper[wrapper.index(after: openBracketIndex)..<wrapper.endIndex]
+        return (Data(prefix), Data(suffix))
+    }
+
+    static func canonicalAggregateElementData(
+        _ aggregate: AtriaHistoricalAggregateChunk
+    ) throws -> Data {
+        try JSONEncoder.iso8601.encode(aggregate)
     }
 
     /// Returns the index of the `[` of the sole empty-array literal `[]` in the

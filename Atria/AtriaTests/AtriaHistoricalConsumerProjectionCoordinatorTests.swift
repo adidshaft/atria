@@ -19,7 +19,7 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
 
         let first = try coordinator.publishEligibleReceipts(
             catalogStore: fixture.catalogStore,
-            aggregateSnapshot: fixture.snapshot,
+            aggregateReader: fixture.aggregateReader,
             configuration: configuration()
         )
 
@@ -36,7 +36,7 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
 
         let retry = try coordinator.publishEligibleReceipts(
             catalogStore: fixture.catalogStore,
-            aggregateSnapshot: fixture.snapshot,
+            aggregateReader: fixture.aggregateReader,
             configuration: configuration()
         )
         XCTAssertEqual(retry.published.count, 5)
@@ -55,7 +55,7 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
 
         let report = try coordinator.publishEligibleReceipts(
             catalogStore: fixture.catalogStore,
-            aggregateSnapshot: fixture.snapshot,
+            aggregateReader: fixture.aggregateReader,
             configuration: configuration()
         )
 
@@ -74,7 +74,7 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
 
         let report = try coordinator.publishEligibleReceipts(
             catalogStore: fixture.catalogStore,
-            aggregateSnapshot: fixture.snapshot,
+            aggregateReader: fixture.aggregateReader,
             configuration: configuration()
         )
 
@@ -292,7 +292,7 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
             receiptLedger: crashLedger
         ).publishEligibleReceipts(
             catalogStore: fixture.catalogStore,
-            aggregateSnapshot: fixture.snapshot,
+            aggregateReader: fixture.aggregateReader,
             configuration: configuration()
         )
         XCTAssertFalse(interrupted.hasCompleteConsumerCoverage)
@@ -504,7 +504,7 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
             receiptLedger: fixture.ledger
         ).publishEligibleReceipts(
             catalogStore: fixture.catalogStore,
-            aggregateSnapshot: fixture.snapshot,
+            aggregateReader: fixture.aggregateReader,
             configuration: configuration(),
             shouldAbortBetweenSources: { false }
         )
@@ -524,7 +524,7 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
 
         let aborted = try coordinator.publishEligibleReceipts(
             catalogStore: fixture.catalogStore,
-            aggregateSnapshot: fixture.snapshot,
+            aggregateReader: fixture.aggregateReader,
             configuration: configuration(),
             lane: "test_lane",
             shouldAbortBetweenSources: { true }
@@ -544,7 +544,7 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
         // publishes only the deferred remainder.
         let resumed = try coordinator.publishEligibleReceipts(
             catalogStore: fixture.catalogStore,
-            aggregateSnapshot: fixture.snapshot,
+            aggregateReader: fixture.aggregateReader,
             configuration: configuration(),
             shouldAbortBetweenSources: { false }
         )
@@ -557,7 +557,7 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
         defer { AtriaHistoricalProjectionForegroundGate.isBackgrounded = false }
         let gateAborted = try coordinator.publishEligibleReceipts(
             catalogStore: fixture.catalogStore,
-            aggregateSnapshot: fixture.snapshot,
+            aggregateReader: fixture.aggregateReader,
             configuration: configuration()
         )
         XCTAssertEqual(gateAborted.published.count, 5)
@@ -571,12 +571,13 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
 
     func testRejectedAggregateManifestStopsAllPublication() throws {
         let fixture = try makeFixture()
-        let rejected = AtriaHistoricalAggregateReader.Snapshot(
-            aggregates: fixture.snapshot.aggregates,
-            diagnostics: .init(committedManifests: 2,
-                               acceptedAggregates: 1,
-                               rejectedManifests: 1)
-        )
+        // `publishEligibleReceipts` now streams its own whole-archive digest
+        // from the reader instead of taking a caller-constructed `Snapshot`,
+        // so a rejected manifest has to be real: an undecodable manifest file
+        // dropped straight into the reader's own manifest directory, exactly
+        // like `AtriaHistoricalAggregateReaderTests`'s orphan-file fixtures.
+        let manifestsDirectory = fixture.root.appendingPathComponent("retention-manifests-v2")
+        try Data("{}".utf8).write(to: manifestsDirectory.appendingPathComponent("bogus-manifest.json"))
         let coordinator = AtriaHistoricalConsumerProjectionCoordinator(
             completionStore: fixture.completionStore,
             receiptLedger: fixture.ledger
@@ -584,7 +585,7 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
 
         XCTAssertThrowsError(try coordinator.publishEligibleReceipts(
             catalogStore: fixture.catalogStore,
-            aggregateSnapshot: rejected,
+            aggregateReader: fixture.aggregateReader,
             configuration: configuration()
         )) { error in
             XCTAssertEqual(error as? AtriaHistoricalConsumerProjectionCoordinator.CoordinatorError,
@@ -598,6 +599,7 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
         let catalogStore: AtriaHistoricalArchiveCatalogStore
         let aggregate: AtriaHistoricalAggregateChunk
         let snapshot: AtriaHistoricalAggregateReader.Snapshot
+        let aggregateReader: AtriaHistoricalAggregateReader
         let completionStore: AtriaHistoricalDrainCompletionGenerationStore
         let ledger: AtriaHistoricalConsumerReceiptLedger
         let rawURL: URL
@@ -783,10 +785,11 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
                 firstRawURL = active.fileURL
             }
         }
-        let snapshot = AtriaHistoricalAggregateReader(
+        let aggregateReader = AtriaHistoricalAggregateReader(
             aggregateDirectoryURL: aggregates,
             manifestDirectoryURL: manifests
-        ).load()
+        )
+        let snapshot = aggregateReader.load()
         let completionStore = AtriaHistoricalDrainCompletionGenerationStore(
             directoryURL: root.appendingPathComponent("drain-completions-v1")
         )
@@ -806,6 +809,7 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
                      catalogStore: catalogStore,
                      aggregate: try XCTUnwrap(firstAggregate),
                      snapshot: snapshot,
+                     aggregateReader: aggregateReader,
                      completionStore: completionStore,
                      ledger: .init(directoryURL: root.appendingPathComponent("consumer-receipts-v1")),
                      rawURL: try XCTUnwrap(firstRawURL))
@@ -864,10 +868,11 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
             semanticParityReceipt: AtriaHistoricalAggregateBuilder.semanticParityReceipt(for: aggregate),
             deleteSourceAfterCommit: false
         ))
-        let snapshot = AtriaHistoricalAggregateReader(
+        let aggregateReader = AtriaHistoricalAggregateReader(
             aggregateDirectoryURL: aggregates,
             manifestDirectoryURL: manifests
-        ).load()
+        )
+        let snapshot = aggregateReader.load()
         let completionStore = AtriaHistoricalDrainCompletionGenerationStore(
             directoryURL: root.appendingPathComponent("drain-completions-v1")
         )
@@ -891,6 +896,7 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
                      catalogStore: catalogStore,
                      aggregate: aggregate,
                      snapshot: snapshot,
+                     aggregateReader: aggregateReader,
                      completionStore: completionStore,
                      ledger: .init(directoryURL: root.appendingPathComponent("consumer-receipts-v1")),
                      rawURL: active.fileURL)

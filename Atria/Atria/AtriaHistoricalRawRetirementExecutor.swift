@@ -92,7 +92,19 @@ struct AtriaHistoricalRawRetirementExecutor {
             aggregateDirectoryURL: aggregateDirectory,
             manifestDirectoryURL: manifestDirectory
         )
-        let snapshot = reader.load()
+        // Retirement targets ONE chunk. Loading the whole committed archive
+        // here (this runs once per chunk in the compaction loop) is the
+        // primary foreground-reopen memory balloon — N chunks × whole-archive
+        // decode. Window the decode to the target chunk's own committed range
+        // (the catalog already provides its exact bounds), which contains the
+        // matching aggregate (+ any boundary-adjacent neighbors, filtered out
+        // below by chunkID). `rejectedManifests` now scopes to this window,
+        // which is the only region relevant to retiring this chunk.
+        let snapshot = reader.load(
+            since: firstTimestamp,
+            until: Date(timeIntervalSinceReferenceDate:
+                lastTimestamp.timeIntervalSinceReferenceDate.nextUp)
+        )
         let matches = snapshot.aggregates.filter { $0.source.chunkID == chunkID }
         guard !snapshot.diagnostics.limitExceeded,
               snapshot.diagnostics.rejectedManifests == 0,

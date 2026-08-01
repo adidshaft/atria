@@ -142,19 +142,27 @@ struct AtriaHistoricalVerifiedConsumerReader {
             return deferredBundle(chunkID: chunkID, reason: .readerLimitExceeded)
         }
 
-        let snapshot = aggregateReader.load(limits: aggregateLoadLimits)
-        guard !snapshot.diagnostics.limitExceeded else {
+        // Bounded (was a whole-archive load(limits:)): the whole-archive digest,
+        // rejection state, and lightweight accepted-source list come from the
+        // streaming primitive (one decoded aggregate resident at a time). The
+        // heavy per-source decode is windowed to the dependency range below.
+        guard let streamed = aggregateReader.streamedWholeArchiveDigest(
+            limits: aggregateLoadLimits
+        ) else {
+            return deferredBundle(chunkID: chunkID, reason: .attestationUnavailable)
+        }
+        guard !streamed.diagnostics.limitExceeded else {
             return deferredBundle(chunkID: chunkID, reason: .readerLimitExceeded)
         }
-        guard snapshot.diagnostics.rejectedManifests == 0 else {
+        guard streamed.diagnostics.rejectedManifests == 0 else {
             return deferredBundle(chunkID: chunkID, reason: .aggregateSnapshotRejected)
         }
-        guard snapshot.aggregates.count <= limits.maximumAggregateCount else {
+        guard streamed.sources.count <= limits.maximumAggregateCount else {
             return deferredBundle(chunkID: chunkID, reason: .readerLimitExceeded)
         }
 
-        let matches = snapshot.aggregates.filter { $0.source.chunkID == chunkID }
-        guard matches.count == 1, let source = matches.first else {
+        let identityMatches = streamed.sources.filter { $0.chunkID == chunkID }
+        guard identityMatches.count == 1, let sourceIdentity = identityMatches.first else {
             do {
                 let catalog = try catalogStore.snapshotVerifiedAgainstFiles()
                 let existsInCatalog = catalog.chunks.contains { $0.id == chunkID }
@@ -168,10 +176,40 @@ struct AtriaHistoricalVerifiedConsumerReader {
 
         let requestedRange: ClosedRange<Date>
         do {
-            requestedRange = try requiredRange(for: source,
+            requestedRange = try requiredRange(for: sourceIdentity,
                                                dailyConfiguration: configuration.daily)
         } catch {
             return deferredBundle(chunkID: chunkID, reason: .invalidConfiguration)
+        }
+
+        let windowed = aggregateReader.load(
+            since: requestedRange.lowerBound,
+            until: Date(timeIntervalSinceReferenceDate:
+                requestedRange.upperBound.timeIntervalSinceReferenceDate.nextUp),
+            limits: aggregateLoadLimits
+        )
+        guard !windowed.diagnostics.limitExceeded else {
+            return deferredBundle(chunkID: chunkID, reason: .readerLimitExceeded)
+        }
+        let matches = windowed.aggregates.filter { $0.source.chunkID == chunkID }
+        guard matches.count == 1, let source = matches.first else {
+            return deferredBundle(chunkID: chunkID, reason: .attestationUnavailable)
+        }
+        let windowedSnapshot = AtriaHistoricalAggregateReader.Snapshot(
+            aggregates: windowed.aggregates,
+            diagnostics: streamed.diagnostics
+        )
+
+        let catalog: AtriaHistoricalArchiveCatalog
+        let catalogData: Data
+        do {
+            let verified = try catalogStore.snapshotVerifiedAgainstFiles()
+            try verified.validate()
+            catalog = verified
+            catalogData = try AtriaHistoricalActivityInspectionProofFactory
+                .canonicalCatalogData(verified)
+        } catch {
+            return deferredBundle(chunkID: chunkID, reason: .attestationUnavailable)
         }
 
         let factory = AtriaHistoricalActivityInspectionProofFactory(
@@ -179,8 +217,10 @@ struct AtriaHistoricalVerifiedConsumerReader {
         )
         let prepared: AtriaHistoricalActivityInspectionProofFactory.Prepared
         do {
-            prepared = try factory.prepare(catalogStore: catalogStore,
-                                           aggregateSnapshot: snapshot,
+            prepared = try factory.prepare(verifiedCatalog: catalog,
+                                           catalogData: catalogData,
+                                           aggregateSnapshot: windowedSnapshot,
+                                           aggregateSnapshotDigest: streamed.digest,
                                            requestedStart: requestedRange.lowerBound,
                                            requestedEnd: requestedRange.upperBound)
             guard prepared.dependencyChunks.count <= limits.maximumDependencyCount else {
@@ -269,15 +309,38 @@ struct AtriaHistoricalVerifiedConsumerReader {
 
         do {
             try checkpoint(.artifactsRead)
-            let finalSnapshot = aggregateReader.load(limits: aggregateLoadLimits)
-            guard !finalSnapshot.diagnostics.limitExceeded,
-                  finalSnapshot.diagnostics.rejectedManifests == 0,
-                  finalSnapshot.aggregates.count <= limits.maximumAggregateCount else {
+            // Fresh whole-archive digest + fresh catalog + windowed re-decode:
+            // detects any aggregate/catalog mutation during the read exactly as
+            // the prior second whole load did. A changed archive yields a
+            // different streamed digest (so `prepare` fails its completion
+            // digest check) or a different catalog (so `sameAttestation` fails).
+            guard let finalStreamed = aggregateReader.streamedWholeArchiveDigest(
+                    limits: aggregateLoadLimits
+                  ),
+                  !finalStreamed.diagnostics.limitExceeded,
+                  finalStreamed.diagnostics.rejectedManifests == 0,
+                  finalStreamed.sources.count <= limits.maximumAggregateCount else {
                 return deferredBundle(chunkID: chunkID, reason: .evidenceChangedDuringRead)
             }
+            let finalCatalog = try catalogStore.snapshotVerifiedAgainstFiles()
+            try finalCatalog.validate()
+            let finalCatalogData = try AtriaHistoricalActivityInspectionProofFactory
+                .canonicalCatalogData(finalCatalog)
+            let finalWindowed = aggregateReader.load(
+                since: requestedRange.lowerBound,
+                until: Date(timeIntervalSinceReferenceDate:
+                    requestedRange.upperBound.timeIntervalSinceReferenceDate.nextUp),
+                limits: aggregateLoadLimits
+            )
+            let finalSnapshot = AtriaHistoricalAggregateReader.Snapshot(
+                aggregates: finalWindowed.aggregates,
+                diagnostics: finalStreamed.diagnostics
+            )
             let finalPrepared = try factory.prepare(
-                catalogStore: catalogStore,
+                verifiedCatalog: finalCatalog,
+                catalogData: finalCatalogData,
                 aggregateSnapshot: finalSnapshot,
+                aggregateSnapshotDigest: finalStreamed.digest,
                 requestedStart: requestedRange.lowerBound,
                 requestedEnd: requestedRange.upperBound
             )
@@ -521,13 +584,22 @@ struct AtriaHistoricalVerifiedConsumerReader {
         for source: AtriaHistoricalAggregateChunk,
         dailyConfiguration: AtriaHistoricalDailyConsumerProjection.Configuration
     ) throws -> ClosedRange<Date> {
+        try requiredRange(for: source.source, dailyConfiguration: dailyConfiguration)
+    }
+
+    /// Source-identity form so the dependency range can be computed from the
+    /// lightweight streamed source list (before any windowed decode).
+    private func requiredRange(
+        for source: AtriaHistoricalAggregateChunk.Source,
+        dailyConfiguration: AtriaHistoricalDailyConsumerProjection.Configuration
+    ) throws -> ClosedRange<Date> {
         guard let zone = TimeZone(identifier: dailyConfiguration.timeZoneIdentifier) else {
             throw DeferredReason.invalidConfiguration
         }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = zone
-        let dailyStart = calendar.startOfDay(for: source.source.firstTimestamp)
-        let lastDay = calendar.startOfDay(for: source.source.lastTimestamp)
+        let dailyStart = calendar.startOfDay(for: source.firstTimestamp)
+        let lastDay = calendar.startOfDay(for: source.lastTimestamp)
         guard let dailyEnd = calendar.date(byAdding: .day, value: 1, to: lastDay) else {
             throw DeferredReason.invalidConfiguration
         }
@@ -537,8 +609,8 @@ struct AtriaHistoricalVerifiedConsumerReader {
         let lookahead = max(AtriaHistoricalActivityProjection.requiredLookahead,
                             AtriaHistoricalSleepProjection.requiredLookahead,
                             AtriaHistoricalWorkoutProjection.requiredLookahead)
-        let start = min(dailyStart, source.source.firstTimestamp.addingTimeInterval(-history))
-        let end = max(dailyEnd, source.source.lastTimestamp.addingTimeInterval(lookahead))
+        let start = min(dailyStart, source.firstTimestamp.addingTimeInterval(-history))
+        let end = max(dailyEnd, source.lastTimestamp.addingTimeInterval(lookahead))
         guard start.timeIntervalSince1970.isFinite,
               end.timeIntervalSince1970.isFinite,
               end > start else {
