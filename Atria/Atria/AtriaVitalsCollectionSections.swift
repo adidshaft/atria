@@ -613,264 +613,22 @@ enum AtriaVitalsEducationTopic: String, Identifiable {
         }
     }
 
-    // One identity hue per metric, matching AtriaMetricDetailKind.tint and the
-    // Customize sheet (Metrics.electric* — adaptive, deepened on light). Was:
-    // RHR+HRV both `.pink`, respiration raw `.teal`, stress raw `.orange`, which
-    // collapsed distinct vitals and washed out on white.
-    var tint: Color {
+    // Design-parity slice 5 (2026-08-01): the compact AtriaVitalsEducationSheet
+    // was retired in favor of the richer AtriaAboutMetricSheet. This enum stays
+    // as the vitals info-affordance router; it maps each topic to its About
+    // case. (The former `tint`, `whatItIs`, `howComputed`, `honestyNote`, etc.
+    // lived only on the deleted sheet and were removed with it.)
+    var aboutMetric: AtriaAboutMetric {
         switch self {
-        case .recovery: return Metrics.electricGreen
-        case .restingHeartRate: return Metrics.electricRHR
-        case .hrv: return Metrics.electricHRV
-        case .respiration: return Metrics.electricRespiratory
-        case .stress: return Metrics.electricStress
-        case .sleep: return Metrics.electricSleep
+        case .recovery: return .recovery
+        case .restingHeartRate: return .restingHeartRate
+        case .hrv: return .hrv
+        case .respiration: return .respiration
+        case .stress: return .stress
+        case .sleep: return .sleep
         }
     }
 
-    var whatItIs: String {
-        switch self {
-        case .recovery:
-            return "Recovery blends your overnight HRV, resting heart rate, sleep, and respiration against your own baseline into one readiness read. It answers \u{201c}how ready am I today\u{201d} rather than being a score to max out every day."
-        case .restingHeartRate:
-            return "Resting heart rate is how many times your heart beats per minute at full rest, usually measured overnight. It tracks cardiovascular fitness over months and day-to-day strain in the short term."
-        case .hrv:
-            return "Heart rate variability measures the tiny timing differences between heartbeats, driven mostly by your autonomic nervous system. Higher HRV generally reflects more recovery capacity, though the \u{201c}right\u{201d} number is highly individual."
-        case .respiration:
-            return "Respiratory rate is how many breaths you take per minute while asleep. It is normally quite stable night to night, so shifts outside your own usual range are often the first sign something is off."
-        case .stress:
-            return "This stress read estimates autonomic load right now from heart rate and beat-to-beat timing, not a lab cortisol measurement. Treat it as a rough signal for how activated your system currently is."
-        case .sleep:
-            return "Sleep tracks how long you slept against your personal goal, plus how consistent your recent sleep timing has been. It is a duration and consistency estimate, not a clinical sleep study."
-        }
-    }
-
-    var howToImprove: [String] {
-        switch self {
-        case .recovery:
-            return [
-                "Sleep is the single biggest lever -- consistent bed and wake times build a steadier baseline.",
-                "Scale today's effort to the score -- treat a low recovery as a cue for easier movement, not a verdict.",
-                "Give it time -- the underlying baseline gets more accurate over your first few weeks of wear."
-            ]
-        case .restingHeartRate:
-            return [
-                "Build a consistent aerobic base -- regular easy-effort training tends to lower resting heart rate over weeks, not days.",
-                "Protect sleep and hydration -- a single poor night or dehydration can temporarily raise resting HR.",
-                "Watch the trend, not one reading -- a sustained rise versus your own baseline matters more than any single morning."
-            ]
-        case .hrv:
-            return [
-                "Prioritize consistent, sufficient sleep -- HRV is most sensitive to sleep quality and timing.",
-                "Manage training load -- hard sessions temporarily suppress HRV, and easier days typically let it rebound.",
-                "Limit late alcohol and heavy evening meals -- both are commonly linked with lower overnight HRV."
-            ]
-        case .respiration:
-            return [
-                "Rule out simple causes first -- illness, altitude, and a warm room can all shift breathing rate.",
-                "Favor nasal breathing and a consistent sleep position where you can.",
-                "Track the trend for a few nights -- one blip is common; several nights outside range is worth noting."
-            ]
-        case .stress:
-            return [
-                "Try slow paced breathing, roughly 5-6 breaths a minute, for a few minutes to bring it down.",
-                "Short walks and daylight exposure are consistently linked with lower perceived stress.",
-                "If it stays elevated for days, treat that as a cue to lighten training and protect sleep, not push harder."
-            ]
-        case .sleep:
-            return [
-                "Anchor a consistent wake time -- it is one of the strongest levers for regulating your body clock.",
-                "Wind down earlier if you're carrying sleep debt -- small nightly top-ups add up faster than one long catch-up night.",
-                "Keep the bedroom cool, dark, and screen-free in the last 30 minutes to help sleep onset."
-            ]
-        }
-    }
-
-    /// Short action labels for the primary sheet. The complete rationale stays
-    /// attached as an accessibility hint, so sighted users do not have to read
-    /// three paragraph cards before reaching anything actionable.
-    var improvementTitles: [String] {
-        switch self {
-        case .recovery:
-            return ["Keep sleep consistent", "Match effort to readiness", "Let your baseline mature"]
-        case .restingHeartRate:
-            return ["Build an aerobic base", "Protect sleep and hydration", "Watch the trend"]
-        case .hrv:
-            return ["Protect consistent sleep", "Balance hard and easy days", "Limit late alcohol and meals"]
-        case .respiration:
-            return ["Check illness, altitude, and heat", "Favor calm nasal breathing", "Watch several nights"]
-        case .stress:
-            return ["Breathe slowly for 3 minutes", "Take a short daylight walk", "Ease load if it stays high"]
-        case .sleep:
-            return ["Anchor your wake time", "Wind down earlier", "Keep the room cool and dark"]
-        }
-    }
-
-    var compactSummary: String {
-        guard let first = whatItIs.components(separatedBy: ". ").first else { return whatItIs }
-        return first.hasSuffix(".") ? first : first + "."
-    }
-
-    /// "How Atria computes it" methodology (2026-07-07 design handoff).
-    /// Every figure here is the code's real behavior -- constants match
-    /// Insights.swift / AtriaStressMonitor / the sleep aggregation, never the
-    /// mock's illustrative numbers.
-    var howComputed: String {
-        switch self {
-        case .recovery:
-            return "Overnight HRV, resting heart rate, sleep, and respiration are each compared with your own rolling baseline, then blended into one percent. Recovery starts appearing after about 4 nights of calibration and gets steadier as the baseline matures."
-        case .restingHeartRate:
-            return "Read from the strap's heart-rate stream at full rest, preferring overnight windows. Your baseline is a step-bounded rolling average of up to 90 nights, trusted after 14 -- one odd night can't yank it."
-        case .hrv:
-            return "Calculated from the tiny timing gaps between heartbeats in the strap's stream, with implausible beats dropped before the math. Once 7 or more overnight readings exist the baseline uses sleep windows only; it's trusted after 14 nights and holds up to 90."
-        case .respiration:
-            return "Estimated from the breathing rhythm visible in your overnight beat-to-beat timing -- no extra sensor. Nights without a clean overnight window simply don't produce a value."
-        case .stress:
-            return "A short rolling window of heart rate and beat-to-beat variability is compared with your own resting patterns. It needs continuous, well-seated strap contact: loose fit, movement noise, or the strap being off pauses the read as \u{201c}No signal\u{201d} rather than guessing."
-        case .sleep:
-            return "Detected from continuous overnight heart-rate evidence (plus movement evidence when available). Brief sensor dropouts of up to 20 minutes between clearly-asleep stretches count toward duration; longer gaps are honestly excluded."
-        }
-    }
-
-    /// Distinct honesty note (design handoff): personal-baseline framing plus
-    /// the metric's fail-closed behavior, stated explicitly.
-    var honestyNote: String {
-        switch self {
-        case .recovery:
-            return "Scored against your own baseline, never a population norm. Early scores are labeled Early read; confidence becomes personal-baseline after 14 trusted nights, and missing essentials stay Learning."
-        case .restingHeartRate:
-            return "Compared only with your own normal, not age tables. Until 14 trusted nights exist it shows Learning instead of a guessed range."
-        case .hrv:
-            return "There is no universally \u{201c}good\u{201d} HRV -- yours is compared only with your own baseline, never a population norm. It reads Learning until 14 trusted nights exist."
-        case .respiration:
-            return "Compared with your own typical nights only. A missing night stays missing -- no interpolated breaths."
-        case .stress:
-            return "Not a medical stress diagnosis -- a same-day, relative signal from your own resting patterns. When contact is poor it says No signal instead of estimating."
-        case .sleep:
-            return "A duration and consistency estimate from heart-rate evidence, not a clinical sleep study. Stage labels are estimates, and unworn time is never counted as sleep."
-        }
-    }
-
-    /// Used only when no numeric baseline range exists yet for this metric --
-    /// either because the metric isn't range-based (recovery, stress, sleep)
-    /// or because the trusted baseline hasn't formed yet.
-    func rangeFallback(sleepGoalHours: Double) -> String {
-        switch self {
-        case .recovery:
-            return "Recovery already compares today with your own rolling baseline, so there's no separate range -- read the percent itself: 67-100% high, 34-66% moderate, 1-33% low."
-        case .stress:
-            return "Stress is a live Calm / Low / Medium / High read rather than a numeric range -- compare the label day to day."
-        case .sleep:
-            return String(format: "Sleep is compared with your %.1f hour goal and your recent timing consistency rather than a numeric typical range.", sleepGoalHours)
-        case .restingHeartRate, .hrv, .respiration:
-            return "Still building your typical range -- Atria needs a few more days of trusted overnight data before comparing today with your own normal."
-        }
-    }
-}
-
-/// Compact education sheet: one summary, one range row, and three actions.
-/// Methodology and honesty detail remain available in a native disclosure.
-struct AtriaVitalsEducationSheet: View {
-    let topic: AtriaVitalsEducationTopic
-    var numericRangeText: String? = nil
-    var sleepGoalHours: Double = 8.0
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text(topic.compactSummary)
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityHint(topic.whatItIs)
-
-                    LabeledContent("Typical") {
-                        Text(compactRangeText)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(topic.tint)
-                            .multilineTextAlignment(.trailing)
-                    }
-                    .padding(14)
-                    .atriaInsetCard(tint: topic.tint)
-                    .accessibilityHint(numericRangeText
-                        ?? topic.rangeFallback(sleepGoalHours: sleepGoalHours))
-
-                    improveBlock
-                    methodologyDisclosure
-
-                    Text("General guidance, not medical advice.")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(18)
-            }
-            .navigationTitle(topic.title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
-            }
-        }
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
-    }
-
-    private var improveBlock: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Try next")
-                .font(.subheadline.weight(.semibold))
-            ForEach(Array(topic.improvementTitles.enumerated()), id: \.offset) { index, title in
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(topic.tint)
-                        .padding(.top, 2)
-                    Text(title)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityHint(topic.howToImprove[index])
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .atriaInsetCard(tint: topic.tint)
-    }
-
-    private var methodologyDisclosure: some View {
-        DisclosureGroup {
-            Text(topic.honestyNote)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Divider()
-            Text(topic.howComputed)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        } label: {
-            Label("How it works", systemImage: "checkmark.shield.fill")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(topic.tint)
-        }
-        .padding(14)
-        .atriaInsetCard(tint: topic.tint)
-    }
-
-    private var compactRangeText: String {
-        if let numericRangeText { return numericRangeText }
-        switch topic {
-        case .recovery: return "1–33 low · 34–66 moderate · 67–100 high"
-        case .stress: return "Calm · Low · Medium · High"
-        case .sleep: return String(format: "%.1f h goal", sleepGoalHours)
-        case .restingHeartRate, .hrv, .respiration: return "Building your baseline"
-        }
-    }
 }
 
 /// Small inline hint chip shown on a vitals row only when a real
@@ -919,7 +677,6 @@ private struct AtriaHealthMonitorCard: View {
     let skinTemperatureEnabled: Bool
     let onOpenDetail: (AtriaMetricDetailKind) -> Void
     @State private var educationTopic: AtriaVitalsEducationTopic?
-    @State private var educationRangeText: String?
 
     var body: some View {
         let rows = rows(prepared: preparedData)
@@ -934,8 +691,7 @@ private struct AtriaHealthMonitorCard: View {
                 ForEach(rows) { row in
                     AtriaHealthMonitorRowView(row: row,
                                               onOpenDetail: onOpenDetail,
-                                              onOpenEducation: { topic, rangeText in
-                        educationRangeText = rangeText
+                                              onOpenEducation: { topic, _ in
                         educationTopic = topic
                     })
                 }
@@ -944,7 +700,7 @@ private struct AtriaHealthMonitorCard: View {
         .padding(18)
         .atriaCard(emphasis: .soft)
         .sheet(item: $educationTopic) { topic in
-            AtriaVitalsEducationSheet(topic: topic, numericRangeText: educationRangeText)
+            AtriaAboutMetricSheet(metric: topic.aboutMetric)
         }
         .accessibilityElement(children: .contain)
     }
@@ -2854,10 +2610,18 @@ enum AtriaExperimentalSensorCopy {
             : "--"
     }
 
+    // SpO2 copy consolidation (2026-08-01): only the strap-3 branch is a true
+    // hardware limitation (no SpO2 sensor), so it now routes through the
+    // canonical AtriaSpO2Copy strings. The other branches are genuinely
+    // TIME-BASED, not hardware: strap-4+ carry the sensor but Atria has no
+    // validated decoder yet ("Not available yet"), and the decoder-present
+    // branch is still waiting on a reading ("No SpO2 reading yet"). Per the
+    // honesty rule these keep their transient wording -- forcing "on this
+    // strap" onto a strap that HAS the sensor would over-claim a hardware limit.
     static func bloodOxygenStatus(strapModel: AtriaBLEManager.AtriaStrapModel,
                                   decoderAvailable: Bool) -> String {
         if strapModel == .strap3 {
-            return "Not available on this strap"
+            return AtriaSpO2Copy.notAvailableOnStrap
         }
         return decoderAvailable ? "No SpO2 reading yet" : "Not available yet"
     }
@@ -2865,7 +2629,7 @@ enum AtriaExperimentalSensorCopy {
     static func bloodOxygenFootnote(strapModel: AtriaBLEManager.AtriaStrapModel,
                                     decoderAvailable: Bool) -> String {
         if strapModel == .strap3 {
-            return "Not available on this strap; Atria never fabricates an SpO2 value."
+            return "\(AtriaSpO2Copy.notAvailableOnStrap) \(AtriaSpO2Copy.wontFakeAPercentage)"
         }
         if !decoderAvailable {
             return "Not available yet. Atria does not estimate a percentage."
@@ -2877,7 +2641,7 @@ enum AtriaExperimentalSensorCopy {
                                   decoderAvailable: Bool,
                                   candidateFrames: Int) -> String {
         if strapModel == .strap3 {
-            return "This strap's hardware does not support SpO2. Atria does not estimate or display a blood-oxygen percentage."
+            return AtriaSpO2Copy.longUnavailable
         }
         if !decoderAvailable {
             return "Not available yet. Atria does not show raw sensor data as blood oxygen."

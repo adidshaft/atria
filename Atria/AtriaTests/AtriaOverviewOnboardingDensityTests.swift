@@ -171,7 +171,17 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
         XCTAssertFalse(settings.contains("These bands tune sleep-only deviations and candidate-frame evidence."))
     }
 
-    func testFirstLaunchStopsAtFiveMandatoryPagesWithoutDuplicatePersonalization() throws {
+    // 2026-08-01: the first-launch flow deliberately grew from 5 to 8 pages to
+    // adopt the design file's in-flow personalization (nickname, rings + center
+    // number, cycle opt-in) at the user's explicit onboarding request. The
+    // anti-duplication property this test guards is UNCHANGED and still
+    // asserted: personalization is owned by the flow alone — ContentView's
+    // OnboardingStage stays a two-stage machine (flow + sharingChoice) with no
+    // personalization stages, and research consent remains the post-flow
+    // sharingChoice step, never duplicated in-flow. Only the page-count
+    // expectation was migrated (5 -> 8); trade-off (added first-launch pages)
+    // surfaced to the user for veto.
+    func testFirstLaunchOnboardingOwnsPersonalizationWithoutDuplicatingContentViewStages() throws {
         let content = try source("ContentView.swift")
         let stageStart = try XCTUnwrap(content.range(of: "private enum OnboardingStage"))
         let stageEnd = try XCTUnwrap(content.range(of: "init(ble:", range: stageStart.upperBound..<content.endIndex))
@@ -182,17 +192,24 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
                                                range: stepStart.upperBound..<flow.endIndex))
         let steps = String(flow[stepStart.lowerBound..<stepEnd.lowerBound])
 
+        // ContentView stays flow + sharingChoice — personalization is never
+        // duplicated as a ContentView stage.
         XCTAssertTrue(stages.contains("case flow"))
         XCTAssertTrue(stages.contains("case sharingChoice(AthleteProfile)"))
         XCTAssertFalse(stages.contains("case nickname"))
         XCTAssertFalse(stages.contains("case ringPicker"))
         XCTAssertFalse(stages.contains("case womensHealth"))
-        XCTAssertEqual(steps.components(separatedBy: "\n        case ").count - 1, 5)
+        // The flow owns all 8 first-launch pages, including the three
+        // personalization pages adopted from the design.
+        XCTAssertEqual(steps.components(separatedBy: "\n        case ").count - 1, 8)
         XCTAssertTrue(steps.contains("case whatThisIs"))
         XCTAssertTrue(steps.contains("case strap"))
         XCTAssertTrue(steps.contains("case you"))
         XCTAssertTrue(steps.contains("case behaviors"))
         XCTAssertTrue(steps.contains("case expectations"))
+        XCTAssertTrue(steps.contains("case nickname"))
+        XCTAssertTrue(steps.contains("case rings"))
+        XCTAssertTrue(steps.contains("case cycle"))
         XCTAssertTrue(content.contains("onboardingStage = .sharingChoice("))
         XCTAssertFalse(content.contains("onboardingStage = .nickname(profile)"))
     }

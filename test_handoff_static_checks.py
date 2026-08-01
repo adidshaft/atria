@@ -2052,8 +2052,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .steps:",
             "Adjust the daily strap-step goal used by the steps card.",
             "AtriaGlanceMetricCard(title: \"Blood oxygen\"",
-            "detail: \"Not available yet\"",
-            "Blood oxygen is not available yet. Atria does not estimate a percentage.",
+            # SpO2 copy consolidation (2026-08-01): the glance card now sources the
+            # canonical AtriaSpO2Copy hardware-limitation strings (still em dash, no %).
+            "detail: AtriaSpO2Copy.notAvailableOnStrap",
+            "accessibilityDetail: \"\\(AtriaSpO2Copy.notAvailableOnStrap) \\(AtriaSpO2Copy.wontFakeAPercentage)\"",
             "AtriaGlanceMetricCard(title: \"Wrist temp\"",
             "value: AtriaExperimentalSensorCopy.skinTemperatureValue(",
             "detail: AtriaExperimentalSensorCopy.skinTemperatureStatus(",
@@ -8341,6 +8343,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "state: summary.sleepWakeText == \"--\" ? .learning : .research",
             "state: summary.probeFrameCount > 0 ? .research : .learning",
             "AtriaExperimentalSensorCopy.bloodOxygenFootnote(",
+            # SpO2 copy consolidation (2026-08-01): the strap-4+ decoder-not-shipped
+            # branch is genuinely time-based, so it keeps its transient wording; only
+            # the strap-3 hardware branch (not pinned here) moved to AtriaSpO2Copy.
             "return \"Not available yet. Atria does not estimate a percentage.\"",
             "value: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable",
             "AtriaExperimentalSensorCopy.skinTemperatureFootnote(",
@@ -8656,7 +8661,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "Blood pressure not supported",
             "WHOOP 4.0 is not cuff-calibrated, so Atria does not estimate BP.",
             "Blood oxygen signal",
-            "Sleep-only evidence; no SpO2 percentage or Health export yet.",
+            # SpO2 copy consolidation (2026-08-01): sensor row now uses the canonical
+            # AtriaSpO2Copy hardware-limitation strings instead of time-framed copy.
+            "\\(AtriaSpO2Copy.notAvailableOnStrap) \\(AtriaSpO2Copy.wontFakeAPercentage)",
             "Wrist temperature signal",
             "Relative wrist-skin deviation only; no core temperature or Health export.",
         ]:
@@ -10406,6 +10413,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "Rows show evidence counts until checked. Skin temperature is only a sleep-baseline change.",
             "private struct AtriaResearchSignalInfoSheet: View",
             "@Environment(\\.dismiss) private var dismiss",
+            # SpO2 copy consolidation (2026-08-01): the strap-4+ decoder-not-shipped
+            # branch is genuinely time-based and keeps its transient wording; only the
+            # strap-3 hardware branch (not pinned here) moved to AtriaSpO2Copy.
             "Not available yet. Atria does not show raw sensor data as blood oxygen.",
             "Atria does not show an SpO2 percentage until quality checks pass.",
             ".navigationTitle(\"Experimental sensors\")",

@@ -1441,10 +1441,12 @@ struct AtriaSettingsView: View {
                             tint: .secondary,
                             title: "Blood pressure not supported",
                             detail: "WHOOP 4.0 is not cuff-calibrated, so Atria does not estimate BP.")
+                // SpO2 copy consolidation (2026-08-01): canonical hardware
+                // limitation copy, matching the About sheet and vitals surfaces.
                 settingsInfoRow(icon: "drop.degreesign",
                             tint: .cyan,
                             title: "Blood oxygen signal",
-                            detail: "Sleep-only evidence; no SpO2 percentage or Health export yet.")
+                            detail: "\(AtriaSpO2Copy.notAvailableOnStrap) \(AtriaSpO2Copy.wontFakeAPercentage)")
                 settingsInfoRow(icon: "thermometer.variable",
                             tint: .teal,
                             title: "Wrist temperature signal",

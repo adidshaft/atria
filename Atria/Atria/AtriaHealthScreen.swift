@@ -774,9 +774,7 @@ struct AtriaHealthScreen: View {
             }
         }
         .sheet(item: $educationTopic) { topic in
-            AtriaVitalsEducationSheet(topic: topic,
-                                      numericRangeText: typicalRangeText(for: topic),
-                                      sleepGoalHours: sleepGoalHours)
+            AtriaAboutMetricSheet(metric: topic.aboutMetric)
         }
         .sheet(item: $metricDetail) { detail in
             AtriaMetricDetailSheet(metric: detail,
@@ -1485,18 +1483,6 @@ struct AtriaHealthScreen: View {
         let lowText = String(format: format, max(low, 0))
         let highText = String(format: format, max(high, low))
         return "Typical for you: \(lowText)\u{2013}\(highText) \(unit)"
-    }
-
-    /// Feeds the tap-education sheet's "Your typical range" section. `nil`
-    /// falls back to the topic's honest "still building" copy inside the
-    /// sheet itself -- recovery, stress, and sleep are never range-based.
-    private func typicalRangeText(for topic: AtriaVitalsEducationTopic) -> String? {
-        switch topic {
-        case .restingHeartRate: return restingHeartRateRangeText
-        case .hrv: return hrvRangeText
-        case .respiration: return respiratoryRangeText
-        case .recovery, .stress, .sleep: return nil
-        }
     }
 
     // MARK: Suboptimal-zone hint chips (only when a trusted comparison exists)

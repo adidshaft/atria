@@ -70,7 +70,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
         }
     }
 
-    /// Identity hue per metric, matching AtriaVitalsEducationTopic.tint and the
+    /// Identity hue per metric, matching AtriaMetricDetailKind.tint and the
     /// Customize sheet (Metrics.electric*). `bloodOxygen` is intentionally
     /// neutral -- painting an unavailable metric in a confident hue would imply
     /// a reading exists.
