@@ -10,13 +10,18 @@ import SwiftUI
 /// any surface that wants the canonical wording can reference one place instead
 /// of re-inventing it. Deliberately never renders a percentage.
 enum AtriaSpO2Copy {
-    /// Short honesty line. Verbatim design canonical.
+    /// Short honesty line.
     static let wontFakeAPercentage = "Atria won't fake a percentage."
-    /// Short state line. Verbatim design canonical.
-    static let notAvailableOnStrap = "Not available on this strap."
-    /// Long form for education/detail surfaces. Verbatim design canonical.
-    /// Uses "SpO2" (not the subscript form) to match the design copy exactly.
-    static let longUnavailable = "This strap's sensor can't produce a validated SpO2 reading. Rather than estimate, Atria leaves it blank — and tells you why."
+    /// Short state line. 2026-08-01: reframed from "Not available on this strap"
+    /// to an APP-limitation, because the WHOOP 4 strap DOES carry the SpO2 sensor
+    /// (`AtriaBLEManager.AtriaStrapModel.supportsSpO2 == true`) — Atria simply has
+    /// no validated decoder for it yet (`AtriaResearchProbe.validatedSpO2Decoder-
+    /// Available == false`). Saying "not on this strap" over-claimed a hardware
+    /// gap that isn't real. Constant name kept for reference stability; the value
+    /// is the source of truth. See the SpO2-decoder research task.
+    static let notAvailableOnStrap = "Not available in Atria yet."
+    /// Long form for education/detail surfaces.
+    static let longUnavailable = "Atria can't yet produce a validated SpO2 reading from this strap's sensor. Rather than estimate, it leaves this blank — and tells you why."
 }
 
 /// The metrics that have an "About <metric>" education sheet.
