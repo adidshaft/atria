@@ -43,8 +43,10 @@ final class AtriaAboutMetricSheetTests: XCTestCase {
         let spo2 = AtriaAboutMetric.bloodOxygen
         XCTAssertTrue(spo2.isHardwareUnavailable)
         XCTAssertEqual(spo2.computeCardTitle, "WHY IT'S BLANK")
-        // The middle card carries the canonical long-form unavailable copy...
-        XCTAssertEqual(spo2.computeCardBody, AtriaSpO2Copy.longUnavailable)
+        // 2026-08-01: the middle card now carries the full "why it's blank"
+        // explanation (derived ratio-of-ratios value + the decode-vs-calibrate
+        // question) shown when the user taps SpO2, not the compact long form.
+        XCTAssertEqual(spo2.computeCardBody, AtriaSpO2Copy.whyBlank)
         // ...and the honesty note carries both canonical short lines verbatim.
         XCTAssertTrue(spo2.honestyNote.contains(AtriaSpO2Copy.wontFakeAPercentage),
                       "SpO2 honesty note must use canonical \"won't fake a percentage\" copy")
@@ -62,12 +64,25 @@ final class AtriaAboutMetricSheetTests: XCTestCase {
     // fabricated %) is unchanged; only the availability framing moved.
     func testCanonicalSpO2ConstantsUseAppLimitationFraming() {
         XCTAssertEqual(AtriaSpO2Copy.wontFakeAPercentage, "Atria won't fake a percentage.")
-        XCTAssertEqual(AtriaSpO2Copy.notAvailableOnStrap, "Not available in Atria yet.")
+        XCTAssertEqual(AtriaSpO2Copy.notAvailableOnStrap, "Not available yet.")
         XCTAssertEqual(AtriaSpO2Copy.longUnavailable,
                        "Atria can't yet produce a validated SpO2 reading from this strap's sensor. Rather than estimate, it leaves this blank — and tells you why.")
         // The framing must NOT claim the hardware lacks the sensor.
         XCTAssertFalse(AtriaSpO2Copy.notAvailableOnStrap.contains("on this strap"))
         XCTAssertFalse(AtriaSpO2Copy.longUnavailable.contains("can't produce"))
+    }
+
+    // Tapping SpO2 opens the About sheet; its "WHY IT'S BLANK" card must explain
+    // the real reason — SpO2 is a derived (ratio-of-ratios) value, and the open
+    // decode-vs-calibrate question — never a fabricated %.
+    func testBloodOxygenAboutSheetExplainsTheDerivedReason() {
+        let body = AtriaAboutMetric.bloodOxygen.computeCardBody
+        XCTAssertEqual(body, AtriaSpO2Copy.whyBlank)
+        XCTAssertTrue(body.contains("ratio of ratios"))
+        XCTAssertTrue(body.contains("red versus infrared"))
+        XCTAssertTrue(body.lowercased().contains("calibration"))
+        XCTAssertFalse(body.contains("%"))
+        XCTAssertEqual(AtriaAboutMetric.bloodOxygen.computeCardTitle, "WHY IT'S BLANK")
     }
 
     func testOnlyBloodOxygenIsHardwareUnavailable() {

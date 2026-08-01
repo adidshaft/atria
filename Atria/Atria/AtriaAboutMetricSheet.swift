@@ -19,9 +19,13 @@ enum AtriaSpO2Copy {
     /// Available == false`). Saying "not on this strap" over-claimed a hardware
     /// gap that isn't real. Constant name kept for reference stability; the value
     /// is the source of truth. See the SpO2-decoder research task.
-    static let notAvailableOnStrap = "Not available in Atria yet."
-    /// Long form for education/detail surfaces.
+    static let notAvailableOnStrap = "Not available yet."
+    /// Long form for compact education/detail surfaces.
     static let longUnavailable = "Atria can't yet produce a validated SpO2 reading from this strap's sensor. Rather than estimate, it leaves this blank — and tells you why."
+    /// Full "why it's blank" explanation shown when the user taps SpO2 to open the
+    /// About sheet. Explains SpO2 is a derived (ratio-of-ratios) value, not a
+    /// direct read, and the open decode-vs-calibrate question. 2026-08-01.
+    static let whyBlank = "SpO\u{2082} isn't a number the sensor reads directly — it's worked out from how much red versus infrared light your blood absorbs (a \u{201c}ratio of ratios\u{201d}). The open question is whether this strap broadcasts WHOOP's already-computed SpO\u{2082} over Bluetooth — which Atria could simply decode and show — or only the raw red/infrared waveform, which would need a one-time calibration against a reference oximeter to become a percentage. Atria is working that out. Until it can confirm a real value, it shows nothing rather than guess a number you might act on."
 }
 
 /// The metrics that have an "About <metric>" education sheet.
@@ -168,7 +172,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
             // prior sleep nights; needs ≥3 prior nights; ±0.5 °C typical.
             return "Averaged from the strap's skin-temperature sensor across a night's sleep, then compared with the mean of your prior sleep nights to give a deviation in °C. It needs at least 3 prior nights before a delta appears, and reads within about ±0.5 °C as typical."
         case .bloodOxygen:
-            return AtriaSpO2Copy.longUnavailable
+            return AtriaSpO2Copy.whyBlank
         }
     }
 
