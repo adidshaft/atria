@@ -31,6 +31,9 @@ struct AtriaExpandedChartView: View {
     /// handoff). One at a time; the overlay is rescaled into this chart's
     /// y-domain and the legend says so — comparison of shape, not units.
     var overlays: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] = []
+    /// Window noun ("week", "month", …) used only to word the compare delta's
+    /// scope ("Month-over-month"). The comparison series is always priorPoints.
+    var comparisonPeriodNoun: String = "period"
     let onDismiss: () -> Void
     private let prepared: AtriaExpandedChartPreparedModel
 
@@ -38,6 +41,15 @@ struct AtriaExpandedChartView: View {
     @State private var activeOverlayTitle: String?
     @State private var brushStart: Date?
     @State private var brushEnd: Date?
+    // Graph grammar slice 4 (2026-08-01). Compare (pattern 2) and edit-chart
+    // (pattern 4) state. Compare is off by default — the design's "Compare on"
+    // toggle — so the prior-period overlay appears only when asked for.
+    @State private var compareOn: Bool = false
+    @State private var compareMode: AtriaGraphCompareMode = .previousPeriod
+    @State private var chartType: AtriaGraphChartType = .line
+    @State private var markJournalEvents: Bool = true
+    @State private var showCompareSheet: Bool = false
+    @State private var showEditSheet: Bool = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(title: String,
@@ -48,6 +60,7 @@ struct AtriaExpandedChartView: View {
          baselineBand: AtriaDetailBaselineBand? = nil,
          events: [AtriaChartEvent] = [],
          overlays: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] = [],
+         comparisonPeriodNoun: String = "period",
          onDismiss: @escaping () -> Void) {
         self.title = title
         self.unit = unit
@@ -57,6 +70,7 @@ struct AtriaExpandedChartView: View {
         self.baselineBand = baselineBand
         self.events = events
         self.overlays = overlays
+        self.comparisonPeriodNoun = comparisonPeriodNoun
         self.onDismiss = onDismiss
         self.prepared = AtriaExpandedChartPreparedModel(points: points,
                                                         priorPoints: priorPoints,
@@ -89,6 +103,7 @@ struct AtriaExpandedChartView: View {
                         emptyState
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
+                        if compareOn { compareStrip }
                         chartBody
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                         footer
@@ -106,6 +121,50 @@ struct AtriaExpandedChartView: View {
         .preferredColorScheme(.dark)
         .onAppear {
             if visibleDays == 0 { visibleDays = spanDays }
+        }
+        .sheet(isPresented: $showCompareSheet) {
+            AtriaGraphCompareSheet(compareOn: $compareOn,
+                                   mode: $compareMode,
+                                   availability: compareAvailability,
+                                   delta: compareDelta,
+                                   tint: tint)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showEditSheet) {
+            AtriaEditChartSheet(primaryTitle: title,
+                                primaryTint: tint,
+                                plotOptions: plotOptions,
+                                activeOverlayTitle: $activeOverlayTitle,
+                                chartType: $chartType,
+                                chartTypeOptions: chartTypeOptions,
+                                markJournalEvents: $markJournalEvents,
+                                hasJournalEvents: visibleEventCount > 0)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+    }
+
+    /// Compact compare readout above the plot: swatches plus the honest delta.
+    @ViewBuilder private var compareStrip: some View {
+        HStack(spacing: 12) {
+            AtriaGraphCompareLegend(currentTitle: "This \(comparisonPeriodNoun)",
+                                    currentTint: tint,
+                                    comparisonTitle: compareMode.title)
+            Spacer(minLength: 8)
+            if let compareDelta {
+                Text("\(compareDelta.deltaText) · \(compareDelta.scopeText)")
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(tint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            } else {
+                Text(compareAvailability.disabledNote(for: compareMode) ?? "Not enough data to compare")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
         }
     }
 
@@ -134,6 +193,26 @@ struct AtriaExpandedChartView: View {
                 .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
+            Button {
+                showCompareSheet = true
+            } label: {
+                Image(systemName: compareOn ? "square.filled.on.square" : "square.on.square")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(compareOn ? tint : .secondary)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Compare against another period")
+            Button {
+                showEditSheet = true
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Edit chart: plot, chart type, journal markers")
             Button {
                 onDismiss()
             } label: {
@@ -171,13 +250,19 @@ struct AtriaExpandedChartView: View {
                     .foregroundStyle(baselineBand.tint.opacity(0.10))
             }
 
-            ForEach(priorPoints) { point in
-                LineMark(x: .value("Day", point.day, unit: .day),
-                         y: .value(title, point.value),
-                         series: .value("Series", "prior"))
-                    .interpolationMethod(.monotone)
-                    .foregroundStyle(.secondary.opacity(0.4))
-                    .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
+            // Comparison overlay (pattern 2): only drawn when Compare is on and
+            // the selected mode is one Atria actually has data for. The prior
+            // series is the "previous period"; the other modes stay disabled in
+            // the compare sheet rather than drawing a fabricated line.
+            if compareOn, compareMode == .previousPeriod {
+                ForEach(priorPoints) { point in
+                    LineMark(x: .value("Day", point.day, unit: .day),
+                             y: .value(title, point.value),
+                             series: .value("Series", "prior"))
+                        .interpolationMethod(.monotone)
+                        .foregroundStyle(.secondary.opacity(0.4))
+                        .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 5]))
+                }
             }
 
             if let overlay = activeOverlay {
@@ -191,38 +276,21 @@ struct AtriaExpandedChartView: View {
                 }
             }
 
-            ForEach(points) { point in
-                // Subtle area fill beneath the current line (Apple Health idiom,
-                // matching AtriaTrendChartCard). Purely decorative: the bounded
-                // y-scale below keeps it inside the plot, and no value is
-                // implied beyond the real sampled line it sits under.
-                AreaMark(x: .value("Day", point.day, unit: .day),
-                         y: .value(title, point.value))
-                    .interpolationMethod(.monotone)
-                    .foregroundStyle(
-                        LinearGradient(colors: [tint.opacity(0.24), tint.opacity(0.02)],
-                                       startPoint: .top, endPoint: .bottom)
-                    )
-                LineMark(x: .value("Day", point.day, unit: .day),
-                         y: .value(title, point.value),
-                         series: .value("Series", "current"))
-                    .interpolationMethod(.monotone)
-                    .foregroundStyle(tint)
-                PointMark(x: .value("Day", point.day, unit: .day),
-                          y: .value(title, point.value))
-                    .foregroundStyle(point.tint)
-                    .symbolSize(30)
-            }
+            // Current series, drawn per the selected chart type (pattern 4).
+            currentSeriesMarks
 
             // Event lane: real saved activity pinned to the top of the plot.
-            ForEach(events) { event in
-                PointMark(x: .value("Day", event.day, unit: .day),
-                          y: .value(title, prepared.eventLaneY))
-                    .symbol {
-                        Image(systemName: event.systemImage)
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(event.tint)
-                    }
+            // Gated by the edit-chart "Mark journal events" toggle.
+            if markJournalEvents {
+                ForEach(events) { event in
+                    PointMark(x: .value("Day", event.day, unit: .day),
+                              y: .value(title, prepared.eventLaneY))
+                        .symbol {
+                            Image(systemName: event.systemImage)
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(event.tint)
+                        }
+                }
             }
 
             if let start = brushStart, let end = brushEnd {
@@ -325,6 +393,104 @@ struct AtriaExpandedChartView: View {
     private var visibleEventCount: Int {
         events.reduce(into: 0) { count, event in
             if prepared.xDomain.contains(event.day) { count += 1 }
+        }
+    }
+
+    // MARK: Graph grammar slice 4 — chart-type + compare (2026-08-01)
+
+    /// Current series drawn in the selected chart type. Line keeps the shipped
+    /// area+line+points; Bars is a per-point bar; Range draws each bucket's real
+    /// min–max as a thin bar (only where a band exists) with its value dotted.
+    @ChartContentBuilder private var currentSeriesMarks: some ChartContent {
+        switch effectiveChartType {
+        case .line:
+            ForEach(points) { point in
+                // Subtle area fill beneath the current line (Apple Health idiom,
+                // matching AtriaTrendChartCard). Purely decorative: the bounded
+                // y-scale keeps it inside the plot, and no value is implied
+                // beyond the real sampled line it sits under.
+                AreaMark(x: .value("Day", point.day, unit: .day),
+                         y: .value(title, point.value))
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(
+                        LinearGradient(colors: [tint.opacity(0.24), tint.opacity(0.02)],
+                                       startPoint: .top, endPoint: .bottom)
+                    )
+                LineMark(x: .value("Day", point.day, unit: .day),
+                         y: .value(title, point.value),
+                         series: .value("Series", "current"))
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(tint)
+                PointMark(x: .value("Day", point.day, unit: .day),
+                          y: .value(title, point.value))
+                    .foregroundStyle(point.tint)
+                    .symbolSize(30)
+            }
+        case .bars:
+            ForEach(points) { point in
+                BarMark(x: .value("Day", point.day, unit: .day),
+                        y: .value(title, point.value))
+                    .foregroundStyle(tint.gradient)
+                    .cornerRadius(3)
+            }
+        case .range:
+            ForEach(points) { point in
+                if let lower = point.bandLower, let upper = point.bandUpper, upper > lower {
+                    BarMark(x: .value("Day", point.day, unit: .day),
+                            yStart: .value("Min", lower),
+                            yEnd: .value("Max", upper),
+                            width: .fixed(6))
+                        .foregroundStyle(tint.opacity(0.32))
+                        .cornerRadius(3)
+                }
+                PointMark(x: .value("Day", point.day, unit: .day),
+                          y: .value(title, point.value))
+                    .foregroundStyle(point.tint)
+                    .symbolSize(30)
+            }
+        }
+    }
+
+    /// Whether the plotted points carry a real min–max band; gates the Range
+    /// chart type so it is never offered for band-less daily points.
+    private var hasMinMaxBand: Bool {
+        points.contains { $0.bandLower != nil && $0.bandUpper != nil }
+    }
+
+    private var chartTypeOptions: [AtriaGraphChartType] {
+        AtriaGraphChartType.options(hasMinMaxBand: hasMinMaxBand)
+    }
+
+    /// Falls back to Line if a previously chosen type is no longer valid for
+    /// the current data (e.g. Range after the band went away).
+    private var effectiveChartType: AtriaGraphChartType {
+        chartTypeOptions.contains(chartType) ? chartType : .line
+    }
+
+    /// Which comparison modes have real data. Only the previous-period series
+    /// is passed into this chart; the other two stay honestly disabled.
+    private var compareAvailability: AtriaGraphCompareAvailability {
+        AtriaGraphCompareAvailability.make(currentCount: points.count,
+                                           previousPeriodCount: priorPoints.count,
+                                           samePeriodLastYearCount: 0)
+    }
+
+    /// The honest delta for the active compare mode, or nil when it can't be
+    /// stated from real data.
+    private var compareDelta: AtriaGraphCompareDelta? {
+        guard compareMode == .previousPeriod else { return nil }
+        return AtriaGraphCompareDelta(current: points.map(\.value),
+                                      comparison: priorPoints.map(\.value),
+                                      unit: unit,
+                                      scopeText: AtriaGraphCompareDelta.scope(for: compareMode,
+                                                                              noun: comparisonPeriodNoun))
+    }
+
+    /// Sibling overlays offered in the edit-chart plot list; each marked with
+    /// whether it actually has data to draw.
+    private var plotOptions: [AtriaEditChartPlotOption] {
+        prepared.overlays.map {
+            AtriaEditChartPlotOption(title: $0.title, tint: $0.tint, hasData: !$0.points.isEmpty)
         }
     }
 
