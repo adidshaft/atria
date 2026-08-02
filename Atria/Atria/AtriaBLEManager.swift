@@ -2861,6 +2861,35 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
 
+    /// Drain-keeping P2 (maintenance window): the connected-link guards
+    /// (`connected_slice_cooldown`, `connected_live_link`, `live_link`) exist to
+    /// protect the live HR stream the user is *looking at*. When the app is NOT
+    /// foreground-interactive (backgrounded / phone locked / idle — e.g. asleep
+    /// on the charger) nobody is watching live HR, so a real backlog should be
+    /// flushed HARD instead of deferred behind those guards. Same guardrails as
+    /// the connected catch-up: only a settled owner (never mid proof/cutover),
+    /// never during a workout, and back off after a recent disconnect storm.
+    /// This is the "flush while sleeping" window done safely — the tradeoff
+    /// flips toward catch-up precisely when live-link stability matters least.
+    nonisolated static func isFlushMaintenanceWindow(
+        rangeLossBackfillPending: Bool,
+        foregroundInteractive: Bool,
+        cleanOwnerState: ProtectedR10CleanOwnerState,
+        activeExplicitWorkout: Bool,
+        recentDisconnectStorm: Bool
+    ) -> Bool {
+        guard rangeLossBackfillPending,
+              !foregroundInteractive,
+              !activeExplicitWorkout,
+              !recentDisconnectStorm else { return false }
+        switch cleanOwnerState {
+        case .none, .qualified, .fallbackActive:
+            return true
+        case .protectedLaunchPending, .proving, .fallbackPending:
+            return false
+        }
+    }
+
     nonisolated static func shouldDeferAutomaticHistoryForCleanOwner(
         cleanOwner: ProtectedR10CleanOwner,
         state: ProtectedR10CleanOwnerState,
@@ -8841,6 +8870,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 activeExplicitWorkout: activeExplicitWorkout,
                 syncInProgress: offlineHistoricalSyncInProgress
             )
+        // Drain-keeping P2 maintenance window: when backgrounded/idle (nobody is
+        // watching live HR) with a real backlog and a settled, storm-free link,
+        // relax the connected-link guards below so the backlog flushes hard
+        // instead of waiting for a lucky disconnect. See isFlushMaintenanceWindow.
+        let flushMaintenanceWindow = Self.isFlushMaintenanceWindow(
+            rangeLossBackfillPending: defaults.bool(
+                forKey: OfflineSyncDefaults.rangeLossBackfillPending
+            ),
+            foregroundInteractive: foregroundInteractiveMode,
+            cleanOwnerState: protectedR10CleanOwnerState,
+            activeExplicitWorkout: activeExplicitWorkout,
+            recentDisconnectStorm: recentDisconnectStorm
+        )
+        if flushMaintenanceWindow {
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=flush_maintenance_window reason=%@ owner=%@ action=relax_connected_link_guards_for_backlog",
+                reason,
+                protectedR10CleanOwnerState.rawValue
+            )
+        }
 
         // A clean-owner cutover/proof/fallback owns the process radio even
         // across a disconnect. The physical V4 proof showed that admitting a
@@ -8932,7 +8981,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if connectedLink,
            connectedSliceCooldownUntil > now.timeIntervalSince1970,
            !explicitUserRequest,
-           !explicitResearchRequest {
+           !explicitResearchRequest,
+           !flushMaintenanceWindow {
             retainPendingOfflineHistoricalSyncRequest(
                 reason: reason,
                 force: false,
@@ -9023,7 +9073,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // reconnect while the exact recovery window remained pending. Wait for
         // a naturally disconnected transport instead. A deliberate user action
         // remains able to request a connected sync.
-        if Self.shouldDeferAutomaticOfflineSyncForConnectedLink(
+        if !flushMaintenanceWindow,
+           Self.shouldDeferAutomaticOfflineSyncForConnectedLink(
             linkConnected: connectedLink,
             linkConnecting: connectingLink,
             explicitUserRequest: explicitHistoricalRequest,
@@ -9049,6 +9100,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // stream. Preserve live data; the durable gap ledger keeps this request
         // pending until a natural reconnect or an explicit manual force sync.
         if !force,
+           !flushMaintenanceWindow,
            !(recoverableGapPending && verifiedMetricHistoryCapability),
            shouldProtectLiveStreamForOfflineSync(now: now) {
             retainPendingOfflineHistoricalSyncRequest(
