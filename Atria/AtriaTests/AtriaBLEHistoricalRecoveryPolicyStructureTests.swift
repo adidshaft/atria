@@ -273,6 +273,41 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         }
     }
 
+    func testConnectedRangeLossCatchUpIsGuardedButAllowedWhenSettled() {
+        typealias State = AtriaBLEManager.ProtectedR10CleanOwnerState
+        func allow(
+            pending: Bool = true,
+            state: State = .fallbackActive,
+            storm: Bool = false,
+            verified: Bool = true,
+            workout: Bool = false,
+            sync: Bool = false
+        ) -> Bool {
+            AtriaBLEManager.shouldAllowConnectedRangeLossCatchUp(
+                rangeLossBackfillPending: pending,
+                cleanOwnerState: state,
+                recentDisconnectStorm: storm,
+                verifiedHistoryCapability: verified,
+                activeExplicitWorkout: workout,
+                syncInProgress: sync
+            )
+        }
+        // Settled owner + real backlog + no storm → connected catch-up allowed.
+        XCTAssertTrue(allow(state: .fallbackActive))
+        XCTAssertTrue(allow(state: .qualified))
+        XCTAssertTrue(allow(state: .none))
+        // Active proof/cutover genuinely owns the radio → never preempt.
+        XCTAssertFalse(allow(state: .proving))
+        XCTAssertFalse(allow(state: .protectedLaunchPending))
+        XCTAssertFalse(allow(state: .fallbackPending))
+        // Storm back-off, no backlog, active workout, or in-flight sync → refuse.
+        XCTAssertFalse(allow(storm: true))
+        XCTAssertFalse(allow(pending: false))
+        XCTAssertFalse(allow(workout: true))
+        XCTAssertFalse(allow(sync: true))
+        XCTAssertFalse(allow(verified: false))
+    }
+
     func testTerminalProjectionFailureReleasesOnlyAuthorizedMotionBankRequest() {
         typealias Status =
             AtriaHistoricalFullDrainCoverageStore.Authority.Status

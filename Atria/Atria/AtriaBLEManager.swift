@@ -2829,6 +2829,38 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
 
+    /// Drain-keeping P1b (accepted-risk, guarded): a large range-loss backlog
+    /// otherwise only drains on natural disconnect→reconnect cycles, because the
+    /// pure-HR fallback defers connected history to protect the live link. When
+    /// a real backlog is pending and the owner is SETTLED (not mid proof/cutover)
+    /// and there is no recent disconnect storm, permit the connected catch-up
+    /// drain. Storm safety is layered: (1) this refuses after a recent early-
+    /// disconnect storm, and (2) the P1 retry chaining is progress-gated, so an
+    /// attempt that drops the link WITHOUT yielding rows falls back to the slow
+    /// cadence instead of tight-looping. A dropped link still lands on the proven
+    /// disconnected-recovery path, so the backlog is never lost.
+    nonisolated static func shouldAllowConnectedRangeLossCatchUp(
+        rangeLossBackfillPending: Bool,
+        cleanOwnerState: ProtectedR10CleanOwnerState,
+        recentDisconnectStorm: Bool,
+        verifiedHistoryCapability: Bool,
+        activeExplicitWorkout: Bool,
+        syncInProgress: Bool
+    ) -> Bool {
+        guard rangeLossBackfillPending,
+              verifiedHistoryCapability,
+              !activeExplicitWorkout,
+              !syncInProgress,
+              !recentDisconnectStorm else { return false }
+        switch cleanOwnerState {
+        case .none, .qualified, .fallbackActive:
+            return true
+        case .protectedLaunchPending, .proving, .fallbackPending:
+            // An active proof/cutover genuinely owns the radio — never preempt.
+            return false
+        }
+    }
+
     nonisolated static func shouldDeferAutomaticHistoryForCleanOwner(
         cleanOwner: ProtectedR10CleanOwner,
         state: ProtectedR10CleanOwnerState,
@@ -8781,6 +8813,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // durable journal + verified WHOOP-4 capability fence is the bounded
         // exception that prevents a healthy standing reconnect from starving
         // its own missing interval forever.
+        // Drain-keeping P1b: treat a recent early-disconnect storm as a signal
+        // to keep deferring connected catch-up (fall back to disconnect-cycle
+        // recovery) rather than risk churning the link.
+        let recentDisconnectStorm =
+            defaults.integer(forKey: Self.protectedR10EarlyDisconnectsKey)
+                >= Self.protectedR10EarlyDisconnectLimit
+            || (defaults.object(forKey: Self.protectedR10DisconnectStormAtKey)
+                as? Double).map {
+                    Date().timeIntervalSince1970 - $0 < 300
+                } ?? false
         let protectedHistoryHandoffAllowed = Self.shouldAllowProtectedHistoricalRecovery(
             linkConnected: connectedLink,
             exactGapPending: recoverableGapPending,
@@ -8789,6 +8831,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             syncInProgress: offlineHistoricalSyncInProgress,
             explicitUserRequest: explicitHistoricalRequest
         )
+            || Self.shouldAllowConnectedRangeLossCatchUp(
+                rangeLossBackfillPending: defaults.bool(
+                    forKey: OfflineSyncDefaults.rangeLossBackfillPending
+                ),
+                cleanOwnerState: protectedR10CleanOwnerState,
+                recentDisconnectStorm: recentDisconnectStorm,
+                verifiedHistoryCapability: verifiedHistoryCapability,
+                activeExplicitWorkout: activeExplicitWorkout,
+                syncInProgress: offlineHistoricalSyncInProgress
+            )
 
         // A clean-owner cutover/proof/fallback owns the process radio even
         // across a disconnect. The physical V4 proof showed that admitting a
