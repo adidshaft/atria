@@ -308,6 +308,38 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         XCTAssertFalse(allow(verified: false))
     }
 
+    func testFlushMaintenanceWindowRelaxesGuardsOnlyWhenBackgroundedAndSettled() {
+        typealias State = AtriaBLEManager.ProtectedR10CleanOwnerState
+        func window(
+            pending: Bool = true,
+            foreground: Bool = false,
+            state: State = .fallbackActive,
+            workout: Bool = false,
+            storm: Bool = false
+        ) -> Bool {
+            AtriaBLEManager.isFlushMaintenanceWindow(
+                rangeLossBackfillPending: pending,
+                foregroundInteractive: foreground,
+                cleanOwnerState: state,
+                activeExplicitWorkout: workout,
+                recentDisconnectStorm: storm
+            )
+        }
+        // Backgrounded + backlog + settled + no storm/workout → maintenance flush.
+        XCTAssertTrue(window(state: .fallbackActive))
+        XCTAssertTrue(window(state: .qualified))
+        XCTAssertTrue(window(state: .none))
+        // Foreground-interactive (user may be watching live HR) → never.
+        XCTAssertFalse(window(foreground: true))
+        // No backlog, active workout, storm back-off, or active proof → never.
+        XCTAssertFalse(window(pending: false))
+        XCTAssertFalse(window(workout: true))
+        XCTAssertFalse(window(storm: true))
+        XCTAssertFalse(window(state: .proving))
+        XCTAssertFalse(window(state: .protectedLaunchPending))
+        XCTAssertFalse(window(state: .fallbackPending))
+    }
+
     func testTerminalProjectionFailureReleasesOnlyAuthorizedMotionBankRequest() {
         typealias Status =
             AtriaHistoricalFullDrainCoverageStore.Authority.Status
