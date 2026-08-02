@@ -57,14 +57,13 @@ User decision: don't wait 34 h for a backlog of mostly-sleep data — **wipe the
 
 ## 6. CURRENT STATE (right now)
 - Strap: **wiped, caught up, worn, ~70% battery.**
-- Phone: **Debug build installed**, app backgrounded, `rangeLossBackfillPending` cleared, materializing then steady.
+- Phone: **optimized Release build (`858a9f50`) installed** (Aug-3 05:20, replaced the temporary Debug build; trim is DEBUG-gated again), app launched, `rangeLossBackfillPending` cleared, materializing then steady.
 - Continuous flush (P0a/P1/P1b/P2/P0b) running → stays current going forward (no backlog to accumulate; keeps pace with ~1× new data easily).
 - Repo clean at `858a9f50`. No background tasks needed (the overnight watchers were stopped; a `walk-watcher2` may still be running harmlessly — read-only).
 - The 4:30 AM walk validation was **sacrificed** by the wipe (user is fine redoing a walk anytime).
 
 ## 7. NEXT STEPS (in priority order)
-1. **Swap the optimized Release build back on.** Currently a Debug build is installed. Build clean Release from `858a9f50` (`#if DEBUG` restored, trim gated again) and install for daily performance:
-   `xcodebuild build -project Atria/Atria.xcodeproj -scheme Atria -configuration Release -destination 'platform=iOS,id=3803F5B6-1666-56D3-A71A-62F131F6CE3B' -allowProvisioningUpdates` → `xcrun devicectl device install app ...`
+1. ✅ **DONE (Aug-3 05:20)** — optimized Release build (`858a9f50`) built + installed + launched on the phone, replacing the temporary Debug build. Daily performance restored; trim DEBUG-gated again.
 2. **Validate the step engine** (task #21 close-out): user does a known-count walk (they cited **265 steps** as reference; ~2% expected error). On the now-caught-up strap it should surface within the flush window. Compare engine vs actual.
 3. **Build task #23 — wipe feature (two entry points, same productionized trim):**
    - **(a) Onboarding wipe-vs-sync choice.** First-run, when a connected strap already has banked data, show a one-line two-option choice: **"Start fresh · clears the strap, ready in seconds (Recommended)"** vs **"Bring my history · syncs ~Xh in the background"** (ETA computed from `pending_records`).
