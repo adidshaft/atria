@@ -4442,6 +4442,54 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
     }
 
+    func testActiveCatchUpChainsSlicesWhenLastSliceMadeProgress() {
+        // Drain-keeping P1: a slice that pulled durable rows against a large
+        // (aged) backlog must chain quickly instead of idling the full retry.
+        XCTAssertEqual(
+            AtriaBLEManager.rangeLossBackfillRetryDelay(
+                pendingAge: 10_000,
+                readyForceInterval: 90,
+                retryInterval: 600,
+                lastSliceMadeDurableProgress: true,
+                progressChainInterval: 8
+            ),
+            8,
+            "an actively-progressing catch-up must chain, not wait 10 min"
+        )
+        // No progress → unchanged slow cadence (never a tight reconnect loop).
+        XCTAssertEqual(
+            AtriaBLEManager.rangeLossBackfillRetryDelay(
+                pendingAge: 10_000,
+                readyForceInterval: 90,
+                retryInterval: 600,
+                lastSliceMadeDurableProgress: false,
+                progressChainInterval: 8
+            ),
+            600,
+            "a slice that yielded nothing must fall back to the slow cadence"
+        )
+        // Chain interval is clamped to the retry interval.
+        XCTAssertEqual(
+            AtriaBLEManager.rangeLossBackfillRetryDelay(
+                pendingAge: 10_000,
+                readyForceInterval: 90,
+                retryInterval: 5,
+                lastSliceMadeDurableProgress: true,
+                progressChainInterval: 8
+            ),
+            5
+        )
+        // The default (no progress flag) preserves the original cadence.
+        XCTAssertEqual(
+            AtriaBLEManager.rangeLossBackfillRetryDelay(
+                pendingAge: 90,
+                readyForceInterval: 90,
+                retryInterval: 600
+            ),
+            600
+        )
+    }
+
     func testPersistedInterruptedDrainUsesDurableAuthorityAndFreshHRPath() throws {
         let source = try leaseManagerSource()
         let start = try XCTUnwrap(source.range(

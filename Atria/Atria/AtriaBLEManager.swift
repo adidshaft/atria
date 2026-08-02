@@ -1539,6 +1539,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     // silently waiting six hours.
     private let automaticConnectedHistoryAttemptCooldown: TimeInterval = 5 * 60
     private let rangeLossBackfillRetryInterval: TimeInterval = 10 * 60
+    // Drain-keeping P1: while actively catching up a backlog (the previous
+    // slice pulled durable history rows and the gap is still open) chain the
+    // next slice on this short interval instead of idling the full retry
+    // interval. Gated on real per-slice progress so a strap that serves nothing
+    // still falls back to the slow cadence and never churns the link.
+    private let rangeLossBackfillProgressChainInterval: TimeInterval = 8
     private let rangeLossBackfillArmedTimeout: TimeInterval = 180
     private var rangeLossBackfillTask: Task<Void, Never>?
     private var staleRangeLossReconciliationInFlight = false
@@ -8144,6 +8150,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case continueNormally
         case resumeLocalPublicationAndReturn
         case resumeLocalPublicationAndContinueMotionBank
+        case resumeLocalPublicationAndContinueRawDrain
     }
 
     /// A failed terminal *local* projection must release a newer, already
@@ -8191,16 +8198,32 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// resume its local materialization. The sole pass-through is the
     /// already-authorized motion-bank ticket; all of its later admission,
     /// thermal, workout, reconnect and fresh-HR guards remain in force.
+    /// A terminal journal whose consumer projection is still pending (its raw
+    /// rows + coverage proof are durable, but `recordCommittedConsumers` has not
+    /// run because that materialization is foreground-gated) used to block every
+    /// non-motion-bank transport request — including the range-loss catch-up
+    /// lane. That is the drain-keeping stall: after any background drain reaches
+    /// terminal, the parked authority refused all further catch-up until the app
+    /// was foregrounded, so a reconnect-after-long-gap backlog crawled instead of
+    /// clearing. The catch-up lane is RAW-ONLY (binding nil, forward-from-cursor
+    /// FIFO `0x16[0x00]`); it never mutates the parked authority's coverage or
+    /// event identity, so admitting it in parallel with the deferred local
+    /// publication is safe. The motion-bank pass-through keeps precedence.
     nonisolated static func terminalHistoryRequestDisposition(
         authorityStatus: AtriaHistoricalFullDrainCoverageStore.Authority.Status,
-        explicitPostWorkoutBankRequest: Bool
+        explicitPostWorkoutBankRequest: Bool,
+        rangeLossRawDrainPending: Bool = false
     ) -> TerminalHistoryRequestDisposition {
         switch authorityStatus {
         case .historyComplete, .coverageProven,
              .gapResolvedConsumersPending, .consumersCommitted:
-            return explicitPostWorkoutBankRequest
-                ? .resumeLocalPublicationAndContinueMotionBank
-                : .resumeLocalPublicationAndReturn
+            if explicitPostWorkoutBankRequest {
+                return .resumeLocalPublicationAndContinueMotionBank
+            }
+            if rangeLossRawDrainPending {
+                return .resumeLocalPublicationAndContinueRawDrain
+            }
+            return .resumeLocalPublicationAndReturn
         case .draining, .resolved:
             return .continueNormally
         }
@@ -8324,13 +8347,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // previous one. Keep the radio with live HR and resume the fsynced
         // journal locally instead.
         if let authority = try? historicalFullDrainCoverageStore.load() {
+            let rangeLossRawDrainPending = defaults.bool(
+                forKey: OfflineSyncDefaults.rangeLossBackfillPending
+            )
             let terminalDisposition = Self.terminalHistoryRequestDisposition(
                 authorityStatus: authority.status,
-                explicitPostWorkoutBankRequest: explicitPostWorkoutBankRequest
+                explicitPostWorkoutBankRequest: explicitPostWorkoutBankRequest,
+                rangeLossRawDrainPending: rangeLossRawDrainPending
             )
             switch terminalDisposition {
             case .resumeLocalPublicationAndReturn,
-                 .resumeLocalPublicationAndContinueMotionBank:
+                 .resumeLocalPublicationAndContinueMotionBank,
+                 .resumeLocalPublicationAndContinueRawDrain:
                 defaults.set(
                     "terminal_consumer_materialization",
                     forKey: OfflineSyncDefaults.lastStatus
@@ -8355,11 +8383,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 if terminalDisposition == .resumeLocalPublicationAndReturn {
                     return false
                 }
-                AtriaDebugLog(
-                    "ATRIADBG offline_sync status=terminal_publication_parallel_motion_bank reason=%@ stage=%@ action=continue_durable_same_strap_bank_ticket_through_normal_guards",
-                    reason,
-                    authority.status.rawValue
-                )
+                if terminalDisposition
+                    == .resumeLocalPublicationAndContinueRawDrain {
+                    // Catch-up (range-loss) raw drain runs in parallel with the
+                    // deferred local publication of the parked terminal journal.
+                    // It is forward-from-cursor FIFO and never mutates that
+                    // journal's coverage/identity, so read_cursor keeps advancing
+                    // in the background instead of waiting for a foreground
+                    // materialization to clear the authority.
+                    AtriaDebugLog(
+                        "ATRIADBG offline_sync status=terminal_publication_parallel_range_loss_raw reason=%@ stage=%@ action=continue_raw_only_catch_up_through_normal_guards",
+                        reason,
+                        authority.status.rawValue
+                    )
+                } else {
+                    AtriaDebugLog(
+                        "ATRIADBG offline_sync status=terminal_publication_parallel_motion_bank reason=%@ stage=%@ action=continue_durable_same_strap_bank_ticket_through_normal_guards",
+                        reason,
+                        authority.status.rawValue
+                    )
+                }
             case .continueNormally where authority.status == .draining:
                 guard Self.isPersistedDrainAuthorityResumeReason(reason) else {
                     defaults.set(
@@ -12973,17 +13016,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return rangeLossBackfillRetryInterval
         }
         let pendingAge = max(0, now.timeIntervalSince1970 - requestedAt)
+        let lastSliceMadeDurableProgress = defaults.bool(
+            forKey: OfflineSyncDefaults.lastDrainAttemptYieldedRows
+        )
         return Self.rangeLossBackfillRetryDelay(
             pendingAge: pendingAge,
             readyForceInterval: rangeLossBackfillReadyForceInterval,
-            retryInterval: rangeLossBackfillRetryInterval
+            retryInterval: rangeLossBackfillRetryInterval,
+            lastSliceMadeDurableProgress: lastSliceMadeDurableProgress,
+            progressChainInterval: rangeLossBackfillProgressChainInterval
         )
     }
 
     nonisolated static func rangeLossBackfillRetryDelay(
         pendingAge: TimeInterval,
         readyForceInterval: TimeInterval,
-        retryInterval: TimeInterval
+        retryInterval: TimeInterval,
+        lastSliceMadeDurableProgress: Bool = false,
+        progressChainInterval: TimeInterval = 8
     ) -> TimeInterval {
         guard pendingAge.isFinite,
               readyForceInterval.isFinite,
@@ -12992,6 +13042,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               readyForceInterval > 0,
               retryInterval > 0 else {
             return max(0, retryInterval)
+        }
+        // Drain-keeping P1: actively catching up. The previous slice pulled
+        // durable history rows but the gap is still open, so there is more
+        // backlog waiting. Chain the next slice on the short interval instead of
+        // idling the full retry cadence. The progress gate is essential — a
+        // slice that yielded NOTHING falls through to the slow cadence below, so
+        // this never becomes a tight 8-second reconnect loop against a strap
+        // that is serving no rows.
+        if lastSliceMadeDurableProgress,
+           progressChainInterval.isFinite,
+           progressChainInterval > 0 {
+            return max(1, min(retryInterval, progressChainInterval))
         }
         guard pendingAge < readyForceInterval else {
             // An old unresolved gap is important, but age must not turn the

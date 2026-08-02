@@ -222,6 +222,55 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
                 Disposition.continueNormally
             )
         }
+
+        // P0a drain-keeping: a parked terminal-consumer-pending authority must
+        // NOT block the range-loss RAW catch-up lane. Motion-bank keeps
+        // precedence; range-loss raw drain passes through; otherwise blocked.
+        for status in [
+            Status.historyComplete,
+            .coverageProven,
+            .gapResolvedConsumersPending,
+            .consumersCommitted
+        ] {
+            XCTAssertEqual(
+                AtriaBLEManager.terminalHistoryRequestDisposition(
+                    authorityStatus: status,
+                    explicitPostWorkoutBankRequest: false,
+                    rangeLossRawDrainPending: true
+                ),
+                Disposition.resumeLocalPublicationAndContinueRawDrain
+            )
+            // Motion-bank authorization keeps precedence over range-loss.
+            XCTAssertEqual(
+                AtriaBLEManager.terminalHistoryRequestDisposition(
+                    authorityStatus: status,
+                    explicitPostWorkoutBankRequest: true,
+                    rangeLossRawDrainPending: true
+                ),
+                Disposition.resumeLocalPublicationAndContinueMotionBank
+            )
+            // Without either authorization the terminal journal still blocks.
+            XCTAssertEqual(
+                AtriaBLEManager.terminalHistoryRequestDisposition(
+                    authorityStatus: status,
+                    explicitPostWorkoutBankRequest: false,
+                    rangeLossRawDrainPending: false
+                ),
+                Disposition.resumeLocalPublicationAndReturn
+            )
+        }
+
+        // A draining/resolved authority is unaffected by the range-loss flag.
+        for status in [Status.draining, .resolved] {
+            XCTAssertEqual(
+                AtriaBLEManager.terminalHistoryRequestDisposition(
+                    authorityStatus: status,
+                    explicitPostWorkoutBankRequest: false,
+                    rangeLossRawDrainPending: true
+                ),
+                Disposition.continueNormally
+            )
+        }
     }
 
     func testTerminalProjectionFailureReleasesOnlyAuthorizedMotionBankRequest() {
