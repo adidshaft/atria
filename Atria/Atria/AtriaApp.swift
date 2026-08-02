@@ -601,11 +601,29 @@ struct AtriaApp: App {
         }
     }
 
+    /// A routine nightly maintenance pass can wait for the 2h floor, but a
+    /// pending range-loss backlog must not — holding it off 2h means iOS can
+    /// grant at most one catch-up window every couple of hours, which is why an
+    /// overnight backlog crawls. When a backlog is pending, ask for eligibility
+    /// in ~60s so iOS grants tight, repeated processing windows (the handler
+    /// reschedules after each) until the backlog is cleared.
+    static func backgroundProcessingEarliestDelay(backlogPending: Bool) -> TimeInterval {
+        backlogPending ? 60 : 2 * 60 * 60
+    }
+
     private static func scheduleBackgroundProcessing(reason: String) {
         let request = BGProcessingTaskRequest(identifier: processingTaskIdentifier)
         request.requiresNetworkConnectivity = false
         request.requiresExternalPower = false
-        request.earliestBeginDate = Date(timeIntervalSinceNow: 2 * 60 * 60)
+        // Mirrors OfflineSyncDefaults.rangeLossBackfillPending (persisted key).
+        let backlogPending = UserDefaults.standard.bool(
+            forKey: "atria.offlineSync.rangeLossBackfillPending"
+        )
+        request.earliestBeginDate = Date(
+            timeIntervalSinceNow: backgroundProcessingEarliestDelay(
+                backlogPending: backlogPending
+            )
+        )
         do {
             try BGTaskScheduler.shared.submit(request)
             AtriaDebugLog("ATRIADBG bg_task_schedule status=ok kind=processing reason=%@", reason)
