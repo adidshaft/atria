@@ -801,7 +801,12 @@ private struct AtriaJournalCheckInDeck: View {
     }
 
     private func resistedSwipeDistance(_ translation: CGFloat) -> CGFloat {
-        let limit: CGFloat = 132
+        // The card fills the deck column, so any large drag pushes its leading
+        // edge past the column/screen margin (which read as "leaking / clipping
+        // left and right"). Cap the finger-follow to a small tilt-and-nudge so the
+        // card never reaches an edge during a drag; the decisive fly-off on commit
+        // still travels fully off-screen.
+        let limit: CGFloat = 30
         let magnitude = abs(translation)
         let resisted = limit * (1 - exp(-magnitude / limit))
         return translation < 0 ? -resisted : resisted
@@ -1340,6 +1345,26 @@ struct AtriaJournalHeatStrip: View, Equatable {
     /// show a pattern; before that it's ~88 empty cells advertising emptiness
     /// (UX audit 2026-07-08). Until ~3 weeks of history, show a 2-week strip.
     private static let compactDayCount = 14
+    /// Full grid is a GitHub-style calendar heatmap: one COLUMN per week (7
+    /// weekday rows), the last ~3 months across (user request 2026-08-03).
+    private static let weeksToShow = 13
+
+    /// The last `weeksToShow` weeks as columns of 7 days each, aligned to the
+    /// calendar's week boundary so every column is a clean Mon–Sun (or Sun–Sat)
+    /// week and the rightmost column is the current, partially-elapsed week.
+    static func weekColumns(endingAt localDay: Date,
+                            calendar: Calendar = .current) -> [[Date]] {
+        let today = calendar.startOfDay(for: localDay)
+        let currentWeekStart = calendar.dateInterval(of: .weekOfYear, for: today)?.start ?? today
+        guard let gridStart = calendar.date(byAdding: .weekOfYear,
+                                            value: -(weeksToShow - 1),
+                                            to: currentWeekStart) else { return [] }
+        return (0..<weeksToShow).map { week in
+            (0..<7).compactMap { weekday in
+                calendar.date(byAdding: .day, value: week * 7 + weekday, to: gridStart)
+            }
+        }
+    }
 
     private struct HeatKey: Equatable {
         let revision: Int
@@ -1416,11 +1441,11 @@ struct AtriaJournalHeatStrip: View, Equatable {
 
     var body: some View {
         let model = heatMemo.model(entries: entries, revision: revision, localDay: localDay)
-        let columnCount = model.usesFullGrid ? 30 : Self.compactDayCount
+        let today = Calendar.current.startOfDay(for: localDay)
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
                 AtriaPanelSectionHeader(title: "Logging history",
-                                        subtitle: model.usesFullGrid ? "Last 90 days" : "Last 2 weeks")
+                                        subtitle: model.usesFullGrid ? "Last 3 months" : "Last 2 weeks")
 
                 Spacer(minLength: 0)
 
@@ -1429,26 +1454,50 @@ struct AtriaJournalHeatStrip: View, Equatable {
                                 tint: .cyan)
             }
 
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 3), count: columnCount),
-                      spacing: 3) {
-                ForEach(model.shownDays, id: \.self) { day in
-                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                        .fill(cellColor(count: model.countsByDay[day] ?? 0))
-                        .aspectRatio(1, contentMode: .fit)
+            if model.usesFullGrid {
+                // GitHub-style calendar: one column per week (7 weekday rows),
+                // ~13 weeks across. Columns share the width equally so the whole
+                // grid always fits the card (never overflows the screen margins).
+                HStack(alignment: .top, spacing: 3) {
+                    ForEach(Array(Self.weekColumns(endingAt: localDay).enumerated()),
+                            id: \.offset) { _, week in
+                        VStack(spacing: 3) {
+                            ForEach(week, id: \.self) { day in
+                                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                    .fill(cellColor(count: model.countsByDay[day] ?? 0,
+                                                    isFuture: day > today))
+                                    .aspectRatio(1, contentMode: .fit)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+            } else {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 3),
+                                         count: Self.compactDayCount),
+                          spacing: 3) {
+                    ForEach(model.shownDays, id: \.self) { day in
+                        RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                            .fill(cellColor(count: model.countsByDay[day] ?? 0,
+                                            isFuture: day > today))
+                            .aspectRatio(1, contentMode: .fit)
+                    }
                 }
             }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Journal logging history: \(model.loggedDayCount) of the last \(model.visibleDayCount) days logged.")
-
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Journal logging history: \(model.loggedDayCount) of the last \(model.usesFullGrid ? Self.weeksToShow * 7 : model.visibleDayCount) days logged.")
         .padding(16)
         .atriaCard(emphasis: .soft)
         .accessibilityHint(model.usesFullGrid
-                           ? "Shows the last 90 days."
-                           : "The full 90-day pattern appears as logging history grows.")
+                           ? "Shows the last 3 months, one column per week."
+                           : "The full pattern appears as logging history grows.")
     }
 
-    private func cellColor(count: Int) -> Color {
+    private func cellColor(count: Int, isFuture: Bool) -> Color {
+        // A day that has not happened yet is not a "missed" day — keep it faint
+        // so the current week's remaining days do not read as skipped.
+        if isFuture { return .primary.opacity(0.03) }
         guard count > 0 else { return .primary.opacity(0.08) }
         let fraction = min(Double(count) / 6.0, 1.0)
         return .cyan.opacity(0.25 + 0.65 * fraction)
