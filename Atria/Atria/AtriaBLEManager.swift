@@ -30120,6 +30120,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             let defaults = UserDefaults.standard
                             defaults.removeObject(forKey: OfflineSyncDefaults.lastDurableFlushError)
                             defaults.removeObject(forKey: OfflineSyncDefaults.lastDurableFlushErrorAt)
+                            // Truthful success-path progress signal (see schema note);
+                            // the boundary field above only records the last error.
+                            defaults.set(Date().timeIntervalSince1970,
+                                         forKey: OfflineSyncDefaults.lastDurableFlushBoundaryOKAt)
                             self.noteOfflineHistoricalSyncProgress(
                                 generation: generation,
                                 reason: "durable_flush"

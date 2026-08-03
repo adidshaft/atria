@@ -367,6 +367,10 @@ extension AtriaBLEManager {
         static let lastDurableFlushError = "atria.offlineSync.lastDurableFlushError.v1"
         static let lastDurableFlushErrorAt = "atria.offlineSync.lastDurableFlushErrorAt.v1"
         static let lastDurableFlushBoundary = "atria.offlineSync.lastDurableFlushBoundary.v1"
+        // Truthful "last durable flush SUCCEEDED at" timestamp. lastDurableFlushBoundary
+        // above is a last-ERROR value (froze while segments still landed → misleading
+        // for triage); this is the success-path progress signal.
+        static let lastDurableFlushBoundaryOKAt = "atria.offlineSync.lastDurableFlushBoundaryOKAt.v1"
     }
 
     enum KeepaliveDefaults {
