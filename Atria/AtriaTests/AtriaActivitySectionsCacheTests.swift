@@ -607,6 +607,42 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                       "only a sleep touching the day start is admitted, not one ending before it")
     }
 
+    func testNapDedupHonoursTheSeventyPercentOverlapBoundary() throws {
+        // The nap-vs-confirmed-sleep dedup (substantiallyOverlaps) suppresses a
+        // nap row only at >= 0.70 overlap of the shorter window. Pin that edge so
+        // a refactor can't silently hide real naps (too aggressive) or double-draw
+        // them (too lax). Exercised through canonical, since the gate is private.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026,
+                                                                   month: 8,
+                                                                   day: 1)))
+        // Confirmed main sleep spans 100 minutes; the nap is 60 minutes (shorter).
+        let sleep = activitySleep(id: "confirmed-main",
+                                  day: day,
+                                  start: day,
+                                  end: day.addingTimeInterval(100 * 60),
+                                  confirmed: true)
+        let snapshot = SleepHistorySnapshot(nights: [sleep],
+                                            confirmedCount: 1,
+                                            candidateCount: 0)
+        func napIDsWithOverlap(minutes: Double) -> Set<String> {
+            // nap [100-overlap .. 160-overlap]; overlap with [0,100] = `minutes`.
+            let napStart = day.addingTimeInterval((100 - minutes) * 60)
+            let nap = napNight(id: "nap",
+                               day: day,
+                               start: napStart,
+                               end: napStart.addingTimeInterval(60 * 60))
+            return Set(AtriaActivitySelectedDaySleeps.canonical(
+                snapshot: snapshot, pendingReview: nil, napReviewCandidates: [nap]
+            ).map(\.id))
+        }
+        // 42/60 = 0.70 exactly → suppressed (dedup fires).
+        XCTAssertEqual(napIDsWithOverlap(minutes: 42), ["confirmed-main"])
+        // 41/60 ≈ 0.683 → kept as its own row.
+        XCTAssertEqual(napIDsWithOverlap(minutes: 41), ["confirmed-main", "nap"])
+    }
+
     private func napNight(id: String,
                           day: Date,
                           start: Date,
