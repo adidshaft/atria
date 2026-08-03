@@ -3909,6 +3909,38 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(AtriaAnalytics.Strain.banisterCoefficient(for: .unspecified), 1.92, accuracy: 1e-9)
     }
 
+    func testZoneSummaryFailsSafeOnDegenerateInputAndPinsHRReserveBoundaries() {
+        typealias Strain = AtriaAnalytics.Strain
+        // Degenerate: <2 samples or max<=rest → empty (no strain from nothing).
+        XCTAssertEqual(Strain.zoneSummary([], rest: 60, max: 160), Strain.ZoneSummary.empty)
+        XCTAssertEqual(Strain.zoneSummary([(0, 120)], rest: 60, max: 160), Strain.ZoneSummary.empty)
+        XCTAssertEqual(Strain.zoneSummary([(0, 120), (1, 130)], rest: 160, max: 160),
+                       Strain.ZoneSummary.empty)
+
+        // All-gap input (dt > maximumLoadEvidenceGap = 15s): every step is dropped,
+        // so there are zero usable samples. The result must report minHRReserve 0,
+        // NOT the internal 1.0 seed leaking out (which would poison a later merge).
+        let allGap = Strain.zoneSummary([(0, 100), (20, 150)], rest: 60, max: 160)
+        XCTAssertEqual(allGap.samples, 0)
+        XCTAssertEqual(allGap.minHRReserve, 0, accuracy: 1e-9)
+        XCTAssertEqual(allGap.maxHRReserve, 0, accuracy: 1e-9)
+        XCTAssertEqual(allGap.droppedGapSeconds, 20, accuracy: 1e-9)
+        XCTAssertEqual(allGap.totalSeconds, 0, accuracy: 1e-9)
+
+        // HR-reserve zone edges are inclusive-lower at 0.30/0.50/0.70/0.85
+        // (rest 60, max 160 → span 100, so bpm = 60 + reserve*100). One bpm below
+        // an edge stays in the lower zone.
+        func zoneSeconds(bpm: Int) -> [TimeInterval] {
+            let s = Strain.zoneSummary([(0, bpm), (1, bpm)], rest: 60, max: 160)
+            return [s.secondsZ0, s.secondsZ1, s.secondsZ2, s.secondsZ3, s.secondsZ4]
+        }
+        XCTAssertEqual(zoneSeconds(bpm: 89), [1, 0, 0, 0, 0])  // reserve 0.29 → Z0
+        XCTAssertEqual(zoneSeconds(bpm: 90), [0, 1, 0, 0, 0])  // 0.30 → Z1
+        XCTAssertEqual(zoneSeconds(bpm: 110), [0, 0, 1, 0, 0]) // 0.50 → Z2
+        XCTAssertEqual(zoneSeconds(bpm: 130), [0, 0, 0, 1, 0]) // 0.70 → Z3
+        XCTAssertEqual(zoneSeconds(bpm: 145), [0, 0, 0, 0, 1]) // 0.85 → Z4
+    }
+
     func testBodyAgeAndResearchZonesAreHonestEstimates() {
         let readySummary = AtriaAnalytics.BiologicalAge.summary(
             chronologicalAge: 40,
