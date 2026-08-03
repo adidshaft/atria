@@ -23,6 +23,35 @@ build-from-scratch effort. The actual work is:
   oximeter data, §5) and **same-night Smart-Wake staging** (no live sleep
   stages on this transport, §3.2).
 
+## 0.1 Interpretation principle (PRODUCT DECISION — read before implementing)
+
+**The mockups are illustrative of functionality and view, not literal specs.**
+Every specific label, behavior, metric, and number in the boards is an *example*
+of the shape we want — never a fixed requirement. Build the **generic
+capability**; the examples only show how it should look and feel.
+
+Concretely:
+- **Behavior Impact is not about Magnesium (or Alcohol, or any named behavior).**
+  It is about *whatever the user chooses to track in their journal*. Whatever
+  behaviors they log, the impact map, drill-in, recovery deltas, and
+  significance gating must surface those — generically. (Magnesium was added as
+  one more offered behavior, not because the feature is "about" it. The engine
+  is already generic over tags; that genericity is the actual product, not any
+  single tag.)
+- **The same reading applies to every board:** Strain "contributors" and
+  "today's activities", Stress "likely stressors", Fuel "auto-journal tags",
+  Sleep "need ledger" line items, Behavior rows — the specific entries shown are
+  examples. The feature is the generic engine + view that renders *the user's
+  own* data, honestly, whatever it happens to be.
+- **Numbers are placeholders.** Percentages, effect sizes, p-values, deltas, and
+  counts in the mockups are illustrative. Never hard-code them; never fabricate
+  to match them. Real values come from the user's real data, and are honestly
+  withheld / marked "learning" when the data isn't there.
+- **These are product decisions**, recorded here and in memory
+  (`atria-product-decisions`): (1) the mockups define *view + behavior*, not
+  content; (2) genericity-over-user-tracked-data is the requirement; (3) honesty
+  gating always wins over matching a mockup's filled-in look.
+
 ## 1. Transport-honesty correction (important, load-bearing)
 
 An earlier claim in this session — "WHOOP 4 has no live broadcast" — is **only
@@ -67,12 +96,19 @@ Already built: `AtriaBehaviorImpact.swift` (Welch two-sample t, `welchTwoSidedPV
 HRV/RHR/deep-sleep deltas logged-vs-quiet), distributions (`Distribution` `:115`),
 impact map (`AtriaBehaviorImpactMapCard.swift`), diverging bar chart
 (`AtriaBehaviorImpactChart.swift:66`). Wired at `AtriaJournalTab.swift:1277`.
-- **Gaps:** "Magnesium" is not a tracked tag (only umbrella `supplements`/
-  `melatonin` at `Sessions.swift:2428-2470`); adding it needs a `Tag` case +
-  opt-in plumbing. Deep-sleep deltas only appear with `sleepSource ==
-  "validated_sleep_stages"` (frequently absent). Two engines share the identical
-  statistic but differ on which rows print (3-pt floor vs none) — preserve that.
-- **Verdict:** feature is essentially done; extension is optional polish.
+- **The feature is generic over whatever the user tracks** (see §0.1) — this is
+  the requirement, and it already holds: any `Tag` the user logs flows through
+  `AtriaBehaviorImpact` → map/drill-in/deltas automatically. Work here is about
+  the *view* and *offering enough behaviors to track*, not any named behavior.
+- **Gaps:** the catalog can keep growing (e.g. Magnesium was added
+  2026-08-03 as one more opt-in behavior via a `Tag` case + picker plumbing; the
+  same pattern adds any future behavior). Deep-sleep deltas only appear with
+  `sleepSource == "validated_sleep_stages"` (frequently absent). Two engines
+  share the identical statistic but differ on which rows print (3-pt floor vs
+  none) — preserve that. **G3 (§9.4): embed the generic behaviors strip in the
+  Recovery detail** so the connection is visible where recovery is read.
+- **Verdict:** engine is done and generic; work is view surfacing + catalog
+  breadth, not per-behavior features.
 
 ### 3.2 Sleep Planner & Smart Wake
 Built: `AtriaSleepBudget.swift` (need ledger `:19-39`, decayed 7-night debt
@@ -327,9 +363,11 @@ narrative in one scroll), and (b) the net-new charts below.
 Add to the charting backlog, and re-order phases to honor the user's explicit
 "Strain/Recovery + Activity combo" priority AFTER the chosen Behavior-Impact
 start:
-- **P4 (in progress, user-selected): Behavior Impact polish** — magnesium tag +
-  opt-in; reconcile diverging-bar/distribution visuals; **and G3** (embed the
-  behaviors strip in the Recovery detail).
+- **P4 (in progress, user-selected): Behavior Impact polish** — the goal is the
+  GENERIC engine + view working for *any* tracked behavior (§0.1), not a named
+  one. Done: catalog breadth (magnesium added as one example). Remaining:
+  reconcile diverging-bar/distribution visuals to the mockup shape; **G3** (embed
+  the generic behaviors strip in the Recovery detail).
 - **P-combo (next, user-requested): G1 dual-axis Strain & Recovery weekly combo**
   for the Strain/Recovery detail AND the Activity view.
 - **P-sleep: G6 + G2** — assemble the full Sleep detail scroll + Hours-vs-Need.
