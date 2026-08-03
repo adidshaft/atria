@@ -61,6 +61,32 @@ THROUGHOUT, not one-off patches.
 - **C5 — Re-verify on device** once the install has ≥1–2 weeks of real data, so
   charts are reviewed with realistic density, not a 3-day cold start.
 
+## STATUS — shipped this session (2026-08-03), all on `claude/atria-background-continuity-88ce90`
+
+Device-verified via iPhone Mirroring unless noted:
+- ✅ Magnesium opt-in behavior tag (example of the generic engine) + test.
+- ✅ Banner honesty: "Catching up history" now reflects real drain progress
+  (last-flush recency + lease), Sync gives feedback. Unit-tested.
+- ✅ Chart honesty pass: removed the fabricated `.monotone` prior-period ghost
+  curve (device-verified gone); `.linear` everywhere (~24 usages / 12 files);
+  lines break at day-gaps app-wide; sparse-data "building history" state in the
+  expanded chart. No hardcoded/sample data in production (all DEBUG-gated).
+- ✅ Strain & Recovery combo (native Swift Charts): two zigzag lines, band-
+  colored recovery, gap-broken, **fixed 7-day weekday axis** (render-verified).
+  Lives in the Strain + Recovery **details** (NOT Activity).
+- ✅ Activity view = intraday + log: **stress monitor + past-24h timeline** on
+  top (device-verified, honest "collecting" state when sparse), day activity
+  timeline, activities list. Weekly combo removed from Activity.
+- ✅ G3 (behaviors strip in Recovery) + G4-style cardio/strength split found
+  ALREADY built.
+- Docs/memory: interpretation principle (§0.1), chart-honesty (§10), placement
+  (§11) — all in memory `atria-product-decisions`.
+
+**Not yet done (backlog):** Steps history chart (next), About-sheet mini-trends,
+Stress daily trend, C5 re-verify at ≥1–2wk data density, optional live-HR line
+on the Activity stress card, SpO2 (blocked on oximeter data, §5), same-night
+Smart-Wake staging (blocked, §3.2).
+
 ## 11. Chart PLACEMENT principle (2026-08-03, user-directed) — right chart, right place
 
 The right chart in the wrong place is still wrong. Match the chart's TIME SCALE
@@ -87,12 +113,12 @@ to the surface's purpose:
    read as random noise. Data is framed within the week; days without a reading
    simply have no point.
 
-**Backlog (Activity view redesign, P-activity):** bring the heart/stress monitor
-+ a **past-24h** HR/stress timeline to the top of the Activity view, above the
-activities list — the intraday counterpart to the weekly trends that live
-elsewhere. The stress monitor + today timeline already exist
-(`AtriaStressMonitor`, `AtriaStressDetailView`); this is a surfacing/placement
-job, not new analytics.
+**DONE (P-activity, this session):** the stress monitor + past-24h stress
+timeline now sit at the top of the Activity view (`stressMonitorCard` in
+`AtriaActivityMonitor.swift`, fed by `AtriaStressMonitorStore`), above the day
+activity timeline and the activities list. Honest: observed readings only,
+gap-broken, shows the state's "collecting/warming up" copy when sparse.
+Follow-up option: add a live-HR number/line to the same card ("heart/stress").
 
 ## 0. TL;DR — the reframe
 
