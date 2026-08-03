@@ -35,7 +35,21 @@ enum AtriaMetricConfidenceLevel: String, Equatable, CaseIterable {
         case .high: return "checked"
         case .moderate: return "baseline"
         case .limited: return "limited"
-        case .provisional: return "provisional"
+        // "provisional" reads as "don't trust this number"; the honest meaning is
+        // simply that it's an estimate (max HR is age-estimated, not measured).
+        case .provisional: return "estimate"
+        }
+    }
+
+    /// User-facing level name for the provenance sheet ("Confidence · …"). The
+    /// enum case stays `.provisional` internally, but the word shown is the calm,
+    /// honest "Estimate" rather than "Provisional" (which reads as untrustworthy).
+    var displayName: String {
+        switch self {
+        case .high: return "High"
+        case .moderate: return "Moderate"
+        case .limited: return "Limited"
+        case .provisional: return "Estimate"
         }
     }
 
@@ -236,7 +250,7 @@ extension AtriaCompactMetricPresentation {
         case .high: return nil
         case .moderate: return nil
         case .limited: return "limited"
-        case .provisional: return "provisional"
+        case .provisional: return "estimate"
         }
     }
 }
@@ -289,7 +303,7 @@ extension AtriaCompactMetricPresentation {
         }
         if evidence.isAgeEstimatedMaxHR {
             return Self(value: numeric,
-                        marker: "provisional",
+                        marker: "estimate",
                         level: .provisional,
                         isLowerBound: false)
         }

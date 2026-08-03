@@ -5594,10 +5594,11 @@ enum AtriaMissedDataBannerPresentation {
                         subtitle: "\(amount) still on the strap",
                         offersRecovery: true)
         }
-        // Old gap with little/nothing left on the strap → be honest it is gone,
-        // and do not imply a sync can bring it back.
-        return Copy(title: "Some earlier data unavailable",
-                    subtitle: "It wasn't recorded and can't be recovered from the strap",
+        // Old gap with little/nothing left on the strap → calm, informational,
+        // and reassuring: it's gone, there is nothing to do, and it does not
+        // affect anything going forward. No sync affordance (it would be futile).
+        return Copy(title: "Some earlier data wasn't recorded",
+                    subtitle: "Older than the strap could store — new data is unaffected",
                     offersRecovery: false)
     }
 }

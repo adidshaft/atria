@@ -17,8 +17,9 @@ final class AtriaMissedDataBannerPresentationTests: XCTestCase {
         // cannot be recovered rather than dangling a scary hours number.
         let c = copy(pending: 90, protectsLive: false) // ~1.5 min on strap
         XCTAssertFalse(c.offersRecovery)
-        XCTAssertEqual(c.title, "Some earlier data unavailable")
-        XCTAssertTrue(c.subtitle.lowercased().contains("can't be recovered"))
+        XCTAssertEqual(c.title, "Some earlier data wasn't recorded")
+        // Reassuring, not alarming: it does not affect new data.
+        XCTAssertTrue(c.subtitle.lowercased().contains("unaffected"))
         // No misleading number (e.g. the 85.4h gap-age) anywhere in the copy.
         XCTAssertNil(c.title.rangeOfCharacter(from: .decimalDigits))
         XCTAssertNil(c.subtitle.rangeOfCharacter(from: .decimalDigits))
