@@ -3880,6 +3880,35 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(zoneSeconds.droppedGapSeconds, 600)
     }
 
+    func testMaxHeartRateZoneBoundariesAndBanisterCoefficientAreStable() {
+        // Zone edges are inclusive-lower: exactly 50/60/70/80/90% of maxHR steps
+        // up a zone; one bpm below stays in the lower zone. A silent boundary
+        // shift or coefficient swap would corrupt every strain/recovery score, so
+        // pin the contract these integrators depend on.
+        func zone(_ bpm: Int) -> Int {
+            AtriaAnalytics.Strain.maxHeartRateZoneRawValue(for: bpm, maxHR: 200)
+        }
+        XCTAssertEqual(zone(100), 1) // 0.50 → warmup
+        XCTAssertEqual(zone(99), 0)  // just below 0.50 → rest
+        XCTAssertEqual(zone(120), 2) // 0.60
+        XCTAssertEqual(zone(119), 1)
+        XCTAssertEqual(zone(140), 3) // 0.70
+        XCTAssertEqual(zone(139), 2)
+        XCTAssertEqual(zone(160), 4) // 0.80
+        XCTAssertEqual(zone(159), 3)
+        XCTAssertEqual(zone(180), 5) // 0.90
+        XCTAssertEqual(zone(179), 4)
+        XCTAssertEqual(zone(200), 5) // at max
+        // Degenerate inputs fail safe to zone 0 (never crash / negative).
+        XCTAssertEqual(zone(0), 0)
+        XCTAssertEqual(AtriaAnalytics.Strain.maxHeartRateZoneRawValue(for: 120, maxHR: 0), 0)
+
+        // Banister TRIMP sex weighting must not drift or swap.
+        XCTAssertEqual(AtriaAnalytics.Strain.banisterCoefficient(for: .female), 1.67, accuracy: 1e-9)
+        XCTAssertEqual(AtriaAnalytics.Strain.banisterCoefficient(for: .male), 1.92, accuracy: 1e-9)
+        XCTAssertEqual(AtriaAnalytics.Strain.banisterCoefficient(for: .unspecified), 1.92, accuracy: 1e-9)
+    }
+
     func testBodyAgeAndResearchZonesAreHonestEstimates() {
         let readySummary = AtriaAnalytics.BiologicalAge.summary(
             chronologicalAge: 40,
