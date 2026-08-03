@@ -2952,6 +2952,34 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         rangeLossBackfillPending && nowCharging && !previousCharging
     }
 
+    /// Drain-keeping P6 (flush-debt tracker): the strap-side backlog, classified.
+    /// `pendingRecords` is the ring-buffer's `pending_records` from a 0x22
+    /// getDataRange; at the ~1 Hz banking cadence a record is roughly one second
+    /// of banked data, so the thresholds below read as ~caught-up / moderate /
+    /// deep. This is the single explicit priority the design centres flush
+    /// decisions on; escalation shortens the maintenance re-arm cadence when debt
+    /// is high, so a deep backlog closes faster while a shallow one stays gentle.
+    enum FlushDebtLevel: String {
+        case caughtUp = "caught_up"
+        case low
+        case high
+    }
+
+    /// ~2 minutes of banked data still counts as caught up (the frontier is
+    /// never exactly zero on a worn strap).
+    nonisolated static let flushDebtCaughtUpRecords = 120
+    /// ~1 hour of banked data is a deep backlog that should escalate.
+    nonisolated static let flushDebtHighRecords = 3600
+
+    nonisolated static func flushDebtLevel(
+        pendingRecords: Int,
+        caughtUpThreshold: Int = flushDebtCaughtUpRecords,
+        highThreshold: Int = flushDebtHighRecords
+    ) -> FlushDebtLevel {
+        guard pendingRecords > caughtUpThreshold else { return .caughtUp }
+        return pendingRecords >= highThreshold ? .high : .low
+    }
+
     nonisolated static func shouldDeferAutomaticHistoryForCleanOwner(
         cleanOwner: ProtectedR10CleanOwner,
         state: ProtectedR10CleanOwnerState,
@@ -13223,20 +13251,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let sinceLastReArm = lastRangeLossBackfillReArmAt.map {
             now.timeIntervalSince($0)
         }
+        // Drain-keeping P6 escalation: a deep backlog re-arms on a shorter floor
+        // so it closes faster; a shallow one keeps the gentle floor. Still floored
+        // (never a tight loop) and still fully guarded downstream.
+        let debtLevel = currentFlushDebtLevel(now: now)
+        let effectiveFloor = debtLevel == .high
+            ? min(rangeLossBackfillMaintenanceReArmFloor,
+                  rangeLossBackfillMaintenanceTickInterval)
+            : rangeLossBackfillMaintenanceReArmFloor
         guard Self.shouldReArmRangeLossBackfillOnMaintenanceTick(
             rangeLossBackfillPending: true,
             syncInProgress: offlineHistoricalSyncInProgress,
             linkConnected: connected,
             flushEligible: flushMaintenanceWindow || connectedCatchUp,
             sinceLastReArm: sinceLastReArm,
-            reArmFloor: rangeLossBackfillMaintenanceReArmFloor
+            reArmFloor: effectiveFloor
         ) else { return }
         defaults.set(now.timeIntervalSince1970,
                      forKey: OfflineSyncDefaults.lastMaintenanceReArmAt)
-        AtriaDebugLog("ATRIADBG offline_sync status=maintenance_ticker_rearm since_last_rearm_s=%@ maintenance=%d connected_catchup=%d action=rearm_range_loss_backfill_independent_of_hr",
+        AtriaDebugLog("ATRIADBG offline_sync status=maintenance_ticker_rearm since_last_rearm_s=%@ maintenance=%d connected_catchup=%d debt=%@ floor_s=%.0f action=rearm_range_loss_backfill_independent_of_hr",
                       sinceLastReArm.map { String(format: "%.0f", $0) } ?? "never",
                       flushMaintenanceWindow ? 1 : 0,
-                      connectedCatchUp ? 1 : 0)
+                      connectedCatchUp ? 1 : 0,
+                      debtLevel?.rawValue ?? "unknown",
+                      effectiveFloor)
         scheduleRangeLossBackfillIfNeeded(reason: "maintenance_ticker")
     }
 
@@ -13281,6 +13319,37 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         AtriaDebugLog("ATRIADBG offline_sync status=phone_charge_resume action=rearm_drain_backlog_on_external_power_edge")
         startRangeLossBackfillMaintenanceTickerIfNeeded(reason: "phone_charge_resume")
         scheduleRangeLossBackfillIfNeeded(reason: "phone_charge_resume")
+    }
+
+    /// Drain-keeping P6: persist the strap-side backlog as a first-class debt
+    /// signal every time a 0x22 getDataRange response is observed. Purely
+    /// diagnostic + escalation input — it advances no cursor and sends nothing.
+    private func recordFlushDebt(pendingRecords: UInt32) {
+        let records = Int(min(pendingRecords, UInt32(Int32.max)))
+        let level = Self.flushDebtLevel(pendingRecords: records)
+        let defaults = UserDefaults.standard
+        defaults.set(records, forKey: OfflineSyncDefaults.flushDebtPendingRecords)
+        defaults.set(Date().timeIntervalSince1970,
+                     forKey: OfflineSyncDefaults.flushDebtObservedAt)
+        defaults.set(level.rawValue, forKey: OfflineSyncDefaults.flushDebtLevel)
+    }
+
+    /// The current flush-debt level, or nil when the last observation is missing
+    /// or stale (older than `maxAge`) — escalation must not act on stale debt.
+    private func currentFlushDebtLevel(
+        now: Date = Date(),
+        maxAge: TimeInterval = 15 * 60
+    ) -> FlushDebtLevel? {
+        let defaults = UserDefaults.standard
+        guard let observedAt = defaults.object(
+            forKey: OfflineSyncDefaults.flushDebtObservedAt
+        ) as? Double,
+              observedAt.isFinite,
+              now.timeIntervalSince1970 - observedAt <= maxAge else { return nil }
+        let records = defaults.integer(
+            forKey: OfflineSyncDefaults.flushDebtPendingRecords
+        )
+        return Self.flushDebtLevel(pendingRecords: records)
     }
 
     private func scheduleStaleArmedRangeLossBackfillReconciliation(reason: String,
@@ -20938,6 +21007,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               Date().timeIntervalSince1970,
               Self.hex(status))
         if let cursorRange {
+            recordFlushDebt(pendingRecords: cursorRange.pendingRecords)
             AtriaDebugLog("ATRIADBG historyRange status=observed response_seq=%d request_seq_echo=%d matched=%d write=%u read=%u capacity=%u pending=%u mutation=0 payload=%@",
                           Int(cursorRange.responseSequence),
                           Int(cursorRange.requestSequenceEcho),

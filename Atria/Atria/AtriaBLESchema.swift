@@ -377,6 +377,15 @@ extension AtriaBLEManager {
         // backlog persists is the on-device signal that the anti-divergence
         // backstop is carrying the drain through an HR-sparse (asleep) window.
         static let lastMaintenanceReArmAt = "atria.offlineSync.lastMaintenanceReArmAt.v1"
+        // Drain-keeping P6 (flush-debt tracker): the strap-side backlog made a
+        // first-class, persisted signal. `flushDebtPendingRecords` is the last
+        // observed ring-buffer pending_records (0x22 getDataRange); at the ~1 Hz
+        // banking cadence a record is roughly one second of banked data, so this
+        // doubles as an approximate time-behind. `flushDebtLevel` is the
+        // classified level (caught_up / low / high) that escalation keys off.
+        static let flushDebtPendingRecords = "atria.offlineSync.flushDebtPendingRecords.v1"
+        static let flushDebtObservedAt = "atria.offlineSync.flushDebtObservedAt.v1"
+        static let flushDebtLevel = "atria.offlineSync.flushDebtLevel.v1"
     }
 
     enum KeepaliveDefaults {
