@@ -817,18 +817,16 @@ struct AtriaTodayScreen: View {
         case .hrv: metric = hrvMetric
         case .rhr: metric = restingHeartRateMetric
         }
-        // The ring center already shows this slot's numeral — the chip
-        // keeps title + detail only (dedup audit 2026-07-07).
-        if slotMatchesRingCenter(slot) {
-            metric.suppressesValue = true
-            // ...and when the center's caption is word-for-word this chip's
-            // detail, drop that too. Exact-match only, so this fires on the
-            // real duplicate (learning recovery: "Save sleep to score" in the
-            // hero and again in the chip beneath it) and never hides a detail
-            // the center is not already showing.
-            if metric.detail == centerState {
-                metric.suppressesDetail = true
-            }
+        // Every ring chip keeps its own numeral, even the one whose slot is the
+        // ring center. Suppressing the center metric's value left a value-less
+        // chip (e.g. recovery showing only "provisional") sitting beside numeric
+        // sleep/strain chips, which reads as "recovery has no score" — the exact
+        // confusion a user reported. A mild numeral echo between the big ring and
+        // its small chip is the lesser evil than an inconsistent, seemingly-empty
+        // column. We still drop a word-for-word duplicate CAPTION of the center
+        // (exact-match only), so a learning-state caption isn't shown twice.
+        if slotMatchesRingCenter(slot), metric.detail == centerState {
+            metric.suppressesDetail = true
         }
         return metric
     }
