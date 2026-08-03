@@ -977,6 +977,7 @@ struct AtriaHomeView: View {
     @State private var batteryState: UIDevice.BatteryState = UIDevice.current.batteryState
     @State private var standByDismissedUntil: Date?
     @State private var missedDataBannerDismissedUntil: Date?
+    @State private var confirmStartFreshFromBanner = false
     @State private var developerModeEnabled = AtriaDeveloperMode.isEnabled
     @State private var lastLiveWidgetSnapshotAt: Date?
     @State private var lastLiveWidgetSnapshotHeartRate: Int?
@@ -5044,6 +5045,19 @@ struct AtriaHomeView: View {
                 missedDataBannerDismissedUntil = nil
                 _ = ble.requestOfflineHistoricalSyncIfNeeded(reason: "home_missed_data_banner",
                                                              force: true)
+            } onStartFresh: {
+                confirmStartFreshFromBanner = true
+            }
+            .confirmationDialog("Start fresh?",
+                                isPresented: $confirmStartFreshFromBanner,
+                                titleVisibility: .visible) {
+                Button("Start fresh", role: .destructive) {
+                    ble.startFreshAcceptingMissedDataLoss(reason: "home_banner_start_fresh")
+                    missedDataBannerDismissedUntil = nil
+                }
+                Button("Keep waiting", role: .cancel) {}
+            } message: {
+                Text("Earlier data that wasn't recorded will be marked done. Your live tracking and new data are unaffected.")
             }
         }
     }
@@ -5581,22 +5595,24 @@ enum AtriaMissedDataBannerPresentation {
         let pending = max(0, strapPendingRecords)
         let minutes = pending / 60
         let amount = minutes >= 1 ? "~\(minutes) min" : "under a minute"
-        if protectsLiveStream {
-            // Live HR is deliberately protected; catch-up is deferred, not lost.
-            return Copy(title: "Live HR protected",
-                        subtitle: pending > 0
-                            ? "Catching up \(amount) of history when idle"
-                            : "Up to date — catching up in the background",
-                        offersRecovery: true)
-        }
+        // Recoverability is the FIRST question. An old gap that has fallen off
+        // the strap's ring buffer is gone whether or not live HR is streaming, so
+        // branching on "live protected" first would falsely imply (with a Sync
+        // button) that the old data is still coming. Only when the strap genuinely
+        // holds recoverable history do we offer sync + care about live-vs-idle.
         if pending >= recoverableRecordFloor {
+            if protectsLiveStream {
+                // Live HR is streaming; catch-up is deferred to protect it.
+                return Copy(title: "Live HR protected",
+                            subtitle: "Catching up \(amount) of history when idle",
+                            offersRecovery: true)
+            }
             return Copy(title: "Catching up history",
                         subtitle: "\(amount) still on the strap",
                         offersRecovery: true)
         }
-        // Old gap with little/nothing left on the strap → calm, informational,
-        // and reassuring: it's gone, there is nothing to do, and it does not
-        // affect anything going forward. No sync affordance (it would be futile).
+        // Little/nothing left on the strap → the gap is gone. Say so calmly and
+        // never dangle a futile sync, regardless of live-stream state.
         return Copy(title: "Some earlier data wasn't recorded",
                     subtitle: "Older than the strap could store — new data is unaffected",
                     offersRecovery: false)
@@ -5607,6 +5623,7 @@ private struct AtriaMissedDataBanner: View, Equatable {
     let protectsLiveStream: Bool
     let onDismiss: () -> Void
     let onSync: () -> Void
+    let onStartFresh: () -> Void
 
     static func == (lhs: AtriaMissedDataBanner, rhs: AtriaMissedDataBanner) -> Bool {
         lhs.protectsLiveStream == rhs.protectsLiveStream
@@ -5617,7 +5634,11 @@ private struct AtriaMissedDataBanner: View, Equatable {
             compactIcon
             copyBlock
             Spacer(minLength: 0)
-            compactState
+            if bannerCopy.offersRecovery {
+                compactState
+            } else {
+                startFreshButton
+            }
             dismissButton
         }
         .padding(.horizontal, 12)
@@ -5681,6 +5702,21 @@ private struct AtriaMissedDataBanner: View, Equatable {
                                 ? "Sync missed data now; live heart rate may pause during recovery"
                                 : "Catch up recoverable strap data now")
         }
+    }
+
+    /// For an unrecoverable (overwritten) gap, the only useful action is to stop
+    /// tracking it. "Start fresh" clears it (behind a confirm) so the banner stops
+    /// nagging about data the strap can no longer serve.
+    private var startFreshButton: some View {
+        Button(action: onStartFresh) {
+            Text("Start fresh")
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 10)
+                .frame(height: 32)
+                .contentShape(.rect)
+        }
+        .atriaCardAction(prominent: false, tint: .cyan)
+        .accessibilityLabel("Start fresh; stop tracking this unrecoverable gap")
     }
 
     private var dismissButton: some View {

@@ -12824,6 +12824,45 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
     }
 
+    /// User-initiated "Start fresh": accept that an unrecoverable, overwritten
+    /// gap is gone and stop tracking it, so the missed-data banner clears instead
+    /// of nagging about data the strap ring buffer can no longer serve. This is
+    /// the same reconcile the verified strap-reset path runs (retire the draining
+    /// authority, retire gap windows before `now`, clear the pending flag) MINUS
+    /// any BLE command — the strap is already caught up at its frontier, so
+    /// forgetting the older windows matches reality. Never sends a command, never
+    /// touches metric archives, sessions, workouts, or sleep. Fail-safe: the
+    /// authority abandon no-ops unless a `.draining` authority genuinely exists,
+    /// and the window retirement persists a filtered list or does nothing.
+    func startFreshAcceptingMissedDataLoss(reason: String) {
+        let now = Date()
+        let defaults = UserDefaults.standard
+        let authorityAbandoned = (try? historicalFullDrainCoverageStore
+            .abandonDrainingAuthorityAfterVerifiedStrapHistoryReset(
+                completedAtUnix: now.timeIntervalSince1970
+            )) ?? false
+        let retirement = AtriaHistoricalGapLedger
+            .retireWindowsBeforeVerifiedStrapHistoryReset(completedAt: now)
+        // The user tapped Start fresh, so honor it: clear the pending state (and
+        // the request window) that keeps the banner and the pending-recovery
+        // treatment alive. With `completedAt = now` every window is older than the
+        // reset point, so nothing recoverable is being discarded here.
+        defaults.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)
+        defaults.removeObject(forKey: OfflineSyncDefaults.rangeLossBackfillReason)
+        defaults.removeObject(forKey: OfflineSyncDefaults.recoveryWindowStart)
+        defaults.removeObject(forKey: OfflineSyncDefaults.recoveryWindowEnd)
+        assignIfChanged(\.rangeLossBackfillPending, false)
+        historicalRecoveryPresentation = .idle
+        reconcileHistoricalRecoveryPresentation(reason: "user_start_fresh")
+        AtriaDebugLog(
+            "ATRIADBG offline_sync status=user_start_fresh_accept_loss reason=%@ authority_abandoned=%d retired_windows=%d remaining_windows=%d ble_commands=0 metric_archive_mutation=0 session_mutation=0",
+            reason,
+            authorityAbandoned ? 1 : 0,
+            retirement?.retiredWindows ?? -1,
+            retirement?.remainingWindows ?? -1
+        )
+    }
+
     /// Emits only read-only per-gap coverage evidence at a history
     /// transaction boundary.  This makes a support trace auditable from
     /// request → persisted rows → durable flush/ACK → exact coverage outcome
