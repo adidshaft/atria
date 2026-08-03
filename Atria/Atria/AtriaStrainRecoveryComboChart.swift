@@ -24,6 +24,38 @@ struct AtriaStrainRecoveryComboChart: View {
     /// recovery (0–100%) is mapped onto so the two axes align on 0/33/66/100%.
     private let strainAxisMax = 21.0
 
+    private let calendar = Calendar.current
+
+    /// A FIXED 7-day frame ending on the most recent day that has data, so the
+    /// x-axis always shows seven day-ticks (not a couple of scattered labels over
+    /// a sparse wide range). Anchoring on the latest data day keeps the readings
+    /// flush at the right edge instead of leaving an empty tail.
+    private var weekDays: [Date] {
+        let allDays = (strain + recovery).map { calendar.startOfDay(for: $0.day) }
+        guard let end = allDays.max() else { return [] }
+        let start = calendar.date(byAdding: .day, value: -6, to: end) ?? end
+        return (0...6).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
+    }
+
+    /// Points snapped to day-starts and clipped to the 7-day frame, so they align
+    /// exactly on the day-ticks and nothing outside the week is drawn.
+    private func windowed(_ points: [AtriaDetailChartPoint]) -> [AtriaDetailChartPoint] {
+        guard let first = weekDays.first, let last = weekDays.last else { return [] }
+        return points.compactMap { point in
+            let day = calendar.startOfDay(for: point.day)
+            guard day >= first, day <= last else { return nil }
+            return AtriaDetailChartPoint(day: day, value: point.value, tint: point.tint)
+        }
+    }
+
+    /// Domain padded half a day each side so edge ticks/points aren't clipped.
+    private var xDomain: ClosedRange<Date>? {
+        guard let first = weekDays.first, let last = weekDays.last else { return nil }
+        let lo = calendar.date(byAdding: .hour, value: -12, to: first) ?? first
+        let hi = calendar.date(byAdding: .hour, value: 12, to: last) ?? last
+        return lo...hi
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
@@ -58,20 +90,22 @@ struct AtriaStrainRecoveryComboChart: View {
     }
 
     private var chart: some View {
-        Chart {
+        let strainWindow = windowed(strain)
+        let recoveryWindow = windowed(recovery)
+        return Chart {
             // Two zigzag lines on a shared 0–21 domain (recovery % mapped onto
             // it), each BROKEN at day gaps via its contiguous-run id so neither
             // line is drawn across days with no reading.
-            ForEach(strain.contiguousDayRuns(), id: \.point.day) { entry in
-                LineMark(x: .value("Day", entry.point.day),
+            ForEach(strainWindow.contiguousDayRuns(), id: \.point.day) { entry in
+                LineMark(x: .value("Day", entry.point.day, unit: .day),
                          y: .value("Strain", min(entry.point.value, strainAxisMax)),
                          series: .value("Strain run", "s\(entry.runID)"))
                     .foregroundStyle(Metrics.electricStrain)
                     .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 2))
             }
-            ForEach(recovery.contiguousDayRuns(), id: \.point.day) { entry in
-                LineMark(x: .value("Day", entry.point.day),
+            ForEach(recoveryWindow.contiguousDayRuns(), id: \.point.day) { entry in
+                LineMark(x: .value("Day", entry.point.day, unit: .day),
                          y: .value("Recovery", entry.point.value / 100.0 * strainAxisMax),
                          series: .value("Recovery run", "r\(entry.runID)"))
                     .foregroundStyle(Metrics.electricGreen)
@@ -80,11 +114,19 @@ struct AtriaStrainRecoveryComboChart: View {
             }
             // A dot on each real recovery day, colored by its band, so the
             // recovery line's points read green/yellow/red at a glance.
-            ForEach(recovery) { point in
-                PointMark(x: .value("Day", point.day),
+            ForEach(recoveryWindow) { point in
+                PointMark(x: .value("Day", point.day, unit: .day),
                           y: .value("Recovery", point.value / 100.0 * strainAxisMax))
                     .foregroundStyle(Metrics.recoveryColor(Int(point.value.rounded())))
                     .symbolSize(50)
+            }
+        }
+        .chartXScale(domain: xDomain ?? Date()...Date())
+        .chartXAxis {
+            AxisMarks(values: weekDays) { value in
+                AxisGridLine()
+                AxisValueLabel(format: .dateTime.weekday(.narrow))
+                    .foregroundStyle(.secondary)
             }
         }
         .chartYScale(domain: 0...strainAxisMax)

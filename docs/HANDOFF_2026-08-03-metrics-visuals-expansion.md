@@ -61,6 +61,39 @@ THROUGHOUT, not one-off patches.
 - **C5 — Re-verify on device** once the install has ≥1–2 weeks of real data, so
   charts are reviewed with realistic density, not a 3-day cold start.
 
+## 11. Chart PLACEMENT principle (2026-08-03, user-directed) — right chart, right place
+
+The right chart in the wrong place is still wrong. Match the chart's TIME SCALE
+to the surface's purpose:
+
+- **Activity view** = **intraday + log**. Heart/stress monitor, **past-24h**
+  graphs (live HR, today's stress timeline), and the list of that day's
+  activities (workouts / sleep / naps). NOT weekly/monthly trends. (User: "the
+  activity view should only have heart/stress monitor, with graphs from past 24
+  hrs and different activities listed.")
+- **Strain & Recovery weekly combo** (the 7-day fixed-axis two-line chart) =
+  the **Strain and Recovery metric details** (and a candidate for Overview),
+  NOT Activity. It is a weekly trend, so it lives where weekly trends live.
+- **Metric details** = that metric's history at the selected range + its
+  contributors/behaviors.
+- **General rule:** today/live/intraday → Activity & the live tiles; daily /
+  weekly / monthly trends → metric details & Overview.
+
+**Two fixes applied under this (`this commit`):**
+1. The Strain & Recovery combo was REMOVED from the Activity tab (wrong place)
+   and stays only in the Strain + Recovery details.
+2. The combo now uses a **fixed 7-day x-axis** (seven weekday ticks) instead of
+   a sparse 14-day window that rendered as a couple of scattered labels — it
+   read as random noise. Data is framed within the week; days without a reading
+   simply have no point.
+
+**Backlog (Activity view redesign, P-activity):** bring the heart/stress monitor
++ a **past-24h** HR/stress timeline to the top of the Activity view, above the
+activities list — the intraday counterpart to the weekly trends that live
+elsewhere. The stress monitor + today timeline already exist
+(`AtriaStressMonitor`, `AtriaStressDetailView`); this is a surfacing/placement
+job, not new analytics.
+
 ## 0. TL;DR — the reframe
 
 The user shared 6 mockup boards (Behavior Impact, Strength Log, Sleep Planner &
