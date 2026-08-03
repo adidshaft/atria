@@ -647,6 +647,10 @@ private enum AtriaWorkoutRouteTransactionRecovery {
 /// when the underlying session actually recorded it.
 struct AtriaActivityMonitorTab: View {
     @ObservedObject var activityStore: AtriaHomeModel.ActivityStore
+    /// Live stress monitor for the intraday (past-24h) card at the top of the
+    /// Activity view — Activity is the intraday + log surface (heart/stress +
+    /// today's timeline + activities), not the weekly-trend surface.
+    @ObservedObject var stressMonitorStore: AtriaStressMonitorStore
     /// Retained without observation for action sheets, which observe it only
     /// while presented.
     let store: SessionStore
@@ -746,6 +750,10 @@ struct AtriaActivityMonitorTab: View {
         return LazyVStack(alignment: .leading, spacing: 14) {
             activityToolbar
 
+            if viewingCurrentPhysiologicalDay {
+                stressMonitorCard
+            }
+
             dayTimelineCard
 
             let sections = daySectionsCache.value(for: requestKey) ?? []
@@ -791,6 +799,82 @@ struct AtriaActivityMonitorTab: View {
                                      activity: activity,
                                      calendar: calendar)
         }
+    }
+
+    /// Intraday heart/stress monitor for the Activity view: the current stress
+    /// state plus a past-24h stress timeline. Honest — plots only observed
+    /// readings, breaks the line at collection gaps, and shows the state's own
+    /// explanation when there isn't yet a meaningful window (never a fabricated
+    /// flat line). Activity is the intraday surface; weekly trends live in the
+    /// metric details.
+    @ViewBuilder private var stressMonitorCard: some View {
+        let presentation = AtriaStressPresentation.make(state: stressMonitorStore.state)
+        let cutoff = Calendar.current.date(byAdding: .hour, value: -24, to: Date()) ?? Date.distantPast
+        let readings = stressMonitorStore.history
+            .filter { $0.t >= cutoff }
+            .map(AtriaStressDetailReading.init(historyPoint:))
+        let points = AtriaStressTimelinePoint.segment(readings)
+        let hasWindow: Bool = {
+            guard let first = points.first?.reading.date,
+                  let last = points.last?.reading.date else { return false }
+            return last.timeIntervalSince(first) >= 10 * 60
+        }()
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("Stress", systemImage: "bolt.heart.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Metrics.electricStress)
+                Spacer()
+                Text(presentation.value)
+                    .font(.subheadline.weight(.bold).monospacedDigit())
+                    .foregroundStyle(stressMonitorStore.state.level?.tint ?? .secondary)
+            }
+
+            if hasWindow {
+                Chart {
+                    ForEach(points) { point in
+                        AreaMark(x: .value("Time", point.reading.date),
+                                 y: .value("Stress", point.reading.score),
+                                 series: .value("Segment", point.segment))
+                            .interpolationMethod(.linear)
+                            .foregroundStyle(Metrics.electricStress.opacity(0.12))
+                        LineMark(x: .value("Time", point.reading.date),
+                                 y: .value("Stress", point.reading.score),
+                                 series: .value("Segment", point.segment))
+                            .interpolationMethod(.linear)
+                            .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                            .foregroundStyle(Metrics.electricStress)
+                    }
+                }
+                .chartYScale(domain: 0...3)
+                .chartYAxis(.hidden)
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                        AxisValueLabel(format: .dateTime.hour())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(height: 88)
+                .clipped()
+
+                Text("Past 24 hours · observed readings only; blanks are collection gaps.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(presentation.detail.isEmpty
+                     ? "Warming up — stress needs a short window of steady wear before a timeline appears."
+                     : presentation.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(14)
+        .atriaInsetCard(tint: Metrics.electricStress)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Stress monitor. \(presentation.value). \(presentation.detail)")
     }
 
     /// The navigation title already says Activity. Keep day navigation and Add
