@@ -733,15 +733,18 @@ private struct AtriaJournalCheckInDeck: View {
             }
         }
         .frame(minHeight: deckSizing.minimumHeight)
-        // Contain the Tinder drag/fly-off HORIZONTALLY (user 2026-07-30: journal
-        // cards "crossing over the margins from both sides"). The mask is exactly
-        // the deck-column width but runs far past top and bottom, so a dragged or
-        // flying card is clipped at the card's own edges and can never bleed across
-        // the gutter to the screen margin, while vertical rotation overhang and the
-        // peeking card's bottom sliver stay visible.
-        .mask(alignment: .center) {
-            Rectangle().padding(.vertical, -300)
-        }
+        // Contain the Tinder drag/fly-off HORIZONTALLY (user 2026-07-30 & again on
+        // 2026-08-03: journal cards "leaking right and left" to the screen margins
+        // mid-swipe). The earlier `.mask(Rectangle().padding(.vertical, -300))` did
+        // not clip the offset/rotated card in practice. Instead over-pad
+        // vertically, `.clipped()` (which reliably clips at the view's own bounds =
+        // the deck column horizontally), then remove the pad's layout effect. A
+        // dragged/flying card is now clipped at the deck edges and can never reach
+        // the gutter, while the rotation overhang + peek sliver still show through
+        // the vertical breathing room.
+        .padding(.vertical, 44)
+        .clipped()
+        .padding(.vertical, -44)
         // Direction badges sit OUTSIDE the mask, pinned to the deck's fixed top
         // corners, so they read clearly and never ride off-column with the card.
         .overlay(alignment: .topTrailing) {
