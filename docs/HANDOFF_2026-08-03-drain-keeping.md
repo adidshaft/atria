@@ -72,6 +72,13 @@ User decision: don't wait 34 h for a backlog of mostly-sleep data — **wipe the
 4. **Remaining drain-keeping hardening** (so it never diverges even off-charger/HR-starved): timer-driven re-arm independent of HR during a backlog; connected-slice teardown fix; charge-resume; flush-debt tracker; verify BGProcessing windows actually fire; retire the non-convergent full drain. (Design doc + task #22.)
 5. **Task #20 (backlog):** validated SpO2 on WHOOP 4 (decoder + reference calibration).
 
+## 7b. LOOP — next concrete step to implement (start here)
+A `continue implementing` cron loop (`c4bd0c6c`, every 10 min) is running. Do task #22 hardening in **smallest-safe-first** order, each as its own build+test+commit, appending a ✅ line to §6/§7 after each:
+1. **P2 telemetry fix (smallest, zero behavioral risk — do first).** `AtriaBLEManager.swift` writes `lastDurableFlushBoundary` (`OfflineSyncDefaults.lastDurableFlushBoundary.v1`) **only on the flush-ERROR branch** (~line 29969), so it froze for 1.5h while segments still landed → misleading field. Add a **success-branch** write (a `lastDurableFlushBoundaryOKAt` timestamp on the durable-flush success path, ~line 29948) so field triage has a truthful progress signal. Additive only; no ACK/coverage coupling. Add a tiny unit test if a pure helper is extracted. Build sim → `-only-testing` the cadence class → commit.
+2. **Timer-driven re-arm independent of HR** (the real anti-divergence fix): during a backlog (`rangeLossBackfillPending`) + connected + settled + no storm, re-arm the range-loss drain on a bounded timer even when HR ticks are sparse (don't rely on accepted-HR callbacks). Gate + progress-guard like P1 so it never churns; keep constraints §8.
+3. Connected-slice teardown fix (don't release a productive drain on live-HR silence during a large backlog); charge-resume on power-state edge; flush-debt tracker. See `docs/drain-keeping-flush-design.md`.
+Build cmd (sim test): `xcodebuild test -project Atria/Atria.xcodeproj -scheme AtriaTests -destination 'platform=iOS Simulator,id=85C288CE-EA97-4A98-B650-44BCF49F2CA5' -only-testing:AtriaTests/AtriaBLERecoveryCadenceTests`. Release for device: `-scheme Atria -configuration Release -destination 'platform=iOS,id=3803F5B6-1666-56D3-A71A-62F131F6CE3B' -allowProvisioningUpdates`.
+
 ## 8. Hard constraints (never violate)
 - Never re-enable the non-convergent full drain (`productionHistoricalFullDrainGapRecoveryEnabled` / `automaticFullDrainRecoveryEnabled`).
 - No history seek (`[start,end]` serve returns nothing on WHOOP 4).
