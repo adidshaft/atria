@@ -1547,6 +1547,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private let rangeLossBackfillProgressChainInterval: TimeInterval = 8
     private let rangeLossBackfillArmedTimeout: TimeInterval = 180
     private var rangeLossBackfillTask: Task<Void, Never>?
+    // Drain-keeping P3 (HR-independent re-arm safety net): the background drain
+    // re-arm rides on accepted-HR (2A37) callbacks (and Task.sleep timers that
+    // only advance when iOS wakes the app — for a BLE app that wake is largely
+    // the HR packet itself). When the user is still/asleep, accepted HR goes
+    // sparse, the re-arm loop starves, and the drain falls below 1x and DIVERGES.
+    // A bounded maintenance ticker re-arms the range-loss drain independent of HR
+    // whenever the normal loop has gone silent longer than the re-arm floor. It
+    // never sends a BLE command itself (it re-enters the fully-guarded
+    // `scheduleRangeLossBackfillIfNeeded`), and the floor keeps it from ever
+    // churning a healthy chain: any real re-arm within the floor keeps it quiet.
+    private let rangeLossBackfillMaintenanceTickInterval: TimeInterval = 60
+    private let rangeLossBackfillMaintenanceReArmFloor: TimeInterval = 120
+    private var rangeLossBackfillMaintenanceTickerTask: Task<Void, Never>?
+    private var lastRangeLossBackfillReArmAt: Date?
     private var staleRangeLossReconciliationInFlight = false
     private var lastStaleRangeLossReconciliationAttemptAt: Date?
     private var offlineHistoricalSyncStartRows = 0
@@ -2888,6 +2902,35 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case .protectedLaunchPending, .proving, .fallbackPending:
             return false
         }
+    }
+
+    /// Drain-keeping P3 (HR-independent re-arm safety net): decide, on a bounded
+    /// maintenance tick, whether to re-arm the range-loss drain. The re-arm loop
+    /// normally rides on accepted-HR callbacks; when HR is sparse (still/asleep)
+    /// that loop starves and the drain diverges. This backstop fires ONLY when a
+    /// real backlog is pending, no sync is already running, the link is up, the
+    /// context is flush-eligible (maintenance window or guarded connected catch-up),
+    /// AND the normal loop has been silent for at least `reArmFloor`. The floor is
+    /// the anti-churn guard: any genuine re-arm from any source (HR path, retry
+    /// chain, did_connect) refreshes the "last re-arm" clock and keeps this quiet,
+    /// so the ticker never stomps a healthy chain and cannot tight-loop. A `nil`
+    /// `sinceLastReArm` means the loop has never armed this backlog → re-arm now.
+    nonisolated static func shouldReArmRangeLossBackfillOnMaintenanceTick(
+        rangeLossBackfillPending: Bool,
+        syncInProgress: Bool,
+        linkConnected: Bool,
+        flushEligible: Bool,
+        sinceLastReArm: TimeInterval?,
+        reArmFloor: TimeInterval
+    ) -> Bool {
+        guard rangeLossBackfillPending,
+              !syncInProgress,
+              linkConnected,
+              flushEligible,
+              reArmFloor.isFinite,
+              reArmFloor > 0 else { return false }
+        guard let sinceLastReArm else { return true }
+        return sinceLastReArm.isFinite && sinceLastReArm >= reArmFloor
     }
 
     nonisolated static func shouldDeferAutomaticHistoryForCleanOwner(
@@ -12765,6 +12808,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.removeObject(forKey: OfflineSyncDefaults.recoveryWindowEnd)
         defaults.set(Date().timeIntervalSince1970, forKey: OfflineSyncDefaults.rangeLossBackfillStartedAt)
         assignIfChanged(\.rangeLossBackfillPending, false)
+        // Drain-keeping P3: the backlog is resolved, so retire the HR-independent
+        // re-arm backstop (it also self-terminates on its next tick as a fallback).
+        stopRangeLossBackfillMaintenanceTicker(reason: "range_loss_cleared")
         AtriaDebugLog("ATRIADBG offline_sync status=range_loss_backfill_cleared reason=%@ new_rows=%d metric_ready=%d metric_rows=%d current_rows=%d",
                       reason,
                       newRows,
@@ -12889,6 +12935,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         scheduleStaleArmedRangeLossBackfillReconciliation(reason: reason)
         guard defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) else { return }
         guard !offlineHistoricalSyncInProgress else { return }
+        // Drain-keeping P3: a genuine re-arm attempt is proceeding for a real
+        // backlog. Refresh the clock the maintenance ticker watches so its
+        // HR-independent backstop only fires once this normal loop has gone
+        // silent past the floor (never while it is actively cycling).
+        lastRangeLossBackfillReArmAt = Date()
         let verifiedPeripheralID = defaults.string(forKey: OfflineSyncDefaults.verifiedHistoryPeripheralID)
         let currentPeripheralID = peripheral?.identifier.uuidString
         let previouslyVerified = currentPeripheralID != nil
@@ -12915,6 +12966,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           reason)
             return
         }
+        // Drain-keeping P3: we are in an active-arming posture for a real backlog.
+        // Bring up the HR-independent maintenance backstop (idempotent) so that if
+        // this normal loop later starves on sparse HR, the drain still re-arms.
+        startRangeLossBackfillMaintenanceTickerIfNeeded(reason: reason)
         rangeLossBackfillTask?.cancel()
         rangeLossBackfillTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(8))
@@ -13004,6 +13059,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         rangeLossBackfillTask?.cancel()
         rangeLossBackfillTask = nil
+        // A genuine re-arm: refresh the clock the P3 maintenance ticker watches so
+        // an HR-healthy period keeps that HR-independent backstop quiet.
+        lastRangeLossBackfillReArmAt = now
         let reason = UserDefaults.standard.string(
             forKey: OfflineSyncDefaults.rangeLossBackfillReason
         ) ?? "accepted_hr_qualified_range_loss"
@@ -13013,6 +13071,116 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             reason: reason,
             force: true,
             allowConnectedAutomaticHandoff: true
+        )
+    }
+
+    /// Drain-keeping P3: start the bounded, HR-independent maintenance ticker that
+    /// backstops the range-loss re-arm when accepted HR (and therefore the app's
+    /// background wakes) goes sparse. Idempotent — a second call while running is a
+    /// no-op — and it self-terminates when the backlog clears or offline sync is
+    /// disabled. It sends no BLE command; each due tick re-enters the fully-guarded
+    /// `scheduleRangeLossBackfillIfNeeded`.
+    private func startRangeLossBackfillMaintenanceTickerIfNeeded(reason: String) {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: OfflineSyncDefaults.enabled),
+              defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending),
+              rangeLossBackfillMaintenanceTickerTask == nil else { return }
+        AtriaDebugLog("ATRIADBG offline_sync status=maintenance_ticker_started reason=%@ interval_s=%.0f floor_s=%.0f action=hr_independent_rearm_backstop",
+                      reason,
+                      rangeLossBackfillMaintenanceTickInterval,
+                      rangeLossBackfillMaintenanceReArmFloor)
+        rangeLossBackfillMaintenanceTickerTask = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(
+                    for: .seconds(rangeLossBackfillMaintenanceTickInterval)
+                )
+                if Task.isCancelled { break }
+                maintenanceTickRangeLossBackfillReArmIfDue()
+            }
+        }
+    }
+
+    private func stopRangeLossBackfillMaintenanceTicker(reason: String) {
+        guard rangeLossBackfillMaintenanceTickerTask != nil else { return }
+        rangeLossBackfillMaintenanceTickerTask?.cancel()
+        rangeLossBackfillMaintenanceTickerTask = nil
+        AtriaDebugLog("ATRIADBG offline_sync status=maintenance_ticker_stopped reason=%@",
+                      reason)
+    }
+
+    /// One maintenance tick: if the backlog is gone (or sync disabled) tear the
+    /// ticker down; otherwise, when the normal re-arm loop has been silent past
+    /// the floor on a settled, storm-free, flush-eligible link, re-arm the drain
+    /// through the same guarded entry point the HR path uses — independent of HR.
+    private func maintenanceTickRangeLossBackfillReArmIfDue() {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: OfflineSyncDefaults.enabled),
+              defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) else {
+            stopRangeLossBackfillMaintenanceTicker(
+                reason: "backlog_cleared_or_disabled"
+            )
+            return
+        }
+        let now = Date()
+        let connected = peripheral?.state == .connected && status == .connected
+        // Same recent-storm signal the connected-catch-up / maintenance-window
+        // admission uses (see requestOfflineHistoricalSyncIfNeeded).
+        let recentDisconnectStorm =
+            defaults.integer(forKey: Self.protectedR10EarlyDisconnectsKey)
+                >= Self.protectedR10EarlyDisconnectLimit
+            || (defaults.object(forKey: Self.protectedR10DisconnectStormAtKey)
+                as? Double).map {
+                    now.timeIntervalSince1970 - $0 < 300
+                } ?? false
+        let activeExplicitWorkout = AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
+        let flushMaintenanceWindow = Self.isFlushMaintenanceWindow(
+            rangeLossBackfillPending: true,
+            foregroundInteractive: foregroundInteractiveMode,
+            cleanOwnerState: protectedR10CleanOwnerState,
+            activeExplicitWorkout: activeExplicitWorkout,
+            recentDisconnectStorm: recentDisconnectStorm
+        )
+        let connectedCatchUp = Self.shouldAllowConnectedRangeLossCatchUp(
+            rangeLossBackfillPending: true,
+            cleanOwnerState: protectedR10CleanOwnerState,
+            recentDisconnectStorm: recentDisconnectStorm,
+            verifiedHistoryCapability: currentVerifiedRawHistoryCapability(),
+            activeExplicitWorkout: activeExplicitWorkout,
+            syncInProgress: offlineHistoricalSyncInProgress
+        )
+        let sinceLastReArm = lastRangeLossBackfillReArmAt.map {
+            now.timeIntervalSince($0)
+        }
+        guard Self.shouldReArmRangeLossBackfillOnMaintenanceTick(
+            rangeLossBackfillPending: true,
+            syncInProgress: offlineHistoricalSyncInProgress,
+            linkConnected: connected,
+            flushEligible: flushMaintenanceWindow || connectedCatchUp,
+            sinceLastReArm: sinceLastReArm,
+            reArmFloor: rangeLossBackfillMaintenanceReArmFloor
+        ) else { return }
+        defaults.set(now.timeIntervalSince1970,
+                     forKey: OfflineSyncDefaults.lastMaintenanceReArmAt)
+        AtriaDebugLog("ATRIADBG offline_sync status=maintenance_ticker_rearm since_last_rearm_s=%@ maintenance=%d connected_catchup=%d action=rearm_range_loss_backfill_independent_of_hr",
+                      sinceLastReArm.map { String(format: "%.0f", $0) } ?? "never",
+                      flushMaintenanceWindow ? 1 : 0,
+                      connectedCatchUp ? 1 : 0)
+        scheduleRangeLossBackfillIfNeeded(reason: "maintenance_ticker")
+    }
+
+    /// The raw-history capability fence used by the connected-catch-up admission,
+    /// computed the same way as inside `scheduleRangeLossBackfillIfNeeded`.
+    private func currentVerifiedRawHistoryCapability() -> Bool {
+        let defaults = UserDefaults.standard
+        let verifiedPeripheralID = defaults.string(
+            forKey: OfflineSyncDefaults.verifiedHistoryPeripheralID
+        )
+        let currentPeripheralID = peripheral?.identifier.uuidString
+        let previouslyVerified = currentPeripheralID != nil
+            && currentPeripheralID == verifiedPeripheralID
+        return Self.supportsVerifiedHistoricalRecovery(
+            model: strapModel,
+            previouslyVerified: previouslyVerified
         )
     }
 
@@ -17703,6 +17871,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         r10LivenessTask?.cancel()
         proprietaryNotifyFallbackTask?.cancel()
         rangeLossBackfillTask?.cancel()
+        rangeLossBackfillMaintenanceTickerTask?.cancel()
+        rangeLossBackfillMaintenanceTickerTask = nil
         offlineHistoricalSyncTimeoutTask?.cancel()
         connectedHistoricalSliceTask?.cancel()
         connectedHistoricalSliceTask = nil
