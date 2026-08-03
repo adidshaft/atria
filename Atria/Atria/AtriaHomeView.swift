@@ -5634,11 +5634,7 @@ private struct AtriaMissedDataBanner: View, Equatable {
             compactIcon
             copyBlock
             Spacer(minLength: 0)
-            if bannerCopy.offersRecovery {
-                compactState
-            } else {
-                startFreshButton
-            }
+            compactState
             dismissButton
         }
         .padding(.horizontal, 12)
@@ -5650,11 +5646,15 @@ private struct AtriaMissedDataBanner: View, Equatable {
     }
 
     private var compactIcon: some View {
-        Image(systemName: "arrow.triangle.2.circlepath")
+        // A cyan sync-loop icon implies "recovering". For an unrecoverable gap
+        // that is misleading, so use a calm, neutral info glyph instead.
+        let recoverable = bannerCopy.offersRecovery
+        return Image(systemName: recoverable ? "arrow.triangle.2.circlepath" : "info.circle")
             .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.cyan)
+            .foregroundStyle(recoverable ? Color.cyan : Color.secondary)
             .frame(width: 30, height: 30)
-            .background(AtriaIconTileBackground(cornerRadius: 9, tint: .cyan))
+            .background(AtriaIconTileBackground(cornerRadius: 9,
+                                                tint: recoverable ? .cyan : .gray))
     }
 
     /// Honest banner copy driven by what is actually recoverable (strap ring-
@@ -5704,23 +5704,11 @@ private struct AtriaMissedDataBanner: View, Equatable {
         }
     }
 
-    /// For an unrecoverable (overwritten) gap, the only useful action is to stop
-    /// tracking it. "Start fresh" clears it (behind a confirm) so the banner stops
-    /// nagging about data the strap can no longer serve.
-    private var startFreshButton: some View {
-        Button(action: onStartFresh) {
-            Text("Start fresh")
-                .font(.caption.weight(.semibold))
-                .padding(.horizontal, 10)
-                .frame(height: 32)
-                .contentShape(.rect)
-        }
-        .atriaCardAction(prominent: false, tint: .cyan)
-        .accessibilityLabel("Start fresh; stop tracking this unrecoverable gap")
-    }
-
     private var dismissButton: some View {
-        Button(action: onDismiss) {
+        // Recoverable: the ✕ snoozes the catch-up status. Unrecoverable: there is
+        // nothing to wait for, so the ✕ offers "Start fresh" (a confirm dialog)
+        // to clear the gone gap for good — one clean affordance, no crammed button.
+        Button(action: bannerCopy.offersRecovery ? onDismiss : onStartFresh) {
             Image(systemName: "xmark")
                 .font(.caption.weight(.bold))
                 .frame(width: 44, height: 44)
@@ -5728,7 +5716,9 @@ private struct AtriaMissedDataBanner: View, Equatable {
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
-        .accessibilityLabel("Dismiss catch-up status")
+        .accessibilityLabel(bannerCopy.offersRecovery
+                            ? "Dismiss catch-up status"
+                            : "Start fresh; clear this unrecoverable gap")
     }
 
     private var missedDataDurationText: String {
