@@ -547,6 +547,66 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                        "an overlapping nap must not be drawn twice through both surfaces")
     }
 
+    func testCurrentDayShowsTheAnchorSleepThatEndsExactlyAtItsWakeBoundary() throws {
+        // Repro of "confirm made my sleep vanish": the current physiological day
+        // starts at the anchoring sleep's WAKE, so that sleep ends exactly at
+        // interval.start. Once confirmed it leaves the review card; with a strict
+        // `end > interval.start` it is dropped from the day and disappears.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let wake = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026,
+                                                                    month: 8,
+                                                                    day: 3,
+                                                                    hour: 10,
+                                                                    minute: 50)))
+        let sleep = activitySleep(id: "anchor-sleep",
+                                  day: calendar.startOfDay(for: wake),
+                                  start: wake.addingTimeInterval(-4.8 * 3_600), // ~06:03
+                                  end: wake,                                    // ends AT the boundary
+                                  confirmed: true)
+        let snapshot = SleepHistorySnapshot(nights: [sleep],
+                                            confirmedCount: 1,
+                                            candidateCount: 0)
+        // Current physiological day: [wake, now].
+        let interval = DateInterval(start: wake, end: wake.addingTimeInterval(3 * 3_600))
+
+        // Strict (historical days): the boundary sleep is not part of this window.
+        let strict = AtriaActivitySelectedDaySleeps.overlapping(
+            snapshot: snapshot, pendingReview: nil,
+            interval: interval, calendar: calendar,
+            includeStartBoundarySleep: false
+        )
+        XCTAssertTrue(strict.isEmpty,
+                      "a sleep ending exactly at the boundary is not in a historical civil-day window")
+
+        // Current physiological day: the anchoring sleep stays visible.
+        let current = AtriaActivitySelectedDaySleeps.overlapping(
+            snapshot: snapshot, pendingReview: nil,
+            interval: interval, calendar: calendar,
+            includeStartBoundarySleep: true
+        )
+        XCTAssertEqual(current.map(\.id), [sleep.id],
+                       "the sleep you woke from must remain in today's Activity after confirming")
+
+        // A sleep that ends strictly BEFORE the boundary is still excluded — the
+        // relaxation only admits the exact anchor, never an unrelated prior sleep.
+        let earlier = activitySleep(id: "earlier",
+                                    day: calendar.startOfDay(for: wake),
+                                    start: wake.addingTimeInterval(-9 * 3_600),
+                                    end: wake.addingTimeInterval(-3 * 3_600),
+                                    confirmed: true)
+        let earlierSnapshot = SleepHistorySnapshot(nights: [earlier],
+                                                   confirmedCount: 1,
+                                                   candidateCount: 0)
+        let earlierRows = AtriaActivitySelectedDaySleeps.overlapping(
+            snapshot: earlierSnapshot, pendingReview: nil,
+            interval: interval, calendar: calendar,
+            includeStartBoundarySleep: true
+        )
+        XCTAssertTrue(earlierRows.isEmpty,
+                      "only a sleep touching the day start is admitted, not one ending before it")
+    }
+
     private func napNight(id: String,
                           day: Date,
                           start: Date,
