@@ -15,11 +15,12 @@ final class AtriaStrainRecoveryComboChartSnapshotTests: XCTestCase {
                                   tint: .primary)
         }
         // A week with a realistic strain/recovery inverse relationship + one
-        // red-band day, so every dot color path (green/yellow/red) is exercised.
-        let strainVals: [Double] = [8, 12, 15, 10, 17, 6, 13]
-        let recoveryVals: [Double] = [90, 69, 65, 63, 45, 82, 75]
-        let strain = strainVals.enumerated().map { point($0.offset, $0.element) }
-        let recovery = recoveryVals.enumerated().map { point($0.offset, $0.element) }
+        // red-band day, AND a mid-week gap (days 2–4 unworn) so the line's
+        // across-gap behavior is visible — the exact honesty concern.
+        let strainByDay: [Int: Double] = [0: 8, 1: 12, 5: 6, 6: 13]
+        let recoveryByDay: [Int: Double] = [0: 90, 1: 69, 5: 82, 6: 75]
+        let strain = strainByDay.keys.sorted().map { point($0, strainByDay[$0]!) }
+        let recovery = recoveryByDay.keys.sorted().map { point($0, recoveryByDay[$0]!) }
 
         let content = AtriaStrainRecoveryComboChart(strain: strain,
                                                     recovery: recovery,

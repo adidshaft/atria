@@ -10657,7 +10657,7 @@ private struct AtriaPreparedMetricChart: View {
             }
             ForEach(points) { point in
                 AreaMark(x: .value("Day", point.day, unit: .day), y: .value(title, point.value))
-                    .interpolationMethod(.monotone)
+                    .interpolationMethod(.linear)
                     .foregroundStyle(LinearGradient(colors: [tint.opacity(0.20), tint.opacity(0)],
                                                     startPoint: .top, endPoint: .bottom))
             }
@@ -10670,16 +10670,16 @@ private struct AtriaPreparedMetricChart: View {
                         Text("prior avg \(comparison.priorText)").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                     }
             }
-            ForEach(priorPoints) { point in
-                LineMark(x: .value("Day", point.day, unit: .day), y: .value(title, point.value),
-                         series: .value("Series", "prior"))
-                    .interpolationMethod(.monotone).foregroundStyle(.secondary.opacity(0.45))
-                    .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
-            }
+            // The per-day prior-period ghost line was removed (2026-08-03): a
+            // `.monotone` spline through the prior window's sparse points invents
+            // a swooping shape (dipping/peaking on days that had no such value),
+            // which reads as "a random line that has nothing to do with the real
+            // figure." The honest previous-period comparison is the FLAT
+            // prior-average RuleMark above; the fabricated curve is not kept.
             ForEach(points) { point in
                 LineMark(x: .value("Day", point.day, unit: .day), y: .value(title, point.value),
                          series: .value("Series", "current"))
-                    .interpolationMethod(.monotone).foregroundStyle(tint)
+                    .interpolationMethod(.linear).foregroundStyle(tint)
                 PointMark(x: .value("Day", point.day, unit: .day), y: .value(title, point.value))
                     .foregroundStyle(point.tint)
             }
@@ -10780,8 +10780,8 @@ private struct AtriaPreparedMetricChart: View {
         if prepared.hasMinMaxBand {
             Text("Weekly averages \u{00b7} shaded band is that week's real min\u{2013}max").font(.caption2).foregroundStyle(.secondary)
         }
-        if !priorPoints.isEmpty {
-            Text("Dashed line: the previous period, overlaid").font(.caption2).foregroundStyle(.secondary)
+        if comparison != nil {
+            Text("Dashed line: your previous-period average").font(.caption2).foregroundStyle(.secondary)
         }
         if scrubbedDay != nil, onOpenDay != nil {
             Text("Double-tap the chart to open this day").font(.caption2).foregroundStyle(.tertiary)

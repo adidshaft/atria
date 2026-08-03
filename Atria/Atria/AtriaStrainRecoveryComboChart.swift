@@ -24,11 +24,33 @@ struct AtriaStrainRecoveryComboChart: View {
     /// recovery (0–100%) is mapped onto so the two axes align on 0/33/66/100%.
     private let strainAxisMax = 21.0
 
+    /// Points tagged with a contiguous-run id so a line BREAKS at day gaps
+    /// instead of drawing a straight segment across days with no reading (which
+    /// would imply data that never existed). A run increments whenever
+    /// consecutive points are more than a day apart.
+    static func contiguousRuns(_ points: [AtriaDetailChartPoint])
+        -> [(runID: Int, point: AtriaDetailChartPoint)] {
+        let sorted = points.sorted { $0.day < $1.day }
+        var out: [(Int, AtriaDetailChartPoint)] = []
+        var run = 0
+        var previous: Date?
+        let calendar = Calendar.current
+        for point in sorted {
+            if let previous {
+                let days = calendar.dateComponents([.day], from: previous, to: point.day).day ?? 1
+                if days > 1 { run += 1 }
+            }
+            out.append((run, point))
+            previous = point.day
+        }
+        return out
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
             chart
-            Text("Strain (0–21, left) against each day's recovery % (right). Recovery dots are colored by band — days without a recovery score don't plot.")
+            Text("Strain (0–21, left) and recovery % (right) as two lines. Recovery points are colored by band; each line breaks on days with no reading rather than drawing across the gap.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -59,19 +81,32 @@ struct AtriaStrainRecoveryComboChart: View {
 
     private var chart: some View {
         Chart {
-            ForEach(strain) { point in
-                LineMark(x: .value("Day", point.day),
-                         y: .value("Strain", min(point.value, strainAxisMax)),
-                         series: .value("Series", "Strain"))
+            // Two zigzag lines on a shared 0–21 domain (recovery % mapped onto
+            // it), each BROKEN at day gaps via its contiguous-run id so neither
+            // line is drawn across days with no reading.
+            ForEach(Self.contiguousRuns(strain), id: \.point.day) { entry in
+                LineMark(x: .value("Day", entry.point.day),
+                         y: .value("Strain", min(entry.point.value, strainAxisMax)),
+                         series: .value("Strain run", "s\(entry.runID)"))
                     .foregroundStyle(Metrics.electricStrain)
                     .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 2))
             }
+            ForEach(Self.contiguousRuns(recovery), id: \.point.day) { entry in
+                LineMark(x: .value("Day", entry.point.day),
+                         y: .value("Recovery", entry.point.value / 100.0 * strainAxisMax),
+                         series: .value("Recovery run", "r\(entry.runID)"))
+                    .foregroundStyle(Metrics.electricGreen)
+                    .interpolationMethod(.linear)
+                    .lineStyle(StrokeStyle(lineWidth: 2))
+            }
+            // A dot on each real recovery day, colored by its band, so the
+            // recovery line's points read green/yellow/red at a glance.
             ForEach(recovery) { point in
                 PointMark(x: .value("Day", point.day),
                           y: .value("Recovery", point.value / 100.0 * strainAxisMax))
                     .foregroundStyle(Metrics.recoveryColor(Int(point.value.rounded())))
-                    .symbolSize(70)
+                    .symbolSize(50)
             }
         }
         .chartYScale(domain: 0...strainAxisMax)
