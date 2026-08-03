@@ -2918,9 +2918,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// context is flush-eligible (maintenance window or guarded connected catch-up),
     /// AND the normal loop has been silent for at least `reArmFloor`. The floor is
     /// the anti-churn guard: any genuine re-arm from any source (HR path, retry
-    /// chain, did_connect) refreshes the "last re-arm" clock and keeps this quiet,
-    /// so the ticker never stomps a healthy chain and cannot tight-loop. A `nil`
-    /// `sinceLastReArm` means the loop has never armed this backlog → re-arm now.
+    /// chain, did_connect, a prior ticker fire) refreshes the "last re-arm" clock
+    /// and keeps this quiet, so the ticker never stomps a healthy chain and cannot
+    /// tight-loop. A `nil` `sinceLastReArm` means the loop has never armed this
+    /// backlog → re-arm now. The caller drives `requestOfflineHistoricalSyncIfNeeded`
+    /// (the BGProcessing connected-drain lane), not the suppressed schedule lane.
     nonisolated static func shouldReArmRangeLossBackfillOnMaintenanceTick(
         rangeLossBackfillPending: Bool,
         syncInProgress: Bool,
@@ -12957,6 +12959,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set(reason, forKey: OfflineSyncDefaults.rangeLossBackfillReason)
         assignIfChanged(\.rangeLossBackfillPending, true)
         historicalRecoveryPresentation = .needsAttention
+        // Drain-keeping P3: a backlog now exists — bring up the HR-independent
+        // maintenance backstop (idempotent) even if the connected re-arm lane
+        // suppresses and no other caller reaches its start.
+        startRangeLossBackfillMaintenanceTickerIfNeeded(reason: reason)
         retainPendingOfflineHistoricalSyncRequest(
             reason: reason,
             force: false,
@@ -13038,8 +13044,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // Drain-keeping P3: a genuine re-arm attempt is proceeding for a real
         // backlog. Refresh the clock the maintenance ticker watches so its
         // HR-independent backstop only fires once this normal loop has gone
-        // silent past the floor (never while it is actively cycling).
+        // silent past the floor (never while it is actively cycling). Start the
+        // ticker HERE — before the connected-WHOOP4 `gap_retained_transaction_
+        // unverified` early-return below — so it runs even when this lane
+        // suppresses; the ticker drives the BGProcessing drain lane instead.
         lastRangeLossBackfillReArmAt = Date()
+        startRangeLossBackfillMaintenanceTickerIfNeeded(reason: reason)
         let verifiedPeripheralID = defaults.string(forKey: OfflineSyncDefaults.verifiedHistoryPeripheralID)
         let currentPeripheralID = peripheral?.identifier.uuidString
         let previouslyVerified = currentPeripheralID != nil
@@ -13066,10 +13076,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           reason)
             return
         }
-        // Drain-keeping P3: we are in an active-arming posture for a real backlog.
-        // Bring up the HR-independent maintenance backstop (idempotent) so that if
-        // this normal loop later starves on sparse HR, the drain still re-arms.
-        startRangeLossBackfillMaintenanceTickerIfNeeded(reason: reason)
         rangeLossBackfillTask?.cancel()
         rangeLossBackfillTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(8))
@@ -13178,8 +13184,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// backstops the range-loss re-arm when accepted HR (and therefore the app's
     /// background wakes) goes sparse. Idempotent — a second call while running is a
     /// no-op — and it self-terminates when the backlog clears or offline sync is
-    /// disabled. It sends no BLE command; each due tick re-enters the fully-guarded
-    /// `scheduleRangeLossBackfillIfNeeded`.
+    /// disabled. It sends no BLE command directly; each due tick re-enters the
+    /// fully-guarded `requestOfflineHistoricalSyncIfNeeded` — the same connected-
+    /// drain lane the BGProcessing task uses (P1b/P2 admission), which the
+    /// `scheduleRangeLossBackfillIfNeeded` lane cannot reach on connected WHOOP 4.
     private func startRangeLossBackfillMaintenanceTickerIfNeeded(reason: String) {
         let defaults = UserDefaults.standard
         guard defaults.bool(forKey: OfflineSyncDefaults.enabled),
@@ -13263,19 +13271,36 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             rangeLossBackfillPending: true,
             syncInProgress: offlineHistoricalSyncInProgress,
             linkConnected: connected,
-            flushEligible: flushMaintenanceWindow || connectedCatchUp,
+            // Background only (this is a backgrounded catch-up backstop). Foreground
+            // legitimately defers history to protect the live HR the user is
+            // watching — driving a foreground drain here is the reverted dead-end.
+            flushEligible: !foregroundInteractiveMode
+                && (flushMaintenanceWindow || connectedCatchUp),
             sinceLastReArm: sinceLastReArm,
             reArmFloor: effectiveFloor
         ) else { return }
         defaults.set(now.timeIntervalSince1970,
                      forKey: OfflineSyncDefaults.lastMaintenanceReArmAt)
+        lastRangeLossBackfillReArmAt = now
         AtriaDebugLog("ATRIADBG offline_sync status=maintenance_ticker_rearm since_last_rearm_s=%@ maintenance=%d connected_catchup=%d debt=%@ floor_s=%.0f action=rearm_range_loss_backfill_independent_of_hr",
                       sinceLastReArm.map { String(format: "%.0f", $0) } ?? "never",
                       flushMaintenanceWindow ? 1 : 0,
                       connectedCatchUp ? 1 : 0,
                       debtLevel?.rawValue ?? "unknown",
                       effectiveFloor)
-        scheduleRangeLossBackfillIfNeeded(reason: "maintenance_ticker")
+        // P3 fix: drive the SAME connected-drain lane the BGProcessing task uses
+        // (requestOfflineHistoricalSyncIfNeeded → P1b/P2 admission), NOT the
+        // scheduleRangeLossBackfillIfNeeded lane, which early-returns at the
+        // `gap_retained_transaction_unverified` guard on the connected WHOOP 4 path
+        // (raw verified, transaction-recovery unverified because full-drain is OFF)
+        // and never reaches an arm. force:false / handoff:false mirrors what the
+        // BGProcessing handler resolves to for WHOOP 4; the P1b/P2 gates inside
+        // decide, and defer in foreground.
+        _ = requestOfflineHistoricalSyncIfNeeded(
+            reason: "maintenance_ticker",
+            force: false,
+            allowConnectedAutomaticHandoff: false
+        )
     }
 
     /// The raw-history capability fence used by the connected-catch-up admission,
