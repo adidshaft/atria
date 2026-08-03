@@ -5555,6 +5555,53 @@ struct AtriaHomeView: View {
     }
 }
 
+/// Honest copy for the missed-data banner. The old banner showed the gap's AGE
+/// (hours since it was first opened) as "Data gap · 85.4 h", which reads as
+/// "85.4 h of data is missing" AND implies a sync will recover it. In reality the
+/// only recoverable data is what is still on the strap's ring buffer
+/// (`strapPendingRecords`, ~1 record/sec); everything older was overwritten
+/// (finite buffer, no seek) and is gone. This maps the real signals to copy that
+/// never over-promises recovery. Pure + unit-tested; the view just renders it.
+enum AtriaMissedDataBannerPresentation {
+    struct Copy: Equatable {
+        let title: String
+        let subtitle: String
+        /// True when there is genuinely recoverable data (so a Sync affordance is
+        /// honest). False when the gap is effectively lost — the view then hides
+        /// the futile sync button and offers only dismissal / start-fresh.
+        let offersRecovery: Bool
+    }
+
+    /// ~5 min still bankable on the strap is the floor for calling catch-up
+    /// "recoverable" rather than effectively lost.
+    static let recoverableRecordFloor = 300
+
+    static func copy(strapPendingRecords: Int,
+                     protectsLiveStream: Bool) -> Copy {
+        let pending = max(0, strapPendingRecords)
+        let minutes = pending / 60
+        let amount = minutes >= 1 ? "~\(minutes) min" : "under a minute"
+        if protectsLiveStream {
+            // Live HR is deliberately protected; catch-up is deferred, not lost.
+            return Copy(title: "Live HR protected",
+                        subtitle: pending > 0
+                            ? "Catching up \(amount) of history when idle"
+                            : "Up to date — catching up in the background",
+                        offersRecovery: true)
+        }
+        if pending >= recoverableRecordFloor {
+            return Copy(title: "Catching up history",
+                        subtitle: "\(amount) still on the strap",
+                        offersRecovery: true)
+        }
+        // Old gap with little/nothing left on the strap → be honest it is gone,
+        // and do not imply a sync can bring it back.
+        return Copy(title: "Some earlier data unavailable",
+                    subtitle: "It wasn't recorded and can't be recovered from the strap",
+                    offersRecovery: false)
+    }
+}
+
 private struct AtriaMissedDataBanner: View, Equatable {
     let protectsLiveStream: Bool
     let onDismiss: () -> Void
@@ -5577,7 +5624,7 @@ private struct AtriaMissedDataBanner: View, Equatable {
         .background(Color(uiColor: .secondarySystemBackground),
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Data gap. \(missedDataDurationText) of missed data. \(protectsLiveStream ? "Live heart rate remains protected; missing time stays excluded." : "Check the strap for recoverable history; missing time stays excluded until verified.")")
+        .accessibilityLabel("\(bannerCopy.title). \(bannerCopy.subtitle).")
     }
 
     private var compactIcon: some View {
@@ -5588,17 +5635,25 @@ private struct AtriaMissedDataBanner: View, Equatable {
             .background(AtriaIconTileBackground(cornerRadius: 9, tint: .cyan))
     }
 
+    /// Honest banner copy driven by what is actually recoverable (strap ring-
+    /// buffer pending, P6), NOT the misleading gap-AGE the banner used to show.
+    private var bannerCopy: AtriaMissedDataBannerPresentation.Copy {
+        let pending = UserDefaults.standard.integer(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtPendingRecords
+        )
+        return AtriaMissedDataBannerPresentation.copy(
+            strapPendingRecords: pending,
+            protectsLiveStream: protectsLiveStream
+        )
+    }
+
     private var copyBlock: some View {
         VStack(alignment: .leading, spacing: 2) {
-            // Static handoff compatibility marker for the previous title token:
-            // Text(protectsLiveStream ? "Saved data protected" : "Sync ready")
-            // Live HR stays protected while Atria waits for the best sync moment.
-            // Pull missed strap data when you are ready.
-            Text("Data gap · \(missedDataDurationText)")
+            Text(bannerCopy.title)
                 .font(.subheadline.weight(.semibold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
-            Text(protectsLiveStream ? "Live protected" : "Check strap history")
+            Text(bannerCopy.subtitle)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -5609,18 +5664,22 @@ private struct AtriaMissedDataBanner: View, Equatable {
 
     @ViewBuilder
     private var compactState: some View {
-        Button(action: onSync) {
-            Image(systemName: "arrow.triangle.2.circlepath")
-                .font(.caption.weight(.bold))
-                // 44pt hit area (UX-quality audit 2026-07-07): the glyph
-                // stays 16pt, the target doesn't.
-                .frame(width: 32, height: 32)
-                .contentShape(.rect)
+        // Only offer a Sync affordance when there is genuinely recoverable data.
+        // For an old, overwritten gap a sync is futile and implies false hope.
+        if bannerCopy.offersRecovery {
+            Button(action: onSync) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.caption.weight(.bold))
+                    // 44pt hit area (UX-quality audit 2026-07-07): the glyph
+                    // stays 16pt, the target doesn't.
+                    .frame(width: 32, height: 32)
+                    .contentShape(.rect)
+            }
+            .atriaCardAction(prominent: false, tint: .cyan)
+            .accessibilityLabel(protectsLiveStream
+                                ? "Sync missed data now; live heart rate may pause during recovery"
+                                : "Catch up recoverable strap data now")
         }
-        .atriaCardAction(prominent: false, tint: .cyan)
-        .accessibilityLabel(protectsLiveStream
-                            ? "Sync missed data now; live heart rate may pause during recovery"
-                            : "Check strap for missed data")
     }
 
     private var dismissButton: some View {
