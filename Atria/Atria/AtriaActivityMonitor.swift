@@ -410,12 +410,24 @@ enum AtriaActivitySelectedDaySleeps {
                             pendingReview: SleepHistorySnapshot.Night?,
                             napReviewCandidates: [SleepHistorySnapshot.Night] = [],
                             interval: DateInterval,
-                            calendar: Calendar) -> [SleepHistorySnapshot.Night] {
+                            calendar: Calendar,
+                            includeStartBoundarySleep: Bool = false) -> [SleepHistorySnapshot.Night] {
         canonical(snapshot: snapshot,
                   pendingReview: pendingReview,
                   napReviewCandidates: napReviewCandidates).filter { night in
             if let start = night.start, let end = night.end, end > start {
-                return end > interval.start && start < interval.end
+                // The CURRENT physiological day begins at the anchoring main
+                // sleep's WAKE, so that sleep ends exactly at `interval.start`.
+                // A strict `end > interval.start` therefore hides the very sleep
+                // that defines the day — the moment it is confirmed it leaves the
+                // review-card slot and, ending exactly on the boundary, is dropped
+                // from both the timeline and the row list, so it silently vanishes.
+                // For the current day, admit a sleep that ends exactly at the day
+                // start so "the sleep you woke from" stays visible in today.
+                let overlapsStart = includeStartBoundarySleep
+                    ? end >= interval.start
+                    : end > interval.start
+                return overlapsStart && start < interval.end
             }
             return calendar.isDate(night.day, inSameDayAs: interval.start)
         }
@@ -704,6 +716,7 @@ struct AtriaActivityMonitorTab: View {
         let selectedDayStart: Date
         let interval: DateInterval
         let calendar: Calendar
+        let isCurrentPhysiologicalDay: Bool
     }
 
     private struct DaySectionsResult: @unchecked Sendable {
@@ -894,7 +907,8 @@ struct AtriaActivityMonitorTab: View {
                                                rollups: activity.dailyRollupHistory,
                                                selectedDayStart: key.selectedDayStart,
                                                interval: DateInterval(start: key.intervalStart, end: key.intervalEnd),
-                                               calendar: calendar)
+                                               calendar: calendar,
+                                               isCurrentPhysiologicalDay: key.isCurrentPhysiologicalDay)
         let preparation = Task.detached(priority: .utility) {
             Self.makeDaySections(from: source)
         }
@@ -934,7 +948,8 @@ struct AtriaActivityMonitorTab: View {
             pendingReview: source.pendingSleepReview,
             napReviewCandidates: source.napReviewCandidates,
             interval: source.interval,
-            calendar: source.calendar
+            calendar: source.calendar,
+            includeStartBoundarySleep: source.isCurrentPhysiologicalDay
         )
             .map(Entry.sleep)
         let selectedWorkouts = AtriaActivitySelectedDayWorkouts.overlapping(
