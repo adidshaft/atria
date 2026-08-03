@@ -1,0 +1,339 @@
+# Handoff — Metrics visuals enrichment + feature completion (2026-08-03)
+
+Branch: `claude/atria-background-continuity-88ce90` (worktree
+`.claude/worktrees/atria-background-continuity-88ce90`). Codex parity branch:
+`codex/atria-reliability-handoff-2026-07-22`.
+
+## 0. TL;DR — the reframe
+
+The user shared 6 mockup boards (Behavior Impact, Strength Log, Sleep Planner &
+Smart Wake, Fuel & Cycle, Healthspan/Body Age, Stress Monitor) and asked to:
+(1) fix SpO2 if possible, (2) build Behavior Impact, (3) enrich **all** metrics
+with richer visual charts, (4) implement what's "missing" in Strength Log.
+
+**Four parallel codebase surveys established that almost every feature in the
+mockups already exists as a full, honest implementation.** So this is NOT a
+build-from-scratch effort. The actual work is:
+
+- **A. Enrich existing metrics with charts** where a metric currently shows only
+  a number (the real bulk — see §4).
+- **B. Wire up the partial pieces** (Smart-Wake decision path; a few honest
+  detail cases).
+- **C. Two genuinely-blocked items**, honestly: **SpO2** (needs empirical
+  oximeter data, §5) and **same-night Smart-Wake staging** (no live sleep
+  stages on this transport, §3.2).
+
+## 1. Transport-honesty correction (important, load-bearing)
+
+An earlier claim in this session — "WHOOP 4 has no live broadcast" — is **only
+half true and must not propagate into the spec**:
+
+- **Standard BLE heart rate + RR IS live.** `AtriaBLEManager` subscribes to the
+  180D/2A37 Heart Rate Measurement characteristic and treats it as a live stream
+  with freshness gates (`currentConnectionHasFreshHeartRate`
+  `AtriaBLEManager.swift:836`, `staleHeartRatePacketThreshold: 120s` `:1021`,
+  `lastAcceptedHRAt` `:20380`). WHOOP 4 broadcasts standard HR+RR live when worn
+  and in broadcast mode.
+- **The proprietary channel (strain / steps / motion / sleep) is drained from
+  flash, oldest-first, with lag** — that's the part with no live path.
+- **There is NO live sleep-stage stream and no forward stage projection.** Sleep
+  staging is post-hoc only, from drained data.
+
+Consequence for honesty: a **live Stress gauge is legitimate** (fed by live
+2A37, gated to ≤90 s freshness). A **same-night Smart-Wake "lightest 30 min"
+is not** (needs live/forecast staging we don't have).
+
+## 2. Honesty ledger (what is real vs blocked)
+
+| Feature | State | Data honesty |
+|---|---|---|
+| Behavior Impact | ~80% built | REAL (journal + `dailyMetricHistory`); strict gating, no sample-data path even in DEBUG |
+| Strength Log | Full | REAL (user-entered) |
+| Sleep Planner (need/debt/in-bed-by) | Full | REAL (drained ledger) |
+| Smart Wake (lightest-minute) | Partial — `decision()` only called in tests | **BLOCKED**: needs live/forecast sleep staging we don't have; code already refuses to fake the hypnogram |
+| Stress Monitor | Full | REAL live 2A37 HR/RR; "Live" honestly gated ≤90 s |
+| Fuel (nutrition) | Full | REAL (HealthKit read, opt-in) |
+| Cycle | Full | REAL (user-logged), labeled estimate, private store, excluded from research sharing |
+| Healthspan/Body Age | Full | REAL, conservatively gated (14/28-day) |
+| SpO2 | Capture harness live; not decodable | **BLOCKED**: needs oximeter ground truth across ≥3 nights (§5) |
+
+## 3. Per-feature gap analysis (mockup → reality)
+
+### 3.1 Behavior Impact — HARDEN/EXTEND
+Already built: `AtriaBehaviorImpact.swift` (Welch two-sample t, `welchTwoSidedPValue`
+`:105`; 90-day window; `minimumLoggedDays=5`, `minimumComparisonDays=5`,
+`minimumImpact=3.0`, `maximumPValue=0.10`), `AtriaBehaviorImpactPresentation.swift`
+(full screen model, drill-in `detail()` `:363` + `shifts()` `:393` computing
+HRV/RHR/deep-sleep deltas logged-vs-quiet), distributions (`Distribution` `:115`),
+impact map (`AtriaBehaviorImpactMapCard.swift`), diverging bar chart
+(`AtriaBehaviorImpactChart.swift:66`). Wired at `AtriaJournalTab.swift:1277`.
+- **Gaps:** "Magnesium" is not a tracked tag (only umbrella `supplements`/
+  `melatonin` at `Sessions.swift:2428-2470`); adding it needs a `Tag` case +
+  opt-in plumbing. Deep-sleep deltas only appear with `sleepSource ==
+  "validated_sleep_stages"` (frequently absent). Two engines share the identical
+  statistic but differ on which rows print (3-pt floor vs none) — preserve that.
+- **Verdict:** feature is essentially done; extension is optional polish.
+
+### 3.2 Sleep Planner & Smart Wake
+Built: `AtriaSleepBudget.swift` (need ledger `:19-39`, decayed 7-night debt
+`:51-61`), `AtriaSleepPlanner.swift` (`plan` in-bed-by `:85-98`, learned
+efficiency), charts `AtriaSleepPlannerCharts.swift`.
+- **Smart Wake gap:** `AtriaWakeAlarmPlanner.decision()` (`AtriaWakeAlarm.swift:64-107`)
+  exists but is **called only from tests** (`AtriaAnalyticsTests.swift:2340`);
+  production schedules a hard AlarmKit alarm at wake-by only
+  (`AtriaSmartWakeView.swift:326-350`). It needs live in-sleep staging that does
+  not exist (`AtriaSmartWakeView.swift:5-14` states it verbatim;
+  `hasActiveSleepEvidence` hard-coded `false` at `AtriaHomeView.swift:9052,9732`).
+- **Verdict:** planner/debt visuals are honest and can be enriched. The
+  lightest-minute alarm stays **aspirational until a staging source exists** —
+  do NOT wire `decision()` to a fabricated hypnogram.
+
+### 3.3 Stress Monitor — BUILT, chart gap
+Built: `AtriaStressMonitor.swift` (0–3 scorer, HR z 0.6 + RMSSD HRV z 0.4 vs
+`PersonalBaseline` `:156-244`), gauge/timeline/Live chip
+`AtriaStressDetailView.swift`, breathwork `AtriaBreathworkSession.swift`.
+Honesty guards strong (no number until 14-day baseline; capped Medium HR-only;
+suppressed in workout/sleep/no-contact).
+- **Gap:** **no saved daily stress history** → no trend chart. Needs a small
+  daily-stress persistence layer before a trend can render (§4 item 3).
+
+### 3.4 Fuel & Cycle — BUILT
+Fuel: `HealthKitExporter.swift` nutrition read (`:170-176`, opt-in
+`atria.health.readNutrition`), model `AtriaNutritionContext.swift`. Cycle:
+`AtriaCycleTracking.swift` (phases, confidence tiers, private `atria-cycle-tracking.json`,
+excluded from `AtriaResearchBundle`). Both honest. Minor: could enrich with a
+per-phase recovery mini-chart (data present at `AtriaCycleTracking.swift:317-335`).
+
+### 3.5 Healthspan / Body Age — BUILT
+`AtriaFitnessAge.swift` (5-factor age, pace-of-aging slope), visuals
+`AtriaHealthspanDetailView.swift` (radial dials, pace gauge, trend line `:467`).
+Conservatively gated. Minor enrichment only.
+
+### 3.6 Strength Log — BUILT ("what's missing" ≈ polish)
+Full: `AtriaStrengthLog.swift` (`LoggedSet`, Epley e1RM `:21-29`, PR detection
+`:118-133`, rest timer), catalog `AtriaExerciseCatalog.swift`, progress
+`AtriaStrengthProgressView.swift` (e1RM line chart), catalog sparklines
+`AtriaStrengthCatalogView.swift:290`. Everything in the mockup exists.
+- **Candidate micro-gaps to confirm against the mockup:** per-exercise PR badges
+  in the catalog row; "Need 3+" learning state; rest-target "HR back to N bpm"
+  line (already honestly gated). Treat as a polish pass, not new feature.
+
+## 4. The real work — chart enrichment backlog (prioritized)
+
+Reusable components (do NOT reinvent): `AtriaPreparedMetricChart`
+(`AtriaOverviewSections.swift:10506`), `metricChart(...)` builder (`:10140`),
+`AtriaGraphGrammar.swift` (line/bar/area/compare grammar), `AtriaMetricRing`/
+`AtriaTriRing`, `ContentView.Sparkline` (`:703`). Data: `AtriaPreparedMetricHistory`
+(`AtriaOverviewSections.swift:12721`) + `DailyRollupStoreEntry`
+(`DailyRollupStore.swift:541`). Style: `AtriaDesignTokens.swift`,
+`AtriaSharedChrome.swift` card modifiers, `Metrics.swift` electric color tokens.
+
+**Metrics currently charted:** Recovery, HRV, RHR, Respiratory, Sleep duration,
+Strain, Sleep performance, Fitness age, HR zones.
+
+**Metrics with NO chart (the backlog):**
+
+1. **Steps — highest value.** Detail is `AtriaStrapStepsDetailSheet`
+   (`AtriaOverviewSections.swift:6007`): ring + number only, and steps is NOT in
+   `AtriaMetricDetailKind` or the rollup pipeline (`DailyRollupStoreEntry` has no
+   `steps` field). Source data exists (`AtriaWhoop4MotionTickDailyStore.swift`,
+   `AtriaDailyStepPresentation.swift`) but isn't exposed as a chartable
+   time-series. **Work:** expose a daily-steps `[day:value]` series → add a
+   daily/weekly bar chart to the steps detail. (Two parts: data source + view.)
+2. **About-X sheets** (`AtriaAboutMetricSheet.swift:218`) — pure text for every
+   metric (hrv, stress, recovery, RHR, respiration, sleep, vo2max, skin temp,
+   blood O2). **Cheap, broad "enrich all metrics" win:** drop an inline
+   `Sparkline`/compact `AtriaPreparedMetricChart` mini-trend into each, fed from
+   existing history, honestly hidden when data is sparse.
+3. **Stress trend** — needs daily-stress persistence first, then a trend chart
+   (§3.3).
+4. **Sleep efficiency** (`:9192`), **Skin temperature** (`:9197`) — data exists
+   per-night/reading; wire a trend chart into the honest-partial detail cases.
+5. **Blood oxygen** — stays honest-partial until §5 unblocks it.
+6. **Home/Today hero tiles** — RHR/HRV/Recovery inline sparklines are partial;
+   full chart only appears after tap-through. Optional polish.
+
+## 5. SpO2 — the exact unblock path (cannot be code-only)
+
+Confirmed: `AtriaResearchProbe.validatedSpO2DecoderAvailable = false`
+(`AtriaResearchProbe.swift:6`). The capture harness is **already live**:
+`historicalFixedOffsetCandidates` (`:264-288`) reads u16LE at offsets 64/66
+(oxygen hypotheses) and 68 (validated skin-temp) from historical `0x2f` records
+v12/24; accumulated per-offset sum+count through the full persistence stack
+(`AtriaBLEManager.swift:29299-29338`, `:1907-1915`). Correlation tooling exists
+(`tools/replay_sensor_reference.py`, `pair_sensor_references.py`,
+`analyze_sensor_research_probe.py`) and an in-app capture UI exists
+(Developer → Research validation → Sensor references,
+`AtriaSensorReferenceCapture.swift`). Requirements to flip the flag are in
+`docs/14-spo2-skin-temperature-decoder-validation.md:117-148`.
+
+**What a human must do (only they can — SpO2 is sleep-only on WHOOP 4):**
+1. Wear WHOOP 4 + a timestamped fingertip pulse oximeter overnight, ≥3 separate
+   nights, natural variation only (no breath-holding — doc forbids deliberate
+   desaturation `:100-102`).
+2. Log oximeter readings via Developer mode "Sensor references" with clock
+   markers; export the reference CSV.
+3. Run the pairing/replay tools to correlate offset-64 vs offset-66 means against
+   ground truth; confirm which byte (if either) is SpO2 and isn't a
+   counter/timestamp/motion/contact flag.
+4. Thresholds to clear: reference spans ≥4 pts; held-out bias ≤1 pt, MAE ≤2 pts,
+   p95 abs err ≤4 pts, correlation ≥0.8; ≥99% CRC-clean frames; ≤2 s alignment;
+   zero false promotions in off-wrist negative controls.
+
+**What code does then (and only then):** add `decodeSpO2(...)` (modeled on
+`decodeSkinTemperatureCelsius` `AtriaResearchProbe.swift:125-158`), gated on the
+proven layout, and flip the flag. Anything earlier fabricates a percentage the
+app is architected to refuse. **Status: blocked on data; protocol ready.**
+
+## 6. Implementation plan (phases)
+
+Honesty constraints throughout: never fabricate a value; keep every new chart
+"honestly hidden / learning" when data is sparse; do NOT ship blind UI — verify
+via iPhone Mirroring (see memory `atria-iphone-mirroring-ui-verification`).
+
+- **P1 — About-sheet mini-trends (broad "enrich all metrics").** Add an inline
+  sparkline/mini-trend to `AtriaAboutMetricSheet` per metric, fed from
+  `AtriaPreparedMetricHistory`, hidden when <N points. Reuses `Sparkline` +
+  existing history. Lowest risk, touches every metric. Unit-testable via the
+  presentation model.
+- **P2 — Steps history chart.** Expose a daily-steps time-series from
+  `AtriaWhoop4MotionTickDailyStore`; add a bar/line trend to
+  `AtriaStrapStepsDetailSheet` (and consider adding steps to
+  `AtriaMetricDetailKind`). Honestly marks days still draining.
+- **P3 — Honest-partial trend cases.** Sleep efficiency + Skin temperature trend
+  charts (data exists). Stress trend after adding daily-stress persistence.
+- **P4 — Behavior Impact polish** (optional): magnesium tag + opt-in; any visual
+  deltas vs the mockup.
+- **P5 — Strength Log polish** (optional): reconcile catalog row against mockup.
+- **Blocked (documented, not built): SpO2 (§5), same-night Smart-Wake staging
+  (§3.2).**
+
+## 7. Verification
+- Tests scheme: `AtriaTests` (NOT `Atria` — Atria isn't configured for `test`).
+  Sim id `44333107-67D1-4E0C-9107-B8F52D7FDF19` (iPhone 17 Pro, OS 27.0).
+- Device build/install: `-scheme Atria -configuration Release -destination
+  'platform=iOS,id=3803F5B6-1666-56D3-A71A-62F131F6CE3B' -allowProvisioningUpdates`
+  then `devicectl device install/launch`.
+- New source files auto-included (project uses `PBXFileSystemSynchronizedRootGroup`).
+- Visual verification via iPhone Mirroring + computer-use (memory
+  `atria-iphone-mirroring-ui-verification`).
+
+## 8. Open decisions for the user
+1. Priority/order of P1–P5 (default: P1 → P2 as the highest-value honest wins).
+2. SpO2: does the user have / will they get a fingertip pulse oximeter (~$20)?
+   Without it, SpO2 stays honestly blank.
+3. Smart-Wake: accept it stays a hard wake-by alarm (honest), or descope the
+   "lightest 30 min" copy to match reality?
+
+## 9. Detail-screen design references (2026-08-03 addendum)
+
+The user shared two more mockup batches — full metric-detail "whole scroll"
+layouts, chart-interaction sheets, and WHOOP reference screenshots — plus an
+explicit ask: **"activity and Strain/Recovery should have a chart view like
+this"** (the WHOOP "STRAIN & RECOVERY" dual-axis weekly combo). This section
+captures the target patterns and maps each to existing components vs gaps.
+
+### 9.1 The canonical "whole scroll" metric-detail template
+Every metric detail should read top-to-bottom as this ordered anatomy (Recovery
+and Sleep mockups both follow it):
+1. **Hero**: big score/value + tint ring (or duration), timestamp/"updated",
+   qualitative word (Good), and a baseline chip ("+4% vs your 30-day baseline").
+2. **Range picker**: W / M / 3M / 6M / 1Y / All.
+3. **Stat row**: LATEST · Δ PRIOR · AVG · RANGE.
+4. **Main chart**: line/area with a baseline RuleMark + scrub. (Exists:
+   `AtriaPreparedMetricChart` `AtriaOverviewSections.swift:10506`.)
+5. **Contributors** ("WHAT MADE TODAY'S SCORE"): per-input bars with a
+   typical/above/lower marker — HRV, Resting HR, Respiratory, Sleep performance.
+   (Contributor rows exist in `AtriaOverviewSections`/`AtriaHealthspanDetailView`.)
+6. **Secondary mini-trend**: e.g. "HRV · 30 days".
+7. **Behaviors that move this metric** (compact impact strip) — see G3.
+8. **"What this means today"** narrative card (tinted).
+9. **Honesty footnote** ("scored against YOUR baseline, N nights in").
+
+Most of this template already exists in `AtriaMetricDetailSheet`
+(`AtriaOverviewSections.swift:8595`) for Recovery/HRV/RHR/Respiratory/Sleep/
+Strain/Sleep-performance/Fitness-age. The addendum work is (a) assembling the
+FULL scroll for each (contributors + secondary trend + behaviors strip +
+narrative in one scroll), and (b) the net-new charts below.
+
+### 9.2 Per-metric detail targets
+- **Recovery**: ring + baseline chip + stat row + line + contributors (HRV/RHR/
+  Respiratory/Sleep-perf) + "HRV · 30 days" + behaviors strip (G3) + narrative.
+- **Sleep**: duration hero + "96% of need · Performance 96%" + Night/W/M/3M/1Y +
+  **hypnogram** (`AtriaSleepHypnogram.swift` exists) + stage chips (Deep/REM/
+  Light/Awake w/ min + %) + **need ledger** (Baseline + debt + strain − nap =
+  total; `AtriaSleepBudget.sleepNeedComponents` exists) + Consistency /
+  Disturbances tiles + **sleep-debt trend** (`AtriaSleepDebtChartCard` exists) +
+  narrative + Sleep planner / Set haptic alarm buttons.
+- **Strain**: value hero + "of 21 · target 12–15" + strain bar w/ Target/Coach-
+  limit markers + **HR-zone bars** (G5) + a per-workout HR line ("Morning run ·
+  HR avg/max") + **Cardiovascular / Muscular split** (G4) + today's activities
+  with per-activity strain contributions + "Room to push" coaching.
+
+### 9.3 Chart-interaction sheets (mostly EXIST — reuse `AtriaGraphGrammar.swift`)
+- **Range & interval sheet**: WINDOW (W/M/3M/6M/1Y/All) + BUCKET (Day / Week avg
+  / Month avg) + "Show min-max band" toggle → maps to `AtriaGraphBucketInterval`
+  (`:212`), `AtriaGraphMinMaxEnvelope` (`:234`). Verify the sheet is presented on
+  every metric detail.
+- **Edit this chart sheet**: PLOT primary + overlays (HRV, Resting HR) + CHART
+  TYPE (Line/Bars/Range) + "Mark journal events" toggle → `AtriaEditChartSheet`
+  (`:457`), `AtriaGraphChartType` (`:19`), `AtriaGraphCompareMode` (`:54`).
+  Confirm overlay/compare + journal-event marks are wired through.
+- **Select · drag a window** (Stress·today: drag → SELECTED 1:10–2:40pm, avg/
+  peak/HRV, Log a stressor / Start breathwork): `chartXSelection` scrubbing
+  exists (`AtriaGraphInspector.swift`, `AtriaTrendChart`); the **drag-to-
+  summarize-a-range** (not just a point) may be partial — verify/extend.
+
+### 9.4 NET-NEW chart gaps (prioritized)
+- **G1 — Dual-axis Strain & Recovery weekly combo (EXPLICIT user request).**
+  WHOOP "STRAIN & RECOVERY": a weekly chart with **strain as a line on a left
+  0–21 axis** and **recovery as colored dots on a right 0–100% axis** (green/
+  yellow/red by band), one week of days. NOT present today
+  (`AtriaTrendPeriodBalanceMap` `AtriaTrendChart.swift:963` is a different
+  balance viz). Needs a dual-`chartYScale` combo. Both series already in
+  `DailyRollupStoreEntry` (`recovery`, `strain`). **Also apply to Activity.**
+- **G2 — Dual-line Hours vs Need (Sleep).** Two overlaid lines/point-series:
+  hours slept vs sleep needed, per day (WHOOP "Hours vs Need"). Not present
+  (`grep` for hours-vs-need = 0). Data exists (`AtriaSleepBudget` need +
+  `SavedDailyMetric.sleepDuration`).
+- **G3 — Embedded "behaviors that move your recovery" strip.** A compact
+  diverging strip inside the Recovery detail ("Consistent sleep +9%, Read before
+  bed +4%, Alcohol −11% · last 60 days"). The engine exists
+  (`AtriaBehaviorImpact`/`AtriaBehaviorImpactDivergingChart`) but is NOT embedded
+  in the metric detail. This directly connects the Behavior Impact work (P4) into
+  the Recovery detail.
+- **G4 — Cardiovascular vs Muscular strain split** + today's activities with
+  per-activity strain deltas. Only onboarding/insights refs today; not a strain
+  detail card.
+- **G5 — HR-zone bars in the Strain detail.** Histogram exists
+  (`AtriaOverviewSections.swift:9887` `Chart(histogram){BarMark}`) but is not
+  surfaced as the "TIME IN HEART-RATE ZONES" card (22m Z1 … 3m Z5 w/ bpm
+  ranges) in the strain scroll. Mostly a surfacing job.
+- **G6 — Assemble the Sleep detail** from existing parts (hypnogram + stage
+  chips + need ledger + debt trend) into the one scroll of 9.2.
+
+### 9.5 Honesty notes for these charts
+- **G1 strain line**: strain is drained/lagged (proprietary channel), so the
+  current day marks as "still catching up" until drained — do NOT render a
+  live-looking today point. Recovery dots colored strictly by band; missing days
+  are gaps, never zero.
+- **G2**: "need" is an estimate (label it); nights without a recovery/sleep read
+  don't plot.
+- **G3**: reuse the exact Welch-gated stats — never show an impact row that fails
+  the ≥5/≥5 · p<0.10 gate; below gate = "learning".
+- **G5 zones**: only from real per-workout HR; no zone bar without HR coverage.
+
+### 9.6 Backlog + phase updates (supersedes §4/§6 ordering)
+Add to the charting backlog, and re-order phases to honor the user's explicit
+"Strain/Recovery + Activity combo" priority AFTER the chosen Behavior-Impact
+start:
+- **P4 (in progress, user-selected): Behavior Impact polish** — magnesium tag +
+  opt-in; reconcile diverging-bar/distribution visuals; **and G3** (embed the
+  behaviors strip in the Recovery detail).
+- **P-combo (next, user-requested): G1 dual-axis Strain & Recovery weekly combo**
+  for the Strain/Recovery detail AND the Activity view.
+- **P-sleep: G6 + G2** — assemble the full Sleep detail scroll + Hours-vs-Need.
+- **P-strain: G4 + G5** — cardio/muscular split + HR-zone bars in Strain.
+- Then P1 (About-sheet trends), P2 (Steps chart), P3 (Stress/partial trends) from
+  §6.
+- **Blocked, documented: SpO2 (§5), same-night Smart-Wake staging (§3.2).**
