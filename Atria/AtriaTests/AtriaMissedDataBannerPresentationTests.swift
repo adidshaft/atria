@@ -41,14 +41,17 @@ final class AtriaMissedDataBannerPresentationTests: XCTestCase {
     }
 
     func testProtectedLiveStreamNeverReadsAsLost() {
-        // While live HR is being protected, catch-up is deferred, not lost —
-        // never tell the user their data is gone in this state.
-        let withData = copy(pending: 90, protectsLive: true)
-        XCTAssertTrue(withData.offersRecovery)
-        XCTAssertEqual(withData.title, "Live HR protected")
-        let caughtUp = copy(pending: 0, protectsLive: true)
-        XCTAssertTrue(caughtUp.offersRecovery)
-        XCTAssertTrue(caughtUp.subtitle.lowercased().contains("up to date"))
+        // Recoverability gates the message even while live HR is protected:
+        // with a genuine banked backlog on the strap, live-protected reads as a
+        // deferred catch-up (recoverable), never as loss.
+        let recoverable = copy(pending: 20 * 60, protectsLive: true)
+        XCTAssertTrue(recoverable.offersRecovery)
+        XCTAssertEqual(recoverable.title, "Live HR protected")
+        // But an OLD gap that is gone stays honestly "wasn't recorded" even while
+        // live HR streams — live being fine does not make the old data recoverable.
+        let goneWhileLive = copy(pending: 90, protectsLive: true)
+        XCTAssertFalse(goneWhileLive.offersRecovery)
+        XCTAssertEqual(goneWhileLive.title, "Some earlier data wasn't recorded")
     }
 
     func testNegativeOrZeroPendingIsClamped() {
