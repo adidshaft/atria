@@ -2447,6 +2447,7 @@ struct BehaviorJournalEntry: Codable, Identifiable, Equatable {
         case fasted
         case supplements
         case melatonin
+        case magnesium
         case medication
         case sauna
         case coldExposure
@@ -2499,6 +2500,7 @@ struct BehaviorJournalEntry: Codable, Identifiable, Equatable {
             case .fasted: return "Fasted"
             case .supplements: return "Supplements"
             case .melatonin: return "Melatonin"
+            case .magnesium: return "Magnesium"
             case .medication: return "Medication"
             case .sauna: return "Sauna"
             case .coldExposure: return "Cold exposure"
@@ -2543,6 +2545,7 @@ struct BehaviorJournalEntry: Codable, Identifiable, Equatable {
             case .fasted: return "timer"
             case .supplements: return "capsule.fill"
             case .melatonin: return "pills.fill"
+            case .magnesium: return "pills.circle.fill"
             case .medication: return "cross.case.fill"
             case .sauna: return "thermometer.sun.fill"
             case .coldExposure: return "snowflake"

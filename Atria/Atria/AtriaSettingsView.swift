@@ -2325,9 +2325,9 @@ struct AtriaTrackedBehaviorsSettingsView: View {
 
     private var groups: [(title: String, tags: [BehaviorJournalEntry.Tag])] {
         [
-            ("Sleep & recovery", [.sleep, .consistentBedtime, .nap, .melatonin, .sharedBed,
-                                  .warmRoom, .screenInBed, .readBeforeBed, .sauna, .coldExposure,
-                                  .massage, .stretching, .soreness]),
+            ("Sleep & recovery", [.sleep, .consistentBedtime, .nap, .melatonin, .magnesium,
+                                  .sharedBed, .warmRoom, .screenInBed, .readBeforeBed, .sauna,
+                                  .coldExposure, .massage, .stretching, .soreness]),
             ("Activity & nutrition", [.training, .activeDay, .protein, .hydration, .vegetables,
                                       .bigMeal, .addedSugar, .lateMeal, .fasted, .caffeine,
                                       .supplements, .medication]),
