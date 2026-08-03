@@ -832,30 +832,47 @@ struct AtriaActivityMonitorTab: View {
             }
 
             if hasWindow {
+                // Colored by stress height (calm→high = green→yellow→red), like
+                // the reference stress monitor: a vertical gradient means a point
+                // low on the axis reads green and a spike reads red.
+                let stressGradient = LinearGradient(
+                    colors: [Metrics.electricGreen, Metrics.electricYellow, Metrics.electricRed],
+                    startPoint: .bottom, endPoint: .top)
                 Chart {
                     ForEach(points) { point in
                         AreaMark(x: .value("Time", point.reading.date),
                                  y: .value("Stress", point.reading.score),
                                  series: .value("Segment", point.segment))
                             .interpolationMethod(.linear)
-                            .foregroundStyle(Metrics.electricStress.opacity(0.12))
+                            .foregroundStyle(stressGradient.opacity(0.18))
                         LineMark(x: .value("Time", point.reading.date),
                                  y: .value("Stress", point.reading.score),
                                  series: .value("Segment", point.segment))
                             .interpolationMethod(.linear)
                             .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                            .foregroundStyle(Metrics.electricStress)
+                            .foregroundStyle(stressGradient)
                     }
                 }
                 .chartYScale(domain: 0...3)
-                .chartYAxis(.hidden)
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: [0, 1, 2, 3]) { value in
+                        AxisGridLine().foregroundStyle(.secondary.opacity(0.10))
+                        AxisValueLabel {
+                            if let raw = value.as(Int.self) {
+                                Text(["Calm", "Low", "Med", "High"][max(0, min(3, raw))])
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
                 .chartXAxis {
                     AxisMarks(values: .automatic(desiredCount: 4)) { _ in
                         AxisValueLabel(format: .dateTime.hour())
                             .foregroundStyle(.secondary)
                     }
                 }
-                .frame(height: 88)
+                .frame(height: 100)
                 .clipped()
 
                 Text("Past 24 hours · observed readings only; blanks are collection gaps.")

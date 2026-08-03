@@ -6012,6 +6012,11 @@ private struct AtriaStrapStepsDetailSheet: View {
     let presentation: AtriaDailyStepPresentation
     let goal: Int
 
+    /// Verified per-day step totals (day-start → steps) for the weekly bar chart,
+    /// loaded once from the durable motion-tick day store. Days without a
+    /// verified receipt simply have no entry (and no bar).
+    @State private var weekSteps: [Date: Int] = [:]
+
     var body: some View {
         NavigationStack {
             TimelineView(.periodic(from: .now, by: 15)) { context in
@@ -6096,11 +6101,14 @@ private struct AtriaStrapStepsDetailSheet: View {
                     .padding(12)
                     .atriaInsetCard(tint: status.tint)
 
+                    stepsWeekChartCard
+
                     Spacer(minLength: 0)
                 }
                 .padding()
                 .accessibilityElement(children: .contain)
             }
+            .task { await loadWeekSteps() }
             .navigationTitle("Strap steps")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -6126,6 +6134,81 @@ private struct AtriaStrapStepsDetailSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .atriaInsetCard(tint: .secondary)
+    }
+
+    /// Weekly steps as a fixed 7-day bar chart (native Swift Charts), matching
+    /// the "7 fixed weekday ticks" rule. Only days with a verified receipt draw a
+    /// bar; the rest keep their tick but stay empty (honest — missing ≠ zero).
+    @ViewBuilder private var stepsWeekChartCard: some View {
+        let calendar = Calendar.current
+        let end = calendar.startOfDay(for: Date())
+        let start = calendar.date(byAdding: .day, value: -6, to: end) ?? end
+        let days = (0...6).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
+        let hasAny = days.contains { weekSteps[$0] != nil }
+        let axisLo = calendar.date(byAdding: .hour, value: -12, to: start) ?? start
+        let axisHi = calendar.date(byAdding: .hour, value: 12, to: end) ?? end
+
+        VStack(alignment: .leading, spacing: 8) {
+            Text("This week")
+                .font(.subheadline.weight(.semibold))
+
+            if hasAny {
+                Chart {
+                    ForEach(days, id: \.self) { day in
+                        if let steps = weekSteps[day] {
+                            BarMark(x: .value("Day", day, unit: .day),
+                                    y: .value("Steps", steps))
+                                .foregroundStyle(Metrics.electricGreen.opacity(0.85))
+                                .cornerRadius(4)
+                        }
+                    }
+                    if goal > 0 {
+                        RuleMark(y: .value("Goal", goal))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                            .foregroundStyle(.secondary.opacity(0.5))
+                            .annotation(position: .top, alignment: .trailing, spacing: 1) {
+                                Text("goal \(goal)")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                    }
+                }
+                .chartXScale(domain: axisLo...axisHi)
+                .chartXAxis {
+                    AxisMarks(values: days) { _ in
+                        AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+                        AxisValueLabel(format: .dateTime.weekday(.narrow))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(height: 140)
+                .clipped()
+                Text("Verified strap steps per day. A day with no verified reading shows no bar.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Building your step history — days with verified strap steps will appear here as they're recorded.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .atriaInsetCard(tint: Metrics.electricGreen)
+    }
+
+    private func loadWeekSteps() async {
+        let calendar = Calendar.current
+        guard let identifier = AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers().first else { return }
+        let receipts = AtriaWhoop4MotionTickDailyStore.shared.recentReceipts(strapIdentifier: identifier, limit: 14)
+        var map: [Date: Int] = [:]
+        for receipt in receipts {
+            let day = calendar.startOfDay(for: receipt.windowStart)
+            // One strongest total per day (the store already keeps the strongest
+            // record per window; guard anyway).
+            map[day] = max(map[day] ?? 0, receipt.steps)
+        }
+        weekSteps = map
     }
 }
 
