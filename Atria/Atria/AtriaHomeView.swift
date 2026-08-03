@@ -5600,21 +5600,24 @@ enum AtriaMissedDataBannerPresentation {
         // branching on "live protected" first would falsely imply (with a Sync
         // button) that the old data is still coming. Only when the strap genuinely
         // holds recoverable history do we offer sync + care about live-vs-idle.
+        // Subtitles are kept SHORT so the single caption line never clips in the
+        // narrow banner row — a clipped long line carries no more meaning than a
+        // fitted short one.
         if pending >= recoverableRecordFloor {
             if protectsLiveStream {
                 // Live HR is streaming; catch-up is deferred to protect it.
                 return Copy(title: "Live HR protected",
-                            subtitle: "Catching up \(amount) of history when idle",
+                            subtitle: "Catching up \(amount) when idle",
                             offersRecovery: true)
             }
             return Copy(title: "Catching up history",
-                        subtitle: "\(amount) still on the strap",
+                        subtitle: "\(amount) on the strap",
                         offersRecovery: true)
         }
         // Little/nothing left on the strap → the gap is gone. Say so calmly and
         // never dangle a futile sync, regardless of live-stream state.
         return Copy(title: "Some earlier data wasn't recorded",
-                    subtitle: "Older than the strap could store — new data is unaffected",
+                    subtitle: "New data is unaffected",
                     offersRecovery: false)
     }
 }
