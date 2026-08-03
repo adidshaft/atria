@@ -36952,7 +36952,7 @@ private struct TrendMetricChart: View {
                 Chart(plotted) { point in
                     LineMark(x: .value("Window", point.label),
                              y: .value(model.title, point.value ?? 0))
-                        .interpolationMethod(.monotone)
+                        .interpolationMethod(.linear)
                         .foregroundStyle(model.color)
                     PointMark(x: .value("Window", point.label),
                               y: .value(model.title, point.value ?? 0))
@@ -37043,7 +37043,7 @@ struct SessionDetail: View {
                 VStack(spacing: 16) {
                     Chart(Array(displayedPoints.enumerated()), id: \.offset) { _, p in
                         LineMark(x: .value("t", p.t), y: .value("bpm", p.bpm))
-                            .interpolationMethod(.catmullRom)
+                            .interpolationMethod(.linear)
                             .foregroundStyle(.red.gradient)
                     }
                     .frame(height: 220)

@@ -1762,12 +1762,12 @@ private struct AtriaStressStripChart: View, Equatable {
                 AreaMark(x: .value("Time", point.t),
                          y: .value("Stress", point.value),
                          series: .value("Segment", point.segment))
-                    .interpolationMethod(.monotone)
+                    .interpolationMethod(.linear)
                     .foregroundStyle(.orange.opacity(0.16))
                 LineMark(x: .value("Time", point.t),
                          y: .value("Stress", point.value),
                          series: .value("Segment", point.segment))
-                    .interpolationMethod(.monotone)
+                    .interpolationMethod(.linear)
                     .foregroundStyle(.orange.gradient)
             }
             RuleMark(y: .value("Medium", 1))

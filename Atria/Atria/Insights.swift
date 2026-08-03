@@ -601,7 +601,7 @@ struct RestingTrendChart: View {
                     ForEach(points) { point in
                         LineMark(x: .value("Date", point.start),
                                  y: .value("Resting", point.resting))
-                            .interpolationMethod(.monotone)
+                            .interpolationMethod(.linear)
                             .foregroundStyle(.teal)
                         PointMark(x: .value("Date", point.start),
                                   y: .value("Resting", point.resting))

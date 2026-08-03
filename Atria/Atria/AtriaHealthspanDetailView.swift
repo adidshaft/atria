@@ -466,7 +466,7 @@ struct AtriaHealthspanDetailView: View {
             Chart(model.trendPoints) { point in
                 LineMark(x: .value("Date", point.day),
                          y: .value("Fitness age", point.value))
-                    .interpolationMethod(.monotone)
+                    .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                     .foregroundStyle(Metrics.electricStrain)
 

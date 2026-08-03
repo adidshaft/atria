@@ -453,7 +453,7 @@ struct AtriaTrendChartCard: View {
                         y: .value("Prior \(metric.shortLabel)", ghostSample.value),
                         series: .value("Series", "prior")
                     )
-                    .interpolationMethod(.monotone)
+                    .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
                     // Prior-period line in neutral gray, not the metric tint: a
                     // faint-tint ghost overlapped the solid tinted current line
@@ -467,7 +467,7 @@ struct AtriaTrendChartCard: View {
                     x: .value("Date", sample.date),
                     y: .value(metric.shortLabel, sample.value)
                 )
-                .interpolationMethod(.monotone)
+                .interpolationMethod(.linear)
                 .foregroundStyle(
                     LinearGradient(
                         colors: [metric.tint.opacity(0.30), metric.tint.opacity(0.02)],
@@ -479,7 +479,7 @@ struct AtriaTrendChartCard: View {
                     x: .value("Date", sample.date),
                     y: .value(metric.shortLabel, sample.value)
                 )
-                .interpolationMethod(.monotone)
+                .interpolationMethod(.linear)
                 .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
                 .foregroundStyle(metric.tint)
             }

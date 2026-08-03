@@ -1146,7 +1146,7 @@ private struct AtriaHealthMonitorSparkline: View, Equatable {
             Chart(points) { point in
                 LineMark(x: .value("Day", point.day),
                          y: .value("Value", point.value))
-                    .interpolationMethod(.catmullRom)
+                    .interpolationMethod(.linear)
                     .foregroundStyle(tint)
             }
             .chartXAxis {
@@ -4880,11 +4880,11 @@ struct AtriaHeartRateAxisChart: View, Equatable {
                     AreaMark(x: .value("Time", bucket.t),
                              yStart: .value("Floor", Double(yDomain.lowerBound)),
                              yEnd: .value("BPM", bucket.average))
-                        .interpolationMethod(.monotone)
+                        .interpolationMethod(.linear)
                         .foregroundStyle(.red.opacity(0.12).gradient)
                     LineMark(x: .value("Time", bucket.t),
                              y: .value("BPM", bucket.average))
-                        .interpolationMethod(.monotone)
+                        .interpolationMethod(.linear)
                         .foregroundStyle(.red.gradient)
                         .lineStyle(StrokeStyle(lineWidth: 2))
                 }
@@ -4893,10 +4893,10 @@ struct AtriaHeartRateAxisChart: View, Equatable {
                     AreaMark(x: .value("Time", point.t),
                              yStart: .value("Visible floor", yDomain.lowerBound),
                              yEnd: .value("BPM", point.bpm))
-                        .interpolationMethod(.catmullRom)
+                        .interpolationMethod(.linear)
                         .foregroundStyle(.red.opacity(0.12).gradient)
                     LineMark(x: .value("Time", point.t), y: .value("BPM", point.bpm))
-                        .interpolationMethod(.catmullRom)
+                        .interpolationMethod(.linear)
                         .foregroundStyle(.red.gradient)
                 }
             }

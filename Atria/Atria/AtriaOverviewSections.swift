@@ -5339,7 +5339,7 @@ struct AtriaWeeklyReportSheet: View {
                 ForEach(points, id: \.day) { point in
                     LineMark(x: .value("Day", point.day, unit: .day),
                              y: .value("Recovery", point.recovery))
-                        .interpolationMethod(.monotone)
+                        .interpolationMethod(.linear)
                         .foregroundStyle(Metrics.electricGreen)
                     PointMark(x: .value("Day", point.day, unit: .day),
                               y: .value("Recovery", point.recovery))
@@ -10653,7 +10653,7 @@ private struct AtriaPreparedMetricChart: View {
                 AreaMark(x: .value("Day", point.day, unit: .day),
                          yStart: .value("Min", point.bandLower ?? point.value),
                          yEnd: .value("Max", point.bandUpper ?? point.value))
-                    .interpolationMethod(.monotone).foregroundStyle(tint.opacity(0.13))
+                    .interpolationMethod(.linear).foregroundStyle(tint.opacity(0.13))
             }
             ForEach(points) { point in
                 AreaMark(x: .value("Day", point.day, unit: .day), y: .value(title, point.value))
