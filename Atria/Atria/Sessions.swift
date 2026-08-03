@@ -8733,6 +8733,40 @@ final class SessionStore: ObservableObject {
                                                   calendar: calendar)
     }
 
+    /// A background pass (BGProcessing) in the morning is the app's chance to
+    /// deliver the morning summary WITHOUT the user opening the app. The rollup
+    /// publish that calls `scheduleMorningSummaryIfNeeded` is not foreground-gated,
+    /// but it only runs when something re-projects the snapshot. On a morning where
+    /// today's sleep is ALREADY confirmed (so the background auto-confirm doesn't
+    /// trigger a refresh) the summary would otherwise never get a background
+    /// scheduling attempt. This re-projects to close exactly that gap — gated so it
+    /// only fires inside the wake-anchored window, only when a real wake exists,
+    /// and stops once the summary has been scheduled for the day.
+    private func materializeMorningMetricForSummaryInBackgroundIfNeeded(
+        now: Date,
+        calendar: Calendar
+    ) {
+        let today = calendar.startOfDay(for: now)
+        let dayID = Self.localDayIdentifier(for: today, calendar: calendar)
+        guard UserDefaults.standard.string(forKey: Self.morningSummaryLastScheduledDayKey) != dayID else {
+            return
+        }
+        // Wake = end of the most recent confirmed sleep the user woke from today.
+        let wake = cachedConfirmedSleeps
+            .filter { calendar.isDate($0.end, inSameDayAs: today) }
+            .map(\.end)
+            .max()
+        guard let wake,
+              Self.isWithinMorningSummaryWindow(now: now, wake: wake, calendar: calendar) else {
+            return
+        }
+        AtriaDebugLog("ATRIADBG morning_summary_bg_materialize day=%@ action=reproject_so_rollup_publish_schedules_summary",
+                      dayID)
+        // Re-project off-main; the rollup publish that follows reaches
+        // scheduleMorningSummaryIfNeeded with a freshly materialized today metric.
+        refreshHistorySnapshotCache(deferred: true)
+    }
+
     /// Whether `now` is inside the morning-summary window. Anchored to the
     /// confirmed WAKE (`wake`) rather than a fixed clock cutoff: the summary may
     /// fire up to `hoursAfterWake` after waking (generous, to absorb the drain +
@@ -15484,6 +15518,7 @@ final class SessionStore: ObservableObject {
         generateWeeklyPlanIfNeeded(now: now, calendar: calendar, reason: reason)
         compactHistoricalArchiveIfUseful(reason: reason, now: now)
         compactColdSessionsInShadowIfUseful(reason: reason, now: now)
+        materializeMorningMetricForSummaryInBackgroundIfNeeded(now: now, calendar: calendar)
         let healthSessions = sessions
         let healthRest = baseline.restingInt ?? 60
         let healthMaxHR = profile.maxHR
