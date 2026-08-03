@@ -24,28 +24,6 @@ struct AtriaStrainRecoveryComboChart: View {
     /// recovery (0–100%) is mapped onto so the two axes align on 0/33/66/100%.
     private let strainAxisMax = 21.0
 
-    /// Points tagged with a contiguous-run id so a line BREAKS at day gaps
-    /// instead of drawing a straight segment across days with no reading (which
-    /// would imply data that never existed). A run increments whenever
-    /// consecutive points are more than a day apart.
-    static func contiguousRuns(_ points: [AtriaDetailChartPoint])
-        -> [(runID: Int, point: AtriaDetailChartPoint)] {
-        let sorted = points.sorted { $0.day < $1.day }
-        var out: [(Int, AtriaDetailChartPoint)] = []
-        var run = 0
-        var previous: Date?
-        let calendar = Calendar.current
-        for point in sorted {
-            if let previous {
-                let days = calendar.dateComponents([.day], from: previous, to: point.day).day ?? 1
-                if days > 1 { run += 1 }
-            }
-            out.append((run, point))
-            previous = point.day
-        }
-        return out
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
@@ -84,7 +62,7 @@ struct AtriaStrainRecoveryComboChart: View {
             // Two zigzag lines on a shared 0–21 domain (recovery % mapped onto
             // it), each BROKEN at day gaps via its contiguous-run id so neither
             // line is drawn across days with no reading.
-            ForEach(Self.contiguousRuns(strain), id: \.point.day) { entry in
+            ForEach(strain.contiguousDayRuns(), id: \.point.day) { entry in
                 LineMark(x: .value("Day", entry.point.day),
                          y: .value("Strain", min(entry.point.value, strainAxisMax)),
                          series: .value("Strain run", "s\(entry.runID)"))
@@ -92,7 +70,7 @@ struct AtriaStrainRecoveryComboChart: View {
                     .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 2))
             }
-            ForEach(Self.contiguousRuns(recovery), id: \.point.day) { entry in
+            ForEach(recovery.contiguousDayRuns(), id: \.point.day) { entry in
                 LineMark(x: .value("Day", entry.point.day),
                          y: .value("Recovery", entry.point.value / 100.0 * strainAxisMax),
                          series: .value("Recovery run", "r\(entry.runID)"))
@@ -131,5 +109,30 @@ struct AtriaStrainRecoveryComboChart: View {
         }
         .frame(height: 150)
         .clipped()
+    }
+}
+
+extension Array where Element == AtriaDetailChartPoint {
+    /// Split into contiguous day-runs so a charted line BREAKS at day gaps
+    /// instead of drawing a straight segment across days with no reading (which
+    /// would imply data that never existed — honesty-first chart rule,
+    /// 2026-08-03). The run id increments whenever consecutive points are more
+    /// than a day apart; feed it to `LineMark(series:)` so each run is its own
+    /// line. Shared by the combo and the metric detail charts.
+    func contiguousDayRuns(calendar: Calendar = .current)
+        -> [(runID: Int, point: AtriaDetailChartPoint)] {
+        let sorted = self.sorted { $0.day < $1.day }
+        var out: [(Int, AtriaDetailChartPoint)] = []
+        var run = 0
+        var previous: Date?
+        for point in sorted {
+            if let previous {
+                let days = calendar.dateComponents([.day], from: previous, to: point.day).day ?? 1
+                if days > 1 { run += 1 }
+            }
+            out.append((run, point))
+            previous = point.day
+        }
+        return out
     }
 }

@@ -10676,10 +10676,15 @@ private struct AtriaPreparedMetricChart: View {
             // which reads as "a random line that has nothing to do with the real
             // figure." The honest previous-period comparison is the FLAT
             // prior-average RuleMark above; the fabricated curve is not kept.
-            ForEach(points) { point in
-                LineMark(x: .value("Day", point.day, unit: .day), y: .value(title, point.value),
-                         series: .value("Series", "current"))
+            // Line split into contiguous day-runs so it BREAKS at gaps instead of
+            // drawing a straight segment across days with no reading (2026-08-03
+            // chart-honesty rule). Points still render on every real day.
+            ForEach(points.contiguousDayRuns(), id: \.point.day) { entry in
+                LineMark(x: .value("Day", entry.point.day, unit: .day), y: .value(title, entry.point.value),
+                         series: .value("Series", "current-\(entry.runID)"))
                     .interpolationMethod(.linear).foregroundStyle(tint)
+            }
+            ForEach(points) { point in
                 PointMark(x: .value("Day", point.day, unit: .day), y: .value(title, point.value))
                     .foregroundStyle(point.tint)
             }
