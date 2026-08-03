@@ -4,6 +4,63 @@ Branch: `claude/atria-background-continuity-88ce90` (worktree
 `.claude/worktrees/atria-background-continuity-88ce90`). Codex parity branch:
 `codex/atria-reliability-handoff-2026-07-22`.
 
+## 10. Chart honesty review (2026-08-03, device-observed) — READ THIS
+
+Live device review with the user surfaced a cluster of **chart honesty** defects,
+all rooted in the same thing: **the install has very little real data (~3 days,
+Aug 1–3), and the charts degrade badly with sparse data** — inventing shape,
+connecting across gaps, and showing empty/confusing views. Fixes shipped where
+noted; the rest is a ranked backlog. These are product-level rules to apply
+THROUGHOUT, not one-off patches.
+
+### Findings
+1. **Fabricated "prior period" ghost line (FIXED, `d9a942ee`).** The dashed blue
+   curve on every metric detail chart was a `.monotone` spline through the prior
+   window's sparse points — it swooped to values (≈5) and peaks (≈75) on days
+   that had no such reading. "Random, nothing to do with the real figure."
+   Removed the per-day ghost curve; kept only the honest FLAT prior-average
+   reference line. Current line + area switched `.monotone` → `.linear`.
+2. **Lines drawn across day-gaps (FIXED in the combo; APP-WIDE TODO).** A
+   `LineMark` over non-consecutive days draws a straight segment across unworn
+   days, implying data that never existed. Fixed in `AtriaStrainRecoveryComboChart`
+   via a contiguous-run id that breaks the line at gaps. **Every other line chart
+   in the app still connects across gaps** — apply the same run-splitting.
+3. **Expanded chart shows "nothing there" on sparse data.** `AtriaExpandedChart`
+   opens with a brushed selection that lands on days with no points →
+   "No data in selection" (`AtriaExpandedChart.swift:604`) over a near-empty
+   plot, plus a "fabricated 0…1 axis / 1 of 1 days visible" fallback
+   (`:92,:100`). Reads as broken. Needs a sparse-data "building history" state.
+4. **Smooth interpolation in general fabricates curvature.** `.monotone`/
+   `.catmullRom` invent shape between real points. Honest default is `.linear`
+   (straight segments between real readings) everywhere.
+
+### Product decisions (apply throughout — added to memory `atria-product-decisions`)
+- **Use native Apple Swift Charts** wherever a chart is needed and native serves
+  it better — do NOT hand-roll custom `Path`/`Shape` charts when Swift Charts
+  covers it. (The app already standardizes on Swift Charts; keep it that way.)
+- **Strain & Recovery combo = two zigzag lines** (strain line + recovery line on
+  a dual 0–21 / 0–100% axis), recovery points colored by band — NOT line+dots.
+- **Never fabricate shape:** `.linear` only; break every line at day-gaps; no
+  per-day prior ghost (flat prior-average reference is the honest comparison).
+- **Sparse data degrades honestly:** show a "building history / N days so far"
+  state instead of empty plots, fabricated axes, or empty brush selections.
+- This is the honesty-first LAW applied to charts: a chart must never draw a
+  point, segment, or curve that doesn't correspond to a real reading.
+
+### Ranked backlog (chart honesty)
+- **C1 — App-wide gap-breaking:** factor the combo's contiguous-run split into a
+  shared helper and apply to every metric detail line (recovery/hrv/rhr/resp/
+  sleep/strain) + `AtriaTrendChart` + `AtriaExpandedChart`.
+- **C2 — Sparse-data state:** replace empty expanded-chart / "No data in
+  selection" / fabricated-0…1-axis with an honest "building history" view; audit
+  the default brush so it opens on days that have data.
+- **C3 — Interpolation audit:** sweep all `.monotone`/`.catmullRom` chart usages
+  → `.linear` (or justify each remaining one).
+- **C4 — Combo on the Activity surface** (original G1 part b) + apply the two-
+  line treatment consistently.
+- **C5 — Re-verify on device** once the install has ≥1–2 weeks of real data, so
+  charts are reviewed with realistic density, not a 3-day cold start.
+
 ## 0. TL;DR — the reframe
 
 The user shared 6 mockup boards (Behavior Impact, Strength Log, Sleep Planner &
