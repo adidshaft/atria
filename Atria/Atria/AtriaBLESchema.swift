@@ -371,6 +371,12 @@ extension AtriaBLEManager {
         // above is a last-ERROR value (froze while segments still landed → misleading
         // for triage); this is the success-path progress signal.
         static let lastDurableFlushBoundaryOKAt = "atria.offlineSync.lastDurableFlushBoundaryOKAt.v1"
+        // Drain-keeping P3: last time the HR-independent maintenance ticker
+        // re-armed the range-loss drain because the normal (accepted-HR-driven)
+        // re-arm loop had gone silent past its floor. A moving value here while a
+        // backlog persists is the on-device signal that the anti-divergence
+        // backstop is carrying the drain through an HR-sparse (asleep) window.
+        static let lastMaintenanceReArmAt = "atria.offlineSync.lastMaintenanceReArmAt.v1"
     }
 
     enum KeepaliveDefaults {

@@ -340,6 +340,47 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         XCTAssertFalse(window(state: .fallbackPending))
     }
 
+    func testMaintenanceTickerReArmsOnlyAfterTheNormalLoopHasGoneSilent() {
+        let floor: TimeInterval = 120
+        func rearm(
+            pending: Bool = true,
+            sync: Bool = false,
+            connected: Bool = true,
+            eligible: Bool = true,
+            since: TimeInterval? = nil,
+            floorOverride: TimeInterval = floor
+        ) -> Bool {
+            AtriaBLEManager.shouldReArmRangeLossBackfillOnMaintenanceTick(
+                rangeLossBackfillPending: pending,
+                syncInProgress: sync,
+                linkConnected: connected,
+                flushEligible: eligible,
+                sinceLastReArm: since,
+                reArmFloor: floorOverride
+            )
+        }
+        // Never re-armed this backlog (nil) + eligible → the backstop re-arms now.
+        XCTAssertTrue(rearm(since: nil))
+        // Normal loop has been silent past the floor → HR-independent re-arm.
+        XCTAssertTrue(rearm(since: floor))
+        XCTAssertTrue(rearm(since: floor + 60))
+        // A real re-arm within the floor keeps the ticker quiet (anti-churn).
+        XCTAssertFalse(rearm(since: floor - 1))
+        XCTAssertFalse(rearm(since: 0))
+        // No backlog, an active drain, a dropped link, or an ineligible context
+        // (foreground / storm / active proof, surfaced as flushEligible=false) all
+        // refuse — never preempt a running drain or churn an unhealthy link.
+        XCTAssertFalse(rearm(pending: false, since: floor + 60))
+        XCTAssertFalse(rearm(sync: true, since: floor + 60))
+        XCTAssertFalse(rearm(connected: false, since: floor + 60))
+        XCTAssertFalse(rearm(eligible: false, since: floor + 60))
+        // Degenerate floors and a non-finite elapsed reading fail closed.
+        XCTAssertFalse(rearm(since: floor + 60, floorOverride: 0))
+        XCTAssertFalse(rearm(since: floor + 60, floorOverride: .infinity))
+        XCTAssertFalse(rearm(since: .infinity))
+        XCTAssertFalse(rearm(since: .nan))
+    }
+
     func testTerminalProjectionFailureReleasesOnlyAuthorizedMotionBankRequest() {
         typealias Status =
             AtriaHistoricalFullDrainCoverageStore.Authority.Status
