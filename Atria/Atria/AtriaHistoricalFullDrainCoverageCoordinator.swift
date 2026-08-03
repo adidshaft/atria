@@ -19,6 +19,12 @@ enum AtriaHistoricalFullDrainCoverageIntegration {
     /// coverage (45.5% of wall time) while closing zero seconds of the ledger.
     /// Re-enable only once a seek (0x21 read pointer or an exact-range 0x16)
     /// is physically proven to reposition the cursor.
+    ///
+    /// Retirement seal (design doc #6): flipping this bool alone can no longer
+    /// re-arm the autonomous replay. `AtriaBLEManager.persistedDrainResumeAllowed`
+    /// now also requires `exactRangeTransportAuthorityAvailable`, so the seekless
+    /// non-convergent path is structurally unreachable -- the only autonomous
+    /// resume that can ever run again is a convergent, seek-based one.
     static let persistedDrainResumeEnabled = false
 }
 

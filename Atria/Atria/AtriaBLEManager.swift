@@ -7846,16 +7846,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// forever, though: when iOS killed the process mid-drain, no terminal
     /// transport result exists. This resumes the existing exact gap once, not
     /// a selector sweep or a new protocol variant.
-    /// The autonomous resume lane is paused (see
+    /// The autonomous resume lane is retired (see
     /// `AtriaHistoricalFullDrainCoverageIntegration.persistedDrainResumeEnabled`).
-    /// An attended seek experiment still needs a real armed drain to intercept,
-    /// so the debug selector-sweep launch argument re-opens the lane for that
-    /// bounded, operator-supervised run only.
+    /// The seekless oldest-first replay is structurally sealed: even if the
+    /// integration flag is flipped back on, the autonomous lane stays paused
+    /// until `exactRangeSeekAvailable` proves a real seek exists -- at which
+    /// point the replay is no longer the non-convergent path this retirement
+    /// removed. An attended seek experiment still needs a real armed drain to
+    /// intercept, so the debug selector-sweep launch argument re-opens the lane
+    /// for that bounded, operator-supervised run only (that run is how the seek
+    /// gets proven in the first place, so it must not require the seek).
     nonisolated static func persistedDrainResumeAllowed(
         integrationEnabled: Bool,
+        exactRangeSeekAvailable: Bool,
         attendedSelectorSweepEnabled: Bool
     ) -> Bool {
-        integrationEnabled || attendedSelectorSweepEnabled
+        (integrationEnabled && exactRangeSeekAvailable) || attendedSelectorSweepEnabled
     }
 
     private var persistedDrainResumeAllowed: Bool {
@@ -7866,6 +7872,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return Self.persistedDrainResumeAllowed(
             integrationEnabled: AtriaHistoricalFullDrainCoverageIntegration
                 .persistedDrainResumeEnabled,
+            exactRangeSeekAvailable: AtriaHistoricalFullDrainCoverageIntegration
+                .exactRangeTransportAuthorityAvailable,
             attendedSelectorSweepEnabled: historySelectorSweepEnabled
         )
     }

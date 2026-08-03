@@ -78,10 +78,21 @@ synthesis/materialization is a separate scheduled job (its own `BGProcessingTask
 chunked, charge-gated). **P0a started this** (raw drain no longer blocked by a
 parked terminal materialization authority).
 
-### 6. Convergence guarantee
+### 6. Convergence guarantee — RETIRED (2026-08-03)
 Every slice ACKs → advances `read_cursor` → permanent progress. Never restart
 from oldest. Make the chunked range-loss drain THE drain; retire the old
 full-drain path entirely.
+
+**Status: done.** The chunked coverage-authority drain (P1–P6) is the drain.
+The old oldest-first replay is retired: `persistedDrainResumeEnabled = false`,
+and — the retirement seal — `AtriaBLEManager.persistedDrainResumeAllowed` now
+requires `exactRangeTransportAuthorityAvailable` too, so flipping the bool back
+on can no longer re-arm the *seekless, non-convergent* lane. The only autonomous
+resume that can ever run again is a convergent, seek-based one, once a seek is
+physically proven. The attended selector-sweep / gate2 debug lanes are
+deliberately preserved: they are how that seek would get proven, and they must
+not require the seek to already exist. Pinned by
+`testPersistedDrainResumeIsPausedUnlessAttendedSelectorSweepIsArmed`.
 
 ## A good day under this design
 - **Daytime:** trickle flush → steps/naps ~15 min fresh.
