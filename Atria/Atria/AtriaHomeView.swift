@@ -4637,7 +4637,18 @@ struct AtriaHomeView: View {
         /// lets a slow-maturing status stay visible alongside a live one.
         private func notices(now: Date) -> [Status] {
             var result: [Status] = []
-            if let status = status(now: now) {
+            // Always lead with live-capture health when live HR is flowing, so a
+            // background history sync (or a stale-data "needs review" note) never
+            // reads as "live HR is broken". The user must be able to tell at a
+            // glance that the strap is connected and recording right now — the
+            // "Syncing strap history" chip is about the BACKGROUND catch-up, not
+            // the live stream, and showing it alone made that ambiguous.
+            let live = coreLiveStore.state
+            let liveStatus = liveProtectedStatus(live, now: now)
+            if let liveStatus {
+                result.append(liveStatus)
+            }
+            if let status = status(now: now), status.title != liveStatus?.title {
                 result.append(status)
             }
             if let maturity = maturityText() {
