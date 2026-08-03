@@ -72,6 +72,25 @@ final class AtriaBehaviorImpactPresentationTests: XCTestCase {
         XCTAssertNotNil(model.details[stat.id], "a gated row must carry a precomputed drill-in")
     }
 
+    func testMagnesiumFlowsThroughTheEngineLikeAnyOtherBehavior() throws {
+        // Magnesium was added to the catalog (2026-08-03) as an opt-in behavior.
+        // The stats engine is generic over tags, so a separated magnesium
+        // distribution must clear the gate exactly like alcohol does — and it
+        // must NOT be tracked by default (it is opt-in from onboarding/Settings).
+        XCTAssertFalse(BehaviorJournalEntry.Tag.defaultTracked.contains(.magnesium),
+                       "Magnesium is opt-in, not a default check-in behavior.")
+        XCTAssertEqual(BehaviorJournalEntry.Tag.magnesium.label, "Magnesium")
+
+        let recoveries = [40, 42, 39, 41, 43] + Array(repeating: 72, count: 20)
+        let model = makeModel(recoveries: recoveries,
+                              loggedOffsets: [0, 1, 2, 3, 4],
+                              tag: .magnesium)
+        let stat = try XCTUnwrap(model.stats.first)
+        XCTAssertEqual(stat.tag, .magnesium)
+        XCTAssertTrue(stat.passesSignificanceGate)
+        XCTAssertNotNil(model.details[stat.id], "a gated magnesium row must carry a drill-in")
+    }
+
     func testFewerThanFiveQuietNightsAlsoWithholdsTheRow() throws {
         // Ten logged nights but only four quiet ones: the comparison side is
         // just as much a part of "logged vs quiet" as the logged side.

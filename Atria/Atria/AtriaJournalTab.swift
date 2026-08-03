@@ -1050,6 +1050,7 @@ private struct AtriaJournalCheckInDeck: View {
         case .fasted: return "Did you fast for a long stretch yesterday?"
         case .supplements: return "Took your supplements yesterday?"
         case .melatonin: return "Melatonin or a sleep aid last night?"
+        case .magnesium: return "Magnesium before bed last night?"
         case .medication: return "Took your medication yesterday?"
         case .sauna: return "Sauna or heat session yesterday?"
         case .coldExposure: return "Cold plunge or cold shower yesterday?"
