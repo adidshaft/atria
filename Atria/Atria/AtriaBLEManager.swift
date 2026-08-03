@@ -1561,6 +1561,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private let rangeLossBackfillMaintenanceReArmFloor: TimeInterval = 120
     private var rangeLossBackfillMaintenanceTickerTask: Task<Void, Never>?
     private var lastRangeLossBackfillReArmAt: Date?
+    // Drain-keeping P5 (charge-resume): the moment the phone starts charging is a
+    // strong signal we are in a generous background-execution window (e.g. on the
+    // charger overnight). On that power-state edge, if a backlog is pending, kick
+    // the drain immediately rather than waiting for the next tick/HR packet.
+    private var phoneChargeStateObserver: NSObjectProtocol?
+    private var lastPhoneChargingState: Bool?
     private var staleRangeLossReconciliationInFlight = false
     private var lastStaleRangeLossReconciliationAttemptAt: Date?
     private var offlineHistoricalSyncStartRows = 0
@@ -2931,6 +2937,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               reArmFloor > 0 else { return false }
         guard let sinceLastReArm else { return true }
         return sinceLastReArm.isFinite && sinceLastReArm >= reArmFloor
+    }
+
+    /// Drain-keeping P5 (charge-resume): re-arm the drain on the rising edge of
+    /// the phone's charging state (unplugged → charging/full) when a backlog is
+    /// pending. Only the rising edge fires so a phone that stays plugged in does
+    /// not re-trigger on every battery-state notification; the downstream re-arm
+    /// is the same fully-guarded entry point, so this only ever prompts.
+    nonisolated static func shouldResumeDrainOnPhoneChargeEdge(
+        previousCharging: Bool,
+        nowCharging: Bool,
+        rangeLossBackfillPending: Bool
+    ) -> Bool {
+        rangeLossBackfillPending && nowCharging && !previousCharging
     }
 
     nonisolated static func shouldDeferAutomaticHistoryForCleanOwner(
@@ -4532,6 +4551,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     )
                 }
             }
+        // Drain-keeping P5: observe the phone's charging edge to resume the drain
+        // when we plug in (a good background-execution window). Enabling battery
+        // monitoring is required to read UIDevice.batteryState.
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        lastPhoneChargingState = Self.phoneStateIsCharging(UIDevice.current.batteryState)
+        phoneChargeStateObserver = NotificationCenter.default.addObserver(
+            forName: UIDevice.batteryStateDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.handlePhoneChargeStateEdgeIfNeeded() }
+        }
         // Retention must not depend on a history attempt eventually reaching a
         // terminal callback: normal long wear can leave one attempt open for a
         // long time. This starts one bounded, non-transport maintenance pass
@@ -13223,6 +13254,33 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             model: strapModel,
             previouslyVerified: previouslyVerified
         )
+    }
+
+    nonisolated static func phoneStateIsCharging(
+        _ state: UIDevice.BatteryState
+    ) -> Bool {
+        state == .charging || state == .full
+    }
+
+    /// Drain-keeping P5: on the phone's charging edge, if a backlog is pending,
+    /// re-arm the drain (and bring up the P3 backstop) through the same guarded
+    /// entry point — a good moment to catch up while iOS is generous with
+    /// background execution.
+    private func handlePhoneChargeStateEdgeIfNeeded() {
+        let nowCharging = Self.phoneStateIsCharging(UIDevice.current.batteryState)
+        let previous = lastPhoneChargingState ?? false
+        lastPhoneChargingState = nowCharging
+        let pending = UserDefaults.standard.bool(
+            forKey: OfflineSyncDefaults.rangeLossBackfillPending
+        )
+        guard Self.shouldResumeDrainOnPhoneChargeEdge(
+            previousCharging: previous,
+            nowCharging: nowCharging,
+            rangeLossBackfillPending: pending
+        ) else { return }
+        AtriaDebugLog("ATRIADBG offline_sync status=phone_charge_resume action=rearm_drain_backlog_on_external_power_edge")
+        startRangeLossBackfillMaintenanceTickerIfNeeded(reason: "phone_charge_resume")
+        scheduleRangeLossBackfillIfNeeded(reason: "phone_charge_resume")
     }
 
     private func scheduleStaleArmedRangeLossBackfillReconciliation(reason: String,
@@ -36046,6 +36104,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if let motionCompactStoreObserver {
             NotificationCenter.default.removeObserver(
                 motionCompactStoreObserver
+            )
+        }
+        if let phoneChargeStateObserver {
+            NotificationCenter.default.removeObserver(
+                phoneChargeStateObserver
             )
         }
     }

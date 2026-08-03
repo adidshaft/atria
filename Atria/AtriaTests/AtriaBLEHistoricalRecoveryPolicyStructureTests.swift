@@ -381,6 +381,29 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         XCTAssertFalse(rearm(since: .nan))
     }
 
+    func testPhoneChargeEdgeResumesDrainOnlyOnRisingEdgeWithBacklog() {
+        // Rising edge (unplugged → charging) with a backlog → resume.
+        XCTAssertTrue(AtriaBLEManager.shouldResumeDrainOnPhoneChargeEdge(
+            previousCharging: false, nowCharging: true, rangeLossBackfillPending: true
+        ))
+        // Already charging (level edge while plugged in) → do not re-trigger.
+        XCTAssertFalse(AtriaBLEManager.shouldResumeDrainOnPhoneChargeEdge(
+            previousCharging: true, nowCharging: true, rangeLossBackfillPending: true
+        ))
+        // Unplugging, or no backlog → never.
+        XCTAssertFalse(AtriaBLEManager.shouldResumeDrainOnPhoneChargeEdge(
+            previousCharging: true, nowCharging: false, rangeLossBackfillPending: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldResumeDrainOnPhoneChargeEdge(
+            previousCharging: false, nowCharging: true, rangeLossBackfillPending: false
+        ))
+        // Charging classification includes .full (topped off, still on power).
+        XCTAssertTrue(AtriaBLEManager.phoneStateIsCharging(.charging))
+        XCTAssertTrue(AtriaBLEManager.phoneStateIsCharging(.full))
+        XCTAssertFalse(AtriaBLEManager.phoneStateIsCharging(.unplugged))
+        XCTAssertFalse(AtriaBLEManager.phoneStateIsCharging(.unknown))
+    }
+
     func testTerminalProjectionFailureReleasesOnlyAuthorizedMotionBankRequest() {
         typealias Status =
             AtriaHistoricalFullDrainCoverageStore.Authority.Status
