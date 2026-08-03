@@ -748,6 +748,8 @@ struct AtriaActivityMonitorTab: View {
 
             dayTimelineCard
 
+            strainRecoveryComboCard
+
             let sections = daySectionsCache.value(for: requestKey) ?? []
             if daySectionsCache.publishedKey != requestKey {
                 activityLoadingState
@@ -790,6 +792,39 @@ struct AtriaActivityMonitorTab: View {
             await refreshDaySections(for: requestKey,
                                      activity: activity,
                                      calendar: calendar)
+        }
+    }
+
+    /// Last ~2 weeks of real daily strain + recovery, mapped to chart points.
+    /// Only days with an actual value plot (missing ≠ zero); the combo itself
+    /// breaks each line at gaps.
+    private var recentStrainRecovery: (strain: [AtriaDetailChartPoint], recovery: [AtriaDetailChartPoint]) {
+        let calendar = Calendar.current
+        let cutoff = calendar.date(byAdding: .day, value: -14, to: calendar.startOfDay(for: Date()))
+            ?? Date.distantPast
+        let recent = activityStore.state.dailyRollupHistory
+            .filter { $0.day >= cutoff }
+            .sorted { $0.day < $1.day }
+        let strain = recent.compactMap { entry -> AtriaDetailChartPoint? in
+            guard let value = entry.strain, value > 0 else { return nil }
+            return AtriaDetailChartPoint(day: entry.day, value: value, tint: Metrics.electricStrain)
+        }
+        let recovery = recent.compactMap { entry -> AtriaDetailChartPoint? in
+            guard let value = entry.recovery else { return nil }
+            return AtriaDetailChartPoint(day: entry.day, value: Double(value),
+                                         tint: Metrics.recoveryColor(value))
+        }
+        return (strain, recovery)
+    }
+
+    /// WHOOP-style Strain & Recovery combo on the Activity surface (design
+    /// backlog C4). Hidden until both series have real data.
+    @ViewBuilder private var strainRecoveryComboCard: some View {
+        let series = recentStrainRecovery
+        if !series.strain.isEmpty && !series.recovery.isEmpty {
+            AtriaStrainRecoveryComboChart(strain: series.strain,
+                                          recovery: series.recovery,
+                                          rangeLabel: "last 14 days")
         }
     }
 
