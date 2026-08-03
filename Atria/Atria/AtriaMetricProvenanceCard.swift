@@ -28,7 +28,7 @@ struct AtriaMetricProvenanceCard: View {
                 // assert a standing the app has not earned. Confidence carries
                 // how far the number can be trusted, which is green/amber only.
                 row("Value", provenance.displayValue, tint: provenance.valueStatusTint)
-                row("Confidence", provenance.level.rawValue.capitalized,
+                row("Confidence", provenance.level.displayName,
                     tint: provenance.level.statusTint)
                 if let fraction = provenance.hrCoverageFraction {
                     row("HR coverage", "\(Int((fraction * 100).rounded()))%")

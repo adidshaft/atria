@@ -55,7 +55,7 @@ final class AtriaMetricConfidencePresentationTests: XCTestCase {
 
         XCTAssertEqual(presentation.value, "75%")
         XCTAssertEqual(presentation.level, .provisional)
-        XCTAssertEqual(presentation.marker, "provisional")
+        XCTAssertEqual(presentation.marker, "estimate")
     }
 
     func testRecoveryAtHighConfidenceSaysNothingExtra() {
@@ -155,7 +155,7 @@ final class AtriaMetricConfidencePresentationTests: XCTestCase {
 
         XCTAssertEqual(presentation.value, "11.4")
         XCTAssertEqual(presentation.level, .provisional)
-        XCTAssertEqual(presentation.marker, "provisional")
+        XCTAssertEqual(presentation.marker, "estimate")
     }
 
     /// Heart-rate reserve is undefined without a valid rest and max, so there is
