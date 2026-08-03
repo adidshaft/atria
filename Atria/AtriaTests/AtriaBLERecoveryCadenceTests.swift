@@ -4159,21 +4159,41 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         // lane may take the radio.
         XCTAssertFalse(AtriaBLEManager.persistedDrainResumeAllowed(
             integrationEnabled: false,
+            exactRangeSeekAvailable: false,
             attendedSelectorSweepEnabled: false
         ))
-        // An attended seek experiment still needs a real armed drain.
+        // An attended seek experiment still needs a real armed drain -- and it
+        // is precisely how the seek gets proven, so it must not itself require
+        // the seek to already exist.
         XCTAssertTrue(AtriaBLEManager.persistedDrainResumeAllowed(
             integrationEnabled: false,
+            exactRangeSeekAvailable: false,
             attendedSelectorSweepEnabled: true
         ))
-        // Re-enabling the integration flag restores the autonomous lane.
+        // Retirement seal: flipping the integration flag back on is NOT enough.
+        // The seekless oldest-first replay is non-convergent, so the autonomous
+        // lane stays paused until a real seek is proven available. This is the
+        // structural retirement of the old full-drain path (design doc #6).
+        XCTAssertFalse(AtriaBLEManager.persistedDrainResumeAllowed(
+            integrationEnabled: true,
+            exactRangeSeekAvailable: false,
+            attendedSelectorSweepEnabled: false
+        ))
+        // Only once a seek is physically proven does an autonomous resume
+        // become admissible again -- and by then it is a convergent path, not
+        // the one this retirement removed.
         XCTAssertTrue(AtriaBLEManager.persistedDrainResumeAllowed(
             integrationEnabled: true,
+            exactRangeSeekAvailable: true,
             attendedSelectorSweepEnabled: false
         ))
         XCTAssertFalse(
             AtriaHistoricalFullDrainCoverageIntegration.persistedDrainResumeEnabled,
             "The resume lane must ship paused until a seek is physically proven."
+        )
+        XCTAssertFalse(
+            AtriaHistoricalFullDrainCoverageIntegration.exactRangeTransportAuthorityAvailable,
+            "No seek transport is proven on WHOOP 4, so the autonomous lane stays sealed."
         )
     }
 
@@ -4303,6 +4323,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(
             AtriaBLEManager.persistedDrainResumeAllowed(
                 integrationEnabled: false,
+                exactRangeSeekAvailable: false,
                 attendedSelectorSweepEnabled: false
             ),
             "Paused resume lane must not claim the live connection."
@@ -4310,6 +4331,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(
             AtriaBLEManager.persistedDrainResumeAllowed(
                 integrationEnabled: false,
+                exactRangeSeekAvailable: false,
                 attendedSelectorSweepEnabled: true
             ),
             "An attended sweep still needs the claim so a drain can arm."
