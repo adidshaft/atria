@@ -5590,35 +5590,73 @@ enum AtriaMissedDataBannerPresentation {
     /// "recoverable" rather than effectively lost.
     static let recoverableRecordFloor = 300
 
+    /// A durable flush landing within this window means the background drain is
+    /// actively working right now — even if the app is foreground/connected and
+    /// the top-level status reads "deferred". Device forensics (2026-08-03)
+    /// showed the drain flushing every ~2 min while the banner still displayed a
+    /// 28-min-stale "~8 min on the strap", which read as "stuck". Leading with
+    /// the fresh flush time is what makes a working drain look working.
+    static let activeDrainRecencyWindow: TimeInterval = 12 * 60
+
+    /// Relative "how long ago" for a durable-flush timestamp. Short by design so
+    /// it never clips the single caption line.
+    static func relativeAgo(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds.rounded()))
+        if s < 60 { return "just now" }
+        let m = s / 60
+        if m < 60 { return "\(m)m ago" }
+        return "\(m / 60)h ago"
+    }
+
+    /// - Parameters:
+    ///   - secondsSinceLastFlush: age of the last durable flush boundary
+    ///     (`lastDurableFlushBoundaryOKAt`) — the ground-truth "is it actually
+    ///     draining" signal, independent of the stale pending count.
+    ///   - backgroundLeaseActive: the app holds live background execution for the
+    ///     drain (`backgroundLeaseStatus == "active"`).
     static func copy(strapPendingRecords: Int,
-                     protectsLiveStream: Bool) -> Copy {
+                     protectsLiveStream: Bool,
+                     secondsSinceLastFlush: TimeInterval?,
+                     backgroundLeaseActive: Bool) -> Copy {
         let pending = max(0, strapPendingRecords)
         let minutes = pending / 60
         let amount = minutes >= 1 ? "~\(minutes) min" : "under a minute"
-        // Recoverability is the FIRST question. An old gap that has fallen off
-        // the strap's ring buffer is gone whether or not live HR is streaming, so
-        // branching on "live protected" first would falsely imply (with a Sync
-        // button) that the old data is still coming. Only when the strap genuinely
-        // holds recoverable history do we offer sync + care about live-vs-idle.
-        // Subtitles are kept SHORT so the single caption line never clips in the
-        // narrow banner row — a clipped long line carries no more meaning than a
-        // fitted short one.
-        if pending >= recoverableRecordFloor {
-            if protectsLiveStream {
-                // Live HR is streaming; catch-up is deferred to protect it.
-                return Copy(title: "Live HR protected",
-                            subtitle: "Catching up \(amount) when idle",
-                            offersRecovery: true)
-            }
+
+        // Little/nothing left on the strap → the gap is gone. Say so calmly and
+        // never dangle a futile sync, regardless of live-stream/drain state.
+        guard pending >= recoverableRecordFloor else {
+            return Copy(title: "Some earlier data wasn't recorded",
+                        subtitle: "New data is unaffected",
+                        offersRecovery: false)
+        }
+
+        // Recoverable. Is the background drain actively making progress? A recent
+        // durable flush is the strongest proof; an active background lease is the
+        // fallback. When it is, LEAD WITH THE FRESH SIGNAL so a stale pending
+        // count can't read as "frozen".
+        let activelyDraining: Bool = {
+            if let age = secondsSinceLastFlush, age <= activeDrainRecencyWindow { return true }
+            return backgroundLeaseActive
+        }()
+        if activelyDraining {
+            let subtitle = secondsSinceLastFlush
+                .map { "Catching up · synced \(relativeAgo($0))" } ?? "Catching up now"
             return Copy(title: "Catching up history",
-                        subtitle: "\(amount) on the strap",
+                        subtitle: subtitle,
                         offersRecovery: true)
         }
-        // Little/nothing left on the strap → the gap is gone. Say so calmly and
-        // never dangle a futile sync, regardless of live-stream state.
-        return Copy(title: "Some earlier data wasn't recorded",
-                    subtitle: "New data is unaffected",
-                    offersRecovery: false)
+
+        // Recoverable but not currently draining. Subtitles are kept SHORT so the
+        // single caption line never clips in the narrow banner row.
+        if protectsLiveStream {
+            // Live HR is streaming; catch-up is deferred to protect it.
+            return Copy(title: "Live HR protected",
+                        subtitle: "Catching up \(amount) when idle",
+                        offersRecovery: true)
+        }
+        return Copy(title: "Catching up history",
+                    subtitle: "\(amount) left · resumes shortly",
+                    offersRecovery: true)
     }
 }
 
@@ -5661,15 +5699,50 @@ private struct AtriaMissedDataBanner: View, Equatable {
     }
 
     /// Honest banner copy driven by what is actually recoverable (strap ring-
-    /// buffer pending, P6), NOT the misleading gap-AGE the banner used to show.
+    /// buffer pending, P6) AND whether the background drain is actively flushing
+    /// (durable-flush recency + active lease) — NOT the stale pending count
+    /// alone, which made a working drain read as "stuck at ~8 min".
     private var bannerCopy: AtriaMissedDataBannerPresentation.Copy {
-        let pending = UserDefaults.standard.integer(
+        let defaults = UserDefaults.standard
+        let pending = defaults.integer(
             forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtPendingRecords
         )
+        let lastFlushAt = defaults.object(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.lastDurableFlushBoundaryOKAt
+        ) as? Double
+        let secondsSinceLastFlush = lastFlushAt.map {
+            max(0, Date().timeIntervalSince1970 - $0)
+        }
+        let leaseActive = defaults.string(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.backgroundLeaseStatus
+        ) == "active"
         return AtriaMissedDataBannerPresentation.copy(
             strapPendingRecords: pending,
-            protectsLiveStream: protectsLiveStream
+            protectsLiveStream: protectsLiveStream,
+            secondsSinceLastFlush: secondsSinceLastFlush,
+            backgroundLeaseActive: leaseActive
         )
+    }
+
+    /// Transient confirmation shown when the user taps Sync, so the affordance is
+    /// never a dead tap. It reflects the truth: the background drain is already
+    /// catching up, and here's how recently it flushed.
+    @State private var syncTapFeedback: String?
+
+    private func handleSyncTap() {
+        onSync()
+        let defaults = UserDefaults.standard
+        let lastFlushAt = defaults.object(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.lastDurableFlushBoundaryOKAt
+        ) as? Double
+        if let lastFlushAt {
+            let ago = AtriaMissedDataBannerPresentation.relativeAgo(
+                max(0, Date().timeIntervalSince1970 - lastFlushAt)
+            )
+            syncTapFeedback = "Already catching up · synced \(ago)"
+        } else {
+            syncTapFeedback = "Catching up in the background"
+        }
     }
 
     private var copyBlock: some View {
@@ -5678,11 +5751,18 @@ private struct AtriaMissedDataBanner: View, Equatable {
                 .font(.subheadline.weight(.semibold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
-            Text(bannerCopy.subtitle)
+            Text(syncTapFeedback ?? bannerCopy.subtitle)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(syncTapFeedback == nil ? Color.secondary : Color.cyan)
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
+                .task(id: syncTapFeedback) {
+                    // Auto-clear the tap confirmation so the row returns to its
+                    // live status line.
+                    guard syncTapFeedback != nil else { return }
+                    try? await Task.sleep(for: .seconds(3))
+                    syncTapFeedback = nil
+                }
         }
         .layoutPriority(2)
     }
@@ -5692,7 +5772,7 @@ private struct AtriaMissedDataBanner: View, Equatable {
         // Only offer a Sync affordance when there is genuinely recoverable data.
         // For an old, overwritten gap a sync is futile and implies false hope.
         if bannerCopy.offersRecovery {
-            Button(action: onSync) {
+            Button(action: handleSyncTap) {
                 Image(systemName: "arrow.triangle.2.circlepath")
                     .font(.caption.weight(.bold))
                     // 44pt hit area (UX-quality audit 2026-07-07): the glyph
