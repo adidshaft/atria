@@ -8733,15 +8733,33 @@ final class SessionStore: ObservableObject {
                                                   calendar: calendar)
     }
 
+    /// Whether `now` is inside the morning-summary window. Anchored to the
+    /// confirmed WAKE (`wake`) rather than a fixed clock cutoff: the summary may
+    /// fire up to `hoursAfterWake` after waking (generous, to absorb the drain +
+    /// materialization lag that delivers the metric), but never in the
+    /// afternoon/evening (a hard `latestHour` cap) and never before an
+    /// `earliestHour` floor. With no confirmed wake it falls back to the original
+    /// conservative 11:30 AM bound. Pure + unit-tested.
+    nonisolated static func isWithinMorningSummaryWindow(
+        now: Date,
+        wake: Date?,
+        calendar: Calendar,
+        earliestHour: Int = 4,
+        latestHour: Int = 14,
+        hoursAfterWake: Double = 4
+    ) -> Bool {
+        let minutes = calendar.component(.hour, from: now) * 60
+            + calendar.component(.minute, from: now)
+        guard minutes >= earliestHour * 60, minutes <= latestHour * 60 else { return false }
+        guard let wake, wake <= now else {
+            return minutes <= 11 * 60 + 30
+        }
+        return now.timeIntervalSince(wake) <= hoursAfterWake * 3600
+    }
+
     private func scheduleMorningSummaryIfNeeded(metrics: [SavedDailyMetric],
                                                 now: Date = Date(),
                                                 calendar: Calendar = .current) {
-        let minutes = calendar.component(.hour, from: now) * 60 + calendar.component(.minute, from: now)
-        guard (4 * 60...(11 * 60 + 30)).contains(minutes) else {
-            AtriaDebugLog("ATRIADBG morning_summary_skip reason=outside_window local_minutes=%d", minutes)
-            return
-        }
-
         let today = calendar.startOfDay(for: now)
         let dayID = Self.localDayIdentifier(for: today, calendar: calendar)
         let defaults = UserDefaults.standard
@@ -8759,7 +8777,8 @@ final class SessionStore: ObservableObject {
         //
         // Recorded durably rather than only logged, so a morning with no rich
         // summary can say which input was missing instead of being silent about
-        // its own silence.
+        // its own silence. Checked BEFORE the time window so `metric.sleepEnd` is
+        // available to anchor the window to the user's actual wake.
         guard let metric = metrics.first(where: { calendar.isDate($0.day, inSameDayAs: today) }),
               let recovery = metric.recoveryPercent,
               let hrv = metric.hrv,
@@ -8771,6 +8790,22 @@ final class SessionStore: ObservableObject {
                 reason: "awaiting_confirmed_sleep_metric",
                 at: now
             )
+            return
+        }
+
+        // The morning summary is a "just after you woke" nudge, so its window is
+        // anchored to the confirmed WAKE (metric.sleepEnd), NOT a fixed 11:30 AM
+        // cutoff. A late riser (wake ~10:50) has their sleep metric materialize
+        // after 11:30, so the old fixed window silently dropped the summary every
+        // time it was actually ready. Reported 2026-08-03: silent morning.
+        guard Self.isWithinMorningSummaryWindow(now: now,
+                                                wake: metric.sleepEnd,
+                                                calendar: calendar) else {
+            let minutes = calendar.component(.hour, from: now) * 60
+                + calendar.component(.minute, from: now)
+            AtriaDebugLog("ATRIADBG morning_summary_skip reason=outside_window local_minutes=%d wake_present=%d",
+                          minutes,
+                          metric.sleepEnd != nil ? 1 : 0)
             return
         }
 
