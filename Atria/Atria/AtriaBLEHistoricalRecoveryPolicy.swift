@@ -694,13 +694,27 @@ extension AtriaBLEManager {
     /// is not permission to monopolize the user's live stream indefinitely.
     /// Release only after both a useful initial history slice and a sustained
     /// 2A37 silence; callers preserve the ingress spool and exact gap ticket.
+    ///
+    /// Drain-keeping P4: `productiveBacklogHold` suppresses this live-HR-silence
+    /// teardown while the drain is genuinely productive and nobody is watching
+    /// live HR (a real backlog, backgrounded/idle, settled + storm-free link —
+    /// the P2 maintenance window — AND recent durable row progress). During a
+    /// large backlog on a sleeping/still user, 2A37 is expected to be silent
+    /// because history contends with it on the one pipe; tearing down a slice
+    /// that is still pulling rows just forces a reconnect + cooldown and crushes
+    /// the drain rate. A stalled (non-productive) slice never sets this hold, so
+    /// it still releases here, and the independent GATT idle-timeout watchdog
+    /// still drops a truly wedged link regardless — the durable prefix is always
+    /// preserved either way.
     nonisolated static func shouldReleaseConnectedHistorySlice(
         sliceStartedAt: Date,
         lastAcceptedHeartRateAt: Date?,
         now: Date,
         minimumSliceDuration: TimeInterval,
-        liveSilenceLimit: TimeInterval
+        liveSilenceLimit: TimeInterval,
+        productiveBacklogHold: Bool = false
     ) -> Bool {
+        guard !productiveBacklogHold else { return false }
         guard sliceStartedAt.timeIntervalSince1970.isFinite,
               now.timeIntervalSince1970.isFinite,
               minimumSliceDuration.isFinite,

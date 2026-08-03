@@ -3590,6 +3590,32 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), "a connected slice with no live packet is bounded too")
     }
 
+    func testProductiveBacklogHoldKeepsDrainingThroughLiveHRSilence() {
+        let started = Date(timeIntervalSince1970: 10_000)
+        // Same input that would normally release on live-HR silence...
+        XCTAssertTrue(AtriaBLEManager.shouldReleaseConnectedHistorySlice(
+            sliceStartedAt: started,
+            lastAcceptedHeartRateAt: started.addingTimeInterval(20),
+            now: started.addingTimeInterval(45),
+            minimumSliceDuration: 45,
+            liveSilenceLimit: 15,
+            productiveBacklogHold: false
+        ))
+        // ...is held (drain P4) when the slice is productive in the maintenance
+        // window: a large backlog, backgrounded, settled link, still pulling rows.
+        XCTAssertFalse(AtriaBLEManager.shouldReleaseConnectedHistorySlice(
+            sliceStartedAt: started,
+            lastAcceptedHeartRateAt: started.addingTimeInterval(20),
+            now: started.addingTimeInterval(45),
+            minimumSliceDuration: 45,
+            liveSilenceLimit: 15,
+            productiveBacklogHold: true
+        ), "a productive backlog drain must not be torn down just because live HR went silent")
+        // The hold suppresses only live-silence release; a stalled slice never
+        // sets it (caller gates on recent durable progress), so the default-false
+        // path is unchanged and the GATT idle-timeout still guards a wedged link.
+    }
+
     func testBackgroundConnectedHistorySliceToleratesObservedTwentyTwoSecondPause() {
         let started = Date(timeIntervalSince1970: 10_000)
         let lastAcceptedHeartRateAt = started.addingTimeInterval(60)

@@ -11949,17 +11949,58 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let silenceLimit = foreground
             ? connectedHistoricalSliceLiveSilenceLimit
             : backgroundHistoricalSliceLiveSilenceLimit
+        // Drain-keeping P4: hold a productive slice through live-HR silence when
+        // nobody is watching live HR (the P2 maintenance window) and the drain is
+        // still pulling durable rows. `recentDurableProgress` uses the same
+        // per-frame uptime clock the GATT idle-timeout watchdog trusts, so a
+        // stalled slice never qualifies and still releases below.
+        let defaults = UserDefaults.standard
+        let recentDisconnectStorm =
+            defaults.integer(forKey: Self.protectedR10EarlyDisconnectsKey)
+                >= Self.protectedR10EarlyDisconnectLimit
+            || (defaults.object(forKey: Self.protectedR10DisconnectStormAtKey)
+                as? Double).map {
+                    now.timeIntervalSince1970 - $0 < 300
+                } ?? false
+        let maintenanceWindow = Self.isFlushMaintenanceWindow(
+            rangeLossBackfillPending: defaults.bool(
+                forKey: OfflineSyncDefaults.rangeLossBackfillPending
+            ),
+            foregroundInteractive: foregroundInteractiveMode,
+            cleanOwnerState: protectedR10CleanOwnerState,
+            activeExplicitWorkout: AtriaPendingWorkoutIntent.isActiveForBLEContinuity(),
+            recentDisconnectStorm: recentDisconnectStorm
+        )
+        let nowUptime = ProcessInfo.processInfo.systemUptime
+        let recentDurableProgress = offlineHistoricalSyncLastProgressUptime.map {
+            $0.isFinite && nowUptime.isFinite && nowUptime >= $0
+                && (nowUptime - $0) < silenceLimit
+        } ?? false
+        let productiveBacklogHold = maintenanceWindow && recentDurableProgress
+        if productiveBacklogHold {
+            defaults.set(
+                "held_productive_backlog_maintenance",
+                forKey: OfflineSyncDefaults.connectedSliceStatus
+            )
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=connected_slice_held_productive_backlog generation=%llu elapsed_s=%.0f progress_age_s=%.1f foreground=%d action=keep_draining_backlog_through_live_hr_silence",
+                generation,
+                now.timeIntervalSince(startedAt),
+                offlineHistoricalSyncLastProgressUptime.map { max(0, nowUptime - $0) } ?? -1,
+                foreground ? 1 : 0
+            )
+        }
         guard Self.shouldReleaseConnectedHistorySlice(
             sliceStartedAt: startedAt,
             lastAcceptedHeartRateAt: lastAcceptedHRAt,
             now: now,
             minimumSliceDuration: minimumDuration,
-            liveSilenceLimit: silenceLimit
+            liveSilenceLimit: silenceLimit,
+            productiveBacklogHold: productiveBacklogHold
         ) else { return false }
         let liveSilence = now.timeIntervalSince(
             max(lastAcceptedHRAt ?? startedAt, startedAt)
         )
-        let defaults = UserDefaults.standard
         defaults.set(
             "released_for_live_heart_rate",
             forKey: OfflineSyncDefaults.connectedSliceStatus
