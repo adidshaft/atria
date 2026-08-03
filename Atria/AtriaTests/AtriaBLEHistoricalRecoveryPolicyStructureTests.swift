@@ -404,6 +404,41 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         XCTAssertFalse(AtriaBLEManager.phoneStateIsCharging(.unknown))
     }
 
+    func testFlushDebtLevelClassifiesTheStrapBacklog() {
+        // At/under the caught-up threshold → caught up (frontier never exactly 0).
+        XCTAssertEqual(AtriaBLEManager.flushDebtLevel(pendingRecords: 0), .caughtUp)
+        XCTAssertEqual(
+            AtriaBLEManager.flushDebtLevel(
+                pendingRecords: AtriaBLEManager.flushDebtCaughtUpRecords
+            ),
+            .caughtUp
+        )
+        // Between the thresholds → low (gentle).
+        XCTAssertEqual(
+            AtriaBLEManager.flushDebtLevel(
+                pendingRecords: AtriaBLEManager.flushDebtCaughtUpRecords + 1
+            ),
+            .low
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.flushDebtLevel(
+                pendingRecords: AtriaBLEManager.flushDebtHighRecords - 1
+            ),
+            .low
+        )
+        // At/above the high threshold → high (escalate).
+        XCTAssertEqual(
+            AtriaBLEManager.flushDebtLevel(
+                pendingRecords: AtriaBLEManager.flushDebtHighRecords
+            ),
+            .high
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.flushDebtLevel(pendingRecords: 100_000),
+            .high
+        )
+    }
+
     func testTerminalProjectionFailureReleasesOnlyAuthorizedMotionBankRequest() {
         typealias Status =
             AtriaHistoricalFullDrainCoverageStore.Authority.Status
