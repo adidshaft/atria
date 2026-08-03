@@ -7,8 +7,8 @@ Read this top-to-bottom and you are exactly where the previous session left off.
 ## 0. The product, in one line
 **Atria** is an iOS companion app for the **WHOOP 4** strap. WHOOP 4 does **not** broadcast a step count or most metrics live — Atria computes steps / sleep / recovery from the strap's **onboard-banked motion + HR**, which it **drains over Bluetooth** and materializes into insights. So: **if the drain doesn't keep up, every metric goes stale / shows `--`.** Reliable draining is the whole ballgame.
 
-- Repo: `/Users/amanpandey/projects/atria` — worktree `.claude/worktrees/atria-background-continuity-88ce90`
-- Branch: `claude/atria-background-continuity-88ce90` — **clean at `858a9f50`**
+- **Work in this worktree:** `cd /Users/amanpandey/projects/atria/.claude/worktrees/atria-background-continuity-88ce90` (this IS the working dir; the handoff lives at `docs/HANDOFF_2026-08-03-drain-keeping.md` here).
+- **Branch:** `claude/atria-background-continuity-88ce90` — **clean at `dafe3fca`** (drain-keeping P0a/P1/P1b/P2/P0b + P2-telemetry all committed; `git log --oneline` to see them).
 - Physical device (Aman's iPhone): `3803F5B6-1666-56D3-A71A-62F131F6CE3B` (devicectl over Wi-Fi/USB)
 - Strap peripheral: `C125C62E-C432-53E7-BD19-9761251B2C3E`
 - Build sim (iOS 27): `85C288CE-EA97-4A98-B650-44BCF49F2CA5` ("Atria RC Clean")
