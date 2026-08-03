@@ -8938,6 +8938,7 @@ struct AtriaMetricDetailSheet: View {
                     AtriaMetricProvenanceCard(provenance: provenance)
                 }
                 contributorCard
+                strainRecoveryComboCard
                 behaviorsMoveYouCard
             } contributors: {
                 EmptyView()
@@ -9101,6 +9102,7 @@ struct AtriaMetricDetailSheet: View {
                 if let provenance {
                     AtriaMetricProvenanceCard(provenance: provenance)
                 }
+                strainRecoveryComboCard
                 strainWorkoutSection
                 strainZoneHistogramCard
                 strainActivityMixCard
@@ -9908,6 +9910,25 @@ struct AtriaMetricDetailSheet: View {
             .atriaInsetCard(tint: Metrics.electricStrain)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Time in zones today. " + histogram.map { "Zone \($0.zone.rawValue), \(Int($0.minutes.rounded())) minutes" }.joined(separator: ". ") + ".")
+        }
+    }
+
+    /// WHOOP-style "Strain & Recovery" combo (design backlog G1, 2026-08-03):
+    /// strain as a line on the 0–21 left axis, and each day's recovery as a
+    /// colored dot on a right 0–100% axis (dots colored strictly by recovery
+    /// band). Both series are the same day-bucketed history the charts above
+    /// already use, so no new data path. Honesty: recovery dots plot only on
+    /// days that actually have a recovery score (missing ≠ zero); strain is the
+    /// drained/lagged value the rest of this sheet already shows — never a
+    /// fabricated live point.
+    @ViewBuilder
+    private var strainRecoveryComboCard: some View {
+        let strainPoints = strainDisplayPointsForSelectedPeriod
+        let recoveryPoints = recoveryDisplayPointsForSelectedPeriod
+        if !strainPoints.isEmpty && !recoveryPoints.isEmpty {
+            AtriaStrainRecoveryComboChart(strain: strainPoints,
+                                          recovery: recoveryPoints,
+                                          rangeLabel: range.label)
         }
     }
 
