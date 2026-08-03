@@ -5314,6 +5314,7 @@ struct AtriaHomeView: View {
     // with (seeded night = edit, nil = add).
     private var planContent: some View {
         AtriaActivityMonitorTab(activityStore: model.activityStore,
+                                stressMonitorStore: model.stressMonitorStore,
                                 store: store,
                                 onEditSleep: { night in
                                     sleepReviewSheetRoute = AtriaSleepReviewSheetRoute(night: night)
