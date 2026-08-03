@@ -770,13 +770,13 @@ private struct AtriaStressTimelineChart: View, Equatable {
                 AreaMark(x: .value("Time", point.reading.date),
                          y: .value("Stress", point.reading.score),
                          series: .value("Segment", point.segment))
-                    .interpolationMethod(.monotone)
+                    .interpolationMethod(.linear)
                     .foregroundStyle(tint.opacity(0.12))
 
                 LineMark(x: .value("Time", point.reading.date),
                          y: .value("Stress", point.reading.score),
                          series: .value("Segment", point.segment))
-                    .interpolationMethod(.monotone)
+                    .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                     .foregroundStyle(tint)
             }

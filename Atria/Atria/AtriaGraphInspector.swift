@@ -299,7 +299,7 @@ private struct AtriaGraphInspectorView: View {
                     LineMark(x: .value("Time", point.date),
                              y: .value(item.title, point.value),
                              series: .value("Observed segment", "\(item.id)-\(point.segment)"))
-                        .interpolationMethod(.monotone)
+                        .interpolationMethod(.linear)
                         .foregroundStyle(item.tint)
                     PointMark(x: .value("Time", point.date), y: .value(item.title, point.value))
                         .foregroundStyle(item.tint.opacity(0.8))

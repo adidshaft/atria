@@ -480,7 +480,7 @@ struct TachogramChart: View {
         Chart {
             ForEach(correctedSamples) { s in
                 LineMark(x: .value("Time", s.t), y: .value("RR", s.ms))
-                    .interpolationMethod(.catmullRom)
+                    .interpolationMethod(.linear)
                     .foregroundStyle(.purple.gradient)
             }
             ForEach(uncorrectedSamples) { s in

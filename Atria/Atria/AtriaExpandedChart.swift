@@ -102,6 +102,14 @@ struct AtriaExpandedChartView: View {
                         // selection": say there is nothing, draw no axes.
                         emptyState
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if dataDayCount < Self.minimumDaysForExploration {
+                        // Sparse-but-not-empty (2026-08-03): a couple of days
+                        // spread across a landscape plot renders as a near-empty
+                        // chart whose default brush lands on gaps ("No data in
+                        // selection") — it reads as broken. Say plainly that
+                        // history is still building, with the REAL day count.
+                        buildingHistoryState
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         if compareOn { compareStrip }
                         chartBody
@@ -240,6 +248,34 @@ struct AtriaExpandedChartView: View {
         .accessibilityElement(children: .combine)
     }
 
+    /// Below this many recorded days, the brushing/exploration UI has nothing to
+    /// explore — show the building-history state instead of a near-empty plot.
+    static let minimumDaysForExploration = 4
+
+    /// The REAL number of distinct days with a recorded value (never a fabricated
+    /// count) — drives the sparse-data gate and the "N days" copy.
+    private var dataDayCount: Int {
+        Set(points.map { Calendar.current.startOfDay(for: $0.day) }).count
+    }
+
+    private var buildingHistoryState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "hourglass")
+                .font(.title2)
+                .foregroundStyle(tint.opacity(0.7))
+            Text("Building your history")
+                .font(.subheadline.weight(.semibold))
+            Text(dataDayCount == 1
+                 ? "1 day of \(title.lowercased()) recorded. The expanded view opens once there are a few days to explore."
+                 : "\(dataDayCount) days of \(title.lowercased()) recorded. The expanded view opens once there are a few days to explore.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(.horizontal, 32)
+        .accessibilityElement(children: .combine)
+    }
+
     private var chartBody: some View {
         Chart {
             if let baselineBand {
@@ -259,7 +295,7 @@ struct AtriaExpandedChartView: View {
                     LineMark(x: .value("Day", point.day, unit: .day),
                              y: .value(title, point.value),
                              series: .value("Series", "prior"))
-                        .interpolationMethod(.monotone)
+                        .interpolationMethod(.linear)
                         .foregroundStyle(.secondary.opacity(0.4))
                         .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 5]))
                 }
@@ -270,7 +306,7 @@ struct AtriaExpandedChartView: View {
                     LineMark(x: .value("Day", point.day, unit: .day),
                              y: .value(title, point.value),
                              series: .value("Series", "overlay"))
-                        .interpolationMethod(.monotone)
+                        .interpolationMethod(.linear)
                         .foregroundStyle(overlay.tint.opacity(0.7))
                         .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [6, 3]))
                 }
@@ -411,7 +447,7 @@ struct AtriaExpandedChartView: View {
                 // beyond the real sampled line it sits under.
                 AreaMark(x: .value("Day", point.day, unit: .day),
                          y: .value(title, point.value))
-                    .interpolationMethod(.monotone)
+                    .interpolationMethod(.linear)
                     .foregroundStyle(
                         LinearGradient(colors: [tint.opacity(0.24), tint.opacity(0.02)],
                                        startPoint: .top, endPoint: .bottom)
@@ -419,7 +455,7 @@ struct AtriaExpandedChartView: View {
                 LineMark(x: .value("Day", point.day, unit: .day),
                          y: .value(title, point.value),
                          series: .value("Series", "current"))
-                    .interpolationMethod(.monotone)
+                    .interpolationMethod(.linear)
                     .foregroundStyle(tint)
                 PointMark(x: .value("Day", point.day, unit: .day),
                           y: .value(title, point.value))

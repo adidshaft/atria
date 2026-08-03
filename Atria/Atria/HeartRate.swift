@@ -61,10 +61,10 @@ struct HRChart: View {
     var body: some View {
         Chart(samples) { s in
             LineMark(x: .value("Time", s.t), y: .value("BPM", s.bpm))
-                .interpolationMethod(.catmullRom)
+                .interpolationMethod(.linear)
                 .foregroundStyle(.red.gradient)
             AreaMark(x: .value("Time", s.t), y: .value("BPM", s.bpm))
-                .interpolationMethod(.catmullRom)
+                .interpolationMethod(.linear)
                 .foregroundStyle(.red.opacity(0.12).gradient)
         }
         .chartYScale(domain: yDomain)
