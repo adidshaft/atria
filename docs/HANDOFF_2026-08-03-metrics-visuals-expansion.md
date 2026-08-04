@@ -1787,3 +1787,38 @@ capture (04:30, black frame — the documented nighttime trap), so live
 visual check = user's eyes in the morning + next-cycle probe pull for
 the new build's cold-launch health. The overnight soak now runs on
 THIS build (same allocation fixes aboard).
+
+## 15.6 CORRECTION: §15.1 verdict was WRONG — burst survives (2026-08-05 ~04:35)
+
+The "+161s clean" read was a measurement artifact: devicectl log copies
+LAG live content by ~60-90s, and the log ROTATED at 8MB right at the
+verdict window. Full-log truth: pid 11178 (allocation build, 04:00
+cold launch) DIED at +67s in the classic burst — 896MB at +61s →
+3363MB at +67s (~500MB/s), m_small live 2717MB / 4.4M blocks. BLE
+restore relaunched it (11231) which ran 26min at ≤362MB. Pattern
+unchanged: first cold launch dies once, relaunch is stable.
+
+NEW EVIDENCE that re-aims the hunt: the burst window contains ONLY
+sleep_candidates_end → widget_publish(dashboard_revision) ×2 +
+hero_snapshot ×3 (all cheap, on-main) — NO hist_stage or derived_step
+note fired. The balloon thread is UN-INSTRUMENTED: it starts after
+sleep settlement and before/without the history pass's first substage
+note. Suspects: confirmedWorkouts component entry (rehydration input
+materialization before its first note), coordinator startDerived
+dispatch copies, or an input snapshot (canonicalSessions copy) taken
+before the first phase note.
+
+COUNTER-DATA: pid 11324 (04:30 cold launch of the UI-batch build)
+SURVIVED +195s with no restart — cold launches do not burst when the
+prior process already committed the recompute (11231 ran 26min).
+The burst needs a PENDING cold-launch recompute backlog.
+
+MEASUREMENT RULES learned: (1) never trust a devicectl log copy's
+recency — compare the copy's LAST timestamp against wall clock before
+reading a verdict; (2) always pull BOTH atria-memprobe.log and .1.log
+around a rotation; (3) a per-pid window analysis (awk on [start_a,
+start_b)) is the only honest per-launch peak.
+
+NEXT: controlled repro — cold relaunch now (fresh backlog from 11324's
+run is small, may not burst); if no burst, the morning's first user
+cold-open is the decisive sample. Memory file corrected.
