@@ -251,6 +251,13 @@ whole-recovered-decode lane that re-runs after each drained batch and is the
 prime steady-climb suspect. Read the log tail after the next kill; the
 breadcrumbs now bracket every candidate.
 
+**Soak update (07:5x):** ~55 min clean. `activity` launch-arg alias added
+(`1ec21012`) — the Activity tab is now in the headless screenshot loop;
+sim-verified the Heart & stress card: honest no-signal state, live-HR chip
+correctly hidden without fresh contact. iPhone Mirroring access was declined
+this session, so the chip WITH live bpm remains user-verifiable on device
+(open Activity tab while wearing the strap).
+
 **Soak update (07:4x):** still zero post-fix kills. Recovery fallback
 improved on its own 38→53 (RHR 68→58) as morning rest accrued — the
 "frozen" fallback legitimately re-mints on input change; sleep still
