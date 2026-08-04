@@ -155,6 +155,34 @@ activity timeline and the activities list. Honest: observed readings only,
 gap-broken, shows the state's "collecting/warming up" copy when sparse.
 Follow-up option: add a live-HR number/line to the same card ("heart/stress").
 
+## 12.0 DEFECT (user-caught, 2026-08-04 evening): sleep candidate swallows a
+known wake window — duration == span
+
+The "Possible sleep 11:33 PM–8:59 AM · 9h 26m" review card counts the FULL
+span as slept (11:33PM→8:59AM is exactly 9h26m — zero wake deducted), yet
+the user was demonstrably awake ~05:45–06:15 (messaging, phone unlocked,
+builds installing; even the earlier 6h46m candidate ending 6:20 covered
+it). I (Claude) quoted the card approvingly twice without noticing —
+logged here as a review-vigilance failure too.
+
+Facts: the card renders `night.durationHours`; for this candidate duration
+equals span ⇒ the aggregate candidate merged across the wake with no
+exclusion. Hypotheses to investigate (in order): (1) the wake window's
+evidence is HR-only in the candidate (quiet typing ≈ resting HR) and
+motion-validated segmentation didn't run against the DRAINED motion for
+that window (recovered-motion epochs attach later / HR-only candidates show
+no hypnogram by design — but duration must still exclude detected wake);
+(2) gap-bridging tolerance merged main sleep + morning re-sleep across a
+too-long ambiguous stretch; (3) span-vs-duration conflation in the
+aggregate-candidate builder for recovered (vs live) evidence. Ground truth
+available: the drained archive holds per-second HR AND wrist motion for
+05:40–06:20 — typing should show clear gravity movement.
+
+USER GUIDANCE meanwhile: do NOT confirm as-is — open the card and EDIT the
+times (the review sheet supports it): real night ≈ 11:33PM–05:40AM; if you
+re-slept ~06:20–08:59, log it separately (nap/second sleep) so the ledger
+stays honest.
+
 ## 12.1 WHOOP-reference copy check (2026-08-04 loop, per the user's
 "when confused, check WHOOP" rule)
 
