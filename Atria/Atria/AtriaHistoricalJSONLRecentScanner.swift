@@ -49,6 +49,12 @@ struct AtriaHistoricalJSONLRecentScanner {
         let states: [String: FileState]
         let statistics: Statistics
         let complete: Bool
+        /// True when the scan stopped because it hit `byteBudget`, with all
+        /// states valid at complete-line boundaries. `complete` is false in
+        /// this case, but unlike a read failure the scan is safely
+        /// RESUMABLE: re-plan the remaining sources from `states` and call
+        /// again. Callers distinguish this from corruption via this flag.
+        var exhaustedByteBudget: Bool = false
     }
 
     static func descriptors(for urls: [URL]) -> [FileDescriptor] {
@@ -116,6 +122,7 @@ struct AtriaHistoricalJSONLRecentScanner {
         sources: [Source],
         cutoff: TimeInterval,
         chunkSize: Int = 64 * 1024,
+        byteBudget: Int? = nil,
         onProgress: ((Statistics) -> Void)? = nil,
         consumeCandidate: (Data) -> Void
     ) -> Result {
@@ -123,8 +130,22 @@ struct AtriaHistoricalJSONLRecentScanner {
         var states: [String: FileState] = [:]
         var statistics = Statistics()
         var complete = true
+        // Per-pass byte ceiling (2026-08-04 balloon fix): on the device's
+        // iOS 27 beta, transient per-line allocations accumulate ~1:1 into
+        // phys_footprint for the WHOLE continuous scan (no reclaim until the
+        // scan machinery unwinds — proven by parse-and-discard releasing
+        // fully only after rec_scan_done). Budgeted passes let the caller
+        // unwind between resumable slices so peak memory is per-pass, not
+        // per-archive. Compressed sources are all-or-nothing, so their
+        // budget check happens before the file starts.
+        var exhaustedByteBudget = false
 
         for source in sources {
+            if let byteBudget, statistics.byteCount >= byteBudget {
+                exhaustedByteBudget = true
+                complete = false
+                break
+            }
             guard source.startOffset <= source.descriptor.size,
                   (!source.descriptor.isCompressed || source.startOffset == 0) else {
                 complete = false
@@ -202,6 +223,15 @@ struct AtriaHistoricalJSONLRecentScanner {
                     defer { try? handle.close() }
                     try handle.seek(toOffset: source.startOffset)
                     while readOffset < source.descriptor.size {
+                        if let byteBudget, statistics.byteCount >= byteBudget {
+                            // Resumable stop at a complete-line boundary:
+                            // processedOffset already trails the last full
+                            // line, so the state written below re-reads any
+                            // carry remainder on the next pass.
+                            exhaustedByteBudget = true
+                            complete = false
+                            break
+                        }
                         let remaining = source.descriptor.size - readOffset
                         let count = min(chunkSize, Int(remaining))
                         // Per-CHUNK pool (2026-08-04 footprint kill, final
@@ -241,7 +271,10 @@ struct AtriaHistoricalJSONLRecentScanner {
                 complete = false
             }
         }
-        return Result(states: states, statistics: statistics, complete: complete)
+        return Result(states: states,
+                      statistics: statistics,
+                      complete: complete,
+                      exhaustedByteBudget: exhaustedByteBudget)
     }
 
     static func timestamp(in jsonLine: Data) -> TimeInterval? {

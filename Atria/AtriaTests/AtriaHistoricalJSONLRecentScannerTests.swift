@@ -407,6 +407,86 @@ final class AtriaHistoricalJSONLRecentScannerTests: XCTestCase {
         XCTAssertEqual(second.states[file.path]?.processedOffset, nextDescriptor.size)
     }
 
+    func testByteBudgetStopsResumablyAndPassesCoverEverything() throws {
+        // The 2026-08-04 balloon fix scans in budgeted passes; a budget stop
+        // must land on a complete-line boundary and resume losslessly.
+        let file = temporaryDirectory().appendingPathComponent("budget.jsonl")
+        var content = Data()
+        for index in 0..<200 {
+            content.append(Data("{\"unix7\":\(1000 + index),\"subsec11\":0}\n".utf8))
+        }
+        try content.write(to: file)
+        let descriptor = try XCTUnwrap(
+            AtriaHistoricalJSONLRecentScanner.descriptors(for: [file]).first
+        )
+
+        var timestamps: [TimeInterval] = []
+        var sources = [AtriaHistoricalJSONLRecentScanner.Source(descriptor: descriptor,
+                                                                startOffset: 0)]
+        var passes = 0
+        var totalBytes = 0
+        while !sources.isEmpty, passes < 64 {
+            passes += 1
+            let result = AtriaHistoricalJSONLRecentScanner.scan(
+                sources: sources,
+                cutoff: 0,
+                chunkSize: 64,
+                byteBudget: 512
+            ) { line in
+                if let timestamp = AtriaHistoricalJSONLRecentScanner.timestamp(in: line) {
+                    timestamps.append(timestamp)
+                }
+            }
+            totalBytes += result.statistics.byteCount
+            if !result.exhaustedByteBudget {
+                XCTAssertTrue(result.complete)
+                break
+            }
+            XCTAssertFalse(result.complete,
+                           "a budget stop is by definition not a complete scan")
+            let offset = try XCTUnwrap(result.states[file.path]?.processedOffset)
+            XCTAssertGreaterThan(offset, 0)
+            sources = offset >= descriptor.size
+                ? []
+                : [.init(descriptor: descriptor, startOffset: offset)]
+        }
+        XCTAssertGreaterThan(passes, 2, "budget must actually split the scan")
+        XCTAssertEqual(timestamps.count, 200, "no line lost or duplicated across passes")
+        XCTAssertEqual(timestamps, (0..<200).map { TimeInterval(1000 + $0) })
+        // A resumed pass re-reads the partial-line tail beyond the last
+        // complete boundary, so bytes-read may slightly exceed the file —
+        // bounded by one carry per pass. The timestamp equality above is
+        // the actual lossless-coverage proof.
+        XCTAssertGreaterThanOrEqual(totalBytes, content.count)
+        XCTAssertLessThan(totalBytes, content.count + passes * 64)
+    }
+
+    func testByteBudgetChecksBeforeEachSourceAndKeepsUntouchedSourcesUnstated() throws {
+        // Budget exhaustion mid-list must leave later sources without state
+        // entries so a pass loop re-offers them whole.
+        let directory = temporaryDirectory()
+        let first = directory.appendingPathComponent("a.jsonl")
+        let second = directory.appendingPathComponent("b.jsonl")
+        try Data(String(repeating: "{\"unix7\":100,\"subsec11\":0}\n", count: 40).utf8)
+            .write(to: first)
+        try Data("{\"unix7\":200,\"subsec11\":0}\n".utf8).write(to: second)
+        let descriptors = AtriaHistoricalJSONLRecentScanner.descriptors(for: [first, second])
+        XCTAssertEqual(descriptors.count, 2)
+
+        let result = AtriaHistoricalJSONLRecentScanner.scan(
+            sources: descriptors.map { .init(descriptor: $0, startOffset: 0) },
+            cutoff: 0,
+            chunkSize: 64,
+            byteBudget: 256,
+            consumeCandidate: { _ in }
+        )
+        XCTAssertTrue(result.exhaustedByteBudget)
+        XCTAssertFalse(result.complete)
+        XCTAssertNotNil(result.states[first.path])
+        XCTAssertNil(result.states[second.path],
+                     "an untouched source must carry no state so it is re-offered whole")
+    }
+
     func testScanPlanReusesGrowthAndFailsClosedOnReplacementOrRemoval() {
         let firstURL = URL(fileURLWithPath: "/tmp/archive-a.jsonl")
         let secondURL = URL(fileURLWithPath: "/tmp/archive-b.jsonl")
