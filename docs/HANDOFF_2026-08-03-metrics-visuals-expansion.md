@@ -261,6 +261,22 @@ sites (dead code, unpinned, likely superseded by `AtriaExpandedChart`) —
 flagged as a spin-off review task rather than deleted unilaterally, per the
 pinned-dead-code precedent.
 
+**FOOTPRINT TRAP RESULTS (08:5x) — balloon is reproducible on demand and
+nearly cornered.** Foregrounding the app during an active drain kills it in
+45–62s, every time (`devicectl launch` suffices — no user interaction). The
+footprint probe caught the full curve: ~50MB/s climb to 3374MB footprint
+while resident stayed ~500MB. Anatomy: (1) an unbracketed climber runs
+297→1740MB in the window between `history_snapshots_end` and
+`recovered_snapshot_begin`; (2) the recovered-data scan stacks its ~1.5GB on
+top → kill. Dispatch-level notes cleared workout-rehydration / compaction /
+step-receipt (flags not set); `fg_step_evidence_scheduled` fires just before
+the climb → **lead suspect = the confirmed-workout step-evidence publication
+worker (motion-bank decode), the one unbracketed lane in the window.** Next
+bisect step: note inside `scheduleConfirmedWorkoutStepEvidencePublication`'s
+worker, reproduce (3-min loop), convict, fix. Also note: the workout
+rehydration lane's `metricHeartRatePoints(union-window, max 1.5M points)`
+is a separate whole-archive-scale read to bound once the primary is fixed.
+
 **STATUS CORRECTION (08:2x): fix #2 did NOT hold either** — another 3.45GB
 active+frontmost jetsam at 08:11:45, 63s after the rate-limited build
 launched, with zero lane notes during the climb. Conclusion: the
