@@ -4304,7 +4304,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         if strainIsPartial {
             return "Partial · limited wear"
         }
-        return targetValueText
+        // WHOOP's published band vocabulary gives the number a name
+        // (2026-08-05 parity): "Moderate · of 13.9" reads the effort level
+        // without opening the detail.
+        return "\(Metrics.strainBandName(hero.strain)) · \(targetValueText)"
     }
 
     private var hrvDetailText: String {

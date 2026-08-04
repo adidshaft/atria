@@ -1449,6 +1449,10 @@ struct AtriaActivityMonitorTab: View {
         let type = AtriaWorkoutActivityType.resolved(activityType: workout.activityType,
                                                      subtype: workout.activitySubtype,
                                                      label: workout.label)
+        // Category-driven for the 77-type catalog (2026-08-05): specific
+        // overrides stay for the original set; everything else tints by its
+        // catalog category so new types never fall through to a compile
+        // error or a mismatched color.
         switch type {
         case .walking, .hiking: return .mint
         case .running, .hiit, .jumpRope: return .orange
@@ -1459,6 +1463,18 @@ struct AtriaActivityMonitorTab: View {
              .badminton, .volleyball, .golf, .martialArts: return .pink
         case .cardio, .elliptical, .stairClimber: return .red
         case .other: return .secondary
+        default:
+            switch type.category {
+            case .training: return Metrics.electricStrain
+            case .cardio: return .red
+            case .sports: return .pink
+            case .outdoor: return .mint
+            case .winter: return .cyan
+            case .combat: return Metrics.electricStrain
+            case .mindBody: return .indigo
+            case .recovery: return .teal
+            case .daily: return .secondary
+            }
         }
     }
 
