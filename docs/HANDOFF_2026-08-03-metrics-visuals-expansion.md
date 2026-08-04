@@ -276,6 +276,15 @@ record shows EVERY kill today dies inside `rec_scan_progress` —
    plus decoder churn) ⇒ the scan now crosses the limit ⇒ progressively
    worse as the archive grows. Explains why fixes "verified" then failed:
    each reduced other pressure while the archive kept growing.
+**REPRODUCTION PASSED (12:3x): pid 4362 (pool-fix build, full mode) alive
+45+ minutes** — vs 45-124s deaths for every pre-fix run — with ZERO
+JetsamEvents in the window (probe file-service flaky, but the crash-log
+channel and process liveness agree). Soak clock officially running from
+11:48. Threshold for "fixed": multi-hour + one organic foreground session +
+tonight's overnight. Cleanup after that: strip AtriaMemprobe + the
+--atria-debug-recovered-scan-mode bisect lever + probe notes (list in the
+memory file), then re-run the full suite.
+
 **ROOT FOUND (11:2x-11:3x): AUTORELEASED CHUNKS — per-chunk pool fix is
 holding.** Decoder-recycle failed identically → re-analysis showed the climb
 is ~1:1 with BYTES READ in count-only (978MB read → +1GB) with a ~4x decode
