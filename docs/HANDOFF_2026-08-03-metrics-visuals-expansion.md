@@ -1639,3 +1639,22 @@ Cold-launch verdict for the cluster fix: NEXT cold launch (this build's
 launch included it — read start-pid count across the +60s cliff, both
 log generations). If clean → the balloon campaign closes → strip ALL
 instrumentation → full suite.
+
+## 14.6 Ops changes + frontier (2026-08-05 ~03:20)
+
+USER DIRECTIVES APPLIED: loop cadence 5min→2min (session cron);
+parallel-work pattern adopted — subagents run audits/research while
+device builds and soaks run in background. Nudge retuned per user
+decision: NO time-of-day gate + threshold = 30 minutes of missed
+records (was level=high + 9-21h window); tests updated 6/6.
+
+FRONTIER: the 6h aggregation bound shipped but the trailing cycle's
+detections stage STILL bursts (1156→3122MB at +55-59s, death +61).
+So the burst survives: per-session readiness wraps, aggregate-pass
+wraps, per-cluster wraps, AND the all-day exclusion. Remaining
+suspects inside the detections tree: windowedWorkoutCandidates
+(per-window point copies?), stitchedObservedWorkoutPoints, or a
+whole-points copy in the summaries path. A parallel audit agent is
+mapping every O(points) allocation site in the tree; its ranked list
+names the next surgical fix. Cold-launch UX impact unchanged: one
+silent restart ~60s after cold open, data intact, then stable.
