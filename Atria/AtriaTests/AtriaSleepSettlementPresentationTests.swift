@@ -140,7 +140,7 @@ final class AtriaSleepSettlementPresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(state, .waitingForData)
-        XCTAssertEqual(state.title, "Still waiting for enough strap data")
+        XCTAssertEqual(state.title, "Last night · not enough strap data yet")  // renamed 2026-08-04: Subject · state pattern
         XCTAssertNil(state.since, "no event behind this state, so no stamp")
     }
 

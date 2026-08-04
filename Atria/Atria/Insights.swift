@@ -277,7 +277,10 @@ struct PersonalBaseline: Codable {
     func restingBaselineMaturityQualifierText(now: Date = Date()) -> String? {
         guard !hasTrustedRestingBaseline(now: now) else { return nil }
         let days = min(freshRestingSampleCount(now: now), Self.trustedMinimumSamples)
-        return "Learning · \(days) of \(Self.trustedMinimumSamples) days"
+        // Named like its rotating siblings ("HRV calibrating · …", "VO₂ max
+        // estimating · …") — subject-less "Learning" at the top of Today read
+        // as the whole app being uncalibrated (2026-08-04 review, rank 5).
+        return "Resting HR learning · \(days) of \(Self.trustedMinimumSamples) days"
     }
 
     /// Display-ready maturity qualifier for the HRV baseline, e.g.

@@ -3699,7 +3699,12 @@ private struct AtriaPulseCard: View, Equatable {
                                average: live.averageHeartRateText,
                                peak: live.peakHeartRateText,
                                resting: restingHeartRateText,
-                               restingTint: restingHeartRateZone?.tint ?? .blue)
+                               // No trusted baseline ⇒ no zone ⇒ neutral: a
+                               // judgment color (blue read as "live/good")
+                               // on an unzoned number implied a verdict the
+                               // data can't back (2026-08-04, the fixture's
+                               // "Resting 119" in blue).
+                               restingTint: restingHeartRateZone?.tint ?? .secondary)
 
             AtriaHeartRateTimelineCard(series: miniTimelineSeries, onOpen: onOpen)
         }
@@ -5598,7 +5603,10 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                     value: latestEvidence?.restingHRText ?? "--",
                                     unit: latestEvidence?.restingHR == nil ? nil : "bpm",
                                     state: latestEvidence?.restingHR == nil ? .learning : (latestEvidence?.confirmed == true ? .personalBaseline : .research),
-                                    tint: restingHeartRateZone?.tint ?? .red,
+                                    // Unzoned (no trusted baseline) must stay
+                                    // neutral — red implied a bad verdict the
+                                    // data can't back (2026-08-04).
+                                    tint: restingHeartRateZone?.tint ?? .secondary,
                                     zone: restingHeartRateZone,
                                     targetMetric: .rhr)
                     AtriaMetricTile(label: "Efficiency",

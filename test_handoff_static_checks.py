@@ -14158,7 +14158,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "Metrics.restingHeartRateZone(restingHeartRate,",
             "baselineTrusted: restingBaselineTrusted",
             "baselineTarget: baselineTarget",
-            "restingTint: restingHeartRateZone?.tint ?? .blue",
+            # 2026-08-04: unzoned fallback migrated .blue -> .secondary — a
+            # judgment colour on a baseline-less value implied a verdict the
+            # data can't back (WHOOP-alignment review).
+            "restingTint: restingHeartRateZone?.tint ?? .secondary",
             "Metrics.hrvZone(Self.parseInt(hero.hrvValue),",
             "baselineTrusted: hrvBaselineTrusted",
             "baselineTarget: baselineTarget",
