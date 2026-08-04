@@ -9268,7 +9268,7 @@ final class SessionStore: ObservableObject {
                     }
                 }
             )
-            AtriaMemprobe.note("recovered_snapshot_end hrPoints=\(recoveredSnapshot.heartRatePoints.count) rr=\(recoveredSnapshot.rrRecords.count)")
+            AtriaMemprobe.note("recovered_snapshot_end hrPoints=\(recoveredSnapshot.heartRatePoints.count) rrBeats=\(recoveredSnapshot.rrProjection.beats.count)")
             Task { @MainActor [weak self, ticket] in
                 self?.renewRecoveredProjectionLease(
                     ticket: ticket,
@@ -9297,9 +9297,9 @@ final class SessionStore: ObservableObject {
                 return
             }
             let archivePoints = recoveredSnapshot.heartRatePoints
-            let rrProjection = AtriaRecoveredRRProjection.project(
-                records: recoveredSnapshot.rrRecords
-            )
+            // Projection already happened at scan time (compact-RR fix,
+            // 2026-08-04): the snapshot carries verified beats directly.
+            let rrProjection = recoveredSnapshot.rrProjection
             let configuration = AtriaRecoveredHeartRateProjection.Configuration(
                 maximumGap: SavedSession.workoutContinuityGapLimit,
                 expectedSampleInterval: 1
