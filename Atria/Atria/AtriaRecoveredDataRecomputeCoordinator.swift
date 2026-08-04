@@ -51,6 +51,15 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         case failed(Ticket, Failure)
         /// The sole effect that authorizes one dashboard/widget publication.
         case publish(Ticket)
+        /// Ask the owner to call `startPendingTrailing()` after this delay.
+        /// Inter-cycle REST (2026-08-04): during drain catch-up a new archive
+        /// revision lands while every cycle runs, so trailing requests used
+        /// to start back-to-back forever — and on the iOS 27 beta each
+        /// cycle's ~1GB of transient projection garbage is only reclaimed at
+        /// thread teardown, so uninterrupted cycles crept the footprint into
+        /// the 3.4GB jetsam ceiling. Resting between cycles bounds the creep
+        /// and costs only freshness-latency, never data.
+        case scheduleTrailingStart(afterSeconds: TimeInterval)
     }
 
     enum Phase: Equatable, Sendable {
@@ -65,8 +74,11 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         let reason: String
     }
 
+    static let interCycleRestSeconds: TimeInterval = 12
+
     private(set) var phase: Phase = .idle
     private(set) var latestRequestedArchiveRevision: UInt64?
+    private var restingUntil: Date?
     private(set) var coalescedRequestCount = 0
     private var nextGeneration: UInt64 = 0
     private var trailingRequest: Request?
@@ -79,7 +91,9 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
     /// Registers a newly durable archive revision. Duplicate or regressed
     /// revisions are ignored. While work is active, only the newest request is
     /// retained; the active run is allowed to finish but can no longer publish.
-    mutating func request(archiveRevision: UInt64, reason: String) -> [Effect] {
+    mutating func request(archiveRevision: UInt64,
+                          reason: String,
+                          now: Date = Date()) -> [Effect] {
         if let latestRequestedArchiveRevision,
            archiveRevision <= latestRequestedArchiveRevision {
             return []
@@ -89,6 +103,17 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
 
         switch phase {
         case .idle, .failed:
+            if let restingUntil, now < restingUntil {
+                // Mid-rest: queue as the (newest-wins) trailing request and
+                // re-arm the wake. Extra wakes are harmless — the start call
+                // is idempotent.
+                if trailingRequest != nil {
+                    coalescedRequestCount &+= 1
+                }
+                trailingRequest = request
+                return [.scheduleTrailingStart(
+                    afterSeconds: restingUntil.timeIntervalSince(now))]
+            }
             trailingRequest = nil
             return start(request)
         case .projecting, .deriving:
@@ -100,11 +125,28 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         }
     }
 
+    /// Starts the queued trailing request once the inter-cycle rest elapses.
+    /// Idempotent: with no queued work, or with a cycle already active
+    /// (a manual retry can race the wake), this is a no-op.
+    mutating func startPendingTrailing(now: Date = Date()) -> [Effect] {
+        if let restingUntil, now < restingUntil { return [] }
+        restingUntil = nil
+        switch phase {
+        case .idle, .failed:
+            guard let trailingRequest else { return [] }
+            self.trailingRequest = nil
+            return start(trailingRequest)
+        case .projecting, .deriving:
+            return []
+        }
+    }
+
     /// Retries the last failed durable input without pretending that a new
     /// archive batch arrived. The new ticket rejects late callbacks from the
     /// failed generation.
     mutating func retryFailed(reason: String) -> [Effect] {
         guard case let .failed(ticket, _) = phase else { return [] }
+        restingUntil = nil
         return start(Request(archiveRevision: ticket.archiveRevision,
                              reason: reason))
     }
@@ -114,20 +156,23 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
     /// then. A queued newer archive revision skips this obsolete fan-out.
     mutating func projectionCompleted(
         ticket: Ticket,
-        failureReason: String? = nil
+        failureReason: String? = nil,
+        now: Date = Date()
     ) -> [Effect] {
         guard case let .projecting(active) = phase, active == ticket else {
             return []
         }
         if let failureReason {
             return fail(ticket: ticket,
-                        failure: Failure(component: nil, reason: failureReason))
+                        failure: Failure(component: nil, reason: failureReason),
+                        now: now)
         }
         if trailingRequest != nil {
-            return supersedeAndStartTrailing(ticket)
+            return restThenStartTrailing(ticket, now: now)
         }
         guard !requiredComponents.isEmpty else {
             phase = .idle
+            restingUntil = now.addingTimeInterval(Self.interCycleRestSeconds)
             return [.publish(ticket)]
         }
         phase = .deriving(ticket, pending: requiredComponents)
@@ -139,7 +184,8 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
     mutating func componentCompleted(
         ticket: Ticket,
         component: Component,
-        failureReason: String? = nil
+        failureReason: String? = nil,
+        now: Date = Date()
     ) -> [Effect] {
         guard case let .deriving(active, pending) = phase,
               active == ticket,
@@ -148,7 +194,8 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         }
         if let failureReason {
             return fail(ticket: ticket,
-                        failure: Failure(component: component, reason: failureReason))
+                        failure: Failure(component: component, reason: failureReason),
+                        now: now)
         }
 
         var remaining = pending
@@ -158,9 +205,10 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
             return []
         }
         if trailingRequest != nil {
-            return supersedeAndStartTrailing(ticket)
+            return restThenStartTrailing(ticket, now: now)
         }
         phase = .idle
+        restingUntil = now.addingTimeInterval(Self.interCycleRestSeconds)
         return [.publish(ticket)]
     }
 
@@ -201,19 +249,26 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         return [.startProjection(ticket)]
     }
 
-    private mutating func fail(ticket: Ticket, failure: Failure) -> [Effect] {
+    private mutating func fail(ticket: Ticket,
+                               failure: Failure,
+                               now: Date = Date()) -> [Effect] {
         let failedEffect = Effect.failed(ticket, failure)
-        guard let trailingRequest else {
-            phase = .failed(ticket, failure)
+        phase = .failed(ticket, failure)
+        guard trailingRequest != nil else {
             return [failedEffect]
         }
-        self.trailingRequest = nil
-        return [failedEffect] + start(trailingRequest)
+        // Trailing work survives the failure but honors the same rest.
+        restingUntil = now.addingTimeInterval(Self.interCycleRestSeconds)
+        return [failedEffect,
+                .scheduleTrailingStart(afterSeconds: Self.interCycleRestSeconds)]
     }
 
-    private mutating func supersedeAndStartTrailing(_ ticket: Ticket) -> [Effect] {
-        guard let trailingRequest else { return [] }
-        self.trailingRequest = nil
-        return [.superseded(ticket)] + start(trailingRequest)
+    private mutating func restThenStartTrailing(_ ticket: Ticket,
+                                                now: Date) -> [Effect] {
+        guard trailingRequest != nil else { return [] }
+        phase = .idle
+        restingUntil = now.addingTimeInterval(Self.interCycleRestSeconds)
+        return [.superseded(ticket),
+                .scheduleTrailingStart(afterSeconds: Self.interCycleRestSeconds)]
     }
 }
