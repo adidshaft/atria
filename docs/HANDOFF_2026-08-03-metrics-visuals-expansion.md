@@ -437,6 +437,39 @@ rule): parity+wake tests green → static gate at baseline → device install
 → foreground-during-drain reproduction → `rec_scan_done` + full recompute
 completion with flat live-stats/vmtags → multi-hour + overnight soak.
 
+**16:1x FALSIFIED ON DEVICE — the JSONSerialization swap did NOT fix it.**
+Installed the swap build, launched foreground during drain: pid 5710
+ballooned 656→3107MB in 46s and was jetsammed (the "alive at 300s" process
+was the background RELAUNCH, pid 5719, which never fronts a scan — process
+liveness is NOT a verdict channel; only the probe log is). Then the
+decisive bisect: decode-only (parse+discard) with the NEW JSONSerialization
+parser leaked identically — live 523→3189MB, blocks near-flat
+(589k→593k through a 1.5GB climb), killed ~140s. So the retention was
+never JSONDecoder-specific: **on iOS 27.0 beta, BOTH JSONDecoder and
+JSONSerialization leak live memory per parse** (they share
+swift-foundation's JSON engine there), and the parse temporaries survive
+the scanner's per-line AND per-chunk autoreleasepools. Re-reading the
+saga: the pre-prefilter motionTickWindowRead balloon (463MB/18 files,
+JSONSerialization per row) fits the same law — its "fix" worked by
+parsing ~1000× fewer lines, not because that API was safe. Corollary: the
+count-only lane is genuinely clean, so Swift-NATIVE allocations drain
+fine; only Foundation JSON parses retain.
+
+**16:2x THE REAL FIX (built): zero-Foundation-JSON hand parser.**
+`Record(scanLine:)` is now backed by `AtriaScanRecordParser` (private,
+HistoricalArchive.swift tail): a byte-level JSON parser specialized to
+Record lines — known key→type dispatch, generic skip for unknown keys,
+full string-escape handling (\uXXXX + surrogate pairs), exact-integer +
+correctly-rounded-double numbers (Int64/Double(String)), hand ISO8601
+(civil-days algorithm, Z and ±HH[:]MM offsets, fractional rejected — the
+.iso8601 contract), strict accept/reject mirroring JSONDecoder. The
+JSONSerialization intermediary (init?(scanObject:)) is deleted. The
+golden parity suite now guards the hand parser directly and gained: -0.0
+full-parity (the byte parser preserves the sign JSONSerialization lost),
+escaped strings incl. an explicit 😀 surrogate-pair line, and a
++05:30 offset date. Same verification protocol owed; no verdict until the
+probe shows rec_scan_done with flat live-stats.
+
 **LIVE-RETENTION CONFIRMED + SCANNER EXONERATED (15:0x):** zone stats show
 size_in_use tracking footprint 1:1 through the burst (live=3074MB at
 3104MB) — the MALLOC_SMALL mass is GENUINELY RETAINED, not freed-dirty
