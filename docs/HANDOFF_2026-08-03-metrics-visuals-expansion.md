@@ -211,6 +211,27 @@ Remaining user action: tap Confirm; recovery then re-mints from the real
 night (§ freeze-race answer above). Still open: the overnight
 capture-dead root cause below.
 
+**ROOT CAUSE CONFIRMED for the mid-use kills (06:07 + 06:42 jetsams,
+`systemCrashLogs` pull): the 3GB balloon is BACK/STILL ALIVE.** JetsamEvent
+06:07:10 = Atria `per-process-limit`, 216,066 pages ≈ **3.45 GB**, state
+`active`; 06:42:33 = 3.45 GB, state `active, frontmost` (killed under the
+user's fingers — the 06:42 screenshot caught the home screen because of it).
+Suspended footprint is a healthy ~236 MB, so the balloon is
+foreground-triggered, exactly the `atria-3gb-memory-balloon-real-cause`
+signature — **but commit `625d7df9` (window/stream all whole-archive loads) IS
+in this build**, so an unidentified lane remains. Scene prefs also revise the
+overnight story: the app was FOREGROUNDED 00:28:12→00:29:30 (user opened it
+before bed), then never ran — plausibly the same balloon → background memory
+limit → jetsam, though no overnight JetsamEvent file survived rotation to
+prove it.
+
+**In progress:** `AtriaMemprobe` reinstated (fsync'd
+`Documents/atria-memprobe.log`, 250ms ≥64MB-delta sampler + lane breadcrumbs
+at scene transitions, shadow step, crash-resume materialize ×2, terminal
+publish ×2) — TEMPORARY, uncommitted; probe Release build installed ~06:55.
+Next: foreground until the balloon fires, pull the log, read the bracketing
+breadcrumbs, fix THAT lane, remove the probe.
+
 **Open root-cause question:** why no BLE-event relaunch between 00:29 and
 05:58 — strap-side link drop with no reconnect attempt reaching the phone, a
 bluetoothd wedge (see `atria-locked-reconnect-fix-proven`), or iOS suspending
