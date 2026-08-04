@@ -3519,7 +3519,14 @@ enum HistoricalArchive {
         }
 
         var pressureReliefCountdown = 16
-        AtriaMemprobe.note("rec_scan_begin sources=\(sources.count) plan=\(String(describing: plan).prefix(12))")
+        // TEMPORARY bisect lever (2026-08-04, footprint hunt): strips the scan
+        // closure layer-by-layer to attribute the ~3.3GB dirty growth.
+        //   --atria-debug-recovered-scan-mode count-only  → scanner+decompress only
+        //   --atria-debug-recovered-scan-mode decode-only → + JSONDecoder Record
+        // Absent → full production behavior. Remove with the memprobe.
+        let scanBisectMode = ProcessInfo.processInfo.arguments
+            .drop { $0 != "--atria-debug-recovered-scan-mode" }.dropFirst().first
+        AtriaMemprobe.note("rec_scan_begin sources=\(sources.count) plan=\(String(describing: plan).prefix(12)) bisect=\(scanBisectMode ?? "full")")
         let scanResult = AtriaHistoricalJSONLRecentScanner.scan(
             sources: sources,
             cutoff: coveredSince,
@@ -3538,8 +3545,13 @@ enum HistoricalArchive {
                 onScanProgress?(statistics)
             }
         ) { lineData in
+            if scanBisectMode == "count-only" {
+                decodedRecordCount += 1
+                return
+            }
             guard let record = try? decoder.decode(Record.self, from: lineData) else { return }
             decodedRecordCount += 1
+            if scanBisectMode == "decode-only" { return }
             appendRecoveredRecord(record,
                                   cutoff: coveredSince,
                                   budget: budget,
@@ -5043,9 +5055,19 @@ enum HistoricalArchive {
         fullGravityLoadCount += 1
         fullGravityInstrumentationLock.unlock()
 #endif
+        // One file resident at a time (2026-08-04): the old
+        // `.compactMap { String(contentsOf:) }` materialized EVERY raw file's
+        // full contents simultaneously (~1GB archive → 2-3GB burst in seconds
+        // — the post-recompute footprint kill), before parsing even began.
         return recentReadableFileURLs()
-            .compactMap { try? String(contentsOf: $0, encoding: .utf8) }
-            .flatMap(gravitySamples(from:))
+            .flatMap { url -> [GravitySample] in
+                autoreleasepool {
+                    guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+                        return []
+                    }
+                    return gravitySamples(from: content)
+                }
+            }
             .sorted {
                 if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
                 return $0.sequence < $1.sequence
