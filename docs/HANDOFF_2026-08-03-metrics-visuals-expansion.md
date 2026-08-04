@@ -1859,3 +1859,23 @@ blocking waits.
 
 Measurement note: comp_begin instrumentation worked — zero fires
 proved the coordinator chain was NOT the burst context this time.
+
+## 15.8 Single-heavy-lane fix SHIPPED (2026-08-05 ~05:00)
+
+60d5ab60: historySnapshotProjectionShouldDefer gains
+projectionScanActive (defaulted; old 2-arg callers/tests unaffected).
+External history refreshes now defer while the coordinator is
+.projecting — same defer external consumers already accept under
+exact-recovery priority. Recovered publications pass. Lifecycle:
+pendingHistoryRefreshDeferredByProjectionScan set on defer +
+hist_deferred_scan_active probe note; cleared on .publish (pipeline's
+own history component refreshed); re-run on .failed (no stale-strand).
+Lane cases pinned in AtriaHistoricalFullDrainCoverageAuthorityTests
+(42/42). Gate baseline 4. Installed + cold-launched for verification;
+decisive sample = the next BACKLOGGED cold open (morning). Watch for:
+one start marker, peak well under 3GB, hist_deferred_scan_active
+firing during rec_scan passes.
+
+Redundancy backlog (not yet done): 3× reuse=0 refreshes in 42s of
+cold launch — coalescing would cut launch CPU/alloc further; triggers
+still unidentified (sleep-candidate settles + scene activation?).
