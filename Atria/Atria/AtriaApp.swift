@@ -230,6 +230,9 @@ struct AtriaApp: App {
     private var store: SessionStore { dependencies.store }
 
     init() {
+        // TEMPORARY (2026-08-04): balloon re-localization probe — see
+        // AtriaMemprobe. Remove with the probe once the lane is found.
+        AtriaMemprobe.start()
         let dependencies = AtriaAppDependencies()
         _dependencies = State(initialValue: dependencies)
         Self.registerBackgroundTasks(store: dependencies.store, ble: dependencies.ble)
@@ -299,8 +302,10 @@ struct AtriaApp: App {
                     switch phase {
                     case .background:
                         AtriaHistoricalProjectionForegroundGate.isBackgrounded = true
+                        AtriaMemprobe.note("scene_background")
                     case .active:
                         AtriaHistoricalProjectionForegroundGate.isBackgrounded = false
+                        AtriaMemprobe.note("scene_active")
                     default:
                         break
                     }

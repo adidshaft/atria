@@ -12288,6 +12288,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historicalArchiveQueue.async { [weak self] in
             var status = "deferred"
             var detail = "unknown"
+            AtriaMemprobe.note("crash_resume_materialize_begin")
+            defer { AtriaMemprobe.note("crash_resume_materialize_end") }
             do {
                 let result = try HistoricalArchive
                     .resumeTerminalConsumerProjectionsAfterCrash(
@@ -31252,6 +31254,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 // terminal request/cursor facts against the advanced verified
                 // snapshots. No range or transport authority is widened.
                 if publication.status == .completionPublished {
+                    AtriaMemprobe.note("publish_terminal_refresh_begin")
                     let refreshed = try HistoricalArchive
                         .publishTerminalCompletionAfterDrain(
                             seal: seal,
@@ -31460,6 +31463,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 }
 
                 if publication.status == .rawSealed {
+                    AtriaMemprobe.note("publish_terminal_sealed_begin")
                     let published = try HistoricalArchive.publishTerminalCompletionAfterDrain(
                         seal: seal,
                         terminalBatchNumber: publication.terminalBatchNumber,
@@ -32943,11 +32947,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     detail += "_completion_published"
                 }
 
+                AtriaMemprobe.note("terminal_resume_materialize_begin")
                 let resumed = try HistoricalArchive
                     .resumeTerminalConsumerProjectionsAfterCrash(
                         job: resumeJob,
                         configuration: configuration
                     )
+                AtriaMemprobe.note("terminal_resume_materialize_end")
                 report = resumed.consumers
                 guard report.hasCompleteConsumerCoverage else {
                     detail = "incomplete_consumer_coverage_published_\(report.published.count)_deferred_\(report.deferredSources.count)"

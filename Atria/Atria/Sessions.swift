@@ -9242,6 +9242,7 @@ final class SessionStore: ObservableObject {
                 }
                 return
             }
+            AtriaMemprobe.note("recovered_snapshot_begin")
             let recoveredSnapshot = HistoricalArchive.makeRecoveredDataSnapshot(
                 since: cutoff,
                 onScanProgress: { [weak self] statistics in
@@ -9265,6 +9266,7 @@ final class SessionStore: ObservableObject {
                     }
                 }
             )
+            AtriaMemprobe.note("recovered_snapshot_end hrPoints=\(recoveredSnapshot.heartRatePoints.count) rr=\(recoveredSnapshot.rrRecords.count)")
             Task { @MainActor [weak self, ticket] in
                 self?.renewRecoveredProjectionLease(
                     ticket: ticket,
@@ -9400,6 +9402,7 @@ final class SessionStore: ObservableObject {
                     return
                 }
 
+                AtriaMemprobe.note("recovered_sessions_swap count=\(recoveredSessions.count)")
                 let previous = self.cachedRecoveredHeartRateSessions
                 self.cachedRecoveredHeartRateSessions = recoveredSessions
                 self.cachedRecoveredSkinTemperatureDeviationByDay =
@@ -10369,6 +10372,8 @@ final class SessionStore: ObservableObject {
         let destination = HistoricalArchive.verifiedActivityConsumerShadowDirectory
 
         Task.detached(priority: .utility) { [recoveredSessions, configuration, destination] in
+            AtriaMemprobe.note("shadow_step_begin")
+            defer { AtriaMemprobe.note("shadow_step_end") }
             let store = AtriaHistoricalVerifiedActivityConsumerApplicationStore(
                 directoryURL: destination
             )
@@ -14294,9 +14299,11 @@ final class SessionStore: ObservableObject {
     }
 
     private func refreshSessionDerivedCaches() {
+        AtriaMemprobe.note("canonical_rebuild_begin live=\(sessions.count) recovered=\(cachedRecoveredHeartRateSessions.count)")
         setCachedCanonicalSessions(Self.makeCanonicalSessions(
             from: sessions + cachedRecoveredHeartRateSessions
         ))
+        AtriaMemprobe.note("canonical_rebuild_end")
         refreshLatestHRVSourcesFromCanonicalSessions()
         cachedHomeSavedAggregate = nil
         cachedTodayTRIMP = nil
@@ -15647,7 +15654,9 @@ final class SessionStore: ObservableObject {
                                                             to url: URL,
                                                             reason: String) -> Bool {
         do {
+            AtriaMemprobe.note("sessions_encode_begin count=\(sessions.count)")
             let data = try JSONEncoder().encode(sessions)
+            AtriaMemprobe.note("sessions_encode_end bytes=\(data.count)")
             try data.write(to: url, options: .atomic)
             AtriaDebugLog("ATRIADBG session_store_save status=ok op=%@ sessions=%d bytes=%d",
                   reason,
