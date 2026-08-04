@@ -11186,16 +11186,19 @@ final class SessionStore: ObservableObject {
         ) else { return }
         if workoutRehydrationDeferredUntilForeground {
             workoutRehydrationDeferredUntilForeground = false
+            AtriaMemprobe.note("fg_workout_rehydration_scheduled")
             scheduleConfirmedWorkoutArchiveRehydration(
                 reason: "foreground_\(reason)"
             )
         }
         if workoutStepEvidenceDeferredUntilForeground {
+            AtriaMemprobe.note("fg_step_evidence_scheduled")
             scheduleConfirmedWorkoutStepEvidencePublication(
                 reason: "foreground_\(reason)"
             )
         }
         if currentCycleStepReceiptDeferredUntilForeground {
+            AtriaMemprobe.note("fg_step_receipt_scheduled")
             prepareCurrentCycleStrapStepReceipt(
                 reason: "foreground_\(reason)"
             )
@@ -11213,6 +11216,7 @@ final class SessionStore: ObservableObject {
         }
         if archiveCompactionDeferredUntilForeground {
             archiveCompactionDeferredUntilForeground = false
+            AtriaMemprobe.note("fg_compaction_scheduled")
             compactHistoricalArchiveIfUseful(
                 reason: "foreground_\(reason)"
             )
