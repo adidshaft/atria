@@ -64,9 +64,13 @@ struct AtriaStrapScreen: View {
                                     detail: capturedSamplesText,
                                     systemImage: collectionLiveStore.state.isRecording ? "record.circle.fill" : "tray.and.arrow.down.fill",
                                     tint: collectionLiveStore.state.isRecording ? .red : Metrics.electricGreen)
-                AtriaStrapStatusRow(title: "Ownership",
+                // Plain words (2026-08-04): "Ownership / Strap check / Local
+                // control" answered a question nobody could parse. The tile
+                // exists to say whether another app is competing for the
+                // strap connection.
+                AtriaStrapStatusRow(title: "Strap control",
                                     value: collectionLiveStore.state.coexistenceStatusText,
-                                    detail: officialAppInstalled ? "Official app installed" : "Local control",
+                                    detail: officialAppInstalled ? "WHOOP app also installed" : "Only Atria connects",
                                     systemImage: "checkmark.shield.fill",
                                     tint: collectionLiveStore.state.officialAppCoexistenceRisk == .suspected ? .red : Metrics.electricGreen)
             }

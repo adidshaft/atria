@@ -268,6 +268,38 @@ struct AtriaAboutMetricTrend {
                                      caption: caption(for: metric, count: points.count, lo: lo, hi: hi))
     }
 
+    /// Sleep-efficiency trend from confirmed-night evidence (P3, 2026-08-04).
+    /// Rollups do not persist efficiency, but every confirmed Night carries
+    /// its own honest value (displaySleepEfficiency is nil for HR-only nights
+    /// whose stored number is span coverage, and those nights are skipped —
+    /// same fail-closed rule as the tile). Gate matches the rollup trends:
+    /// at least 5 qualified nights inside the 30-day window.
+    static func makeSleepEfficiency(nights: [SleepHistorySnapshot.Night],
+                                    referenceDate: Date = Date(),
+                                    calendar: Calendar = .current) -> AtriaAboutMetricTrend? {
+        let end = calendar.startOfDay(for: referenceDate)
+        guard let start = calendar.date(byAdding: .day, value: -29, to: end) else { return nil }
+        var seen = Set<Date>()
+        let points: [AtriaDetailChartPoint] = nights.compactMap { night -> AtriaDetailChartPoint? in
+            let day = calendar.startOfDay(for: night.day)
+            guard day >= start, day <= end,
+                  let efficiency = night.displaySleepEfficiency,
+                  seen.insert(day).inserted else { return nil }
+            return AtriaDetailChartPoint(day: day,
+                                         value: (efficiency * 100).rounded(),
+                                         tint: .cyan)
+        }
+        .sorted { $0.day < $1.day }
+        guard points.count >= 5,
+              let lo = points.map(\.value).min(),
+              let hi = points.map(\.value).max() else { return nil }
+        let noun = points.count == 1 ? "night" : "nights"
+        let range = lo == hi ? "steady at \(Int(lo))%" : "\(Int(lo))–\(Int(hi))%"
+        return AtriaAboutMetricTrend(points: points,
+                                     window: start...end,
+                                     caption: "\(points.count) \(noun) · \(range)")
+    }
+
     private static func caption(for metric: AtriaAboutMetric,
                                 count: Int, lo: Double, hi: Double) -> String {
         let noun: String

@@ -5638,6 +5638,18 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                     targetMetric: .respiratoryRate)
                 }
 
+                // P3 (2026-08-04): efficiency history in place, not just the
+                // latest night — fed from confirmed nights, honest-gated to
+                // ≥5 qualified nights in 30 days like every rollup trend.
+                if let efficiencyTrend = AtriaAboutMetricTrend.makeSleepEfficiency(
+                    nights: snapshot.nights
+                ) {
+                    AtriaMiniTrendCard(trend: efficiencyTrend,
+                                       tint: .cyan,
+                                       title: "EFFICIENCY · LAST 30 DAYS",
+                                       subject: "Sleep efficiency")
+                }
+
                 if chartNights.count > 1 {
                     Chart(chartNights) { night in
                         BarMark(x: .value("Night", night.day, unit: .day),

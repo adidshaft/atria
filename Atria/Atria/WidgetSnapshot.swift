@@ -457,8 +457,7 @@ enum WidgetSnapshotPublisher {
         // is only the last resort before the session_load republish.
         let rest = store.baseline.restingInt ?? store.sessions.first?.restingStable ?? ble.restingHR
         let presentationRestingHeartRate = store.currentCycleRestingHeartRateForPresentation(
-            on: now,
-            liveRestingHeartRate: ble.restingHR
+            on: now
         )
         let validatedHRV = store.latestReferenceValidatedRecoveryHRV(on: now)
         let fallbackHRV = validatedHRV ?? store.latestLocalRecoveryHRV(on: now)

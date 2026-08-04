@@ -488,16 +488,21 @@ enum AtriaHealthConnectionEvidencePresentation {
         switch status {
         case .connected:
             return nil
+        // Single status carrier (2026-08-04): the header chip already names
+        // the evidence scope ("Last known" / "Current cycle"); repeating it
+        // here made two adjacent rows restate one fact in two vocabularies.
+        // This notice now carries only the CONNECTION state (and the retry
+        // affordance where reconnecting is actionable).
         case .scanning, .connecting:
-            return Notice(title: "Reconnecting · saved current cycle",
+            return Notice(title: "Reconnecting",
                           systemImage: "arrow.triangle.2.circlepath",
                           allowsRetry: false)
         case .poweredOff:
-            return Notice(title: "Bluetooth off · saved current cycle",
+            return Notice(title: "Bluetooth off",
                           systemImage: "bolt.slash.fill",
                           allowsRetry: false)
         case .disconnected:
-            return Notice(title: "Last known · current cycle",
+            return Notice(title: "Strap disconnected",
                           systemImage: "clock.arrow.circlepath",
                           allowsRetry: true)
         }
@@ -1370,7 +1375,7 @@ struct AtriaHealthScreen: View {
         // Same unified number as the Performance tile below; the persisted
         // rollup only backstops when no live night exists.
         if let performance = sleepPerformancePercentUnified {
-            return "\(performance)% need"
+            return "\(performance)% of need"
         }
         return "No sleep this cycle"
     }

@@ -69,7 +69,10 @@ enum AtriaSmartWakePresentation {
     static func subtitle(for mode: AtriaWakeAlarmPlan.Mode, displayTime: String) -> String {
         switch mode {
         case .smartWindow:
-            return "Wake in the lightest 30 min before \(displayTime)"
+            // Honest descope (2026-08-04): the in-window early-wake evaluator
+            // exists but needs live same-night stage readings the pipeline
+            // does not produce yet — tonight this behaves as a hard alarm.
+            return "Wake by \(displayTime) · smart early wake in development"
         case .exactTime:
             return "Ring at \(displayTime) sharp"
         case .sleepNeedMet:
@@ -80,7 +83,7 @@ enum AtriaSmartWakePresentation {
     static func axisExplainer(for mode: AtriaWakeAlarmPlan.Mode, displayTime: String) -> String {
         switch mode {
         case .smartWindow:
-            return "Atria doesn't forecast tonight's stages. Once you're asleep, live heart-rate and stage readings pick the lightest minute inside this window — the hard \(displayTime) wake-by always fires."
+            return "The hard \(displayTime) wake-by always fires. Picking a lighter minute inside this window needs live stage readings, which Atria doesn't produce during the night yet — until it does, this behaves as a standard alarm."
         case .exactTime:
             return "One alarm at \(displayTime) — no early window."
         case .sleepNeedMet:

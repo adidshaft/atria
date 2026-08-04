@@ -733,49 +733,36 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertFalse(learning.hasEvidence)
     }
 
-    func testPresentationRestingHeartRateUsesCurrentCycleAuthority() {
+    func testPresentationRestingHeartRateUsesSleepCycleAuthoritiesOnly() {
+        // 2026-08-04 provenance decision: "Resting" only ever shows a
+        // sleep-derived value (main sleep, daily metric, rollup). The old
+        // daytime fallbacks (live low-HR window, saved-wear restingStable)
+        // surfaced awake-day estimates as "Resting" with no source label.
         XCTAssertEqual(SessionStore.presentationRestingHeartRate(
             sleepRestingHeartRate: 52,
             metricRestingHeartRate: 73,
-            rollupRestingHeartRate: 72,
-            liveRestingHeartRate: 71,
-            savedWearRestingHeartRate: 70
+            rollupRestingHeartRate: 72
         ), 52)
         XCTAssertEqual(SessionStore.presentationRestingHeartRate(
             sleepRestingHeartRate: nil,
             metricRestingHeartRate: 73,
-            rollupRestingHeartRate: 72,
-            liveRestingHeartRate: 71,
-            savedWearRestingHeartRate: 70
+            rollupRestingHeartRate: 72
         ), 73)
         XCTAssertEqual(SessionStore.presentationRestingHeartRate(
             sleepRestingHeartRate: nil,
             metricRestingHeartRate: nil,
-            rollupRestingHeartRate: 72,
-            liveRestingHeartRate: 71,
-            savedWearRestingHeartRate: 70
+            rollupRestingHeartRate: 72
         ), 72)
-        XCTAssertEqual(SessionStore.presentationRestingHeartRate(
-            sleepRestingHeartRate: nil,
-            metricRestingHeartRate: nil,
-            rollupRestingHeartRate: nil,
-            liveRestingHeartRate: 71,
-            savedWearRestingHeartRate: 70
-        ), 71)
-        XCTAssertEqual(SessionStore.presentationRestingHeartRate(
-            sleepRestingHeartRate: 0,
-            metricRestingHeartRate: nil,
-            rollupRestingHeartRate: nil,
-            liveRestingHeartRate: nil,
-            savedWearRestingHeartRate: 70
-        ), 70)
         XCTAssertNil(SessionStore.presentationRestingHeartRate(
             sleepRestingHeartRate: nil,
+            metricRestingHeartRate: nil,
+            rollupRestingHeartRate: nil
+        ), "no sleep evidence must render the honest no-value token, never a daytime estimate")
+        XCTAssertNil(SessionStore.presentationRestingHeartRate(
+            sleepRestingHeartRate: 0,
             metricRestingHeartRate: 0,
-            rollupRestingHeartRate: nil,
-            liveRestingHeartRate: nil,
-            savedWearRestingHeartRate: nil
-        ))
+            rollupRestingHeartRate: nil
+        ), "zero readings are not evidence")
     }
 
     func testHealthMonitorUsesTheCurrentPhysiologicalCycleRecoveryEstimate() throws {

@@ -13941,8 +13941,7 @@ final class SessionStore: ObservableObject {
     /// showing the baseline beside a different recovery-driving RHR in Vitals.
     func currentCycleRestingHeartRateForPresentation(
         on now: Date = Date(),
-        calendar: Calendar = .current,
-        liveRestingHeartRate: Int?
+        calendar: Calendar = .current
     ) -> Int? {
         let cycle = AtriaPhysiologicalCycle.current(now: now,
                                                     confirmedSleeps: cachedConfirmedSleeps,
@@ -13954,31 +13953,30 @@ final class SessionStore: ObservableObject {
         let rollupResting = dailyRollupHistory.first {
             calendar.isDate($0.day, inSameDayAs: cycle.start)
         }?.rhr
-        let savedWearResting = cachedCanonicalSessions.first {
-            $0.end >= cycle.start && $0.start <= now
-        }?.restingStable
         return Self.presentationRestingHeartRate(
             sleepRestingHeartRate: sleepResting,
             metricRestingHeartRate: metricResting,
-            rollupRestingHeartRate: rollupResting,
-            liveRestingHeartRate: liveRestingHeartRate,
-            savedWearRestingHeartRate: savedWearResting
+            rollupRestingHeartRate: rollupResting
         )
     }
 
+    /// Sleep-cycle authorities ONLY (2026-08-04 provenance decision): the
+    /// number labeled "Resting" must come from sleep evidence — the main
+    /// sleep's measured RHR, or the persisted daily metric/rollup derived
+    /// from it. The old daytime fallbacks (live low-HR window, a saved wear
+    /// session's restingStable) could surface an awake-day estimate as
+    /// "Resting 119" with no source label; until the first night lands the
+    /// rail now shows the honest no-value token instead. Recovery math is
+    /// unaffected — it reads restingContext.currentForRecovery, not this.
     nonisolated static func presentationRestingHeartRate(
         sleepRestingHeartRate: Int?,
         metricRestingHeartRate: Int?,
-        rollupRestingHeartRate: Int?,
-        liveRestingHeartRate: Int?,
-        savedWearRestingHeartRate: Int?
+        rollupRestingHeartRate: Int?
     ) -> Int? {
         [
             sleepRestingHeartRate,
             metricRestingHeartRate,
             rollupRestingHeartRate,
-            liveRestingHeartRate,
-            savedWearRestingHeartRate,
         ]
         .compactMap { value in
             guard let value, value > 0 else { return nil }
