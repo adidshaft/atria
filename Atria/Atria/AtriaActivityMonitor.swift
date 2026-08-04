@@ -841,9 +841,17 @@ struct AtriaActivityMonitorTab: View {
                 // The card's accessibility label already says "Stress
                 // monitor" — the visible title now matches it (and WHOOP's
                 // feature name) instead of contradicting it (2026-08-04).
-                Label("Stress Monitor", systemImage: "bolt.heart.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Metrics.electricStress)
+                // WHOOP monitor-tile grammar (2026-08-05): monitors are named
+                // in caps letterspaced micro-labels, values carry the weight.
+                Label {
+                    Text("STRESS MONITOR")
+                        .font(.caption.weight(.bold))
+                        .tracking(1.2)
+                } icon: {
+                    Image(systemName: "bolt.heart.fill")
+                        .font(.caption.weight(.bold))
+                }
+                .foregroundStyle(Metrics.electricStress)
                 Spacer()
                 // Live heart rate beside the stress band (user-directed:
                 // Activity's top card is the heart/stress monitor). Shown only
