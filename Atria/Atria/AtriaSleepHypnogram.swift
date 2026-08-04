@@ -150,6 +150,10 @@ struct AtriaSleepHypnogramCard: View, Equatable {
         case timeline
         /// HR-only night: segments exist in storage but lack validated motion.
         case needsMotion
+        /// Hand-typed window: stages will never arrive without sensor data,
+        /// so "building"/"calibrating" copy would be a false promise
+        /// (2026-08-05 manual-sleep honesty audit).
+        case manualEntry
         /// No usable segments/window at all.
         case building
     }
@@ -160,19 +164,22 @@ struct AtriaSleepHypnogramCard: View, Equatable {
     let stageEvidence: SleepStageEvidence
     let provenanceText: String
     let eventTimeZoneIdentifier: String?
+    let isManualEntry: Bool
 
     init(segments: [SleepStageSegment],
          start: Date?,
          end: Date?,
          stageEvidence: SleepStageEvidence,
          provenanceText: String,
-         eventTimeZoneIdentifier: String? = nil) {
+         eventTimeZoneIdentifier: String? = nil,
+         isManualEntry: Bool = false) {
         self.segments = segments
         self.start = start
         self.end = end
         self.stageEvidence = stageEvidence
         self.provenanceText = provenanceText
         self.eventTimeZoneIdentifier = eventTimeZoneIdentifier
+        self.isManualEntry = isManualEntry
     }
 
     /// The canonical feed: `displayStageSegments` is already honesty-gated
@@ -193,13 +200,18 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                   end: night.end,
                   stageEvidence: night.stageEvidence,
                   provenanceText: provenance,
-                  eventTimeZoneIdentifier: night.eventTimeZoneIdentifier)
+                  eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
+                  isManualEntry: night.isManualEntry)
     }
 
     static func displayState(segments: [SleepStageSegment],
                              stageEvidence: SleepStageEvidence,
                              start: Date?,
-                             end: Date?) -> DisplayState {
+                             end: Date?,
+                             isManualEntry: Bool = false) -> DisplayState {
+        // Manual wins over the sensor states: a hand-typed window without
+        // segments must say "manual entry", not promise motion or building.
+        if isManualEntry, segments.isEmpty { return .manualEntry }
         if stageEvidence == .hrOnlyEstimate { return .needsMotion }
         guard !segments.isEmpty, let start, let end, end > start else { return .building }
         return .timeline
@@ -219,7 +231,8 @@ struct AtriaSleepHypnogramCard: View, Equatable {
         Self.displayState(segments: segments,
                           stageEvidence: stageEvidence,
                           start: start,
-                          end: end)
+                          end: end,
+                          isManualEntry: isManualEntry)
     }
 
     private var eventCalendar: Calendar {
@@ -252,6 +265,9 @@ struct AtriaSleepHypnogramCard: View, Equatable {
             case .needsMotion:
                 honestState(title: "Stages need motion data",
                             detail: "Heart rate alone can't separate sleep stages. Duration and overnight vitals remain available.")
+            case .manualEntry:
+                honestState(title: "No stages — manual entry",
+                            detail: "You entered this window by hand. Atria draws stage timelines only from sensor data. Duration and any overnight vitals for this window are kept.")
             case .building:
                 honestState(title: "Stages not ready",
                             detail: "Stages need checked evidence. Duration and overnight vitals remain available while Atria learns.")
@@ -367,6 +383,8 @@ struct AtriaSleepHypnogramCard: View, Equatable {
             return "Sleep stages hypnogram. \(provenanceText). \(stages)."
         case .needsMotion:
             return "\(provenanceText). Stages need motion data — heart rate alone can't separate sleep stages."
+        case .manualEntry:
+            return "\(provenanceText). No stages — this window was entered by hand; stage timelines come only from sensor data."
         case .building:
             return "\(provenanceText). Stages not ready."
         }

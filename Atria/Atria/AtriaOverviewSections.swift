@@ -5358,7 +5358,7 @@ struct AtriaWeeklyReportSheet: View {
             }
             .chartYScale(domain: 0...100)
             .chartYAxis {
-                AxisMarks(position: .leading, values: [0, 50, 100])
+                AxisMarks(position: .trailing, values: [0, 50, 100])
             }
             .chartXAxis {
                 AxisMarks(values: .automatic(desiredCount: 4)) { _ in
@@ -5368,6 +5368,8 @@ struct AtriaWeeklyReportSheet: View {
             }
             .frame(height: 120)
             .clipped()
+            // Full-bleed plot inside the card (2026-08-05 width audit).
+            .padding(.horizontal, -14)
             .accessibilityLabel("Recovery for each day of the week.")
             .atriaInspectableGraph(
                 AtriaInspectableGraph(
@@ -7235,6 +7237,16 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
             AtriaSleepMiniHypnogram(segments: latest.displayStageSegments,
                                     duration: latest.duration)
             .frame(height: 18, alignment: .center)
+        } else if latest?.isManualEntry == true {
+            // Manual honesty (2026-08-05): a hand-typed window never grows
+            // stages, so "calibrating" plus decorative stage capsules read as
+            // a preview of something that will not arrive. Plain words only.
+            Text("Manual entry — no stages")
+                .font(.system(size: 8, weight: .bold, design: .rounded))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.62)
+                .frame(height: 18, alignment: .center)
         } else {
             HStack(spacing: 6) {
                 Text("Stages calibrating")
@@ -7276,7 +7288,10 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
             return "Sleep history building. Wear the strap overnight or during a nap. Morning status \(morningStatus.accessibilityText)."
         }
         guard !latest.displayStageSegments.isEmpty else {
-            return "Sleep history \(valueText). \(latest.evidenceLabel). Morning status \(morningStatus.accessibilityText). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). Stages building: Awake, Light, REM, and Deep are not ready yet."
+            let stageNote = latest.isManualEntry
+                ? "Manual entry — stage timelines come only from sensor data."
+                : "Stages building: Awake, Light, REM, and Deep are not ready yet."
+            return "Sleep history \(valueText). \(latest.evidenceLabel). Morning status \(morningStatus.accessibilityText). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). \(stageNote)"
         }
         return "Sleep history \(valueText). \(latest.evidenceLabel). Morning status \(morningStatus.accessibilityText). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). Awake \(latest.stageText(.awake)), Light \(latest.stageText(.light)), REM \(latest.stageText(.rem)), Deep (SWS) \(latest.stageText(.deep))."
     }
@@ -8827,7 +8842,10 @@ struct AtriaMetricDetailSheet: View {
                     detailTemplate
                 }
             }
-            .padding(18)
+            // 12pt gutter (2026-08-05 width audit): match the app-wide screen
+            // gutter instead of the old 18pt so detail charts gain 12pt.
+            .padding(.horizontal, 12)
+            .padding(.vertical, 18)
         }
         .task(id: preparationInput) {
             await refreshPreparedHistory()
@@ -10705,7 +10723,10 @@ private struct AtriaPreparedMetricChart: View {
             } else if points.count == 1 {
                 singleObservationChart
             } else {
+                // Full-bleed plot (2026-08-05 width audit): only the chart
+                // escapes the card inset — header/legend/summary keep the 14pt.
                 chartContent
+                    .padding(.horizontal, -14)
                 chartLegendAndCompanions
             }
         }
@@ -10850,8 +10871,7 @@ private struct AtriaPreparedMetricChart: View {
         }
         .chartYScale(domain: prepared.domain)
         .chartXScale(domain: prepared.xDomain ?? fallbackXDomain)
-        .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) }
-        .chartYAxisLabel(unit)
+        .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) }
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 4)) { _ in
                 AxisGridLine()

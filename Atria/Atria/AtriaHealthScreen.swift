@@ -973,15 +973,12 @@ struct AtriaHealthScreen: View {
             .equatable()
     }
 
+    // Box-in-box removed (2026-08-05 width audit): AtriaTrendChartCard already
+    // draws its own card chrome AND a "Trends" section header, so the old
+    // wrapper double-boxed the chart and duplicated the title, costing 16pt of
+    // plot width per side.
     private var trendsCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Trends")
-                .font(.title2.weight(.bold))
-            AtriaVitalsTrendChartHost(state: vitalsStore.state)
-        }
-        .padding(16)
-        .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+        AtriaVitalsTrendChartHost(state: vitalsStore.state)
     }
 
     /// First-class breathwork entry point (gap b, 2026-07-05): the pacer

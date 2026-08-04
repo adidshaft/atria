@@ -59,7 +59,10 @@ struct AtriaStrainRecoveryComboChart: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
+            // Full-bleed plot inside the card (2026-08-05 width audit): only
+            // the chart escapes the 14pt inset; header and caption keep it.
             chart
+                .padding(.horizontal, -14)
             Text("Strain (0–21, left) and recovery % (right) as two lines. Recovery points are colored by band; each line breaks on days with no reading rather than drawing across the gap.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)

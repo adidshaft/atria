@@ -59,6 +59,8 @@ struct AtriaStepsWeekChart: View {
                 }
                 .frame(height: 140)
                 .clipped()
+                // Full-bleed plot inside the card (2026-08-05 width audit).
+                .padding(.horizontal, -12)
 
                 Text("Verified strap steps per day. A day with no verified reading shows no bar.")
                     .font(.caption2)

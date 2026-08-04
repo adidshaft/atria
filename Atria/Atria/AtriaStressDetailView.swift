@@ -294,7 +294,9 @@ struct AtriaStressDetailView: View {
                     }
                     interventionCard
                 }
-                .padding(.horizontal, 18)
+                // 12pt gutter (2026-08-05 width audit): match the app-wide
+                // screen gutter so the timeline and trend charts gain 12pt.
+                .padding(.horizontal, 12)
                 .padding(.top, 10)
                 .padding(.bottom, 28)
             }
@@ -439,6 +441,8 @@ struct AtriaStressDetailView: View {
                             ])
                         )
                     )
+                    // Full-bleed plot inside the card (2026-08-05 width audit).
+                    .padding(.horizontal, -16)
             } else {
                 HStack(spacing: 10) {
                     Image(systemName: "waveform.path.ecg")
@@ -697,7 +701,9 @@ struct AtriaStressDailyTrendCard: View {
             }
 
             if framed.count >= Self.minimumMeasuredDays {
+                // Full-bleed plot inside the card (2026-08-05 width audit).
                 chart(framed)
+                    .padding(.horizontal, -16)
                 HStack(spacing: 14) {
                     legend(color: .green, label: "Calm")
                     legend(color: .yellow, label: "Medium")

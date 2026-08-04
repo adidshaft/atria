@@ -3992,12 +3992,15 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
                     // plot-area tap always reaches the card action.
                     .allowsHitTesting(false)
                     .padding(.top, 2)
-                    .padding(.trailing, 2)
                     .frame(maxWidth: .infinity)
                     .frame(height: 182)
                     .background(Color(.systemBackground).opacity(0.18), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .clipped()
+                    // Full-bleed plot (2026-08-05 width audit): the inner
+                    // backdrop strip stretches to the outer card's edge; the
+                    // header row above keeps the 12pt inset.
+                    .padding(.horizontal, -12)
 
             }
             .padding(12)
@@ -5913,6 +5916,10 @@ struct AtriaSleepStageSummary: View, Equatable {
                                      duration: night.duration)
                 .frame(height: 120)
                 .atriaInspectableGraph(sleepStageGraph)
+                // Full-bleed stage lanes (2026-08-05 width audit): the
+                // hypnogram escapes this card's 10pt inset; header, legend
+                // tiles, and the restorative strip keep it.
+                .padding(.horizontal, -10)
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 8)], spacing: 8) {
                 ForEach(SleepStageKind.allCases) { stage in
@@ -6019,9 +6026,9 @@ struct AtriaSleepStageBuildingSummary: View, Equatable {
             HStack {
                 // HR-only honesty (2026-08-01): a night without validated
                 // motion is not "building" toward stages — it needs motion.
-                Text(night.stageEvidence == .hrOnlyEstimate
-                     ? "Stages need motion data"
-                     : "Stages building")
+                // Manual honesty (2026-08-05): a hand-typed window will NEVER
+                // grow stages; "building" would be a false promise.
+                Text(headline)
                     .font(.caption.weight(.semibold))
                 Spacer(minLength: 0)
                 Text(night.evidenceLabel)
@@ -6054,9 +6061,7 @@ struct AtriaSleepStageBuildingSummary: View, Equatable {
                 }
             }
 
-            Text(night.stageEvidence == .hrOnlyEstimate
-                 ? "Heart rate alone can't separate sleep stages. Duration and overnight vitals remain available."
-                 : "Stages need checked evidence. Duration and overnight vitals remain available while Atria learns.")
+            Text(detail)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -6064,7 +6069,23 @@ struct AtriaSleepStageBuildingSummary: View, Equatable {
         .padding(10)
         .atriaInsetCard(tint: .cyan)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(night.evidenceLabel) stages building. Awake, Light, REM, SWS, and Deep are not ready yet.")
+        .accessibilityLabel("\(night.evidenceLabel) \(headline). Awake, Light, REM, SWS, and Deep show no values.")
+    }
+
+    private var headline: String {
+        if night.isManualEntry { return "No stages — manual entry" }
+        return night.stageEvidence == .hrOnlyEstimate
+            ? "Stages need motion data"
+            : "Stages building"
+    }
+
+    private var detail: String {
+        if night.isManualEntry {
+            return "This window was entered by hand. Atria draws stage timelines only from sensor data — duration and any overnight vitals are kept."
+        }
+        return night.stageEvidence == .hrOnlyEstimate
+            ? "Heart rate alone can't separate sleep stages. Duration and overnight vitals remain available."
+            : "Stages need checked evidence. Duration and overnight vitals remain available while Atria learns."
     }
 
     private func color(for stage: SleepStageKind) -> Color {

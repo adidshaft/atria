@@ -1894,6 +1894,8 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                                                 selectedTime: .constant(nil))
                             .frame(height: 150)
                             .clipped()
+                            // Full-bleed plot (2026-08-05 width audit).
+                            .padding(.horizontal, -12)
                     } else {
                         Text("No heart-rate samples recorded during this window.")
                             .font(.caption)
@@ -1904,6 +1906,8 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                     if stressReadings.count >= 2 {
                         AtriaWorkoutStressTraceChart(readings: stressReadings)
                             .frame(height: 150)
+                            // Full-bleed plot (2026-08-05 width audit).
+                            .padding(.horizontal, -12)
                     } else {
                         // The stress monitor scores from recent live wear;
                         // its history is a bounded recent window. Say so
