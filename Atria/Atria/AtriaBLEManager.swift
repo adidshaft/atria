@@ -13251,6 +13251,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 )
                 if Task.isCancelled { break }
                 maintenanceTickRangeLossBackfillReArmIfDue()
+                scheduleSyncNudgeFromCurrentState()
             }
         }
     }
@@ -13409,6 +13410,37 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 reason: "flush_debt_observed"
             )
         }
+        scheduleSyncNudgeFromCurrentState()
+    }
+
+    /// Graceful lag measures (2026-08-05 user directive): when the backlog is
+    /// deep and background catch-up is not progressing, tell the user — a
+    /// foreground open (or bringing the strap close, or leaving Low Power
+    /// Mode) is the fix only they can perform. All throttling/quiet-window
+    /// logic lives in the scheduler's pure decision.
+    private func scheduleSyncNudgeFromCurrentState(now: Date = Date()) {
+        let defaults = UserDefaults.standard
+        let debtObservedAt = defaults.object(
+            forKey: OfflineSyncDefaults.flushDebtObservedAt
+        ) as? Double
+        let flushOKAt = defaults.object(
+            forKey: OfflineSyncDefaults.lastDurableFlushBoundaryOKAt
+        ) as? Double
+        LocalNotificationScheduler.scheduleSyncNudgeIfNeeded(
+            flushDebtLevelRaw: defaults.string(
+                forKey: OfflineSyncDefaults.flushDebtLevel
+            ),
+            debtObservedAgeSeconds: debtObservedAt.map {
+                now.timeIntervalSince1970 - $0
+            },
+            lastDurableFlushAgeSeconds: flushOKAt.map {
+                now.timeIntervalSince1970 - $0
+            },
+            linkConnected: peripheral?.state == .connected,
+            applicationIsActive:
+                UIApplication.shared.applicationState == .active,
+            now: now
+        )
     }
 
     /// P0 drain decoupling (2026-08-05, user escalation "why the hell is
