@@ -276,6 +276,16 @@ record shows EVERY kill today dies inside `rec_scan_progress` —
    plus decoder churn) ⇒ the scan now crosses the limit ⇒ progressively
    worse as the archive grows. Explains why fixes "verified" then failed:
    each reduced other pressure while the archive kept growing.
+**Soak + suite update (13:1x):** ~2h kill-free since 11:48; app alive
+through pid cycles (benign lifecycle exits, zero JetsamEvents). Suite
+health: the two stale CrossScreenDensity failures are resolved
+(`f51b041d` — journal pin migrated to heat-strip-era copy; vitals-education
+pin retired with a tripwire assert, successor contracts in
+AtriaAboutMetricSheetTests) → pre-existing failures now 4 (motion-tick
+pair + widget-battery, all pre-dating this session, plus the stray
+untracked dev probe file). User awake; sleep Confirm still pending
+(fallback recovery 63, RHR 55).
+
 **REPRODUCTION PASSED (12:3x): pid 4362 (pool-fix build, full mode) alive
 45+ minutes** — vs 45-124s deaths for every pre-fix run — with ZERO
 JetsamEvents in the window (probe file-service flaky, but the crash-log
