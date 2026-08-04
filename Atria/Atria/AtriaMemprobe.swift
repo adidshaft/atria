@@ -33,6 +33,17 @@ enum AtriaMemprobe {
             let url = FileManager.default.urls(for: .documentDirectory,
                                                in: .userDomainMask)[0]
                 .appendingPathComponent("atria-memprobe.log")
+            // Rotate at 8MB (2026-08-04): the accumulated log crossed the
+            // devicectl file-service transfer cap (~40MB, silently truncated),
+            // making the newest — most important — window unreadable. One
+            // rotated generation is kept for forensics.
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            if let size = (attributes?[.size] as? NSNumber)?.intValue, size > 8 * 1024 * 1024 {
+                let rotated = url.deletingLastPathComponent()
+                    .appendingPathComponent("atria-memprobe.1.log")
+                try? FileManager.default.removeItem(at: rotated)
+                try? FileManager.default.moveItem(at: url, to: rotated)
+            }
             if !FileManager.default.fileExists(atPath: url.path) {
                 FileManager.default.createFile(atPath: url.path, contents: nil)
             }
