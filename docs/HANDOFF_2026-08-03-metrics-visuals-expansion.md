@@ -1334,3 +1334,35 @@ Documents/atria-memprobe.log (launch epoch 1785855194), read which
 component note precedes the climb, then apply the same medicine to that
 consumer (windowed load or thread-per-slice). Note the probe log is
 ~30MB+ now — consider trimming after pull.
+
+## 12.4 Balloon: state at session end (2026-08-04 night)
+
+Installed build (`HEAD`): thread-per-pass scan (32MB budget) + fresh dying
+thread per recompute + 30s-throttled probe beats. VERIFIED on device: the
+scan completes (~15s, ≤850MB), a full single recompute cycle completes
+(scan → projection → swap → post-swap, peak ~1.2-2GB), per-cycle reclaim
+works (footprint dips to ~880MB after a cycle ends), and data COMMITS
+(post_swap_done reached repeatedly) — the app is functionally recovering
+data now even when a later kill occurs.
+
+REMAINING (two named, mechanical items):
+1. **Recompute storm**: drain chunk-writes re-trigger projection tickets
+   back-to-back (7 in 60s observed). Cycles pace ~20s each; consecutive
+   cycles creep the baseline (1254 → 2062MB across two cycles). Needs a
+   TRIGGER-side coalesce (min-interval debounce while drain is active) in
+   the recompute coordinator — design carefully against its timeout
+   machinery; do NOT delay inside .startProjection (eats the projection
+   timeout).
+2. **Derived-phase garbage**: after post_swap_done the derived chain runs
+   (components now named in probe: archiveStatusAndCycleHeartRate →
+   confirmedWorkouts → …; shadow step = Task.detached on the LONG-LIVED
+   cooperative pool — same thread-teardown law violation). Give the heavy
+   derived bodies (refreshHistoricalArchiveStatus, shadow step's
+   readVerifiedConsumerSources, confirmedWorkouts step-evidence) the same
+   fresh-dying-thread treatment. Death tonight = storm creep (2062MB
+   baseline) + derived garbage (~1GB) crossing 3.4GB.
+
+Verification protocol unchanged: after both fixes, require repeated
+foreground cycles with peak <1.5GB + an organic overnight, THEN strip all
+TEMPORARY instrumentation (AtriaMemprobe + note sites + bisect levers +
+recompute_stage note + append-skip levers) and run the full suite.
