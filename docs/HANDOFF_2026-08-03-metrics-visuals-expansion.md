@@ -82,10 +82,23 @@ Device-verified via iPhone Mirroring unless noted:
 - Docs/memory: interpretation principle (§0.1), chart-honesty (§10), placement
   (§11) — all in memory `atria-product-decisions`.
 
-**Not yet done (backlog):** Steps history chart (next), About-sheet mini-trends,
-Stress daily trend, C5 re-verify at ≥1–2wk data density, optional live-HR line
-on the Activity stress card, SpO2 (blocked on oximeter data, §5), same-night
-Smart-Wake staging (blocked, §3.2).
+**Shipped since (2026-08-04 loop, on `codex/atria-reliability-handoff-2026-07-22`):**
+- ✅ Steps history chart (P2): 7-day steps bar chart + `AtriaStepsWeekChart`
+  extraction with render proof (`080e618c`, `5bfc10a8`).
+- ✅ About-sheet mini-trends (P1, `9f5a8ab5` + render-proof commit):
+  `AtriaAboutMetricTrend` — same rollup transforms as the detail charts
+  (HRV = e^lnRMSSD, sleep hours), nil under 5 readings in the last 30 days,
+  linear gap-broken line + per-reading dots on a fixed 30-day frame, axes
+  hidden with a real "N nights · lo–hi unit" caption instead. Wired at the
+  Health screen + Health Monitor education sheets. Stress/SpO2 never produce
+  a trend (no persisted daily history). Snapshot render verified (sheet
+  content extracted as `sheetContent` because ImageRenderer can't draw
+  NavigationStack — renders the error placeholder if handed the full sheet).
+
+**Not yet done (backlog):** Stress daily trend (needs daily-stress
+persistence), sleep-efficiency + skin-temp trend cases (P3), C5 re-verify at
+≥1–2wk data density, optional live-HR line on the Activity stress card, SpO2
+(blocked on oximeter data, §5), same-night Smart-Wake staging (blocked, §3.2).
 
 ## 11. Chart PLACEMENT principle (2026-08-03, user-directed) — right chart, right place
 
