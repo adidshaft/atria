@@ -183,7 +183,8 @@ struct AtriaHistoricalJSONLRecentScanner {
                     try AtriaHistoricalJSONLInput.forEachChunk(
                         at: source.descriptor.url,
                         chunkSize: chunkSize,
-                        consume: process
+                        // Same per-chunk drain as the uncompressed path below.
+                        consume: { chunk in autoreleasepool { process(chunk) } }
                     )
                     guard carry.isEmpty else {
                         complete = false
@@ -203,11 +204,27 @@ struct AtriaHistoricalJSONLRecentScanner {
                     while readOffset < source.descriptor.size {
                         let remaining = source.descriptor.size - readOffset
                         let count = min(chunkSize, Int(remaining))
-                        guard let chunk = try handle.read(upToCount: count), !chunk.isEmpty else {
+                        // Per-CHUNK pool (2026-08-04 footprint kill, final
+                        // layer): FileHandle.read returns an AUTORELEASED
+                        // NSData-backed chunk, and this loop's thread pool
+                        // only drains when the whole scan ends — a ~1GB
+                        // archive held ~1GB of freed chunks (plus the
+                        // decoder's bridged per-line temporaries, ~4x that in
+                        // full mode) until the per-process limit killed the
+                        // app. The existing per-LINE pool inside process()
+                        // could not release objects autoreleased OUTSIDE it.
+                        let readComplete = autoreleasepool {
+                            guard let chunk = try? handle.read(upToCount: count),
+                                  !chunk.isEmpty else {
+                                return false
+                            }
+                            process(chunk)
+                            return true
+                        }
+                        guard readComplete else {
                             complete = false
                             break
                         }
-                        process(chunk)
                     }
                 }
 
