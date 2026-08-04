@@ -28097,13 +28097,26 @@ final class SessionStore: ObservableObject {
                     reason = "HR-only overnight review window; user confirmation required; \(motionReason)"
                 }
                 let kind = napCandidateReady ? "nap_candidate" : "overnight_sleep"
+                // Duration honesty (2026-08-04, user-caught): deduct SUSTAINED
+                // validated wake movement from the reported duration so a
+                // candidate can never claim duration == span across a stretch
+                // the wearer was demonstrably awake (typing showed 110-596mg
+                // vs a ≤6mg still baseline in the drained archive). Deduction
+                // only trusts measurement-validated recovered epochs and only
+                // blocks ≥10 min — brief rollovers are normal sleep movement.
+                // Flows into downstream review/auto-confirm gates fail-closed
+                // (net duration is smaller, never larger).
+                let motionAwakeSeconds = AtriaRecoveredMotionAnalytics
+                    .sustainedAwakeSeconds(epochs: recoveredEpochs,
+                                           start: start,
+                                           end: end)
                 return AggregateSleepCandidate(kind: kind,
                                                day: day,
                                                eventTimeZoneIdentifier: eventTimeZoneIdentifier,
                                                sessions: cluster.count,
                                                start: start,
                                                end: end,
-                                               duration: totalDuration,
+                                               duration: max(0, totalDuration - motionAwakeSeconds),
                                                span: span,
                                                maxGap: maxGap,
                                                samples: cluster.reduce(0) { $0 + $1.points.count },
