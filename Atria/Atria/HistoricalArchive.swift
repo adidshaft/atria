@@ -3577,8 +3577,12 @@ enum HistoricalArchive {
         // full ~2GB only AFTER rec_scan_done). So never run the archive in one
         // continuous stretch: scan in resumable ~160MB slices and unwind
         // between them, making peak memory per-pass instead of per-archive.
-        let passByteBudget = 160 * 1024 * 1024
-        let maximumPasses = 64
+        // 32MB, not more: the candidate-dense region generates ~15KB of
+        // transient garbage per KB read (a 168MB pass ballooned 587→2573MB
+        // on-device, 2026-08-04) — the budget must bound the DENSE-region
+        // pass, and sparse-region passes just run more often.
+        let passByteBudget = 32 * 1024 * 1024
+        let maximumPasses = 256
         var remainingSources = sources
         var priorPassStatistics = AtriaHistoricalJSONLRecentScanner.Statistics()
         var mergedScanStates: [String: AtriaHistoricalJSONLRecentScanner.FileState] = [:]
@@ -3587,24 +3591,45 @@ enum HistoricalArchive {
         while !remainingSources.isEmpty {
             passIndex += 1
             let passBase = priorPassStatistics
-            let passResult = autoreleasepool {
-                AtriaHistoricalJSONLRecentScanner.scan(
-                    sources: remainingSources,
-                    cutoff: coveredSince,
-                    byteBudget: passByteBudget,
-                    onProgress: { passStatistics in
-                        // Callers renew inactivity leases from a MONOTONIC
-                        // byte count; pass-local statistics restart at zero,
-                        // so re-base them onto the completed passes' totals.
-                        var statistics = passStatistics
-                        statistics.byteCount += passBase.byteCount
-                        statistics.fileReadCount += passBase.fileReadCount
-                        statistics.lineCount += passBase.lineCount
-                        statistics.candidateLineCount += passBase.candidateLineCount
-                        scanProgressTick(statistics)
-                    },
-                    consumeCandidate: consumeScanCandidate)
+            // Each pass runs on a THREAD THAT DIES at pass end: the on-device
+            // evidence (decode-only releasing its full ~2GB only after the
+            // work item finished; a mid-loop nap reclaiming almost nothing)
+            // says the beta allocator returns this garbage when the worker
+            // thread's malloc magazine is torn down — not at autoreleasepool
+            // drains, not at malloc_zone_pressure_relief, not on a sleep.
+            // Sequential handoff via semaphore: no concurrent access to the
+            // captured accumulator state.
+            var passResult = AtriaHistoricalJSONLRecentScanner.Result(
+                states: [:],
+                statistics: .init(),
+                complete: false)
+            let passDone = DispatchSemaphore(value: 0)
+            let passSources = remainingSources
+            let passThread = Thread {
+                passResult = autoreleasepool {
+                    AtriaHistoricalJSONLRecentScanner.scan(
+                        sources: passSources,
+                        cutoff: coveredSince,
+                        byteBudget: passByteBudget,
+                        onProgress: { passStatistics in
+                            // Callers renew inactivity leases from a MONOTONIC
+                            // byte count; pass-local statistics restart at
+                            // zero, so re-base onto completed passes' totals.
+                            var statistics = passStatistics
+                            statistics.byteCount += passBase.byteCount
+                            statistics.fileReadCount += passBase.fileReadCount
+                            statistics.lineCount += passBase.lineCount
+                            statistics.candidateLineCount += passBase.candidateLineCount
+                            scanProgressTick(statistics)
+                        },
+                        consumeCandidate: consumeScanCandidate)
+                }
+                passDone.signal()
             }
+            passThread.name = "atria.recovered-scan.pass\(passIndex)"
+            passThread.qualityOfService = .userInitiated
+            passThread.start()
+            passDone.wait()
             passResult.states.forEach { mergedScanStates[$0.key] = $0.value }
             priorPassStatistics.byteCount += passResult.statistics.byteCount
             priorPassStatistics.fileReadCount += passResult.statistics.fileReadCount
@@ -3633,10 +3658,16 @@ enum HistoricalArchive {
                 scanComplete = false
                 break
             }
-            // The unwind window: freed pages return only once this turn's
-            // allocation burst pauses. A brief nap measurably lets the
-            // footprint fall before the next slice begins.
-            usleep(150_000)
+            // Adaptive unwind wait: give the dead pass thread's magazine
+            // teardown time to actually return pages before the next burst.
+            // Bounded — progress beats a stall if reclaim never comes.
+            let unwindDeadline = Date().addingTimeInterval(2.0)
+            var footprint = AtriaMemprobe.currentFootprintBytes()
+            while footprint > 900 * 1024 * 1024, Date() < unwindDeadline {
+                usleep(120_000)
+                footprint = AtriaMemprobe.currentFootprintBytes()
+            }
+            AtriaMemprobe.note("rec_scan_unwind pass=\(passIndex) fp=\(footprint / (1024 * 1024))MB")
         }
         let scanResult = AtriaHistoricalJSONLRecentScanner.Result(
             states: mergedScanStates,
