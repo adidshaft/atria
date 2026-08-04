@@ -1658,3 +1658,55 @@ whole-points copy in the summaries path. A parallel audit agent is
 mapping every O(points) allocation site in the tree; its ranked list
 names the next surgical fix. Cold-launch UX impact unchanged: one
 silent restart ~60s after cold open, data intact, then stable.
+
+## 15. Allocation batch shipped + UI campaign round 1 (2026-08-05)
+
+ALLOCATION AUDIT FIXES COMMITTED (e665dcfd): #1 workoutReadiness
+copy-elimination (bpms materialized+sorted ONCE per call; percentiles
+take presorted); #2 windowedWorkoutCandidates 6h cluster-span ceiling
+(chained clusters produced up to 3168 window copies); #3 per-candidate
+dying thread around workoutReviewCandidate(fromQualifiedWindow:)
+(whole-corpus rescan garbage reclaimed at teardown). Test migrations
+for the raised prompt bars: rest+35 rename, stays-quiet rest+27 pin
+(the user's too-eager complaint, now a permanent test), RR gap-bridge
+test rebuilt — continuous and sustained floors are EQUAL now (5min),
+so the old premise (bout clears continuous but not sustained) is
+impossible; new form uses sub-bar 200s bouts whose in-window SUM
+clears the floor, third bout ending AT now (maximumSampleAge=5s trap:
+a tail bout ending 40s ago returns emptyResult). 210/210 green.
+Static pin migrated: feat5 fixture names. VERDICT PENDING: cold launch
+on device — if the +60s restart is gone, the balloon campaign closes.
+
+UI ROUND 1 COMMITTED (9b3f3618) from three subagent audits:
+- WIDTH (audit ranked 17 live sites): Health Trends double-box deleted;
+  8-site metric-detail chart full-bleed + trailing axis + no rotated
+  unit label (~72%→~84% plot width); sheet gutters 18→12; breakouts on
+  week-recovery, combo, steps-week, stress timeline/by-day, about-sheet
+  sparkline, Vitals HR timeline, workout traces, hypnogram lanes.
+  NOT DONE: Sessions.swift historySection (:34921) padding 18→14 and
+  the :34759 sheet gutter — do with next Sessions.swift touch.
+- MANUAL-SLEEP HONESTY: Night.isManualEntry; .manualEstimate folded
+  into the HR-only motion gate; backfill skips manual_* (stages were
+  stripped at next migration anyway — appear-then-vanish fixed); all
+  six surfaces now say "manual entry — no stages" instead of promising
+  "building/calibrating". Pins migrated (sheet copy + building summary
+  ternary→headline/detail). Deliberately REJECTED: duration-derived
+  stage templates (= estimatedConfirmedSleepStages, guarded against).
+- STRESS TRANSPARENCY (live user report mid-loop): calibrating detail
+  now carries the real progress "Baseline n of 14 rest days"; narrative
+  says live HR streams NOW and scoring activates at 14 qualified rest
+  days (~2 weeks). Card was showing detail without the label's (n/14).
+  AtriaStressMonitorTests migrated (13-of-14 fixture), 18/18.
+
+WHOOP DESIGN SPEC (subagent, saved refs in scratchpad/whoop/): dark
+near-black blue bg, 2 elevations, semantic-only accents (recovery
+green/yellow/red, strain #0093E7, sleep slate #7BA1BB), two-font rule
+(prose + DIN-like numerals), ALL-CAPS letterspaced micro-labels,
+3-dial home, day-scoped ‹TODAY› capsule stepper, metric detail =
+full-page push (hero ring → notched stat card → coach block), stat-row
+grammar with ▲▼ vs prior 30 days. Adoption pass = task #3.
+
+PARALLEL SESSION: user is running a second UI-only session on the SAME
+branch/worktree (codex/atria-reliability-handoff-2026-07-22 at
+/Users/amanpandey/projects/atria). Commit early, pull before editing,
+expect concurrent commits.
