@@ -7523,23 +7523,34 @@ final class SessionStore: ObservableObject {
                     )
                 }
                 AtriaMemprobe.note("history_snapshots_begin incremental=\(incremental != nil ? 1 : 0)")
-                let snapshots = incremental ?? SessionStore.makeHistorySnapshots(
-                    sessions: sourceSessions,
-                    confirmedWorkouts: confirmedWorkouts,
-                    confirmedSleeps: confirmedSleeps,
-                    dismissedSleepCandidates: dismissedSleepCandidates,
-                    archiveHeartRatePoints: archiveHeartRatePoints,
-                    canonicalHistory: canonicalHistory,
-                    additionalStepEvidenceDays: preservedStepEvidenceDays,
-                    motionTickDayEvidence: motionTickDayEvidence,
-                    priorMotionTickDayEvidence: priorMotionTickDayEvidence,
-                    canonicalPageCursor: canonicalPageCursor,
-                    canonicalHistoryHasMore: canonicalHistoryHasMore,
-                    biologicalSex: biologicalSex,
-                    baseline: baselineSnapshot,
-                    rest: rest,
-                    maxHR: maxHR
-                )
+                // Fresh dying thread for the FULL rebuild (2026-08-04): with
+                // ~700k recovered archive points installed, the whole-history
+                // day slicing churned ~2.4GB of transient allocations in one
+                // queue-thread stretch (flat-blocks signature) and jetsammed
+                // the process ~10s after a recompute cycle finished. The
+                // bounded incremental path stays inline.
+                let snapshots = incremental ?? AtriaTransientWorkThread.run(
+                    name: "atria.history-snapshots",
+                    qualityOfService: .utility
+                ) {
+                    SessionStore.makeHistorySnapshots(
+                        sessions: sourceSessions,
+                        confirmedWorkouts: confirmedWorkouts,
+                        confirmedSleeps: confirmedSleeps,
+                        dismissedSleepCandidates: dismissedSleepCandidates,
+                        archiveHeartRatePoints: archiveHeartRatePoints,
+                        canonicalHistory: canonicalHistory,
+                        additionalStepEvidenceDays: preservedStepEvidenceDays,
+                        motionTickDayEvidence: motionTickDayEvidence,
+                        priorMotionTickDayEvidence: priorMotionTickDayEvidence,
+                        canonicalPageCursor: canonicalPageCursor,
+                        canonicalHistoryHasMore: canonicalHistoryHasMore,
+                        biologicalSex: biologicalSex,
+                        baseline: baselineSnapshot,
+                        rest: rest,
+                        maxHR: maxHR
+                    )
+                }
                 AtriaMemprobe.note("history_snapshots_end")
                 let preparationSessions = recoveredAffectedDays.map {
                     SessionStore.recoveredDailyPreparationSessions(
@@ -11459,36 +11470,57 @@ final class SessionStore: ObservableObject {
                                                          rest: Int,
                                                          maxHR: Int,
                                                          calendar: Calendar = .current) -> (history: HistorySnapshot, sleep: SleepHistorySnapshot) {
-        let canonical = makeCanonicalSessions(from: sessions)
-        let liveDetections = makeHistoryDetections(sessions: canonical,
-                                                   confirmedWorkouts: confirmedWorkouts,
-                                                   rest: rest,
-                                                   maxHR: maxHR,
-                                                   calendar: calendar)
-        let detections = mergeCanonicalHistoricalDetections(
-            live: liveDetections,
-            sources: canonicalHistory
-        )
-        let liveRollups = makeHistoryDailyRollups(sessions: canonical,
-                                                  detections: detections,
-                                                  confirmedWorkouts: confirmedWorkouts,
-                                                  archiveHeartRatePoints: archiveHeartRatePoints,
-                                                  biologicalSex: biologicalSex,
-                                                  baselineRestingIsTrusted: baseline.hasTrustedRestingBaseline(now: Date()),
-                                                  rest: rest,
-                                                  maxHR: maxHR,
-                                                  calendar: calendar)
-        let rollups = mergeCanonicalHistoricalRollups(live: liveRollups,
-                                                       sources: canonicalHistory,
-                                                       rest: rest,
-                                                       maxHR: maxHR,
-                                                       calendar: calendar)
-        let trends = makeHistoryTrendSummaries(sessions: canonical,
-                                               rollups: rollups,
-                                               baseline: baseline,
-                                               rest: rest,
-                                               maxHR: maxHR,
-                                               calendar: calendar)
+        // Per-stage dying threads (2026-08-04): the full rebuild generated
+        // ~2.4GB of transient garbage in one continuous stretch once ~700k
+        // recovered archive points existed. Splitting the pipeline bounds the
+        // peak to the worst single stage AND the per-stage probe notes name
+        // that stage if it alone still overruns.
+        AtriaMemprobe.note("hist_stage canonical")
+        let canonical = AtriaTransientWorkThread.run(name: "atria.hist-canonical",
+                                                     qualityOfService: .utility) {
+            makeCanonicalSessions(from: sessions)
+        }
+        AtriaMemprobe.note("hist_stage detections")
+        let detections = AtriaTransientWorkThread.run(name: "atria.hist-detections",
+                                                      qualityOfService: .utility) {
+            mergeCanonicalHistoricalDetections(
+                live: makeHistoryDetections(sessions: canonical,
+                                            confirmedWorkouts: confirmedWorkouts,
+                                            rest: rest,
+                                            maxHR: maxHR,
+                                            calendar: calendar),
+                sources: canonicalHistory
+            )
+        }
+        AtriaMemprobe.note("hist_stage rollups")
+        let rollups = AtriaTransientWorkThread.run(name: "atria.hist-rollups",
+                                                   qualityOfService: .utility) {
+            mergeCanonicalHistoricalRollups(
+                live: makeHistoryDailyRollups(sessions: canonical,
+                                              detections: detections,
+                                              confirmedWorkouts: confirmedWorkouts,
+                                              archiveHeartRatePoints: archiveHeartRatePoints,
+                                              biologicalSex: biologicalSex,
+                                              baselineRestingIsTrusted: baseline.hasTrustedRestingBaseline(now: Date()),
+                                              rest: rest,
+                                              maxHR: maxHR,
+                                              calendar: calendar),
+                sources: canonicalHistory,
+                rest: rest,
+                maxHR: maxHR,
+                calendar: calendar)
+        }
+        AtriaMemprobe.note("hist_stage trends")
+        let trends = AtriaTransientWorkThread.run(name: "atria.hist-trends",
+                                                  qualityOfService: .utility) {
+            makeHistoryTrendSummaries(sessions: canonical,
+                                      rollups: rollups,
+                                      baseline: baseline,
+                                      rest: rest,
+                                      maxHR: maxHR,
+                                      calendar: calendar)
+        }
+        AtriaMemprobe.note("hist_stage tail")
         var stepEvidenceDays = verifiedCanonicalStepEvidenceDays(
             sources: canonicalHistory,
             calendar: calendar
