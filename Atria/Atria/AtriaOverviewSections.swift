@@ -11434,7 +11434,10 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
     }
 }
 
-private struct AtriaMetricContributorRow: Identifiable, Equatable {
+// Internal (was private, 2026-08-05) so the WHOOP stat-row grammar is
+// render-testable — the rows live behind "Show details" where neither
+// simctl screenshots nor the fixture launch args can reach them.
+struct AtriaMetricContributorRow: Identifiable, Equatable {
     var id: String { "\(systemImage)|\(name)" }
     let systemImage: String
     let name: String
@@ -11451,7 +11454,8 @@ private struct AtriaMetricContributorRow: Identifiable, Equatable {
     }
 }
 
-private struct AtriaMetricContributorRows: View, Equatable {
+// Internal (was private, 2026-08-05) — see AtriaMetricContributorRow above.
+struct AtriaMetricContributorRows: View, Equatable {
     let rows: [AtriaMetricContributorRow]
     let tint: Color
 
@@ -11500,11 +11504,18 @@ private struct AtriaMetricContributorRows: View, Equatable {
                                 .font(.subheadline.weight(.bold).monospacedDigit())
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.72)
-                            if row.direction != 0 {
-                                Image(systemName: directionSymbol(row.direction))
-                                    .font(.caption2.weight(.bold))
-                                    .foregroundStyle(rowTint(row))
+                            // Column reserved even when neutral so every
+                            // value shares one right edge (render-verified).
+                            Group {
+                                if row.direction != 0 {
+                                    Image(systemName: directionSymbol(row.direction))
+                                        .font(.caption2.weight(.bold))
+                                        .foregroundStyle(rowTint(row))
+                                } else {
+                                    Color.clear
+                                }
                             }
+                            .frame(width: 14, height: 14)
                         }
                     }
                     .padding(.vertical, 10)

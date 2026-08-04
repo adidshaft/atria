@@ -490,7 +490,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "while lower < upper",
             "private let companionIndicesByDay: [[Date: Int]]",
             "let match = prepared.companionPointIndex(at: index, on: selectedPoint.day)",
-            "private struct AtriaMetricContributorRow: Identifiable, Equatable",
+            # Pin migrated 2026-08-05: de-privatized (with a dated source
+            # comment) so the WHOOP stat-row grammar is render-testable.
+            "struct AtriaMetricContributorRow: Identifiable, Equatable",
             "var id: String { \"\\(systemImage)|\\(name)\" }",
         ]:
             assert_contains(self, overview, needle)
@@ -507,8 +509,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, chart_domain_source, "points.map(\\.value)")
         assert_not_contains(self, chart_domain_source, "priorPointsForDomain.map(\\.value)")
         assert_not_contains(self, chart_domain_source, "points.compactMap(\\.bandLower)")
-        contributor_row_start = overview.index("private struct AtriaMetricContributorRow")
-        contributor_row_end = overview.index("private struct AtriaMetricContributorRows", contributor_row_start)
+        contributor_row_start = overview.index("struct AtriaMetricContributorRow: Identifiable")
+        contributor_row_end = overview.index("struct AtriaMetricContributorRows: View", contributor_row_start)
         assert_not_contains(self, overview[contributor_row_start:contributor_row_end], "UUID()")
 
         # TODO(unbuilt spec): docs/23 "Sleep review morning wording checkpoint" (July 1,
