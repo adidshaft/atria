@@ -50,7 +50,11 @@ enum AtriaMemprobe {
                 let delta = footprint > lastLoggedResident
                     ? footprint - lastLoggedResident
                     : lastLoggedResident - footprint
-                guard delta >= deltaThresholdBytes || now - lastHeartbeatAt >= 1 else { return }
+                // Idle heartbeat every 30s, not 1s: the 1Hz fsync cadence
+                // kept the devicectl file service permanently contended, so
+                // the log could rarely be pulled (2026-08-04). Movement
+                // still logs immediately via the delta trigger.
+                guard delta >= deltaThresholdBytes || now - lastHeartbeatAt >= 30 else { return }
                 lastHeartbeatAt = now
                 lastLoggedResident = footprint
                 // Tag attribution at every 512MB footprint milestone: the tag
