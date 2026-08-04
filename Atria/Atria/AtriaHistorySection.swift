@@ -1250,13 +1250,16 @@ private struct AtriaHistoryDeltaGlyph: View {
             }
             .font(.caption2.weight(.bold).monospacedDigit())
             .foregroundStyle(tint(isUp: isUp))
-        } else {
-            // Distinguish the two honest empty states: the day itself has no
-            // reading vs the median hasn't accumulated 3 samples yet.
-            Text(median != nil ? "No reading this day" : "Building median")
+        } else if median != nil {
+            // The day itself has no reading (the median exists) — this slot is
+            // the only place that says so.
+            Text("No reading this day")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
+        // median == nil renders nothing here: the row's subtitle already says
+        // "Building median", and printing it twice per row read as sloppy
+        // (sparse-day render audit, 2026-08-04).
     }
 
     private func tint(isUp: Bool) -> Color {
