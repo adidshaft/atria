@@ -261,6 +261,15 @@ sites (dead code, unpinned, likely superseded by `AtriaExpandedChart`) —
 flagged as a spin-off review task rather than deleted unilaterally, per the
 pinned-dead-code precedent.
 
+**REGRESSION VERDICT FINAL (09:5x): all 6 failures PRE-EXISTING at
+session-start `5bfc10a8`** — proven by a baseline worktree run (motion-tick
+×2 + widget-battery fail identically there; vitals-education density fails
+there; journal density's inputs have empty diffs vs HEAD so it is
+deterministically unchanged; the sleep probe is the stray untracked file).
+**Session net test impact: +12 fixed (all July-22 baseline failures now
+pass), 0 broken.** Baseline worktree `/private/tmp/atria-baseline-5bfc10a8`
+can be pruned.
+
 **Full-suite regression run (09:3x): 3354 passed / 6 unique failures** —
 and the July-22 baseline's 12 failures (9 record-replays etc.) are GONE.
 Triage of the 6: `PhysicalSleepProbeTests` = the stray untracked dev probe
