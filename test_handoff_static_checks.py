@@ -6132,12 +6132,16 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, body, "DispatchQueue.global(qos: .utility).async")
         assert_contains(self, body, "Self.aggregateSleepCandidates(in: sourceSessions,")
         assert_contains(self, body, "let aggregateSleepCandidatesForValidation = label == nil")
-        assert_contains(self, body, "historicalMotionPolicy: .fullArchive")
+        # 2026-08-04: migrated from .fullArchive — the diagnostics motion load
+        # materialized the entire raw archive as simultaneous in-memory Strings
+        # (2-3GB burst, per-process-limit jetsam; see handoff §12 bisect).
+        assert_contains(self, body, "historicalMotionPolicy: .boundedRecent")
         assert_contains(self, body, "? (preparedAggregateCandidates ?? [])")
         assert_contains(self, body, "logSleepValidationCandidateMatrix(candidates: aggregateSleepCandidatesForValidation)")
         assert_contains(self, body, "let aggregate = aggregateSleepCandidatesForValidation.first")
         assert_contains(self, body, "aggregateSleepCandidatesForValidation.count")
-        self.assertEqual(body.count("historicalMotionPolicy: .fullArchive"), 1)
+        self.assertEqual(body.count("historicalMotionPolicy: .boundedRecent"), 1)
+        self.assertEqual(body.count("historicalMotionPolicy: .fullArchive"), 0)
 
         matrix = re.search(
             r"private func logSleepValidationCandidateMatrix\(candidates: \[AggregateSleepCandidate\],\n                                                   maxRows: Int = 6\) \{(?P<body>.*?)\n    \}",
