@@ -1546,3 +1546,23 @@ report in session log; feature-by-feature vs Atria):
 - PRODUCT DECISIONS: guided breathwork sessions (stress monitor
   companion); exportable 30/180-day health REPORT (Atria has raw export
   only); WHOOP-Age-style long-horizon score (needs months of data).
+
+## 14.1 Balloon endgame status (2026-08-05 ~02:00)
+
+CLOSED this pass: all three rehydration raw-scan entries (trailing ×2,
+foreground replay) + the projection-first stand-down rule — verified: no
+rehydration_raw note in the final cycle. WHOOP-parity features shipped
+(picker chart, 77-type catalog, band names, Restorative sleep row).
+
+REMAINING (one precise signature): cold launch → first recompute
+completes and COMMITS (post_swap ~+46s, ~1.3GB) → un-noted ~2GB burst in
+the next ~9s → one jetsam → relaunch → indefinitely stable (~300MB,
+verified across 3 consecutive builds; 7+ clean minutes each). User
+impact: a single silent restart shortly after a cold open; no data loss
+(the swap commits first). NEXT BRACKET TARGET: the post-publish window's
+un-instrumented consumers — prime suspect the widget-projection/publish
+encode (WidgetSnapshot walks the recovered channels and carries NO probe
+notes); second suspect the startDerived dispatch path before its first
+component note. One note-instrumented cycle names it; then the same
+dying-thread/stage medicine closes the campaign, followed by the
+instrumentation strip + full suite.
