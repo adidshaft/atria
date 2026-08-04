@@ -276,6 +276,44 @@ record shows EVERY kill today dies inside `rec_scan_progress` —
    plus decoder churn) ⇒ the scan now crosses the limit ⇒ progressively
    worse as the archive grows. Explains why fixes "verified" then failed:
    each reduced other pressure while the archive kept growing.
+IMPLEMENTATION MAP (10:2x pass — everything read, refactor NOT landed to
+avoid another under-tested loop-pass fix):
+- `AtriaRecoveredRRProjection.project(records:)` (~94-148) = per-record
+  `verify()` (~170-234, needs rawPayloadHex for payload re-decode +
+  cross-checks) + cross-record dedup via `acceptedByRecordID[stableRecordID]`
+  with clock-provenance preference (~106-125). Extract this loop into a
+  streaming `Accumulator` (compact per-record storage: recordID String once,
+  clockRank, correctedUnix/subsec11/counter, intervals [Int]; materialize
+  `Beat`s only in `finish()` — beats' id strings are the fat part).
+  `project(records:)` becomes ingest-loop + finish → tests untouched.
+- `HistoricalArchive.appendRecoveredRecord` (~3563): RR branch (~3624)
+  currently appends the WHOLE Record (rawPayloadHex + candidateRR + 3 int
+  arrays ≈ 0.8-1.2KB each; 250K ≈ 300MB). Replace `rrRecords: inout [Record]`
+  with the accumulator; budget counts accepted records
+  (`RecoveredProjectionBudget.maximumRRRecords` 250K can then rise ~4× at
+  equal bytes).
+- Cache: `RecoveredDataCache` (~4900) + `prunedRecoveredCache` (~3677, prune
+  accumulator by correctedUnix ≥ cutoff) + reuse limitations (~3446) +
+  retention decisions (~3525-3533). ADD `truncatedChannels: Set<Channel>` so
+  a capped channel keeps reporting budgetExceeded after prune instead of the
+  cache being discarded (the current `recoveredDataCache = nil` on
+  limitations is the rebuild-forever amplifier). NOTE: cache is a process-
+  lifetime STATIC — retention alone cannot stop first-scan-after-launch
+  kills; the compact accumulation is what shrinks the scan itself.
+- Also compact: `AtriaRecoveredMotionReplayIdentity.payload = .bytes(Data)`
+  (full raw payload per identity; 658K ≈ 130MB) — a SHA-256 digest preserves
+  identity semantics at 32B.
+- Pre-existing quirk found while mapping (fix or document): on plan=.rebuild
+  (~3480-3486) the arrays are cleared but `limitations` (~3465) was seeded
+  from the PRE-clear reused counts — a full cache forced into rebuild starts
+  with stale budgetExceeded flags that block appends.
+- Consumer swap: Sessions ~9301 `AtriaRecoveredRRProjection.project(records:
+  snapshot.rrRecords)` → snapshot carries the projection/accumulator.
+- Sizing at last kill: rr 250K Records ≈300MB + motion IDs ≈130MB + hr/grav
+  ≈45MB retained; remainder of the 3.3GB ≈ malloc-dirty churn from full-
+  Record JSONDecoder decodes over 955MB of lines (per-line autoreleasepool
+  exists; native-heap dirty pages still accumulate in footprint).
+
 FIX DESIGN (dedicated session; spun off as a task): (a) move the RR
 verification (AtriaRecoveredRRProjection ~171-227, needs rawPayloadHex)
 INTO the scan and retain compact verified beats, not whole Records; (b)
