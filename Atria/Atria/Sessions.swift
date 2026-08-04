@@ -27553,7 +27553,15 @@ final class SessionStore: ObservableObject {
                                                                maxHR: Int,
                                                                calendar: Calendar = .current,
                                                                thresholdFraction: Double = 0.50) -> [AggregateWorkoutCandidate] {
-        let eligible = sessions.filter { !$0.points.isEmpty && $0.duration >= 60 }
+        // Upper bound (2026-08-05, cold-launch burst root): aggregation
+        // exists to stitch SHORT chunks into one workout. An all-day
+        // recovered wear session is not a workout chunk — clustering it
+        // copied+sorted ~a day of points three ways per cluster and was the
+        // ignition inside hist_stage=detections. Single-session readiness
+        // still evaluates long sessions on their own path.
+        let eligible = sessions.filter {
+            !$0.points.isEmpty && $0.duration >= 60 && $0.duration <= 6 * 3600
+        }
         let grouped = Dictionary(grouping: eligible) { session in
             EventCivilTime.day(containing: session.start,
                                eventTimeZoneIdentifier: session.eventTimeZoneIdentifier,

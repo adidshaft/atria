@@ -5,21 +5,19 @@ import XCTest
 /// graceful measures when data lags). The nudge must fire only when the user
 /// can actually fix the lag, and stay silent otherwise.
 final class AtriaSyncNudgeTests: XCTestCase {
-    private func content(level: String? = "high",
+    private func content(pending: Int? = 45 * 60,
                          debtAge: TimeInterval? = 600,
                          flushAge: TimeInterval? = 3 * 3600,
                          connected: Bool = true,
                          lowPower: Bool = false,
-                         active: Bool = false,
-                         hour: Int = 14) -> LocalNotificationScheduler.SyncNudgeContent? {
+                         active: Bool = false) -> LocalNotificationScheduler.SyncNudgeContent? {
         LocalNotificationScheduler.syncNudgeContent(
-            flushDebtLevelRaw: level,
+            flushDebtPendingRecords: pending,
             debtObservedAgeSeconds: debtAge,
             lastDurableFlushAgeSeconds: flushAge,
             linkConnected: connected,
             lowPowerMode: lowPower,
-            applicationIsActive: active,
-            hour: hour
+            applicationIsActive: active
         )
     }
 
@@ -43,12 +41,14 @@ final class AtriaSyncNudgeTests: XCTestCase {
                      "a progressing drain needs no user action")
     }
 
-    func testSilentWhenAppActiveOrNightOrShallowDebt() {
+    func testSilentWhenAppActiveOrShallowDebt() {
         XCTAssertNil(content(active: true))
-        XCTAssertNil(content(hour: 23))
-        XCTAssertNil(content(hour: 3))
-        XCTAssertNil(content(level: "low"))
-        XCTAssertNil(content(level: nil))
+        // 2026-08-05 user decision: no time-of-day gate — a 30min+ miss is
+        // worth knowing at any hour. The threshold is the only depth gate.
+        XCTAssertNil(content(pending: 20 * 60))
+        XCTAssertNil(content(pending: nil))
+        XCTAssertNotNil(content(pending: 30 * 60),
+                        "exactly 30 minutes of missed data qualifies")
     }
 
     func testSilentWhenDebtStaleButStillConnected() {

@@ -114,19 +114,25 @@ enum LocalNotificationScheduler {
     /// - strapAway: a deep backlog was last observed hours ago and the link
     ///   has been down since — bringing the strap close is the fix.
     /// - lowPower: Low Power Mode is throttling background sync.
-    /// Never fires while the app is active (the in-app banner owns that), and
-    /// only inside 09:00–21:59 local.
+    /// Never fires while the app is active (the in-app banner owns that).
+    /// No time-of-day gate (2026-08-05 user decision: "sync should happen
+    /// whenever possible" — a significant miss is worth knowing at any hour;
+    /// iOS delivers it quietly under the user's own Focus/notification
+    /// settings). Threshold: ≥30 minutes of missed strap data
+    /// (pendingRecords at the ~1Hz banking cadence).
+    nonisolated static let syncNudgeMinimumPendingRecords = 30 * 60
+
     nonisolated static func syncNudgeContent(
-        flushDebtLevelRaw: String?,
+        flushDebtPendingRecords: Int?,
         debtObservedAgeSeconds: TimeInterval?,
         lastDurableFlushAgeSeconds: TimeInterval?,
         linkConnected: Bool,
         lowPowerMode: Bool,
-        applicationIsActive: Bool,
-        hour: Int
+        applicationIsActive: Bool
     ) -> SyncNudgeContent? {
-        guard !applicationIsActive, (9...21).contains(hour) else { return nil }
-        guard flushDebtLevelRaw == "high" else { return nil }
+        guard !applicationIsActive else { return nil }
+        guard let pending = flushDebtPendingRecords,
+              pending >= syncNudgeMinimumPendingRecords else { return nil }
         let progressing = lastDurableFlushAgeSeconds.map { $0 < 2 * 3600 } ?? false
         guard !progressing else { return nil }
         let debtFresh = debtObservedAgeSeconds.map { $0 <= 2 * 3600 } ?? false
@@ -153,7 +159,7 @@ enum LocalNotificationScheduler {
     private static let syncNudgeLastScheduledKey = "atria.notification.syncNudge.lastAt"
 
     static func scheduleSyncNudgeIfNeeded(
-        flushDebtLevelRaw: String?,
+        flushDebtPendingRecords: Int?,
         debtObservedAgeSeconds: TimeInterval?,
         lastDurableFlushAgeSeconds: TimeInterval?,
         linkConnected: Bool,
@@ -163,13 +169,12 @@ enum LocalNotificationScheduler {
     ) {
         guard AtriaNotificationSettings.load().allows(kind: "sync_nudge") else { return }
         guard let content = syncNudgeContent(
-            flushDebtLevelRaw: flushDebtLevelRaw,
+            flushDebtPendingRecords: flushDebtPendingRecords,
             debtObservedAgeSeconds: debtObservedAgeSeconds,
             lastDurableFlushAgeSeconds: lastDurableFlushAgeSeconds,
             linkConnected: linkConnected,
             lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
-            applicationIsActive: applicationIsActive,
-            hour: calendar.component(.hour, from: now)
+            applicationIsActive: applicationIsActive
         ) else { return }
         let defaults = UserDefaults.standard
         let last = defaults.double(forKey: syncNudgeLastScheduledKey)
