@@ -5938,6 +5938,31 @@ struct AtriaSleepStageSummary: View, Equatable {
                     .foregroundStyle(color(for: stage))
                 }
             }
+
+            // WHOOP-parity "Restorative sleep" (2026-08-05): REM + slow-wave
+            // + deep summed — the recovery-relevant share of the night, named
+            // the way WHOOP names it. Pure re-presentation of the same
+            // stage evidence above; hidden when stages carry no duration.
+            let restorativeSeconds = night.stageDuration(.rem)
+                + night.stageDuration(.sws)
+                + night.stageDuration(.deep)
+            if restorativeSeconds > 0 {
+                HStack(spacing: 7) {
+                    Image(systemName: "bolt.heart.fill")
+                        .font(.caption2.weight(.bold))
+                    Text("RESTORATIVE (REM + DEEP)")
+                        .font(.caption2.weight(.bold))
+                    Spacer(minLength: 0)
+                    Text(SleepHistorySnapshot.formatDuration(restorativeSeconds))
+                        .font(.caption2.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 6)
+                .padding(.horizontal, 8)
+                .background(Color.indigo.opacity(0.10),
+                            in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .foregroundStyle(.indigo)
+            }
         }
         .padding(10)
         .atriaInsetCard(tint: .cyan)

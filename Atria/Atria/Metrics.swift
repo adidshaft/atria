@@ -186,6 +186,18 @@ enum Metrics {
         case unavailable
     }
 
+    /// WHOOP's published strain vocabulary (support docs, fetched 2026-08-05):
+    /// Light 0–9 · Moderate 10–13 · High 14–17 · All Out 18–21. Shared so the
+    /// detail sheet, coach copy and any future band chip agree.
+    static func strainBandName(_ strain: Double) -> String {
+        switch strain {
+        case ..<10: return "Light"
+        case ..<14: return "Moderate"
+        case ..<18: return "High"
+        default: return "All Out"
+        }
+    }
+
     struct StrainPresentation: Equatable {
         /// Missing less than five percent is the strongest practical coverage
         /// tier. This matches the product's ~95% real-world accuracy target
