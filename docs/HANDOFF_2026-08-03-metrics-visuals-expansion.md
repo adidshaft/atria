@@ -167,7 +167,16 @@ logged here as a review-vigilance failure too.
 
 Facts: the card renders `night.durationHours`; for this candidate duration
 equals span ⇒ the aggregate candidate merged across the wake with no
-exclusion. FIXED (`b95f8817`, evening): `AtriaRecoveredMotionAnalytics
+exclusion. UX OBSERVATION (post-rollover screenshot): the physiological cycle rolled
+before the user confirmed the night — the "Possible sleep" card left the
+Overview (Sleep tile back to "--", fallback recovery 66% "resting HR" now
+fronting). The unconfirmed night remains reachable only via Activity/
+history. This is the `atria-nap-surfacing-gap` class biting for MAIN sleep:
+an unconfirmed night that ages past rollover loses its primary surface.
+Product decision needed (same as the nap question): should an unconfirmed
+previous-night candidate keep a visible slot on Overview until resolved?
+
+FIXED (`b95f8817`, evening): `AtriaRecoveredMotionAnalytics
 .sustainedAwakeSeconds` (validated non-low-motion epoch blocks ≥10min;
 rollovers never deducted; unvalidated never trusted) deducted from candidate
 duration at construction — span intact, downstream gates fail-closed. 5 new
