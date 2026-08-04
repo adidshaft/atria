@@ -1879,3 +1879,25 @@ firing during rec_scan passes.
 Redundancy backlog (not yet done): 3× reuse=0 refreshes in 42s of
 cold launch — coalescing would cut launch CPU/alloc further; triggers
 still unidentified (sleep-candidate settles + scene activation?).
+
+## 15.9 Burst-hunt round 3: guards verified, lane widened (2026-08-05 ~05:20)
+
+Verified on-device, three consecutive instrumented cold launches:
+- Round 1 (single-lane fix 60d5ab60): scan COMPLETED (20s, plateau
+  892MB, hist_deferred_scan_active fired) — death MOVED to +80s inside
+  shadow parity (955→3202MB; readVerifiedConsumerSources decodes at
+  whole-archive scale even with maximumSourceCount:1).
+- Round 2 (shadow cold-launch skip c63e7397): shadow_step_skipped
+  fired; death MOVED to +151s — an EXTERNAL reuse=0 history refresh
+  during the DERIVING phase, stacking its ~1.3GB entry load on the
+  ~1.3GB retained recovered working set (recovered_snapshot_end shows
+  hrPoints=726K rrBeats=474K resident ≈1.23GB — RETAINED, not garbage).
+- Round 3 (lane widened to .deriving, this commit): installed +
+  cold-launched ~05:20; verdict next cycle.
+
+Pattern: each fix moves the death later and the guards demonstrably
+engage. Remaining structural issues once round 3 verifies: (a) WHO
+fires the repeated external reuse=0 refreshes (3-4 per cold launch —
+coalescing backlog); (b) the 1.3GB retained recovered working set is
+itself half the ceiling — bounding/staging it is the durable fix;
+(c) bounded reads for readVerifiedConsumerSources (task #10 list).
