@@ -251,6 +251,18 @@ whole-recovered-decode lane that re-runs after each drained batch and is the
 prime steady-climb suspect. Read the log tail after the next kill; the
 breadcrumbs now bracket every candidate.
 
+**STATUS CORRECTION (08:2x): fix #2 did NOT hold either** — another 3.45GB
+active+frontmost jetsam at 08:11:45, 63s after the rate-limited build
+launched, with zero lane notes during the climb. Conclusion: the
+symbolicated gravity stack was the CPU-QUOTA offender (real, and its fixes
+stand — history_snapshots now completes in ~0.9-16s instead of looping), but
+the FOOTPRINT balloon is a different, still-unnamed lane that resident_size
+sampling never saw. Probe upgraded (`b280246d`): samples
+`task_vm_info.phys_footprint` (the jetsam-enforced metric) with 1s
+heartbeats + dual footprint/resident per line. The next kill's tail will
+show the true footprint curve and the nearest breadcrumb. Do NOT re-declare
+victory until a multi-hour kill-free soak with the footprint probe.
+
 **BALLOON FIX #2 (`5b1e9e4b`, 08:1x) — fingerprint alone was NOT enough.**
 A new 3.45GB jetsam at 07:59:39 (active+frontmost, post-fingerprint-fix
 build) with ZERO probe lane notes during the climb. Diagnosis: the drain
