@@ -276,6 +276,19 @@ record shows EVERY kill today dies inside `rec_scan_progress` —
    plus decoder churn) ⇒ the scan now crosses the limit ⇒ progressively
    worse as the archive grows. Explains why fixes "verified" then failed:
    each reduced other pressure while the archive kept growing.
+**ROOT FOUND (11:2x-11:3x): AUTORELEASED CHUNKS — per-chunk pool fix is
+holding.** Decoder-recycle failed identically → re-analysis showed the climb
+is ~1:1 with BYTES READ in count-only (978MB read → +1GB) with a ~4x decode
+multiplier — pointing at the scanner's read loop: FileHandle.read returns
+AUTORELEASED NSData chunks and the loop's thread pool never drains until the
+scan ends (the per-LINE pool inside process() cannot release objects
+autoreleased outside it); the decoder's bridged temporaries ride the same
+pool. Fix: autoreleasepool per 64KB chunk in BOTH read paths
+(`pending-hash`). On-device full-mode repro: footprint FLAT ~150MB through
+the scan where every prior run was 500+MB and climbing (kills at 3.37GB).
+This also explains every failed counter (recycle/pressure-relief can't touch
+autoreleased-alive objects). Scan completion + multi-hour soak still owed.
+
 **BISECT COMPLETE (11:2x): the mid-scan climber is JSONDecoder ITSELF.**
 decode-only (decode per line, retain nothing) died at 3.37GB after 594MB —
 vs count-only surviving all 978MB at 1.5GB. A reused JSONDecoder hoards
