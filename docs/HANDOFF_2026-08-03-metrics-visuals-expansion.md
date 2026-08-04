@@ -496,6 +496,41 @@ to restore real data. NOTE the probe build tag still reads
 compact-rr-v1 on FOUR different binaries — distinguish runs by launch
 epoch only; bump the tag on the next instrumented build.
 
+**16:4x THE THEORY THAT SURVIVED + STATE AT PHONE-DETACH (evening).**
+User unlocked; decode-only on the byte-parser build ran to completion:
+climb to ~2.1GB plateau, `rec_scan_done` at 43s, then FULL RELEASE back
+to 68-84MB. So nothing is retained — the balloon is TRANSIENT PER-LINE
+GARBAGE outrunning page reclaim during the scan, and full mode dies by
+stacking append-path garbage on the same plateau. count-only = the
+411MB bar (no per-line allocation). Two fix rounds landed on that
+theory, each real but so far insufficient on device:
+`f7e735cb` in-place parser (no line copy/key/number Strings, span
+ISO8601, probe tag → inplace-parser-v1) and `2fe14d72` allocation-
+frugal append (byte-wise hex encode/decode fast paths in
+bytes(fromHex:)/RR decodeHex/identity payload; sha256+normalizedHex
+without String(format:); ONE payload decode per record shared by
+gravity+skin) — parity/RR/scanner suites 30/30, all output-identical.
+Full mode still died (~500MB/s climb), BUT the flat prefix moved
+100MB→512MB of bytes read: ignition tracks REACHING CANDIDATE-DENSE
+(post-cutoff) rows, not a file position — the closure only runs on
+candidates, so the garbage is per-CANDIDATE (~40KB/row unexplained by
+audited allocations; canonical decoder audited lean — provenance rawHex
+is computed-only). `AtriaWhoop4HistoricalRecordDecoder.decode` still
+runs ×2 per candidate (gravitySample + RR verify) — sharing one decode
+is the next planned reduction, but blind fixes are paused pending the
+lane verdict. LEVER BUILT (last commit): 3-way append bisect
+`append-sans-motion|-rr|-skin` (full append minus exactly one
+subsystem). ALL THREE RAN on-device (launch epochs 1785843178 /
+1785844232 / 1785844507, then normal relaunch 1785844784) but the
+devicectl file service wedged (~20min) before the probe log could be
+pulled — VERDICT IS ON THE PHONE, unread. NEXT SESSION FIRST MOVE: plug
+phone in, pull Documents/atria-memprobe.log, read the three bisect
+windows by epoch; the run whose climb is missing/flattest names the
+lane. Also available in the log: the earlier in-place decode-only run
+(epoch 1785841510, scene never fronted → rerun if empty) and the
+unread sans-motion window. If the file service still wedges, verdict
+fallback = systemCrashLogs jetsam timestamps vs the three windows.
+
 **LIVE-RETENTION CONFIRMED + SCANNER EXONERATED (15:0x):** zone stats show
 size_in_use tracking footprint 1:1 through the burst (live=3074MB at
 3104MB) — the MALLOC_SMALL mass is GENUINELY RETAINED, not freed-dirty
