@@ -251,6 +251,20 @@ whole-recovered-decode lane that re-runs after each drained batch and is the
 prime steady-climb suspect. Read the log tail after the next kill; the
 breadcrumbs now bracket every candidate.
 
+**BALLOON FIX #2 (`5b1e9e4b`, 08:1x) — fingerprint alone was NOT enough.**
+A new 3.45GB jetsam at 07:59:39 (active+frontmost, post-fingerprint-fix
+build) with ZERO probe lane notes during the climb. Diagnosis: the drain
+WRITES gravity files continuously, so the stat fingerprint invalidates on
+every sleep-candidate call while draining — the re-decode loop returned
+exactly when the app is busiest (which is also why earlier post-fix runs
+"settled": the drain had paused). Fix #2: a cache younger than 45s always
+hits (≤45s-stale motion evidence is fine for sleep candidacy). Probe now
+also brackets `history_snapshots` — post-fix it completes in 0.86s
+(369→424MB) where the old loop ran for minutes. **Verdict deliberately
+withheld pending a multi-hour soak** — fix #1 also looked clean for 40
+minutes. Watch: any new JetsamEvent + whether `history_snapshots_begin/end`
+pairs stay sub-second in the probe log.
+
 **Soak update (08:0x):** latest build (incl. timeline empty-state fix)
 installed + relaunched on device; still no kills. Below-fold render audit of
 `AtriaHistoryDayDetailSheet` (temp drawHierarchy test per the recipe, deleted
