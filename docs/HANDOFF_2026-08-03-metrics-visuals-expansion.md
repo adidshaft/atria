@@ -394,6 +394,22 @@ pair + widget-battery, all pre-dating this session, plus the stray
 untracked dev probe file). User awake; sleep Confirm still pending
 (fallback recovery 63, RHR 55).
 
+**FINAL CONVICTION (15:1x): JSONDecoder retains live memory per decode —
+confirmed clean-room.** decode-only under live-stats (decode+discard, no
+append, no verify): live 635→3006MB across the scan with net blocks nearly
+flat; count-only on the same build stays at 411MB peak. So plain
+`JSONDecoder().decode(Record.self, from: line)` × ~3.6M lines retains ~GBs,
+SURVIVING instance recycling ⇒ shared swift-foundation infrastructure —
+note the device runs iOS 27.0 BETA (24A5380h); plausibly a beta Foundation
+regression. FIX (specified, not yet built): remove JSONDecoder from the
+scan hot path — parse scan lines via JSONSerialization + a manual
+`Record(jsonObject:)` mapping (the motionTickWindowRead lane already parses
+this way and stays memory-flat under the pools); keep Codable everywhere
+else; add a GOLDEN PARITY test (JSONDecoder vs jsonObject mapping must
+produce identical Records over representative real lines, incl. iso8601
+capturedAt and every optional). Also file the beta-Foundation suspicion for
+re-test on iOS 27 GA before considering the workaround permanent.
+
 **LIVE-RETENTION CONFIRMED + SCANNER EXONERATED (15:0x):** zone stats show
 size_in_use tracking footprint 1:1 through the burst (live=3074MB at
 3104MB) — the MALLOC_SMALL mass is GENUINELY RETAINED, not freed-dirty
