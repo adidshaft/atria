@@ -475,4 +475,47 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertEqual(archive.comparison(at: date, calendar: calendar)?.today.mediumSamples, 1)
         XCTAssertEqual(archive.comparison(at: date, calendar: calendar)?.today.highSamples, 0)
     }
+
+    // Activity "heart & stress" card (2026-08-04): the store republishes the
+    // contact-backed live HR it is already fed. Contract: set on contact,
+    // cleared on lost contact, stamp refreshed on steady bpm so freshness
+    // gating never hides a delivering strap.
+    @MainActor
+    func testLiveHeartRatePublishesOnContactAndClearsOnLoss() {
+        let baseline = makeBaseline(restingMean: 60, restingSD: 4)
+        let store = AtriaStressMonitorStore()
+
+        func tick(atOffset offset: TimeInterval, bpm: Int, hasContact: Bool) {
+            store.update(heartRate: bpm,
+                         hasContact: hasContact,
+                         recentRRSamples: [],
+                         isRecording: false,
+                         zoneIndex: 0,
+                         hrvSnapshot: nil,
+                         baseline: baseline,
+                         restingMaxHR: restingMaxHR,
+                         hasActiveSleepEvidence: false,
+                         now: now.addingTimeInterval(offset))
+        }
+
+        tick(atOffset: 0, bpm: 64, hasContact: true)
+        XCTAssertEqual(store.liveHeartRate?.bpm, 64)
+        XCTAssertEqual(store.liveHeartRate?.at, now)
+
+        // Steady bpm: the stamp refreshes once the old one ages past 30s.
+        tick(atOffset: 10, bpm: 64, hasContact: true)
+        XCTAssertEqual(store.liveHeartRate?.at, now, "stamp must not churn under 30s")
+        tick(atOffset: 40, bpm: 64, hasContact: true)
+        XCTAssertEqual(store.liveHeartRate?.at, now.addingTimeInterval(40))
+
+        tick(atOffset: 45, bpm: 71, hasContact: true)
+        XCTAssertEqual(store.liveHeartRate?.bpm, 71)
+
+        tick(atOffset: 50, bpm: 0, hasContact: false)
+        XCTAssertNil(store.liveHeartRate, "lost contact must clear the readout, not cache it")
+
+        let reading = AtriaStressMonitorStore.LiveHeartRateReading(bpm: 70, at: now)
+        XCTAssertTrue(reading.isFresh(now: now.addingTimeInterval(60)))
+        XCTAssertFalse(reading.isFresh(now: now.addingTimeInterval(120)))
+    }
 }

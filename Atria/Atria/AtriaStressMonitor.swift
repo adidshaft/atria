@@ -434,6 +434,22 @@ struct AtriaStressDistributionArchive: Codable, Equatable {
 @MainActor
 final class AtriaStressMonitorStore: ObservableObject {
     @Published private(set) var state: AtriaStressState = .noSignal
+    /// Most recent contact-backed live heart rate fed into the monitor, for
+    /// surfaces that pair a heart readout with the stress read (the Activity
+    /// "heart & stress" card). Publishes only on bpm change; cleared on lost
+    /// contact. Render-side must gate on `at` freshness — a stored reading is
+    /// not a claim the strap is still delivering.
+    @Published private(set) var liveHeartRate: LiveHeartRateReading?
+
+    struct LiveHeartRateReading: Equatable {
+        let bpm: Int
+        let at: Date
+
+        func isFresh(now: Date = Date(),
+                     window: TimeInterval = AtriaStressReadingFreshness.liveWindow) -> Bool {
+            now.timeIntervalSince(at) <= window
+        }
+    }
     /// Clock of the most recent scored evaluation. Presentation surfaces use
     /// this source clock; merely opening a screen must never renew freshness.
     @Published private(set) var lastMeasuredAt: Date?
@@ -550,6 +566,18 @@ final class AtriaStressMonitorStore: ObservableObject {
                 restingMaxHR: (rest: Int, max: Int),
                 hasActiveSleepEvidence: Bool = false,
                 now: Date = Date()) {
+
+        if hasContact, heartRate > 0 {
+            if liveHeartRate?.bpm != heartRate {
+                liveHeartRate = LiveHeartRateReading(bpm: heartRate, at: now)
+            } else if let current = liveHeartRate, now.timeIntervalSince(current.at) > 30 {
+                // Same bpm for a while: refresh the stamp so freshness gating
+                // doesn't hide a steadily-delivering strap.
+                liveHeartRate = LiveHeartRateReading(bpm: heartRate, at: now)
+            }
+        } else {
+            liveHeartRate = nil
+        }
 
         if hasContact {
             if let lastContactAt,
