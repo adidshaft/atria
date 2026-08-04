@@ -14840,6 +14840,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func publishDashboardRevision() {
+        AtriaMemprobe.note("dashboard_publish")
         dashboardRevision &+= 1
     }
 
