@@ -313,6 +313,59 @@ struct AtriaAboutMetricTrend {
     }
 }
 
+/// Shared mini-trend card: gap-broken linear line + a dot per real reading,
+/// framed on the trend's full window. Axes are hidden — the caption carries the
+/// real observed count and range instead, so nothing on the plot is fabricated
+/// (honesty-first chart rules, 2026-08-03). Used by the About sheets and the
+/// sleep-efficiency detail; self-contained for render tests.
+struct AtriaMiniTrendCard: View {
+    let trend: AtriaAboutMetricTrend
+    let tint: Color
+    let title: String
+    /// What the values are, for VoiceOver ("HRV", "Sleep efficiency").
+    let subject: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
+            Text(title)
+                .font(.caption2.weight(.bold))
+                .tracking(0.6)
+                .foregroundStyle(.secondary)
+            Chart {
+                ForEach(trend.points.contiguousDayRuns(), id: \.point.day) { entry in
+                    LineMark(x: .value("Day", entry.point.day, unit: .day),
+                             y: .value(subject, entry.point.value),
+                             series: .value("Run", "r\(entry.runID)"))
+                        .foregroundStyle(tint)
+                        .interpolationMethod(.linear)
+                        .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                }
+                // A dot per real reading so single-day runs (no line segment)
+                // are still visible instead of silently disappearing.
+                ForEach(trend.points) { point in
+                    PointMark(x: .value("Day", point.day, unit: .day),
+                              y: .value(subject, point.value))
+                        .foregroundStyle(tint)
+                        .symbolSize(18)
+                }
+            }
+            .chartXScale(domain: trend.window)
+            .chartYScale(domain: trend.yDomain)
+            .chartXAxis(.hidden)
+            .chartYAxis(.hidden)
+            .frame(height: 72)
+            Text(trend.caption)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(AtriaDesignTokens.Spacing.lg)
+        .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title.capitalized) of \(subject): \(trend.caption)")
+    }
+}
+
 /// The "About <metric>" education sheet (design spec §20).
 ///
 /// A reusable template: a tinted glyph tile, an H1, a definition paragraph, a
@@ -386,48 +439,11 @@ struct AtriaAboutMetricSheet: View {
             .accessibilityHidden(true)
     }
 
-    /// Last-30-days mini-trend: gap-broken linear line + a dot per real
-    /// reading, framed on the full 30-day window. Axes are hidden — the caption
-    /// carries the real observed count and range instead, so nothing on the
-    /// plot is fabricated (honesty-first chart rules, 2026-08-03).
     private func trendCard(_ trend: AtriaAboutMetricTrend) -> some View {
-        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
-            Text("YOUR LAST 30 DAYS")
-                .font(.caption2.weight(.bold))
-                .tracking(0.6)
-                .foregroundStyle(.secondary)
-            Chart {
-                ForEach(trend.points.contiguousDayRuns(), id: \.point.day) { entry in
-                    LineMark(x: .value("Day", entry.point.day, unit: .day),
-                             y: .value(metric.title, entry.point.value),
-                             series: .value("Run", "r\(entry.runID)"))
-                        .foregroundStyle(metric.tint)
-                        .interpolationMethod(.linear)
-                        .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                }
-                // A dot per real reading so single-day runs (no line segment)
-                // are still visible instead of silently disappearing.
-                ForEach(trend.points) { point in
-                    PointMark(x: .value("Day", point.day, unit: .day),
-                              y: .value(metric.title, point.value))
-                        .foregroundStyle(metric.tint)
-                        .symbolSize(18)
-                }
-            }
-            .chartXScale(domain: trend.window)
-            .chartYScale(domain: trend.yDomain)
-            .chartXAxis(.hidden)
-            .chartYAxis(.hidden)
-            .frame(height: 72)
-            Text(trend.caption)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(AtriaDesignTokens.Spacing.lg)
-        .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Your last 30 days of \(metric.title): \(trend.caption)")
+        AtriaMiniTrendCard(trend: trend,
+                           tint: metric.tint,
+                           title: "YOUR LAST 30 DAYS",
+                           subject: metric.title)
     }
 
     private var computeCard: some View {

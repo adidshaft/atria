@@ -9208,20 +9208,42 @@ struct AtriaMetricDetailSheet: View {
                 aboutDisclosure
             }
         case .stress:
+            // Copy updated 2026-08-04: a daily stress history DOES exist now
+            // (the distribution archive feeds "Stress by day" in the Stress
+            // monitor). This compact sheet stays chart-free and points there.
             honestPartialDetail(heroValue: "Live read",
-                                heroState: "Not saved daily yet",
+                                heroState: "Live estimate",
                                 tint: .orange,
-                                bodyText: "Stress is a live, moment-to-moment estimate from heart rate and beat-to-beat timing. Atria doesn't save a daily stress history yet, so there's no trend chart here \u{2014} check the Stress tile for the current read, or open guided breathwork to bring it down.")
+                                bodyText: "Stress is a live, moment-to-moment estimate from heart rate and beat-to-beat timing. The full picture \u{2014} today's timeline, today versus typical, and the day-by-day trend \u{2014} lives in the Stress monitor: open the Stress tile. Guided breathwork can bring an elevated read down.")
         case .vo2max:
             honestPartialDetail(heroValue: vo2MaxEstimate?.valueText ?? "Learning",
                                 heroState: (vo2MaxEstimate?.value == nil) ? "Learning" : "Estimate",
                                 tint: Metrics.electricGreen,
                                 bodyText: vo2MaxEstimate?.narrative ?? "VO2max is estimated from your resting heart-rate baseline and measured max heart rate. It sharpens as Atria gathers more sessions.")
         case .sleepEfficiency:
-            honestPartialDetail(heroValue: sleepHistory.latestMainSleep?.sleepEfficiencyText ?? "--",
-                                heroState: sleepHistory.latestMainSleep?.sleepEfficiency == nil ? "Learning" : "Duration-based estimate",
-                                tint: Metrics.electricSleep,
-                                bodyText: "Sleep efficiency is estimated from time asleep versus time in bed. Atria doesn't save a night-by-night efficiency trend here yet \u{2014} the current estimate is shown above.")
+            // P3 (2026-08-04): graduated from honest-partial — a real per-night
+            // trend from confirmed nights' display efficiencies (the
+            // motion-honest accessor; HR-only nights carry nil and stay off the
+            // chart). Below 5 nights the old honest-partial copy remains.
+            if let trend = sleepEfficiencyTrend {
+                AtriaMetricDetailTemplate(heroValue: sleepHistory.latestMainSleep?.sleepEfficiencyText ?? "--",
+                                          heroState: sleepHistory.latestMainSleep?.displaySleepEfficiency == nil ? "Learning" : "Duration-based estimate",
+                                          tint: Metrics.electricSleep) {
+                    EmptyView()
+                } chart: {
+                    AtriaMiniTrendCard(trend: trend,
+                                       tint: Metrics.electricSleep,
+                                       title: "LAST 30 NIGHTS",
+                                       subject: "Sleep efficiency")
+                } about: {
+                    aboutDisclosure
+                }
+            } else {
+                honestPartialDetail(heroValue: sleepHistory.latestMainSleep?.sleepEfficiencyText ?? "--",
+                                    heroState: sleepHistory.latestMainSleep?.displaySleepEfficiency == nil ? "Learning" : "Duration-based estimate",
+                                    tint: Metrics.electricSleep,
+                                    bodyText: "Sleep efficiency is estimated from time asleep versus time in bed. A night-by-night trend appears after 5 confirmed nights with motion-validated efficiency.")
+            }
         case .skinTemperature:
             let decoderAvailable = AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
             let summary = skinTemperatureDeviation
@@ -10374,6 +10396,37 @@ struct AtriaMetricDetailSheet: View {
     /// sleep planner's time-in-bed assumption.
     private var confirmedNightEfficiencies: [Double] {
         sleepHistory.nights.filter(\.confirmed).compactMap(\.sleepEfficiency)
+    }
+
+    /// Per-night efficiency trend for the sleep-efficiency detail (P3). Uses
+    /// `displaySleepEfficiency` — the motion-honest accessor (HR-only nights
+    /// are nil: their stored value is span coverage, not efficiency). Nil under
+    /// 5 charted nights in the last 30 days; the detail then keeps its
+    /// honest-partial copy.
+    private var sleepEfficiencyTrend: AtriaAboutMetricTrend? {
+        let calendar = Calendar.current
+        let end = calendar.startOfDay(for: Date())
+        guard let start = calendar.date(byAdding: .day, value: -29, to: end) else { return nil }
+        var seen = Set<Date>()
+        let points: [AtriaDetailChartPoint] = sleepHistory.nights
+            .filter(\.confirmed)
+            .compactMap { night -> AtriaDetailChartPoint? in
+                let day = calendar.startOfDay(for: night.day)
+                guard day >= start, day <= end,
+                      let efficiency = night.displaySleepEfficiency,
+                      seen.insert(day).inserted else { return nil }
+                return AtriaDetailChartPoint(day: day,
+                                             value: (efficiency * 100).rounded(),
+                                             tint: Metrics.electricSleep)
+            }
+            .sorted { $0.day < $1.day }
+        guard points.count >= 5,
+              let lo = points.map(\.value).min(),
+              let hi = points.map(\.value).max() else { return nil }
+        let range = lo == hi ? "steady at \(Int(lo))%" : "\(Int(lo))–\(Int(hi))%"
+        return AtriaAboutMetricTrend(points: points,
+                                     window: start...end,
+                                     caption: "\(points.count) nights · \(range)")
     }
 
     /// Overlay candidates for "Edit this chart": the two sibling metrics the
