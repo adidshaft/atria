@@ -49,9 +49,19 @@ final class AtriaRecoveredDataRecomputeCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.request(archiveRevision: 22, reason: "batch_22").isEmpty)
         XCTAssertEqual(coordinator.coalescedRequestCount, 1)
 
-        let effects = coordinator.projectionCompleted(ticket: first)
-        XCTAssertEqual(effects.first, .superseded(first))
-        let newest = try startProjectionTicket(Array(effects.dropFirst()))
+        let now = Date(timeIntervalSince1970: 1_785_000_000)
+        let effects = coordinator.projectionCompleted(ticket: first, now: now)
+        // 2026-08-04 inter-cycle rest: the trailing request no longer starts
+        // back-to-back — the coordinator rests, then the scheduled wake
+        // starts the newest queued revision.
+        XCTAssertEqual(effects, [
+            .superseded(first),
+            .scheduleTrailingStart(afterSeconds: Coordinator.interCycleRestSeconds),
+        ])
+        XCTAssertTrue(coordinator.startPendingTrailing(now: now).isEmpty,
+                      "the wake must not fire before the rest elapses")
+        let newest = try startProjectionTicket(coordinator.startPendingTrailing(
+            now: now.addingTimeInterval(Coordinator.interCycleRestSeconds)))
         XCTAssertEqual(newest.archiveRevision, 22)
         XCTAssertEqual(newest.reason, "batch_22")
         XCTAssertGreaterThan(newest.generation, first.generation)
@@ -69,11 +79,18 @@ final class AtriaRecoveredDataRecomputeCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.componentCompleted(ticket: first,
                                                      component: .overviewTrends).isEmpty)
 
+        let now = Date(timeIntervalSince1970: 1_785_000_000)
         let effects = coordinator.componentCompleted(ticket: first,
-                                                     component: .trainingLoad)
-        XCTAssertEqual(effects.first, .superseded(first))
-        XCTAssertEqual(try startProjectionTicket(Array(effects.dropFirst())).archiveRevision, 31)
+                                                     component: .trainingLoad,
+                                                     now: now)
+        XCTAssertEqual(effects, [
+            .superseded(first),
+            .scheduleTrailingStart(afterSeconds: Coordinator.interCycleRestSeconds),
+        ])
         XCTAssertFalse(effects.contains(.publish(first)))
+        XCTAssertEqual(try startProjectionTicket(coordinator.startPendingTrailing(
+            now: now.addingTimeInterval(Coordinator.interCycleRestSeconds)
+        )).archiveRevision, 31)
     }
 
     func testStaleProjectionAndComponentCallbacksAreRejected() throws {
@@ -83,8 +100,10 @@ final class AtriaRecoveredDataRecomputeCoordinatorTests: XCTestCase {
             coordinator.request(archiveRevision: 40, reason: "first")
         )
         XCTAssertTrue(coordinator.request(archiveRevision: 41, reason: "second").isEmpty)
-        let replacementEffects = coordinator.projectionCompleted(ticket: first)
-        let second = try startProjectionTicket(Array(replacementEffects.dropFirst()))
+        let now = Date(timeIntervalSince1970: 1_785_000_000)
+        _ = coordinator.projectionCompleted(ticket: first, now: now)
+        let second = try startProjectionTicket(coordinator.startPendingTrailing(
+            now: now.addingTimeInterval(Coordinator.interCycleRestSeconds)))
 
         XCTAssertTrue(coordinator.projectionCompleted(ticket: first).isEmpty)
         XCTAssertEqual(coordinator.projectionCompleted(ticket: second),
@@ -115,7 +134,7 @@ final class AtriaRecoveredDataRecomputeCoordinatorTests: XCTestCase {
                                                      component: .overviewTrends).isEmpty)
     }
 
-    func testTimeoutFailsClosedButImmediatelyStartsNewestQueuedInput() throws {
+    func testTimeoutFailsClosedAndStartsNewestQueuedInputAfterRest() throws {
         var coordinator = Coordinator()
         let first = try startProjectionTicket(
             coordinator.request(archiveRevision: 60, reason: "first")
@@ -123,11 +142,52 @@ final class AtriaRecoveredDataRecomputeCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.request(archiveRevision: 61, reason: "trailing").isEmpty)
 
         let effects = coordinator.timedOut(ticket: first)
-        XCTAssertEqual(effects.first,
-                       .failed(first, .init(component: nil, reason: "timed_out")))
-        let second = try startProjectionTicket(Array(effects.dropFirst()))
+        XCTAssertEqual(effects, [
+            .failed(first, .init(component: nil, reason: "timed_out")),
+            .scheduleTrailingStart(afterSeconds: Coordinator.interCycleRestSeconds),
+        ])
+        let second = try startProjectionTicket(coordinator.startPendingTrailing(
+            now: Date().addingTimeInterval(Coordinator.interCycleRestSeconds + 1)))
         XCTAssertEqual(second.archiveRevision, 61)
         XCTAssertTrue(coordinator.projectionCompleted(ticket: first).isEmpty)
+    }
+
+    func testRequestDuringPostPublishRestQueuesAndReArmsWake() throws {
+        let components: Set<Coordinator.Component> = [.trainingLoad]
+        var coordinator = Coordinator(requiredComponents: components)
+        let now = Date(timeIntervalSince1970: 1_785_000_000)
+        let ticket = try startProjectionTicket(
+            coordinator.request(archiveRevision: 70, reason: "first", now: now)
+        )
+        _ = coordinator.projectionCompleted(ticket: ticket, now: now)
+        XCTAssertEqual(coordinator.componentCompleted(ticket: ticket,
+                                                      component: .trainingLoad,
+                                                      now: now),
+                       [.publish(ticket)])
+
+        // A fresh drain revision one second after publish must WAIT out the
+        // rest, not start a back-to-back cycle.
+        let during = coordinator.request(archiveRevision: 71,
+                                         reason: "drain_chunk",
+                                         now: now.addingTimeInterval(1))
+        XCTAssertEqual(during, [.scheduleTrailingStart(
+            afterSeconds: Coordinator.interCycleRestSeconds - 1)])
+        XCTAssertTrue(coordinator.startPendingTrailing(
+            now: now.addingTimeInterval(2)).isEmpty)
+        let next = try startProjectionTicket(coordinator.startPendingTrailing(
+            now: now.addingTimeInterval(Coordinator.interCycleRestSeconds)))
+        XCTAssertEqual(next.archiveRevision, 71)
+    }
+
+    func testWakeWithNothingQueuedOrWhileBusyIsANoOp() throws {
+        var coordinator = Coordinator()
+        XCTAssertTrue(coordinator.startPendingTrailing().isEmpty)
+        _ = try startProjectionTicket(
+            coordinator.request(archiveRevision: 80, reason: "first")
+        )
+        XCTAssertTrue(coordinator.startPendingTrailing(
+            now: Date().addingTimeInterval(60)).isEmpty,
+            "a wake during an active cycle must not double-start")
     }
 
     func testDerivedProgressExposesRemainingComponentsAndAttributesTimeout() throws {

@@ -8976,13 +8976,22 @@ final class SessionStore: ObservableObject {
         let revision = historicalArchiveStatusRevision
         let confirmedWorkouts = cachedConfirmedWorkouts
         DispatchQueue.global(qos: .utility).async { [weak self, reason, confirmedWorkouts] in
-            let diagnostics = HistoricalArchive.diagnostics()
-            let status = HistoricalArchiveStatus(diagnostics: diagnostics)
-            let recoveryWindow = SessionStore.historicalRecoveryWindow(
-                confirmedWorkouts: confirmedWorkouts,
-                archiveLastUnix: diagnostics.correctedUnixLast ?? diagnostics.unixLast,
-                now: Date()
-            )
+            // Fresh dying thread for the archive walk: diagnostics() churns
+            // transient allocations this long-lived GCD thread would retain
+            // until jetsam (2026-08-04 thread-teardown reclaim law).
+            let (diagnostics, status, recoveryWindow) = AtriaTransientWorkThread.run(
+                name: "atria.archive-status",
+                qualityOfService: .utility
+            ) { () -> (HistoricalArchive.Diagnostics, HistoricalArchiveStatus, SessionStore.HistoricalRecoveryWindow?) in
+                let diagnostics = HistoricalArchive.diagnostics()
+                let status = HistoricalArchiveStatus(diagnostics: diagnostics)
+                let recoveryWindow = SessionStore.historicalRecoveryWindow(
+                    confirmedWorkouts: confirmedWorkouts,
+                    archiveLastUnix: diagnostics.correctedUnixLast ?? diagnostics.unixLast,
+                    now: Date()
+                )
+                return (diagnostics, status, recoveryWindow)
+            }
             DispatchQueue.main.async {
                 guard let self, revision == self.historicalArchiveStatusRevision else {
                     completion?(false)
@@ -10229,6 +10238,22 @@ final class SessionStore: ObservableObject {
                     reason: failure.reason
                 )
 
+            case .scheduleTrailingStart(let afterSeconds):
+                // Inter-cycle rest wake (2026-08-04): the coordinator queues
+                // trailing recompute requests through a rest window so
+                // drain-triggered cycles never run back-to-back (the beta
+                // allocator reclaims each cycle's transient garbage only at
+                // thread teardown; uninterrupted cycles crept into the
+                // jetsam ceiling). Idempotent on the coordinator side.
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + afterSeconds
+                ) { [weak self] in
+                    guard let self else { return }
+                    self.handleRecoveredDataRecomputeEffects(
+                        self.recoveredDataRecompute.startPendingTrailing()
+                    )
+                }
+
             case .publish(let ticket):
                 recoveredDataRecomputeTimeoutTask?.cancel()
                 recoveredDataRecomputeTimeoutTask = nil
@@ -10407,6 +10432,12 @@ final class SessionStore: ObservableObject {
         let destination = HistoricalArchive.verifiedActivityConsumerShadowDirectory
 
         Task.detached(priority: .utility) { [recoveredSessions, configuration, destination] in
+            // Fresh dying thread: this sweep's verified-consumer reads churn
+            // transient allocations the cooperative pool's long-lived thread
+            // would otherwise retain until jetsam (2026-08-04 law: reclaim
+            // happens at thread teardown).
+            AtriaTransientWorkThread.run(name: "atria.shadow-step",
+                                         qualityOfService: .utility) {
             AtriaMemprobe.note("shadow_step_begin")
             defer { AtriaMemprobe.note("shadow_step_end") }
             let store = AtriaHistoricalVerifiedActivityConsumerApplicationStore(
@@ -10469,6 +10500,7 @@ final class SessionStore: ObservableObject {
                           applied,
                           retained,
                           failed)
+            }
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 // Shadow parity is intentionally outside the publication
