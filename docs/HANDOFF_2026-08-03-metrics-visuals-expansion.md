@@ -1468,3 +1468,24 @@ shows a death there, add the heavy-pipeline mutual-exclusion gate
 makeHistorySnapshots — they never nest). A post-relaunch full rebuild
 DID complete bounded (detections 100s at ≤400MB) proving the wraps work
 in isolation.
+
+## 13.4 Loop pass (2026-08-05 ~00:30): steady-state health observed
+
+Balloon: the healthiest window of the saga — ONE pid across 12+ min
+including a foreground launch, peak 358MB, cache reuse doing its job
+(history rebuild incremental in 0.2s). Not yet the stress verdict (needs
+a drain-heavy rebuild + trailing recompute under the new per-session
+wraps) — organic soak continues.
+
+Live-verified on device (real data): recovery 53-54% Fair with new
+"-27% vs yesterday" context; sleep SAVED (5h24m of 10h need, honest
+red); strain accruing live (2.3→4.4) with plan pill arithmetic exact
+(13.7−4.4 → "9.4 to go"); "Capturing live" with strap at 47%; no stuck
+drag floater after the edit-mode gate. Shipped this pass: bottom
+contentMargins(72) on the dashboard scroll — the tabViewBottomAccessory
+(Live pill) height is not added to the scroll safe area on this beta, so
+the last card was permanently clipped behind bottom chrome.
+
+Watch item (not acted on): strain climbed 2.1 in ~10 quiet minutes at
+83-87bpm — plausible TRIMP at elevated-resting HR, but worth a sanity
+pass against the zone floor if the user reports inflated daily strain.
