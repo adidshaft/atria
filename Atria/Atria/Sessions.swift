@@ -11342,8 +11342,16 @@ final class SessionStore: ObservableObject {
         if workoutRehydrationDeferredUntilForeground {
             workoutRehydrationDeferredUntilForeground = false
             AtriaMemprobe.note("fg_workout_rehydration_scheduled")
+            // Reuse the recovered projection here too (2026-08-05): this
+            // foreground replay was the third raw-scan entry point — it fired
+            // at +29s of a cold launch and its 1.5M-point window scan stacked
+            // with the recompute to cross the ceiling at +52s.
             scheduleConfirmedWorkoutArchiveRehydration(
-                reason: "foreground_\(reason)"
+                reason: "foreground_\(reason)",
+                recoveredArchiveHeartRatePoints:
+                    cachedRecoveredArchiveHeartRatePoints,
+                recoveredArchiveCoverageStart:
+                    Date().addingTimeInterval(-14 * 24 * 60 * 60)
             )
         }
         if workoutStepEvidenceDeferredUntilForeground {
