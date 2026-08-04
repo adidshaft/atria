@@ -276,6 +276,14 @@ record shows EVERY kill today dies inside `rec_scan_progress` —
    plus decoder churn) ⇒ the scan now crosses the limit ⇒ progressively
    worse as the archive grows. Explains why fixes "verified" then failed:
    each reduced other pressure while the archive kept growing.
+**BISECT COMPLETE (11:2x): the mid-scan climber is JSONDecoder ITSELF.**
+decode-only (decode per line, retain nothing) died at 3.37GB after 594MB —
+vs count-only surviving all 978MB at 1.5GB. A reused JSONDecoder hoards
+~300B/decode across ~9M lines. Counter in test: recycle the decoder every
+8192 lines (`pending`); if insufficient, next lever = byte-scan field
+extraction replacing full-Record decode. (The diagnostics burst below was
+ALSO real — both fixes needed.)
+
 **BISECT VERDICT (11:1x): the killer burst is DIAGNOSTICS LOGGING.**
 count-only mode completed the FULL 978MB scan in 33s at 1512MB peak — then
 died 5s later in a 1512→3359MB burst with zero notes: the post-recompute
