@@ -24,6 +24,7 @@ enum AtriaMemprobe {
     private static var timer: DispatchSourceTimer?
     private static var lastLoggedResident: UInt64 = 0
     private static var lastHeartbeatAt: TimeInterval = 0
+    private static var lastTagMilestone: UInt64 = 0
     private static let deltaThresholdBytes: UInt64 = 64 * 1024 * 1024
 
     static func start() {
@@ -52,6 +53,13 @@ enum AtriaMemprobe {
                 guard delta >= deltaThresholdBytes || now - lastHeartbeatAt >= 1 else { return }
                 lastHeartbeatAt = now
                 lastLoggedResident = footprint
+                // Tag attribution at every 512MB footprint milestone: the tag
+                // distribution names the allocator class behind a climb.
+                let milestone = footprint / (512 * 1024 * 1024)
+                if milestone != lastTagMilestone {
+                    lastTagMilestone = milestone
+                    write(line: "vmtags \(vmTagSummary())")
+                }
                 write(line: delta >= deltaThresholdBytes ? "sample" : "beat")
             }
             source.resume()
@@ -76,6 +84,44 @@ enum AtriaMemprobe {
         _ = try? handle.write(contentsOf: data)
         // fsync so the tail survives the jetsam SIGKILL.
         fsync(handle.fileDescriptor)
+    }
+
+    /// Attribute footprint by VM region user_tag: sums (dirtied + swapped)
+    /// pages per tag across the task's regions. Names the allocator class
+    /// (MALLOC_TINY/SMALL/LARGE/HUGE, mapped file, Swift runtime, …) that
+    /// owns a balloon when call-stack tools are unavailable (xctrace's
+    /// Allocations store is GUI-only). Costs one region walk (~ms).
+    static func vmTagSummary(top: Int = 6) -> String {
+        var address: vm_address_t = 0
+        var totals: [UInt32: UInt64] = [:]
+        let page = UInt64(vm_kernel_page_size)
+        while true {
+            var size: vm_size_t = 0
+            var depth: UInt32 = 0
+            var info = vm_region_submap_info_64()
+            var count = mach_msg_type_number_t(
+                MemoryLayout<vm_region_submap_info_64>.stride / MemoryLayout<Int32>.stride)
+            let kr = withUnsafeMutablePointer(to: &info) { pointer in
+                pointer.withMemoryRebound(to: Int32.self, capacity: Int(count)) { rebound in
+                    vm_region_recurse_64(mach_task_self_, &address, &size, &depth, rebound, &count)
+                }
+            }
+            guard kr == KERN_SUCCESS else { break }
+            let dirty = (UInt64(info.pages_dirtied) + UInt64(info.pages_swapped_out)) * page
+            if dirty > 0 { totals[info.user_tag, default: 0] += dirty }
+            let previous = address
+            address = address &+ size
+            if address <= previous { break }
+        }
+        let names: [UInt32: String] = [1: "malloc", 2: "m_small", 3: "m_large", 4: "m_huge",
+                                       5: "sbrk", 6: "realloc", 7: "m_tiny", 8: "m_lg_reusable",
+                                       9: "m_lg_reused", 10: "m_nano", 11: "mach_msg", 12: "iokit",
+                                       13: "stack", 14: "guard", 20: "dylib", 32: "appkit",
+                                       33: "foundation", 35: "cg_image", 53: "swift_meta",
+                                       70: "os_log", 80: "mapped_file", 84: "compressed", 99: "dyld"]
+        return totals.sorted { $0.value > $1.value }.prefix(top)
+            .map { "\(names[$0.key] ?? "tag\($0.key)")=\($0.value / (1024*1024))MB" }
+            .joined(separator: " ")
     }
 
     /// The jetsam-enforced metric (includes compressed + IOKit-mapped dirty).
