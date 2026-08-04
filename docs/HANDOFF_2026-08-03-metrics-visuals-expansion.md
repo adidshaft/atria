@@ -167,7 +167,18 @@ logged here as a review-vigilance failure too.
 
 Facts: the card renders `night.durationHours`; for this candidate duration
 equals span ⇒ the aggregate candidate merged across the wake with no
-exclusion. GROUND TRUTH EXTRACTED (evening pass, chunk
+exclusion. FIXED (`b95f8817`, evening): `AtriaRecoveredMotionAnalytics
+.sustainedAwakeSeconds` (validated non-low-motion epoch blocks ≥10min;
+rollovers never deducted; unvalidated never trusted) deducted from candidate
+duration at construction — span intact, downstream gates fail-closed. 5 new
+tests incl. an end-to-end regression replaying this night's shape; sleep
+net (replays + review + detection accuracy) zero failures; gate at baseline.
+Build installed + launched — the pending review card regenerates with net
+duration on the next candidate recompute. Follow-up candidate (not built):
+SPLITTING a candidate at a long wake block into two sleeps; deduction-only
+was chosen for v1 (honest + minimal blast radius).
+
+GROUND TRUTH EXTRACTED (evening pass, chunk
 raw-20260804-731d9a45…jsonl, 3,872 rows @1Hz across 05:30–06:30 IST):
 movement (mean abs gravity-component delta) in the wake window runs
 110–596 mg vs a ≤6 mg sleep-still baseline — 05:40–06:05 sustained
