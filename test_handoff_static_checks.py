@@ -2393,7 +2393,9 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, vitals, "func enumeratedColumn(_ column: Int) -> [AtriaVitalsSection]")
         assert_not_contains(self, vitals, "sections.enumeratedColumn(")
         assert_not_contains(self, overview, ".draggable(metric.rawValue)")
-        assert_not_contains(self, overview, ".draggable(metric.dragPayload)")
+        assert_not_contains(self, overview, # 2026-08-05: drag gated behind edit mode — always-on .draggable let a
+            # scroll-adjacent touch float a stuck tile preview (seen live).
+            ".draggableIf(isEditingGlance, metric.dragPayload)")
         assert_not_contains(self, overview, "let dragged = AtriaTodayMetric(rawValue: raw)")
         assert_not_contains(self, vitals, ".draggable(section.rawValue)")
         assert_not_contains(self, vitals, "let dragged = AtriaVitalsSection(rawValue: raw)")
@@ -5248,7 +5250,7 @@ class HandoffStaticChecks(unittest.TestCase):
             '.accessibilityLabel("Today actions")',
             ".onLongPressGesture(minimumDuration: 0.45)",
             "isEditingGlance = true",
-            ".draggable(metric.dragPayload)",
+            ".draggableIf(isEditingGlance, metric.dragPayload)",  # gated 2026-08-05
         ]:
             assert_contains(self, today, needle)
 
