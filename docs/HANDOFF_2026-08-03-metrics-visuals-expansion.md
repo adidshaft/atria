@@ -155,6 +155,24 @@ activity timeline and the activities list. Honest: observed readings only,
 gap-broken, shows the state's "collecting/warming up" copy when sparse.
 Follow-up option: add a live-HR number/line to the same card ("heart/stress").
 
+## 12.1 WHOOP-reference copy check (2026-08-04 loop, per the user's
+"when confused, check WHOOP" rule)
+
+Verified against WHOOP's official/support behavior: with sleep
+pending/undetected, WHOOP shows Recovery as "--%" and produces NO recovery
+at all until sleep exists (users must manually add missed sleeps; Health
+Monitor sits on "Pending"). Comparison verdict for Atria's equivalents —
+all VALIDATED, no changes needed:
+- Atria's ring "--" + "Save sleep to score" matches WHOOP's "--%" pattern
+  and is MORE actionable (names the unblocking step).
+- Atria's hero holding the previous cycle's score labeled "prev. sleep" is
+  richer than WHOOP's blank while staying honest (provenance labeled).
+- Atria's auto-detect → review card ("Possible sleep · Confirm") is the
+  affordance-rich version of WHOOP's manual-add fallback.
+- The internal no-sleep fallback score stays rollup-only ("unverified") and
+  never fronts the hero — stricter than WHOOP requires, consistent with the
+  honesty-first law.
+
 ## 12. Overnight inspection 2026-08-04 (~06:00 IST, container pull) — capture was DEAD all night
 
 Ground truth via `devicectl` container pull (Documents + Library/Preferences).
