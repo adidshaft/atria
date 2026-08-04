@@ -3518,12 +3518,23 @@ enum HistoricalArchive {
             limitations = [:]
         }
 
+        var pressureReliefCountdown = 16
         AtriaMemprobe.note("rec_scan_begin sources=\(sources.count) plan=\(String(describing: plan).prefix(12))")
         let scanResult = AtriaHistoricalJSONLRecentScanner.scan(
             sources: sources,
             cutoff: coveredSince,
             onProgress: { statistics in
                 AtriaMemprobe.note("rec_scan_progress bytes=\(statistics.byteCount) hr=\(heartRate.count) rr=\(rrAccumulator.acceptedRecordCount) grav=\(gravity.count) motionIDs=\(motionRecordIdentities.count)")
+                // Footprint probe proved the scan accumulates ~1.4KB of
+                // freed-but-dirty malloc pages per decoded line (3.4GB over a
+                // ~125MB scan) while retained arrays stay tiny — the decode
+                // churn never returns pages to the OS on its own. Ask malloc
+                // to return free pages every ~1MB of input (2026-08-04).
+                pressureReliefCountdown -= 1
+                if pressureReliefCountdown <= 0 {
+                    pressureReliefCountdown = 16
+                    malloc_zone_pressure_relief(nil, 0)
+                }
                 onScanProgress?(statistics)
             }
         ) { lineData in
