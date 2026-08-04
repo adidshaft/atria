@@ -261,6 +261,29 @@ sites (dead code, unpinned, likely superseded by `AtriaExpandedChart`) —
 flagged as a spin-off review task rather than deleted unilaterally, per the
 pinned-dead-code precedent.
 
+**BALLOON — TRUE SYSTEMIC ROOT CAUSE (09:58 kill, 10:0x analysis).** A new
+3.45GB frontmost kill at 09:58 falsified the motion-tick verdict as the FULL
+story (its fixes stand but were one layer). The footprint probe's complete
+record shows EVERY kill today dies inside `rec_scan_progress` —
+`makeRecoveredDataSnapshot`'s scan. Mechanism, now airtight:
+1. The drain wrote ~1GB of recovered JSONL today (last scan: 955MB scanned
+   at death, hr=638K, grav/motionIDs=658K, **rr=250,000 = pinned at cap**).
+2. RR at cap ⇒ `limitations` non-empty ⇒ `recoveredDataCache = nil`
+   (deliberate, HistoricalArchive ~3527) ⇒ **every subsequent snapshot is a
+   full REBUILD scan, never incremental** — the cache can never form again.
+3. Footprint ≈ 3.5× bytes scanned (retained `Record`s carry `rawPayloadHex`
+   + `candidateRR` strings ≈ 1-2KB/row; 250K rrRecords alone ≈ 300-500MB;
+   plus decoder churn) ⇒ the scan now crosses the limit ⇒ progressively
+   worse as the archive grows. Explains why fixes "verified" then failed:
+   each reduced other pressure while the archive kept growing.
+FIX DESIGN (dedicated session; spun off as a task): (a) move the RR
+verification (AtriaRecoveredRRProjection ~171-227, needs rawPayloadHex)
+INTO the scan and retain compact verified beats, not whole Records; (b)
+count budgets in BYTES; (c) retain the cache PER-CHANNEL so one capped
+channel doesn't force whole-archive rebuilds forever. Meanwhile the app
+remains usable (kills are on foreground-during-drain; the drain finishes
+eventually and scans complete).
+
 **REGRESSION VERDICT FINAL (09:5x): all 6 failures PRE-EXISTING at
 session-start `5bfc10a8`** — proven by a baseline worktree run (motion-tick
 ×2 + widget-battery fail identically there; vitals-education density fails
