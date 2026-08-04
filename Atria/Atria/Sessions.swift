@@ -27700,6 +27700,8 @@ final class SessionStore: ObservableObject {
                                                              maxHR: Int,
                                                              calendar: Calendar = .current,
                                                              historicalMotionPolicy: HistoricalSleepMotionPolicy = .boundedRecent) -> [AggregateSleepCandidate] {
+        AtriaMemprobe.note("sleep_candidates_begin sessions=\(sourceSessions.count)")
+        defer { AtriaMemprobe.note("sleep_candidates_end") }
         var fullArchiveMotionSnapshot: HistoricalArchive.MotionArchiveSnapshot?
         func historicalMotionDiagnostics(start: Date, end: Date) -> HistoricalArchive.MotionWindowDiagnostics {
             switch historicalMotionPolicy {
