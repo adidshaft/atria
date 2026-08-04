@@ -1366,3 +1366,45 @@ Verification protocol unchanged: after both fixes, require repeated
 foreground cycles with peak <1.5GB + an organic overnight, THEN strip all
 TEMPORARY instrumentation (AtriaMemprobe + note sites + bisect levers +
 recompute_stage note + append-skip levers) and run the full suite.
+
+## 13. Accuracy-first completion sweep (2026-08-04 late night, user directive)
+
+User directive: close background tasks, complete everything open, and make
+"every single metric as accurate and reliable as possible, shown as soon
+as it can be shown." Executed:
+
+**Reliability (the Recovery-persistence fix):** inter-cycle recompute REST
+(12s, coordinator state machine + scheduleTrailingStart effect, clock-
+injected, 13/13 suite) so drain-triggered cycles never run back-to-back;
+`AtriaTransientWorkThread` (dying-thread lifetime boundary) applied to the
+shadow-step sweep + archive-status walk. Installed with the whole sweep
+for the overnight soak. Process stable across checks post-install. NOTE:
+the probe log now exceeds the ~40MB devicectl transfer cap — the soak
+verdict needs the log ROTATED at next instrumented build (or read crash
+logs instead); pulls truncate at exactly 40,000,000 bytes.
+
+**Decisions implemented:** RHR = sleep-cycle authorities only (the '119'
+class of unlabeled daytime estimates cannot render); sticky unresolved
+sleep/nap prompt through rollover (48h cap, superseded by newer confirmed
+evidence); Smart-Wake copy descoped to the hard-alarm reality; naps
+audited — confirmed naps ALREADY flow into Activity sections and newer
+nap candidates ALREADY win the review slot (Aug-1 memory partially
+stale); the surviving gap was the rollover age-cap, now fixed by the
+sticky prompt.
+
+**P3 complete:** sleep-efficiency 30-day mini-trend (confirmed nights,
+≥5 qualified, HR-only nights fail closed); skin-temp About-trend verified
+already live; stress daily trend shipped earlier today.
+**P4/P5 audited complete:** magnesium tag present + tested; strength-log
+learning states, need-more countdown, PR badges all exist.
+**UI backlog batch:** journal Yes/No answer-neutrality, "% of need",
+"Resting HR" spelled out, Health Monitor single-carrier status, "Strap
+control · Only Atria connects". Pins migrated (Ownership, notice titles,
+RHR chain test); gate at 4-failure baseline; vitals+journal
+screenshot-verified ("Resting --" honest, equal-weight buttons).
+
+**Still open after this sweep (honest tail):** SpO2 (hardware validation
+— user's oximeter call), steps drain-latency policy (P0 decouple raw
+drain remains the big engineering item), settings profile-header polish
+(needs visual sign-off), instrumentation strip + full suite AFTER a clean
+overnight, C5 chart re-verify at real data density, iOS 27 GA re-test.
