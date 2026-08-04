@@ -1429,3 +1429,21 @@ next pass brackets each derived component's runner (the recompute_stage
 note only marks the timeout arm, not stage completion) and applies the
 dying-thread stage pattern to whichever names itself. Settings + plan
 surfaces audited clean this pass (Developer row properly gated).
+
+## 13.2 Loop pass (late night): tail-derived serialization shipped, awaiting organic verdict
+
+The +132→+180s killer was structural: the four tail derived refreshes
+(overviewTrends / trainingLoad / todayHeartRateZones / behaviorInsights)
+launched IN PARALLEL after history snapshots — four stacked transient
+bursts. They now run as a completion chain with per-step probe notes
+(`derived_step <name>` … `derived_steps_done`); coordinator semantics
+per component unchanged. Shipped to device with the stress-card
+unblock-condition line (existing model copy). Phone locked before a
+foreground cycle could run — the serialized chain verdict arrives at the
+next unlock's cycle; meanwhile 5+ min of locked-background operation
+showed zero deaths at ≤311MB. Note for readers: pulls now read the
+ROTATED current log — the previous generation is atria-memprobe.1.log.
+Read protocol next session: pull log, find newest `rec_scan_begin`,
+follow through derived_step notes; if `derived_steps_done` appears with
+peak <1.5GB, the balloon is DEAD and the instrumentation strip + full
+suite is unlocked.
