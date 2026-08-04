@@ -9518,7 +9518,24 @@ final class SessionStore: ObservableObject {
 
             }
         }
-        Self.historySnapshotProjectionQueue.async(execute: workItem)
+        Self.historySnapshotProjectionQueue.async {
+            // Fresh dying thread per recompute (2026-08-04, final balloon
+            // layer): consecutive drain-triggered recompute cycles on this
+            // persistent queue thread STACKED their ~1GB-per-cycle transient
+            // projection garbage — the iOS 27 beta allocator returns a
+            // worker's garbage only at thread teardown, and three cycles in
+            // ~5s reached the 3.4GB jetsam ceiling. The queue still
+            // serializes recomputes; only the garbage's lifetime changes.
+            let recomputeDone = DispatchSemaphore(value: 0)
+            let recomputeThread = Thread {
+                workItem.perform()
+                recomputeDone.signal()
+            }
+            recomputeThread.name = "atria.recovered-recompute"
+            recomputeThread.qualityOfService = .userInitiated
+            recomputeThread.start()
+            recomputeDone.wait()
+        }
     }
 
     nonisolated static func shouldRenewRecoveredProjectionLease(
