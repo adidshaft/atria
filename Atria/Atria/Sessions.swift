@@ -10948,18 +10948,28 @@ final class SessionStore: ObservableObject {
                     }
                 }
                 if Self.confirmedWorkoutNeedsHeartRateArchiveRehydration(old),
-                   let archiveHeartRateWindow,
-                   let rehydrated = SessionStore.rehydratedConfirmedWorkout(
-                       old,
-                       existingPoints: existingPoints,
-                       archivePoints: archiveHeartRateWindow.points.filter {
-                           $0.t >= old.start && $0.t <= old.end
-                       },
-                       rest: currentRest,
-                       maxHR: currentMaxHR,
-                       profile: currentProfile
-                   ) {
-                    replacement = rehydrated
+                   let archiveHeartRateWindow {
+                    // Per-workout dying thread (2026-08-05): each rehydration
+                    // is a bounded archive read whose garbage must die before
+                    // the next workout's read begins.
+                    let rehydrated = AtriaTransientWorkThread.run(
+                        name: "atria.workout-rehydration-one",
+                        qualityOfService: .utility
+                    ) { () -> UserConfirmedWorkout? in
+                        SessionStore.rehydratedConfirmedWorkout(
+                            old,
+                            existingPoints: existingPoints,
+                            archivePoints: archiveHeartRateWindow.points.filter {
+                                $0.t >= old.start && $0.t <= old.end
+                            },
+                            rest: currentRest,
+                            maxHR: currentMaxHR,
+                            profile: currentProfile
+                        )
+                    }
+                    if let rehydrated {
+                        replacement = rehydrated
+                    }
                 }
                 return replacement == old ? nil : (old, replacement)
             }
@@ -11036,8 +11046,17 @@ final class SessionStore: ObservableObject {
             }
         }
         pendingConfirmedWorkoutRehydrationWorkItem = workItem
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.75,
-                                                       execute: workItem)
+        // Fresh dying thread (2026-08-05, the LAST balloon lane): both
+        // stress-cycle deaths landed inside this rehydration pass — bounded
+        // per-workout archive reads whose transient garbage summed on a
+        // long-lived global-pool thread (reclaim happens only at thread
+        // teardown on this beta).
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.75) {
+            AtriaTransientWorkThread.run(name: "atria.workout-rehydration",
+                                         qualityOfService: .utility) {
+                workItem.perform()
+            }
+        }
     }
 
     /// Publishes qualified WHOOP/R10 steps independently of the broader
