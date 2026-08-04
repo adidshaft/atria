@@ -1489,3 +1489,24 @@ the last card was permanently clipped behind bottom chrome.
 Watch item (not acted on): strain climbed 2.1 in ~10 quiet minutes at
 83-87bpm — plausible TRIMP at elevated-resting HR, but worth a sanity
 pass against the zone floor if the user reports inflated daily strain.
+
+## 13.5 Loop pass: strain watch-item AUDITED CLOSED; soak still perfect
+
+Soak since the margin build: ONE pid across 35+ min, peak 333MB,
+incremental history stages instant. Zero deaths since the per-session
+replay wraps + serialized tail landed (three consecutive healthy
+windows now).
+
+Strain climb (2.3→4.4 in ~10 quiet min) audited: every strain lane —
+saved, saved-active, AND the hero's live component
+(liveSessionDailyLoadTRIMP) — routes through dailyLoadTRIMP's
+50%-of-max floor (95bpm at maxHR 190), so sub-floor wear cannot accrue.
+The observed climb is legitimate: drain catch-up retro-computing the
+day's recovered TRIMP (honest backfill) and/or real above-floor moments
+between captures. WATCH ITEM CLOSED, no code change.
+
+Remaining campaign checklist (unchanged): clean drain-heavy stress
+cycle in the soak log → strip ALL temp instrumentation (AtriaMemprobe +
+note sites + bisect/append levers + recompute_stage note) → full suite
+→ then the deferred product tail (steps drain P0, SpO2 hardware,
+settings profile polish, C5 density re-verify, iOS 27 GA re-test).
