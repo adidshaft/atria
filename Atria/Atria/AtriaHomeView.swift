@@ -280,9 +280,23 @@ fileprivate struct AtriaWorkoutDetectionPrompt: Equatable {
     }
 
     var subtitle: String {
-        isReviewReady
-            ? "Sustained strap HR is ready to confirm."
-            : "Atria is waiting for a steadier strap rise."
+        // Give the user something to judge WITH (2026-08-05 feedback: the
+        // card showed neither when nor what, "which makes it very difficult
+        // for user to guess"). Start time is derived from the contiguous
+        // elevated-sample count, so it is approximate — say so with "≈".
+        guard isReviewReady else {
+            return "Atria is waiting for a steadier strap rise."
+        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "h:mm a"
+        let approximateStart = formatter.string(
+            from: Date().addingTimeInterval(-Double(samples))
+        )
+        var parts = ["Since ≈\(approximateStart)", "\(evidenceMinutes) min elevated"]
+        if let motionSuggestedActivityType {
+            parts.append("looks like \(motionSuggestedActivityType.rawValue.lowercased())")
+        }
+        return parts.joined(separator: " · ")
     }
 
     var typeSuggestions: [String] {
