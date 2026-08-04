@@ -294,6 +294,13 @@ record shows EVERY kill today dies inside `rec_scan_progress` —
    plus decoder churn) ⇒ the scan now crosses the limit ⇒ progressively
    worse as the archive grows. Explains why fixes "verified" then failed:
    each reduced other pressure while the archive kept growing.
+**Kernel-side confirmation (13:5x):** a late-written JetsamEvent (11:57:48,
+killed process = an unrelated idle system daemon) doubles as an independent
+snapshot of Atria DURING the pool-fix scan: `active, frontmost, 20,041
+pages ≈ 320MB, reason None` — kernel-attested flat footprint in the exact
+window that previously recorded 3.45GB kills. Atria soak record remains
+unblemished.
+
 **Soak + suite update (13:1x):** ~2h kill-free since 11:48; app alive
 through pid cycles (benign lifecycle exits, zero JetsamEvents). Suite
 health: the two stale CrossScreenDensity failures are resolved
