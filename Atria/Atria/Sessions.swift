@@ -9044,6 +9044,9 @@ final class SessionStore: ObservableObject {
         deferDerivedPublication: Bool = false,
         completion: ((Bool) -> Void)? = nil
     ) {
+        // TEMP instrumentation (2026-08-05 round-4): covers EVERY caller —
+        // the coordinator's comp_begin note misses external status refreshes.
+        AtriaMemprobe.note("arch_status_entry reason=\(reason.prefix(24))")
         historicalArchiveStatusRevision &+= 1
         let revision = historicalArchiveStatusRevision
         let confirmedWorkouts = cachedConfirmedWorkouts
