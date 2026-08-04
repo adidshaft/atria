@@ -225,6 +225,18 @@ before bed), then never ran — plausibly the same balloon → background memory
 limit → jetsam, though no overnight JetsamEvent file survived rotation to
 prove it.
 
+**Probe finding #1 (06:5x, decisive negative):** with a stack-capturing probe
+INSIDE `AtriaHistoricalAggregateReader.load()`, the resident climb
+(128→691MB in ~17s post-launch) produced ZERO load() notes — **the balloon
+does NOT flow through the aggregate reader at all**, so the entire Aug-2
+unbounded-`load()` theory doesn't cover today's lane. Also: two probe runs
+peaked ~460–900MB then SETTLED back to ~130–250MB — the fatal 3.4GB climb is
+phase-triggered, not launch-constant; prime suspect is a drain-phase
+transition (batch seal → terminal publish / crash-resume materialize, where
+the lane breadcrumbs sit waiting). Probe left running on-device
+(fsync survives the jetsam) — read `Documents/atria-memprobe.log`'s tail
+after the next kill; the last breadcrumb before death names the lane.
+
 **In progress:** `AtriaMemprobe` reinstated (fsync'd
 `Documents/atria-memprobe.log`, 250ms ≥64MB-delta sampler + lane breadcrumbs
 at scene transitions, shadow step, crash-resume materialize ×2, terminal
