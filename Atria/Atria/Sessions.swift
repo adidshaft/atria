@@ -25683,6 +25683,13 @@ final class SessionStore: ObservableObject {
             if sleep.source.hasPrefix("user_adjusted_") {
                 return sleep
             }
+            // Manual windows never earn stage segments (2026-08-05): the
+            // migration path strips stages from manual_* sources on the next
+            // launch, so writing them here made a hypnogram appear mid-session
+            // and vanish after relaunch. Storage policy wins — skip backfill.
+            if sleep.source.hasPrefix("manual_") {
+                return sleep
+            }
             let hasRecoveredEpochOverlap = sourceSessions.contains { session in
                 (session.recoveredMotionEpochs ?? []).contains {
                     $0.end > sleep.start && $0.start < sleep.end
@@ -35423,7 +35430,11 @@ struct SleepHistorySnapshot: Equatable {
             // sleep stages, so a sensor-research hypnogram without validated
             // motion previously rendered as a confident all-deep band. Fold
             // it into an explicit "needs motion data" state instead.
-            if evidence == .sensorResearch,
+            // Widened 2026-08-05: a manual window with backfilled HR-only
+            // segments previously resolved to .manualEstimate, skipped this
+            // motion gate entirely, and rendered a confident hypnogram from
+            // HR alone — the exact failure mode this gate exists to stop.
+            if evidence == .sensorResearch || evidence == .manualEstimate,
                !Self.hasValidatedMotionEvidence(motionValidated: motionValidated,
                                                 confidence: confidence,
                                                 stageEvidence: evidence) {
@@ -35591,6 +35602,11 @@ struct SleepHistorySnapshot: Equatable {
             if Self.explicitSleepSources.contains(source) { return false }
             return !confirmed && fitsInferredDaytimeNapWindow
         }
+
+        /// Hand-typed windows (2026-08-05): deliberately NOT the wider
+        /// `isUserAuthoredSleepSource` — `user_adjusted_*` legitimately keeps
+        /// sensor-derived stages, while `manual_*` never earns them.
+        var isManualEntry: Bool { source.hasPrefix("manual_") }
 
         var evidenceLabel: String {
             isNapEvidence ? "Nap" : "Sleep"

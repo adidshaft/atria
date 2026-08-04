@@ -386,6 +386,9 @@ struct AtriaMiniTrendCard: View {
             .chartXAxis(.hidden)
             .chartYAxis(.hidden)
             .frame(height: 72)
+            // Full-bleed plot inside the card (2026-08-05 width audit): the
+            // axis-less sparkline needs no inset; title and caption keep it.
+            .padding(.horizontal, -AtriaDesignTokens.Spacing.lg)
             Text(trend.caption)
                 .font(.caption2)
                 .foregroundStyle(.secondary)

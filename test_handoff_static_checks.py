@@ -4639,8 +4639,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "\"Sleep needs at least 3 hours.\"",
             ".disabled(!canSave || isSaving)",
             "ForEach(SleepStageKind.allCases)",
-            "Not estimated from manual entry",
-            "Stage bars stay blank until sensor evidence is available.",
+            # Pin migrated 2026-08-05 (manual-sleep honesty audit): the sheet
+            # now says "No stages — entered by hand" and no longer promises
+            # stage bars "until sensor evidence is available" (backfill now
+            # deliberately skips manual_* windows).
+            "No stages — entered by hand",
+            "never shows stage bars.",
             "AtriaSleepStageSummary(night: latest)",
             "AtriaMetricTile(label: \"Consistency\"",
             "value: snapshot.sleepConsistencyText",
@@ -4690,12 +4694,15 @@ class HandoffStaticChecks(unittest.TestCase):
             "struct AtriaSleepStageBuildingSummary: View, Equatable",
             # Pin migrated 2026-08-01 (sleep-stages hypnogram): an HR-only
             # night honestly reads "Stages need motion data" instead of
-            # "building"; the building copy remains for every other state.
-            "Text(night.stageEvidence == .hrOnlyEstimate",
-            ": \"Stages building\")",
+            # "building". Re-migrated 2026-08-05 (manual-sleep honesty): the
+            # ternary became headline/detail computed properties so a
+            # hand-typed window can say "No stages — manual entry" instead of
+            # promising stages that will never arrive.
+            "if night.isManualEntry { return \"No stages — manual entry\" }",
+            ": \"Stages building\"",
             "Stages need checked evidence. Duration and overnight vitals remain available while Atria learns.",
             "AtriaSleepStageBuildingSummary(night: latest)",
-            "Awake, Light, REM, SWS, and Deep are not ready yet.",
+            "Awake, Light, REM, SWS, and Deep show no values.",
             # 2026-07-08: de-privatized so the broader-lane sizing (user request)
             # is render-testable.
             "struct AtriaSleepStageHypnogram: View, Equatable",

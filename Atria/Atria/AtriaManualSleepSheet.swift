@@ -430,7 +430,11 @@ struct AtriaManualSleepSheet: View {
                 if night.displayStageSegments.isEmpty {
                     // HR-only honesty (2026-08-01): say what is actually
                     // missing instead of implying stages will appear.
-                    Text(night.stageEvidence == .hrOnlyEstimate
+                    // Manual honesty (2026-08-05): a hand-typed window never
+                    // grows stages, so "still building" was a false promise.
+                    Text(night.isManualEntry
+                         ? "No stages \u{2014} this window was entered by hand. Stage timelines come only from sensor data."
+                         : night.stageEvidence == .hrOnlyEstimate
                          ? "Stages need motion data \u{2014} heart rate alone can't separate sleep stages."
                          : "Stages are still building for this night \u{2014} heart-rate estimate only.")
                         .font(.caption)
@@ -608,7 +612,7 @@ struct AtriaManualSleepSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Sleep stages")
                         .font(.subheadline.weight(.semibold))
-                    Text(preservesSensorStages ? "Sensor-derived for this window" : "Not estimated from manual entry")
+                    Text(preservesSensorStages ? "Sensor-derived for this window" : "No stages — entered by hand")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -621,7 +625,7 @@ struct AtriaManualSleepSheet: View {
         .accessibilityLabel("Sleep stages")
         .accessibilityValue(preservesSensorStages
                             ? "Sensor-derived for this window"
-                            : "Not estimated from manual entry")
+                            : "No stages — entered by hand")
         .accessibilityHint(showsStageMethodology ? "Collapses stage methodology" : "Shows stage methodology")
     }
 
@@ -629,7 +633,10 @@ struct AtriaManualSleepSheet: View {
         if preservesSensorStages {
             return "Atria re-derives Awake, Light, REM, SWS, and Deep from sensor samples inside the edited window; changing its bounds does not fabricate stages."
         }
-        return "This manual \(isNap ? "nap" : "sleep") saves its window and duration only. Stage bars stay blank until sensor evidence is available."
+        // 2026-08-05: "until sensor evidence is available" was a false promise
+        // — backfill now deliberately skips manual_* windows, so a hand-typed
+        // window never grows stage bars.
+        return "This manual \(isNap ? "nap" : "sleep") saves its window and duration only. Stage timelines come only from sensor-detected sleep, so a hand-typed window never shows stage bars."
     }
 
     private func applyInferredTypeIfNeeded() {

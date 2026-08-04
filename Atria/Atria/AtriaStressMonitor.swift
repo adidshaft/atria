@@ -93,7 +93,12 @@ struct AtriaStressPresentation: Equatable {
                 : "Measured from live HR against your personal baseline; high stress requires HRV corroboration."
         case .calibrating:
             detail = state.detail.isEmpty ? "Building your personal HR baseline" : state.detail
-            narrative = "Stress will activate after Atria builds a reliable personal resting baseline."
+            // Real-time confusion fix (2026-08-05, user report): live HR was
+            // streaming beside a "--" stress value with no explanation of the
+            // gate. Name the mechanism: HR is live now; scoring needs a
+            // trusted baseline of qualified rest days (one per day, so this
+            // takes days by design, not by lag).
+            narrative = "Live heart rate is streaming now. Stress scoring turns on once \(PersonalBaseline.trustedMinimumSamples) qualified rest days (about two weeks of overnight wear) build your personal baseline."
         case .warmingUp:
             detail = "Collecting 2 min of live signal"
             narrative = "Stress is waiting for enough continuous live signal to make a reliable reading."
@@ -197,9 +202,13 @@ enum AtriaStressMonitor {
 
         guard baseline.hasTrustedRestingBaseline(now: now) else {
             let n = min(baseline.freshRestingSampleCount(now: now), PersonalBaseline.trustedMinimumSamples)
+            // Progress in the detail line (2026-08-05): the card surfaces
+            // `detail`, not `label`, so the count was invisible — a user
+            // watching live HR stream had no way to tell how far calibration
+            // was or that it advances one qualified rest day at a time.
             return AtriaStressState(level: nil,
                                     label: "Calibrating (\(n)/\(PersonalBaseline.trustedMinimumSamples))",
-                                    detail: "Building your personal HR baseline",
+                                    detail: "Baseline \(n) of \(PersonalBaseline.trustedMinimumSamples) rest days",
                                     kind: .calibrating, confidence: 0,
                                     rawActivation: 0, hrvAvailable: false)
         }

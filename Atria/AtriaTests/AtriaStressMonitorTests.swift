@@ -340,7 +340,10 @@ final class AtriaStressMonitorTests: XCTestCase {
             presentation.value,
             AtriaCompactMetricPresentation.noValue
         )
-        XCTAssertEqual(presentation.detail, "Building your personal HR baseline")
+        // Migrated 2026-08-05: the scorer's calibrating detail now carries the
+        // visible progress count (the card shows detail, not label, so the
+        // count was invisible to users watching live HR stream beside "--").
+        XCTAssertEqual(presentation.detail, "Baseline 13 of 14 rest days")
         XCTAssertFalse(presentation.value.contains("/3"))
     }
 
