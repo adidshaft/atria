@@ -3527,10 +3527,7 @@ enum HistoricalArchive {
         let scanBisectMode = ProcessInfo.processInfo.arguments
             .drop { $0 != "--atria-debug-recovered-scan-mode" }.dropFirst().first
         AtriaMemprobe.note("rec_scan_begin sources=\(sources.count) plan=\(String(describing: plan).prefix(12)) bisect=\(scanBisectMode ?? "full")")
-        let scanResult = AtriaHistoricalJSONLRecentScanner.scan(
-            sources: sources,
-            cutoff: coveredSince,
-            onProgress: { statistics in
+        func scanProgressTick(_ statistics: AtriaHistoricalJSONLRecentScanner.Statistics) {
                 AtriaMemprobe.note("rec_scan_progress bytes=\(statistics.byteCount) hr=\(heartRate.count) rr=\(rrAccumulator.acceptedRecordCount) grav=\(gravity.count) motionIDs=\(motionRecordIdentities.count)")
                 // Footprint probe proved the scan accumulates ~1.4KB of
                 // freed-but-dirty malloc pages per decoded line (3.4GB over a
@@ -3543,8 +3540,8 @@ enum HistoricalArchive {
                     malloc_zone_pressure_relief(nil, 0)
                 }
                 onScanProgress?(statistics)
-            }
-        ) { lineData in
+        }
+        func consumeScanCandidate(_ lineData: Data) {
             if scanBisectMode == "count-only" {
                 decodedRecordCount += 1
                 return
@@ -3572,6 +3569,79 @@ enum HistoricalArchive {
                                   skipRR: scanBisectMode == "append-sans-rr",
                                   skipSkin: scanBisectMode == "append-sans-skin")
         }
+        // BUDGETED PASSES (2026-08-04, the balloon's architectural fix): the
+        // 3-way append bisect proved every per-line lane contributes transient
+        // garbage that accumulates ~1:1 into phys_footprint for as long as the
+        // scan runs continuously — the iOS 27 beta allocator reclaims nothing
+        // until the scan machinery unwinds (decode-and-discard released its
+        // full ~2GB only AFTER rec_scan_done). So never run the archive in one
+        // continuous stretch: scan in resumable ~160MB slices and unwind
+        // between them, making peak memory per-pass instead of per-archive.
+        let passByteBudget = 160 * 1024 * 1024
+        let maximumPasses = 64
+        var remainingSources = sources
+        var priorPassStatistics = AtriaHistoricalJSONLRecentScanner.Statistics()
+        var mergedScanStates: [String: AtriaHistoricalJSONLRecentScanner.FileState] = [:]
+        var scanComplete = true
+        var passIndex = 0
+        while !remainingSources.isEmpty {
+            passIndex += 1
+            let passBase = priorPassStatistics
+            let passResult = autoreleasepool {
+                AtriaHistoricalJSONLRecentScanner.scan(
+                    sources: remainingSources,
+                    cutoff: coveredSince,
+                    byteBudget: passByteBudget,
+                    onProgress: { passStatistics in
+                        // Callers renew inactivity leases from a MONOTONIC
+                        // byte count; pass-local statistics restart at zero,
+                        // so re-base them onto the completed passes' totals.
+                        var statistics = passStatistics
+                        statistics.byteCount += passBase.byteCount
+                        statistics.fileReadCount += passBase.fileReadCount
+                        statistics.lineCount += passBase.lineCount
+                        statistics.candidateLineCount += passBase.candidateLineCount
+                        scanProgressTick(statistics)
+                    },
+                    consumeCandidate: consumeScanCandidate)
+            }
+            passResult.states.forEach { mergedScanStates[$0.key] = $0.value }
+            priorPassStatistics.byteCount += passResult.statistics.byteCount
+            priorPassStatistics.fileReadCount += passResult.statistics.fileReadCount
+            priorPassStatistics.lineCount += passResult.statistics.lineCount
+            priorPassStatistics.candidateLineCount += passResult.statistics.candidateLineCount
+            if !passResult.exhaustedByteBudget {
+                scanComplete = passResult.complete
+                break
+            }
+            AtriaMemprobe.note("rec_scan_pass \(passIndex) bytes=\(priorPassStatistics.byteCount) fp=\(AtriaMemprobe.currentFootprintBytes() / (1024 * 1024))MB")
+            remainingSources = remainingSources.compactMap { source in
+                guard let state = mergedScanStates[source.descriptor.path] else {
+                    return source  // untouched this pass
+                }
+                guard !source.descriptor.isCompressed else {
+                    // Compressed sources are all-or-nothing; a state entry
+                    // means the whole file was consumed.
+                    return nil
+                }
+                guard state.processedOffset < source.descriptor.size else { return nil }
+                return AtriaHistoricalJSONLRecentScanner.Source(
+                    descriptor: source.descriptor,
+                    startOffset: state.processedOffset)
+            }
+            guard passIndex < maximumPasses else {
+                scanComplete = false
+                break
+            }
+            // The unwind window: freed pages return only once this turn's
+            // allocation burst pauses. A brief nap measurably lets the
+            // footprint fall before the next slice begins.
+            usleep(150_000)
+        }
+        let scanResult = AtriaHistoricalJSONLRecentScanner.Result(
+            states: mergedScanStates,
+            statistics: priorPassStatistics,
+            complete: scanComplete)
         AtriaMemprobe.note("rec_scan_done hr=\(heartRate.count) rr=\(rrAccumulator.acceptedRecordCount) skin=\(skinTemperatureRawPoints.count) grav=\(gravity.count) motionIDs=\(motionRecordIdentities.count)")
         sortRecoveredData(heartRate: &heartRate,
                           skinTemperatureRawPoints: &skinTemperatureRawPoints,
