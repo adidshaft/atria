@@ -11968,8 +11968,10 @@ final class SessionStore: ObservableObject {
         // does not: a live journal can span hours around one short effort, so
         // History and Activity must use the same bounded replay authority as
         // Home/review instead of publishing the raw journal envelope.
-        let preservedSleepAndRest = sessions.compactMap {
-            $0.detectedActivity(rest: rest, maxHR: maxHR, calendar: calendar)
+        let preservedSleepAndRest = sessions.compactMap { session in
+            AtriaTransientWorkThread.run(name: "atria.hist-detected-activity") {
+                session.detectedActivity(rest: rest, maxHR: maxHR, calendar: calendar)
+            }
         }.filter {
             $0.kind == .sleepCandidate || $0.kind == .restCandidate
         }
@@ -26097,18 +26099,31 @@ final class SessionStore: ObservableObject {
             replaySessions = Array(replaySessions.prefix(max(1, limitSessions)))
         }
         let aggregateCandidates = includeAggregates
-            ? aggregateWorkoutCandidates(in: replaySessions,
-                                         rest: rest,
-                                         maxHR: maxHR,
-                                         calendar: Calendar.current,
-                                         thresholdFraction: thresholdFraction)
+            ? AtriaTransientWorkThread.run(name: "atria.replay-aggregates") {
+                aggregateWorkoutCandidates(in: replaySessions,
+                                           rest: rest,
+                                           maxHR: maxHR,
+                                           calendar: Calendar.current,
+                                           thresholdFraction: thresholdFraction)
+            }
             : []
         // Perf: workoutReadiness walks a session's whole points array, so compute
         // it ONCE per session and reuse it for both the ready-count and the
         // per-session loop below (previously evaluated twice per session per call,
         // which ran every ~3s on the overview tab as saved sessions accumulated).
         let sessionReadiness = replaySessions.map { session in
-            (session: session, readiness: session.workoutReadiness(rest: rest, maxHR: maxHR, thresholdFraction: thresholdFraction))
+            // Per-session dying thread (2026-08-04 balloon): a readiness
+            // replay walks the session's whole points array; across ~50
+            // canonical sessions with recovered archives attached, the
+            // summed transient garbage inside ONE thread stretch crossed
+            // 2GB (the hist_stage=detections kill). Each session's garbage
+            // now dies before the next replay starts.
+            (session: session,
+             readiness: AtriaTransientWorkThread.run(name: "atria.replay-readiness") {
+                 session.workoutReadiness(rest: rest,
+                                          maxHR: maxHR,
+                                          thresholdFraction: thresholdFraction)
+             })
         }
         let readySessions = sessionReadiness.filter { $0.readiness.ready }.count
             + aggregateCandidates.filter { $0.readiness.ready }.count
