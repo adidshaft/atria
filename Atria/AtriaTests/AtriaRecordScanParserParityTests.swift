@@ -184,26 +184,36 @@ final class AtriaRecordScanParserParityTests: XCTestCase {
         try assertParity(line)
     }
 
-    func testNegativeZeroIsTheOneKnownBenignDivergence() throws {
-        // JSONEncoder writes Double(-0.0) as `-0`; JSONSerialization reparses
-        // that literal as an INTEGER zero (sign bit lost) while JSONDecoder
-        // preserves the minus. IEEE -0.0 == 0.0, so every numeric consumer
-        // (gravity math, thresholds, magnitudes) is unaffected — this test
-        // pins the divergence as understood and bounds it to the sign bit.
+    func testNegativeZeroRoundTripsWithFullParity() throws {
+        // JSONEncoder writes Double(-0.0) as `-0`. JSONSerialization used to
+        // lose the sign bit here (it reparses `-0` as an integer zero) — the
+        // hand-rolled byte parser goes through Double("-0") and preserves
+        // it, so even this edge is full byte-parity with JSONDecoder now.
         var record = fullRecord()
         record.unknownMotionScalar32 = -0.0
-        let data = Data(try encodedLine(record).utf8)
-        let codable = try Self.decoder.decode(HistoricalArchive.Record.self, from: data)
-        guard let scanned = HistoricalArchive.Record(scanLine: data) else {
-            XCTFail("scan parser must accept a -0.0 line")
-            return
-        }
-        XCTAssertEqual(codable.unknownMotionScalar32, scanned.unknownMotionScalar32,
-                       "numeric equality must hold even where the sign bit differs")
-        XCTAssertEqual(codable.unknownMotionScalar32?.sign, .minus)
-        XCTAssertEqual(scanned.unknownMotionScalar32?.sign, .plus,
-                       "if this starts preserving the sign, the divergence is gone — "
-                       + "fold this case back into the byte-parity matrix")
+        try assertParity(try encodedLine(record))
+    }
+
+    func testEscapedStringsAndOffsetDatesParity() throws {
+        // Exercises the byte parser's escape decoding (quote, backslash,
+        // \uXXXX incl. a surrogate pair) and a non-Z zone offset — shapes
+        // the archive writer never emits but JSONDecoder would accept.
+        var record = fullRecord()
+        record.strapIdentifier = "quote\" back\\slash \tñ\u{1F600}"
+        try assertParity(try encodedLine(record))
+        var line = try encodedLine(fullRecord())
+        line = line.replacingOccurrences(of: "\"capturedAt\":\"[^\"]*\"",
+                                         with: "\"capturedAt\":\"2026-08-03T23:33:41+05:30\"",
+                                         options: .regularExpression)
+        XCTAssertTrue(line.contains("+05:30"), "offset fixture must be applied")
+        try assertParity(line)
+        // Explicit \uXXXX escapes incl. a surrogate pair (😀 = D83D DE00):
+        // the writer emits raw UTF-8, so only a hand-written line covers
+        // the escape-decoding branch.
+        line = line.replacingOccurrences(of: "\"usabilityReason\":\"ok\"",
+                                         with: "\"usabilityReason\":\"A\\u0042 \\ud83d\\ude00\"")
+        XCTAssertTrue(line.contains("\\ud83d"), "escape fixture must be applied")
+        try assertParity(line)
     }
 
     func testParityAcrossRepresentativeVariations() throws {
