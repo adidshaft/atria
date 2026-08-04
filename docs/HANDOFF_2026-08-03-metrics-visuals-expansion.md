@@ -133,6 +133,42 @@ activity timeline and the activities list. Honest: observed readings only,
 gap-broken, shows the state's "collecting/warming up" copy when sparse.
 Follow-up option: add a live-HR number/line to the same card ("heart/stress").
 
+## 12. Overnight inspection 2026-08-04 (~06:00 IST, container pull) — capture was DEAD all night
+
+Ground truth via `devicectl` container pull (Documents + Library/Preferences).
+Timestamp note: the `atria.keepalive.*` / `atria.offlineSync.*` defaults store
+**Unix-epoch** seconds — decode against 1970, not the Apple 2001 reference
+(decoding against 2001 reads as year 2057).
+
+**Timeline (all IST):**
+- Aug 3 18:03 — evening live session starts after the day's device review; only
+  ~12 samples accepted by 23:35. `atria.hrContinuity.status = stale`,
+  `atria.keepalive.stallReconnects = 96` — capture was already mostly dead
+  through the evening.
+- Aug 3 18:00 — `backgroundLeaseStatus.v1 = orphaned_process_terminated`.
+- Aug 4 00:28:12 — app relaunched (background), keepalive armed, new session
+  identity created.
+- Aug 4 00:29:13 — **last keepalive tick of the night.** The process went
+  silent ~60 s after relaunch and never ran again.
+- Aug 4 05:58 — this session's install/launch revived capture; the strap
+  streamed ~1 Hz immediately (73 samples in ~70 s), so it was worn, charged,
+  and in range the whole time.
+
+**Consequences:** no live overnight HR → no Aug-4 sleep/recovery at wake; the
+night exists only on strap flash. `automaticFullDrainRecoveryEnabled` is
+`true` again, so the catch-up drain should backfill it now that the app runs —
+**verify an Aug-4 sleep + rollup appears** (that check doubles as an end-to-end
+proof of "the app does the work" backfill).
+
+**Open root-cause question:** why no BLE-event relaunch between 00:29 and
+05:58 — strap-side link drop with no reconnect attempt reaching the phone, a
+bluetoothd wedge (see `atria-locked-reconnect-fix-proven`), or iOS suspending
+the process with no pending connection? The six background-continuity fixes
+are in this build, so this is either a new hole or the known
+parked-terminal-coverage-authority block (`atria-drain-keeping-hardening-plan`
+P0, still open). Evidence copies live in the session scratchpad
+(`container-pull/`, `container-pull-lib/`).
+
 ## 0. TL;DR — the reframe
 
 The user shared 6 mockup boards (Behavior Impact, Strength Log, Sleep Planner &
