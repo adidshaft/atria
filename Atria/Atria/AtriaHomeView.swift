@@ -10335,6 +10335,8 @@ final class AtriaHomeModel {
                                          savedAggregate: SavedAggregate,
                                          deferredDetails: DeferredDetails?,
                                          stressState: AtriaStressState) -> HeroSnapshot {
+        AtriaMemprobe.note("hero_snapshot_begin")
+        defer { AtriaMemprobe.note("hero_snapshot_end") }
         let restingContext = savedAggregate.restingContext
         let rest = restingContext.resolved
         let calendar = Calendar.current

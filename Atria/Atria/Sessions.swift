@@ -16100,6 +16100,8 @@ final class SessionStore: ObservableObject {
     }
 
     func homeDashboardDiagnostics() -> HomeDashboardDiagnostics {
+        AtriaMemprobe.note("dash_diag_begin")
+        defer { AtriaMemprobe.note("dash_diag_end") }
         if let cachedHomeDashboardDiagnostics {
             return cachedHomeDashboardDiagnostics
         }
