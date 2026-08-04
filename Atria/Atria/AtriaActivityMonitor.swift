@@ -2895,6 +2895,13 @@ struct AtriaAddWorkoutSheet: View {
                             DatePicker("End", selection: $endTime, in: startTime..., displayedComponents: [.date, .hourAndMinute])
                         }
                         .font(.subheadline.weight(.semibold))
+
+                        if endTime > startTime {
+                            AtriaEventWindowTimeline(title: "Workout window",
+                                                     start: startTime,
+                                                     end: endTime,
+                                                     tint: Metrics.electricStrain)
+                        }
                     }
                     .padding(14)
                     .atriaCard(emphasis: .soft)

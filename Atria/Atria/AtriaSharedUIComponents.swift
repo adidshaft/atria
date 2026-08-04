@@ -821,3 +821,124 @@ struct AtriaPulsingHeart: View, Equatable {
         }
     }
 }
+
+/// Honest event-window visual for manual entry sheets (sleep, nap, workout):
+/// draws ONLY the user-entered start→end span on an hour-ticked time track with
+/// a duration readout. It never implies stage/zone data — it's a pure function
+/// of the two times the user picked — so it stays within Atria's honesty rules
+/// (no fabricated sensor detail). Updates live as the pickers move.
+struct AtriaEventWindowTimeline: View, Equatable {
+    let title: String
+    let start: Date
+    let end: Date
+    let tint: Color
+    var timeZoneIdentifier: String? = nil
+
+    private var duration: TimeInterval { max(0, end.timeIntervalSince(start)) }
+
+    private var spanStart: Date {
+        start.addingTimeInterval(-max(30 * 60, duration * 0.2))
+    }
+
+    private var spanEnd: Date {
+        end.addingTimeInterval(max(30 * 60, duration * 0.2))
+    }
+
+    private func fraction(_ date: Date) -> CGFloat {
+        let total = spanEnd.timeIntervalSince(spanStart)
+        guard total > 0 else { return 0 }
+        return CGFloat(min(1, max(0, date.timeIntervalSince(spanStart) / total)))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                Spacer(minLength: 8)
+                Text(Self.durationText(duration))
+                    .font(.caption2.weight(.bold).monospacedDigit())
+                    .foregroundStyle(tint)
+            }
+
+            GeometryReader { geo in
+                let w = geo.size.width
+                let trackH: CGFloat = 34
+                let x0 = fraction(start) * w
+                let x1 = fraction(end) * w
+                let capW = max(6, x1 - x0)
+
+                ZStack(alignment: .topLeading) {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Color.primary.opacity(0.05))
+                        .frame(width: w, height: trackH)
+
+                    hourTicks(width: w, height: trackH)
+
+                    Capsule(style: .continuous)
+                        .fill(LinearGradient(colors: [tint.opacity(0.92), tint.opacity(0.55)],
+                                             startPoint: .leading, endPoint: .trailing))
+                        .frame(width: capW, height: trackH)
+                        .offset(x: x0)
+                }
+                .frame(width: w, height: trackH)
+            }
+            .frame(height: 34)
+
+            HStack {
+                Text(Self.timeText(start, timeZoneIdentifier: timeZoneIdentifier))
+                Spacer(minLength: 0)
+                Text(Self.timeText(end, timeZoneIdentifier: timeZoneIdentifier))
+            }
+            .font(.system(size: 10, weight: .semibold).monospacedDigit())
+            .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title) from \(Self.timeText(start, timeZoneIdentifier: timeZoneIdentifier)) to \(Self.timeText(end, timeZoneIdentifier: timeZoneIdentifier)), duration \(Self.durationText(duration))")
+    }
+
+    private func hourTicks(width: CGFloat, height: CGFloat) -> some View {
+        Canvas { context, size in
+            let total = spanEnd.timeIntervalSince(spanStart)
+            guard total > 0 else { return }
+            var calendar = Calendar.current
+            if let timeZoneIdentifier, let timeZone = TimeZone(identifier: timeZoneIdentifier) {
+                calendar.timeZone = timeZone
+            }
+            let comps = calendar.dateComponents([.year, .month, .day, .hour], from: spanStart)
+            guard var tick = calendar.date(from: comps) else { return }
+            if tick < spanStart { tick = tick.addingTimeInterval(3600) }
+            while tick < spanEnd {
+                let x = CGFloat(tick.timeIntervalSince(spanStart) / total) * size.width
+                var path = Path()
+                path.move(to: CGPoint(x: x, y: 4))
+                path.addLine(to: CGPoint(x: x, y: size.height - 4))
+                context.stroke(path,
+                               with: .color(Color.primary.opacity(0.08)),
+                               style: StrokeStyle(lineWidth: 1))
+                tick = tick.addingTimeInterval(3600)
+            }
+        }
+        .frame(width: width, height: height)
+        .allowsHitTesting(false)
+    }
+
+    private static func durationText(_ seconds: TimeInterval) -> String {
+        guard seconds > 0 else { return "--" }
+        let minutes = Int((seconds / 60).rounded())
+        let hours = minutes / 60
+        let remainder = minutes % 60
+        if hours > 0 { return "\(hours)h \(remainder)m" }
+        return "\(remainder)m"
+    }
+
+    private static func timeText(_ date: Date, timeZoneIdentifier: String?) -> String {
+        var style = Date.FormatStyle(date: .omitted, time: .shortened)
+        if let timeZoneIdentifier, let timeZone = TimeZone(identifier: timeZoneIdentifier) {
+            style.timeZone = timeZone
+        }
+        return date.formatted(style)
+    }
+}

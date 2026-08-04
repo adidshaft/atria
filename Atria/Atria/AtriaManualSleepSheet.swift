@@ -560,6 +560,14 @@ struct AtriaManualSleepSheet: View {
             DatePicker("End", selection: $end, in: start..., displayedComponents: [.date, .hourAndMinute])
                 .datePickerStyle(.compact)
 
+            if end > start {
+                AtriaEventWindowTimeline(title: isNap ? "Nap window" : "Sleep window",
+                                         start: start,
+                                         end: end,
+                                         tint: isNap ? .indigo : .cyan)
+                    .padding(.top, 2)
+            }
+
             if !canSave {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.circle.fill")
