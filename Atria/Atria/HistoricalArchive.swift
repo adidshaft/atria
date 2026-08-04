@@ -6268,41 +6268,46 @@ enum AtriaHistoricalGravity {
     }
 }
 
-// MARK: - Scan-path Record parser (Foundation-JSON bypass, 2026-08-04)
+// MARK: - Scan-path Record parser (allocation-frugal, 2026-08-04)
 
 extension HistoricalArchive.Record {
-    /// Parses one archive JSONL line with ZERO Foundation JSON machinery.
-    /// On this device's iOS 27.0 beta (24A5380h), parse-and-discard of the
-    /// archive leaks gigabytes of LIVE small-zone memory per scan through
-    /// BOTH JSONDecoder AND JSONSerialization (each proven independently by
-    /// the decode-only bisect: live 523→3189MB with count-only clean at
-    /// 411MB on the same build), surviving per-line + per-chunk
-    /// autoreleasepools and instance recycling — the two APIs share
-    /// swift-foundation's JSON engine on that OS. Swift-native allocations
-    /// demonstrably drain (count-only materializes every line Data and
-    /// byte-scans it, flat), so the workaround is a hand-rolled byte parser.
+    /// Parses one archive JSONL line IN PLACE, allocating only what the
+    /// Record itself keeps (its String fields and Int/String arrays).
+    ///
+    /// Why this exists (the 3.4GB scan-kill saga's final layer): the
+    /// recovered-data scan reads ~1GB and visits millions of lines; the
+    /// footprint probe proved the killer was per-line PARSE GARBAGE —
+    /// transient heap allocations outrunning the allocator's page reclaim
+    /// (violent climb to a ~2GB plateau, full release only after the scan
+    /// ends). Every object-graph parser hit it: JSONDecoder,
+    /// JSONSerialization (shared swift-foundation engine on iOS 27.0 beta),
+    /// and a first-cut byte parser that copied each line into [UInt8]
+    /// (~1.5KB × millions). count-only mode — same bytes, no per-line
+    /// allocation — stays flat at ~411MB, which is the proof and the bar.
+    /// So: no line copy, no key Strings, no number Strings (integers
+    /// accumulate from bytes; only decimal tokens round-trip through a
+    /// short String for correctly-rounded Double conversion), and string
+    /// fields decode straight from the buffer slice.
     /// Field-for-field parity with JSONDecoder is enforced by
     /// AtriaRecordScanParserParityTests — extend BOTH when Record changes.
+    /// Known divergence (documented, pathological-input-only): a key
+    /// spelled with \u escapes is treated as unknown rather than matched.
     init?(scanLine line: Data) {
-        var parser = AtriaScanRecordParser(line)
-        guard let record = parser.parseRecord() else { return nil }
-        self = record
+        let parsed = line.withUnsafeBytes { raw -> HistoricalArchive.Record? in
+            var parser = AtriaScanRecordParser(raw.bindMemory(to: UInt8.self))
+            return parser.parseRecord()
+        }
+        guard let parsed else { return nil }
+        self = parsed
     }
 }
 
-/// Minimal JSON parser specialized to `HistoricalArchive.Record` lines:
-/// a flat object with known key→type shapes, unknown keys skipped
-/// generically, standard string escapes (incl. \uXXXX + surrogate pairs),
-/// strict-enough number/date handling to match JSONDecoder on every line
-/// the archive writer can produce. Rejection (returning nil) mirrors
-/// JSONDecoder's throw: any malformed token, wrong-typed known key, or
-/// missing required key drops the whole line.
 private struct AtriaScanRecordParser {
-    private let bytes: [UInt8]
+    private let bytes: UnsafeBufferPointer<UInt8>
     private var index = 0
 
-    init(_ data: Data) {
-        bytes = [UInt8](data)
+    init(_ bytes: UnsafeBufferPointer<UInt8>) {
+        self.bytes = bytes
     }
 
     // MARK: field slots
@@ -6349,11 +6354,12 @@ private struct AtriaScanRecordParser {
         }
         while true {
             skipWhitespace()
-            guard let key = parseString() else { return nil }
+            guard let key = parseStringSpan() else { return nil }
             skipWhitespace()
             guard consume(0x3A) else { return nil }  // :
             skipWhitespace()
-            guard storeValue(forKey: key) else { return nil }
+            guard storeValue(keyStart: key.start, keyEnd: key.end,
+                             keyHasEscape: key.hasEscape) else { return nil }
             skipWhitespace()
             if consume(0x2C) { continue }  // ,
             if consume(0x7D) { break }     // }
@@ -6404,52 +6410,57 @@ private struct AtriaScanRecordParser {
             usabilityReason: usabilityReason)
     }
 
-    /// Parses (or skips) the value at the cursor according to the key's
-    /// declared type. Returns false to reject the line — a PRESENT key with
-    /// the wrong type must drop the record exactly like JSONDecoder's
-    /// typeMismatch, while null on an optional reads as nil (decodeIfPresent).
-    private mutating func storeValue(forKey key: String) -> Bool {
-        switch key {
-        case "schema":              return store(\.schema) { $0.parseInt() }
-        case "capturedAt":
-            guard let text = parseString(), let date = Self.parseISO8601(text)
+    private mutating func storeValue(keyStart: Int, keyEnd: Int,
+                                     keyHasEscape: Bool) -> Bool {
+        // Escaped keys (never produced by the writer) fall through to the
+        // unknown-key skip; see the documented divergence above.
+        guard !keyHasEscape else { return skipValue() }
+        func keyIs(_ literal: StaticString) -> Bool {
+            spanEquals(keyStart, keyEnd, literal)
+        }
+        if keyIs("schema")              { return store(\.schema) { $0.parseInt() } }
+        if keyIs("capturedAt") {
+            guard let span = parseStringSpan(), !span.hasEscape,
+                  let date = parseISO8601(span.start, span.end)
             else { return false }
             capturedAt = date
             return true
-        case "strapIdentifier":     return storeOptional(\.strapIdentifier) { $0.parseString() }
-        case "source":              return store(\.source) { $0.parseString() }
-        case "layoutVersion":       return store(\.layoutVersion) { $0.parseString() }
-        case "sequence":            return store(\.sequence) { $0.parseInt() }
-        case "command":             return store(\.command) { $0.parseInt() }
-        case "unix7":               return store(\.unix7) { $0.parseUInt32() }
-        case "subsec11":            return store(\.subsec11) { $0.parseUInt16() }
-        case "flash13":             return store(\.flash13) { $0.parseUInt32() }
-        case "payloadLength":       return store(\.payloadLength) { $0.parseInt() }
-        case "whoofHR17":           return store(\.whoofHR17) { $0.parseInt() }
-        case "whoofRRNum18":        return store(\.whoofRRNum18) { $0.parseInt() }
-        case "whoofRR19":           return store(\.whoofRR19) { $0.parseIntArray() }
-        case "kRR64":               return store(\.kRR64) { $0.parseIntArray() }
-        case "gravityX36":          return storeOptional(\.gravityX36) { $0.parseDouble() }
-        case "gravityY40":          return storeOptional(\.gravityY40) { $0.parseDouble() }
-        case "gravityZ44":          return storeOptional(\.gravityZ44) { $0.parseDouble() }
-        case "unknownMotionScalar32":
-            return storeOptional(\.unknownMotionScalar32) { $0.parseDouble() }
-        case "gravityMagnitude":    return storeOptional(\.gravityMagnitude) { $0.parseDouble() }
-        case "gravityValidated":    return store(\.gravityValidated) { $0.parseBool() }
-        case "motionTickCounter88": return storeOptional(\.motionTickCounter88) { $0.parseInt() }
-        case "candidateRR":         return store(\.candidateRR) { $0.parseStringArray() }
-        case "rawPayloadHex":       return store(\.rawPayloadHex) { $0.parseString() }
-        case "clockDeviceRef":      return storeOptional(\.clockDeviceRef) { $0.parseUInt32() }
-        case "clockWallRef":        return storeOptional(\.clockWallRef) { $0.parseUInt32() }
-        case "clockDriftSeconds":   return storeOptional(\.clockDriftSeconds) { $0.parseInt() }
-        case "clockCorrectedUnix7": return storeOptional(\.clockCorrectedUnix7) { $0.parseUInt32() }
-        case "clockCorrectionStatus":
-            return store(\.clockCorrectionStatus) { $0.parseString() }
-        case "currentSessionUsable": return store(\.currentSessionUsable) { $0.parseBool() }
-        case "metricUsable":        return store(\.metricUsable) { $0.parseBool() }
-        case "usabilityReason":     return store(\.usabilityReason) { $0.parseString() }
-        default:                    return skipValue()  // unknown keys ignored
         }
+        if keyIs("strapIdentifier")     { return storeOptional(\.strapIdentifier) { $0.parseString() } }
+        if keyIs("source")              { return store(\.source) { $0.parseString() } }
+        if keyIs("layoutVersion")       { return store(\.layoutVersion) { $0.parseString() } }
+        if keyIs("sequence")            { return store(\.sequence) { $0.parseInt() } }
+        if keyIs("command")             { return store(\.command) { $0.parseInt() } }
+        if keyIs("unix7")               { return store(\.unix7) { $0.parseUInt32() } }
+        if keyIs("subsec11")            { return store(\.subsec11) { $0.parseUInt16() } }
+        if keyIs("flash13")             { return store(\.flash13) { $0.parseUInt32() } }
+        if keyIs("payloadLength")       { return store(\.payloadLength) { $0.parseInt() } }
+        if keyIs("whoofHR17")           { return store(\.whoofHR17) { $0.parseInt() } }
+        if keyIs("whoofRRNum18")        { return store(\.whoofRRNum18) { $0.parseInt() } }
+        if keyIs("whoofRR19")           { return store(\.whoofRR19) { $0.parseIntArray() } }
+        if keyIs("kRR64")               { return store(\.kRR64) { $0.parseIntArray() } }
+        if keyIs("gravityX36")          { return storeOptional(\.gravityX36) { $0.parseDouble() } }
+        if keyIs("gravityY40")          { return storeOptional(\.gravityY40) { $0.parseDouble() } }
+        if keyIs("gravityZ44")          { return storeOptional(\.gravityZ44) { $0.parseDouble() } }
+        if keyIs("unknownMotionScalar32") {
+            return storeOptional(\.unknownMotionScalar32) { $0.parseDouble() }
+        }
+        if keyIs("gravityMagnitude")    { return storeOptional(\.gravityMagnitude) { $0.parseDouble() } }
+        if keyIs("gravityValidated")    { return store(\.gravityValidated) { $0.parseBool() } }
+        if keyIs("motionTickCounter88") { return storeOptional(\.motionTickCounter88) { $0.parseInt() } }
+        if keyIs("candidateRR")         { return store(\.candidateRR) { $0.parseStringArray() } }
+        if keyIs("rawPayloadHex")       { return store(\.rawPayloadHex) { $0.parseString() } }
+        if keyIs("clockDeviceRef")      { return storeOptional(\.clockDeviceRef) { $0.parseUInt32() } }
+        if keyIs("clockWallRef")        { return storeOptional(\.clockWallRef) { $0.parseUInt32() } }
+        if keyIs("clockDriftSeconds")   { return storeOptional(\.clockDriftSeconds) { $0.parseInt() } }
+        if keyIs("clockCorrectedUnix7") { return storeOptional(\.clockCorrectedUnix7) { $0.parseUInt32() } }
+        if keyIs("clockCorrectionStatus") {
+            return store(\.clockCorrectionStatus) { $0.parseString() }
+        }
+        if keyIs("currentSessionUsable") { return store(\.currentSessionUsable) { $0.parseBool() } }
+        if keyIs("metricUsable")        { return store(\.metricUsable) { $0.parseBool() } }
+        if keyIs("usabilityReason")     { return store(\.usabilityReason) { $0.parseString() } }
+        return skipValue()  // unknown keys ignored
     }
 
     /// Sequential parse-then-store: the closure's `inout self` access ends
@@ -6490,16 +6501,28 @@ private struct AtriaScanRecordParser {
     private mutating func consumeLiteral(_ literal: StaticString) -> Bool {
         let count = literal.utf8CodeUnitCount
         guard index + count <= bytes.count else { return false }
-        var matched = true
-        literal.withUTF8Buffer { buffer in
-            for offset in 0..<count where bytes[index + offset] != buffer[offset] {
-                matched = false
-                break
+        let start = index
+        let matched = literal.withUTF8Buffer { buffer -> Bool in
+            for offset in 0..<count where bytes[start + offset] != buffer[offset] {
+                return false
             }
+            return true
         }
         guard matched else { return false }
         index += count
         return true
+    }
+
+    private func spanEquals(_ start: Int, _ end: Int,
+                            _ literal: StaticString) -> Bool {
+        let count = literal.utf8CodeUnitCount
+        guard end - start == count else { return false }
+        return literal.withUTF8Buffer { buffer -> Bool in
+            for offset in 0..<count where bytes[start + offset] != buffer[offset] {
+                return false
+            }
+            return true
+        }
     }
 
     private mutating func skipWhitespace() {
@@ -6509,54 +6532,107 @@ private struct AtriaScanRecordParser {
         }
     }
 
-    private mutating func parseString() -> String? {
+    /// Scans the raw span of a JSON string without decoding it. Validates
+    /// escape SHAPES (so the cursor lands correctly) but defers unescaping
+    /// to the slow path; the fast no-escape path is a zero-copy slice.
+    private mutating func parseStringSpan() -> (start: Int, end: Int, hasEscape: Bool)? {
         guard consume(0x22) else { return nil }  // "
-        var out: [UInt8] = []
+        let start = index
+        var hasEscape = false
         while let byte = current {
-            index += 1
             switch byte {
             case 0x22:
-                return String(decoding: out, as: UTF8.self)
-            case 0x5C:  // backslash
+                let end = index
+                index += 1
+                return (start, end, hasEscape)
+            case 0x5C:
+                hasEscape = true
+                index += 1
                 guard let escape = current else { return nil }
                 index += 1
-                switch escape {
-                case 0x22, 0x5C, 0x2F: out.append(escape)
-                case 0x62: out.append(0x08)  // \b
-                case 0x66: out.append(0x0C)  // \f
-                case 0x6E: out.append(0x0A)  // \n
-                case 0x72: out.append(0x0D)  // \r
-                case 0x74: out.append(0x09)  // \t
-                case 0x75:  // \uXXXX
-                    guard var unit = parseHex4() else { return nil }
-                    if (0xD800...0xDBFF).contains(unit) {
-                        // surrogate pair: require \uDC00–\uDFFF
-                        guard consume(0x5C), consume(0x75),
-                              let low = parseHex4(),
-                              (0xDC00...0xDFFF).contains(low) else { return nil }
-                        unit = 0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00)
-                    } else if (0xDC00...0xDFFF).contains(unit) {
-                        return nil  // unpaired low surrogate
+                if escape == 0x75 {  // \uXXXX — validate 4 hex digits exist
+                    guard parseHex4() != nil else { return nil }
+                } else {
+                    switch escape {
+                    case 0x22, 0x5C, 0x2F, 0x62, 0x66, 0x6E, 0x72, 0x74: break
+                    default: return nil
                     }
-                    guard let scalar = Unicode.Scalar(unit) else { return nil }
-                    out.append(contentsOf: Array(String(scalar).utf8))
-                default:
-                    return nil
                 }
             case 0x00...0x1F:
                 return nil  // raw control characters are invalid in JSON
             default:
-                out.append(byte)
+                index += 1
             }
         }
         return nil  // unterminated
     }
 
+    private mutating func parseString() -> String? {
+        guard let span = parseStringSpan() else { return nil }
+        if !span.hasEscape {
+            return String(decoding: UnsafeBufferPointer(
+                rebasing: bytes[span.start..<span.end]), as: UTF8.self)
+        }
+        return Self.unescape(bytes, span.start, span.end)
+    }
+
+    /// Slow path: decodes a validated escaped span into a String.
+    private static func unescape(_ bytes: UnsafeBufferPointer<UInt8>,
+                                 _ start: Int, _ end: Int) -> String? {
+        var out: [UInt8] = []
+        out.reserveCapacity(end - start)
+        var position = start
+        while position < end {
+            let byte = bytes[position]
+            position += 1
+            guard byte == 0x5C else {
+                out.append(byte)
+                continue
+            }
+            let escape = bytes[position]
+            position += 1
+            switch escape {
+            case 0x22, 0x5C, 0x2F: out.append(escape)
+            case 0x62: out.append(0x08)
+            case 0x66: out.append(0x0C)
+            case 0x6E: out.append(0x0A)
+            case 0x72: out.append(0x0D)
+            case 0x74: out.append(0x09)
+            case 0x75:
+                guard var unit = hex4(bytes, position) else { return nil }
+                position += 4
+                if (0xD800...0xDBFF).contains(unit) {
+                    // surrogate pair: require \uDC00–\uDFFF
+                    guard position + 6 <= end,
+                          bytes[position] == 0x5C, bytes[position + 1] == 0x75,
+                          let low = hex4(bytes, position + 2),
+                          (0xDC00...0xDFFF).contains(low) else { return nil }
+                    position += 6
+                    unit = 0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00)
+                } else if (0xDC00...0xDFFF).contains(unit) {
+                    return nil  // unpaired low surrogate
+                }
+                guard let scalar = Unicode.Scalar(unit) else { return nil }
+                out.append(contentsOf: Array(String(scalar).utf8))
+            default:
+                return nil
+            }
+        }
+        return String(decoding: out, as: UTF8.self)
+    }
+
     private mutating func parseHex4() -> UInt32? {
-        guard index + 4 <= bytes.count else { return nil }
+        guard let value = Self.hex4(bytes, index) else { return nil }
+        index += 4
+        return value
+    }
+
+    private static func hex4(_ bytes: UnsafeBufferPointer<UInt8>,
+                             _ start: Int) -> UInt32? {
+        guard start + 4 <= bytes.count else { return nil }
         var value: UInt32 = 0
         for offset in 0..<4 {
-            let byte = bytes[index + offset]
+            let byte = bytes[start + offset]
             let digit: UInt32
             switch byte {
             case 0x30...0x39: digit = UInt32(byte - 0x30)
@@ -6566,19 +6642,19 @@ private struct AtriaScanRecordParser {
             }
             value = value << 4 | digit
         }
-        index += 4
         return value
     }
 
-    /// Collects one JSON number token. Integral tokens parse exactly via
-    /// Int64; decimal/exponent tokens go through Swift's correctly-rounded
-    /// Double(String) — the same rounding JSONDecoder applies.
-    private mutating func parseNumberToken() -> (text: String, isIntegral: Bool)? {
+    /// Collects one JSON number token as a span. Integral tokens later
+    /// accumulate exactly from the bytes; decimal/exponent tokens go
+    /// through Swift's correctly-rounded Double(String) — the same
+    /// rounding JSONDecoder applies (the only per-number allocation left).
+    private mutating func parseNumberToken() -> (start: Int, end: Int, isIntegral: Bool)? {
         let start = index
         var isIntegral = true
         if current == 0x2D { index += 1 }  // -
         var sawDigit = false
-        while let byte = current {
+        loop: while let byte = current {
             switch byte {
             case 0x30...0x39:
                 sawDigit = true
@@ -6587,22 +6663,45 @@ private struct AtriaScanRecordParser {
                 isIntegral = false
                 index += 1
             default:
-                guard sawDigit, start != index else { return nil }
-                return (String(decoding: bytes[start..<index], as: UTF8.self), isIntegral)
+                break loop
             }
         }
         guard sawDigit else { return nil }
-        return (String(decoding: bytes[start..<index], as: UTF8.self), isIntegral)
+        return (start, index, isIntegral)
     }
 
     private mutating func parseIntegerExactly() -> Int64? {
         guard let token = parseNumberToken() else { return nil }
-        if token.isIntegral { return Int64(token.text) }
-        // Integral-valued decimals (4.0) convert when exact, like
-        // Int(exactly: NSNumber) did on the JSONSerialization path.
-        guard let value = Double(token.text),
-              let exact = Int64(exactly: value) else { return nil }
+        if token.isIntegral {
+            var position = token.start
+            var negative = false
+            if bytes[position] == 0x2D {
+                negative = true
+                position += 1
+            }
+            guard position < token.end else { return nil }
+            var value: Int64 = 0
+            while position < token.end {
+                let byte = bytes[position]
+                guard (0x30...0x39).contains(byte) else { return nil }
+                let (multiplied, multiplyOverflow) = value.multipliedReportingOverflow(by: 10)
+                let (added, addOverflow) = multiplied.addingReportingOverflow(Int64(byte - 0x30))
+                guard !multiplyOverflow, !addOverflow else { return nil }
+                value = added
+                position += 1
+            }
+            return negative ? -value : value
+        }
+        // Integral-valued decimals (4.0) convert when exact, mirroring the
+        // NSNumber-exactly semantics the parity suite pins.
+        guard let value = doubleValue(token), let exact = Int64(exactly: value)
+        else { return nil }
         return exact
+    }
+
+    private func doubleValue(_ token: (start: Int, end: Int, isIntegral: Bool)) -> Double? {
+        Double(String(decoding: UnsafeBufferPointer(
+            rebasing: bytes[token.start..<token.end]), as: UTF8.self))
     }
 
     private mutating func parseInt() -> Int? {
@@ -6619,7 +6718,7 @@ private struct AtriaScanRecordParser {
 
     private mutating func parseDouble() -> Double? {
         guard let token = parseNumberToken() else { return nil }
-        return Double(token.text)
+        return doubleValue(token)
     }
 
     private mutating func parseBool() -> Bool? {
@@ -6665,14 +6764,14 @@ private struct AtriaScanRecordParser {
         skipWhitespace()
         switch current {
         case 0x22:
-            return parseString() != nil
+            return parseStringSpan() != nil
         case 0x7B:  // {
             index += 1
             skipWhitespace()
             if consume(0x7D) { return true }
             while true {
                 skipWhitespace()
-                guard parseString() != nil else { return false }
+                guard parseStringSpan() != nil else { return false }
                 skipWhitespace()
                 guard consume(0x3A), skipValue() else { return false }
                 skipWhitespace()
@@ -6701,49 +6800,57 @@ private struct AtriaScanRecordParser {
 
     // MARK: dates
 
-    /// yyyy-MM-dd'T'HH:mm:ss with Z or ±HH(:)MM — exactly the shapes
-    /// ISO8601DateFormatter(.withInternetDateTime) accepts (JSONDecoder's
-    /// .iso8601). No fractional seconds (that strategy rejects them too).
-    /// Civil-days algorithm avoids Calendar/TimeZone entirely.
-    static func parseISO8601(_ text: String) -> Date? {
-        let ascii = Array(text.utf8)
-        func digits(_ range: Range<Int>) -> Int? {
+    /// yyyy-MM-dd'T'HH:mm:ss with Z or ±HH(:)MM over the raw span —
+    /// exactly the shapes ISO8601DateFormatter(.withInternetDateTime)
+    /// accepts (JSONDecoder's .iso8601); fractional seconds rejected, as
+    /// that strategy does. Civil-days algorithm avoids Calendar/TimeZone
+    /// and allocates nothing.
+    private func parseISO8601(_ start: Int, _ end: Int) -> Date? {
+        let count = end - start
+        func digits(_ offset: Int, _ length: Int) -> Int? {
             var value = 0
-            for position in range {
-                guard position < ascii.count,
-                      (0x30...0x39).contains(ascii[position]) else { return nil }
-                value = value * 10 + Int(ascii[position] - 0x30)
+            for position in (start + offset)..<(start + offset + length) {
+                guard position < end,
+                      (0x30...0x39).contains(bytes[position]) else { return nil }
+                value = value * 10 + Int(bytes[position] - 0x30)
             }
             return value
         }
-        guard ascii.count >= 20,
-              let year = digits(0..<4), ascii[4] == 0x2D,
-              let month = digits(5..<7), ascii[7] == 0x2D,
-              let day = digits(8..<10), ascii[10] == 0x54,
-              let hour = digits(11..<13), ascii[13] == 0x3A,
-              let minute = digits(14..<16), ascii[16] == 0x3A,
-              let second = digits(17..<19)
+        func byteAt(_ offset: Int) -> UInt8 { bytes[start + offset] }
+        guard count >= 20,
+              let year = digits(0, 4), byteAt(4) == 0x2D,
+              let month = digits(5, 2), byteAt(7) == 0x2D,
+              let day = digits(8, 2), byteAt(10) == 0x54,
+              let hour = digits(11, 2), byteAt(13) == 0x3A,
+              let minute = digits(14, 2), byteAt(16) == 0x3A,
+              let second = digits(17, 2)
         else { return nil }
         guard (1...12).contains(month), hour <= 23, minute <= 59, second <= 59
         else { return nil }
         let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
-        let monthDays = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-        guard day >= 1, day <= monthDays[month - 1] else { return nil }
+        // No array literal here — this runs per line; stay allocation-free.
+        let daysInMonth: Int
+        switch month {
+        case 2: daysInMonth = leap ? 29 : 28
+        case 4, 6, 9, 11: daysInMonth = 30
+        default: daysInMonth = 31
+        }
+        guard day >= 1, day <= daysInMonth else { return nil }
 
         var offsetSeconds = 0
-        switch ascii[19] {
+        switch byteAt(19) {
         case 0x5A:  // Z
-            guard ascii.count == 20 else { return nil }
+            guard count == 20 else { return nil }
         case 0x2B, 0x2D:  // + -
-            let sign = ascii[19] == 0x2B ? 1 : -1
+            let sign = byteAt(19) == 0x2B ? 1 : -1
             let offsetHour: Int?
             let offsetMinute: Int?
-            if ascii.count == 25, ascii[22] == 0x3A {  // ±HH:MM
-                offsetHour = digits(20..<22)
-                offsetMinute = digits(23..<25)
-            } else if ascii.count == 24 {               // ±HHMM
-                offsetHour = digits(20..<22)
-                offsetMinute = digits(22..<24)
+            if count == 25, byteAt(22) == 0x3A {  // ±HH:MM
+                offsetHour = digits(20, 2)
+                offsetMinute = digits(23, 2)
+            } else if count == 24 {               // ±HHMM
+                offsetHour = digits(20, 2)
+                offsetMinute = digits(22, 2)
             } else {
                 return nil
             }
