@@ -251,6 +251,13 @@ whole-recovered-decode lane that re-runs after each drained batch and is the
 prime steady-climb suspect. Read the log tail after the next kill; the
 breadcrumbs now bracket every candidate.
 
+**Soak update (07:33):** ~15 min post-fix — zero new jetsams / CPU fatals
+(latest remains 07:17–07:18 pre-fix); app steady at ~164MB backgrounded while
+the drain continues. Sim regression pass on HEAD: Vitals clean (axis-honesty
+fix intact), Settings reviewed clean. Memory file
+`atria-3gb-memory-balloon-real-cause` rewritten with the Aug-4 recurrence +
+method lessons (phys_footprint, dSYM symbolication beats breadcrumbs).
+
 **ROOT CAUSE FOUND + FIXED (`0cba1e83`, 07:3x):** symbolicating the
 `cpu_resource_fatal` reports against the local dSYM named the lane exactly:
 `aggregateSleepCandidates → boundedMotionWindowDiagnostics →
