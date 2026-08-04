@@ -37,7 +37,7 @@ enum AtriaMemprobe {
             }
             handle = try? FileHandle(forWritingTo: url)
             _ = try? handle?.seekToEnd()
-            write(line: "start pid=\(ProcessInfo.processInfo.processIdentifier)")
+            write(line: "start pid=\(ProcessInfo.processInfo.processIdentifier) build=compact-rr-v1")
 
             let source = DispatchSource.makeTimerSource(queue: queue)
             source.schedule(deadline: .now(), repeating: .milliseconds(250))
