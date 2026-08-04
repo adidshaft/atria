@@ -251,6 +251,24 @@ whole-recovered-decode lane that re-runs after each drained batch and is the
 prime steady-climb suspect. Read the log tail after the next kill; the
 breadcrumbs now bracket every candidate.
 
+**ROOT CAUSE FOUND + FIXED (`0cba1e83`, 07:3x):** symbolicating the
+`cpu_resource_fatal` reports against the local dSYM named the lane exactly:
+`aggregateSleepCandidates → boundedMotionWindowDiagnostics →
+loadRecentGravitySamples → loadRecentGravitySamplesUncached →
+bytes(fromHex:)`. The gravity cache's validity check demands corpus coverage
+within 120s of the candidate window's end — impossible during drain backfill
+(drained gravity always lags now), so EVERY sleep-candidate pass re-decoded
+the full 8MiB hex/JSON gravity tail; repeated Foundation churn filled the
+memory compressor (footprint 3.45GB while resident read ~440MB — why the
+probe's resident_size looked innocent) and burned the CPU quota. Five
+jetsams 06:07–07:17, all 3.45GB active/frontmost. FIX: stat-level
+source-file fingerprint on the cache — unchanged files ⇒ identical decode ⇒
+hit regardless of window end. Post-fix soak: peaks 400–650MB, zero jetsams
+across repeated foreground runs. TODO next session: strip the TEMPORARY
+AtriaMemprobe instrumentation after a longer soak (a day) confirms; consider
+phys_footprint (task_vm_info) for any future memory probe — resident_size
+hid this balloon.
+
 **Probe finding #3 (07:1x):** pid 2421 died INSIDE
 `makeRecoveredDataSnapshot` (begin note at 1196MB, peak 1801MB, no end note)
 — the recovered-data recompute is the kill lane, riding on a ~800MB
