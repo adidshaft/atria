@@ -910,6 +910,17 @@ struct AtriaActivityMonitorTab: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
+                // The state line says WHAT; this says what will unblock it —
+                // copy already written by the presentation model (no new
+                // claims), previously shown only in the detail sheet.
+                if !presentation.narrative.isEmpty,
+                   presentation.narrative != presentation.detail {
+                    Text(presentation.narrative)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .padding(14)
