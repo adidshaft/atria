@@ -132,16 +132,21 @@ final class AtriaActivityDetectionAccuracyTests: XCTestCase {
     }
 
     func testRRValuesCannotBridgeMultipleHardGapEffortBouts() {
-        let start = now.addingTimeInterval(-400)
-        let first = (0..<120).map {
+        // 2026-08-05 bar migration: continuous and sustained floors are both
+        // 5 min now, so a single bout clearing continuity legitimately
+        // prompts. The gap-bridging intent survives with SUB-bar bouts whose
+        // in-window SUM clears the sustained floor — RR corroboration must
+        // still not stitch them across hard transport gaps.
+        let start = now.addingTimeInterval(-640)
+        let first = (0..<200).map {
             HRSample(t: start.addingTimeInterval(TimeInterval($0)), bpm: 95)
         }
-        let secondStart = start.addingTimeInterval(140)
-        let second = (0..<120).map {
+        let secondStart = start.addingTimeInterval(220)
+        let second = (0..<200).map {
             HRSample(t: secondStart.addingTimeInterval(TimeInterval($0)), bpm: 95)
         }
-        let thirdStart = secondStart.addingTimeInterval(140)
-        let third = (0...120).map {
+        let thirdStart = secondStart.addingTimeInterval(220)
+        let third = (0...200).map {
             HRSample(t: thirdStart.addingTimeInterval(TimeInterval($0)), bpm: 95)
         }
         let samples = first + second + third
@@ -165,9 +170,11 @@ final class AtriaActivityDetectionAccuracyTests: XCTestCase {
                                                           now: now)
 
         XCTAssertGreaterThanOrEqual(result.elevatedSamples,
-                                    AtriaWorkoutPromptEvaluator.minimumSustainedElevatedSamples)
-        XCTAssertGreaterThanOrEqual(result.longestElevatedBout,
-                                    AtriaWorkoutPromptEvaluator.minimumContinuousElevatedSamples)
+                                    AtriaWorkoutPromptEvaluator.minimumSustainedElevatedSamples,
+                                    "the summed evidence must clear the floor so only bridging is under test")
+        XCTAssertLessThan(result.longestElevatedBout,
+                          AtriaWorkoutPromptEvaluator.minimumSustainedElevatedSamples,
+                          "no single bout may clear the floor on its own")
         XCTAssertFalse(result.shouldPrompt,
                        "sparse RR corroboration must not bridge hard accepted-HR transport gaps")
     }

@@ -255,7 +255,12 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, home, needle)
 
         for needle in [
-            "func testWorkoutPromptEvaluatorFiresForEightMinutesAtRestPlusTwentySeven()",
+            # Pin migrated 2026-08-05: prompt bars were deliberately raised
+            # (minimumBPMOverRest 25->30, continuous bout 90s->5min) after the
+            # user's too-eager-detection complaint, so the fixture test now
+            # exercises rest+35 and a stays-quiet rest+27 companion.
+            "func testWorkoutPromptEvaluatorFiresForEightMinutesAtRestPlusThirtyFive()",
+            "func testWorkoutPromptEvaluatorStaysQuietForMildlyElevatedWear()",
             "func testWorkoutPromptEvaluatorRejectsTwentyMinutesAtRestPlusTwenty()",
             "func testWorkoutPromptEvaluatorFiresForFourMinutesInZoneThree()",
             "func testWorkoutPromptCooldownLatchExpiresAfterFortyFiveMinutes()",
