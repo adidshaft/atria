@@ -6923,6 +6923,11 @@ final class SessionStore: ObservableObject {
     private var recoveredDataDerivedLeaseRenewals: [UInt64: Int] = [:]
     private var recoveredDataDerivedCompletedStages: [UInt64: Set<String>] = [:]
     private var exactRecoveryProjectionArchiveRevisions = Set<UInt64>()
+    /// Single heavy lane (2026-08-05): an external history refresh that
+    /// arrived while the recovered projection scan was running. Cleared on
+    /// publish (the pipeline's own history step refreshed); re-run on failure
+    /// so a failed projection cannot strand a stale history cache.
+    private var pendingHistoryRefreshDeferredByProjectionScan = false
     private var exactRecoveryArchivePriorityLeaseActive =
         HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority()
     private var recoveredDataRecomputationDeferralProvider:
@@ -7362,11 +7367,25 @@ final class SessionStore: ObservableObject {
                                                              calendar: calendar)[day]
     }
 
+    // projectionScanActive added 2026-08-05 (single heavy lane): the +60s
+    // cold-launch jetsam was the recovered projection's full archive scan
+    // (healthy alone, ~830MB plateau) SUPERPOSED with a concurrent external
+    // history refresh whose canonical-history entry load allocates ~1.3GB
+    // under the iOS 27 reclaim law. Neither alone kills; together they cross
+    // the ceiling. External refreshes defer while a projection scan runs —
+    // the coordinator's own history step always follows the projection, so
+    // freshness is preserved by the pipeline itself.
     nonisolated static func historySnapshotProjectionShouldDefer(
         exactRecoveryOwnsPriority: Bool,
-        isRecoveredPublication: Bool
+        isRecoveredPublication: Bool,
+        projectionScanActive: Bool = false
     ) -> Bool {
-        exactRecoveryOwnsPriority && !isRecoveredPublication
+        (exactRecoveryOwnsPriority || projectionScanActive) && !isRecoveredPublication
+    }
+
+    private var recoveredProjectionScanActive: Bool {
+        if case .projecting = recoveredDataRecompute.phase { return true }
+        return false
     }
 
     private var nonExactArchiveConsumerShouldDefer: Bool {
@@ -7407,11 +7426,23 @@ final class SessionStore: ObservableObject {
         guard !Self.historySnapshotProjectionShouldDefer(
             exactRecoveryOwnsPriority:
                 nonExactArchiveConsumerShouldDefer,
-            isRecoveredPublication: isRecoveredPublication
+            isRecoveredPublication: isRecoveredPublication,
+            projectionScanActive: recoveredProjectionScanActive
         ) else {
-            AtriaDebugLog(
-                "ATRIADBG history_snapshot status=deferred_exact_recovery_projection action=preserve_shared_projection_lane"
-            )
+            if recoveredProjectionScanActive, !nonExactArchiveConsumerShouldDefer {
+                // Single heavy lane (2026-08-05): re-armed on projection
+                // failure; the publish path's own history component covers
+                // freshness on success.
+                pendingHistoryRefreshDeferredByProjectionScan = true
+                AtriaMemprobe.note("hist_deferred_scan_active")
+                AtriaDebugLog(
+                    "ATRIADBG history_snapshot status=deferred_projection_scan_active action=single_heavy_lane"
+                )
+            } else {
+                AtriaDebugLog(
+                    "ATRIADBG history_snapshot status=deferred_exact_recovery_projection action=preserve_shared_projection_lane"
+                )
+            }
             return
         }
         // TEMP instrumentation (2026-08-05 burst hunt): distinguishes this
@@ -10291,6 +10322,12 @@ final class SessionStore: ObservableObject {
                     for: ticket,
                     reason: failure.reason
                 )
+                // Single heavy lane (2026-08-05): a failed projection cannot
+                // strand the history cache an external refresh wanted fresh.
+                if pendingHistoryRefreshDeferredByProjectionScan {
+                    pendingHistoryRefreshDeferredByProjectionScan = false
+                    refreshHistorySnapshotCache(deferred: true)
+                }
 
             case .scheduleTrailingStart(let afterSeconds):
                 // Inter-cycle rest wake (2026-08-04): the coordinator queues
@@ -10358,6 +10395,10 @@ final class SessionStore: ObservableObject {
                     for: ticket,
                     reason: "published"
                 )
+                // Single heavy lane (2026-08-05): the pipeline's own history
+                // component just refreshed — the deferred external intent is
+                // satisfied, not stranded.
+                pendingHistoryRefreshDeferredByProjectionScan = false
             }
         }
     }
