@@ -1743,3 +1743,15 @@ remaining metric-name sites, half-width monitor tiles.
 
 PARALLEL SESSION note: no second-session commits observed yet; my next
 edits stay in AtriaOverviewSections/AtriaHomeView/AtriaSharedChrome.
+
+## 15.3 Stat-row grammar RENDER-VERIFIED (2026-08-05 ~04:20)
+
+Temp-XCTest render (recipe: protocols memory) of the new contributor
+rows PASSED visual sign-off — CAPS letterspaced labels, bold aligned
+numerals, ▲/▼ triangles, flat divider rows, recessed honest legend.
+One fix came out of the render: reserved 14pt qualifier column so
+neutral rows share the value right-edge. Structs de-privatized (dated
+comments) for render-testability; gate pins at :493/:510 migrated;
+temp test DELETED after use. Safe to include in the next device
+install. Next: hero unit scaling, ‹TODAY› capsule, caps micro-labels
+on remaining metric-name sites.
