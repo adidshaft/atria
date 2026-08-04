@@ -9304,30 +9304,36 @@ final class SessionStore: ObservableObject {
                 maximumGap: SavedSession.workoutContinuityGapLimit,
                 expectedSampleInterval: 1
             )
+            AtriaMemprobe.note("proj_hr_begin points=\(archivePoints.count)")
             let projection = AtriaRecoveredHeartRateProjection.project(
                 historical: archivePoints,
                 live: livePoints,
                 configuration: configuration
             )
+            AtriaMemprobe.note("proj_hr_end")
             Task { @MainActor [weak self, ticket] in
                 self?.renewRecoveredProjectionLease(
                     ticket: ticket,
                     completedStage: "heart_rate_projection"
                 )
             }
+            AtriaMemprobe.note("proj_sessions_begin beats=\(rrProjection.beats.count)")
             var recoveredSessions = AtriaRecoveredHeartRateProjection.recoveredSessions(
                 from: projection,
                 maximumGap: configuration.maximumGap,
                 recoveredRRBeats: rrProjection.beats
             )
+            AtriaMemprobe.note("proj_sessions_end count=\(recoveredSessions.count)")
             let motionWindows = recoveredSessions.map {
                 AtriaRecoveredMotionProjection.Window(id: $0.id.uuidString,
                                                        start: $0.start,
                                                        end: $0.end)
             }
+            AtriaMemprobe.note("proj_motion_begin")
             let motionEpochsBySessionID = recoveredSnapshot.motion.recoveredEpochs(
                 windows: motionWindows
             )
+            AtriaMemprobe.note("proj_motion_end")
             for index in recoveredSessions.indices {
                 let session = recoveredSessions[index]
                 let epochs = motionEpochsBySessionID[session.id.uuidString] ?? []
@@ -9347,6 +9353,7 @@ final class SessionStore: ObservableObject {
                 recoveredSessions[index].imuValidationState = fields.imuValidationState
                 recoveredSessions[index].strapStepResearchCount = fields.strapStepResearchCount
             }
+            AtriaMemprobe.note("proj_fields_done")
             if recoveredSnapshot.skinTemperatureCompleteness == .complete {
                 recoveredSessions = Self.attachRecoveredSkinTemperature(
                     recoveredSnapshot.skinTemperatureRawPoints,
@@ -9365,6 +9372,7 @@ final class SessionStore: ObservableObject {
                 recoveredSnapshot.skinTemperatureCompleteness == .complete
                 ? recoveredSnapshot.skinTemperatureRawPoints.count
                 : 0
+            AtriaMemprobe.note("proj_skin_done")
             Task { @MainActor [weak self, ticket] in
                 self?.renewRecoveredProjectionLease(
                     ticket: ticket,
