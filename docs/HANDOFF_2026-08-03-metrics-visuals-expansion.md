@@ -1605,3 +1605,22 @@ in defaults (flushDebtLevel) and offline_sync status lines. User was
 told foregrounding the app accelerates catch-up NOW (true: foreground
 unparks materialization + drains survive foreground post-balloon).
 Review-prompt UX + calmer trigger also live on device.
+
+## 14.4 P0 first verification (2026-08-05 ~02:10, state pull)
+
+STRAP SIDE: healthy and nearly caught up — flushDebtPendingRecords=161
+(~3 min of data, level=low, fresh observation), handshake
+full_drain_write_confirmed, lastDrainAttemptYieldedRows=true, durable
+flush boundary confirmed seconds before the pull. The drain machinery is
+actively landing rows.
+
+PHONE SIDE: the coverage % lag is NOT strap lag — the authority sits at
+gapResolvedConsumersPending with materializing=1 (consumer
+materialization in flight; this chain only started SURVIVING today).
+The scary-looking terminalConsumerDependencyMismatch/terminal archive
+failure keys in the pull are STALE v1-era values (code moved to .v2,
+which is clear) — do not chase them. Expectation: coverage % climbs as
+the surviving recompute+derived chain commits consumer receipts;
+verify at next foreground with the steps card. User's phone is
+backgrounded overnight = exactly the P2 flush window P0 now unlocks —
+the overnight log is the real P0 verdict.
