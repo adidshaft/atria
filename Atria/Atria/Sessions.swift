@@ -10703,25 +10703,39 @@ final class SessionStore: ObservableObject {
     private func runRecoveredIndependentDerivedSteps(
         ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket
     ) {
+        // SEQUENTIAL, not parallel (2026-08-04): these four refreshes are
+        // logically independent, but launched together their transient
+        // allocation bursts STACK — with ~700k recovered points installed
+        // the pile-up crossed the jetsam ceiling ~48s after the history
+        // snapshots finished. Chained completions bound the peak to one
+        // step's burst; the per-step probe notes name any step that still
+        // overruns alone. Failure of one step still lets the rest complete
+        // (matching the old parallel behavior — completion rejection is
+        // handled per-component by the coordinator).
+        AtriaMemprobe.note("derived_step overviewTrends")
         refreshOverviewTrendPointsCache(deferred: false) { [weak self] succeeded in
             self?.completeRecoveredDataComponent(ticket: ticket,
                                                  component: .overviewTrends,
                                                  succeeded: succeeded)
-        }
-        refreshTrainingLoadSummaryCache(deferred: false) { [weak self] succeeded in
-            self?.completeRecoveredDataComponent(ticket: ticket,
-                                                 component: .trainingLoad,
-                                                 succeeded: succeeded)
-        }
-        refreshTodayHRZoneMinutesCache(deferred: false) { [weak self] succeeded in
-            self?.completeRecoveredDataComponent(ticket: ticket,
-                                                 component: .todayHeartRateZones,
-                                                 succeeded: succeeded)
-        }
-        recomputeBehaviorInsights { [weak self] succeeded in
-            self?.completeRecoveredDataComponent(ticket: ticket,
-                                                 component: .behaviorInsights,
-                                                 succeeded: succeeded)
+            AtriaMemprobe.note("derived_step trainingLoad")
+            self?.refreshTrainingLoadSummaryCache(deferred: false) { [weak self] succeeded in
+                self?.completeRecoveredDataComponent(ticket: ticket,
+                                                     component: .trainingLoad,
+                                                     succeeded: succeeded)
+                AtriaMemprobe.note("derived_step todayHeartRateZones")
+                self?.refreshTodayHRZoneMinutesCache(deferred: false) { [weak self] succeeded in
+                    self?.completeRecoveredDataComponent(ticket: ticket,
+                                                         component: .todayHeartRateZones,
+                                                         succeeded: succeeded)
+                    AtriaMemprobe.note("derived_step behaviorInsights")
+                    self?.recomputeBehaviorInsights { [weak self] succeeded in
+                        self?.completeRecoveredDataComponent(ticket: ticket,
+                                                             component: .behaviorInsights,
+                                                             succeeded: succeeded)
+                        AtriaMemprobe.note("derived_steps_done")
+                    }
+                }
+            }
         }
     }
 
