@@ -28771,7 +28771,7 @@ final class SessionStore: ObservableObject {
                                                                      rest: rest,
                                                                      maxHR: maxHR,
                                                                      calendar: calendar,
-                                                                     historicalMotionPolicy: .fullArchive).count
+                                                                     historicalMotionPolicy: .boundedRecent).count
         return (evaluated, eligible, tooShort, notOvernight, hrTooHigh, workoutLike, candidates)
     }
 
@@ -29771,7 +29771,7 @@ final class SessionStore: ObservableObject {
                                                                   rest: rest,
                                                                   maxHR: maxHR,
                                                                   calendar: Calendar.current,
-                                                                  historicalMotionPolicy: .fullArchive)
+                                                                  historicalMotionPolicy: .boundedRecent)
         let aggregateDiagnostics = aggregateSleepDiagnostics(in: sourceSessions,
                                                              rest: rest,
                                                              maxHR: maxHR,
@@ -29954,7 +29954,7 @@ final class SessionStore: ObservableObject {
                                                                rest: rest,
                                                                maxHR: maxHR,
                                                                calendar: calendar,
-                                                               historicalMotionPolicy: .fullArchive)
+                                                               historicalMotionPolicy: .boundedRecent)
                 DispatchQueue.main.async {
                     self?.logSleepValidation(label: nil,
                                              preparedAggregateCandidates: candidates)
