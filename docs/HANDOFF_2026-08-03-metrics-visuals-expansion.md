@@ -251,6 +251,17 @@ whole-recovered-decode lane that re-runs after each drained batch and is the
 prime steady-climb suspect. Read the log tail after the next kill; the
 breadcrumbs now bracket every candidate.
 
+**Probe finding #3 (07:1x):** pid 2421 died INSIDE
+`makeRecoveredDataSnapshot` (begin note at 1196MB, peak 1801MB, no end note)
+— the recovered-data recompute is the kill lane, riding on a ~800MB
+launch-time baseline that every run rebuilds (launch also fires an immediate
+`sessions.json` save: 12.6MB output, ~200MB encode transient — wasteful,
+separate fix). Probe v5 now sub-brackets the snapshot internals
+(`rec_scan_begin/progress/done` with per-channel counts vs the
+1.5M/250K/750K budget caps, `rec_sort_done`) plus
+`canonical_rebuild_begin/end` — the next recompute names the exploding
+channel (HR points / RR records / gravity / motion identities) directly.
+
 **In progress:** `AtriaMemprobe` reinstated (fsync'd
 `Documents/atria-memprobe.log`, 250ms ≥64MB-delta sampler + lane breadcrumbs
 at scene transitions, shadow step, crash-resume materialize ×2, terminal
