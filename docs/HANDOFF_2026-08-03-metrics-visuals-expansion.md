@@ -470,6 +470,32 @@ escaped strings incl. an explicit 😀 surrogate-pair line, and a
 +05:30 offset date. Same verification protocol owed; no verdict until the
 probe shows rec_scan_done with flat live-stats.
 
+**16:3x BYTE PARSER ALSO FALSIFIED in full mode — the parser was NEVER
+the retainer.** Installed `5cb41b42` (zero Foundation JSON), launched
+foreground: pid 6050 climbed 655→3079MB and died with the IDENTICAL
+signature. The breadcrumb trail (read in full this time, not filtered to
+rec_scan) shows the climb ONSET is positional: the scan runs FLAT at
+~230-300MB through the first ~99.7MB of bytes, then jumps 297→540MB in
+200ms at byte ~100MB and climbs ~100:1 vs bytes read while progress
+continues normally (~500MB/s vs ~5MB/s read) — i.e., the leak ignites
+when the scan reaches a specific REGION/FILE of the archive, on every
+build, in every parser. rr-append also stalls at 42594 right at onset
+(unexplained — possibly coincident). Evidence matrix now: count-only
+clean end-to-end (411MB peak) on all builds; JSONDecoder full + decode
+leak; JSONSerialization decode-only leaks; byte-parser FULL leaks;
+byte-parser decode-only = NOT YET RUN (the one cell that splits
+parse-vs-append). Two-leak hypotheses stay open until that cell fills.
+ARMED: the device app is currently running with
+`--atria-debug-recovered-scan-mode decode-only` on the byte-parser
+build, but the phone LOCKED before it could front (no scene_active — the
+foreground-gated recompute never fired; process liveness lied again
+earlier, only the probe log is a verdict channel). One unlock+open runs
+the discriminant; user pinged by push. If decode-only completes clean it
+in-memory-caches empty channels — relaunch the app normally afterwards
+to restore real data. NOTE the probe build tag still reads
+compact-rr-v1 on FOUR different binaries — distinguish runs by launch
+epoch only; bump the tag on the next instrumented build.
+
 **LIVE-RETENTION CONFIRMED + SCANNER EXONERATED (15:0x):** zone stats show
 size_in_use tracking footprint 1:1 through the burst (live=3074MB at
 3104MB) — the MALLOC_SMALL mass is GENUINELY RETAINED, not freed-dirty
