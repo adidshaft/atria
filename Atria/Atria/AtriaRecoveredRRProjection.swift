@@ -354,10 +354,61 @@ enum AtriaRecoveredRRProjection {
     }
 
     private static func sha256(_ value: String) -> String {
-        SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+        hexEncoded(SHA256.hash(data: Data(value.utf8)))
+    }
+
+    /// Lowercase hex rendering without per-byte String(format:) — the scan
+    /// ingests millions of RR rows and the Foundation format path was a
+    /// dominant source of the transient-garbage footprint balloon
+    /// (2026-08-04). Output is byte-identical to map{"%02x"}.joined().
+    private static let hexEncodeDigits: [UInt8] = Array("0123456789abcdef".utf8)
+
+    private static func hexEncoded<S: Sequence>(_ bytes: S) -> String
+    where S.Element == UInt8 {
+        var out: [UInt8] = []
+        out.reserveCapacity(2 * bytes.underestimatedCount)
+        for byte in bytes {
+            out.append(hexEncodeDigits[Int(byte >> 4)])
+            out.append(hexEncodeDigits[Int(byte & 0x0F)])
+        }
+        return String(decoding: out, as: UTF8.self)
     }
 
     private static func decodeHex(_ value: String) -> [UInt8]? {
+        // Fast path (the writer's only shape): pure-ASCII input decoded
+        // byte-wise with inline ASCII-whitespace skipping — no Character
+        // filter, no per-pair substrings. Any non-ASCII byte falls back to
+        // the Unicode-correct slow path below; rejection semantics match.
+        var sawNonASCII = false
+        var nibbles = 0
+        var pending: UInt8 = 0
+        var fast: [UInt8] = []
+        fast.reserveCapacity(value.utf8.count / 2)
+        for byte in value.utf8 {
+            if byte >= 0x80 {
+                sawNonASCII = true
+                break
+            }
+            switch byte {
+            case 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20:
+                continue  // Character.isWhitespace for the ASCII range
+            case 0x30...0x39, 0x41...0x46, 0x61...0x66:
+                let digit = byte <= 0x39 ? byte - 0x30
+                    : (byte <= 0x46 ? byte - 0x41 + 10 : byte - 0x61 + 10)
+                if nibbles % 2 == 0 {
+                    pending = digit << 4
+                } else {
+                    fast.append(pending | digit)
+                }
+                nibbles += 1
+            default:
+                return nil  // non-hex ASCII rejects in both paths
+            }
+        }
+        if !sawNonASCII {
+            guard nibbles > 0, nibbles % 2 == 0 else { return nil }
+            return fast
+        }
         let compact = value.filter { !$0.isWhitespace }
         guard !compact.isEmpty, compact.count.isMultiple(of: 2) else { return nil }
         var bytes: [UInt8] = []
@@ -373,6 +424,6 @@ enum AtriaRecoveredRRProjection {
     }
 
     private static func normalizedHex(_ bytes: [UInt8]) -> String {
-        bytes.map { String(format: "%02x", $0) }.joined()
+        hexEncoded(bytes)
     }
 }

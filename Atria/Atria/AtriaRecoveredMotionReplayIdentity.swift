@@ -75,6 +75,38 @@ struct AtriaRecoveredMotionReplayIdentity: Hashable, Sendable {
     }
 
     private static func payload(_ rawPayloadHex: String) -> Payload {
+        // Fast path (2026-08-04 scan-garbage fix): the archive writer only
+        // ever emits already-normalized hex (lowercase, no whitespace), and
+        // this runs once per scanned line — decode straight from UTF-8
+        // without the Character filter + lowercased copies. Anything else
+        // (uppercase, whitespace, unicode, malformed) falls through to the
+        // original normalization so identity values stay byte-identical.
+        var fastDecodable = true
+        var count = 0
+        for byte in rawPayloadHex.utf8 {
+            switch byte {
+            case 0x30...0x39, 0x61...0x66:
+                count += 1
+            default:
+                fastDecodable = false
+            }
+            if !fastDecodable { break }
+        }
+        if fastDecodable, count.isMultiple(of: 2) {
+            var bytes = Data(capacity: count / 2)
+            var pending: UInt8 = 0
+            var atHighNibble = true
+            for byte in rawPayloadHex.utf8 {
+                let digit = byte <= 0x39 ? byte - 0x30 : byte - 0x61 + 10
+                if atHighNibble {
+                    pending = digit << 4
+                } else {
+                    bytes.append(pending | digit)
+                }
+                atHighNibble.toggle()
+            }
+            return .bytes(bytes)
+        }
         let normalized = rawPayloadHex
             .filter { !$0.isWhitespace }
             .lowercased()
