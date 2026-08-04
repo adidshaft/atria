@@ -2770,7 +2770,9 @@ struct AtriaHomeView: View {
             selectedTab = .journal
         case "chat":
             showAssistant = true
-        case "plan":
+        // "activity" alias (2026-08-04): the Plan tab IS the Activity Monitor
+        // now; the natural name should reach it in the screenshot loop.
+        case "plan", "activity":
             selectedTab = .plan
         case "strap", "data", "collection", "history":
             showStrapScreen = true
