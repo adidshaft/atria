@@ -7414,6 +7414,10 @@ final class SessionStore: ObservableObject {
             )
             return
         }
+        // TEMP instrumentation (2026-08-05 burst hunt): distinguishes this
+        // pass's ENTRY materialization (canonical-history load and inputs)
+        // from its first hist_stage substage note.
+        AtriaMemprobe.note("hist_entry reuse=\(reuseLoadedCanonicalHistory ? 1 : 0)")
         historySnapshotRevision &+= 1
         let revision = historySnapshotRevision
         let sourceSessions = canonicalSessions(includeActiveJournal: true)
@@ -10449,6 +10453,10 @@ final class SessionStore: ObservableObject {
     private func runRecoveredArchiveStatusStep(
         ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket
     ) {
+        // TEMP instrumentation (2026-08-05 burst hunt): the +67s balloon fired
+        // with NO stage note in frame — component entry notes make the last
+        // note before a death name the phase. Strip with AtriaMemprobe.
+        AtriaMemprobe.note("comp_begin archive_status")
         refreshHistoricalArchiveStatus(
             reason: "recovered_fence_\(ticket.reason)",
             deferDerivedPublication: true
@@ -10572,6 +10580,7 @@ final class SessionStore: ObservableObject {
         // lease on the physical phone. Reuse that immutable image for workouts
         // fully contained by its proven window; older incomplete workouts stay
         // untouched and remain eligible for the ordinary deferred repair pass.
+        AtriaMemprobe.note("comp_begin workouts")
         let recoveredArchiveCoverageStart =
             Date().addingTimeInterval(-14 * 24 * 60 * 60)
         scheduleConfirmedWorkoutArchiveRehydration(
@@ -10594,6 +10603,7 @@ final class SessionStore: ObservableObject {
     private func runRecoveredSleepSettlementStep(
         ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket
     ) {
+        AtriaMemprobe.note("comp_begin sleep_settlement")
         autoConfirmSleepOnForegroundIfUseful(
             reason: "recovered_fence_\(ticket.reason)",
             force: true,
@@ -10615,6 +10625,7 @@ final class SessionStore: ObservableObject {
     private func runRecoveredHistoryStep(
         ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket
     ) {
+        AtriaMemprobe.note("comp_begin history")
         let affectedDays = Self.currentExactRecoveryAffectedDays()
         if let affectedDays {
             pendingDailyDerivedInvalidationDays.formUnion(affectedDays)
