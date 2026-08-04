@@ -10893,8 +10893,17 @@ final class SessionStore: ObservableObject {
                         generation
                     )
                     if needsTrailingRefresh {
+                        // Reuse the recovered projection (2026-08-05): a
+                        // trailing refresh without it fell into the raw
+                        // 1.5M-point archive window scan — the last
+                        // stress-cycle killer (40 un-noted seconds after
+                        // the confirmedWorkouts component note).
                         self.scheduleConfirmedWorkoutArchiveRehydration(
-                            reason: "archive_trailing_refresh"
+                            reason: "archive_trailing_refresh",
+                            recoveredArchiveHeartRatePoints:
+                                self.cachedRecoveredArchiveHeartRatePoints,
+                            recoveredArchiveCoverageStart:
+                                Date().addingTimeInterval(-14 * 24 * 60 * 60)
                         )
                     } else {
                         self.finishConfirmedWorkoutRehydrationCompletions(
@@ -10927,12 +10936,18 @@ final class SessionStore: ObservableObject {
                     // eligible workouts. The global ceiling remains
                     // fail-closed: overflow withholds every HR replacement
                     // instead of publishing a partial prefix.
-                    archiveHeartRateWindow = HistoricalArchive
-                        .metricHeartRatePoints(
+                    AtriaMemprobe.note("rehydration_raw_window_scan begin")
+                    archiveHeartRateWindow = AtriaTransientWorkThread.run(
+                        name: "atria.rehydration-window-scan",
+                        qualityOfService: .utility
+                    ) {
+                        HistoricalArchive.metricHeartRatePoints(
                             start: union.start,
                             end: union.end.addingTimeInterval(0.001),
                             maximumPoints: 1_500_000
                         )
+                    }
+                    AtriaMemprobe.note("rehydration_raw_window_scan end")
                 }
             } else {
                 archiveHeartRateWindow = nil
@@ -11037,7 +11052,13 @@ final class SessionStore: ObservableObject {
                     )
                 }
                 if needsTrailingRefresh {
-                    self.scheduleConfirmedWorkoutArchiveRehydration(reason: "archive_trailing_refresh")
+                    self.scheduleConfirmedWorkoutArchiveRehydration(
+                        reason: "archive_trailing_refresh",
+                        recoveredArchiveHeartRatePoints:
+                            self.cachedRecoveredArchiveHeartRatePoints,
+                        recoveredArchiveCoverageStart:
+                            Date().addingTimeInterval(-14 * 24 * 60 * 60)
+                    )
                 } else {
                     self.finishConfirmedWorkoutRehydrationCompletions(
                         succeeded: persistenceSucceeded
