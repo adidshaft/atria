@@ -251,6 +251,13 @@ whole-recovered-decode lane that re-runs after each drained batch and is the
 prime steady-climb suspect. Read the log tail after the next kill; the
 breadcrumbs now bracket every candidate.
 
+**Soak update (07:55):** still clean (iOS also pruned the old crash reports —
+none remain, none new). Recovery fallback continues to normalize on its own
+(38→53→56, RHR 68→57); sleep-confirm tap still pending. Activity
+day-timeline empty state made visible (`09a1da71`) — was VoiceOver-only,
+read as a broken bare axis to sighted users; sim-verified. Static gate still
+at the same 4 pre-existing failures.
+
 **Soak update (07:5x):** ~55 min clean. `activity` launch-arg alias added
 (`1ec21012`) — the Activity tab is now in the headless screenshot loop;
 sim-verified the Heart & stress card: honest no-signal state, live-HR chip
