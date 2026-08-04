@@ -956,13 +956,31 @@ struct AtriaActivityMonitorTab: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Previous day")
 
-            Text(viewingCurrentPhysiologicalDay
-                 ? "Today"
-                 : timelineDay.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))
-                .font(.subheadline.weight(.bold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .accessibilityLabel(timelineDay.formatted(date: .complete, time: .omitted))
+            // WHOOP day-capsule grammar (2026-08-05 design-language pass):
+            // caps letterspaced label in a capsule, chevrons outside it.
+            // Tapping the capsule of a PAST day snaps back to today — the
+            // capsule is inert (plain label) when already on today.
+            Button {
+                timelineDay = currentDisplayWindow.labelDay
+                viewingCurrentPhysiologicalDay = true
+            } label: {
+                Text(viewingCurrentPhysiologicalDay
+                     ? "Today"
+                     : timelineDay.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))
+                    .textCase(.uppercase)
+                    .font(.footnote.weight(.bold))
+                    .tracking(1.0)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 36)
+                    .background(.quaternary.opacity(0.5), in: Capsule(style: .continuous))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(viewingCurrentPhysiologicalDay)
+            .accessibilityLabel(timelineDay.formatted(date: .complete, time: .omitted))
+            .accessibilityHint(viewingCurrentPhysiologicalDay ? "" : "Returns to today")
 
             Button {
                 if let next = calendar.date(byAdding: .day, value: 1, to: timelineDay) {
