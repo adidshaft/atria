@@ -251,6 +251,16 @@ whole-recovered-decode lane that re-runs after each drained batch and is the
 prime steady-climb suspect. Read the log tail after the next kill; the
 breadcrumbs now bracket every candidate.
 
+**Soak update (08:0x):** latest build (incl. timeline empty-state fix)
+installed + relaunched on device; still no kills. Below-fold render audit of
+`AtriaHistoryDayDetailSheet` (temp drawHierarchy test per the recipe, deleted
+after): populated state CLEAN (value/median/delta rows, physiological delta
+colors correct); sparse state had "Building median" printed twice per row —
+fixed (`65caaae9`), delta slot now stays empty while the median builds. Note
+for future audits: ImageRenderer returns BLACK frames for ScrollView-rooted
+views — use the UIHostingController+drawHierarchy recipe. Remaining un-audited
+below-fold surfaces: AtriaTrendExpandedSheet.
+
 **Soak update (07:55):** still clean (iOS also pruned the old crash reports —
 none remain, none new). Recovery fallback continues to normalize on its own
 (38→53→56, RHR 68→57); sleep-confirm tap still pending. Activity
