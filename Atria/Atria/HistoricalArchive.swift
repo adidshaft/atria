@@ -4986,7 +4986,14 @@ enum HistoricalArchive {
         if let cache = recentGravityCache,
            cache.targetBytes >= targetBytes,
            recentGravityCacheCovers(cache, end: end)
-               || (currentFingerprint != nil && cache.fingerprint == currentFingerprint) {
+               || (currentFingerprint != nil && cache.fingerprint == currentFingerprint)
+               // Reload rate limit (2026-08-04, second balloon fix): during an
+               // active drain the writer appends to these files continuously,
+               // so the fingerprint invalidates on every call and the decode
+               // loop returns exactly when the app is busiest. Motion evidence
+               // that is ≤45s stale is fine for sleep candidacy — candidates
+               // are re-evaluated on later passes anyway.
+               || Date().timeIntervalSince(cache.loadedAt) < 45 {
             let samples = cache.samples
             recentGravityCacheLock.unlock()
             return samples

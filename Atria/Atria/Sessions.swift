@@ -7522,6 +7522,7 @@ final class SessionStore: ObservableObject {
                         maxHR: maxHR
                     )
                 }
+                AtriaMemprobe.note("history_snapshots_begin incremental=\(incremental != nil ? 1 : 0)")
                 let snapshots = incremental ?? SessionStore.makeHistorySnapshots(
                     sessions: sourceSessions,
                     confirmedWorkouts: confirmedWorkouts,
@@ -7539,6 +7540,7 @@ final class SessionStore: ObservableObject {
                     rest: rest,
                     maxHR: maxHR
                 )
+                AtriaMemprobe.note("history_snapshots_end")
                 let preparationSessions = recoveredAffectedDays.map {
                     SessionStore.recoveredDailyPreparationSessions(
                         sessions: sourceSessions,
