@@ -3476,8 +3476,9 @@ enum HistoricalArchive {
                                      limitations: limitations)
         }
 
-        let decoder = JSONDecoder()
+        var decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
+        var linesSinceDecoderRecycle = 0
         var decodedRecordCount = 0
         let coveredSince = cutoff
         var heartRate = reusableCache?.heartRatePoints ?? []
@@ -3548,6 +3549,16 @@ enum HistoricalArchive {
             if scanBisectMode == "count-only" {
                 decodedRecordCount += 1
                 return
+            }
+            // Decode-only bisect proved a REUSED JSONDecoder accumulates
+            // ~300B per decode across millions of lines (~2.8GB at 594MB
+            // scanned, with nothing retained by us) — recycle the instance
+            // periodically so whatever it hoards is released (2026-08-04).
+            linesSinceDecoderRecycle += 1
+            if linesSinceDecoderRecycle >= 8_192 {
+                linesSinceDecoderRecycle = 0
+                decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
             }
             guard let record = try? decoder.decode(Record.self, from: lineData) else { return }
             decodedRecordCount += 1
