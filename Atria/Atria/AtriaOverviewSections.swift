@@ -11459,42 +11459,72 @@ private struct AtriaMetricContributorRows: View, Equatable {
         lhs.rows == rhs.rows
     }
 
+    // WHOOP stat-row grammar (2026-08-05 design-language pass): ALL-CAPS
+    // letterspaced micro-labels, numerals louder than labels, ▲▼ triangle
+    // qualifiers, flat rows with hairline dividers instead of chip-boxes
+    // (lesser nested boxes), and a recessed legend strip. The legend says
+    // what the triangles actually MEAN here — band judgments, not a prior-
+    // period delta — because `direction` is band-based at every call site.
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Contributors")
-                .font(.subheadline.weight(.semibold))
+            Text("CONTRIBUTORS")
+                .font(.caption2.weight(.bold))
+                .tracking(1.2)
+                .foregroundStyle(.secondary)
 
-            ForEach(rows) { row in
-                HStack(spacing: 10) {
-                    Image(systemName: row.systemImage)
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(rowTint(row))
-                        .frame(width: 28, height: 28)
-                        .background(rowTint(row).opacity(0.12), in: Circle())
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(row.name)
-                            .font(.caption.weight(.bold))
-                        Text(row.comparison)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-
-                    Spacer(minLength: 8)
-
-                    HStack(spacing: 6) {
-                        Text(row.value)
-                            .font(.caption.monospacedDigit().weight(.semibold))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.72)
-                        Image(systemName: directionSymbol(row.direction))
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                    if index > 0 { Divider().opacity(0.5) }
+                    HStack(spacing: 10) {
+                        Image(systemName: row.systemImage)
                             .font(.caption.weight(.bold))
                             .foregroundStyle(rowTint(row))
+                            .frame(width: 28, height: 28)
+                            .background(rowTint(row).opacity(0.12), in: Circle())
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.name)
+                                .font(.caption2.weight(.bold))
+                                .tracking(1.1)
+                                .textCase(.uppercase)
+                            Text(row.comparison)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+
+                        Spacer(minLength: 8)
+
+                        HStack(spacing: 5) {
+                            Text(row.value)
+                                .font(.subheadline.weight(.bold).monospacedDigit())
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.72)
+                            if row.direction != 0 {
+                                Image(systemName: directionSymbol(row.direction))
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(rowTint(row))
+                            }
+                        }
                     }
+                    .padding(.vertical, 10)
                 }
-                .padding(12)
-                .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+            }
+
+            if rows.contains(where: { $0.direction != 0 }) {
+                HStack(spacing: 12) {
+                    Label("On target", systemImage: "arrowtriangle.up.fill")
+                        .foregroundStyle(Metrics.electricGreen)
+                    Label("Needs attention", systemImage: "arrowtriangle.down.fill")
+                        .foregroundStyle(Metrics.electricRed)
+                }
+                .font(.caption2.weight(.semibold))
+                .imageScale(.small)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 6)
+                .padding(.horizontal, 10)
+                .background(.primary.opacity(0.045),
+                            in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
             }
         }
         .padding(14)
@@ -11508,9 +11538,7 @@ private struct AtriaMetricContributorRows: View, Equatable {
     }
 
     private func directionSymbol(_ direction: Int) -> String {
-        if direction > 0 { return "arrow.up.circle.fill" }
-        if direction < 0 { return "arrow.down.circle.fill" }
-        return "minus.circle.fill"
+        direction > 0 ? "arrowtriangle.up.fill" : "arrowtriangle.down.fill"
     }
 }
 
