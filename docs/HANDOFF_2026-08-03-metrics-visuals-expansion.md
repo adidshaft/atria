@@ -394,6 +394,25 @@ pair + widget-battery, all pre-dating this session, plus the stray
 untracked dev probe file). User awake; sleep Confirm still pending
 (fallback recovery 63, RHR 55).
 
+**RE-OPENED (14:1x): kill #9 at 13:55:41 — the pool fix reduced but did
+NOT close the balloon.** pid 5158 (wake-fix build, all prior fixes present):
+pre-scan phases clean (motion-tick read 46s @≤502MB), then the recovered
+scan climbed to 3375MB by 237MB scanned (~155s) → per-process-limit kill,
+frontmost. CORRECTIONS to the record: (a) the earlier "reproduction passed"
+never observed `rec_scan_done` for pid 4362 — process liveness was NOT
+proof the scan completed; (b) decode-only bisect predates the pool fix, so
+its decoder-attribution is confounded. RATE RE-ANALYSIS across all runs
+fits TIME-based accumulation ~18-50MB/s during scan-era activity better
+than per-byte (this run 3GB/166s; count-only +1GB/33s; decode-only
+2.8GB/57s; the "flat" observation covered only the first ~13s). Hypothesis
+now: a CONCURRENT allocator active while the archive queue is busy (live
+drain pipeline? diagnostics accumulators?) — NOT (only) the scan's own
+per-line work. Decoder statics ruled out (grep clean). NEXT (decisive, not
+another breadcrumb): reproduce under `xctrace record --template
+Allocations --attach` (worked at 11:10; export needs the schema-table
+form, e.g. --xpath into data/table[@schema] rather than tracks/detail) and
+read the allocation call trees. Probe + levers stay armed.
+
 **REPRODUCTION PASSED (12:3x): pid 4362 (pool-fix build, full mode) alive
 45+ minutes** — vs 45-124s deaths for every pre-fix run — with ZERO
 JetsamEvents in the window (probe file-service flaky, but the crash-log
