@@ -1920,3 +1920,29 @@ executing; next cycle's pull is the decisive full-gauntlet verdict.
 Note: 11676 fired no lane guards (0), consistent with its cycle not
 overlapping any external refresh — the clean run is necessary but not
 sufficient; 11706's gauntlet is the real test.
+
+## 15.11 Round-4: gauntlet still dies at +65s — new note-less climber (2026-08-05 ~05:30)
+
+pid 11706 (BLE relaunch that ran the FULL rebuild): scan ✓ (904MB,
++49s), sort ✓, snapshot ✓ (1240MB), proj stages ✓ (1392MB, +52s),
+post_swap ✓ (footprint DROPPED to ~911MB at +53s — reclaim worked).
+THEN a note-less climber: 835MB@+57s → 1153@+60s → 1731@+61s →
+2184@+62s → jetsam 3303MB@+65s (~350MB/s). The coordinator's derived
+chain NEVER started (zero comp_begin fires) — this climber is NOT the
+recompute pipeline. Lane guard deflected 3 external history refreshes
+(hist_deferred_scan_active ×3) — those are handled. Interleaved notes
+during the climb: dashboard_revision widget publishes + live_bpm
+(strap streaming). Successors 11732 (356MB peak, recycled idle) and
+11771 (308MB, healthy) confirm: only the full-gauntlet process dies.
+
+SUSPECTS for the post-swap note-less climber (next instrumentation
+targets): (a) refreshHistoricalArchiveStatus via NON-coordinator
+callers (the comp_begin note only covers the coordinator's entry);
+(b) the P0 connected catch-up drain / terminal materialization lanes
+kicking in on the live strap link right after the swap; (c) widget/
+dashboard revision fan-out materializing consumer projections. Add
+entry notes to all three, reproduce once, read the last note.
+
+User-visible state UNCHANGED all along: one silent restart on
+backlogged launches, relaunch stable, data intact (post_swap commits
+before the death every time).
