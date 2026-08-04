@@ -11392,12 +11392,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
         switch heroStyle {
         case .standard:
             VStack(alignment: .leading, spacing: 10) {
-                Text(heroValue)
-                    .font(.system(size: 56, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.56)
-                    .foregroundStyle(heroTint)
+                AtriaMetricHeroValueText(text: heroValue, tint: heroTint)
                     .contentTransition(reduceMotion ? .identity : .numericText())
                     .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: heroValue)
 
@@ -11431,6 +11426,52 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
                                  state: heroState,
                                  tint: tint)
         }
+    }
+}
+
+/// Hero numeral with the unit at reduced size (WHOOP design-language pass,
+/// 2026-08-05): "54 ms" renders the 54 huge and the ms at ~40%, baseline-
+/// aligned. Split rules are deliberately conservative — the unit must be the
+/// trailing space-separated token with NO digits (or a glued trailing "%"),
+/// and the remaining prefix must contain a digit — so "6h 24m", "Live read",
+/// "Learning", and "--" all render unsplit exactly as before. Internal so
+/// it is render-testable.
+struct AtriaMetricHeroValueText: View {
+    let text: String
+    let tint: Color
+
+    var body: some View {
+        let parts = Self.split(text)
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(parts.value)
+                .font(.system(size: 56, weight: .bold, design: .rounded))
+                .monospacedDigit()
+            if let unit = parts.unit {
+                Text(unit)
+                    .font(.system(size: 22, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.56)
+        .foregroundStyle(tint)
+    }
+
+    static func split(_ text: String) -> (value: String, unit: String?) {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        if trimmed.count > 1, trimmed.hasSuffix("%"),
+           trimmed.dropLast().contains(where: \.isNumber),
+           !trimmed.dropLast().hasSuffix(" ") {
+            return (String(trimmed.dropLast()), "%")
+        }
+        let tokens = trimmed.split(separator: " ")
+        guard tokens.count >= 2,
+              let last = tokens.last,
+              !last.contains(where: \.isNumber),
+              tokens.dropLast().joined(separator: " ").contains(where: \.isNumber) else {
+            return (trimmed, nil)
+        }
+        return (tokens.dropLast().joined(separator: " "), String(last))
     }
 }
 
