@@ -47,6 +47,51 @@ enum AtriaRecoveredMotionAnalytics {
         let reason: String
     }
 
+    /// Seconds inside [start, end] covered by SUSTAINED wake movement:
+    /// consecutive measurement-validated epochs that are NOT low-motion
+    /// qualified, merged into blocks, counting only blocks at least
+    /// `minimumBlock` long. Brief stirring (rollovers) stays below the floor
+    /// and is never deducted; unvalidated epochs are never trusted either way.
+    ///
+    /// 2026-08-04 (user-caught defect): a recovered candidate spanning
+    /// 11:33PM–8:59AM reported duration == span while the drained archive
+    /// showed 110–596mg wrist movement (vs ≤6mg sleep-still) through a
+    /// ~40-minute awake stretch. Candidate duration must exclude detectable
+    /// wake; this helper is the measurement.
+    static func sustainedAwakeSeconds(
+        epochs: [AtriaRecoveredMotionEpoch],
+        start: Date,
+        end: Date,
+        minimumBlock: TimeInterval = 10 * 60
+    ) -> TimeInterval {
+        let wakeEpochs = overlappingEpochs(epochs, start: start, end: end)
+            .filter { $0.measurementValidated && !$0.lowMotionQualified }
+            .sorted { $0.start < $1.start }
+        guard !wakeEpochs.isEmpty else { return 0 }
+        var total: TimeInterval = 0
+        var blockStart = max(wakeEpochs[0].start, start)
+        var blockEnd = min(wakeEpochs[0].end, end)
+        func closeBlock() {
+            let length = blockEnd.timeIntervalSince(blockStart)
+            if length >= minimumBlock { total += length }
+        }
+        for epoch in wakeEpochs.dropFirst() {
+            let s = max(epoch.start, start)
+            let e = min(epoch.end, end)
+            // Allow tiny seams between adjacent epochs (epoch emission is
+            // windowed); anything larger separates two distinct blocks.
+            if s.timeIntervalSince(blockEnd) <= 60 {
+                blockEnd = max(blockEnd, e)
+            } else {
+                closeBlock()
+                blockStart = s
+                blockEnd = e
+            }
+        }
+        closeBlock()
+        return total
+    }
+
     static func savedSessionFields(
         epochs: [AtriaRecoveredMotionEpoch],
         start: Date,
