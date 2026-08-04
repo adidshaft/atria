@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 /// Canonical hardware-unavailable copy for blood oxygen (SpO2).
 ///
@@ -206,6 +207,112 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
     }
 }
 
+/// The last-30-days mini-trend shown inside an About sheet (chart backlog P1).
+///
+/// Built from the same daily rollups the metric detail charts read, with the
+/// identical value transforms (HRV = e^lnRMSSD, sleep in hours, …), so the
+/// mini-trend can never disagree with the full chart. `make` returns nil below
+/// 5 real readings in the window — the sheet simply omits the card rather than
+/// plot a shape that isn't there. Stress and blood oxygen have no persisted
+/// daily history, so they never produce a trend.
+struct AtriaAboutMetricTrend {
+    let points: [AtriaDetailChartPoint]
+    /// The full 30-day frame, so sparse points sit at their true position in
+    /// the month instead of being stretched to fill the plot.
+    let window: ClosedRange<Date>
+    /// Real observed count + range ("12 nights · 54–88 ms") — the honest
+    /// substitute for a y-axis on a plot this small.
+    let caption: String
+
+    var yDomain: ClosedRange<Double> {
+        let lo = points.map(\.value).min() ?? 0
+        let hi = points.map(\.value).max() ?? 1
+        let pad = Swift.max((hi - lo) * 0.18, 0.5)
+        return (lo - pad)...(hi + pad)
+    }
+
+    static func make(for metric: AtriaAboutMetric,
+                     rollups: [DailyRollupStoreEntry],
+                     referenceDate: Date = Date(),
+                     calendar: Calendar = .current) -> AtriaAboutMetricTrend? {
+        let end = calendar.startOfDay(for: referenceDate)
+        guard let start = calendar.date(byAdding: .day, value: -29, to: end) else { return nil }
+
+        func value(_ entry: DailyRollupStoreEntry) -> Double? {
+            switch metric {
+            case .hrv: return entry.lnRMSSD.map { exp($0).rounded() }
+            case .restingHeartRate: return entry.rhr.map(Double.init)
+            case .recovery: return entry.recovery.map(Double.init)
+            case .respiration: return entry.respiratoryRate
+            case .sleep: return entry.sleepSeconds.flatMap { $0 > 0 ? $0 / 3_600 : nil }
+            case .skinTemperature: return entry.skinTemperatureDeviationCelsius
+            case .vo2max: return entry.fitnessAgeDelta.map(Double.init)
+            case .stress, .bloodOxygen: return nil
+            }
+        }
+
+        var seen = Set<Date>()
+        let points: [AtriaDetailChartPoint] = rollups.compactMap { entry -> AtriaDetailChartPoint? in
+            let day = calendar.startOfDay(for: entry.day)
+            guard day >= start, day <= end, let value = value(entry),
+                  seen.insert(day).inserted else { return nil }
+            return AtriaDetailChartPoint(day: day, value: value, tint: metric.tint)
+        }
+        .sorted { $0.day < $1.day }
+
+        guard points.count >= 5,
+              let lo = points.map(\.value).min(),
+              let hi = points.map(\.value).max() else { return nil }
+        return AtriaAboutMetricTrend(points: points,
+                                     window: start...end,
+                                     caption: caption(for: metric, count: points.count, lo: lo, hi: hi))
+    }
+
+    private static func caption(for metric: AtriaAboutMetric,
+                                count: Int, lo: Double, hi: Double) -> String {
+        let noun: String
+        switch metric {
+        case .vo2max: noun = count == 1 ? "day" : "days"
+        default: noun = count == 1 ? "night" : "nights"
+        }
+        let range = rangeText(for: metric, lo: lo, hi: hi)
+        return "\(count) \(noun) · \(range)"
+    }
+
+    private static func rangeText(for metric: AtriaAboutMetric,
+                                  lo: Double, hi: Double) -> String {
+        func plain(_ v: Double, decimals: Int) -> String {
+            String(format: "%.\(decimals)f", v)
+        }
+        func signed(_ v: Double, decimals: Int) -> String {
+            let magnitude = plain(abs(v), decimals: decimals)
+            return v < 0 ? "−\(magnitude)" : "+\(magnitude)"
+        }
+        switch metric {
+        case .hrv:
+            return lo == hi ? "steady at \(Int(lo)) ms" : "\(Int(lo))–\(Int(hi)) ms"
+        case .restingHeartRate:
+            return lo == hi ? "steady at \(Int(lo)) bpm" : "\(Int(lo))–\(Int(hi)) bpm"
+        case .recovery:
+            return lo == hi ? "steady at \(Int(lo))%" : "\(Int(lo))–\(Int(hi))%"
+        case .respiration:
+            return lo == hi
+                ? "steady at \(plain(lo, decimals: 1)) breaths/min"
+                : "\(plain(lo, decimals: 1))–\(plain(hi, decimals: 1)) breaths/min"
+        case .sleep:
+            return lo == hi
+                ? "steady at \(plain(lo, decimals: 1)) h"
+                : "\(plain(lo, decimals: 1))–\(plain(hi, decimals: 1)) h"
+        case .skinTemperature:
+            return "\(signed(lo, decimals: 1)) to \(signed(hi, decimals: 1)) °C vs your baseline"
+        case .vo2max:
+            return "\(signed(lo, decimals: 0)) to \(signed(hi, decimals: 0)) yr vs calendar age"
+        case .stress, .bloodOxygen:
+            return ""
+        }
+    }
+}
+
 /// The "About <metric>" education sheet (design spec §20).
 ///
 /// A reusable template: a tinted glyph tile, an H1, a definition paragraph, a
@@ -217,6 +324,10 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
 /// and so it can be rendered straight to an image in a test.
 struct AtriaAboutMetricSheet: View {
     let metric: AtriaAboutMetric
+    /// Optional last-30-days mini-trend (P1). nil — because the surface has no
+    /// rollup history in scope, or the metric has under 5 readings — simply
+    /// omits the card; the education copy stands alone.
+    var trend: AtriaAboutMetricTrend? = nil
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -233,6 +344,9 @@ struct AtriaAboutMetricSheet: View {
                         .lineSpacing(8)
                         .fixedSize(horizontal: false, vertical: true)
 
+                    if let trend {
+                        trendCard(trend)
+                    }
                     computeCard
                     honestyCard
 
@@ -263,6 +377,50 @@ struct AtriaAboutMetricSheet: View {
             .frame(width: 52, height: 52)
             .background(AtriaIconTileBackground(cornerRadius: 16, tint: metric.tint))
             .accessibilityHidden(true)
+    }
+
+    /// Last-30-days mini-trend: gap-broken linear line + a dot per real
+    /// reading, framed on the full 30-day window. Axes are hidden — the caption
+    /// carries the real observed count and range instead, so nothing on the
+    /// plot is fabricated (honesty-first chart rules, 2026-08-03).
+    private func trendCard(_ trend: AtriaAboutMetricTrend) -> some View {
+        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
+            Text("YOUR LAST 30 DAYS")
+                .font(.caption2.weight(.bold))
+                .tracking(0.6)
+                .foregroundStyle(.secondary)
+            Chart {
+                ForEach(trend.points.contiguousDayRuns(), id: \.point.day) { entry in
+                    LineMark(x: .value("Day", entry.point.day, unit: .day),
+                             y: .value(metric.title, entry.point.value),
+                             series: .value("Run", "r\(entry.runID)"))
+                        .foregroundStyle(metric.tint)
+                        .interpolationMethod(.linear)
+                        .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                }
+                // A dot per real reading so single-day runs (no line segment)
+                // are still visible instead of silently disappearing.
+                ForEach(trend.points) { point in
+                    PointMark(x: .value("Day", point.day, unit: .day),
+                              y: .value(metric.title, point.value))
+                        .foregroundStyle(metric.tint)
+                        .symbolSize(18)
+                }
+            }
+            .chartXScale(domain: trend.window)
+            .chartYScale(domain: trend.yDomain)
+            .chartXAxis(.hidden)
+            .chartYAxis(.hidden)
+            .frame(height: 72)
+            Text(trend.caption)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(AtriaDesignTokens.Spacing.lg)
+        .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Your last 30 days of \(metric.title): \(trend.caption)")
     }
 
     private var computeCard: some View {

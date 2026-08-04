@@ -774,7 +774,9 @@ struct AtriaHealthScreen: View {
             }
         }
         .sheet(item: $educationTopic) { topic in
-            AtriaAboutMetricSheet(metric: topic.aboutMetric)
+            AtriaAboutMetricSheet(metric: topic.aboutMetric,
+                                  trend: .make(for: topic.aboutMetric,
+                                               rollups: vitals.dailyRollupHistory))
         }
         .sheet(item: $metricDetail) { detail in
             AtriaMetricDetailSheet(metric: detail,
