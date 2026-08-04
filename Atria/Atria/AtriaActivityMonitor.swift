@@ -754,9 +754,19 @@ struct AtriaActivityMonitorTab: View {
                 stressMonitorCard
             }
 
-            dayTimelineCard
-
             let sections = daySectionsCache.value(for: requestKey) ?? []
+            // A fully-empty settled day used to stack three adjacent
+            // negatives (stress "waiting" + bare axis "nothing recorded" +
+            // the big empty card) and read as broken. The empty card 60pt
+            // below explains the day better than a bare axis; the strip
+            // still shows while loading and whenever anything is recorded
+            // (2026-08-04 WHOOP-alignment review, rank 7).
+            if !timelineSpans.isEmpty
+                || daySectionsCache.publishedKey != requestKey
+                || !sections.isEmpty {
+                dayTimelineCard
+            }
+
             if daySectionsCache.publishedKey != requestKey {
                 activityLoadingState
             } else if sections.isEmpty {
@@ -822,7 +832,10 @@ struct AtriaActivityMonitorTab: View {
 
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Label("Heart & stress", systemImage: "bolt.heart.fill")
+                // The card's accessibility label already says "Stress
+                // monitor" — the visible title now matches it (and WHOOP's
+                // feature name) instead of contradicting it (2026-08-04).
+                Label("Stress Monitor", systemImage: "bolt.heart.fill")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Metrics.electricStress)
                 Spacer()
@@ -1175,7 +1188,12 @@ struct AtriaActivityMonitorTab: View {
                 .chartXAxis {
                     AxisMarks(values: axisTicks.map(\.date)) { value in
                         AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
-                        AxisValueLabel(centered: true) {
+                        // Not `centered:` — that offsets each label half an
+                        // interval right, honest only for BAND axes; on this
+                        // continuous time axis it floated hour labels ~3.5h
+                        // from their gridlines and pushed "Now" off the edge
+                        // (2026-08-04 WHOOP-alignment review, rank 2).
+                        AxisValueLabel {
                             if let date = value.as(Date.self),
                                let tick = AtriaActivityTimelineAxis.tick(at: date, in: axisTicks) {
                                 Text(tick.label)
@@ -1231,7 +1249,12 @@ struct AtriaActivityMonitorTab: View {
                     AxisMarks(values: axisTicks.map(\.date)) { value in
                         AxisGridLine()
                             .foregroundStyle(.secondary.opacity(0.12))
-                        AxisValueLabel(centered: true) {
+                        // Not `centered:` — that offsets each label half an
+                        // interval right, honest only for BAND axes; on this
+                        // continuous time axis it floated hour labels ~3.5h
+                        // from their gridlines and pushed "Now" off the edge
+                        // (2026-08-04 WHOOP-alignment review, rank 2).
+                        AxisValueLabel {
                             if let date = value.as(Date.self),
                                let tick = AtriaActivityTimelineAxis.tick(at: date, in: axisTicks) {
                                 Text(tick.label)

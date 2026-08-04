@@ -1260,3 +1260,44 @@ start:
 - Then P1 (About-sheet trends), P2 (Steps chart), P3 (Stress/partial trends) from
   §6.
 - **Blocked, documented: SpO2 (§5), same-night Smart-Wake staging (§3.2).**
+
+## 12.2 WHOOP-alignment slate (2026-08-04 evening, 8-agent review → 8 shipped)
+
+An 8-agent per-screen review of fresh `north-star-highlights` fixture
+screenshots (7 reviewers + adversarial synthesis; ~711k tokens) produced a
+ranked slate; all 8 items + 2 inline finds shipped, sim-verified
+before/after, static gate back at its 4-failure baseline (one pin
+migrated), affected suites 20/20:
+
+1. Plan pill honesty: `planTargetText` guarded — "Target 10.2 · strain
+   pending" while the strain hero is pending (was "10.2 to go" asserting a
+   measured 0.0 beside a "--" chip).
+2. Day-timeline axis truth: both `AxisValueLabel(centered: true)` →
+   uncentered (labels sat ~3.5h right of their gridlines; "Now" clipped).
+3. "READINESS" kicker → "RECOVERY" (AtriaHealthScreen:1054) — WHOOP's own
+   pillar name over exactly WHOOP's recovery cluster.
+4. "Heart & stress" card → "Stress Monitor" — visible title now matches
+   its own a11y label and WHOOP's feature name.
+5. "Learning · N of 14 days" → "Resting HR learning · …" (Insights:280) —
+   the only subject-less rotating notice; test pins migrated.
+6. `.noContact` badge tint `.red` → `.secondary` app-wide (routine absence
+   is not an alarm; colour-is-earned).
+7. Activity fully-empty day: bare-axis strip gated out — one consolidated
+   empty card instead of three stacked negatives; strip still shows while
+   loading or with any data.
+8. Sleep banner "Still waiting for enough strap data" → "Last night · not
+   enough strap data yet" (Subject · state pattern; pin migrated).
+Inline finds: unzoned Resting tint `.blue`→`.secondary` (fixture's
+"Resting 119" rendered as a live-blue verdict; gate pin migrated) and
+unzoned Sleep-RHR tile `.red`→`.secondary`.
+
+Deferred next-slate headliner (synthesis): Journal Yes/No answer
+neutrality; then RHR-acronym row copy, "104% of need", Health Monitor
+single-carrier status, strap/settings deep-detail passes. The synthesis
+also flagged the '119' PROVENANCE question (presentation RHR falls back
+to a saved-wear session's restingStable with no source label) as a
+derivation-adjacent item needing a product decision — not shipped.
+
+Balloon status unchanged this pass: 3-way append bisect results remain
+UNREAD on the phone (locked, file-service error 4016); read
+Documents/atria-memprobe.log on next unlock (§16:4x).

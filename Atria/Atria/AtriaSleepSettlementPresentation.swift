@@ -36,7 +36,10 @@ enum AtriaSleepSettlementState: Equatable {
         case .processing: return "Sleep ended · processing"
         case .reviewReady: return "Sleep detected · review ready"
         case .saved: return "Sleep saved · journal ready"
-        case .waitingForData: return "Still waiting for enough strap data"
+        // "Subject · state" like its siblings — the subject-less version
+        // never said WHAT was waiting (2026-08-04 review, rank 8). Still
+        // deliberately not "no sleep detected": only "not enough to judge".
+        case .waitingForData: return "Last night · not enough strap data yet"
         }
     }
 

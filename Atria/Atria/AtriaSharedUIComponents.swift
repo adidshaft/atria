@@ -403,7 +403,10 @@ enum AtriaMetricState: Equatable {
         case .validated, .live:
             return .green
         case .noContact:
-            return .red
+            // Routine absence (strap off wrist / out of range) is not an
+            // alarm — red implied something was wrong with the DATA. Same
+            // colour-is-earned rule as `.learning` above (2026-08-04).
+            return .secondary
         case .conflict:
             return .orange
         case .local:

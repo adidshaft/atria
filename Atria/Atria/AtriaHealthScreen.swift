@@ -1051,7 +1051,10 @@ struct AtriaHealthScreen: View {
             // chevron affordance, and a tap into the metric's EXISTING detail
             // sheet (the education copy lives on inside each detail sheet's
             // info button). The compact grid grouping is kept for density.
-            monitorGroupKicker("Readiness")
+            // "Recovery" is this cluster's own vocabulary (the Recovery tile
+            // + its inputs); "Readiness" was a competitor's term for the same
+            // pillar (2026-08-04 WHOOP-alignment review, rank 3).
+            monitorGroupKicker("Recovery")
 
             LazyVGrid(columns: monitorGridColumns, alignment: .leading, spacing: 8) {
                 AtriaHealthMetricRow(title: "Recovery",

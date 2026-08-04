@@ -1936,6 +1936,13 @@ struct AtriaTodayScreen: View {
 
     private var planTargetText: String {
         guard let target = displayHero.guidance.target else { return "Target building" }
+        // "N to go" is an arithmetic claim about measured strain. While the
+        // strain hero itself shows pending, day strain is unmeasured — the
+        // pill asserting "10.2 to go" beside a "--" strain chip contradicted
+        // it (2026-08-04 WHOOP-alignment review, rank 1).
+        if isPendingHeroValue(displayHero.strainValue) {
+            return String(format: "Target %.1f \u{00b7} strain pending", target)
+        }
         let remaining = target - displayHero.strain
         if remaining > 0.05 {
             return String(format: "Target %.1f \u{00b7} %.1f to go", target, remaining)

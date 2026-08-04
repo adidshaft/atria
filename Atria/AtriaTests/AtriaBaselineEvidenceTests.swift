@@ -109,11 +109,11 @@ final class AtriaBaselineEvidenceTests: XCTestCase {
         // its maturity unit is days. HRV remains sleep-window qualified.
         XCTAssertEqual(
             baseline(days: 1).restingBaselineMaturityQualifierText(now: now),
-            "Learning · 1 of 14 days"
+            "Resting HR learning · 1 of 14 days"  // renamed 2026-08-04: named-subject calibration pattern
         )
         XCTAssertEqual(
             baseline(days: 5).restingBaselineMaturityQualifierText(now: now),
-            "Learning · 5 of 14 days"
+            "Resting HR learning · 5 of 14 days"
         )
         // Once trusted the qualifier disappears entirely — one caveat, and only
         // while it is true.
