@@ -47,6 +47,19 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
             exactRecoveryOwnsPriority: false,
             isRecoveredPublication: false
         ))
+        // Single heavy lane (2026-08-05): an active recovered projection scan
+        // defers external history refreshes exactly like exact-recovery
+        // priority does, and the recovered publication itself still passes.
+        XCTAssertTrue(SessionStore.historySnapshotProjectionShouldDefer(
+            exactRecoveryOwnsPriority: false,
+            isRecoveredPublication: false,
+            projectionScanActive: true
+        ))
+        XCTAssertFalse(SessionStore.historySnapshotProjectionShouldDefer(
+            exactRecoveryOwnsPriority: false,
+            isRecoveredPublication: true,
+            projectionScanActive: true
+        ))
     }
 
     func testOnlyExplicitExactPublicationCanRequestRecoveredRecomputationWhileAuthorityOwnsPriority() {
