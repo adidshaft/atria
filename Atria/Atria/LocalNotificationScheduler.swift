@@ -73,6 +73,7 @@ enum LocalNotificationScheduler {
         static let eveningJournalPrefix = "atria.eveningJournal."
         static let morningJournalPrefix = "atria.morningJournal."
         static let healthDeviation = "atria.health.deviation"
+        static let syncNudge = "atria.sync.nudge"
         static let recovery = "atria.recovery.ready"
         static let strain = "atria.strain.target"
         static let sleepReview = "atria.sleep.review"
@@ -96,6 +97,112 @@ enum LocalNotificationScheduler {
         static let diagnosticOnly = [diagnostic]
         static let legacy = [legacyRecovery, legacyStrain, legacySleepReview, legacyWorkoutReview, legacyBattery, legacyBluetoothOff, legacyDiagnostic]
         static let removable = active + diagnosticOnly + legacy
+    }
+
+    // MARK: - Sync nudge (2026-08-05 user directive: graceful measures when
+    // data is lagging — app closed a while, strap away, Low Power Mode, or
+    // background catch-up simply not progressing).
+
+    struct SyncNudgeContent: Equatable {
+        let title: String
+        let body: String
+    }
+
+    /// Pure decision. Nudge ONLY when opening the app would actually help:
+    /// - foregroundHelps: a fresh strap backlog is observed (strap reachable)
+    ///   but no durable flush progress for ≥2h — foreground drains fastest.
+    /// - strapAway: a deep backlog was last observed hours ago and the link
+    ///   has been down since — bringing the strap close is the fix.
+    /// - lowPower: Low Power Mode is throttling background sync.
+    /// Never fires while the app is active (the in-app banner owns that), and
+    /// only inside 09:00–21:59 local.
+    nonisolated static func syncNudgeContent(
+        flushDebtLevelRaw: String?,
+        debtObservedAgeSeconds: TimeInterval?,
+        lastDurableFlushAgeSeconds: TimeInterval?,
+        linkConnected: Bool,
+        lowPowerMode: Bool,
+        applicationIsActive: Bool,
+        hour: Int
+    ) -> SyncNudgeContent? {
+        guard !applicationIsActive, (9...21).contains(hour) else { return nil }
+        guard flushDebtLevelRaw == "high" else { return nil }
+        let progressing = lastDurableFlushAgeSeconds.map { $0 < 2 * 3600 } ?? false
+        guard !progressing else { return nil }
+        let debtFresh = debtObservedAgeSeconds.map { $0 <= 2 * 3600 } ?? false
+        if !linkConnected, !debtFresh {
+            return SyncNudgeContent(
+                title: "Strap out of range",
+                body: "Hours of strap data are waiting. Bring your strap near your phone and open Atria to catch up."
+            )
+        }
+        if lowPowerMode {
+            return SyncNudgeContent(
+                title: "Sync limited by Low Power Mode",
+                body: "Strap data is waiting. Open Atria for a few minutes — foreground sync runs at full speed."
+            )
+        }
+        guard debtFresh else { return nil }
+        return SyncNudgeContent(
+            title: "Strap data waiting to sync",
+            body: "Background catch-up hasn't kept pace. Open Atria for a few minutes — sync runs fastest in the foreground."
+        )
+    }
+
+    static let syncNudgeCooldown: TimeInterval = 6 * 3600
+    private static let syncNudgeLastScheduledKey = "atria.notification.syncNudge.lastAt"
+
+    static func scheduleSyncNudgeIfNeeded(
+        flushDebtLevelRaw: String?,
+        debtObservedAgeSeconds: TimeInterval?,
+        lastDurableFlushAgeSeconds: TimeInterval?,
+        linkConnected: Bool,
+        applicationIsActive: Bool,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) {
+        guard AtriaNotificationSettings.load().allows(kind: "sync_nudge") else { return }
+        guard let content = syncNudgeContent(
+            flushDebtLevelRaw: flushDebtLevelRaw,
+            debtObservedAgeSeconds: debtObservedAgeSeconds,
+            lastDurableFlushAgeSeconds: lastDurableFlushAgeSeconds,
+            linkConnected: linkConnected,
+            lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
+            applicationIsActive: applicationIsActive,
+            hour: calendar.component(.hour, from: now)
+        ) else { return }
+        let defaults = UserDefaults.standard
+        let last = defaults.double(forKey: syncNudgeLastScheduledKey)
+        if last > 0,
+           now.timeIntervalSince(Date(timeIntervalSince1970: last)) < syncNudgeCooldown {
+            return
+        }
+        configureDeliveryLogger()
+        Task {
+            let center = UNUserNotificationCenter.current()
+            _ = await requestProvisionalAuthorization(center: center)
+            let settings = await notificationSettings(center: center)
+            guard settings.authorizationStatus == .authorized ||
+                    settings.authorizationStatus == .provisional ||
+                    settings.authorizationStatus == .ephemeral else { return }
+            let notification = UNMutableNotificationContent()
+            notification.title = content.title
+            notification.body = content.body
+            notification.sound = nil
+            center.removePendingNotificationRequests(withIdentifiers: [Identifier.syncNudge])
+            do {
+                try await center.add(UNNotificationRequest(
+                    identifier: Identifier.syncNudge,
+                    content: notification,
+                    trigger: nil
+                ))
+                defaults.set(now.timeIntervalSince1970, forKey: syncNudgeLastScheduledKey)
+                AtriaDebugLog("ATRIADBG notification_schedule kind=sync_nudge title=%@", content.title)
+            } catch {
+                AtriaDebugLog("ATRIADBG notification_error kind=sync_nudge error=%@",
+                              String(describing: error))
+            }
+        }
     }
 
     static func scheduleHealthDeviationIfNeeded(rollups: [DailyRollupStoreEntry],
