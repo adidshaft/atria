@@ -10877,6 +10877,8 @@ final class AtriaHomeModel {
     private static func makeDeferredDetails(ble: AtriaBLEManager,
                                             store: SessionStore,
                                             recoveryIsLearning: Bool) -> DeferredDetails {
+        AtriaMemprobe.note("deferred_details_begin")
+        defer { AtriaMemprobe.note("deferred_details_end") }
         let diagnostics = store.homeDashboardDiagnostics()
         let now = Date()
         let validatedDisplayHRV = store.latestReferenceValidatedHRVForDisplay
