@@ -1589,3 +1589,19 @@ parked coverage authority so background catch-up runs without waiting
 for foreground; then chain+slice (P1) and charge-resume. Target the
 user set: ≥95% coverage tracking near-real-time during normal wear.
 WHOOP's own benchmark: step data refreshes ~every 10 minutes.
+
+## 14.3 P0 drain decoupling SHIPPED (2026-08-05 ~03:00, user directive)
+
+`strapBacklogPendingForCatchUp()` (range-loss flag OR fresh flush debt >
+caught-up floor) now drives: the connected catch-up gate, the background
+flush window, the HR-independent re-arm ticker (also armed on every
+fresh 0x22 debt observation), the charge-resume edge, and the
+parked-terminal-authority raw pass-through. All downstream guards
+unchanged. Every prior pass of this machinery was proven under the
+range-loss ticket; this broadens only the trigger. VERIFY over the next
+day: steps card coverage % should climb toward ≥95% and stay
+near-real-time during normal wear; watch flush-debt level transitions
+in defaults (flushDebtLevel) and offline_sync status lines. User was
+told foregrounding the app accelerates catch-up NOW (true: foreground
+unparks materialization + drains survive foreground post-balloon).
+Review-prompt UX + calmer trigger also live on device.
