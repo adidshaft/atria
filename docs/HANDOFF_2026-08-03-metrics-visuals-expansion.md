@@ -410,6 +410,33 @@ produce identical Records over representative real lines, incl. iso8601
 capturedAt and every optional). Also file the beta-Foundation suspicion for
 re-test on iOS 27 GA before considering the workaround permanent.
 
+**FIX BUILT (16:0x, this commit) — status: IN VERIFICATION, no verdict
+yet.** `HistoricalArchive.Record` gained two failable initializers at the
+bottom of HistoricalArchive.swift: `init?(scanLine: Data)`
+(JSONSerialization) and `init?(scanObject: [String: Any])` (manual
+field-by-field mapping). Semantics deliberately mirror JSONDecoder:
+CFBoolean-gated numeric bridging (a JSON `true` can't pass as an Int and
+`1` can't pass as a Bool), `Int/UInt32/UInt16(exactly:)` conversions, a
+tri-state `scanOptional` so an ABSENT/null optional reads nil but a
+PRESENT-but-wrong-type key rejects the whole record (decodeIfPresent +
+typeMismatch parity), and `ISO8601DateFormatter` `.withInternetDateTime`
+for `capturedAt` (exactly what `.iso8601` uses). The scan closure in
+`makeRecoveredDataSnapshot` now calls `Record(scanLine:)`; the JSONDecoder
+instance, its recycle counter, and the recycle block are GONE from the hot
+path (recycling was proven useless anyway). The bisect lever stays for
+verification — `decode-only` now exercises the NEW parser. Codable remains
+the parser everywhere else (bounded lanes, diagnostics, replay).
+GOLDEN PARITY: `AtriaTests/AtriaRecordScanParserParityTests.swift` — both
+parsers must agree on accept/reject AND accepted records must re-encode to
+byte-identical canonical JSON (sortedKeys, iso8601) across: fully-populated
+row, all-optionals-absent row, hand-written line with explicit nulls +
+unknown future key, missing required key, truncated/empty line,
+present-optional-with-wrong-type, and a 4-way realistic variation matrix.
+Verification protocol before ANY "fixed" claim (per the thrice-learned
+rule): parity+wake tests green → static gate at baseline → device install
+→ foreground-during-drain reproduction → `rec_scan_done` + full recompute
+completion with flat live-stats/vmtags → multi-hour + overnight soak.
+
 **LIVE-RETENTION CONFIRMED + SCANNER EXONERATED (15:0x):** zone stats show
 size_in_use tracking footprint 1:1 through the burst (live=3074MB at
 3104MB) — the MALLOC_SMALL mass is GENUINELY RETAINED, not freed-dirty

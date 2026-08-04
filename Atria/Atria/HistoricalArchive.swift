@@ -3476,9 +3476,6 @@ enum HistoricalArchive {
                                      limitations: limitations)
         }
 
-        var decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        var linesSinceDecoderRecycle = 0
         var decodedRecordCount = 0
         let coveredSince = cutoff
         var heartRate = reusableCache?.heartRatePoints ?? []
@@ -3523,7 +3520,7 @@ enum HistoricalArchive {
         // TEMPORARY bisect lever (2026-08-04, footprint hunt): strips the scan
         // closure layer-by-layer to attribute the ~3.3GB dirty growth.
         //   --atria-debug-recovered-scan-mode count-only  → scanner+decompress only
-        //   --atria-debug-recovered-scan-mode decode-only → + JSONDecoder Record
+        //   --atria-debug-recovered-scan-mode decode-only → + Record(scanLine:) parse
         // Absent → full production behavior. Remove with the memprobe.
         let scanBisectMode = ProcessInfo.processInfo.arguments
             .drop { $0 != "--atria-debug-recovered-scan-mode" }.dropFirst().first
@@ -3550,17 +3547,13 @@ enum HistoricalArchive {
                 decodedRecordCount += 1
                 return
             }
-            // Decode-only bisect proved a REUSED JSONDecoder accumulates
-            // ~300B per decode across millions of lines (~2.8GB at 594MB
-            // scanned, with nothing retained by us) — recycle the instance
-            // periodically so whatever it hoards is released (2026-08-04).
-            linesSinceDecoderRecycle += 1
-            if linesSinceDecoderRecycle >= 8_192 {
-                linesSinceDecoderRecycle = 0
-                decoder = JSONDecoder()
-                decoder.dateDecodingStrategy = .iso8601
-            }
-            guard let record = try? decoder.decode(Record.self, from: lineData) else { return }
+            // JSONDecoder is banned from this hot path: decode-only bisect
+            // proved it retains live memory per decode on iOS 27.0 beta
+            // (635→3006MB live across one scan, surviving instance
+            // recycling). Record(scanLine:) parses via JSONSerialization,
+            // whose temporaries drain in the scanner's per-chunk pools —
+            // parity enforced by AtriaRecordScanParserParityTests.
+            guard let record = Record(scanLine: lineData) else { return }
             decodedRecordCount += 1
             if scanBisectMode == "decode-only" { return }
             appendRecoveredRecord(record,
@@ -6271,5 +6264,170 @@ enum HistoricalArchive {
 enum AtriaHistoricalGravity {
     static func decode(payload: [UInt8], version: Int? = nil) -> (x: Double, y: Double, z: Double, magnitude: Double, validated: Bool)? {
         HistoricalArchive.historicalGravity(payload)
+    }
+}
+
+// MARK: - Scan-path Record parser (JSONDecoder bypass, 2026-08-04)
+
+extension HistoricalArchive.Record {
+    /// Parses one archive JSONL line without JSONDecoder. On this device's
+    /// iOS 27.0 beta (24A5380h), `JSONDecoder.decode(Record.self, from:)`
+    /// retains live memory per call — clean-room proven: decode-and-discard
+    /// alone grew live small-zone memory 635→3006MB across a scan whose
+    /// count-only twin (same build, decode skipped) peaked at 411MB, and
+    /// recycling the decoder instance did not release it. JSONSerialization
+    /// is ObjC Foundation: its temporaries autorelease into the scanner's
+    /// per-chunk pools and drain — the motion-tick window lane has parsed
+    /// this way, memory-flat, through the same archives. Codable stays the
+    /// parser everywhere off the multi-million-line scan hot path.
+    /// Field-for-field parity with JSONDecoder is enforced by
+    /// AtriaRecordScanParserParityTests — extend BOTH when Record changes.
+    init?(scanLine line: Data) {
+        guard let object = try? JSONSerialization.jsonObject(with: line)
+                as? [String: Any] else { return nil }
+        self.init(scanObject: object)
+    }
+
+    init?(scanObject object: [String: Any]) {
+        guard let schema = Self.scanInt(object["schema"]),
+              let capturedAtText = object["capturedAt"] as? String,
+              let capturedAt = Self.scanDate(capturedAtText),
+              let source = object["source"] as? String,
+              let layoutVersion = object["layoutVersion"] as? String,
+              let sequence = Self.scanInt(object["sequence"]),
+              let command = Self.scanInt(object["command"]),
+              let unix7 = Self.scanUInt32(object["unix7"]),
+              let subsec11 = Self.scanUInt16(object["subsec11"]),
+              let flash13 = Self.scanUInt32(object["flash13"]),
+              let payloadLength = Self.scanInt(object["payloadLength"]),
+              let whoofHR17 = Self.scanInt(object["whoofHR17"]),
+              let whoofRRNum18 = Self.scanInt(object["whoofRRNum18"]),
+              let whoofRR19 = Self.scanIntArray(object["whoofRR19"]),
+              let kRR64 = Self.scanIntArray(object["kRR64"]),
+              let gravityValidated = Self.scanBool(object["gravityValidated"]),
+              let candidateRR = object["candidateRR"] as? [String],
+              let rawPayloadHex = object["rawPayloadHex"] as? String,
+              let clockCorrectionStatus = object["clockCorrectionStatus"] as? String,
+              let currentSessionUsable = Self.scanBool(object["currentSessionUsable"]),
+              let metricUsable = Self.scanBool(object["metricUsable"]),
+              let usabilityReason = object["usabilityReason"] as? String
+        else { return nil }
+        // Optionals mirror decodeIfPresent: absent or null ⇒ nil, but a
+        // PRESENT key of the wrong type must reject the record like
+        // JSONDecoder's typeMismatch does — hence the tri-state helper.
+        guard case .value(let strapIdentifier) = Self.scanOptional(object["strapIdentifier"], as: { $0 as? String }),
+              case .value(let gravityX36) = Self.scanOptional(object["gravityX36"], as: Self.scanDouble),
+              case .value(let gravityY40) = Self.scanOptional(object["gravityY40"], as: Self.scanDouble),
+              case .value(let gravityZ44) = Self.scanOptional(object["gravityZ44"], as: Self.scanDouble),
+              case .value(let unknownMotionScalar32) = Self.scanOptional(object["unknownMotionScalar32"], as: Self.scanDouble),
+              case .value(let gravityMagnitude) = Self.scanOptional(object["gravityMagnitude"], as: Self.scanDouble),
+              case .value(let motionTickCounter88) = Self.scanOptional(object["motionTickCounter88"], as: Self.scanInt),
+              case .value(let clockDeviceRef) = Self.scanOptional(object["clockDeviceRef"], as: Self.scanUInt32),
+              case .value(let clockWallRef) = Self.scanOptional(object["clockWallRef"], as: Self.scanUInt32),
+              case .value(let clockDriftSeconds) = Self.scanOptional(object["clockDriftSeconds"], as: Self.scanInt),
+              case .value(let clockCorrectedUnix7) = Self.scanOptional(object["clockCorrectedUnix7"], as: Self.scanUInt32)
+        else { return nil }
+        self.init(schema: schema,
+                  capturedAt: capturedAt,
+                  strapIdentifier: strapIdentifier,
+                  source: source,
+                  layoutVersion: layoutVersion,
+                  sequence: sequence,
+                  command: command,
+                  unix7: unix7,
+                  subsec11: subsec11,
+                  flash13: flash13,
+                  payloadLength: payloadLength,
+                  whoofHR17: whoofHR17,
+                  whoofRRNum18: whoofRRNum18,
+                  whoofRR19: whoofRR19,
+                  kRR64: kRR64,
+                  gravityX36: gravityX36,
+                  gravityY40: gravityY40,
+                  gravityZ44: gravityZ44,
+                  unknownMotionScalar32: unknownMotionScalar32,
+                  gravityMagnitude: gravityMagnitude,
+                  gravityValidated: gravityValidated,
+                  motionTickCounter88: motionTickCounter88,
+                  candidateRR: candidateRR,
+                  rawPayloadHex: rawPayloadHex,
+                  clockDeviceRef: clockDeviceRef,
+                  clockWallRef: clockWallRef,
+                  clockDriftSeconds: clockDriftSeconds,
+                  clockCorrectedUnix7: clockCorrectedUnix7,
+                  clockCorrectionStatus: clockCorrectionStatus,
+                  currentSessionUsable: currentSessionUsable,
+                  metricUsable: metricUsable,
+                  usabilityReason: usabilityReason)
+    }
+
+    private enum ScanOptional<T> {
+        case value(T?)
+        case typeMismatch
+    }
+
+    private static func scanOptional<T>(_ raw: Any?,
+                                        as convert: (Any?) -> T?) -> ScanOptional<T> {
+        guard let raw, !(raw is NSNull) else { return .value(nil) }
+        guard let converted = convert(raw) else { return .typeMismatch }
+        return .value(converted)
+    }
+
+    /// Matches JSONDecoder .iso8601 (ISO8601DateFormatter, internet date
+    /// time, no fractional seconds) — the archive writer's exact format.
+    private static let scanDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    private static func scanDate(_ text: String) -> Date? {
+        scanDateFormatter.date(from: text)
+    }
+
+    // JSON booleans arrive as CFBoolean-backed NSNumbers; Swift's loose
+    // bridging would also accept 0/1 (and Bool for Int), which JSONDecoder
+    // rejects as typeMismatch — so gate every numeric on the CF type.
+    private static func scanIsBoolean(_ number: NSNumber) -> Bool {
+        CFGetTypeID(number) == CFBooleanGetTypeID()
+    }
+
+    private static func scanBool(_ raw: Any?) -> Bool? {
+        guard let number = raw as? NSNumber, scanIsBoolean(number) else { return nil }
+        return number.boolValue
+    }
+
+    private static func scanInt(_ raw: Any?) -> Int? {
+        guard let number = raw as? NSNumber, !scanIsBoolean(number),
+              let value = Int(exactly: number) else { return nil }
+        return value
+    }
+
+    private static func scanDouble(_ raw: Any?) -> Double? {
+        guard let number = raw as? NSNumber, !scanIsBoolean(number) else { return nil }
+        return number.doubleValue
+    }
+
+    private static func scanUInt32(_ raw: Any?) -> UInt32? {
+        guard let number = raw as? NSNumber, !scanIsBoolean(number),
+              let value = UInt32(exactly: number) else { return nil }
+        return value
+    }
+
+    private static func scanUInt16(_ raw: Any?) -> UInt16? {
+        guard let number = raw as? NSNumber, !scanIsBoolean(number),
+              let value = UInt16(exactly: number) else { return nil }
+        return value
+    }
+
+    private static func scanIntArray(_ raw: Any?) -> [Int]? {
+        guard let numbers = raw as? [NSNumber] else { return nil }
+        var values: [Int] = []
+        values.reserveCapacity(numbers.count)
+        for number in numbers {
+            guard !scanIsBoolean(number), let value = Int(exactly: number) else { return nil }
+            values.append(value)
+        }
+        return values
     }
 }
