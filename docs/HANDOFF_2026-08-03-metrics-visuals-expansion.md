@@ -1301,3 +1301,36 @@ derivation-adjacent item needing a product decision — not shipped.
 Balloon status unchanged this pass: 3-way append bisect results remain
 UNREAD on the phone (locked, file-service error 4016); read
 Documents/atria-memprobe.log on next unlock (§16:4x).
+
+## 12.3 Balloon endgame status (2026-08-04 late evening)
+
+**THE SCAN IS FIXED — architecturally.** Thread-per-pass budgeted scanning
+(`4c14af2b`, 32MB/pass, fresh dying Thread per pass, adaptive unwind wait):
+full production scan of the 1.007GB archive completes in ~15s across 30
+passes with footprint ≤850MB (previously dead by the halfway mark on every
+build). Root law, twice-proven: on this iOS 27.0 beta the allocator
+returns a worker's transient garbage only at THREAD TEARDOWN — not at
+autoreleasepool drains, not via malloc_zone_pressure_relief, not on naps.
+Per-pass thread death is the reclaim lever.
+
+**Stage-by-stage exoneration** (probe brackets, three naming runs): scan →
+snapshot build → proj_hr → proj_sessions → proj_motion → fields → skin →
+sessions_swap → canonical → motion-provenance → stage-backfill → HRV
+requalify → baseline: ALL clean, whole recompute ≤1.2GB. sleep_candidates
+and deferred_details also bracketed and exonerated.
+
+**REMAINING KILLER (one lane left): the post-publish DERIVED fan-out.**
+The climb (859→3143MB at ~450MB/s, same garbage signature) starts 0.4-11s
+after post_swap_done, carries no notes, and dies in ~6s. Effects
+dispatcher: projectionCompleted → .startDerived →
+runRecoveredArchiveStatusStep → chain of ~8 derived consumers — which
+includes the Aug-2 memory's KNOWN remaining unbounded whole-archive sites
+(readVerifiedConsumerSources → 2 whole loads per source, reader.readSource,
+shadow step). Instrumented `recompute_stage phase=/component=` note in
+armRecoveredDataRecomputeTimeout (fires per derived component) — the
+naming run is INSTALLED and has run on-device, but the file service
+wedged before the log could be pulled. NEXT: pull
+Documents/atria-memprobe.log (launch epoch 1785855194), read which
+component note precedes the climb, then apply the same medicine to that
+consumer (windowed load or thread-per-slice). Note the probe log is
+~30MB+ now — consider trimming after pull.
