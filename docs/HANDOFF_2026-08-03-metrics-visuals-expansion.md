@@ -167,7 +167,19 @@ logged here as a review-vigilance failure too.
 
 Facts: the card renders `night.durationHours`; for this candidate duration
 equals span ⇒ the aggregate candidate merged across the wake with no
-exclusion. Hypotheses to investigate (in order): (1) the wake window's
+exclusion. GROUND TRUTH EXTRACTED (evening pass, chunk
+raw-20260804-731d9a45…jsonl, 3,872 rows @1Hz across 05:30–06:30 IST):
+movement (mean abs gravity-component delta) in the wake window runs
+110–596 mg vs a ≤6 mg sleep-still baseline — 05:40–06:05 sustained
+31–584 mg with HR 66–86 (peak 05:45: 419 mg @ HR 85.6), another 596 mg
+burst 06:25–06:30; only 06:10–06:20 reads still. The drained archive
+therefore CONTAINS unmistakable, gravity-validated wake evidence for the
+exact window the candidate counted as sleep ⇒ hypothesis (1) is confirmed
+at the data level: the candidate builder never consulted recovered motion
+for wake exclusion. Remaining work is the FIX: make the aggregate/recovered
+candidate path segment or deduct against recovered-motion stillness (and
+never render duration == span across detectable wake), plus a regression
+test replaying this night. Original hypotheses kept for the fix session: (1) the wake window's
 evidence is HR-only in the candidate (quiet typing ≈ resting HR) and
 motion-validated segmentation didn't run against the DRAINED motion for
 that window (recovered-motion epochs attach later / HR-only candidates show
