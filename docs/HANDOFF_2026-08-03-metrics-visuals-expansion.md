@@ -251,6 +251,16 @@ whole-recovered-decode lane that re-runs after each drained batch and is the
 prime steady-climb suspect. Read the log tail after the next kill; the
 breadcrumbs now bracket every candidate.
 
+**Soak (08:4x):** no kills since 08:11 (~30 min, though the app suspended
+itself cleanly at 08:19 at a healthy 74MB footprint, so most of that window
+is weak evidence — the balloon needs foreground+active-drain to trigger; the
+footprint probe is armed for the next such window). Recovery fallback has
+converged 38→53→56→**63** with RHR 55 (baseline-normal); sleep confirm still
+pending. Below-fold audit wrap-up: `AtriaTrendExpandedSheet` has ZERO call
+sites (dead code, unpinned, likely superseded by `AtriaExpandedChart`) —
+flagged as a spin-off review task rather than deleted unilaterally, per the
+pinned-dead-code precedent.
+
 **STATUS CORRECTION (08:2x): fix #2 did NOT hold either** — another 3.45GB
 active+frontmost jetsam at 08:11:45, 63s after the rate-limited build
 launched, with zero lane notes during the climb. Conclusion: the
