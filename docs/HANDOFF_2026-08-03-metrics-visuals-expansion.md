@@ -276,6 +276,20 @@ record shows EVERY kill today dies inside `rec_scan_progress` —
    plus decoder churn) ⇒ the scan now crosses the limit ⇒ progressively
    worse as the archive grows. Explains why fixes "verified" then failed:
    each reduced other pressure while the archive kept growing.
+**BISECT VERDICT (11:1x): the killer burst is DIAGNOSTICS LOGGING.**
+count-only mode completed the FULL 978MB scan in 33s at 1512MB peak — then
+died 5s later in a 1512→3359MB burst with zero notes: the post-recompute
+`logSleepValidation`/`aggregateSleepDiagnostics` pass calls
+aggregateSleepCandidates(historicalMotionPolicy: **.fullArchive**) whose
+loadGravitySamples() built an in-memory [String] of EVERY raw file
+simultaneously (~1GB archive → 2-3GB in seconds) — to decorate ATRIADBG log
+lines. Also proven by the same run: pressure-relief didn't matter, the scan
+itself reaches ~1.5GB for 978MB (survivable), and full-mode deaths mid-scan
+were this burst racing the slower decode on other threads. FIXED
+(`pending-commit-hash`): diagnostics use .boundedRecent; loadGravitySamples
+streams one file per autoreleasepool. Full-mode reproduction in flight —
+verdict owed. Bisect lever + probe stay until a clean multi-hour soak.
+
 **TAGGED REPRODUCTION (10:5x): retention fixed, churn remains.** The
 build-tagged compact-RR run died identically (3374MB at 101s) but with
 arrays PROVABLY tiny (rr=52K accepted ≈8MB) and the pre-scan phase peaking
