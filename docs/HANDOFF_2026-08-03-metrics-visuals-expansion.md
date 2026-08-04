@@ -1408,3 +1408,24 @@ screenshot-verified ("Resting --" honest, equal-weight buttons).
 drain remains the big engineering item), settings profile-header polish
 (needs visual sign-off), instrumentation strip + full suite AFTER a clean
 overnight, C5 chart re-verify at real data density, iOS 27 GA re-test.
+
+## 13.1 Balloon frontier log (2026-08-04 night, loop pass)
+
+Fix chain verified on-device this pass (each layer HOLDS):
+- 12→20s inter-cycle rest works (observed exact-gap trailing starts).
+- Fresh-thread-per-recompute + PER-STAGE dying threads inside the
+  recompute (snapshot / HR projection / sessions+motion+skin): both
+  cycles of a drain-triggered pair now complete at ~1.1GB peak
+  (previously: cycle 2 died at 3.3GB in the serial materialization).
+- history_snapshots full rebuild staged per-substage: passes at ~1GB.
+- Probe log rotation at 8MB (40MB devicectl truncation trap solved);
+  hero_snapshot + dash_diag bracketed and exonerated.
+DEATH FRONTIER now at +180s: after archiveStatusAndCycleHeartRate and
+confirmedWorkouts complete (~1GB), an unnamed lane between +132s and
++180s climbs to 3.3GB. Remaining derived components not yet reached in
+notes: sleepSettlement, historySleepAndDailyRollups' TAIL consumers,
+overviewTrends, trainingLoad, todayHeartRateZones, behaviorInsights —
+next pass brackets each derived component's runner (the recompute_stage
+note only marks the timeout arm, not stage completion) and applies the
+dying-thread stage pattern to whichever names itself. Settings + plan
+surfaces audited clean this pass (Developer row properly gated).
