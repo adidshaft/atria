@@ -42,17 +42,17 @@ enum AtriaMemprobe {
             let source = DispatchSource.makeTimerSource(queue: queue)
             source.schedule(deadline: .now(), repeating: .milliseconds(250))
             source.setEventHandler {
-                let resident = currentResidentBytes()
+                // Trigger on FOOTPRINT movement — the jetsam metric — not
+                // resident (which sat flat through a 3.45GB compressor climb).
+                let footprint = currentFootprintBytes()
                 let now = Date().timeIntervalSince1970
-                let delta = resident > lastLoggedResident
-                    ? resident - lastLoggedResident
-                    : lastLoggedResident - resident
-                // Unconditional 1s heartbeat: distinguishes "resident was
-                // steady" from "sampler was starved" around a kill.
+                let delta = footprint > lastLoggedResident
+                    ? footprint - lastLoggedResident
+                    : lastLoggedResident - footprint
                 guard delta >= deltaThresholdBytes || now - lastHeartbeatAt >= 1 else { return }
                 lastHeartbeatAt = now
-                lastLoggedResident = resident
-                write(line: delta >= deltaThresholdBytes ? "sample" : "beat", resident: resident)
+                lastLoggedResident = footprint
+                write(line: delta >= deltaThresholdBytes ? "sample" : "beat")
             }
             source.resume()
             timer = source
@@ -67,12 +67,29 @@ enum AtriaMemprobe {
     }
 
     private static func write(line: String, resident: UInt64? = nil) {
+        // phys_footprint is the metric jetsam enforces; resident_size hid a
+        // 3GB compressor balloon (2026-08-04). Log both: "<fp>F/<res>R".
+        let footprintMB = currentFootprintBytes() / (1024 * 1024)
         let residentMB = (resident ?? currentResidentBytes()) / (1024 * 1024)
-        let text = "\(Date().timeIntervalSince1970) \(residentMB)MB \(line)\n"
+        let text = "\(Date().timeIntervalSince1970) \(footprintMB)F/\(residentMB)R MB \(line)\n"
         guard let handle, let data = text.data(using: .utf8) else { return }
         _ = try? handle.write(contentsOf: data)
         // fsync so the tail survives the jetsam SIGKILL.
         fsync(handle.fileDescriptor)
+    }
+
+    /// The jetsam-enforced metric (includes compressed + IOKit-mapped dirty).
+    static func currentFootprintBytes() -> UInt64 {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<task_vm_info_data_t>.stride / MemoryLayout<integer_t>.stride)
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), rebound, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return 0 }
+        return UInt64(info.phys_footprint)
     }
 
     private static func currentResidentBytes() -> UInt64 {
