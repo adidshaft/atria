@@ -6928,6 +6928,9 @@ final class SessionStore: ObservableObject {
     /// publish (the pipeline's own history step refreshed); re-run on failure
     /// so a failed projection cannot strand a stale history cache.
     private var pendingHistoryRefreshDeferredByProjectionScan = false
+    /// ≈ process launch (the store is created at app start). Gates diagnostic
+    /// heavy passes out of the cold-launch window (2026-08-05).
+    private let storeCreatedAt = Date()
     private var exactRecoveryArchivePriorityLeaseActive =
         HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority()
     private var recoveredDataRecomputationDeferralProvider:
@@ -10529,6 +10532,23 @@ final class SessionStore: ObservableObject {
             timeZoneIdentifier: timeZoneIdentifier
         )
         let destination = HistoricalArchive.verifiedActivityConsumerShadowDirectory
+
+        // Cold-launch guard (2026-08-05): with the projection scan serialized,
+        // the +80s jetsam moved HERE — readVerifiedConsumerSources decodes at
+        // whole-archive scale even for one source (fp 955→3202MB inside this
+        // step on-device) and the reclaim law holds that garbage until the
+        // stretch ends. Shadow parity applies no canonical state, so it has
+        // no business inside the launch recompute: skip during the first 10
+        // minutes and let any later cycle run it. The proper bounded-read fix
+        // for the reader stays on the backlog.
+        if Date().timeIntervalSince(storeCreatedAt) < 600 {
+            AtriaMemprobe.note("shadow_step_skipped_cold_launch")
+            AtriaDebugLog("ATRIADBG verified_activity_consumer_shadow status=skipped_cold_launch action=run_on_later_cycle")
+            guard recoveredDataRecompute.pendingComponents(ticket: ticket)?
+                .contains(.confirmedWorkouts) == true else { return }
+            runRecoveredWorkoutStep(ticket: ticket)
+            return
+        }
 
         Task.detached(priority: .utility) { [recoveredSessions, configuration, destination] in
             // Fresh dying thread: this sweep's verified-consumer reads churn
