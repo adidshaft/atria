@@ -261,6 +261,13 @@ sites (dead code, unpinned, likely superseded by `AtriaExpandedChart`) —
 flagged as a spin-off review task rather than deleted unilaterally, per the
 pinned-dead-code precedent.
 
+**Organic-use confirmation (09:07 screenshot):** app stable through real
+morning use — the sleep candidate grew to 9h 26m (11:33PM–8:59AM) as the
+drain caught up, "Sleep ended · processing" settlement is active, hero
+honestly holds 63% "prev. sleep", live HR 61bpm, battery 79%, zero kills.
+The whole reliability arc (capture revival → backfill → candidate →
+settlement) now runs unattended.
+
 **Follow-up closed (09:2x):** the rehydration union-window read
 (`metricHeartRatePoints(start:end:maximumPoints:)`) needs NO bounding — it
 already does catalog-bounds chunk overlap selection, 64-KiB streaming, one
