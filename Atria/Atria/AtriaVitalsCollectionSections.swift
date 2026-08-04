@@ -4874,6 +4874,12 @@ struct AtriaHeartRateAxisChart: View, Equatable {
             && lhs.showsXAxis == rhs.showsXAxis
     }
 
+    /// True when neither series has anything to draw. Gates the y-axis so an
+    /// empty plot never shows a fabricated bpm scale.
+    private var plotIsEmpty: Bool {
+        (buckets ?? []).isEmpty && points.isEmpty
+    }
+
     private var baseChart: some View {
         Chart {
             if let buckets {
@@ -4949,14 +4955,19 @@ struct AtriaHeartRateAxisChart: View, Equatable {
         .chartYAxis {
             // Trailing axis: the leading bpm gutter (~28pt) was the largest
             // single left inset on the Vitals tab (space audit 2026-07-07).
-            AxisMarks(position: .trailing, values: .automatic(desiredCount: 5)) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
-                AxisTick().foregroundStyle(.secondary.opacity(0.45))
-                AxisValueLabel {
-                    if let bpm = value.as(Int.self) {
-                        Text("\(bpm)")
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
+            // Hidden entirely while the plot is empty — a 60–120 bpm scale
+            // over "No heart-rate points to plot yet" is a fabricated axis
+            // (chart-honesty rule, 2026-08-04).
+            if !plotIsEmpty {
+                AxisMarks(position: .trailing, values: .automatic(desiredCount: 5)) { value in
+                    AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
+                    AxisTick().foregroundStyle(.secondary.opacity(0.45))
+                    AxisValueLabel {
+                        if let bpm = value.as(Int.self) {
+                            Text("\(bpm)")
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
