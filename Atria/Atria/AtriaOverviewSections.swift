@@ -1742,7 +1742,14 @@ enum AtriaOverviewCurrentSleep {
                                        pendingReview: SleepHistorySnapshot.Night? = nil,
                                        now: Date = Date(),
                                        calendar: Calendar = .current,
-                                       maximumCandidateAge: TimeInterval = 24 * 60 * 60) -> SleepHistorySnapshot.Night? {
+                                       // Sticky review prompt (2026-08-04 product decision):
+                                       // an unresolved candidate must survive the midnight/cycle
+                                       // rollover instead of silently falling off the Overview —
+                                       // WHOOP keeps the equivalent prompt pinned. 48h bounds the
+                                       // pin so a never-opened app cannot resurface a stale window
+                                       // days later; a newer confirmed sleep still supersedes via
+                                       // the reference-date comparison below.
+                                       maximumCandidateAge: TimeInterval = 48 * 60 * 60) -> SleepHistorySnapshot.Night? {
         let snapshotCandidate = snapshot.latestDisplayEvidence
         let candidate: SleepHistorySnapshot.Night?
         if pendingReview != nil {

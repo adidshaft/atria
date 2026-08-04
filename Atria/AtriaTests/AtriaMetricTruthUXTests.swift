@@ -51,21 +51,21 @@ final class AtriaMetricTruthUXTests: XCTestCase {
             status: .disconnected,
             hasEvidence: true
         )
-        XCTAssertEqual(disconnected?.title, "Last known · current cycle")
+        XCTAssertEqual(disconnected?.title, "Strap disconnected")  // 2026-08-04 single-carrier: scope lives in the header chip
         XCTAssertEqual(disconnected?.allowsRetry, true)
 
         let connecting = AtriaHealthConnectionEvidencePresentation.notice(
             status: .connecting,
             hasEvidence: true
         )
-        XCTAssertEqual(connecting?.title, "Reconnecting · saved current cycle")
+        XCTAssertEqual(connecting?.title, "Reconnecting")
         XCTAssertEqual(connecting?.allowsRetry, false)
 
         let poweredOff = AtriaHealthConnectionEvidencePresentation.notice(
             status: .poweredOff,
             hasEvidence: true
         )
-        XCTAssertEqual(poweredOff?.title, "Bluetooth off · saved current cycle")
+        XCTAssertEqual(poweredOff?.title, "Bluetooth off")
         XCTAssertEqual(poweredOff?.allowsRetry, false)
     }
 

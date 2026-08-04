@@ -10344,8 +10344,7 @@ final class AtriaHomeModel {
         // physiological-cycle measurement used by recovery and Vitals.
         let presentationRestingHeartRate = store.currentCycleRestingHeartRateForPresentation(
             on: now,
-            calendar: calendar,
-            liveRestingHeartRate: restingContext.currentForRecovery
+            calendar: calendar
         )
         // Same deterministic no-value token as every other metric value. Left as
         // the old word, the Vitals heart-rate row rendered "Now --", "Average

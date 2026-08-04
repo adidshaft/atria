@@ -1364,7 +1364,7 @@ struct AtriaTodayScreen: View {
             return "of \(AtriaMetricFormat.sleepHours(needHours)) need"
         }
         if let performance {
-            return "\(performance)% need"
+            return "\(performance)% of need"
         }
         return "Sleep"
     }

@@ -934,7 +934,12 @@ private struct AtriaJournalCheckInDeck: View {
                         .font(.body.weight(.semibold))
                         .frame(maxWidth: .infinity, minHeight: 30)
                 }
-                .atriaCardAction(tint: answeredYes ? .cyan : .accentColor)
+                // Equal visual weight with No (2026-08-04): a filled Yes
+                // beside a pale No nudged the answer, and journal answers
+                // feed behavior-impact associations — biased input corrupts
+                // the correlation the feature exists to surface.
+                .atriaCardAction(prominent: false,
+                                 tint: answeredYes ? .cyan : .accentColor)
 
                 Button {
                     recordNo(tag: tag, followUp: followUp)
@@ -944,7 +949,7 @@ private struct AtriaJournalCheckInDeck: View {
                         .font(.body.weight(.semibold))
                         .frame(maxWidth: .infinity, minHeight: 30)
                 }
-                .atriaCardAction(prominent: false, tint: .secondary)
+                .atriaCardAction(prominent: false, tint: .accentColor)
             }
 
             if answeredYes, let followUp {

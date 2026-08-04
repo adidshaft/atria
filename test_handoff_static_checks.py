@@ -5973,7 +5973,9 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "@State private var rawExportURL: URL?",
             "@State private var rawExportInProgress = false",
-            "AtriaStrapStatusRow(title: \"Ownership\"",
+            # 2026-08-04: renamed to plain words — the tile answers "is
+            # another app competing for the strap connection".
+            "AtriaStrapStatusRow(title: \"Strap control\"",
             "rawExportRow",
             "Text(\"Export everything\")",
             "ProgressView()",
@@ -10900,7 +10902,7 @@ class HandoffStaticChecks(unittest.TestCase):
             (strap, 'AtriaStrapStatusRow(title: "Battery",'),
             (strap, 'AtriaStrapStatusRow(title: "Mode",'),
             (strap, 'AtriaStrapStatusRow(title: "Session",'),
-            (strap, 'AtriaStrapStatusRow(title: "Ownership",'),
+            (strap, 'AtriaStrapStatusRow(title: "Strap control",'),  # renamed 2026-08-04
             (highlights, "enum AtriaHighlights"),
             (highlights, "static func topTwo(rollups: [DailyRollupStoreEntry]) -> [AtriaHighlight]"),
             (tri_ring, "struct AtriaTriRing: View, Equatable"),
