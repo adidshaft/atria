@@ -1186,6 +1186,16 @@ struct AtriaActivityMonitorTab: View {
                     }
                 }
                 .frame(height: 44)
+                // Same pattern as the heart-rate timeline's empty state: say
+                // the strip is empty instead of presenting a bare axis that
+                // reads as broken (sighted users previously got only the
+                // VoiceOver label).
+                .chartOverlay { _ in
+                    Text("Nothing recorded yet this day")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
                 .accessibilityLabel("No recorded activity for this day")
             } else {
                 Chart(spans) { span in
