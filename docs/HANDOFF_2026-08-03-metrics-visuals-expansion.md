@@ -261,6 +261,17 @@ sites (dead code, unpinned, likely superseded by `AtriaExpandedChart`) —
 flagged as a spin-off review task rather than deleted unilaterally, per the
 pinned-dead-code precedent.
 
+**VERIFIED (09:1x): the foreground kill is FIXED.** Scene-active
+reproduction on the layer-1+2 build: `motion_tick_read` COMPLETES in 12.8s
+at 508MB footprint (previously: never reached its end note, killed at 3.45GB
+in 45–62s, five consecutive builds). Run peak 1595MB (recovered-snapshot
+stack transient — headroom ~1.9GB), settled 124MB, alive past 205s, zero new
+kills after 08:52. Remaining follow-ups: keep the memprobe through tonight's
+organic overnight cycle, then strip it; the recovered-snapshot ~1.5GB
+transient has windowing options in the memory file if it ever creeps; the
+rehydration union-window read (1.5M-point ceiling) is the other lane worth
+bounding preemptively.
+
 **CONVICTED + FIXED (`7ec72868`, 09:0x): the balloon is the confirmed-workout
 step-evidence worker's `motionTickWindowRead`.** Probe caught it naming
 itself: `motion_tick_read_begin files=18 bytes=463514851` — 463MB scanned,
