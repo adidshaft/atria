@@ -74,7 +74,9 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         let reason: String
     }
 
-    static let interCycleRestSeconds: TimeInterval = 12
+    // 20s, was 12 (2026-08-04): reclaim after a cycle is gradual; trailing
+    // cycles that started from a ~1GB baseline still crossed the ceiling.
+    static let interCycleRestSeconds: TimeInterval = 20
 
     private(set) var phase: Phase = .idle
     private(set) var latestRequestedArchiveRevision: UInt64?

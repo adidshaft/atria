@@ -9265,7 +9265,17 @@ final class SessionStore: ObservableObject {
                 return
             }
             AtriaMemprobe.note("recovered_snapshot_begin")
-            let recoveredSnapshot = HistoricalArchive.makeRecoveredDataSnapshot(
+            // Per-stage dying threads inside the recompute (2026-08-04): the
+            // snapshot materialization, HR projection, and session emission
+            // each generate 500-650MB of transient garbage; run serially on
+            // ONE thread they summed to ~1.6GB and crossed the ceiling when
+            // a trailing cycle started from an incompletely-reclaimed
+            // baseline. Per-stage threads let each stage's garbage die
+            // before the next begins.
+            let recoveredSnapshot = AtriaTransientWorkThread.run(
+                name: "atria.recompute-snapshot",
+                qualityOfService: .userInitiated
+            ) { HistoricalArchive.makeRecoveredDataSnapshot(
                 since: cutoff,
                 onScanProgress: { [weak self] statistics in
                     let now = DispatchTime.now().uptimeNanoseconds
@@ -9287,7 +9297,7 @@ final class SessionStore: ObservableObject {
                         )
                     }
                 }
-            )
+            ) }
             AtriaMemprobe.note("recovered_snapshot_end hrPoints=\(recoveredSnapshot.heartRatePoints.count) rrBeats=\(recoveredSnapshot.rrProjection.beats.count)")
             Task { @MainActor [weak self, ticket] in
                 self?.renewRecoveredProjectionLease(
@@ -9325,11 +9335,16 @@ final class SessionStore: ObservableObject {
                 expectedSampleInterval: 1
             )
             AtriaMemprobe.note("proj_hr_begin points=\(archivePoints.count)")
-            let projection = AtriaRecoveredHeartRateProjection.project(
-                historical: archivePoints,
-                live: livePoints,
-                configuration: configuration
-            )
+            let projection = AtriaTransientWorkThread.run(
+                name: "atria.recompute-hr-projection",
+                qualityOfService: .userInitiated
+            ) {
+                AtriaRecoveredHeartRateProjection.project(
+                    historical: archivePoints,
+                    live: livePoints,
+                    configuration: configuration
+                )
+            }
             AtriaMemprobe.note("proj_hr_end")
             Task { @MainActor [weak self, ticket] in
                 self?.renewRecoveredProjectionLease(
@@ -9337,62 +9352,71 @@ final class SessionStore: ObservableObject {
                     completedStage: "heart_rate_projection"
                 )
             }
-            AtriaMemprobe.note("proj_sessions_begin beats=\(rrProjection.beats.count)")
-            var recoveredSessions = AtriaRecoveredHeartRateProjection.recoveredSessions(
-                from: projection,
-                maximumGap: configuration.maximumGap,
-                recoveredRRBeats: rrProjection.beats
-            )
-            AtriaMemprobe.note("proj_sessions_end count=\(recoveredSessions.count)")
-            let motionWindows = recoveredSessions.map {
-                AtriaRecoveredMotionProjection.Window(id: $0.id.uuidString,
-                                                       start: $0.start,
-                                                       end: $0.end)
-            }
-            AtriaMemprobe.note("proj_motion_begin")
-            let motionEpochsBySessionID = recoveredSnapshot.motion.recoveredEpochs(
-                windows: motionWindows
-            )
-            AtriaMemprobe.note("proj_motion_end")
-            for index in recoveredSessions.indices {
-                let session = recoveredSessions[index]
-                let epochs = motionEpochsBySessionID[session.id.uuidString] ?? []
-                recoveredSessions[index].recoveredMotionEpochs = epochs
-                let fields = AtriaRecoveredMotionAnalytics.savedSessionFields(
-                    epochs: epochs,
-                    start: session.start,
-                    end: session.end
+            let (recoveredSessions, recoveredSkinTemperatureProjection,
+                 recoveredSkinTemperatureCandidateFrameCount) = AtriaTransientWorkThread.run(
+                name: "atria.recompute-sessions",
+                qualityOfService: .userInitiated
+            ) { () -> ([SavedSession], SessionStore.RecoveredSkinTemperatureProjection, Int) in
+                AtriaMemprobe.note("proj_sessions_begin beats=\(rrProjection.beats.count)")
+                var recoveredSessions = AtriaRecoveredHeartRateProjection.recoveredSessions(
+                    from: projection,
+                    maximumGap: configuration.maximumGap,
+                    recoveredRRBeats: rrProjection.beats
                 )
-                recoveredSessions[index].motionEvidenceSource = fields.motionEvidenceSource
-                recoveredSessions[index].motionEvidenceValidated = fields.motionEvidenceValidated
-                recoveredSessions[index].imuSampleCount = fields.imuSampleCount
-                recoveredSessions[index].imuFrameCount = fields.imuFrameCount
-                recoveredSessions[index].imuStillnessRatio = fields.imuStillnessRatio
-                recoveredSessions[index].imuMovementIntensity = fields.imuMovementIntensity
-                recoveredSessions[index].imuActivityBursts = fields.imuActivityBursts
-                recoveredSessions[index].imuValidationState = fields.imuValidationState
-                recoveredSessions[index].strapStepResearchCount = fields.strapStepResearchCount
-            }
-            AtriaMemprobe.note("proj_fields_done")
-            if recoveredSnapshot.skinTemperatureCompleteness == .complete {
-                recoveredSessions = Self.attachRecoveredSkinTemperature(
-                    recoveredSnapshot.skinTemperatureRawPoints,
-                    to: recoveredSessions
+                AtriaMemprobe.note("proj_sessions_end count=\(recoveredSessions.count)")
+                let motionWindows = recoveredSessions.map {
+                    AtriaRecoveredMotionProjection.Window(id: $0.id.uuidString,
+                                                           start: $0.start,
+                                                           end: $0.end)
+                }
+                AtriaMemprobe.note("proj_motion_begin")
+                let motionEpochsBySessionID = recoveredSnapshot.motion.recoveredEpochs(
+                    windows: motionWindows
                 )
+                AtriaMemprobe.note("proj_motion_end")
+                for index in recoveredSessions.indices {
+                    let session = recoveredSessions[index]
+                    let epochs = motionEpochsBySessionID[session.id.uuidString] ?? []
+                    recoveredSessions[index].recoveredMotionEpochs = epochs
+                    let fields = AtriaRecoveredMotionAnalytics.savedSessionFields(
+                        epochs: epochs,
+                        start: session.start,
+                        end: session.end
+                    )
+                    recoveredSessions[index].motionEvidenceSource = fields.motionEvidenceSource
+                    recoveredSessions[index].motionEvidenceValidated = fields.motionEvidenceValidated
+                    recoveredSessions[index].imuSampleCount = fields.imuSampleCount
+                    recoveredSessions[index].imuFrameCount = fields.imuFrameCount
+                    recoveredSessions[index].imuStillnessRatio = fields.imuStillnessRatio
+                    recoveredSessions[index].imuMovementIntensity = fields.imuMovementIntensity
+                    recoveredSessions[index].imuActivityBursts = fields.imuActivityBursts
+                    recoveredSessions[index].imuValidationState = fields.imuValidationState
+                    recoveredSessions[index].strapStepResearchCount = fields.strapStepResearchCount
+                }
+                AtriaMemprobe.note("proj_fields_done")
+                if recoveredSnapshot.skinTemperatureCompleteness == .complete {
+                    recoveredSessions = Self.attachRecoveredSkinTemperature(
+                        recoveredSnapshot.skinTemperatureRawPoints,
+                        to: recoveredSessions
+                    )
+                }
+                let recoveredSkinTemperatureProjection =
+                    recoveredSnapshot.skinTemperatureCompleteness == .complete
+                    ? Self.recoveredSkinTemperatureProjection(
+                        points: recoveredSnapshot.skinTemperatureRawPoints,
+                        confirmedSleeps: confirmedSleeps,
+                        calendar: .current
+                    )
+                    : .empty
+                let recoveredSkinTemperatureCandidateFrameCount =
+                    recoveredSnapshot.skinTemperatureCompleteness == .complete
+                    ? recoveredSnapshot.skinTemperatureRawPoints.count
+                    : 0
+                AtriaMemprobe.note("proj_skin_done")
+                return (recoveredSessions,
+                        recoveredSkinTemperatureProjection,
+                        recoveredSkinTemperatureCandidateFrameCount)
             }
-            let recoveredSkinTemperatureProjection =
-                recoveredSnapshot.skinTemperatureCompleteness == .complete
-                ? Self.recoveredSkinTemperatureProjection(
-                    points: recoveredSnapshot.skinTemperatureRawPoints,
-                    confirmedSleeps: confirmedSleeps,
-                    calendar: .current
-                )
-                : .empty
-            let recoveredSkinTemperatureCandidateFrameCount =
-                recoveredSnapshot.skinTemperatureCompleteness == .complete
-                ? recoveredSnapshot.skinTemperatureRawPoints.count
-                : 0
-            AtriaMemprobe.note("proj_skin_done")
             Task { @MainActor [weak self, ticket] in
                 self?.renewRecoveredProjectionLease(
                     ticket: ticket,
