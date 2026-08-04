@@ -11968,8 +11968,8 @@ final class SessionStore: ObservableObject {
         // does not: a live journal can span hours around one short effort, so
         // History and Activity must use the same bounded replay authority as
         // Home/review instead of publishing the raw journal envelope.
-        let preservedSleepAndRest = sessions.compactMap { session in
-            AtriaTransientWorkThread.run(name: "atria.hist-detected-activity") {
+        let preservedSleepAndRest = sessions.compactMap { session -> ActivityDetection? in
+            AtriaTransientWorkThread.run(name: "atria.hist-detected-activity") { () -> ActivityDetection? in
                 session.detectedActivity(rest: rest, maxHR: maxHR, calendar: calendar)
             }
         }.filter {

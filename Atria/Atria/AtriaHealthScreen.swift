@@ -295,8 +295,11 @@ enum AtriaHealthMetricAuthority {
                 restingHeartRateValue: restingHeartRate.map {
                     AtriaMetricFormat.restingHeartRate(Double($0))
                 } ?? AtriaCompactMetricPresentation.noValue,
+                // "needs enough wear" implied more daytime wear would produce
+                // it — false since RHR became sleep-only (2026-08-04): only a
+                // night can.
                 restingHeartRateDetail: restingHeartRate == nil
-                    ? "needs enough wear" : "current cycle",
+                    ? "after tonight's sleep" : "current cycle",
                 hrvMS: Int(normalizedHRV),
                 hrvValue: normalizedHRV,
                 hrvDetail: normalizedHRV == AtriaCompactMetricPresentation.noValue

@@ -509,7 +509,11 @@ struct AtriaTodayScreen: View {
                     isEditingGlance = true
                 }
             }
-            .draggable(metric.dragPayload)
+            // Drag only while EDITING (2026-08-05): always-on .draggable let a
+            // scroll-adjacent touch lift a floating tile preview over the deck
+            // (observed live on-device as a stuck hovering card) — reorder is
+            // an edit-mode capability, matching the native Home Screen model.
+            .draggableIf(isEditingGlance, metric.dragPayload)
             .dropDestination(for: String.self) { payloads, _ in
                 guard let payload = payloads.first,
                       let dragged = AtriaTodayMetric.draggedMetric(from: payload),
@@ -2325,9 +2329,21 @@ struct AtriaTodayScreen: View {
         glanceMemo.workoutsWeekCount = workouts.prefix(while: { $0.start >= weekStart }).count
         if let latest = workouts.first {
             let title = latest.activitySubtype ?? latest.activityType ?? "Workout"
-            let strainText = latest.strain.map { String(format: "%.1f strain", $0) }
+            // A zero strain is noise, not information (strength logs often
+            // carry none) — drop it rather than print "0.0 strain"
+            // (2026-08-05, seen live).
+            let strainText = latest.strain.flatMap {
+                $0 > 0 ? String(format: "%.1f strain", $0) : nil
+            }
             let dayText = Self.workoutDayFormatter.string(from: latest.start)
-            glanceMemo.workoutsOneLiner = [title, strainText, dayText].compactMap { $0 }.joined(separator: " · ")
+            let latestLine = [title, strainText, dayText].compactMap { $0 }.joined(separator: " · ")
+            // The big number on this card counts THIS WEEK; when that count
+            // is zero the subtitle must not describe an older workout as if
+            // it were the counted scope (2026-08-05, seen live: "Strength ·
+            // 0.0 strain · Tue" beside a 0).
+            glanceMemo.workoutsOneLiner = latest.start >= weekStart
+                ? latestLine
+                : "None this week · last: \(latestLine)"
         } else {
             glanceMemo.workoutsOneLiner = "No workouts yet"
         }
@@ -3668,3 +3684,17 @@ private struct AtriaTodaySectionDropDelegate: DropDelegate {
         return true
     }
 }
+
+private extension View {
+    /// `.draggable` has no disable switch; conditional composition is the
+    /// only way to keep a tile inert outside edit mode.
+    @ViewBuilder
+    func draggableIf(_ enabled: Bool, _ payload: String) -> some View {
+        if enabled {
+            draggable(payload)
+        } else {
+            self
+        }
+    }
+}
+
