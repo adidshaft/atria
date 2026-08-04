@@ -105,11 +105,22 @@ Device-verified via iPhone Mirroring unless noted:
 - §9.4 audit: G1–G6 all done or covered (§9.7) — G2 deliberately stays the
   paired-bars debt chart, no duplicate line version.
 
-**Not yet done (backlog):** sleep-efficiency + skin-temp trend cases (P3),
-C5 re-verify at ≥1–2wk data density, optional live-HR line on the Activity
-stress card, SpO2 (blocked on oximeter data, §5), same-night Smart-Wake
-staging (blocked, §3.2). Watch items: Aug-4 sleep backfill (§12 — still
-`sleepSeconds: None` at 06:35) + whether the frozen recovery 38 re-scores.
+- ✅ Sleep-efficiency per-night trend (P3, `0a23768f`): the detail graduates
+  from honest-partial to a LAST 30 NIGHTS `AtriaMiniTrendCard` (shared
+  extraction of the About-sheet trend card) fed by confirmed nights'
+  `displaySleepEfficiency` (motion-honest; HR-only nights excluded); ≥5-night
+  gate, honest-partial copy below it. Stress metric-sheet copy un-staled to
+  point at the Stress monitor's new day-by-day trend.
+- Skin-temp trend (P3 remainder): DECIDED covered-for-now by the About-sheet
+  mini-trend (it charts `skinTemperatureDeviationCelsius` whenever rollups
+  carry it); the dedicated detail stays honest-partial until real skin-temp
+  values exist on an install to verify against (this install has all-None).
+
+**Not yet done (backlog):** C5 re-verify at ≥1–2wk data density, optional
+live-HR line on the Activity stress card, SpO2 (blocked on oximeter data,
+§5), same-night Smart-Wake staging (blocked, §3.2). Watch items: Aug-4 sleep
+backfill (§12 — still `sleepSeconds: None` at 06:40, drain mid-Aug-3) +
+whether the frozen recovery 38 re-scores when the night lands.
 
 ## 11. Chart PLACEMENT principle (2026-08-03, user-directed) — right chart, right place
 
