@@ -95,10 +95,21 @@ Device-verified via iPhone Mirroring unless noted:
   content extracted as `sheetContent` because ImageRenderer can't draw
   NavigationStack — renders the error placeholder if handed the full sheet).
 
-**Not yet done (backlog):** Stress daily trend (needs daily-stress
-persistence), sleep-efficiency + skin-temp trend cases (P3), C5 re-verify at
-≥1–2wk data density, optional live-HR line on the Activity stress card, SpO2
-(blocked on oximeter data, §5), same-night Smart-Wake staging (blocked, §3.2).
+- ✅ Empty HR-timeline fabricated-axis fix (`be780a74`, sim-verified).
+- ✅ Stress daily trend (`9c1a02a7`): "Stress by day" card in the stress
+  detail — NO new persistence needed; reads the existing
+  `AtriaStressDistributionArchive` (per-day band counts, 35-day retention,
+  ≥10-sample floor). Stacked share-of-measured-time bars on a fixed 14-day
+  frame, blank unmeasured days, building state under 3 measured days, no
+  y-axis (bars sum to 1 by construction). Render-proof + gate tests.
+- §9.4 audit: G1–G6 all done or covered (§9.7) — G2 deliberately stays the
+  paired-bars debt chart, no duplicate line version.
+
+**Not yet done (backlog):** sleep-efficiency + skin-temp trend cases (P3),
+C5 re-verify at ≥1–2wk data density, optional live-HR line on the Activity
+stress card, SpO2 (blocked on oximeter data, §5), same-night Smart-Wake
+staging (blocked, §3.2). Watch items: Aug-4 sleep backfill (§12 — still
+`sleepSeconds: None` at 06:35) + whether the frozen recovery 38 re-scores.
 
 ## 11. Chart PLACEMENT principle (2026-08-03, user-directed) — right chart, right place
 
