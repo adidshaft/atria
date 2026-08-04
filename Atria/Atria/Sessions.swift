@@ -11007,6 +11007,7 @@ final class SessionStore: ObservableObject {
                 [(UserConfirmedWorkout, UserConfirmedWorkout)] = []
             if let old = eligible {
                 attempted = 1
+                AtriaMemprobe.note("step_evidence_worker_begin")
                 let read = HistoricalArchive.motionTickWindowRead(
                     start: old.start,
                     end: old.end,

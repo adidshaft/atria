@@ -2442,6 +2442,8 @@ enum HistoricalArchive {
                 end: end
             )
         )
+        AtriaMemprobe.note("motion_tick_read_begin files=\(descriptors.count) bytes=\(descriptors.reduce(0) { $0 + $1.size })")
+        defer { AtriaMemprobe.note("motion_tick_read_end") }
         typealias CadencePoint = AtriaWhoop4GravityCadenceStepModel.Point
         var endpoints: [String: CadencePoint] = [:]
         var clockOffsetByPayload: [String: Int] = [:]
@@ -2451,6 +2453,17 @@ enum HistoricalArchive {
             sources: descriptors.map { .init(descriptor: $0, startOffset: 0) },
             cutoff: scanStart.timeIntervalSince1970
         ) { line in
+            // Cheap byte-scan prefilter (2026-08-04 foreground-kill fix,
+            // layer 2): fail-open chunks still put ~170MB of mostly
+            // out-of-window rows through this closure, and a full
+            // JSONSerialization parse per row was the dirty-page churn that
+            // ballooned phys_footprint. The scanner's cutoff already floors
+            // the range; enforce the ceiling too before any real parse.
+            // Unparseable stamps fall through to the full parse (fail-open).
+            if let stamp = AtriaHistoricalJSONLRecentScanner.timestamp(in: line),
+               stamp > scanEnd.timeIntervalSince1970 {
+                return
+            }
             guard let object = try? JSONSerialization.jsonObject(with: line)
                     as? [String: Any],
                   (object["sequence"] as? NSNumber)?.intValue
@@ -4349,6 +4362,13 @@ enum HistoricalArchive {
             canonicalRoot.appendingPathComponent(chunk.relativePath)
                 .standardizedFileURL.path
         }
+        // Same clock tolerances the scan itself applies: a record's device
+        // stamp can drift up to the bootstrap policy's maximum, and the read
+        // pads its cutoffs by the boundary tolerance.
+        let windowPad: TimeInterval = 3
+            + AtriaWhoop4ProductionHistoryBootstrapPolicy.maximumClockDrift
+        let scanStart = start.addingTimeInterval(-windowPad)
+        let scanEnd = end.addingTimeInterval(windowPad)
         return candidates.filter { candidate in
             let canonicalCandidate = candidate.standardizedFileURL
             let matching = chunksByCanonicalPath[canonicalCandidate.path] ?? []
@@ -4356,7 +4376,6 @@ enum HistoricalArchive {
                   let chunk = matching.first,
                   chunk.state == .sealed,
                   let sealedAt = chunk.sealedAt,
-                  sealedAt < start,
                   chunk.byteCount > 0,
                   let digest = chunk.contentSHA256,
                   digest.count == 64,
@@ -4372,9 +4391,23 @@ enum HistoricalArchive {
                   let modificationDate =
                     attributes[.modificationDate] as? Date,
                   modificationDate.timeIntervalSince(sealedAt) <= 1 else {
+                // Unverifiable chunk: fail open and scan it.
                 return true
             }
-            return false
+            if sealedAt < start { return false }
+            // Range prune (2026-08-04, the 3.4GB foreground-kill fix): the
+            // drain replays OLDEST-FIRST, so a chunk sealed TODAY holds
+            // weeks-old records and `sealedAt < start` can never exclude it —
+            // one workout window was scanning 463MB across 18 files. A
+            // verified chunk whose recorded row range misses the padded window
+            // cannot contribute; skip it.
+            if let first = chunk.firstTimestamp,
+               let last = chunk.lastTimestamp,
+               last >= first,
+               (last < scanStart || first > scanEnd) {
+                return false
+            }
+            return true
         }
     }
 
