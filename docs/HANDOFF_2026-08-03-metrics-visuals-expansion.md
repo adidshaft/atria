@@ -1722,3 +1722,24 @@ thread were the missing pieces. REMAINING before closing the campaign:
 overnight soak on this build (trailing cycles keep running), then strip
 ALL instrumentation (AtriaMemprobe + note sites + bisect levers) and
 run the full suite.
+
+## 15.2 WHOOP adoption pass 1 begun + soak healthy (2026-08-05 ~04:15)
+
+Soak at +267s: still ONE start marker, footprint settled to 82MB from
+the 293MB startup peak — the allocation fixes hold. build-device/
+DerivedData gitignored so the parallel UI session can't stage it.
+
+Stat-row grammar shipped (8a6e8d6f) on the metric-detail contributor
+rows: CAPS letterspaced micro-labels, louder numerals, ▲▼ triangles,
+flat divider rows (chip-boxes removed), recessed legend naming the
+HONEST semantics (band judgments, not vs-prior-30d — direction is
+band-based at every call site; a WHOOP-style "vs prior 30 days" legend
+would have been a lie). VISUAL SIGN-OFF PENDING: render via the sim
+fixture loop (or Mirroring) BEFORE installing this change to the phone
+— rows live behind metric detail → Show details, unreachable by
+devicectl screenshots. Next slices queued: hero unit at ~40% size,
+day-scoped ‹TODAY› capsule on day-scoped screens, caps micro-labels on
+remaining metric-name sites, half-width monitor tiles.
+
+PARALLEL SESSION note: no second-session commits observed yet; my next
+edits stay in AtriaOverviewSections/AtriaHomeView/AtriaSharedChrome.
