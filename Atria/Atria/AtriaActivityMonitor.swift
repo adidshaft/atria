@@ -778,7 +778,13 @@ struct AtriaActivityMonitorTab: View {
             }
         }
         .sheet(item: $workoutDetail) { workout in
-            AtriaActivityWorkoutDetailSheet(store: store, workout: workout)
+            AtriaActivityWorkoutDetailSheet(
+                store: store,
+                workout: workout,
+                stressReadings: stressMonitorStore.history
+                    .filter { $0.t >= workout.start && $0.t <= workout.end }
+                    .map(AtriaStressDetailReading.init(historyPoint:))
+            )
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -1740,6 +1746,10 @@ private struct AtriaActivityWorkoutDetailSheet: View {
 
     let store: SessionStore
     let workout: UserConfirmedWorkout
+    /// Stress readings overlapping the workout window (empty when the
+    /// in-memory stress history no longer covers it — older workouts show
+    /// an honest empty state instead of a fabricated series).
+    let stressReadings: [AtriaStressDetailReading]
     private let recoveryEffect: AtriaActivityRecoveryEffect
     @Environment(\.dismiss) private var dismiss
 
@@ -1763,9 +1773,12 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     /// fabricated data — just labels for what the effort was).
     static let activityTypes = AtriaWorkoutActivityType.allCases.map(\.rawValue)
 
-    init(store: SessionStore, workout: UserConfirmedWorkout) {
+    init(store: SessionStore,
+         workout: UserConfirmedWorkout,
+         stressReadings: [AtriaStressDetailReading] = []) {
         self.store = store
         self.workout = workout
+        self.stressReadings = stressReadings
         recoveryEffect = AtriaActivityRecoveryEffect.make(workout: workout,
                                                           rollups: store.dailyRollupHistory,
                                                           calendar: .current)
@@ -1784,6 +1797,14 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     /// store publish while the sheet is open was a hang, and a completed workout's
     /// overlapping samples never change (2026-07-08).
     @State private var tracePoints: [AtriaHomeModel.HeartRateChartPoint] = []
+    /// WHOOP-style in-activity chart switcher (2026-08-05 user directive):
+    /// one card, segmented Heart rate / Stress.
+    private enum TraceChartMode: String, CaseIterable, Identifiable {
+        case heartRate = "Heart rate"
+        case stress = "Stress"
+        var id: String { rawValue }
+    }
+    @State private var traceChartMode: TraceChartMode = .heartRate
     @State private var isPreparingTrace = false
     @State private var hasPreparedTrace = false
 
@@ -1841,20 +1862,49 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 .controlSize(.small)
                 .frame(maxWidth: .infinity, minHeight: 36)
                 .accessibilityLabel("Preparing heart-rate trace")
-        } else if points.count >= 30 {
+        } else if points.count >= 30 || !stressReadings.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Heart-rate trace")
-                    .font(.subheadline.weight(.semibold))
-                AtriaHeartRateAxisChart(points: points,
-                                        yDomain: AtriaHeartRateChartSeries.yDomain(for: points),
-                                        selectedTime: .constant(nil))
-                    .frame(height: 150)
-                    .clipped()
+                Picker("Trace", selection: $traceChartMode) {
+                    ForEach(TraceChartMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                switch traceChartMode {
+                case .heartRate:
+                    if points.count >= 30 {
+                        AtriaHeartRateAxisChart(points: points,
+                                                yDomain: AtriaHeartRateChartSeries.yDomain(for: points),
+                                                selectedTime: .constant(nil))
+                            .frame(height: 150)
+                            .clipped()
+                    } else {
+                        Text("No heart-rate samples recorded during this window.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 120)
+                    }
+                case .stress:
+                    if stressReadings.count >= 2 {
+                        AtriaWorkoutStressTraceChart(readings: stressReadings)
+                            .frame(height: 150)
+                    } else {
+                        // The stress monitor scores from recent live wear;
+                        // its history is a bounded recent window. Say so
+                        // instead of drawing nothing silently.
+                        Text("No stress readings for this window — stress history covers the recent past only.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 120)
+                    }
+                }
             }
             .padding(12)
-            .atriaInsetCard(tint: .red)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Heart-rate trace, \(points.count) samples during this workout.")
+            .atriaInsetCard(tint: traceChartMode == .stress ? Metrics.electricStress : .red)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(traceChartMode == .heartRate
+                ? "Heart-rate trace, \(points.count) samples during this workout."
+                : "Stress trace, \(stressReadings.count) readings during this workout.")
         }
     }
 
@@ -2924,5 +2974,65 @@ struct AtriaAddWorkoutSheet: View {
                 failed = true
             }
         }
+    }
+}
+
+/// WHOOP-style in-activity stress trace (2026-08-05 user directive, screenshot
+/// reference): 0–3 scale, min/max annotations, line colored by height so the
+/// band reads directly off the chart. Renders only real monitor readings —
+/// gaps split the line via the shared segmenting rule.
+struct AtriaWorkoutStressTraceChart: View {
+    let readings: [AtriaStressDetailReading]
+
+    private var points: [AtriaStressTimelinePoint] {
+        AtriaStressTimelinePoint.segment(readings)
+    }
+
+    private var low: Double { readings.map(\.score).min() ?? 0 }
+    private var high: Double { readings.map(\.score).max() ?? 0 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(String(format: "%.1f low", low))
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.blue)
+                Spacer()
+                Text(String(format: "high %.1f", high))
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.orange)
+            }
+            Chart(points) { point in
+                LineMark(x: .value("Time", point.reading.date),
+                         y: .value("Stress", point.reading.score),
+                         series: .value("Segment", point.segment))
+                    .interpolationMethod(.monotone)
+                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    // Height-mapped color: the gradient spans the fixed 0–3
+                    // axis, so a point's color IS its band — low blue, mid
+                    // green, high amber (the WHOOP reading of the same axis).
+                    .foregroundStyle(
+                        .linearGradient(colors: [.blue, .green, .orange],
+                                        startPoint: .bottom,
+                                        endPoint: .top)
+                    )
+            }
+            .chartYScale(domain: 0...3)
+            .chartYAxis {
+                AxisMarks(values: [0, 1, 2, 3]) { _ in
+                    AxisGridLine().foregroundStyle(.secondary.opacity(0.15))
+                    AxisValueLabel()
+                        .font(.caption2)
+                }
+            }
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                    AxisValueLabel(format: .dateTime.hour().minute())
+                        .font(.caption2)
+                }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(String(format: "Stress during this workout ranged from %.1f to %.1f on a 0 to 3 scale.", low, high))
     }
 }

@@ -29,9 +29,106 @@ enum AtriaWorkoutActivityType: String, CaseIterable, Identifiable, Hashable {
     case boxing = "Boxing"
     case climbing = "Climbing"
     case mobility = "Mobility"
+    // WHOOP catalog expansion (2026-08-05 user directive) — add-only: raw
+    // values are persisted in saved workouts, so existing cases never change.
+    case baseball = "Baseball"
+    case softball = "Softball"
+    case rugby = "Rugby"
+    case iceHockey = "Ice hockey"
+    case fieldHockey = "Field hockey"
+    case lacrosse = "Lacrosse"
+    case squash = "Squash"
+    case tableTennis = "Table tennis"
+    case pickleball = "Pickleball"
+    case padel = "Padel"
+    case handball = "Handball"
+    case netball = "Netball"
+    case ultimate = "Ultimate"
+    case discGolf = "Disc golf"
+    case trackAndField = "Track & field"
+    case wrestling = "Wrestling"
+    case fencing = "Fencing"
+    case gymnastics = "Gymnastics"
+    case waterPolo = "Water polo"
+    case sailing = "Sailing"
+    case kayaking = "Kayaking"
+    case paddleboarding = "Paddleboarding"
+    case surfing = "Surfing"
+    case waterSkiing = "Water skiing"
+    case wakeboarding = "Wakeboarding"
+    case skateboarding = "Skateboarding"
+    case inlineSkating = "Inline skating"
+    case iceSkating = "Ice skating"
+    case skiing = "Skiing"
+    case snowboarding = "Snowboarding"
+    case crossCountrySkiing = "Cross-country skiing"
+    case mountainBiking = "Mountain biking"
+    case horsebackRiding = "Horseback riding"
+    case spin = "Spin"
+    case assaultBike = "Assault bike"
+    case triathlon = "Triathlon"
+    case duathlon = "Duathlon"
+    case obstacleRacing = "Obstacle course racing"
+    case powerlifting = "Powerlifting"
+    case kickboxing = "Kickboxing"
+    case jiuJitsu = "Jiu jitsu"
+    case meditation = "Meditation"
+    case breathwork = "Breathwork"
+    case sauna = "Sauna"
+    case iceBath = "Ice bath"
+    case massage = "Massage"
+    case barre = "Barre"
+    case manualLabor = "Manual labor"
+    case yardWork = "Yard work"
+    case dogWalking = "Dog walking"
     case other = "Other"
 
     var id: String { rawValue }
+
+    /// Picker sectioning (2026-08-05): 77 activities need structure to stay
+    /// "easily choosable" — WHOOP groups its catalog the same way.
+    enum Category: String, CaseIterable, Identifiable {
+        case training = "Training"
+        case cardio = "Cardio & endurance"
+        case sports = "Sports"
+        case outdoor = "Outdoor & water"
+        case winter = "Winter"
+        case combat = "Combat"
+        case mindBody = "Mind & body"
+        case recovery = "Recovery"
+        case daily = "Daily life"
+        var id: String { rawValue }
+    }
+
+    var category: Category {
+        switch self {
+        case .strength, .functionalFitness, .hiit, .powerlifting, .jumpRope:
+            return .training
+        case .cardio, .running, .walking, .cycling, .rowing, .elliptical,
+             .stairClimber, .spin, .assaultBike, .triathlon, .duathlon,
+             .obstacleRacing, .trackAndField, .swimming:
+            return .cardio
+        case .sport, .basketball, .football, .cricket, .tennis, .badminton,
+             .volleyball, .golf, .baseball, .softball, .rugby, .iceHockey,
+             .fieldHockey, .lacrosse, .squash, .tableTennis, .pickleball,
+             .padel, .handball, .netball, .ultimate, .discGolf, .gymnastics,
+             .waterPolo, .skateboarding, .inlineSkating:
+            return .sports
+        case .hiking, .climbing, .mountainBiking, .horsebackRiding, .sailing,
+             .kayaking, .paddleboarding, .surfing, .waterSkiing, .wakeboarding:
+            return .outdoor
+        case .skiing, .snowboarding, .crossCountrySkiing, .iceSkating:
+            return .winter
+        case .boxing, .martialArts, .kickboxing, .jiuJitsu, .wrestling, .fencing:
+            return .combat
+        case .yoga, .pilates, .dance, .barre, .mobility, .meditation, .breathwork:
+            return .mindBody
+        case .sauna, .iceBath, .massage:
+            return .recovery
+        case .manualLabor, .yardWork, .dogWalking, .other:
+            return .daily
+        }
+    }
 
     var icon: String {
         switch self {
@@ -63,6 +160,56 @@ enum AtriaWorkoutActivityType: String, CaseIterable, Identifiable, Hashable {
         case .boxing: return "figure.boxing"
         case .climbing: return "figure.climbing"
         case .mobility: return "figure.flexibility"
+        case .baseball: return "figure.baseball"
+        case .softball: return "figure.softball"
+        case .rugby: return "figure.rugby"
+        case .iceHockey: return "figure.hockey"
+        case .fieldHockey: return "figure.field.hockey"
+        case .lacrosse: return "figure.lacrosse"
+        case .squash: return "figure.squash"
+        case .tableTennis: return "figure.table.tennis"
+        case .pickleball: return "figure.pickleball"
+        case .padel: return "tennis.racket"
+        case .handball: return "figure.handball"
+        case .netball: return "volleyball.fill"
+        case .ultimate: return "figure.disc.sports"
+        case .discGolf: return "figure.disc.sports"
+        case .trackAndField: return "figure.track.and.field"
+        case .wrestling: return "figure.wrestling"
+        case .fencing: return "figure.fencing"
+        case .gymnastics: return "figure.gymnastics"
+        case .waterPolo: return "figure.waterpolo"
+        case .sailing: return "sailboat.fill"
+        case .kayaking: return "oar.2.crossed"
+        case .paddleboarding: return "figure.surfing"
+        case .surfing: return "figure.surfing"
+        case .waterSkiing: return "figure.water.fitness"
+        case .wakeboarding: return "figure.surfing"
+        case .skateboarding: return "skateboard"
+        case .inlineSkating: return "figure.rolling"
+        case .iceSkating: return "figure.ice.skating"
+        case .skiing: return "figure.skiing.downhill"
+        case .snowboarding: return "figure.snowboarding"
+        case .crossCountrySkiing: return "figure.skiing.crosscountry"
+        case .mountainBiking: return "figure.outdoor.cycle"
+        case .horsebackRiding: return "figure.equestrian.sports"
+        case .spin: return "figure.indoor.cycle"
+        case .assaultBike: return "figure.indoor.cycle"
+        case .triathlon: return "figure.open.water.swim"
+        case .duathlon: return "figure.run"
+        case .obstacleRacing: return "figure.strengthtraining.functional"
+        case .powerlifting: return "dumbbell.fill"
+        case .kickboxing: return "figure.kickboxing"
+        case .jiuJitsu: return "figure.martial.arts"
+        case .meditation: return "brain.head.profile"
+        case .breathwork: return "wind"
+        case .sauna: return "heat.waves"
+        case .iceBath: return "snowflake"
+        case .massage: return "hands.and.sparkles.fill"
+        case .barre: return "figure.barre"
+        case .manualLabor: return "hammer.fill"
+        case .yardWork: return "leaf.fill"
+        case .dogWalking: return "pawprint.fill"
         case .other: return "ellipsis.circle"
         }
     }
@@ -124,6 +271,37 @@ enum AtriaWorkoutActivityType: String, CaseIterable, Identifiable, Hashable {
         if value.contains("golf") { return .golf }
         if value.contains("martial") || value.contains("jiu jitsu")
             || value.contains("karate") || value.contains("taekwondo") { return .martialArts }
+        if value.contains("sauna") { return .sauna }
+        if value.contains("ice bath") || value.contains("cold plunge") { return .iceBath }
+        if value.contains("meditat") { return .meditation }
+        if value.contains("breathwork") || value.contains("breathing") { return .breathwork }
+        if value.contains("snowboard") { return .snowboarding }
+        if value.contains("cross country ski") || value.contains("cross-country ski") { return .crossCountrySkiing }
+        if value.contains("ski") { return .skiing }
+        if value.contains("skate") { return .skateboarding }
+        if value.contains("surf") { return .surfing }
+        if value.contains("kayak") || value.contains("canoe") { return .kayaking }
+        if value.contains("paddleboard") || value.contains("sup") { return .paddleboarding }
+        if value.contains("sail") { return .sailing }
+        if value.contains("pickleball") { return .pickleball }
+        if value.contains("padel") { return .padel }
+        if value.contains("squash") { return .squash }
+        if value.contains("table tennis") || value.contains("ping pong") { return .tableTennis }
+        if value.contains("baseball") { return .baseball }
+        if value.contains("softball") { return .softball }
+        if value.contains("rugby") { return .rugby }
+        if value.contains("hockey") { return .iceHockey }
+        if value.contains("lacrosse") { return .lacrosse }
+        if value.contains("wrestl") { return .wrestling }
+        if value.contains("fencing") { return .fencing }
+        if value.contains("gymnast") { return .gymnastics }
+        if value.contains("triathlon") { return .triathlon }
+        if value.contains("powerlift") { return .powerlifting }
+        if value.contains("kickbox") { return .kickboxing }
+        if value.contains("mountain bik") || value.contains("mtb") { return .mountainBiking }
+        if value.contains("horse") || value.contains("equestrian") { return .horsebackRiding }
+        if value.contains("massage") { return .massage }
+        if value.contains("barre") { return .barre }
         if value.contains("sport") {
             return .sport
         }

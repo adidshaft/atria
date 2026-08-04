@@ -6824,9 +6824,31 @@ private struct AtriaWorkoutReviewFlow: View {
             // the adaptive chip grid cropped names like "Football / soccer" and
             // relaid every chip on reveal, which made opening the full catalog
             // slow. Full-width rows never truncate and stay cheap to build.
-            VStack(spacing: 2) {
-                ForEach(visibleWorkoutTypes) { type in
-                    workoutTypeRow(type)
+            // With the 77-activity WHOOP-parity catalog (2026-08-05) the
+            // revealed list groups by category; search stays a flat filter.
+            if showsAllWorkoutTypes, trimmedTypeSearch.isEmpty {
+                ForEach(AtriaWorkoutActivityType.Category.allCases) { category in
+                    let types = AtriaWorkoutActivityType.allCases.filter {
+                        $0.category == category
+                    }
+                    if !types.isEmpty {
+                        Text(category.rawValue.uppercased())
+                            .font(.caption2.weight(.bold))
+                            .tracking(0.6)
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 6)
+                        VStack(spacing: 2) {
+                            ForEach(types) { type in
+                                workoutTypeRow(type)
+                            }
+                        }
+                    }
+                }
+            } else {
+                VStack(spacing: 2) {
+                    ForEach(visibleWorkoutTypes) { type in
+                        workoutTypeRow(type)
+                    }
                 }
             }
 

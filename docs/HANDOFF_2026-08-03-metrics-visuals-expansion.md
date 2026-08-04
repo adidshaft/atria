@@ -1510,3 +1510,39 @@ cycle in the soak log → strip ALL temp instrumentation (AtriaMemprobe +
 note sites + bisect/append levers + recompute_stage note) → full suite
 → then the deferred product tail (steps drain P0, SpO2 hardware,
 settings profile polish, C5 density re-verify, iOS 27 GA re-test).
+
+## 14. WHOOP-parity push (2026-08-05 user directive + research)
+
+**Shipped this pass:**
+1. **In-activity Heart rate / Stress picker** (user screenshot parity):
+   the workout detail sheet's trace card gained a segmented picker; Stress
+   mode renders `AtriaWorkoutStressTraceChart` — 0–3 axis, low/high
+   annotations, height-mapped blue→green→amber line, gap-split segments,
+   honest empty state when the bounded stress history no longer covers the
+   window. Wired from the Activity tab with a window-sliced
+   `stressMonitorStore.history`.
+2. **Activity catalog 29 → 77 types** (add-only; raw values persisted):
+   the meaningful breadth of WHOOP's 115-activity list incl. sports,
+   water/winter, combat, recovery (Sauna, Ice bath, Massage, Meditation,
+   Breathwork) and daily-life types; icons per case; `Category` axis
+   (9 groups); the add-workout revealed catalog now renders sectioned by
+   category (search stays flat); resolver keywords extended (~30 new).
+
+**Research inventory distilled → prioritized parity backlog** (full agent
+report in session log; feature-by-feature vs Atria):
+- ALREADY AT PARITY: physiological sleep-to-sleep cycles (WHOOP Cycles),
+  optimal-strain-style target from recovery, sleep need/debt dynamics,
+  auto sleep/nap detection + manual add, behavior journal with impact
+  correlation, steps with honest latency, VO2 estimating window.
+- QUICK WINS (next passes): strain BAND NAMES on the hero/detail (WHOOP:
+  Light 0–9 · Moderate 10–13 · High 14–17 · All Out 18–21); "Restorative
+  sleep (REM+Deep)" rollup metric on sleep detail; sleep-metric threshold
+  copy alignment (performance ≥85 optimal / 70–85 sufficient / <70 poor,
+  efficiency ≥90 optimal); recovery band thresholds cross-check
+  (WHOOP green ≥67 / yellow 34–66 / red ≤33 vs Atria's current bands).
+- MEDIUM: stress week-trend breakout (Total Day / Sleep / Non-Activity);
+  Health-Monitor deviation colors (green/orange/red vs rolling baseline —
+  Atria zones partially do this); step goals in the plan.
+- PRODUCT DECISIONS: guided breathwork sessions (stress monitor
+  companion); exportable 30/180-day health REPORT (Atria has raw export
+  only); WHOOP-Age-style long-horizon score (needs months of data).
