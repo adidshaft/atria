@@ -13427,9 +13427,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             forKey: OfflineSyncDefaults.lastDurableFlushBoundaryOKAt
         ) as? Double
         LocalNotificationScheduler.scheduleSyncNudgeIfNeeded(
-            flushDebtLevelRaw: defaults.string(
-                forKey: OfflineSyncDefaults.flushDebtLevel
-            ),
+            flushDebtPendingRecords: defaults.object(
+                forKey: OfflineSyncDefaults.flushDebtPendingRecords
+            ) as? Int,
             debtObservedAgeSeconds: debtObservedAt.map {
                 now.timeIntervalSince1970 - $0
             },
