@@ -534,6 +534,22 @@ narrative in one scroll), and (b) the net-new charts below.
   the ≥5/≥5 · p<0.10 gate; below gate = "learning".
 - **G5 zones**: only from real per-workout HR; no zone bar without HR coverage.
 
+### 9.7 §9.4 status audit (2026-08-04 loop) — ALL of G1–G6 done or covered
+- **G1** ✅ combo built + placed (details, not Activity).
+- **G2** ✅ COVERED BY DESIGN, not built literally: `sleepDebtTrendCard`
+  (AtriaOverviewSections ~9740) is already a 7-night need-vs-slept paired-bars
+  chart headlined by the same `sleepBudgetDebtHours` the ledger uses. A second
+  dual-line chart of the same two series would duplicate a card in the same
+  scroll — per §0.1 the mockup shows the relationship, not a required chart
+  type. Decision: keep the bars; do NOT add a redundant line version.
+- **G3** ✅ `behaviorsMoveYouCard` is wired in the Recovery detail (:8968) —
+  Welch-gated rows + "association, not proof of cause" caption.
+- **G4** ✅ `strainActivityMixCard`, **G5** ✅ `strainZoneHistogramCard` — both
+  already in the strain detail template (:9133-9135).
+- **G6** ✅ sleep detail assembles hypnogram + plan + need ledger + debt trend.
+- True remaining chart backlog = §6 P3 (stress persistence → trend;
+  sleep-efficiency + skin-temp trend cases) + C5 re-verify at density.
+
 ### 9.6 Backlog + phase updates (supersedes §4/§6 ordering)
 Add to the charting backlog, and re-order phases to honor the user's explicit
 "Strain/Recovery + Activity combo" priority AFTER the chosen Behavior-Impact
