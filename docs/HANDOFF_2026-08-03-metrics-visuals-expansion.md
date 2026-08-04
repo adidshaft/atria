@@ -261,6 +261,22 @@ sites (dead code, unpinned, likely superseded by `AtriaExpandedChart`) —
 flagged as a spin-off review task rather than deleted unilaterally, per the
 pinned-dead-code precedent.
 
+**CONVICTED + FIXED (`7ec72868`, 09:0x): the balloon is the confirmed-workout
+step-evidence worker's `motionTickWindowRead`.** Probe caught it naming
+itself: `motion_tick_read_begin files=18 bytes=463514851` — 463MB scanned,
+every row JSON-parsed, for ONE ~1h walking workout window. Root cause of the
+non-pruning: the drain replays OLDEST-FIRST, so chunks sealed today hold
+weeks-old rows and the `sealedAt < start` exclusion never fires. Fix layer 1 =
+chunk `[firstTimestamp,lastTimestamp]`-vs-window range prune (463MB→172MB
+observed); layer 2 = byte-scan timestamp ceiling before JSONSerialization in
+the scan closure (out-of-window rows now cost a byte scan, not a Foundation
+parse). The recovered-data scan stacking its ~1.5GB on top is what crossed
+the limit — with the primary climber gone it should fit. **Verdict pending a
+scene-active reproduction**: the post-fix run was a background relaunch
+(phone likely locked — `devicectl launch` can't foreground a locked phone),
+peaks 343MB, healthy. Next pass: reproduce with the phone unlocked, or
+observe the user's next organic foreground. Gate: same 4 pre-existing.
+
 **FOOTPRINT TRAP RESULTS (08:5x) — balloon is reproducible on demand and
 nearly cornered.** Foregrounding the app during an active drain kills it in
 45–62s, every time (`devicectl launch` suffices — no user interaction). The
