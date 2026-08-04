@@ -10820,6 +10820,33 @@ final class SessionStore: ObservableObject {
             )
             return
         }
+        // Projection-first rule (2026-08-05, final raw-scan closure): when no
+        // projection was handed in, substitute the warm cache; when the cache
+        // is cold BECAUSE a recompute is still building it, stand down — the
+        // recompute's confirmedWorkouts component re-runs this pass with real
+        // points, and an early raw 1.5M-point window scan racing that
+        // recompute is exactly the stack that kept crossing the ceiling.
+        var recoveredArchiveHeartRatePoints = recoveredArchiveHeartRatePoints
+        var recoveredArchiveCoverageStart = recoveredArchiveCoverageStart
+        if recoveredArchiveHeartRatePoints == nil {
+            if !cachedRecoveredArchiveHeartRatePoints.isEmpty {
+                recoveredArchiveHeartRatePoints = cachedRecoveredArchiveHeartRatePoints
+                recoveredArchiveCoverageStart = recoveredArchiveCoverageStart
+                    ?? Date().addingTimeInterval(-14 * 24 * 60 * 60)
+            } else if completion == nil {
+                switch recoveredDataRecompute.phase {
+                case .projecting, .deriving:
+                    workoutRehydrationDeferredUntilForeground = true
+                    AtriaDebugLog(
+                        "ATRIADBG confirmed_workout_rehydration status=deferred reason=%@ detail=awaiting_recovered_projection",
+                        reason
+                    )
+                    return
+                case .idle, .failed:
+                    break
+                }
+            }
+        }
         if let completion {
             confirmedWorkoutRehydrationCompletions.append(completion)
         }
