@@ -27561,6 +27561,13 @@ final class SessionStore: ObservableObject {
         }
         return grouped.flatMap { day, daySessions in
             workoutClusters(from: daySessions, maxGap: 30 * 60).flatMap { cluster -> [AggregateWorkoutCandidate] in
+              // Per-cluster dying thread (2026-08-05, THE cold-launch burst):
+              // an all-day recovered cluster copies + sorts its whole day of
+              // points and replays readiness up to three ways; ~14 day
+              // clusters summed in one thread stretch was the ~2GB ignition
+              // inside hist_stage=detections. Each cluster's garbage now dies
+              // before the next cluster starts.
+              AtriaTransientWorkThread.run(name: "atria.aggregate-cluster") { () -> [AggregateWorkoutCandidate] in
                 guard let start = cluster.map(\.start).min(),
                       let end = cluster.map(\.end).max() else { return [] }
                 let ordered = cluster.sorted { $0.start < $1.start }
@@ -27644,6 +27651,7 @@ final class SessionStore: ObservableObject {
                                                                         maxHR: maxHR,
                                                                         thresholdFraction: thresholdFraction))
                 return candidates
+              }
             }
         }
         .sorted { lhs, rhs in
