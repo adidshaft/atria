@@ -261,6 +261,17 @@ sites (dead code, unpinned, likely superseded by `AtriaExpandedChart`) —
 flagged as a spin-off review task rather than deleted unilaterally, per the
 pinned-dead-code precedent.
 
+**Full-suite regression run (09:3x): 3354 passed / 6 unique failures** —
+and the July-22 baseline's 12 failures (9 record-replays etc.) are GONE.
+Triage of the 6: `PhysicalSleepProbeTests` = the stray untracked dev probe
+(reads a /tmp dump; pre-existing, not shippable); the two
+`AtriaCrossScreenDensityTests` are PRE-EXISTING — their pinned anchor
+(`struct AtriaVitalsEducationSheet`) does not exist at HEAD **or** at
+session-start 5bfc10a8 (verified by direct source evaluation, no build);
+the two `AtriaWhoop4MotionTickDailyStoreTests` + the widget-battery test are
+deterministic (fail in isolation), touch none of this session's files, and a
+baseline run at 5bfc10a8 is in flight to prove pre-existing vs introduced.
+
 **Organic-use confirmation (09:07 screenshot):** app stable through real
 morning use — the sleep candidate grew to 9h 26m (11:33PM–8:59AM) as the
 drain caught up, "Sleep ended · processing" settlement is active, hero
