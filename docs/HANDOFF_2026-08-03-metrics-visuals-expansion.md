@@ -1901,3 +1901,22 @@ fires the repeated external reuse=0 refreshes (3-4 per cold launch —
 coalescing backlog); (b) the 1.3GB retained recovered working set is
 itself half the ceiling — bounding/staging it is the durable fix;
 (c) bounded reads for readVerifiedConsumerSources (task #10 list).
+
+## 15.10 Round-3: widened-lane cold launch CLEAN (2026-08-05 ~05:25)
+
+BOOKKEEPING CORRECTION to §15.9: 11637 ("death at +151s") was
+terminated by the round-3 INSTALL at +152s while at 3373MB — 4MB under
+the ceiling, mid-climb, so the deriving-phase superposition diagnosis
+stands, but no jetsam actually fired.
+
+ROUND-3 RESULT: pid 11676 (widened-lane build, cold launch 05:17) ran
+402s with peak 352MB and ended IDLE at 95MB — fully clean. It was then
+recycled by ordinary iOS background policy (no climb, no jetsam
+signature) and BLE restore brought up 11706, which is NOW running the
+full rebuild gauntlet: 32 scan passes done, plateau ~904MB,
+rec_scan_done hr=726K. The derived phase — where 11637 climbed — is
+executing; next cycle's pull is the decisive full-gauntlet verdict.
+
+Note: 11676 fired no lane guards (0), consistent with its cycle not
+overlapping any external refresh — the clean run is necessary but not
+sufficient; 11706's gauntlet is the real test.
