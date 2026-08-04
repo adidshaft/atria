@@ -1447,3 +1447,24 @@ Read protocol next session: pull log, find newest `rec_scan_begin`,
 follow through derived_step notes; if `derived_steps_done` appears with
 peak <1.5GB, the balloon is DEAD and the instrumentation strip + full
 suite is unlocked.
+
+## 13.3 Live-defect pass (2026-08-05 early AM, user: "some things are showing up really off")
+
+Live device screenshot analysis (devicectl capture screenshot works —
+new verification channel; Mirroring stays denied). Found + shipped:
+gated Today-deck drag behind edit mode (stuck floating tile preview over
+the deck was the "off" floater; drag pins migrated ×2), RHR empty-state
+copy "after tonight's sleep", workouts glance zero-strain suppression +
+week-scope honesty, detections closure type annotation. ALSO seen live
+and GOOD: "Capturing live" banner with strap connected at 48%, honest
+"Strap steps · Partial archive · 15% covered · 357", VO2max "Improving ·
+day 11 of 14" — the honest-display machinery is working with real data.
+Balloon frontier: cycle 1 fully clean (post_swap 1339MB); remaining
+collision = full history rebuild starting while the trailing recompute
+runs (+55.6s death) — per-session replay dying-thread wraps shipped in
+this build may tame the rebuild half; if the next unlock's log still
+shows a death there, add the heavy-pipeline mutual-exclusion gate
+(shared semaphore around makeRecoveredDataSnapshot and full
+makeHistorySnapshots — they never nest). A post-relaunch full rebuild
+DID complete bounded (detections 100s at ≤400MB) proving the wraps work
+in isolation.
