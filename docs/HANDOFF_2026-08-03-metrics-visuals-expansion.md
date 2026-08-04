@@ -237,6 +237,20 @@ the lane breadcrumbs sit waiting). Probe left running on-device
 (fsync survives the jetsam) — read `Documents/atria-memprobe.log`'s tail
 after the next kill; the last breadcrumb before death names the lane.
 
+**Probe finding #2 (07:0x):** another 3.45GB active+frontmost jetsam at
+06:53:40 (pid 2376). Probe showed a smooth climb to ~1.5GB then a LAST LINE
+of 767MB 1.2s before death — the terminal ~2.7GB materialized in a burst the
+utility-QoS sampler couldn't see (starved by the allocator). Probe v3 now
+runs: `.userInitiated` sampler + unconditional 1s heartbeats ("beat" lines —
+distinguishes steady-state from starvation), plus lane notes at
+`sessions_encode` (measured: 29 sessions → 12.6MB, ~200MB transient — real
+but NOT the killer), `recovered_sessions_swap`, and
+`recovered_snapshot_begin/end` around
+`HistoricalArchive.makeRecoveredDataSnapshot(since: −14d)` — the per-ticket
+whole-recovered-decode lane that re-runs after each drained batch and is the
+prime steady-climb suspect. Read the log tail after the next kill; the
+breadcrumbs now bracket every candidate.
+
 **In progress:** `AtriaMemprobe` reinstated (fsync'd
 `Documents/atria-memprobe.log`, 250ms ≥64MB-delta sampler + lane breadcrumbs
 at scene transitions, shadow step, crash-resume materialize ×2, terminal
