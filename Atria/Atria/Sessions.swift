@@ -9425,9 +9425,11 @@ final class SessionStore: ObservableObject {
                 }
                 self.cachedHistoricalCycleStart = cacheInterval.start
                 self.invalidateDailyDerivedDays(for: previous + recoveredSessions)
+                AtriaMemprobe.note("post_swap_canonical_begin")
                 self.setCachedCanonicalSessions(Self.makeCanonicalSessions(
                     from: self.sessions + recoveredSessions
                 ))
+                AtriaMemprobe.note("post_swap_canonical_end")
                 self.refreshLatestHRVSourcesFromCanonicalSessions()
                 self.recoveryProjectionCache.invalidate()
                 self.cachedHomeSavedAggregate = nil
@@ -9438,6 +9440,7 @@ final class SessionStore: ObservableObject {
                 // Existing consumers now read the same merged, exact-timestamp
                 // session set. Stage backfill remains fail-closed when validated
                 // timestamped staging cannot cover the full sleep.
+                AtriaMemprobe.note("post_swap_motion_provenance_begin")
                 guard await self.rebuildConfirmedSleepRecoveredMotionProvenance(
                     reason: "historical_projection_\(ticket.reason)",
                     deferDerivedPublication: true
@@ -9450,6 +9453,7 @@ final class SessionStore: ObservableObject {
                     )
                     return
                 }
+                AtriaMemprobe.note("post_swap_stage_backfill_begin")
                 guard await self.backfillConfirmedSleepStagesFromSessions(
                     reason: "historical_projection_\(ticket.reason)",
                     deferDerivedPublication: true
@@ -9462,6 +9466,7 @@ final class SessionStore: ObservableObject {
                     )
                     return
                 }
+                AtriaMemprobe.note("post_swap_hrv_requalify_begin")
                 let hrvRequalification = await self.requalifyPersistedConfirmedSleepHRVFromSessionsIfNeeded(
                     self.cachedCanonicalSessions,
                     reason: "historical_projection_\(ticket.reason)",
@@ -9476,11 +9481,13 @@ final class SessionStore: ObservableObject {
                     )
                     return
                 }
+                AtriaMemprobe.note("post_swap_baseline_begin")
                 self.rebuildBaselineFromEligibleSessions(
                     reason: "historical_projection_\(ticket.reason)",
                     refreshDiagnosticsCache: false,
                     refreshDerivedCaches: false
                 )
+                AtriaMemprobe.note("post_swap_done")
                 self.handleRecoveredDataRecomputeEffects(
                     self.recoveredDataRecompute.projectionCompleted(ticket: ticket)
                 )
