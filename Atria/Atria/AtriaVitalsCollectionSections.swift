@@ -346,6 +346,7 @@ struct AtriaVitalsTabContent: View {
     private var healthMonitorCard: some View {
         let vitals = vitalsStore.state
         return AtriaHealthMonitorCard(preparedData: healthMonitorPreparedData,
+                                      rollups: vitals.dailyRollupHistory,
                                       sensorSummary: vitals.imuAuditSummary,
                                       skinTemperatureSummary: vitals.skinTemperatureDeviationSummary,
                                       strapModel: ble.strapModel,
@@ -670,6 +671,9 @@ private final class AtriaHealthMonitorPreparedMemo {
 
 private struct AtriaHealthMonitorCard: View {
     let preparedData: AtriaHealthMonitorPreparedData
+    /// Newest-first daily rollups for the About-sheet last-30-days mini-trend
+    /// (P1) — prepared data only keeps per-metric sparkline slices.
+    let rollups: [DailyRollupStoreEntry]
     let sensorSummary: IMUAuditSummary
     let skinTemperatureSummary: IMUAuditSummary.SkinTemperatureDeviationSummary
     let strapModel: AtriaBLEManager.AtriaStrapModel
@@ -700,7 +704,9 @@ private struct AtriaHealthMonitorCard: View {
         .padding(18)
         .atriaCard(emphasis: .soft)
         .sheet(item: $educationTopic) { topic in
-            AtriaAboutMetricSheet(metric: topic.aboutMetric)
+            AtriaAboutMetricSheet(metric: topic.aboutMetric,
+                                  trend: .make(for: topic.aboutMetric,
+                                               rollups: rollups))
         }
         .accessibilityElement(children: .contain)
     }
