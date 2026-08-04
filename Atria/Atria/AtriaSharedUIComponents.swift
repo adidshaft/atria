@@ -907,7 +907,33 @@ struct AtriaEventWindowTimeline: View, Equatable {
             if let timeZoneIdentifier, let timeZone = TimeZone(identifier: timeZoneIdentifier) {
                 calendar.timeZone = timeZone
             }
+            // Keep decorations inside the rounded track.
+            context.clip(to: Path(roundedRect: CGRect(origin: .zero, size: size),
+                                  cornerRadius: 9, style: .continuous))
+
+            // Day/night context bands: shade the hours the window spans that
+            // fall in typical night (21:00-06:00) so a sleep/nap window visibly
+            // sits in the dark hours. Pure clock derivation from the entered
+            // times -- no sensor claim, no stage data.
+            func isNight(_ date: Date) -> Bool {
+                let hour = calendar.component(.hour, from: date)
+                return hour >= 21 || hour < 6
+            }
             let comps = calendar.dateComponents([.year, .month, .day, .hour], from: spanStart)
+            if var cell = calendar.date(from: comps) {
+                while cell < spanEnd {
+                    let cellEnd = cell.addingTimeInterval(3600)
+                    let x0 = CGFloat(max(0, cell.timeIntervalSince(spanStart)) / total) * size.width
+                    let x1 = CGFloat(min(total, cellEnd.timeIntervalSince(spanStart)) / total) * size.width
+                    if isNight(cell), x1 > x0 {
+                        context.fill(Path(CGRect(x: x0, y: 0, width: x1 - x0, height: size.height)),
+                                     with: .color(Color.indigo.opacity(0.09)))
+                    }
+                    cell = cellEnd
+                }
+            }
+
+            // Hour tick hairlines.
             guard var tick = calendar.date(from: comps) else { return }
             if tick < spanStart { tick = tick.addingTimeInterval(3600) }
             while tick < spanEnd {
