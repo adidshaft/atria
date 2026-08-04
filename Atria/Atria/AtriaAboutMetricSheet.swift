@@ -333,30 +333,7 @@ struct AtriaAboutMetricSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.xl) {
-                    glyphTile
-                    Text(metric.title)
-                        .font(.system(size: 24, weight: .bold))
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text(metric.definition)
-                        .font(.system(size: 14.5))
-                        .foregroundStyle(.secondary)
-                        .lineSpacing(8)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    if let trend {
-                        trendCard(trend)
-                    }
-                    computeCard
-                    honestyCard
-
-                    Text("General guidance, not medical advice.")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(AtriaDesignTokens.Spacing.xl)
+                sheetContent
             }
             .navigationTitle("About \(metric.title)")
             .navigationBarTitleDisplayMode(.inline)
@@ -368,6 +345,36 @@ struct AtriaAboutMetricSheet: View {
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+    }
+
+    /// The sheet's scroll content, extracted so a render test can compose it
+    /// directly — ImageRenderer can't draw the UIKit-backed NavigationStack and
+    /// yields the error placeholder if handed the full sheet.
+    var sheetContent: some View {
+        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.xl) {
+            glyphTile
+            Text(metric.title)
+                .font(.system(size: 24, weight: .bold))
+                .fixedSize(horizontal: false, vertical: true)
+            Text(metric.definition)
+                .font(.system(size: 14.5))
+                .foregroundStyle(.secondary)
+                .lineSpacing(8)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let trend {
+                trendCard(trend)
+            }
+            computeCard
+            honestyCard
+
+            Text("General guidance, not medical advice.")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(AtriaDesignTokens.Spacing.xl)
     }
 
     private var glyphTile: some View {
