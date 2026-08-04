@@ -201,6 +201,16 @@ drain**. Verify on the next pulls: does recovery re-score once
 `sleepSeconds` lands for Aug-4? If not, the freeze rule needs a
 "provisional until sleep evidence or cycle end" carve-out.
 
+**RESOLVED (06:41 device screenshot):** the night came back end-to-end. The
+catch-up drain recovered 11:33 PM–6:20 AM (6h 46m) from strap flash and it
+sits as a "Possible sleep · Confirm to add" review card — not auto-confirmed
+because the resting baseline is untrusted (~4 of 14 days), which is the
+designed honesty gate, not a bug. The premature rollup-38 never surfaced: the
+Overview hero held 63% "prev. sleep" via the physiological-cycle authority.
+Remaining user action: tap Confirm; recovery then re-mints from the real
+night (§ freeze-race answer above). Still open: the overnight
+capture-dead root cause below.
+
 **Open root-cause question:** why no BLE-event relaunch between 00:29 and
 05:58 — strap-side link drop with no reconnect attempt reaching the phone, a
 bluetoothd wedge (see `atria-locked-reconnect-fix-proven`), or iOS suspending
