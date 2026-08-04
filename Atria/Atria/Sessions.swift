@@ -7386,9 +7386,17 @@ final class SessionStore: ObservableObject {
         (exactRecoveryOwnsPriority || projectionScanActive) && !isRecoveredPublication
     }
 
+    // Widened to .deriving (2026-08-05, same evidence chain): with the scan
+    // serialized and shadow skipped, the launch death moved to +151s — an
+    // external reuse=0 refresh landing DURING the derived phase, atop the
+    // ~1.3GB retained recovered working set. The whole recompute cycle is one
+    // heavy lane; the pipeline's own history component still passes because
+    // it calls with isRecoveredPublication: true.
     private var recoveredProjectionScanActive: Bool {
-        if case .projecting = recoveredDataRecompute.phase { return true }
-        return false
+        switch recoveredDataRecompute.phase {
+        case .projecting, .deriving: return true
+        case .idle, .failed: return false
+        }
     }
 
     private var nonExactArchiveConsumerShouldDefer: Bool {
