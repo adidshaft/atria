@@ -182,6 +182,15 @@ night exists only on strap flash. `automaticFullDrainRecoveryEnabled` is
 **verify an Aug-4 sleep + rollup appears** (that check doubles as an end-to-end
 proof of "the app does the work" backfill).
 
+**Freeze-race answer (06:45, from code):** the premature score is designed to
+self-heal. `frozenLimitedFallbackIsAuthoritative` (Sessions.swift ~12795)
+holds ONLY while `confirmedNight == nil`; the moment the backfilled night is
+confirmed (main-sleep auto-confirm covers this), the merge path mints
+`freshMorning` from the real night and replaces the unverified fallback. So
+the only dependency is the drained sleep reaching auto-confirm — keep
+verifying on device, but no code fix is needed unless the night lands and the
+38 persists anyway.
+
 **Backfill watch (06:14):** the catch-up drain IS working — an Aug-4 rollup
 appeared ~15 min after revival. BUT recovery scored **38** with
 `sleepSeconds: None` and `rhr: 68` (vs the usual 54–58) — i.e. scored from
