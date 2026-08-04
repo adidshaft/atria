@@ -821,11 +821,22 @@ struct AtriaActivityMonitorTab: View {
         }()
 
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Label("Stress", systemImage: "bolt.heart.fill")
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Label("Heart & stress", systemImage: "bolt.heart.fill")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Metrics.electricStress)
                 Spacer()
+                // Live heart rate beside the stress band (user-directed:
+                // Activity's top card is the heart/stress monitor). Shown only
+                // while a contact-backed reading is fresh — no cached bpm.
+                if let heart = stressMonitorStore.liveHeartRate, heart.isFresh() {
+                    Label("\(heart.bpm)", systemImage: "heart.fill")
+                        .font(.subheadline.weight(.bold).monospacedDigit())
+                        .foregroundStyle(.red)
+                        .labelStyle(.titleAndIcon)
+                        .imageScale(.small)
+                        .accessibilityLabel("Heart rate \(heart.bpm) beats per minute")
+                }
                 Text(presentation.value)
                     .font(.subheadline.weight(.bold).monospacedDigit())
                     .foregroundStyle(stressMonitorStore.state.level?.tint ?? .secondary)
