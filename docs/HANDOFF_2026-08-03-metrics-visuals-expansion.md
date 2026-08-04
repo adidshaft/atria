@@ -1769,3 +1769,21 @@ honesty cases. Gate baseline 4. Applies to every .standard hero
 (recovery/strain) untouched. Next: ‹TODAY› capsule stepper styling,
 remaining caps micro-label sites, then a device install bundling the
 render-verified UI batch.
+
+## 15.5 Day capsule + full UI batch INSTALLED on phone (2026-08-05 ~04:30)
+
+01e33ad3: WHOOP day-capsule stepper on the Activity toolbar (caps
+letterspaced TODAY in a quiet capsule, chevrons outside, forward
+chevron dimmed at today, past-day capsule taps back to today) —
+sim-screenshot verified via --atria-ui-screen activity (WORKS as a
+fixture screen, alias added Aug 4). The same frame reconfirmed the
+resting-HR pill copy "Resting HR learning · 0 of 14 days" and honest
+sim stress state.
+
+DEVICE INSTALL: full render-verified UI batch (width sweep, honesty
+slice, stress transparency, stat rows, hero units, day capsule) built
+Release + installed + launched on Aman's iPhone. Screen was OFF at
+capture (04:30, black frame — the documented nighttime trap), so live
+visual check = user's eyes in the morning + next-cycle probe pull for
+the new build's cold-launch health. The overnight soak now runs on
+THIS build (same allocation fixes aboard).
