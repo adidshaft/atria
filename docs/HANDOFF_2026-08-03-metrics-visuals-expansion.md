@@ -1710,3 +1710,15 @@ PARALLEL SESSION: user is running a second UI-only session on the SAME
 branch/worktree (codex/atria-reliability-handoff-2026-07-22 at
 /Users/amanpandey/projects/atria). Commit early, pull before editing,
 expect concurrent commits.
+
+## 15.1 COLD-LAUNCH VERDICT: CLEAN (2026-08-05 ~04:05)
+
+Build 9b3f3618 (allocation audit #1/#2/#3 aboard), cold launch pid=11178
+epoch 1785882829: at +161s exactly ONE start marker (no restart) and
+peak footprint 293MB at +77s — vs the pre-fix 1156→3122MB burst and
+death at +61s. The detections-stage burst is gone; readiness
+copy-elimination + 6h windowed span ceiling + per-candidate dying
+thread were the missing pieces. REMAINING before closing the campaign:
+overnight soak on this build (trailing cycles keep running), then strip
+ALL instrumentation (AtriaMemprobe + note sites + bisect levers) and
+run the full suite.
