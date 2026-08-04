@@ -371,17 +371,22 @@ struct AtriaApp: App {
                             await Task.yield()
                             try? await Task.sleep(for: .milliseconds(120))
                             guard !Task.isCancelled, scenePhase == .active else { return }
+                            AtriaMemprobe.note("fg_interactive_begin")
                             ble.handleInteractiveForeground(rest: store.baseline.restingInt ?? 60,
                                                            maxHR: store.profile.maxHR)
+                            AtriaMemprobe.note("fg_archive_resume_begin")
                             store.resumeDeferredForegroundArchiveWork(
                                 reason: "scene_active_after_interactive_frame"
                             )
+                            AtriaMemprobe.note("fg_drain_publication_begin")
                             ble.resumePendingFullDrainPublicationIfNeeded(
                                 reason: "scene_active_after_interactive_frame"
                             )
+                            AtriaMemprobe.note("fg_motion_bank_begin")
                             ble.resumeDeferredWorkoutMotionBankCoverageEvaluationIfNeeded(
                                 reason: "scene_active_after_interactive_frame"
                             )
+                            AtriaMemprobe.note("fg_lanes_dispatched")
                             foregroundBLETransitionTask = nil
                         }
                     @unknown default:
