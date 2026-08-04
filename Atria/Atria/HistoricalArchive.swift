@@ -1170,6 +1170,10 @@ enum HistoricalArchive {
         requestedEnd: Date,
         completedAt: Date
     ) throws -> TerminalCompletionPublicationResult {
+        // TEMP instrumentation (2026-08-05 round-4): terminal consumer
+        // materialization is a post-drain heavy lane with no probe note.
+        AtriaMemprobe.note("terminal_publish_entry seq=\(durableSequence)")
+        defer { AtriaMemprobe.note("terminal_publish_exit") }
         guard durableSequence > 0,
               requestedEnd > requestedStart,
               completedAt >= requestedEnd else {
