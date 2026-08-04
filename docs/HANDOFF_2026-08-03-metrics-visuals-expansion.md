@@ -261,6 +261,13 @@ sites (dead code, unpinned, likely superseded by `AtriaExpandedChart`) —
 flagged as a spin-off review task rather than deleted unilaterally, per the
 pinned-dead-code precedent.
 
+**Follow-up closed (09:2x):** the rehydration union-window read
+(`metricHeartRatePoints(start:end:maximumPoints:)`) needs NO bounding — it
+already does catalog-bounds chunk overlap selection, 64-KiB streaming, one
+chunk resident, fail-closed on truncation. It is the pattern
+`motionTickWindowRead` should have copied from the start. Soak remains
+kill-free.
+
 **VERIFIED (09:1x): the foreground kill is FIXED.** Scene-active
 reproduction on the layer-1+2 build: `motion_tick_read` COMPLETES in 12.8s
 at 508MB footprint (previously: never reached its end note, killed at 3.45GB
