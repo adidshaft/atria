@@ -294,6 +294,17 @@ record shows EVERY kill today dies inside `rec_scan_progress` —
    plus decoder churn) ⇒ the scan now crosses the limit ⇒ progressively
    worse as the archive grows. Explains why fixes "verified" then failed:
    each reduced other pressure while the archive kept growing.
+**Late CPU diagnostic triaged (14:2x):** an `Atria.cpu_resource_fatal`
+stamped 12:13 (written hours late) is the current-cycle STEP-RECEIPT lane
+(`prepareCurrentCycleStrapStepReceipt → motionTickDayEvidenceRead → JSONL
+scan`, with `compactArchive` also in-stack) grinding through the day's ~1GB
+backfill — CPU-hungry but memory-flat under the pooled scanner, and the
+process demonstrably survived it (pid 4362 alive past 12:33). Expected
+digestion cost; compaction in the same stack is what shrinks the archive
+and retires this cost. No action. Separately: app currently not running
+and foreground launch fails → phone locked (benign; BLE relaunch owns
+background capture); relaunch when unlocked.
+
 **Kernel-side confirmation (13:5x):** a late-written JetsamEvent (11:57:48,
 killed process = an unrelated idle system daemon) doubles as an independent
 snapshot of Atria DURING the pool-fix scan: `active, frontmost, 20,041
