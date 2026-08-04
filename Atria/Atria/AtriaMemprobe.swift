@@ -58,7 +58,12 @@ enum AtriaMemprobe {
                 let milestone = footprint / (512 * 1024 * 1024)
                 if milestone != lastTagMilestone {
                     lastTagMilestone = milestone
-                    write(line: "vmtags \(vmTagSummary())")
+                    // size_in_use vs region-dirty separates LIVE small blocks
+                    // (a real retainer) from freed-but-dirty churn (allocator
+                    // reclaim losing to the burst rate).
+                    var stats = malloc_statistics_t()
+                    malloc_zone_statistics(nil, &stats)
+                    write(line: "vmtags \(vmTagSummary()) | live=\(stats.size_in_use / (1024*1024))MB blocks=\(stats.blocks_in_use)")
                 }
                 write(line: delta >= deltaThresholdBytes ? "sample" : "beat")
             }
