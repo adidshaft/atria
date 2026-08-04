@@ -221,10 +221,12 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "static let minimumSustainedSamples = 8 * 60",
-            "static let minimumBPMOverRest = 25",
+            # 2026-08-05: prompt READY bar raised (user feedback — stair climbs kept
+            # promoting the interruptive prompt); detection candidates untouched.
+            "static let minimumBPMOverRest = 30",
             "static let zoneLookbackSeconds: TimeInterval = 6 * 60",
             "static let zoneMinimumSamples = 4 * 60",
-            "static let minimumContinuousElevatedSamples = 90",
+            "static let minimumContinuousElevatedSamples = 5 * 60",  # raised 2026-08-05 with the +30bpm bar
             "static let recentConfirmationSamples = 30",
             "static let maximumPacketGap: TimeInterval = SavedSession.workoutContinuityGapLimit",
             "static let maximumSampleAge: TimeInterval = 5",
