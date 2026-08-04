@@ -1822,3 +1822,40 @@ start_b)) is the only honest per-launch peak.
 NEXT: controlled repro — cold relaunch now (fresh backlog from 11324's
 run is small, may not burst); if no burst, the morning's first user
 cold-open is the decisive sample. Memory file corrected.
+
+## 15.7 BURST ROOT CAUSE FOUND: two heavy passes CONCURRENT (2026-08-05 ~04:50)
+
+Instrumented build reproduced the death (pid 11371, +61s) with CURRENT
+logs (2s lag). The complete story:
+
+- +41s: recovered_snapshot_begin → rec_scan_begin plan=rebuild
+  sources=98 bisect=full (the projection's full 1GB+ archive scan).
+- Passes 1-29 PLATEAU at ~780-830MB — per-pass dying threads WORK; the
+  scan alone is healthy even in sustained operation.
+- +41.8s: a THIRD hist_entry reuse=0 fires (non-coordinator caller;
+  comp_begin notes: ZERO — the coordinator's derived chain never
+  started). That refresh NEVER reaches history_snapshots_begin.
+- Pass 30→31 (~+57-59s): footprint 949→2287MB DURING the scan's 2s
+  unwind sleep — allocated by that concurrent, note-less thread: the
+  canonical-history ENTRY materialization (reuse=0 = fresh canonical
+  load) inside refreshHistorySnapshotCache, past my hist_entry note.
+- Pass 31 (+0.4GB) → 3261MB → jetsam. Relaunch (11434) stable.
+
+CONCLUSION: the +60s cold-launch death is the SUPERPOSITION of the
+recovered archive scan (~830MB plateau) and a REDUNDANT concurrent
+full history refresh (~1.3GB entry load under the reclaim law) — one
+completed at +6s, another started at +41.8s anyway. Neither alone
+kills; together they cross 3.4GB in the dense region.
+
+FIX DIRECTION (next cycle): the entry guard
+historySnapshotProjectionShouldDefer ALREADY defers history passes
+during exact-recovery priority — extend the same defer to "recovered
+projection scan active" so external refreshes wait; the coordinator's
+own history step (which runs AFTER projection completes) provides the
+refresh anyway. Also worth killing the redundancy itself: 3× reuse=0
+full refreshes within 42s of cold launch (triggers TBD). Deadlock-
+free because the defer path returns early (completion-based); no
+blocking waits.
+
+Measurement note: comp_begin instrumentation worked — zero fires
+proved the coordinator chain was NOT the burst context this time.
