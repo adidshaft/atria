@@ -294,6 +294,13 @@ record shows EVERY kill today dies inside `rec_scan_progress` —
    plus decoder churn) ⇒ the scan now crosses the limit ⇒ progressively
    worse as the archive grows. Explains why fixes "verified" then failed:
    each reduced other pressure while the archive kept growing.
+**Multi-hour soak bar MET (~16:00): ~5h kill-free** since the pool fix,
+spanning multiple foreground windows, the full-archive scan, backfill
+digestion, and one survived CPU-quota diagnostic. Remaining before "fixed"
+enters the record: one user-organic session + tonight's overnight. Then the
+cleanup pass (strip AtriaMemprobe + notes + bisect lever + relief/recycle
+counters; final full suite).
+
 **Late CPU diagnostic triaged (14:2x):** an `Atria.cpu_resource_fatal`
 stamped 12:13 (written hours late) is the current-cycle STEP-RECEIPT lane
 (`prepareCurrentCycleStrapStepReceipt → motionTickDayEvidenceRead → JSONL
