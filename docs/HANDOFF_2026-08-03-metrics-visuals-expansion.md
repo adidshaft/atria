@@ -394,6 +394,18 @@ pair + widget-battery, all pre-dating this session, plus the stray
 untracked dev probe file). User awake; sleep Confirm still pending
 (fallback recovery 63, RHR 55).
 
+**LIVE-RETENTION CONFIRMED + SCANNER EXONERATED (15:0x):** zone stats show
+size_in_use tracking footprint 1:1 through the burst (live=3074MB at
+3104MB) — the MALLOC_SMALL mass is GENUINELY RETAINED, not freed-dirty
+churn. And count-only under the same probe now runs CLEAN end-to-end (full
+archive in 17s, peak 411MB, rec_scan_done reached) — the per-chunk pool
+fully fixed the scanner layer, and the progress/lease machinery (identical
+in count-only) is exonerated. The retainer therefore lives in the per-line
+DECODE or APPEND path exclusively; tracked containers audit to only ~80MB,
+so ~2.4GB is held by something outside the channel arrays. decode-only
+under live-stats is in flight to split decoder vs append. Identity payload
+construction audited clean (fresh exact-capacity copy, no slice sharing).
+
 **TAG ATTRIBUTION (14:4x): the balloon is a MALLOC_SMALL burst.** VM-region
 user_tag milestones during a reproduction: m_small 552→2904MB in <4s
 (~600MB/s) ~20s into the scan (m_large flat at ~145MB — the pooled chunks
