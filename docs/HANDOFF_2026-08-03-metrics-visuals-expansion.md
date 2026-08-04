@@ -167,14 +167,19 @@ logged here as a review-vigilance failure too.
 
 Facts: the card renders `night.durationHours`; for this candidate duration
 equals span ⇒ the aggregate candidate merged across the wake with no
-exclusion. UX OBSERVATION (post-rollover screenshot): the physiological cycle rolled
-before the user confirmed the night — the "Possible sleep" card left the
-Overview (Sleep tile back to "--", fallback recovery 66% "resting HR" now
-fronting). The unconfirmed night remains reachable only via Activity/
-history. This is the `atria-nap-surfacing-gap` class biting for MAIN sleep:
-an unconfirmed night that ages past rollover loses its primary surface.
-Product decision needed (same as the nap question): should an unconfirmed
-previous-night candidate keep a visible slot on Overview until resolved?
+exclusion. UX OBSERVATION (post-rollover screenshot — CORRECTED for the
+below-the-fold trap): after the cycle rollover, the Sleep TILE dropped from
+"9h 26m · Review sleep" to "--" and the settlement banner reset to
+waiting — the review state no longer feeds the Overview tiles. Whether the
+review CARD itself is gone, below the fold, or was user-dismissed is NOT
+verifiable from a single non-scrolling screenshot (the earlier claim that
+it "left the Overview" was over-concluded). What stands: the tile/banner
+no longer surface the unconfirmed night, which is still the
+`atria-nap-surfacing-gap` class question for MAIN sleep — WHOOP keeps its
+pending-sleep prompt sticky until resolved. Product decision remains open:
+should an unresolved previous-night candidate keep a visible Overview
+surface (tile and/or card) until resolved? Verify card presence via
+iPhone Mirroring or user report before building anything.
 
 FIXED (`b95f8817`, evening): `AtriaRecoveredMotionAnalytics
 .sustainedAwakeSeconds` (validated non-low-motion epoch blocks ≥10min;
