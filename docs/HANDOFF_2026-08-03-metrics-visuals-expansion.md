@@ -276,6 +276,17 @@ record shows EVERY kill today dies inside `rec_scan_progress` —
    plus decoder churn) ⇒ the scan now crosses the limit ⇒ progressively
    worse as the archive grows. Explains why fixes "verified" then failed:
    each reduced other pressure while the archive kept growing.
+**REFACTOR LANDED (`c6df5735`, 10:4x)** per the map below: compact
+Accumulator (12/12 projection tests unchanged), snapshot carries verified
+beats, cache survives capped channels via truncatedChannels, rebuild
+stale-limitations quirk fixed, RR budget 250K→1M accepted (compact).
+29/29 RR+scanner tests, replay+archive-warm net clean, gate at baseline.
+The compact-RR build is INSTALLED on device (launched ~10:40) but the
+device file service dropped before the reproduction probe could be read —
+**on-device verdict OWED: pull Documents/atria-memprobe.log, check the
+rec_scan runs' footprint peak (expect far below 3.4GB) and NO new
+JetsamEvents, then a multi-hour soak before any verdict.**
+
 IMPLEMENTATION MAP (10:2x pass — everything read, refactor NOT landed to
 avoid another under-tested loop-pass fix):
 - `AtriaRecoveredRRProjection.project(records:)` (~94-148) = per-record
