@@ -15654,7 +15654,7 @@ final class SessionStore: ObservableObject {
                                                             to url: URL,
                                                             reason: String) -> Bool {
         do {
-            AtriaMemprobe.note("sessions_encode_begin count=\(sessions.count)")
+            AtriaMemprobe.note("sessions_encode_begin count=\(sessions.count) reason=\(reason)")
             let data = try JSONEncoder().encode(sessions)
             AtriaMemprobe.note("sessions_encode_end bytes=\(data.count)")
             try data.write(to: url, options: .atomic)
