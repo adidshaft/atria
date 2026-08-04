@@ -394,6 +394,16 @@ pair + widget-battery, all pre-dating this session, plus the stray
 untracked dev probe file). User awake; sleep Confirm still pending
 (fallback recovery 63, RHR 55).
 
+**TAG ATTRIBUTION (14:4x): the balloon is a MALLOC_SMALL burst.** VM-region
+user_tag milestones during a reproduction: m_small 552→2904MB in <4s
+(~600MB/s) ~20s into the scan (m_large flat at ~145MB — the pooled chunks
+are innocent). MALLOC_SMALL = 1-15KB blocks — consistent with the per-line
+Data slices (~1-2KB JSONL rows) and decoder temporaries. Next discriminant
+in flight: malloc_zone_statistics size_in_use at each milestone — LIVE
+growth ⇒ a real retainer to hunt; flat-live ⇒ freed-but-dirty churn ⇒ fix
+is allocation-avoidance in the scanner's line path (slice views instead of
+per-line Data copies) or scan throttling. Verdict owed next read.
+
 **RE-OPENED (14:1x): kill #9 at 13:55:41 — the pool fix reduced but did
 NOT close the balloon.** pid 5158 (wake-fix build, all prior fixes present):
 pre-scan phases clean (motion-tick read 46s @≤502MB), then the recovered
