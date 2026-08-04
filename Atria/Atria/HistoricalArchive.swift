@@ -3485,10 +3485,14 @@ enum HistoricalArchive {
             motionRecordIdentities.removeAll(keepingCapacity: true)
         }
 
+        AtriaMemprobe.note("rec_scan_begin sources=\(sources.count) plan=\(String(describing: plan).prefix(12))")
         let scanResult = AtriaHistoricalJSONLRecentScanner.scan(
             sources: sources,
             cutoff: coveredSince,
-            onProgress: onScanProgress
+            onProgress: { statistics in
+                AtriaMemprobe.note("rec_scan_progress bytes=\(statistics.byteCount) hr=\(heartRate.count) rr=\(rrRecords.count) grav=\(gravity.count) motionIDs=\(motionRecordIdentities.count)")
+                onScanProgress?(statistics)
+            }
         ) { lineData in
             guard let record = try? decoder.decode(Record.self, from: lineData) else { return }
             decodedRecordCount += 1
@@ -3502,10 +3506,12 @@ enum HistoricalArchive {
                                   gravity: &gravity,
                                   motionRecordIdentities: &motionRecordIdentities)
         }
+        AtriaMemprobe.note("rec_scan_done hr=\(heartRate.count) rr=\(rrRecords.count) skin=\(skinTemperatureRawPoints.count) grav=\(gravity.count) motionIDs=\(motionRecordIdentities.count)")
         sortRecoveredData(heartRate: &heartRate,
                           rrRecords: &rrRecords,
                           skinTemperatureRawPoints: &skinTemperatureRawPoints,
                           gravity: &gravity)
+        AtriaMemprobe.note("rec_sort_done")
 
         var fileStates: [String: AtriaHistoricalJSONLRecentScanner.FileState]
         if case .incremental = plan {
@@ -4906,6 +4912,41 @@ enum HistoricalArchive {
         let targetBytes: UInt64
         let samples: [GravitySample]
         let latestTimestamp: TimeInterval?
+        /// Source-file identity at load time. While this is unchanged, a
+        /// reload would decode byte-identical inputs — so the cache stays
+        /// valid even for windows the corpus doesn't cover (2026-08-04 fix:
+        /// during drain backfill the archive's gravity ALWAYS lags "now", so
+        /// the coverage check alone missed on every sleep-candidate pass and
+        /// re-decoded the full tail each time — the 3.45GB-footprint /
+        /// cpu_resource_fatal lane).
+        let fingerprint: RecentGravityArchiveFingerprint?
+    }
+
+    /// Cheap stat-level identity of the readable gravity source files.
+    struct RecentGravityArchiveFingerprint: Equatable {
+        let fileCount: Int
+        let totalBytes: UInt64
+        let latestModification: TimeInterval
+    }
+
+    private static func recentGravityArchiveFingerprint() -> RecentGravityArchiveFingerprint? {
+        var fileCount = 0
+        var totalBytes: UInt64 = 0
+        var latestModification: TimeInterval = 0
+        for url in recentReadableFileURLs() {
+            guard let values = try? url.resourceValues(forKeys: [.fileSizeKey,
+                                                                 .contentModificationDateKey]) else {
+                return nil
+            }
+            fileCount += 1
+            totalBytes += UInt64(values.fileSize ?? 0)
+            if let modified = values.contentModificationDate?.timeIntervalSince1970 {
+                latestModification = Swift.max(latestModification, modified)
+            }
+        }
+        return RecentGravityArchiveFingerprint(fileCount: fileCount,
+                                               totalBytes: totalBytes,
+                                               latestModification: latestModification)
     }
 
     private static func loadGravitySamples() -> [GravitySample] {
@@ -4935,10 +4976,17 @@ enum HistoricalArchive {
         // epochs were already projected into the canonical session.
         let targetBytes = UInt64(max(2_097_152, min(8_388_608, estimatedRows * 640)))
 
+        // Stat the source files BEFORE taking the cache lock: if they are
+        // byte-identical to what the cache decoded, a reload cannot produce
+        // different samples, so the cache is valid no matter how far the
+        // requested window outruns the (lagging, still-draining) corpus.
+        let currentFingerprint = recentGravityArchiveFingerprint()
+
         recentGravityCacheLock.lock()
         if let cache = recentGravityCache,
            cache.targetBytes >= targetBytes,
-           recentGravityCacheCovers(cache, end: end) {
+           recentGravityCacheCovers(cache, end: end)
+               || (currentFingerprint != nil && cache.fingerprint == currentFingerprint) {
             let samples = cache.samples
             recentGravityCacheLock.unlock()
             return samples
@@ -4955,10 +5003,12 @@ enum HistoricalArchive {
         // closed for this pass while a single utility task prepares the cache.
         if Thread.isMainThread {
             DispatchQueue.global(qos: .utility).async {
+                let fingerprint = recentGravityArchiveFingerprint()
                 let samples = loadRecentGravitySamplesUncached(targetBytes: targetBytes)
                 publishRecentGravityCache(samples: samples,
                                           targetBytes: targetBytes,
-                                          generation: loadGeneration)
+                                          generation: loadGeneration,
+                                          fingerprint: fingerprint)
             }
             return []
         }
@@ -4966,7 +5016,8 @@ enum HistoricalArchive {
         let samples = loadRecentGravitySamplesUncached(targetBytes: targetBytes)
         publishRecentGravityCache(samples: samples,
                                   targetBytes: targetBytes,
-                                  generation: loadGeneration)
+                                  generation: loadGeneration,
+                                  fingerprint: currentFingerprint)
         return samples
     }
 
@@ -4983,16 +5034,21 @@ enum HistoricalArchive {
 
     private static func publishRecentGravityCache(samples: [GravitySample],
                                                   targetBytes: UInt64,
-                                                  generation: UInt64) {
+                                                  generation: UInt64,
+                                                  fingerprint: RecentGravityArchiveFingerprint?) {
         recentGravityCacheLock.lock()
         guard generation == recentGravityLoadGeneration else {
             recentGravityCacheLock.unlock()
             return
         }
+        // The fingerprint was taken BEFORE the load: if a writer landed during
+        // the decode, the stored identity is older than the files, the next
+        // lookup mismatches, and a fresh reload happens — stale-conservative.
         recentGravityCache = RecentGravityCache(loadedAt: Date(),
                                                 targetBytes: targetBytes,
                                                 samples: samples,
-                                                latestTimestamp: samples.last?.timestamp)
+                                                latestTimestamp: samples.last?.timestamp,
+                                                fingerprint: fingerprint)
         recentGravityLoadInFlight = false
         recentGravityCacheLock.unlock()
     }
