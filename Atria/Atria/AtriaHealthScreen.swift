@@ -1621,6 +1621,7 @@ private struct AtriaHealthStressSection: View {
                                               history: stressMonitorStore.history,
                                               updatedAt: lastStressEvaluationAt,
                                               distributionComparison: stressMonitorStore.distributionComparison(),
+                                              trendDays: stressMonitorStore.dailyTrendDays(),
                                               loggedContext: todayLoggedContext),
                 onDismiss: { showStressDetail = false },
                 onRelax: {

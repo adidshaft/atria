@@ -406,6 +406,13 @@ struct AtriaStressDistributionArchive: Codable, Equatable {
                                                  comparisonDayCount: comparable.count)
     }
 
+    /// Days with enough measured samples to appear in the daily stress trend —
+    /// the same ≥10-sample floor the "typical" comparison uses, so a day can
+    /// never chart with less evidence than it needs to count as comparable.
+    func measuredTrendDays() -> [Day] {
+        days.filter { $0.distribution.sampleCount >= Self.minimumSamplesPerDay }
+    }
+
     static func load(defaults: UserDefaults = .standard) -> AtriaStressDistributionArchive {
         guard let data = defaults.data(forKey: defaultsKey),
               let archive = try? JSONDecoder().decode(AtriaStressDistributionArchive.self, from: data) else {
@@ -523,6 +530,12 @@ final class AtriaStressMonitorStore: ObservableObject {
     func distributionComparison(now: Date = Date(),
                                 calendar: Calendar = .current) -> AtriaStressDistributionComparison? {
         distributionArchive.comparison(at: now, calendar: calendar)
+    }
+
+    /// Measured days for the daily stress trend (§3.3). Read-only projection of
+    /// the persisted distribution archive — no second sample stream exists.
+    func dailyTrendDays() -> [AtriaStressDistributionArchive.Day] {
+        distributionArchive.measuredTrendDays()
     }
 
     /// Feed one pulse tick in. Safe to call as often as ~every 5s (or on every
