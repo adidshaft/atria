@@ -251,6 +251,15 @@ whole-recovered-decode lane that re-runs after each drained batch and is the
 prime steady-climb suspect. Read the log tail after the next kill; the
 breadcrumbs now bracket every candidate.
 
+**Soak update (07:4x):** still zero post-fix kills. Recovery fallback
+improved on its own 38→53 (RHR 68→58) as morning rest accrued — the
+"frozen" fallback legitimately re-mints on input change; sleep still
+unconfirmed (user tap pending). Launch-time sessions save identified:
+`reason=deferred_load_merge`, correctly gated on a real pending persistence
+revision (live HR ticks during load) — NOT skippable; the ~200MB transient
+is JSONEncoder's ~20× overhead on a 12.6MB payload, a future
+streaming-encoder project, not a bug. Today+Vitals sim regressions clean.
+
 **Soak update (07:33):** ~15 min post-fix — zero new jetsams / CPU fatals
 (latest remains 07:17–07:18 pre-fix); app steady at ~164MB backgrounded while
 the drain continues. Sim regression pass on HEAD: Vitals clean (axis-honesty
