@@ -1624,3 +1624,18 @@ the surviving recompute+derived chain commits consumer receipts;
 verify at next foreground with the steps card. User's phone is
 backgrounded overnight = exactly the P2 flush window P0 now unlocks —
 the overnight log is the real P0 verdict.
+
+## 14.5 Sync-nudge + cluster fix shipped (2026-08-05 ~02:45)
+
+User directive implemented: sync-nudge local notifications (pure
+decision, 6/6 tests — foreground-helps / strap-away / Low Power
+variants; silent when progressing, active, night, shallow, or
+stale-but-connected; 6h cooldown; wired from the flush-debt observer +
+maintenance ticker). ALSO shipped: per-cluster dying threads in
+aggregateWorkoutCandidates — the definitively-named cold-launch burst
+(all-day recovered clusters copying+sorting a day of points ×3 replay
+modes, ~14 clusters summed on one thread inside hist_stage=detections).
+Cold-launch verdict for the cluster fix: NEXT cold launch (this build's
+launch included it — read start-pid count across the +60s cliff, both
+log generations). If clean → the balloon campaign closes → strip ALL
+instrumentation → full suite.
