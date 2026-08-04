@@ -1566,3 +1566,26 @@ notes); second suspect the startDerived dispatch path before its first
 component note. One note-instrumented cycle names it; then the same
 dying-thread/stage medicine closes the campaign, followed by the
 instrumentation strip + full suite.
+
+## 14.2 User-feedback pass (2026-08-05 ~02:30)
+
+Shipped: review-prompt context line ("Since ≈6:12 PM · 23 min elevated ·
+looks like walking" — approximate start derived from the contiguous
+elevated count, honestly marked "≈") and a calmer prompt trigger (READY
+bar 90s@+25 → 5min@+30bpm; detection/candidates untouched — only the
+interruptive prompt). Naming cycle: widget publishes measured INSTANT in
+the healthy process (suspect weakened); the cold-launch death window's
+first-process tail still needs a read on the next pass.
+
+**STEPS COVERAGE — the user's "why the hell" (P0 escalation).** The 18%
+is honest arithmetic: strap flash replays oldest-first at ~1× realtime
+with no seek (proven dead on WHOOP4), and background catch-up was
+additionally blocked by the parked terminal coverage authority + weeks
+of foreground jetsams killing every drain. The balloon work removes the
+biggest blocker (drains now survive); coverage should trend up
+organically starting tonight. THE REMAINING ENGINEERING (next session's
+P0, from the drain-keeping plan): decouple the RAW drain from the
+parked coverage authority so background catch-up runs without waiting
+for foreground; then chain+slice (P1) and charge-resume. Target the
+user set: ≥95% coverage tracking near-real-time during normal wear.
+WHOOP's own benchmark: step data refreshes ~every 10 minutes.
