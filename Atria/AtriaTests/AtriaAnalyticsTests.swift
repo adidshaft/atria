@@ -2760,18 +2760,37 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(report.strainRecoveryNote, WeeklyReport.strainRecoveryNoteText)
     }
 
-    func testWorkoutPromptEvaluatorFiresForEightMinutesAtRestPlusTwentySeven() {
+    func testWorkoutPromptEvaluatorFiresForEightMinutesAtRestPlusThirtyFive() {
+        // 2026-08-05: the READY bar rose to +30bpm/5min (user feedback — a
+        // stair climb at +27 kept promoting the interruptive prompt), so the
+        // must-fire fixture is a real effort at +35.
         let start = Date(timeIntervalSince1970: 1_800_000_000)
-        let samples = syntheticHeartSamples(start: start, count: 480, bpm: 87)
+        let samples = syntheticHeartSamples(start: start, count: 480, bpm: 95)
 
         let result = AtriaWorkoutPromptEvaluator.evaluate(samples: samples,
-                                                          currentHeartRate: 87,
+                                                          currentHeartRate: 95,
                                                           restingHeartRate: 60,
                                                           maxHeartRate: 190,
                                                           now: samples.last!.t)
 
         XCTAssertTrue(result.shouldPrompt)
         XCTAssertTrue(result.sustainedPath)
+    }
+
+    func testWorkoutPromptEvaluatorStaysQuietForMildlyElevatedWear() {
+        // The user's exact complaint, pinned: +27 over rest sustained for 8
+        // minutes is mildly-elevated wear (stairs, stress), not a workout
+        // prompt.
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let samples = syntheticHeartSamples(start: start, count: 480, bpm: 87)
+
+        let result = AtriaWorkoutPromptEvaluator.evaluate(samples: samples,
+                                                          currentHeartRate: 95,
+                                                          restingHeartRate: 60,
+                                                          maxHeartRate: 190,
+                                                          now: samples.last!.t)
+
+        XCTAssertFalse(result.shouldPrompt)
     }
 
     // Detection fix (2026-07-09): real BLE data drops packets, so a genuine
@@ -2781,10 +2800,10 @@ final class AtriaAnalyticsTests: XCTestCase {
     // effort (~5-6 min elevated, i.e. an 8-min bout with normal dropout) must fire.
     func testWorkoutPromptEvaluatorFiresForSustainedEffortWithPacketDropout() {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
-        let samples = syntheticHeartSamples(start: start, count: 360, bpm: 87)
+        let samples = syntheticHeartSamples(start: start, count: 360, bpm: 95)  // +35: real effort under the 2026-08-05 bar
 
         let result = AtriaWorkoutPromptEvaluator.evaluate(samples: samples,
-                                                          currentHeartRate: 87,
+                                                          currentHeartRate: 95,
                                                           restingHeartRate: 60,
                                                           maxHeartRate: 190,
                                                           now: samples.last!.t)
@@ -2799,7 +2818,7 @@ final class AtriaAnalyticsTests: XCTestCase {
         let samples = syntheticHeartSamples(start: start, count: 180, bpm: 87)
 
         let result = AtriaWorkoutPromptEvaluator.evaluate(samples: samples,
-                                                          currentHeartRate: 87,
+                                                          currentHeartRate: 95,
                                                           restingHeartRate: 60,
                                                           maxHeartRate: 190,
                                                           now: samples.last!.t)
@@ -2845,11 +2864,11 @@ final class AtriaAnalyticsTests: XCTestCase {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         // ~4h of resting samples before the window, then 8 min elevated ending now.
         let leadIn = syntheticHeartSamples(start: start, count: 14_400, bpm: 62)
-        let tail = syntheticHeartSamples(start: start.addingTimeInterval(14_400), count: 480, bpm: 87)
+        let tail = syntheticHeartSamples(start: start.addingTimeInterval(14_400), count: 480, bpm: 95)  // +35 under the 2026-08-05 bar
         let samples = leadIn + tail
 
         let result = AtriaWorkoutPromptEvaluator.evaluate(samples: samples,
-                                                          currentHeartRate: 87,
+                                                          currentHeartRate: 95,
                                                           restingHeartRate: 60,
                                                           maxHeartRate: 190,
                                                           now: samples.last!.t)

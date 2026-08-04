@@ -5373,15 +5373,27 @@ extension SavedSession {
         let thresholdHR = Self.workoutElevatedThreshold(rest: rest, maxHR: maxHR, fraction: thresholdFraction)
         let borderlineThresholdHR = max(rest, thresholdHR - Self.workoutBorderlineThresholdMarginBPM)
         let borderline = sustainedEvidence(minimumHR: borderlineThresholdHR)
-        let samplesAboveThreshold = bpms.filter { $0 >= thresholdHR }.count
-        let samplesAboveBorderline = bpms.filter { $0 >= borderlineThresholdHR }.count
+        // ONE bpm materialization + ONE sort per readiness call (2026-08-05
+        // allocation audit): `bpms` is a computed property, and this function
+        // used to re-map the whole points array ~20× per call (plus 3 sorts
+        // via percentileHR) — ~184 transient bytes per point per call across
+        // a tree that replays every session, aggregate, and window. Values
+        // are byte-identical; only the copies are gone.
+        let bpmValues = points.map(\.bpm)
+        let sortedBPMValues = bpmValues.sorted()
+        let avgBPM: Int = bpmValues.isEmpty
+            ? 0
+            : Int((Double(bpmValues.reduce(0, +)) / Double(bpmValues.count)).rounded())
+        let peakBPM = sortedBPMValues.last ?? 0
+        let samplesAboveThreshold = bpmValues.filter { $0 >= thresholdHR }.count
+        let samplesAboveBorderline = bpmValues.filter { $0 >= borderlineThresholdHR }.count
         let elevatedSeconds = sustained.total
         let observedDuration = sustained.observedDuration
         let requiredElevatedSeconds = min(max(observedDuration * 0.35, 5 * 60), 20 * 60)
         let requiredElevatedBout = min(max(observedDuration * 0.20, 3 * 60), 8 * 60)
-        let avgOverRest = avg - rest
-        let peakOverRest = peak - rest
-        let thresholdGapBPM = max(0, thresholdHR - peak)
+        let avgOverRest = avgBPM - rest
+        let peakOverRest = peakBPM - rest
+        let thresholdGapBPM = max(0, thresholdHR - peakBPM)
         let streamCoveragePercent = Self.workoutStreamCoveragePercent(observed: observedDuration, duration: duration)
         // RR present OR an unbroken accepted-HR stream backs the elevation with
         // something other than raw wrist/strap bpm alone (see spec item 2).
@@ -5415,7 +5427,7 @@ extension SavedSession {
                                                         streamCoveragePercent: streamCoveragePercent,
                                                         droppedGapSeconds: sustained.droppedGapSeconds,
                                                         maxSampleGap: sustained.maxGap,
-                                                        peakHR: peak,
+                                                        peakHR: peakBPM,
                                                         thresholdHR: thresholdHR,
                                                         elevatedSeconds: elevatedSeconds,
                                                         requiredElevatedSeconds: requiredElevatedSeconds,
@@ -5423,11 +5435,11 @@ extension SavedSession {
                                                         requiredBout: requiredElevatedBout)
         return WorkoutReadiness(duration: duration,
                                 observedDuration: observedDuration,
-                                avgHR: avg,
-                                peakHR: peak,
-                                p90HR: Self.percentileHR(0.90, values: bpms),
-                                p95HR: Self.percentileHR(0.95, values: bpms),
-                                p99HR: Self.percentileHR(0.99, values: bpms),
+                                avgHR: avgBPM,
+                                peakHR: peakBPM,
+                                p90HR: Self.percentileHR(0.90, presorted: sortedBPMValues),
+                                p95HR: Self.percentileHR(0.95, presorted: sortedBPMValues),
+                                p99HR: Self.percentileHR(0.99, presorted: sortedBPMValues),
                                 thresholdHR: thresholdHR,
                                 thresholdGapBPM: thresholdGapBPM,
                                 samplesAboveThreshold: samplesAboveThreshold,
@@ -5689,8 +5701,11 @@ extension SavedSession {
     }
 
     private static func percentileHR(_ percentile: Double, values: [Int]) -> Int {
-        guard !values.isEmpty else { return 0 }
-        let sorted = values.sorted()
+        percentileHR(percentile, presorted: values.sorted())
+    }
+
+    private static func percentileHR(_ percentile: Double, presorted sorted: [Int]) -> Int {
+        guard !sorted.isEmpty else { return 0 }
         let clamped = min(max(percentile, 0), 1)
         let index = min(sorted.count - 1, max(0, Int((Double(sorted.count - 1) * clamped).rounded(.down))))
         return sorted[index]
@@ -19367,13 +19382,21 @@ final class SessionStore: ObservableObject {
             }
         }
         return selectedSummaries
-            .compactMap { summary in
-                workoutReviewCandidate(fromQualifiedWindow: summary,
-                                       sessions: sessions,
-                                       confirmedWorkouts: confirmedWorkouts,
-                                       dismissedCandidates: dismissedCandidates,
-                                       rest: rest,
-                                       maxHR: maxHR)
+            .compactMap { summary -> WorkoutReviewCandidate? in
+                // Per-candidate dying thread (2026-08-05 allocation audit
+                // stopgap): each candidate re-walks every overlapping
+                // session's points/epochs several times on the long-lived
+                // detections thread. The real fix is a shared sorted corpus
+                // index + binary search per window; until then each
+                // candidate's garbage dies here.
+                AtriaTransientWorkThread.run(name: "atria.review-candidate") {
+                    workoutReviewCandidate(fromQualifiedWindow: summary,
+                                           sessions: sessions,
+                                           confirmedWorkouts: confirmedWorkouts,
+                                           dismissedCandidates: dismissedCandidates,
+                                           rest: rest,
+                                           maxHR: maxHR)
+                }
             }
             .sorted { $0.end > $1.end }
     }
@@ -27812,6 +27835,16 @@ final class SessionStore: ObservableObject {
         guard let clusterStart = absolutePoints.first?.date,
               let clusterEnd = absolutePoints.last?.date,
               clusterEnd.timeIntervalSince(clusterStart) >= 10 * 60 else { return [] }
+        // Span ceiling (2026-08-05 allocation audit): the ≤6h SESSION filter
+        // upstream does not bound the CLUSTER — workoutClusters chains ≤6h
+        // chunks across ≤30min gaps, so an all-day recovered wear day
+        // re-formed an unbounded span here and the window sweep (~61 point-
+        // copies per point, ~3k windows/day, each with a full readiness
+        // replay) was the surviving cold-launch burst. Windowed candidates
+        // over a multi-hour continuous span are noise anyway — the whole-
+        // cluster and stitched candidates above still represent long
+        // efforts, and the qualified-window review path owns real workouts.
+        guard clusterEnd.timeIntervalSince(clusterStart) <= 6 * 3600 else { return [] }
 
         let durations: [TimeInterval] = [10, 20, 30, 45, 60, 90].map { $0 * 60 }
         let minimumDuration = 10 * 60.0
