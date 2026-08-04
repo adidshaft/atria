@@ -31,7 +31,12 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertFalse(source.contains("Text(\"Skipped questions stay unanswered.\")"))
         XCTAssertTrue(source.contains(".accessibilityLabel(\"Check-in done. Skipped questions stay unanswered.\")"))
         XCTAssertFalse(source.contains("Log today to start your pattern — the full 90-day view builds as history grows."))
-        XCTAssertTrue(source.contains("The full 90-day pattern appears as logging history grows."))
+        // 2026-08-04: the "full 90-day pattern appears..." empty-state line was
+        // retired with the 7x13 heat-strip redesign (ed4cdac8) — sparse days
+        // read directly from the calendar cells now. Pin the surviving 90-day
+        // honesty copy instead.
+        XCTAssertFalse(source.contains("The full 90-day pattern appears as logging history grows."))
+        XCTAssertTrue(source.contains("90-day association from logged dates; not a prediction."))
     }
 
     func testWorkoutTargetControlsUseSaveSemanticsAndCompactGuidance() throws {
@@ -58,23 +63,14 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertFalse(source.contains("Text(\"Pulls data your strap stored while disconnected"))
     }
 
+    // 2026-08-04: RETIRED — `AtriaVitalsEducationSheet` was removed by
+    // b1509b30 (metric info buttons wired to the spec-§20 About sheets). The
+    // successor content contracts live in AtriaAboutMetricSheetTests; this
+    // density pin had been failing on a nonexistent anchor since then.
     func testVitalsEducationLeadsWithActionsInsteadOfThreeParagraphCards() throws {
         let source = try source("AtriaVitalsCollectionSections.swift")
-        let start = try XCTUnwrap(source.range(of: "struct AtriaVitalsEducationSheet"))
-        let end = try XCTUnwrap(source.range(of: "/// Small inline hint chip",
-                                              range: start.upperBound..<source.endIndex))
-        let sheet = String(source[start.lowerBound..<end.lowerBound])
-
-        XCTAssertTrue(sheet.contains("Text(topic.compactSummary)"))
-        XCTAssertTrue(sheet.contains("LabeledContent(\"Typical\")"))
-        XCTAssertTrue(sheet.contains("Text(\"Try next\")"))
-        XCTAssertTrue(sheet.contains("DisclosureGroup"))
-        XCTAssertTrue(sheet.contains("Label(\"How it works\", systemImage: \"checkmark.shield.fill\")"))
-        XCTAssertTrue(sheet.contains(".accessibilityHint(topic.whatItIs)"))
-        XCTAssertTrue(sheet.contains(".accessibilityHint(topic.howToImprove[index])"))
-        XCTAssertFalse(sheet.contains("detailBlock(title: \"What it is\""))
-        XCTAssertFalse(sheet.contains("detailBlock(title: \"How Atria computes it\""))
-        XCTAssertFalse(sheet.contains("detailBlock(title: \"Your typical range\""))
+        XCTAssertFalse(source.contains("struct AtriaVitalsEducationSheet"),
+                       "education sheet was replaced by AtriaAboutMetricSheet (b1509b30); if it returns, restore the retired density pins from git history")
     }
 
     func testDeveloperReferenceChecksUseFlatReadableLiquidGlassHierarchy() throws {
