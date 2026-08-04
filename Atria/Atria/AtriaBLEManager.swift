@@ -8520,9 +8520,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // previous one. Keep the radio with live HR and resume the fsynced
         // journal locally instead.
         if let authority = try? historicalFullDrainCoverageStore.load() {
-            let rangeLossRawDrainPending = defaults.bool(
-                forKey: OfflineSyncDefaults.rangeLossBackfillPending
-            )
+            // P0: any fresh backlog (not just the range-loss ticket) admits
+            // the raw-only catch-up lane past a parked terminal authority —
+            // the lane's safety argument is unchanged (forward-from-cursor
+            // FIFO, never mutates the parked journal's coverage/identity).
+            let rangeLossRawDrainPending = strapBacklogPendingForCatchUp()
             let terminalDisposition = Self.terminalHistoryRequestDisposition(
                 authorityStatus: authority.status,
                 explicitPostWorkoutBankRequest: explicitPostWorkoutBankRequest,
@@ -8973,9 +8975,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             explicitUserRequest: explicitHistoricalRequest
         )
             || Self.shouldAllowConnectedRangeLossCatchUp(
-                rangeLossBackfillPending: defaults.bool(
-                    forKey: OfflineSyncDefaults.rangeLossBackfillPending
-                ),
+                rangeLossBackfillPending: strapBacklogPendingForCatchUp(),
                 cleanOwnerState: protectedR10CleanOwnerState,
                 recentDisconnectStorm: recentDisconnectStorm,
                 verifiedHistoryCapability: verifiedHistoryCapability,
@@ -8987,9 +8987,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // relax the connected-link guards below so the backlog flushes hard
         // instead of waiting for a lucky disconnect. See isFlushMaintenanceWindow.
         let flushMaintenanceWindow = Self.isFlushMaintenanceWindow(
-            rangeLossBackfillPending: defaults.bool(
-                forKey: OfflineSyncDefaults.rangeLossBackfillPending
-            ),
+            rangeLossBackfillPending: strapBacklogPendingForCatchUp(),
             foregroundInteractive: foregroundInteractiveMode,
             cleanOwnerState: protectedR10CleanOwnerState,
             activeExplicitWorkout: activeExplicitWorkout,
@@ -13240,7 +13238,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func startRangeLossBackfillMaintenanceTickerIfNeeded(reason: String) {
         let defaults = UserDefaults.standard
         guard defaults.bool(forKey: OfflineSyncDefaults.enabled),
-              defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending),
+              strapBacklogPendingForCatchUp(),
               rangeLossBackfillMaintenanceTickerTask == nil else { return }
         AtriaDebugLog("ATRIADBG offline_sync status=maintenance_ticker_started reason=%@ interval_s=%.0f floor_s=%.0f action=hr_independent_rearm_backstop",
                       reason,
@@ -13382,9 +13380,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let nowCharging = Self.phoneStateIsCharging(UIDevice.current.batteryState)
         let previous = lastPhoneChargingState ?? false
         lastPhoneChargingState = nowCharging
-        let pending = UserDefaults.standard.bool(
-            forKey: OfflineSyncDefaults.rangeLossBackfillPending
-        )
+        let pending = strapBacklogPendingForCatchUp()
         guard Self.shouldResumeDrainOnPhoneChargeEdge(
             previousCharging: previous,
             nowCharging: nowCharging,
@@ -13406,6 +13402,32 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set(Date().timeIntervalSince1970,
                      forKey: OfflineSyncDefaults.flushDebtObservedAt)
         defaults.set(level.rawValue, forKey: OfflineSyncDefaults.flushDebtLevel)
+        // P0: a freshly observed backlog arms the maintenance ticker so
+        // catch-up no longer waits for the range-loss flag or a foreground.
+        if level != .caughtUp {
+            startRangeLossBackfillMaintenanceTickerIfNeeded(
+                reason: "flush_debt_observed"
+            )
+        }
+    }
+
+    /// P0 drain decoupling (2026-08-05, user escalation "why the hell is
+    /// coverage 18%"): the entire catch-up engine — connected catch-up (P1),
+    /// maintenance flush window (P2), HR-independent re-arm ticker (P3),
+    /// charge-resume (P5) — used to run ONLY while the exact range-loss
+    /// ticket was pending. A plain strap backlog (fresh flush debt above the
+    /// caught-up floor, observed via 0x22 within the staleness window) now
+    /// drives the same engine through the same downstream guards. The
+    /// range-loss flag keeps precedence for exact-gap accounting; this only
+    /// broadens WHEN the guarded machinery is allowed to try.
+    private func strapBacklogPendingForCatchUp(now: Date = Date()) -> Bool {
+        if UserDefaults.standard.bool(
+            forKey: OfflineSyncDefaults.rangeLossBackfillPending
+        ) {
+            return true
+        }
+        guard let level = currentFlushDebtLevel(now: now) else { return false }
+        return level != .caughtUp
     }
 
     /// The current flush-debt level, or nil when the last observation is missing
