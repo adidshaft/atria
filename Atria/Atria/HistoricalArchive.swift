@@ -3628,6 +3628,10 @@ enum HistoricalArchive {
         guard unix > 0, record.subsec11 < 32_768 else { return }
         let timestamp = TimeInterval(unix) + TimeInterval(record.subsec11) / 32_768
         guard timestamp >= cutoff else { return }
+        // One hex decode per record, shared by every consumer below —
+        // gravity and skin-temperature previously each re-decoded the
+        // payload per line (2026-08-04 scan-garbage fix).
+        let payload = bytes(fromHex: record.rawPayloadHex)
         let motionAlreadyLimited = limitations[.motionReplayIdentity] != nil
             || limitations[.gravity] != nil
         if !motionAlreadyLimited {
@@ -3635,7 +3639,7 @@ enum HistoricalArchive {
             if !motionRecordIdentities.contains(motionIdentity) {
                 if motionRecordIdentities.count >= budget.maximumMotionReplayIdentities {
                     limitations[.motionReplayIdentity] = budget.maximumMotionReplayIdentities
-                } else if let sample = gravitySample(from: record) {
+                } else if let sample = gravitySample(from: record, payload: payload) {
                     if gravity.count >= budget.maximumGravitySamples {
                         limitations[.gravity] = budget.maximumGravitySamples
                     } else {
@@ -3651,7 +3655,7 @@ enum HistoricalArchive {
               metricLayoutValidated(record.layoutVersion),
               record.clockCorrectionStatus == "clock_ref_present",
               record.clockCorrectedUnix7 != nil else { return }
-        if let raw = whoop4SkinTemperatureRaw(from: record),
+        if let raw = whoop4SkinTemperatureRaw(from: record, payload: payload),
            limitations[.skinTemperature] == nil {
             if skinTemperatureRawPoints.count >= budget.maximumSkinTemperaturePoints {
                 limitations[.skinTemperature] = budget.maximumSkinTemperaturePoints
@@ -3706,10 +3710,11 @@ enum HistoricalArchive {
         }
     }
 
-    private static func whoop4SkinTemperatureRaw(from record: Record) -> Int? {
+    private static func whoop4SkinTemperatureRaw(from record: Record,
+                                                 payload: [UInt8]?) -> Int? {
         guard record.layoutVersion == layoutVersion(for: 24),
               record.gravityValidated,
-              let payload = bytes(fromHex: record.rawPayloadHex),
+              let payload,
               payload.count > AtriaResearchProbe.whoop4SkinTemperatureRawOffset + 1,
               payload[0] == 0x2f,
               payload[1] == 24 else { return nil }
@@ -5227,17 +5232,19 @@ enum HistoricalArchive {
             guard !line.isEmpty,
                   let data = line.data(using: .utf8),
                   let record = try? decoder.decode(Record.self, from: data) else { return nil }
-            return gravitySample(from: record)
+            return gravitySample(from: record,
+                                 payload: bytes(fromHex: record.rawPayloadHex))
         }
     }
 
     /// RR-equivalent verification for historical gravity. Stored metadata is
     /// not trusted until the versioned decoder reproduces its clock identity;
     /// subsecond ticks and flash counter are preserved for deterministic order.
-    private static func gravitySample(from record: Record) -> GravitySample? {
+    private static func gravitySample(from record: Record,
+                                      payload: [UInt8]?) -> GravitySample? {
         guard record.unix7 > 0,
               record.subsec11 < 32_768,
-              let payload = bytes(fromHex: record.rawPayloadHex),
+              let payload,
               payload.count == record.payloadLength,
               let gravity = historicalGravity(payload) else { return nil }
 
@@ -5538,6 +5545,45 @@ enum HistoricalArchive {
     }
 
     private static func bytes(fromHex hex: String) -> [UInt8]? {
+        // Fast path (2026-08-04 scan-garbage fix): pure-ASCII hex decoded
+        // byte-wise — no trimmed String copy, no per-pair substrings. This
+        // runs multiple times per scanned line (identity/gravity/skin);
+        // the Character-based version was a dominant footprint contributor.
+        // Semantics preserved: leading/trailing ASCII whitespace trimmed,
+        // interior whitespace rejects (a whitespace-split pair never parsed
+        // before either). Any non-ASCII byte falls back to the original.
+        var sawNonASCII = false
+        var fast: [UInt8] = []
+        fast.reserveCapacity(hex.utf8.count / 2)
+        var nibbles = 0
+        var pending: UInt8 = 0
+        var trailingWhitespace = false
+        scan: for byte in hex.utf8 {
+            switch byte {
+            case 0x80...:
+                sawNonASCII = true
+                break scan
+            case 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20:
+                if nibbles > 0 { trailingWhitespace = true }
+                continue
+            case 0x30...0x39, 0x41...0x46, 0x61...0x66:
+                guard !trailingWhitespace else { return nil }  // interior gap
+                let digit = byte <= 0x39 ? byte - 0x30
+                    : (byte <= 0x46 ? byte - 0x41 + 10 : byte - 0x61 + 10)
+                if nibbles % 2 == 0 {
+                    pending = digit << 4
+                } else {
+                    fast.append(pending | digit)
+                }
+                nibbles += 1
+            default:
+                return nil
+            }
+        }
+        if !sawNonASCII {
+            guard nibbles % 2 == 0 else { return nil }
+            return fast
+        }
         let cleaned = hex.trimmingCharacters(in: .whitespacesAndNewlines)
         guard cleaned.count.isMultiple(of: 2) else { return nil }
         var bytes: [UInt8] = []
