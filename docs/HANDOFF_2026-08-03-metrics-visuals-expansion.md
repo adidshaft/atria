@@ -160,6 +160,16 @@ night exists only on strap flash. `automaticFullDrainRecoveryEnabled` is
 **verify an Aug-4 sleep + rollup appears** (that check doubles as an end-to-end
 proof of "the app does the work" backfill).
 
+**Backfill watch (06:14):** the catch-up drain IS working — an Aug-4 rollup
+appeared ~15 min after revival. BUT recovery scored **38** with
+`sleepSeconds: None` and `rhr: 68` (vs the usual 54–58) — i.e. scored from
+the post-06:00 awake sliver via the no-sleep fallback BEFORE the night
+drained. If `FrozenRecoverySummary` freezes that score for the cycle, it
+will NOT correct when the night backfills → **premature scoring races the
+drain**. Verify on the next pulls: does recovery re-score once
+`sleepSeconds` lands for Aug-4? If not, the freeze rule needs a
+"provisional until sleep evidence or cycle end" carve-out.
+
 **Open root-cause question:** why no BLE-event relaunch between 00:29 and
 05:58 — strap-side link drop with no reconnect attempt reaching the phone, a
 bluetoothd wedge (see `atria-locked-reconnect-fix-proven`), or iOS suspending
