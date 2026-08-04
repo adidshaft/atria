@@ -1755,3 +1755,17 @@ comments) for render-testability; gate pins at :493/:510 migrated;
 temp test DELETED after use. Safe to include in the next device
 install. Next: hero unit scaling, ‹TODAY› capsule, caps micro-labels
 on remaining metric-name sites.
+
+## 15.4 Hero two-scale numerals shipped (2026-08-05 ~04:30)
+
+Soak at +17min: one start, peak 340MB (recompute cycle), idle 99MB.
+2eb1367e: AtriaMetricHeroValueText — 56pt numeral + 22pt baseline-
+aligned unit at reduced emphasis, CONSERVATIVE split (unit = digit-free
+trailing token or glued %, prefix must bear a digit; '6h 24m'/'Live
+read'/'Learning'/'--' stay unsplit). Render-verified via temp XCTest
+(deleted); PERMANENT AtriaMetricHeroValueTextTests pins the no-split
+honesty cases. Gate baseline 4. Applies to every .standard hero
+(HRV/RHR/respiratory/sleep hours/performance/efficiency); ring heroes
+(recovery/strain) untouched. Next: ‹TODAY› capsule stepper styling,
+remaining caps micro-label sites, then a device install bundling the
+render-verified UI batch.
