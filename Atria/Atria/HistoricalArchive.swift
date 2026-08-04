@@ -3521,6 +3521,8 @@ enum HistoricalArchive {
         // closure layer-by-layer to attribute the ~3.3GB dirty growth.
         //   --atria-debug-recovered-scan-mode count-only  → scanner+decompress only
         //   --atria-debug-recovered-scan-mode decode-only → + Record(scanLine:) parse
+        //   --atria-debug-recovered-scan-mode append-sans-motion|-rr|-skin
+        //       → full append minus exactly one subsystem (lane bisect)
         // Absent → full production behavior. Remove with the memprobe.
         let scanBisectMode = ProcessInfo.processInfo.arguments
             .drop { $0 != "--atria-debug-recovered-scan-mode" }.dropFirst().first
@@ -3565,7 +3567,10 @@ enum HistoricalArchive {
                                   rrAccumulator: &rrAccumulator,
                                   skinTemperatureRawPoints: &skinTemperatureRawPoints,
                                   gravity: &gravity,
-                                  motionRecordIdentities: &motionRecordIdentities)
+                                  motionRecordIdentities: &motionRecordIdentities,
+                                  skipMotion: scanBisectMode == "append-sans-motion",
+                                  skipRR: scanBisectMode == "append-sans-rr",
+                                  skipSkin: scanBisectMode == "append-sans-skin")
         }
         AtriaMemprobe.note("rec_scan_done hr=\(heartRate.count) rr=\(rrAccumulator.acceptedRecordCount) skin=\(skinTemperatureRawPoints.count) grav=\(gravity.count) motionIDs=\(motionRecordIdentities.count)")
         sortRecoveredData(heartRate: &heartRate,
@@ -3622,7 +3627,14 @@ enum HistoricalArchive {
         rrAccumulator: inout AtriaRecoveredRRProjection.Accumulator,
         skinTemperatureRawPoints: inout [SkinTemperatureRawPoint],
         gravity: inout [GravitySample],
-        motionRecordIdentities: inout Set<AtriaRecoveredMotionReplayIdentity>
+        motionRecordIdentities: inout Set<AtriaRecoveredMotionReplayIdentity>,
+        // TEMPORARY bisect levers (2026-08-04 footprint hunt): each skips
+        // exactly one append subsystem so a device run can name the lane
+        // whose transient garbage ignites the balloon. Remove with the
+        // memprobe.
+        skipMotion: Bool = false,
+        skipRR: Bool = false,
+        skipSkin: Bool = false
     ) {
         let unix = record.clockCorrectedUnix7 ?? record.unix7
         guard unix > 0, record.subsec11 < 32_768 else { return }
@@ -3634,7 +3646,7 @@ enum HistoricalArchive {
         let payload = bytes(fromHex: record.rawPayloadHex)
         let motionAlreadyLimited = limitations[.motionReplayIdentity] != nil
             || limitations[.gravity] != nil
-        if !motionAlreadyLimited {
+        if !motionAlreadyLimited, !skipMotion {
             let motionIdentity = AtriaRecoveredMotionReplayIdentity(record: record)
             if !motionRecordIdentities.contains(motionIdentity) {
                 if motionRecordIdentities.count >= budget.maximumMotionReplayIdentities {
@@ -3655,7 +3667,8 @@ enum HistoricalArchive {
               metricLayoutValidated(record.layoutVersion),
               record.clockCorrectionStatus == "clock_ref_present",
               record.clockCorrectedUnix7 != nil else { return }
-        if let raw = whoop4SkinTemperatureRaw(from: record, payload: payload),
+        if !skipSkin,
+           let raw = whoop4SkinTemperatureRaw(from: record, payload: payload),
            limitations[.skinTemperature] == nil {
             if skinTemperatureRawPoints.count >= budget.maximumSkinTemperaturePoints {
                 limitations[.skinTemperature] = budget.maximumSkinTemperaturePoints
@@ -3677,7 +3690,7 @@ enum HistoricalArchive {
                 }
             }
         }
-        if record.whoofRRNum18 > 0 {
+        if record.whoofRRNum18 > 0, !skipRR {
             if limitations[.rrRecords] == nil {
                 if rrAccumulator.acceptedRecordCount >= budget.maximumRRRecords {
                     limitations[.rrRecords] = budget.maximumRRRecords
