@@ -276,6 +276,18 @@ record shows EVERY kill today dies inside `rec_scan_progress` —
    plus decoder churn) ⇒ the scan now crosses the limit ⇒ progressively
    worse as the archive grows. Explains why fixes "verified" then failed:
    each reduced other pressure while the archive kept growing.
+**TAGGED REPRODUCTION (10:5x): retention fixed, churn remains.** The
+build-tagged compact-RR run died identically (3374MB at 101s) but with
+arrays PROVABLY tiny (rr=52K accepted ≈8MB) and the pre-scan phase peaking
+at just 540MB (motion-tick layers verified). The residual balloon is
+~1.4KB/line of freed-but-dirty malloc pages during the scan's per-line
+decode churn — pages never returned to the OS. Countermeasure landed
+(`malloc_zone_pressure_relief` every ~1MB of input, in the scan's progress
+hook): verdict OWED from the next probe read. If relief doesn't hold the
+footprint, next lever = replace the per-line full-Record JSONDecoder decode
+with targeted byte-scan field extraction (timestamp(in:)-style) so
+non-contributing lines never allocate.
+
 **REFACTOR LANDED (`c6df5735`, 10:4x)** per the map below: compact
 Accumulator (12/12 projection tests unchanged), snapshot carries verified
 beats, cache survives capped channels via truncatedChannels, rebuild
