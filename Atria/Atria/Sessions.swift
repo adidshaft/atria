@@ -10271,6 +10271,7 @@ final class SessionStore: ObservableObject {
         phase: String,
         component: AtriaRecoveredDataRecomputeCoordinator.Component?
     ) {
+        AtriaMemprobe.note("recompute_stage phase=\(phase) component=\(component.map(String.init(describing:)) ?? "-")")
         recoveredDataRecomputeTimeoutTask?.cancel()
         recoveredDataRecomputeTimeoutContext = .init(
             ticket: ticket,
