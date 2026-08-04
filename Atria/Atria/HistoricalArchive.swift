@@ -220,7 +220,7 @@ enum HistoricalArchive {
     struct RecoveredProjectionBudget: Equatable, Sendable {
         static let production = RecoveredProjectionBudget(
             maximumHeartRatePoints: 1_500_000,
-            maximumRRRecords: 250_000,
+            maximumRRRecords: 1_000_000,
             maximumSkinTemperaturePoints: 1_500_000,
             maximumGravitySamples: 750_000,
             maximumMotionReplayIdentities: 750_000
@@ -282,7 +282,11 @@ enum HistoricalArchive {
     /// for each metric family.
     struct RecoveredDataSnapshot {
         let heartRatePoints: [HeartRatePoint]
-        let rrRecords: [Record]
+        /// Verified RR beats, projected AT SCAN TIME (2026-08-04 footprint
+        /// fix). The scan used to retain whole `Record`s here (~1KB each) for
+        /// a later `project(records:)` pass; verification now happens per
+        /// record during the scan and only the compact accepted form is kept.
+        let rrProjection: AtriaRecoveredRRProjection.Result
         let skinTemperatureRawPoints: [SkinTemperatureRawPoint]
         let motion: MotionArchiveSnapshot
         let scan: RecoveredArchiveScanDiagnostics
@@ -3456,8 +3460,14 @@ enum HistoricalArchive {
         )
         if case .reuse = plan, let reusableCache {
             let elapsed = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
-            let limitations = recoveredBudgetLimitations(cache: reusableCache, budget: budget)
-            recoveredDataCache = limitations.isEmpty ? reusableCache : nil
+            var limitations = recoveredBudgetLimitations(cache: reusableCache, budget: budget)
+            for channel in reusableCache.truncatedChannels where limitations[channel] == nil {
+                limitations[channel] = recoveredBudgetLimit(for: channel, budget: budget)
+            }
+            // Retain even with limitations: truncatedChannels keeps capped
+            // channels honestly budgetExceeded, and discarding the cache here
+            // forced a full-archive rebuild on every recompute (2026-08-04).
+            recoveredDataCache = reusableCache
             return recoveredSnapshot(from: reusableCache,
                                      scan: .init(fileReadCount: 0,
                                                  byteCount: 0,
@@ -3471,18 +3481,23 @@ enum HistoricalArchive {
         var decodedRecordCount = 0
         let coveredSince = cutoff
         var heartRate = reusableCache?.heartRatePoints ?? []
-        var rrRecords = reusableCache?.rrRecords ?? []
+        var rrAccumulator = reusableCache?.rrAccumulator
+            ?? AtriaRecoveredRRProjection.Accumulator()
         var skinTemperatureRawPoints = reusableCache?.skinTemperatureRawPoints ?? []
         var gravity = reusableCache?.gravitySamples ?? []
         var motionRecordIdentities = reusableCache?.motionRecordIdentities ?? []
+        var truncatedChannels = reusableCache?.truncatedChannels ?? []
         var limitations = recoveredBudgetLimitations(
             heartRateCount: heartRate.count,
-            rrRecordCount: rrRecords.count,
+            rrRecordCount: rrAccumulator.acceptedRecordCount,
             skinTemperatureCount: skinTemperatureRawPoints.count,
             gravityCount: gravity.count,
             motionIdentityCount: motionRecordIdentities.count,
             budget: budget
         )
+        for channel in truncatedChannels where limitations[channel] == nil {
+            limitations[channel] = recoveredBudgetLimit(for: channel, budget: budget)
+        }
         let sources: [AtriaHistoricalJSONLRecentScanner.Source]
         switch plan {
         case .reuse:
@@ -3492,10 +3507,15 @@ enum HistoricalArchive {
         }
         if case .rebuild = plan {
             heartRate.removeAll(keepingCapacity: true)
-            rrRecords.removeAll(keepingCapacity: true)
+            rrAccumulator = AtriaRecoveredRRProjection.Accumulator()
             skinTemperatureRawPoints.removeAll(keepingCapacity: true)
             gravity.removeAll(keepingCapacity: true)
             motionRecordIdentities.removeAll(keepingCapacity: true)
+            // A rebuild starts from nothing: limitations seeded from the
+            // pre-clear reused counts would silently block appends into the
+            // now-empty arrays (pre-existing quirk, fixed 2026-08-04).
+            truncatedChannels = []
+            limitations = [:]
         }
 
         AtriaMemprobe.note("rec_scan_begin sources=\(sources.count) plan=\(String(describing: plan).prefix(12))")
@@ -3503,7 +3523,7 @@ enum HistoricalArchive {
             sources: sources,
             cutoff: coveredSince,
             onProgress: { statistics in
-                AtriaMemprobe.note("rec_scan_progress bytes=\(statistics.byteCount) hr=\(heartRate.count) rr=\(rrRecords.count) grav=\(gravity.count) motionIDs=\(motionRecordIdentities.count)")
+                AtriaMemprobe.note("rec_scan_progress bytes=\(statistics.byteCount) hr=\(heartRate.count) rr=\(rrAccumulator.acceptedRecordCount) grav=\(gravity.count) motionIDs=\(motionRecordIdentities.count)")
                 onScanProgress?(statistics)
             }
         ) { lineData in
@@ -3514,14 +3534,13 @@ enum HistoricalArchive {
                                   budget: budget,
                                   limitations: &limitations,
                                   heartRate: &heartRate,
-                                  rrRecords: &rrRecords,
+                                  rrAccumulator: &rrAccumulator,
                                   skinTemperatureRawPoints: &skinTemperatureRawPoints,
                                   gravity: &gravity,
                                   motionRecordIdentities: &motionRecordIdentities)
         }
-        AtriaMemprobe.note("rec_scan_done hr=\(heartRate.count) rr=\(rrRecords.count) skin=\(skinTemperatureRawPoints.count) grav=\(gravity.count) motionIDs=\(motionRecordIdentities.count)")
+        AtriaMemprobe.note("rec_scan_done hr=\(heartRate.count) rr=\(rrAccumulator.acceptedRecordCount) skin=\(skinTemperatureRawPoints.count) grav=\(gravity.count) motionIDs=\(motionRecordIdentities.count)")
         sortRecoveredData(heartRate: &heartRate,
-                          rrRecords: &rrRecords,
                           skinTemperatureRawPoints: &skinTemperatureRawPoints,
                           gravity: &gravity)
         AtriaMemprobe.note("rec_sort_done")
@@ -3537,17 +3556,23 @@ enum HistoricalArchive {
                                        budget: budget,
                                        fileStates: fileStates,
                                        heartRatePoints: heartRate,
-                                       rrRecords: rrRecords,
+                                       rrAccumulator: rrAccumulator,
                                        skinTemperatureRawPoints: skinTemperatureRawPoints,
                                        gravitySamples: gravity,
-                                       motionRecordIdentities: motionRecordIdentities)
-        if scanResult.complete, limitations.isEmpty {
+                                       motionRecordIdentities: motionRecordIdentities,
+                                       truncatedChannels: truncatedChannels
+                                           .union(limitations.keys))
+        if scanResult.complete {
+            // Retain even when a channel capped: `truncatedChannels` keeps that
+            // channel reporting budgetExceeded after pruning (so a narrower
+            // window can never look complete — the concern that used to force
+            // `recoveredDataCache = nil`), while every complete channel stays
+            // incremental instead of paying a full-archive rebuild scan on the
+            // next recompute (the 3.45GB jetsam amplifier, 2026-08-04).
             recoveredDataCache = cache
-        } else if !limitations.isEmpty {
-            // A bounded channel must be rebuilt on the next request; retaining
-            // it would make a later, narrower window look complete. The current
-            // snapshot may still publish independently complete HR/RR, while
-            // the limited motion facade remains explicitly unavailable.
+        } else {
+            // A truncated FILE READ leaves fileStates untrustworthy; only this
+            // case still discards the cache.
             recoveredDataCache = nil
         }
 
@@ -3566,7 +3591,7 @@ enum HistoricalArchive {
         budget: RecoveredProjectionBudget,
         limitations: inout [RecoveredDataCompleteness.Channel: Int],
         heartRate: inout [HeartRatePoint],
-        rrRecords: inout [Record],
+        rrAccumulator: inout AtriaRecoveredRRProjection.Accumulator,
         skinTemperatureRawPoints: inout [SkinTemperatureRawPoint],
         gravity: inout [GravitySample],
         motionRecordIdentities: inout Set<AtriaRecoveredMotionReplayIdentity>
@@ -3622,10 +3647,14 @@ enum HistoricalArchive {
         }
         if record.whoofRRNum18 > 0 {
             if limitations[.rrRecords] == nil {
-                if rrRecords.count >= budget.maximumRRRecords {
+                if rrAccumulator.acceptedRecordCount >= budget.maximumRRRecords {
                     limitations[.rrRecords] = budget.maximumRRRecords
                 } else {
-                    rrRecords.append(record)
+                    // Verify-at-ingest: rejected rows no longer consume the
+                    // budget (previously every whoofRRNum18>0 row counted,
+                    // verified or not), so the cap now measures retained
+                    // verified records only.
+                    rrAccumulator.ingest(record)
                 }
             }
         }
@@ -3633,7 +3662,6 @@ enum HistoricalArchive {
 
     private static func sortRecoveredData(
         heartRate: inout [HeartRatePoint],
-        rrRecords: inout [Record],
         skinTemperatureRawPoints: inout [SkinTemperatureRawPoint],
         gravity: inout [GravitySample]
     ) {
@@ -3641,13 +3669,8 @@ enum HistoricalArchive {
             if $0.t != $1.t { return $0.t < $1.t }
             return $0.bpm < $1.bpm
         }
-        rrRecords.sort {
-            let lhsUnix = $0.clockCorrectedUnix7 ?? $0.unix7
-            let rhsUnix = $1.clockCorrectedUnix7 ?? $1.unix7
-            if lhsUnix != rhsUnix { return lhsUnix < rhsUnix }
-            if $0.subsec11 != $1.subsec11 { return $0.subsec11 < $1.subsec11 }
-            return $0.flash13 < $1.flash13
-        }
+        // RR needs no sort pass here: Accumulator.finish() emits beats in the
+        // projection's canonical deterministic order.
         skinTemperatureRawPoints.sort { $0.t < $1.t }
         gravity.sort {
             if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
@@ -3678,25 +3701,38 @@ enum HistoricalArchive {
         _ cache: RecoveredDataCache,
         since cutoff: TimeInterval
     ) -> RecoveredDataCache {
-        RecoveredDataCache(
+        var prunedRR = cache.rrAccumulator
+        prunedRR.prune(before: cutoff)
+        return RecoveredDataCache(
             coveredSince: cutoff,
             budget: cache.budget,
             fileStates: cache.fileStates,
             heartRatePoints: cache.heartRatePoints.filter {
                 $0.t.timeIntervalSince1970 >= cutoff
             },
-            rrRecords: cache.rrRecords.filter {
-                let unix = $0.clockCorrectedUnix7 ?? $0.unix7
-                return TimeInterval(unix) + TimeInterval($0.subsec11) / 32_768 >= cutoff
-            },
+            rrAccumulator: prunedRR,
             skinTemperatureRawPoints: cache.skinTemperatureRawPoints.filter {
                 $0.t.timeIntervalSince1970 >= cutoff
             },
             gravitySamples: cache.gravitySamples.filter { $0.timestamp >= cutoff },
             motionRecordIdentities: Set(cache.motionRecordIdentities.filter {
                 $0.projectedTimestamp >= cutoff
-            })
+            }),
+            truncatedChannels: cache.truncatedChannels
         )
+    }
+
+    private static func recoveredBudgetLimit(
+        for channel: RecoveredDataCompleteness.Channel,
+        budget: RecoveredProjectionBudget
+    ) -> Int {
+        switch channel {
+        case .heartRate: return budget.maximumHeartRatePoints
+        case .rrRecords: return budget.maximumRRRecords
+        case .skinTemperature: return budget.maximumSkinTemperaturePoints
+        case .gravity: return budget.maximumGravitySamples
+        case .motionReplayIdentity: return budget.maximumMotionReplayIdentities
+        }
     }
 
     private static let recoveredBudgetChannelOrder: [RecoveredDataCompleteness.Channel] = [
@@ -3708,7 +3744,7 @@ enum HistoricalArchive {
         budget: RecoveredProjectionBudget
     ) -> [RecoveredDataCompleteness.Channel: Int] {
         recoveredBudgetLimitations(heartRateCount: cache.heartRatePoints.count,
-                                   rrRecordCount: cache.rrRecords.count,
+                                   rrRecordCount: cache.rrAccumulator.acceptedRecordCount,
                                    skinTemperatureCount: cache.skinTemperatureRawPoints.count,
                                    gravityCount: cache.gravitySamples.count,
                                    motionIdentityCount: cache.motionRecordIdentities.count,
@@ -3770,7 +3806,7 @@ enum HistoricalArchive {
             channels: [.gravity, .motionReplayIdentity]
         )
         return .init(heartRatePoints: cache.heartRatePoints,
-                     rrRecords: cache.rrRecords,
+                     rrProjection: cache.rrAccumulator.finish(),
                      skinTemperatureRawPoints: cache.skinTemperatureRawPoints,
                      motion: .init(samples: cache.gravitySamples,
                                    completeness: motionCompleteness),
@@ -3799,7 +3835,7 @@ enum HistoricalArchive {
     ) -> RecoveredDataSnapshot {
         let cutoff = since.timeIntervalSince1970
         var heartRate: [HeartRatePoint] = []
-        var rrRecords: [Record] = []
+        var rrAccumulator = AtriaRecoveredRRProjection.Accumulator()
         var skinTemperatureRawPoints: [SkinTemperatureRawPoint] = []
         var gravity: [GravitySample] = []
         var motionRecordIdentities = Set<AtriaRecoveredMotionReplayIdentity>()
@@ -3810,23 +3846,23 @@ enum HistoricalArchive {
                                   budget: budget,
                                   limitations: &limitations,
                                   heartRate: &heartRate,
-                                  rrRecords: &rrRecords,
+                                  rrAccumulator: &rrAccumulator,
                                   skinTemperatureRawPoints: &skinTemperatureRawPoints,
                                   gravity: &gravity,
                                   motionRecordIdentities: &motionRecordIdentities)
         }
         sortRecoveredData(heartRate: &heartRate,
-                          rrRecords: &rrRecords,
                           skinTemperatureRawPoints: &skinTemperatureRawPoints,
                           gravity: &gravity)
         let cache = RecoveredDataCache(coveredSince: cutoff,
                                        budget: budget,
                                        fileStates: [:],
                                        heartRatePoints: heartRate,
-                                       rrRecords: rrRecords,
+                                       rrAccumulator: rrAccumulator,
                                        skinTemperatureRawPoints: skinTemperatureRawPoints,
                                        gravitySamples: gravity,
-                                       motionRecordIdentities: motionRecordIdentities)
+                                       motionRecordIdentities: motionRecordIdentities,
+                                       truncatedChannels: Set(limitations.keys))
         return recoveredSnapshot(
             from: cache,
             scan: .init(fileReadCount: 0,
@@ -4934,10 +4970,18 @@ enum HistoricalArchive {
         let budget: RecoveredProjectionBudget
         let fileStates: [String: AtriaHistoricalJSONLRecentScanner.FileState]
         let heartRatePoints: [HeartRatePoint]
-        let rrRecords: [Record]
+        let rrAccumulator: AtriaRecoveredRRProjection.Accumulator
         let skinTemperatureRawPoints: [SkinTemperatureRawPoint]
         let gravitySamples: [GravitySample]
         let motionRecordIdentities: Set<AtriaRecoveredMotionReplayIdentity>
+        /// Channels that hit their budget cap during THIS cache's ingest
+        /// history (2026-08-04). A truncated channel is missing arbitrary
+        /// mid-scan rows, so it must keep reporting budgetExceeded even after
+        /// pruning drops its count back under the cap — previously the whole
+        /// cache was discarded instead, which forced a full-archive rebuild
+        /// scan on every recompute once any channel capped (the systemic
+        /// 3.45GB jetsam amplifier).
+        var truncatedChannels: Set<RecoveredDataCompleteness.Channel> = []
     }
 
     private struct RecentGravityCache {

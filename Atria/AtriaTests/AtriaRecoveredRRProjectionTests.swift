@@ -164,8 +164,8 @@ final class AtriaRecoveredRRProjectionTests: XCTestCase {
         ])["window"] ?? []
 
         XCTAssertEqual(snapshot.heartRatePoints.count, 1)
-        XCTAssertEqual(snapshot.rrRecords.count, 1)
-        XCTAssertEqual(AtriaRecoveredRRProjection.project(records: snapshot.rrRecords)
+        XCTAssertEqual(snapshot.rrProjection.statistics.acceptedRecordCount, 1)
+        XCTAssertEqual(snapshot.rrProjection
             .statistics.acceptedRecordCount, 1)
         XCTAssertFalse(motion.contains(where: \.measurementValidated),
                        "the stricter unusable gravity row remains isolated to motion")
@@ -419,7 +419,7 @@ final class AtriaRecoveredRRProjectionTests: XCTestCase {
         XCTAssertEqual(snapshot.physiologyCompleteness,
                        .budgetExceeded(channel: .heartRate, limit: 1))
         XCTAssertEqual(snapshot.heartRatePoints.count, 1)
-        XCTAssertEqual(snapshot.rrRecords.count, 2,
+        XCTAssertEqual(snapshot.rrProjection.statistics.acceptedRecordCount, 2,
                        "an HR bound must not silently truncate independently verified RR")
         XCTAssertEqual(snapshot.completeness.failureReason,
                        "archive_projection_budget_exceeded_heart_rate_1")
@@ -451,7 +451,7 @@ final class AtriaRecoveredRRProjectionTests: XCTestCase {
             .init(channel: .motionReplayIdentity, limit: 1)
         ])
         XCTAssertEqual(snapshot.heartRatePoints.count, 2)
-        XCTAssertEqual(snapshot.rrRecords.count, 2)
+        XCTAssertEqual(snapshot.rrProjection.statistics.acceptedRecordCount, 2)
 
         let epochs = snapshot.motion.recoveredEpochs(windows: [
             .init(id: "bounded", start: Date(timeIntervalSince1970: 1_781_626_499),
@@ -481,7 +481,7 @@ final class AtriaRecoveredRRProjectionTests: XCTestCase {
         XCTAssertEqual(snapshot.motion.completeness, .complete)
         XCTAssertTrue(snapshot.budgetLimitations.isEmpty)
         XCTAssertEqual(snapshot.heartRatePoints.count, 1)
-        XCTAssertEqual(snapshot.rrRecords.count, 1)
+        XCTAssertEqual(snapshot.rrProjection.statistics.acceptedRecordCount, 1)
     }
 
     func testProductionConsumerUsesPhysiologyGateWithoutClaimingMotionCompleteness() throws {

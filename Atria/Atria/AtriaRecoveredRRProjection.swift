@@ -92,58 +92,111 @@ enum AtriaRecoveredRRProjection {
     }
 
     static func project(records: [HistoricalArchive.Record]) -> Result {
-        var rejectionCounts: [RejectionReason: Int] = [:]
-        var acceptedByRecordID: [String: AcceptedRecord] = [:]
-        var replayedRecordCount = 0
-
+        var accumulator = Accumulator()
         for record in records {
-            switch verify(record) {
+            accumulator.ingest(record)
+        }
+        return accumulator.finish()
+    }
+
+    /// Streaming form of `project(records:)` for the recovered-archive scan
+    /// (2026-08-04 footprint fix): verification happens per-record at ingest
+    /// time and only a COMPACT accepted representation is retained — recordID,
+    /// clock rank, the three timestamp/counter fields `makeBeats` needs, and
+    /// the decoded intervals. Retaining whole `Record`s (rawPayloadHex +
+    /// candidateRR + three int arrays ≈ 1KB each) was a primary contributor to
+    /// the 3.45GB phys_footprint jetsams. `finish()` materializes the exact
+    /// same Result as `project(records:)` — same dedup, same clock-provenance
+    /// preference, same ordering, same fingerprint.
+    struct Accumulator {
+        fileprivate struct CompactAccepted {
+            let recordID: String
+            var clockRank: ClockRank
+            var correctedUnix: UInt32
+            var subsecond: UInt16
+            var counter: UInt32
+            var intervals: [Int]
+        }
+
+        fileprivate var acceptedByRecordID: [String: CompactAccepted] = [:]
+        fileprivate var rejectionCounts: [RejectionReason: Int] = [:]
+        fileprivate var replayedRecordCount = 0
+        fileprivate var inputRecordCount = 0
+
+        init() {}
+
+        var acceptedRecordCount: Int { acceptedByRecordID.count }
+
+        mutating func ingest(_ record: HistoricalArchive.Record) {
+            inputRecordCount += 1
+            switch AtriaRecoveredRRProjection.verify(record) {
             case .failure(let reason):
                 rejectionCounts[reason, default: 0] += 1
 
             case .success(let verified):
-                let recordID = stableRecordID(record, normalizedPayloadHex: verified.payloadHex)
-                guard acceptedByRecordID[recordID] == nil else {
-                    replayedRecordCount += 1
-                    if let existing = acceptedByRecordID[recordID],
-                       prefersClockProvenance(clockRank(for: record), over: existing.clockRank) {
-                        acceptedByRecordID[recordID] = AcceptedRecord(
-                            clockRank: clockRank(for: record),
-                            beats: makeBeats(record: record,
-                                             intervals: verified.intervals,
-                                             recordID: recordID)
-                        )
-                    }
-                    continue
-                }
-                acceptedByRecordID[recordID] = AcceptedRecord(
-                    clockRank: clockRank(for: record),
-                    beats: makeBeats(record: record,
-                                     intervals: verified.intervals,
-                                     recordID: recordID)
+                let recordID = AtriaRecoveredRRProjection.stableRecordID(
+                    record, normalizedPayloadHex: verified.payloadHex)
+                let compact = CompactAccepted(
+                    recordID: recordID,
+                    clockRank: AtriaRecoveredRRProjection.clockRank(for: record),
+                    correctedUnix: record.clockCorrectedUnix7!,
+                    subsecond: record.subsec11,
+                    counter: record.flash13,
+                    intervals: verified.intervals
                 )
+                if let existing = acceptedByRecordID[recordID] {
+                    replayedRecordCount += 1
+                    if AtriaRecoveredRRProjection.prefersClockProvenance(
+                        compact.clockRank, over: existing.clockRank) {
+                        acceptedByRecordID[recordID] = compact
+                    }
+                } else {
+                    acceptedByRecordID[recordID] = compact
+                }
             }
         }
 
-        let beats = acceptedByRecordID.values
-            .flatMap { $0.beats }
-            .sorted { lhs, rhs in
-                if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
-                if lhs.recordID != rhs.recordID { return lhs.recordID < rhs.recordID }
-                return lhs.beatIndex < rhs.beatIndex
+        /// Drop accepted records that end before `cutoff` (cache pruning).
+        /// Rejection/replay statistics intentionally keep describing the whole
+        /// ingest history — they are diagnostics, not retained data.
+        mutating func prune(before cutoff: TimeInterval) {
+            acceptedByRecordID = acceptedByRecordID.filter { _, accepted in
+                TimeInterval(accepted.correctedUnix)
+                    + TimeInterval(accepted.subsecond)
+                        / TimeInterval(AtriaRecoveredRRProjection.rtcTicksPerSecond)
+                    >= cutoff
             }
-        let fingerprint = stableFingerprint(for: beats)
-        return Result(
-            beats: beats,
-            statistics: Statistics(
-                inputRecordCount: records.count,
-                acceptedRecordCount: acceptedByRecordID.count,
-                replayedRecordCount: replayedRecordCount,
-                emittedBeatCount: beats.count,
-                rejectionCounts: rejectionCounts
-            ),
-            stableFingerprint: fingerprint
-        )
+        }
+
+        func finish() -> Result {
+            let beats = acceptedByRecordID.values
+                .flatMap { accepted in
+                    AtriaRecoveredRRProjection.makeBeats(
+                        correctedUnix: accepted.correctedUnix,
+                        subsecond: accepted.subsecond,
+                        counter: accepted.counter,
+                        intervals: accepted.intervals,
+                        recordID: accepted.recordID
+                    )
+                }
+                .sorted { lhs, rhs in
+                    if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+                    if lhs.recordID != rhs.recordID { return lhs.recordID < rhs.recordID }
+                    return lhs.beatIndex < rhs.beatIndex
+                }
+            let fingerprint = AtriaRecoveredRRProjection.stableFingerprint(for: beats)
+            return Result(
+                beats: beats,
+                statistics: Statistics(
+                    inputRecordCount: inputRecordCount,
+                    acceptedRecordCount: acceptedByRecordID.count,
+                    replayedRecordCount: replayedRecordCount,
+                    emittedBeatCount: beats.count,
+                    rejectionCounts: rejectionCounts
+                ),
+                stableFingerprint: fingerprint
+            )
+        }
     }
 
     private struct VerifiedRecord {
@@ -151,15 +204,7 @@ enum AtriaRecoveredRRProjection {
         let intervals: [Int]
     }
 
-    /// The projection output needs only deterministic clock preference after a
-    /// record is verified. Retaining the complete Record (including payload
-    /// strings and RR arrays) doubled the peak cache footprint.
-    private struct AcceptedRecord {
-        let clockRank: ClockRank
-        let beats: [Beat]
-    }
-
-    private struct ClockRank {
+    fileprivate struct ClockRank {
         let wall: UInt32
         let device: UInt32
         let correctedUnix: UInt32
@@ -232,14 +277,15 @@ enum AtriaRecoveredRRProjection {
                                        intervals: intervals))
     }
 
-    private static func makeBeats(
-        record: HistoricalArchive.Record,
+    fileprivate static func makeBeats(
+        correctedUnix: UInt32,
+        subsecond: UInt16,
+        counter: UInt32,
         intervals: [Int],
         recordID: String
     ) -> [Beat] {
-        let correctedUnix = record.clockCorrectedUnix7!
         let recordTimestamp = TimeInterval(correctedUnix)
-            + TimeInterval(record.subsec11) / TimeInterval(rtcTicksPerSecond)
+            + TimeInterval(subsecond) / TimeInterval(rtcTicksPerSecond)
         var remainingAfterMilliseconds = intervals.reduce(0, +)
         return intervals.enumerated().map { index, interval in
             remainingAfterMilliseconds -= interval
@@ -250,7 +296,7 @@ enum AtriaRecoveredRRProjection {
                 recordID: recordID,
                 timestamp: Date(timeIntervalSince1970: beatTimestamp),
                 intervalMilliseconds: interval,
-                counter: record.flash13,
+                counter: counter,
                 beatIndex: index,
                 provenance: .verifiedWhoop4HistoricalV24
             )
