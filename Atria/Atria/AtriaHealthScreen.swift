@@ -715,13 +715,13 @@ struct AtriaHealthScreen: View {
                 // because this whole screen is a single child of it; making THIS stack
                 // lazy renders only the on-screen sections, the rest as they scroll in.
                 LazyVStack(spacing: 12) {
-                    Picker("Vitals view", selection: $scope) {
-                        ForEach(Scope.allCases) { scope in
-                            Text(scope.rawValue).tag(scope)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .accessibilityLabel("Vitals view")
+                    // Native-clean selector (design 2026-08-05): replaces the
+                    // congested `.segmented` picker with a spacious Apple-Stocks
+                    // style plain-text row + sliding highlight.
+                    AtriaTextSelector(items: Scope.allCases,
+                                      title: { $0.rawValue },
+                                      selection: $scope)
+                        .padding(.horizontal, 4)
 
                     switch scope {
                     case .live:

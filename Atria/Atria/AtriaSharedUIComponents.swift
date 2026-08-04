@@ -968,3 +968,45 @@ struct AtriaEventWindowTimeline: View, Equatable {
         return date.formatted(style)
     }
 }
+
+/// Apple-Stocks-style plain-text selector (design direction 2026-08-05): a
+/// spacious row of text items with a single subtle capsule that slides under
+/// the selected one. Replaces congested `.pickerStyle(.segmented)` controls --
+/// no heavy pill-in-pill container, generous tap targets, clearer selected
+/// state, more breathing room.
+struct AtriaTextSelector<Item: Hashable>: View {
+    let items: [Item]
+    let title: (Item) -> String
+    @Binding var selection: Item
+
+    @Namespace private var highlight
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(items, id: \.self) { item in
+                let isSelected = item == selection
+                Button {
+                    withAnimation(.snappy(duration: 0.28)) { selection = item }
+                } label: {
+                    Text(title(item))
+                        .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                        .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .contentShape(Capsule())
+                        .background {
+                            if isSelected {
+                                Capsule(style: .continuous)
+                                    .fill(Color.primary.opacity(0.07))
+                                    .matchedGeometryEffect(id: "atria.selector.highlight", in: highlight)
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(title(item))
+                .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
