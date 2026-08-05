@@ -2517,3 +2517,16 @@ REMAINING (ranked, future sessions): icon-distinctness test fix (UI
 session), July replay-family tests, fingerprint-latch, reuse=0
 refresh coalescing, Jul-24 range-loss windows (defers on live link by
 design), readVerifiedConsumerSources bounded reads.
+
+## 15.35 Last test-debt family under diagnosis (2026-08-05 ~21:15)
+
+Device steady (no new cache publish since 20:38; flush debt low/183).
+Delegated: the July replay-family diagnosis — classify each failure as
+STALE PIN (deliberate Aug-5 changes: raised prompt bars, manual-sleep
+honesty, compaction) vs REAL REGRESSION (captured-fixture truth
+violated — report only, never migrate away) vs ENVIRONMENTAL
+(PhysicalSleepProbeTests untracked debug leftover — disposition
+recommendation). Review + commit on report. This is the final item
+from the day's ranked list actionable in this session; the rest
+(fingerprint-latch, coalescing, bounded verified reads, Jul-24
+range-loss windows) are documented for future sessions.
