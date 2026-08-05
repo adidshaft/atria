@@ -428,6 +428,18 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
     }
 
     func testJuly15CapturedNightCannotRecoverFromLegacyRRAndUnvalidatedMotion() throws {
+        // 72 → 61 (2026-08-05 pin migration): the day-one RHR-only recovery
+        // number moved when the 2026-07-28 daily-metric-authority hardening
+        // (9d8549ee) changed the replay's rebuilt-baseline/resting inputs —
+        // the SAME change that migrated this helper's July 17 pin 63 → 58 in
+        // that commit. July 15's pin was missed then because the replay corpus
+        // was absent from the tree (the whole family failed on file-not-found
+        // until the 2026-07-29 fallback, d5def033). Verified stable at 61 both
+        // before (e665dcfd~1) and after the 2026-08-05 engine changes. Every
+        // fixture-truth assertion (session/RR counts, no promoted sleep, no
+        // HRV, unverified confidence, 0.20 RHR weight) is unchanged; only the
+        // model-output percent was recalibrated. Current inputs: overnight
+        // resting 59 vs rebuilt baseline 61 (default sd 5) → z −0.4 → 61%.
         try assertHonestRejectedNight(year: 2026,
                                       month: 7,
                                       day: 15,
@@ -437,7 +449,7 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
                                       expectedQualifiedStandardRRSessionCount: 0,
                                       expectedLocallyQualifiedHRVSessionCount: 0,
                                       expectedMorningHRV: nil,
-                                      expectedLimitedRecovery: 72)
+                                      expectedLimitedRecovery: 61)
     }
 
     func testJuly16CapturedNightDoesNotPromoteSparseQualifiedRRWithoutSleepEvidence() throws {
