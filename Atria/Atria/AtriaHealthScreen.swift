@@ -715,13 +715,13 @@ struct AtriaHealthScreen: View {
                 // because this whole screen is a single child of it; making THIS stack
                 // lazy renders only the on-screen sections, the rest as they scroll in.
                 LazyVStack(spacing: 12) {
-                    Picker("Vitals view", selection: $scope) {
-                        ForEach(Scope.allCases) { scope in
-                            Text(scope.rawValue).tag(scope)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .accessibilityLabel("Vitals view")
+                    // Native-clean selector (design 2026-08-05): replaces the
+                    // congested `.segmented` picker with a spacious Apple-Stocks
+                    // style plain-text row + sliding highlight.
+                    AtriaTextSelector(items: Scope.allCases,
+                                      title: { $0.rawValue },
+                                      selection: $scope)
+                        .padding(.horizontal, 4)
 
                     switch scope {
                     case .live:
@@ -854,19 +854,35 @@ struct AtriaHealthScreen: View {
                 .font(.title2.weight(.bold))
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                AtriaMetricTile(label: "Performance",
-                                value: sleepPerformanceValue,
-                                state: currentSleep == nil ? .learning : .local,
-                                tint: Metrics.electricSleep,
-                                footnote: "of nightly need")
-                AtriaMetricTile(label: "Efficiency",
-                                value: currentSleep?.sleepEfficiencyText ?? "--",
-                                // HR-only honesty (2026-08-01): without
-                                // validated motion the stored value is span
-                                // coverage, not efficiency.
-                                state: currentSleep?.displaySleepEfficiency == nil ? .learning : .research,
-                                tint: .cyan,
-                                footnote: currentSleep?.sleepEfficiencyFootnote ?? "Duration-based estimate")
+                // Drill-in (design UI pass): these tiles used to be dead-taps.
+                // Route them to the rich, day-organized AtriaMetricDetailSheet
+                // (already wired below), matching the metric-as-object model the
+                // live vital tiles already use.
+                Button {
+                    metricDetail = .sleepPerformance
+                } label: {
+                    AtriaMetricTile(label: "Performance",
+                                    value: sleepPerformanceValue,
+                                    state: currentSleep == nil ? .learning : .local,
+                                    tint: Metrics.electricSleep,
+                                    footnote: "of nightly need")
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Opens sleep performance detail")
+                Button {
+                    metricDetail = .sleepEfficiency
+                } label: {
+                    AtriaMetricTile(label: "Efficiency",
+                                    value: currentSleep?.sleepEfficiencyText ?? "--",
+                                    // HR-only honesty (2026-08-01): without
+                                    // validated motion the stored value is span
+                                    // coverage, not efficiency.
+                                    state: currentSleep?.displaySleepEfficiency == nil ? .learning : .research,
+                                    tint: .cyan,
+                                    footnote: currentSleep?.sleepEfficiencyFootnote ?? "Duration-based estimate")
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Opens sleep efficiency detail")
             }
 
             if currentSleep == nil {
