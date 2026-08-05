@@ -3487,3 +3487,27 @@ restoration on next strap event or morning unlock; morning open
 also fires the §15.74 publication trigger.
 Loop continues: 5-min cadence (job f0aac2f3), integration
 re-verification each iteration, accuracy-first on collisions.
+
+## 15.76 COVERAGE ATTRIBUTION VERDICT — the 48% ceiling explained (04:45)
+
+Full-day duty-cycle data (the §15.42 instrumentation paying off):
+- Aug-5 (5.0h attributed, 19:00→24:00): armed 48% / sync_cutover
+  44% / link_down 6%.
+- Aug-6 00:00→04:41 (4.7h): sync_cutover 73% (207min!) / armed 24%
+  (69min) — overnight, with flushDebt caught_up (3 records) the
+  whole time.
+VERDICT: history-sync link ownership is THE steps-coverage ceiling.
+Every sync minute = unarmed minute (motion not banking). At 44-73%
+sync occupancy, coverage cannot exceed ~50% of worn time — matching
+the user's stuck 48%. The overnight occupant is the range-loss
+lane cycling (arm→own→defer→re-arm) while its target windows remain
+unreachable at 1x-from-oldest (July non-convergence analysis).
+DAYLIGHT FIX (now fully evidenced, §15.73 SLA requires it):
+1. Bound/disable automatic range-loss lane occupancy (the July
+   analysis + tonight's 73% + zero recovered seconds = the same
+   verdict twice); keep gaps honestly ledgered.
+2. Arbitration policy: motion-bank arming must outrank opportunistic
+   history lanes whenever flushDebt is caught_up — sync lanes yield
+   the link within seconds, not minutes.
+3. Re-measure next day: expect armed >85% of worn time → coverage
+   ~100% within the 30-60min SLA.
