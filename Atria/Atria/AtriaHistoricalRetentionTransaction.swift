@@ -492,12 +492,33 @@ struct AtriaHistoricalRetentionTransaction {
         try fileManager.moveItem(at: temporaryURL, to: finalURL)
     }
 
+    // Reused-buffer streaming (2026-08-05, superposition endgame): the old
+    // loop allocated a fresh 1MB Data per read — under the iOS 27 reclaim law
+    // ~1GB of freed read buffers accumulated per whole-archive verify pass
+    // (the dominant burst stack in the +156s jetsam). One POSIX buffer +
+    // update(bufferPointer:) allocates nothing per chunk; digests are
+    // byte-identical.
     static func sha256(of url: URL) throws -> String {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
+        let fd = open(url.path, O_RDONLY)
+        guard fd >= 0 else {
+            throw CocoaError(.fileReadNoSuchFile,
+                             userInfo: [NSFilePathErrorKey: url.path])
+        }
+        defer { close(fd) }
         var hasher = SHA256()
-        while let data = try handle.read(upToCount: 1024 * 1024), !data.isEmpty {
-            hasher.update(data: data)
+        let bufferSize = 1024 * 1024
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: bufferSize,
+                                                      alignment: 16)
+        defer { buffer.deallocate() }
+        while true {
+            let count = read(fd, buffer, bufferSize)
+            if count < 0 {
+                throw CocoaError(.fileReadUnknown,
+                                 userInfo: [NSFilePathErrorKey: url.path])
+            }
+            if count == 0 { break }
+            hasher.update(bufferPointer: UnsafeRawBufferPointer(start: buffer,
+                                                                count: count))
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
