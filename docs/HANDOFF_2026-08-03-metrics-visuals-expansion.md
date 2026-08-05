@@ -2634,3 +2634,19 @@ charge/idle), calibration windows (days). "Caught up" = clock 1.
 Honesty means clocks 2-3 show "--"/building rather than unverified
 numbers. Candidate copy improvement: surfaces gated on clock 2 could
 say "verifying tonight" instead of generic building language.
+
+## 15.40 Watch pull 2026-08-05 18:34 IST
+
+Healthy: flushDebt=low (376 pending, observed 18:09), durable flush
+boundary OK at 18:33, handshake full_drain_write_confirmed, rearm
+diag link=1 fresh=1 authority=none defer=0. No new terminal failure
+(last remains publicationCheckpointMissing @ 07:51 UTC, pre-fix
+build era). Motion bank: offload STARTED 17:11 IST, gate4
+window_complete_requesting_offload — daytime bank drain running, so
+coverage/efficiency backfill is under way before tonight's charge.
+Tripwire: recoveredCacheFootprint plan=scan physMB=745 (hr=776581,
+motionIDs/grav at 750000 caps, strapIdMaxLen=36). Higher than the
+465MB post-compaction publish but scan-path + grown data; under the
+900MB unwind threshold. WATCH: if a later publish trends toward
+900MB, investigate before acting. Jul-24 range-loss lane still
+awaiting natural disconnect (reacquisition marker unchanged, Jul 27).
