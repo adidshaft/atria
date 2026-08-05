@@ -2329,3 +2329,22 @@ gapResolvedConsumersPending + quarantine dir appears with the
 surfaces. If the watch expires unchanged: check whether the resume
 entry needs a foreground activation (user opening the phone provides
 it naturally).
+
+## 15.27 Final gate identified: foreground-only by design (2026-08-05 ~16:20)
+
+The materialization's own entry (resumePendingFullDrainPublicationIfNeeded,
+AtriaBLEManager:32536) requires applicationState == .active — a
+deliberate background-CPU-budget protection (CoreBluetooth restoration
+launches are budgeted; terminal settlement scanning the archive there
+produced cpu_resource_fatal kills). devicectl launches on a
+screen-off phone never satisfy it; the 03:55 failure was a genuine
+foreground moment. The 'deferred_connected_live_link' status seen
+mid-watch was the SEPARATE range-loss drain lane (BLE pipe
+protection), not the materialization. NO gate is being bypassed — the
+repair runs on the user's next natural app-open. User pinged (open the
+app ~3min); 40-min authority watch armed to capture the resolution.
+Verification chain once foreground: shouldRunTerminalConsumerMaterialization
+→ admission ledger → fresh-HR guard → fingerprint (not cached for our
+error class) → dependency gate (old-gap fingerprint differs → clears)
+→ scheduleFullDrainConsumerMaterialization → Leg A repair on 3939d3d6
+→ evidence + re-mint (Leg B) → publish → consumersCommitted/resolved.
