@@ -1964,3 +1964,27 @@ clean N times under forced backlog, the +65s death is closed by the
 lane+skip fixes and the remaining kill needs the LONG backlog only a
 real overnight gap produces (then: reproduce by seeding a synthetic
 gap, still today).
+
+## 15.13 KEY FACT: the dying cycle was SUPERSEDED (2026-08-05 ~06:10)
+
+In 11706's death window, `recompute_stage phase=derived` NEVER fired:
+post_swap_done (+53s) was followed by the coordinator taking the
+SUPERSEDE path (a trailing archive revision queued by the streaming
+strap during the 25s scan) — effects [.superseded,
+.scheduleTrailingStart(20s)], so the derived chain (comp_begin) never
+ran and the death at +65s belongs to a FLUSH-TRIGGERED lane outside
+the recompute pipeline (or the supersede/rollback path itself).
+
+Two-front hunt running NOW:
+1. Flush-synchronized forced repro (device): poll for a fresh durable
+   flush marker, terminate+relaunch within seconds of it so the launch
+   sees an unprocessed revision → rebuild-scale recompute + flush lanes
+   under round-4b's complete note net.
+2. climber-hunt workflow (wf_3021d643): 5 parallel mappers (BLE flush
+   lanes / archive append / rollback+supersede / dashboard observers /
+   steps-today) → adversarial verification against the observed note
+   pattern → ranked verdict + one discriminating note.
+
+Also learned: cold relaunches with a committed archive run NO scan at
+all (no pending revision → no recompute) — forced repro must be
+flush-synchronized to exercise the gauntlet.
