@@ -672,9 +672,10 @@ class HandoffStaticChecks(unittest.TestCase):
             # range picker extended to 1Y/All; .all now has its own
             # `.distantPast` branch instead of falling through this one.
             "case .week, .month, .quarter, .sixMonths, .year:",
-            "Picker(\"Range\", selection: $range)",
-            "Text(item.segmentedLabel)",
-            ".accessibilityLabel(item.menuLabel)",
+            # Pin migrated 2026-08-05 (UI-branch merge): the segmented
+            # Picker became the Apple-native AtriaTextSelector (e831ed55 /
+            # d71e85a3 / f7ffe917); pin the selector idiom instead.
+            "AtriaTextSelector(items: AtriaTrendRange.trendCardSegments,",
             "@State private var rangeCoverage: [AtriaTrendRange: Int] = [:]",
             # 2026-07-07 dedup audit: the dock (a second control bound to
             # the same $range as the segmented picker) is unmounted; its
@@ -7071,9 +7072,10 @@ class HandoffStaticChecks(unittest.TestCase):
             'default: return "Last \\(label)"',
             "case .strain: return Metrics.electricStrain",
             "func cutoffDate(now: Date = Date(), calendar: Calendar = .current) -> Date",
-            "Picker(\"Range\", selection: $range)",
-            "Text(item.segmentedLabel)",
-            ".accessibilityLabel(item.menuLabel)",
+            # Pin migrated 2026-08-05 (UI-branch merge): the segmented
+            # Picker became the Apple-native AtriaTextSelector (e831ed55 /
+            # d71e85a3 / f7ffe917); pin the selector idiom instead.
+            "AtriaTextSelector(items: AtriaTrendRange.trendCardSegments,",
             ".accessibilityLabel(chartAccessibilityLabel)",
             "private var chartAccessibilityLabel: String",
             # 2026-07-31 audit item 13: honest sample-count wording.
@@ -11941,7 +11943,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "@State private var rrSamples: [RRSample] = []",
             'Text("Relax · \\(timeText(remaining))")',
             "Text(\"5.5 breaths/min\")",
-            "Picker(\"Duration\", selection: $selectedDuration)",
+            # Pin migrated 2026-08-05 (UI-branch merge): the segmented
+            # Picker became the Apple-native AtriaTextSelector (e831ed55 /
+            # d71e85a3 / f7ffe917); pin the selector idiom instead.
+            "AtriaTextSelector(items: [TimeInterval(60), TimeInterval(180), TimeInterval(300)],",
             "Label(\"Start\", systemImage: \"play.fill\")",
             "Label(currentHeartRate > 0 ? \"\\(currentHeartRate) bpm\" : \"HR learning\"",
             "let onSave: (SavedSession) -> Void",
