@@ -2856,3 +2856,43 @@ rebuild attempt after N min), verify against the Jul-24 breadcrumb
 forensics before changing. User-visible copy note: the app rendered
 an accurate diagnosis but no remediation hint; "Bluetooth off" card
 could offer "toggle BT / reopen Atria" (UI-session item).
+
+## 15.50 poweredOff-wedge self-heal DESIGN (queue HIGH, do NOT ship tonight) (19:55 IST)
+
+Variant analysis: existing rebuild covers connected-but-silent only —
+(a) silent-stream repair final budget slot (AtriaBLEManager ~19312,
+"link reads connected and silent"), (b) stall hard-reconnect
+replaceWedgedSession (~14986). Today: central reported poweredOff
+(system BT ON), so BOTH paths unreachable — app treats poweredOff as
+ground truth, renders "Bluetooth off", waits for a callback a wedged
+XPC session never delivers. Entry: keepalive stall-reconnect #97 at
+19:26:31 → poweredOff 19:26:32.
+
+DESIGN (safe in both worlds): rebuild-on-persistent-poweredOff.
+- Track poweredOffObservedAt on transition to .poweredOff; clear on
+  .poweredOn (reset episode marker).
+- Trigger: app foreground-active && state still .poweredOff &&
+  elapsed > 60s && !rebuiltThisPoweredOffEpisode → ONE
+  rebuildCentralForWedgedSessionOnce(trigger:"powered_off_wedge") per
+  episode. Foreground-gated = covers today's exact incident (user
+  staring at "Bluetooth off") without background-timer fragility.
+- Genuinely-off radio: fresh central also reports poweredOff → no
+  behavior change. Wedged session: fresh XPC reports poweredOn →
+  standing-connect path recovers (relaunch-equivalent, proven today).
+- BEFORE implementing: read rebuildCentralForWedgedSessionOnce fully
+  (silentStreamCentralRebuildIssued and friends), check Jul-24
+  breadcrumb invariants, add poweredOff-episode breadcrumbs.
+WHY NOT TONIGHT: 2 installs today each caused an incident (trust
+blocker, CB wedge); overnight experiments armed (duty-cycle
+attribution, 9-ticket starvation test, sleep validation) — a third
+install risks the night's data for a fix that needs fixture-grade
+care.
+
+UI-SESSION ITEMS (user asked "can there be a transient message?"):
+staged connection states — "Bluetooth off (try toggling BT or
+reopening Atria)" → "Reconnecting to strap…" → connected; today it
+jumps from off to connected with no narration.
+
+WATCH: boundaryOK still 19:17 at 19:50 (bank re-armed 19:46). Earlier
+relaunch took ~12min to advance boundary → deadline ~20:00; if still
+19:17 then, investigate HR stream (arm success ≠ HR flow proof).
