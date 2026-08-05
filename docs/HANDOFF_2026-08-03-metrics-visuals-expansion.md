@@ -2152,3 +2152,29 @@ Deep-eye protocol notes for reuse: per-pid ASLR slide (grep the pid's
 own aslr line, NOT tail -1 — two processes share the log), atos -s
 <slide> against build-device dSYM (UUID-verify first), burst_stack
 fires on ≥150MB/250ms jumps.
+
+## 15.20 🎯 GAUNTLET SURVIVED — first in nine attempts (2026-08-05 ~11:50)
+
+Gauntlet #9 (streaming-hash build): pid 12984 ran 375s, ONE start,
+peak 1243MB at +48s. The reused-buffer sha256 collapsed the verify
+stretch exactly as designed — fulldrain_snapshot_evidence ran 52s at
+a FLAT ~727MB (was a 2GB climb), and TWO full terminal-materialization
+passes + the forced rebuild + recompute cycles all completed in one
+process. The +60s cold-launch death is CLOSED on this evidence.
+
+THE COMPLETE FIX SET (all committed today):
+1. e665dcfd readiness copy-elim + span ceiling + per-candidate wrap
+2. 60d5ab60 single heavy lane (projection) → 39434570 (+deriving)
+   → rest-window widening (heavyCycleEngaged)
+3. c63e7397 shadow parity cold-launch skip
+4. 969debbf receipt day-scan budgeted dying-thread passes + defer
+5. compaction heavy-lane defer
+6. session-boundary trio dying threads (91bc1725)
+7. terminal materialization dying threads (round 7)
+8. reused-buffer streaming sha256 (the endgame collapse)
+
+Confirmation gauntlet #10 running. THEN: strip ALL instrumentation
+(memprobe + ~100 note sites + deep eye + bisect levers + repro lever +
+comp/arch/terminal/fulldrain/gate notes + force-rebuild flag paths),
+full test suite, and the user-facing verdict: backlogged cold opens
+should no longer silently restart.
