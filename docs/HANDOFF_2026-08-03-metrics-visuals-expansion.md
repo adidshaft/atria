@@ -2770,3 +2770,15 @@ already showing reconnect spends its first minute in TX discovery.
 Bank re-armed. flushDebt=low, handshake confirmed.
 TO CONFIRM next pull: lastDurableFlushBoundaryOKAt advances past
 18:33 (stream resumed post-relaunch).
+
+## 15.45 Post-relaunch pull 19:11 IST — armed continuous, footprint 504MB
+
+Duty cycle: armed 383s, lastReason=armed — bank continuously armed
+since relaunch, no new declines. Footprint: NEW scan publish 19:01
+physMB=504 (identical counts to the 745MB 18:34 reading) → 745 was
+launch-transient, compaction holding; tripwire back to green.
+AMBIGUOUS: lastDurableFlushBoundaryOKAt still 18:33, debt observed
+still 18:09 (pre-blocker). Plausibly periodic-cadence lag after the
+18:52-19:00 down window. RECHECK next pull (~19:25): if boundary
+still 18:33 → investigate stream resumption via device log copy
+(remember 60-90s lag + 8MB rotation).
