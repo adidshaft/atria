@@ -2373,3 +2373,33 @@ NEXT: one more user foreground pass (~3-5min) names the exact line;
 fix that site; repeat until consumersCommitted. Each pass is
 strictly deeper — three distinct layers cleared today
 (aggregateCatalogMismatch window → next).
+
+## 15.29 ✅✅ JULY GAP RESOLVED — second campaign closed (2026-08-05 13:31 IST)
+
+AUTHORITY: **resolved** (resolvedAtUnix set). All FIVE consumer
+receipts committed at 13:31:41 IST (activity / daily_metrics / sleep /
+steps / workout), each hash-chained to gap 66049f87 with admission +
+identity + raw snapshot SHAs; receipt store grew 14→35 files (frozen
+since Jul 30). The site-tag never fired — the pass ran clean end to
+end. `resolved` is not in resumePendingFullDrainPublicationIfNeeded's
+status list → the recurring two-pass-per-launch materialization is
+RETIRED.
+
+What actually closed it (in order, all today):
+1. Balloon fixes made the materialization SURVIVABLE (it used to
+   jetsam mid-pass — the original reason nothing ever completed).
+2. The two-leg repair shipped (correct hardening; Leg A verified
+   no divergent pairs existed — nothing was ever corrupt).
+3. a1c4acf2 — the ACTUAL wedge: scan-source presence checked against
+   a dependency-windowed snapshot; merged the scan source's own range.
+4. The user's three foreground passes provided the foreground-only
+   execution windows; site-tagged forensics (036ec1e3) stood ready
+   but was never needed.
+
+Residual engine backlog (ranked, for future sessions): bound the
+1.3GB retained recovered working set; icon-distinctness test (UI
+session); July replay-family test failures; install-chain hard-stop
+on build failure; fingerprint-latch; reuse=0 refresh coalescing;
+Jul-24 range-loss backfill windows (separate lane, defers on live
+link by design). lastStatus=deferred_thermal_pressure is the phone
+cooling from today's campaign — benign.
