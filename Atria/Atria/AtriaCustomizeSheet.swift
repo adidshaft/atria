@@ -44,6 +44,11 @@ struct AtriaCustomizeSheet: View {
     @State private var showResetConfirmation = false
     @State private var selectedAppIcon: AtriaAlternateAppIcon = .primary
     @State private var iconErrorText: String?
+    /// Shared Today-rings layout preference (also in Settings). Applied live so
+    /// the preview above updates as the wearer flips it -- a display toggle,
+    /// not part of the draft layout that Save commits.
+    @AtriaDefault(AtriaRingLayoutStyle.defaultsKey) private var ringLayoutRaw: String = "concentric"
+    private var ringLayout: AtriaRingLayoutStyle { AtriaRingLayoutStyle(rawValue: ringLayoutRaw) ?? .concentric }
 
     init(initialConfig: AtriaHomeLayoutConfig,
          onCommit: @escaping (AtriaHomeLayoutConfig) -> Void) {
@@ -103,21 +108,36 @@ struct AtriaCustomizeSheet: View {
 
     private var ringsSection: some View {
         Section {
-            Picker("Center metric", selection: $draft.ringCenterMetric) {
-                ForEach(AtriaHomeLayoutConfig.RingCenterMetric.allCases, id: \.self) { metric in
-                    Label(metric.label, systemImage: metric.systemImage).tag(metric)
+            Picker("Ring style", selection: $ringLayoutRaw) {
+                ForEach(AtriaRingLayoutStyle.allCases, id: \.self) { style in
+                    Text(style.label).tag(style.rawValue)
                 }
             }
             .pickerStyle(.segmented)
 
-            Picker("Legend", selection: $draft.legendStatStyle) {
-                ForEach(AtriaHomeLayoutConfig.LegendStatStyle.allCases, id: \.self) { style in
-                    Text(style.label).tag(style)
+            // Center metric + legend exist only in the concentric layout; the
+            // separate (WHOOP-style) layout gives each ring its own value+label.
+            if ringLayout == .concentric {
+                Picker("Center metric", selection: $draft.ringCenterMetric) {
+                    ForEach(AtriaHomeLayoutConfig.RingCenterMetric.allCases, id: \.self) { metric in
+                        Label(metric.label, systemImage: metric.systemImage).tag(metric)
+                    }
                 }
+                .pickerStyle(.segmented)
+
+                Picker("Legend", selection: $draft.legendStatStyle) {
+                    ForEach(AtriaHomeLayoutConfig.LegendStatStyle.allCases, id: \.self) { style in
+                        Text(style.label).tag(style)
+                    }
+                }
+                .pickerStyle(.segmented)
             }
-            .pickerStyle(.segmented)
         } header: {
             Text("Rings")
+        } footer: {
+            Text(ringLayout == .separate
+                 ? "Three side-by-side rings, WHOOP-style."
+                 : "Apple-Activity-style concentric rings.")
         }
     }
 
