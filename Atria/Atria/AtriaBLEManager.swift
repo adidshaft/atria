@@ -22935,6 +22935,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         max(0, totalRows - episodeStartRows)
     }
 
+    /// Duty-cycle attribution must not misfile time the bank is genuinely
+    /// armed: gate declines fire before the already-armed short-circuit, so
+    /// an armed bank riding out a history sync would otherwise bill hours
+    /// to "sync_cutover". Armed-for-this-connection wins over any fallback.
+    private func noteMotionBankDutyCycle(_ fallback: String) {
+        if peripheral?.state == .connected,
+           Self.historicalMotionBankIsArmedForCurrentConnection(
+               armed: workoutHistoricalMotionBankArmed,
+               armedConnectionStartedAt:
+                   workoutHistoricalMotionBankArmedConnectionStartedAt,
+               currentConnectionStartedAt: connectedAt
+           ) {
+            AtriaMotionBankDutyCycleDiag.note("armed")
+        } else {
+            AtriaMotionBankDutyCycleDiag.note(fallback)
+        }
+    }
+
     /// WHOOP 4's banked v24 motion counter is the physically accepted Gate-4
     /// source. It runs independently of the unstable realtime R10 flood and
     /// therefore never blocks Start/End or competes with standard 2A37 HR.
@@ -22942,7 +22960,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard !historyOnlyProbeMode,
               !offlineHistoricalSyncInProgress,
               !freshHistoryOwnerCutoverPending else {
-            AtriaMotionBankDutyCycleDiag.note("sync_cutover")
+            noteMotionBankDutyCycle("sync_cutover")
             return
         }
         guard let peripheral, peripheral.state == .connected else {
@@ -22966,7 +22984,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 forKey:
                     Self.workoutHistoricalMotionBankPrearmRequestedKey
             )
-            AtriaMotionBankDutyCycleDiag.note("governor_off")
+            noteMotionBankDutyCycle("governor_off")
             return
         }
         let rearmNotBefore = defaults.double(
@@ -22974,7 +22992,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
         guard rearmNotBefore <= 0
                 || Date().timeIntervalSince1970 >= rearmNotBefore else {
-            AtriaMotionBankDutyCycleDiag.note("throttle")
+            noteMotionBankDutyCycle("throttle")
             return
         }
         defaults.set(true,
@@ -23093,7 +23111,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     selectedPendingOffload.attempts,
                     reason
                 )
-                AtriaMotionBankDutyCycleDiag.note("offload_first")
+                noteMotionBankDutyCycle("offload_first")
                 return
             }
         }
@@ -23108,7 +23126,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 reason,
                 selectedPendingOffload?.attempts ?? -1
             )
-            AtriaMotionBankDutyCycleDiag.note("offload_first")
+            noteMotionBankDutyCycle("offload_first")
             return
         }
         guard let txCharacteristic,
@@ -23117,7 +23135,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 peripheral: peripheral,
                 reason: reason
             )
-            AtriaMotionBankDutyCycleDiag.note("transport_pending")
+            noteMotionBankDutyCycle("transport_pending")
             return
         }
         if Self.historicalMotionBankIsArmedForCurrentConnection(
