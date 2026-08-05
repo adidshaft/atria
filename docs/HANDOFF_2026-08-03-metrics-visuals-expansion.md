@@ -3064,3 +3064,24 @@ phone unplugged/locked per user's earlier plan. Last good pull 21:27
 (post-install clean). Overnight experiments proceed on-device;
 resume pulls on next attach. Sim-only work (H4 radius sweep)
 continues meanwhile.
+
+## 15.61 H4 SHIPPED — spec complete except judgment items (2026-08-05 ~21:55)
+
+H4: 23 sites tokenized (34 line substitutions + intent comments).
+Reviewer caught the concentric clause applied nowhere → fix pass put
+Radius.concentric(inset: 14) at the 4 confirmed .atriaCard-nested
+sites (pairs with the parent's .padding(14); comment keeps them in
+sync). Three chip-vs-inset judgment calls documented in-code
+(exercise grid family stays .chip so identical controls share one
+rung). Verified: build ✓, gate 4 baseline ✓ (re-ran both myself),
+before/after autoscroll burst eyeballed — reachable surfaces
+coherent; deep workout-flow surfaces covered by review sampling.
+BONUS visual sign-off from the before shot: all 3 copy fixes render
+("Aug 3–9" chip, "· 4 nights", "1 workout of 10+ strain").
+OBSERVATION (pre-existing, low): the floating mini live strip
+(moon/HR/flame, likely dca34a29's smaller separate rings) overlaps
+scrolled content oddly during dashboard-autoscroll — UI session may
+want a look on a real scroll.
+SPEC SCOREBOARD: 13/14 done+verified. Remaining: O9 (sleep-plan
+de-nest) + battery chip = explicit judgment calls the spec defers;
+O4 visual + O8 gradient visual need real data (phone/mirroring).
