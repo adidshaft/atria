@@ -2819,3 +2819,20 @@ unarmed reinstall windows. pendingOffloads 6→9 (reinstalls closed
 short windows → new small tickets); tonight's starvation test now
 covers 9. Lesson recorded: stamp handoff times from `date`, not
 cycle-count estimates.
+
+## 15.48 USER REPORT "shows Bluetooth off" — radio down, not app defect (19:38 IST)
+
+Evidence (19:36 pull): app self-diagnosed bluetooth.off at 19:33
+(actionableDiagnosis.lastScheduled key — Aug-1 in-app detection
+working). Build ran healthy 19:19→19:26 (armed 818s, boundary
+19:17). 19:26:31 keepalive stall-reconnect (#97 cumulative) fired;
+19:26:32 dutyCycle flipped link_down and stayed. CB reports radio
+poweredOff since. Today's changes are note()-only (no CB lifecycle
+touch) + build was connected 7min before drop → bluetoothd wedge
+class (Jul-24 forensics), likely aggravated by double reinstall
+churn. Asked user: Settings→Bluetooth toggle off/on (NOT Control
+Center soft-off); reboot if persists. VERIFY on recovery: dutyCycle
+back to armed + boundary advances. If recovery doesn't hold, next
+step is rollback-confirm (though diff is diagnostics-only).
+Side note: backgroundLeaseStatus=orphaned_process_terminated at
+19:19:25 is the expected reinstall artifact, not a finding.
