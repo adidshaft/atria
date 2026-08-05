@@ -2836,3 +2836,23 @@ back to armed + boundary advances. If recovery doesn't hold, next
 step is rollback-confirm (though diff is diagnostics-only).
 Side note: backgroundLeaseStatus=orphaned_process_terminated at
 19:19:25 is the expected reinstall artifact, not a finding.
+
+## 15.49 Bluetooth-off incident RESOLVED via relaunch — self-heal gap found (19:47 IST)
+
+Root cause: WEDGED CBCentralManager in the old process — NOT system
+radio (user toggled BT twice, no effect), NOT the new build's logic
+(diag-only diff; ran healthy 19:19→19:26). Proof: relaunch with
+--terminate-existing at 19:44 → transport_pending at 19:44:58 →
+bank re-armed 19:46:01, armed accumulating. Incident fully captured
+by the duty-cycle diag: link_down 913s (19:26:32→19:44:58).
+
+ENGINE GAP (queue HIGH): Jul-24 central-rebuild for bluetoothd
+wedges did NOT fire for this variant — CB stuck poweredOff while
+system BT on, entered via keepalive stall-reconnect #97. App showed
+"Bluetooth off" 15+ min with no self-repair; external relaunch was
+the fix. Next: read the central-rebuild trigger conditions, extend
+to cover persistent-poweredOff-with-stall-history (one bounded
+rebuild attempt after N min), verify against the Jul-24 breadcrumb
+forensics before changing. User-visible copy note: the app rendered
+an accurate diagnosis but no remediation hint; "Bluetooth off" card
+could offer "toggle BT / reopen Atria" (UI-session item).
