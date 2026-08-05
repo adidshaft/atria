@@ -2896,3 +2896,12 @@ jumps from off to connected with no narration.
 WATCH: boundaryOK still 19:17 at 19:50 (bank re-armed 19:46). Earlier
 relaunch took ~12min to advance boundary → deadline ~20:00; if still
 19:17 then, investigate HR stream (arm success ≠ HR flow proof).
+
+## 15.51 Boundary WATCH CLOSED (19:58 IST)
+
+boundaryOK 19:17→19:58:30 (live at pull time); debt 402 observed
+19:52 = catch-up drain from the radio-down window, running now
+(sync_cutover noted 19:58:32). Wedge incident fully closed: radio →
+link → arm → stream all recovered. No open watch items besides the
+overnight experiments (duty-cycle read, 9-ticket starvation,
+efficiency backfill) + §15.50 self-heal implementation tomorrow.
