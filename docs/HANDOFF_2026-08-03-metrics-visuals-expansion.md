@@ -2905,3 +2905,13 @@ boundaryOK 19:17→19:58:30 (live at pull time); debt 402 observed
 link → arm → stream all recovered. No open watch items besides the
 overnight experiments (duty-cycle read, 9-ticket starvation,
 efficiency backfill) + §15.50 self-heal implementation tomorrow.
+
+## 15.52 Watch 20:10 — first quantitative sync-vs-capture split
+
+Healthy: boundaryOK 20:10:22, debt low, footprint 534MB (reuse plan,
+19:46). Diag delta 19:58→20:10: sync_cutover +1050s, armed +9s,
+unsampled +201s — the post-wedge catch-up drain parked capture for
+~17 of the last ~30 min (real disarm during history transport, not
+misattribution; armed-aware fix active). This is exactly the §15.38
+policy input: every drain minute is a lost capture minute. Tomorrow's
+full-day read gives the daily total.
