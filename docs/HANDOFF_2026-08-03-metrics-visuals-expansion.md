@@ -3385,3 +3385,28 @@ LESSONS (binding):
    strain/sleep targets.
 §15.70 deadlock diagnosis UNAFFECTED (predates 6688a0ed) — still
 morning item #1 alongside the fix re-landing.
+
+## 15.72 MIRRORING VERIFICATION: nothing missing — scroll-state + opt-in confusion (02:45)
+
+Drove the real phone via iPhone Mirroring (user request). VERIFIED
+LIVE on 1a6b09b5: Settings→Personal→"Today rings" Concentric|
+Separate exists (deep below Appearance); flipped to Separate → the
+THREE SEPARATE WHOOP RINGS render on Today (Sleep 5h31m | Recovery
+58% | Strain 9.7); dynamic strain target chip ("Target 14.9 · 5.2
+to go"); greeting/pills/banner/plan/Start-activity/"Aug 3–9" chip
+all present. ROOT CAUSE of "everything missing": the Today screen
+was scrolled down — hero collapses to a floating mini ring cluster
+and the tab bar collapses to a single button; tapping the Overview
+tab restores top. Mirroring scroll gestures are weak (use the tab
+button to jump to top). Old "x4"/"1 workouts >= 10 strain" strings
+= persisted Aug-3 WeeklyPlan titles (regenerate next week).
+STILL REAL: §15.70 publication deadlock (Activity heart/stress
+timeline) — morning #1. NEW ITEM: user reports the CONCENTRIC ring
+looked full/limit-touching at ~9/14 strain (21:58 screenshot shows
+outer ring near-full at 3.6/14.9) — investigate tri-ring concentric
+FILL SCALING (possible over-fill vs target fraction).
+UX NOTES for UI session: hero-collapse + tab-collapse make a
+scrolled Today look "empty" (user + agent both fooled at 2 AM) —
+consider scroll-to-top affordance on the mini cluster tap; ring
+toggle is 4 screens deep in Personal — consider surfacing in ••• 
+Customize more prominently (it IS there per 1d54de74).
