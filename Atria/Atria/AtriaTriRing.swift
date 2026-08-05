@@ -407,9 +407,12 @@ struct AtriaTriRing: View, Equatable {
     private var separateBody: some View {
         GeometryReader { geo in
             let count = max(1, slots.count)
-            let spacing: CGFloat = 12
-            let available = geo.size.width - spacing * CGFloat(count - 1)
-            let ringSize = min(120, max(70, available / CGFloat(count)))
+            let spacing: CGFloat = 16
+            let fit = (geo.size.width - spacing * CGFloat(count - 1)) / CGFloat(count)
+            // Smaller than the concentric hero (user feedback) and capped so the
+            // three rings group toward the center rather than stretching edge to
+            // edge.
+            let ringSize = min(94, max(62, fit))
             HStack(spacing: spacing) {
                 ForEach(slots, id: \.slot) { content in
                     Button(action: action(for: content.slot)) {
@@ -420,12 +423,11 @@ struct AtriaTriRing: View, Equatable {
                                         size: ringSize)
                     }
                     .buttonStyle(.plain)
-                    .frame(maxWidth: .infinity)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .center)
         }
-        .frame(height: 150)
+        .frame(height: 128)
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
     }
