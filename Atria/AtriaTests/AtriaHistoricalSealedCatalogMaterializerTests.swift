@@ -398,6 +398,311 @@ final class AtriaHistoricalSealedCatalogMaterializerTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: source), Data("{\"torn\":true".utf8))
     }
 
+    // MARK: - Crash-at-seal divergent committed pair repair (2026-08-05)
+
+    func testDivergentCommittedPairIsQuarantinedRebuiltAndConverges() async throws {
+        let (fixture, chunkID) = try await divergentPairFixture()
+        let rawBefore = try Data(contentsOf: fixture.sources[0])
+        let generationBefore = try fixture.store.snapshot().generation
+        let artifacts = artifactURLs(fixture, chunkID: chunkID)
+        let divergentAggregateBytes = try Data(contentsOf: artifacts.aggregate)
+        let divergentManifestBytes = try Data(contentsOf: artifacts.manifest)
+        let digestBefore = streamedDigest(fixture)
+
+        let report = try await materializeNext(
+            fixture,
+            now: Date(timeIntervalSince1970: 9_000)
+        )
+
+        XCTAssertEqual(report.materializedChunkID, chunkID)
+        XCTAssertTrue(report.isComplete)
+        XCTAssertEqual(report.aggregateCount, 1)
+
+        let quarantined = try quarantinedFilenames(fixture)
+        XCTAssertEqual(quarantined.count, 2)
+        let quarantinedAggregate = try XCTUnwrap(quarantined.first {
+            $0.hasPrefix("quarantined-aggregate-\(chunkID)-")
+        })
+        let quarantinedManifest = try XCTUnwrap(quarantined.first {
+            $0.hasPrefix("quarantined-manifest-\(chunkID)-")
+        })
+        XCTAssertEqual(
+            try Data(contentsOf: quarantineDirectory(fixture)
+                .appendingPathComponent(quarantinedAggregate)),
+            divergentAggregateBytes
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: quarantineDirectory(fixture)
+                .appendingPathComponent(quarantinedManifest)),
+            divergentManifestBytes
+        )
+
+        let accepted = AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: fixture.aggregates,
+            manifestDirectoryURL: fixture.manifests
+        ).load()
+        XCTAssertEqual(accepted.diagnostics.rejectedManifests, 0)
+        let rebuilt = try XCTUnwrap(accepted.aggregates.first)
+        let chunk = try XCTUnwrap(
+            try fixture.store.snapshot().chunks.first { $0.id == chunkID }
+        )
+        XCTAssertEqual(rebuilt.source.rawSHA256, chunk.contentSHA256)
+        XCTAssertEqual(rebuilt.source.rawByteCount, chunk.byteCount)
+        XCTAssertEqual(rebuilt.source.rawRowCount, chunk.rowCount)
+
+        XCTAssertEqual(try Data(contentsOf: fixture.sources[0]), rawBefore)
+        XCTAssertGreaterThan(
+            try fixture.store.snapshot().generation,
+            generationBefore
+        )
+        XCTAssertNotEqual(streamedDigest(fixture), digestBefore)
+    }
+
+    func testDivergentPairRepairFailsClosedWhenRawDoesNotMatchCatalog() async throws {
+        let (fixture, chunkID) = try await divergentPairFixture()
+        var tampered = try Data(contentsOf: fixture.sources[0])
+        tampered.append(Data("{\"tampered\":true}\n".utf8))
+        try tampered.write(to: fixture.sources[0])
+        let generationBefore = try fixture.store.snapshot().generation
+        let artifacts = artifactURLs(fixture, chunkID: chunkID)
+        let aggregateBytes = try Data(contentsOf: artifacts.aggregate)
+        let manifestBytes = try Data(contentsOf: artifacts.manifest)
+
+        do {
+            _ = try await materializeNext(
+                fixture,
+                now: Date(timeIntervalSince1970: 9_000)
+            )
+            XCTFail("a raw/catalog divergence must fail closed")
+        } catch AtriaHistoricalSealedCatalogMaterializer
+            .MaterializationError.repairSourceMismatch(let id) {
+            XCTAssertEqual(id, chunkID)
+        }
+
+        XCTAssertEqual(try Data(contentsOf: artifacts.aggregate), aggregateBytes)
+        XCTAssertEqual(try Data(contentsOf: artifacts.manifest), manifestBytes)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: quarantineDirectory(fixture).path
+        ))
+        XCTAssertEqual(
+            try fixture.store.snapshot().generation,
+            generationBefore
+        )
+        XCTAssertEqual(try Data(contentsOf: fixture.sources[0]), tampered)
+    }
+
+    func testCrashAfterRepairGenerationAdvanceRetriesQuarantineIdempotently() async throws {
+        let (fixture, chunkID) = try await divergentPairFixture()
+        let artifacts = artifactURLs(fixture, chunkID: chunkID)
+        enum Injected: Error { case crash }
+
+        do {
+            _ = try await Task.detached {
+                try AtriaHistoricalSealedCatalogMaterializer.materializeNext(
+                    catalogStore: fixture.store,
+                    archiveRoot: fixture.root,
+                    aggregateDirectoryURL: fixture.aggregates,
+                    manifestDirectoryURL: fixture.manifests,
+                    now: Date(timeIntervalSince1970: 9_000),
+                    checkpoint: {
+                        if $0 == .repairGenerationAdvanced(chunkID) {
+                            throw Injected.crash
+                        }
+                    }
+                )
+            }.value
+            XCTFail("expected injected crash")
+        } catch Injected.crash {}
+
+        // The bump is durable but no artifact moved yet.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: artifacts.aggregate.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: artifacts.manifest.path))
+
+        let retry = try await materializeNext(
+            fixture,
+            now: Date(timeIntervalSince1970: 9_100)
+        )
+        XCTAssertEqual(retry.materializedChunkID, chunkID)
+        XCTAssertTrue(retry.isComplete)
+
+        let accepted = AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: fixture.aggregates,
+            manifestDirectoryURL: fixture.manifests
+        ).load()
+        XCTAssertEqual(accepted.aggregates.count, 1)
+        XCTAssertEqual(accepted.diagnostics.rejectedManifests, 0)
+        XCTAssertEqual(try quarantinedFilenames(fixture).count, 2)
+    }
+
+    func testOrphanDivergentManifestIsClaimedAndConverges() async throws {
+        let (fixture, chunkID) = try await divergentPairFixture()
+        let artifacts = artifactURLs(fixture, chunkID: chunkID)
+        // Crash shape: the aggregate move completed, the manifest move did
+        // not. The aggregate's quarantine name is derived from its own bytes
+        // at move time, so the resume pass must converge without it.
+        let quarantine = quarantineDirectory(fixture)
+        try FileManager.default.createDirectory(
+            at: quarantine,
+            withIntermediateDirectories: true
+        )
+        let digest = try AtriaHistoricalRetentionTransaction.sha256(
+            of: artifacts.aggregate
+        )
+        try FileManager.default.moveItem(
+            at: artifacts.aggregate,
+            to: quarantine.appendingPathComponent(
+                "quarantined-aggregate-\(chunkID)-\(digest.prefix(16)).json"
+            )
+        )
+
+        let report = try await materializeNext(
+            fixture,
+            now: Date(timeIntervalSince1970: 9_000)
+        )
+        XCTAssertEqual(report.materializedChunkID, chunkID)
+        XCTAssertTrue(report.isComplete)
+
+        let accepted = AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: fixture.aggregates,
+            manifestDirectoryURL: fixture.manifests
+        ).load()
+        XCTAssertEqual(accepted.aggregates.count, 1)
+        XCTAssertEqual(accepted.diagnostics.rejectedManifests, 0)
+        XCTAssertEqual(try quarantinedFilenames(fixture).count, 2)
+
+        let noOp = try await materializeNext(
+            fixture,
+            now: Date(timeIntervalSince1970: 9_200)
+        )
+        XCTAssertNil(noOp.materializedChunkID)
+        XCTAssertTrue(noOp.isComplete)
+    }
+
+    func testDivergentAggregateWithoutManifestIsClaimedBeforeIdentityConflict() async throws {
+        let (fixture, chunkID) = try await divergentPairFixture()
+        let artifacts = artifactURLs(fixture, chunkID: chunkID)
+        try FileManager.default.removeItem(at: artifacts.manifest)
+
+        let report = try await materializeNext(
+            fixture,
+            now: Date(timeIntervalSince1970: 9_000)
+        )
+        XCTAssertEqual(report.materializedChunkID, chunkID)
+        XCTAssertTrue(report.isComplete)
+
+        let quarantined = try quarantinedFilenames(fixture)
+        XCTAssertEqual(quarantined.count, 1)
+        XCTAssertTrue(try XCTUnwrap(quarantined.first)
+            .hasPrefix("quarantined-aggregate-\(chunkID)-"))
+        let accepted = AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: fixture.aggregates,
+            manifestDirectoryURL: fixture.manifests
+        ).load()
+        XCTAssertEqual(accepted.aggregates.count, 1)
+        XCTAssertEqual(accepted.diagnostics.rejectedManifests, 0)
+    }
+
+    func testConsistentCommittedPairIsNeverQuarantined() async throws {
+        let fixture = try legacyFixture(
+            rowsBySource: [[
+                record(unix: 1_800_000_000),
+                record(unix: 1_800_000_001),
+            ]]
+        )
+        let first = try await materializeNext(
+            fixture,
+            now: Date(timeIntervalSince1970: 3_000)
+        )
+        XCTAssertTrue(first.isComplete)
+        let generationBefore = try fixture.store.snapshot().generation
+        let digestBefore = streamedDigest(fixture)
+
+        let noOp = try await materializeNext(
+            fixture,
+            now: Date(timeIntervalSince1970: 4_000)
+        )
+
+        XCTAssertNil(noOp.materializedChunkID)
+        XCTAssertTrue(noOp.isComplete)
+        XCTAssertEqual(try fixture.store.snapshot().generation, generationBefore)
+        XCTAssertEqual(streamedDigest(fixture), digestBefore)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: quarantineDirectory(fixture).path
+        ))
+    }
+
+    func testRemainingCountIncludesDivergentPairsSoCompletionIsNotReportedEarly() async throws {
+        let fixture = try legacyFixture(
+            rowsBySource: [
+                [record(unix: 1_800_000_000)],
+                [record(unix: 1_800_000_100)],
+            ]
+        )
+        _ = try await materializeNext(fixture, now: Date(timeIntervalSince1970: 3_000))
+        let healthy = try await materializeNext(fixture, now: Date(timeIntervalSince1970: 3_100))
+        XCTAssertTrue(healthy.isComplete)
+        try makeDivergentPair(
+            fixture,
+            chunkID: "legacy-legacy-a",
+            alteredRows: [record(unix: 1_800_000_050)],
+            createdAt: Date(timeIntervalSince1970: 5_000)
+        )
+        try makeDivergentPair(
+            fixture,
+            chunkID: "legacy-legacy-b",
+            alteredRows: [record(unix: 1_800_000_150)],
+            createdAt: Date(timeIntervalSince1970: 5_000)
+        )
+
+        let firstRepair = try await materializeNext(
+            fixture,
+            now: Date(timeIntervalSince1970: 9_000)
+        )
+        XCTAssertEqual(firstRepair.materializedChunkID, "legacy-legacy-a")
+        XCTAssertEqual(firstRepair.remainingChunkCount, 1)
+        XCTAssertFalse(firstRepair.isComplete)
+
+        let secondRepair = try await materializeNext(
+            fixture,
+            now: Date(timeIntervalSince1970: 9_100)
+        )
+        XCTAssertEqual(secondRepair.materializedChunkID, "legacy-legacy-b")
+        XCTAssertTrue(secondRepair.isComplete)
+
+        let noOp = try await materializeNext(
+            fixture,
+            now: Date(timeIntervalSince1970: 9_200)
+        )
+        XCTAssertNil(noOp.materializedChunkID)
+        XCTAssertTrue(noOp.isComplete)
+        XCTAssertEqual(try quarantinedFilenames(fixture).count, 4)
+    }
+
+    func testRebuiltAggregateIdentityPinsToSealedAtNotQuarantinedCreatedAt() async throws {
+        let quarantinedCreatedAt = Date(timeIntervalSince1970: 7_777)
+        let (fixture, chunkID) = try await divergentPairFixture(
+            alteredCreatedAt: quarantinedCreatedAt
+        )
+        let sealedAt = try XCTUnwrap(
+            try fixture.store.snapshot().chunks
+                .first { $0.id == chunkID }?.sealedAt
+        )
+        let wallClock = Date(timeIntervalSince1970: 999_999)
+
+        let report = try await materializeNext(fixture, now: wallClock)
+
+        XCTAssertTrue(report.isComplete)
+        let rebuilt = try XCTUnwrap(
+            AtriaHistoricalAggregateReader(
+                aggregateDirectoryURL: fixture.aggregates,
+                manifestDirectoryURL: fixture.manifests
+            ).load().aggregates.first
+        )
+        XCTAssertEqual(rebuilt.createdAt, sealedAt)
+        XCTAssertNotEqual(rebuilt.createdAt, quarantinedCreatedAt)
+        XCTAssertNotEqual(rebuilt.createdAt, wallClock)
+    }
+
     private struct Fixture: @unchecked Sendable {
         let root: URL
         let store: AtriaHistoricalArchiveCatalogStore
@@ -449,6 +754,109 @@ final class AtriaHistoricalSealedCatalogMaterializerTests: XCTestCase {
                 now: now
             )
         }.value
+    }
+
+    /// A fully materialized single-chunk archive whose committed pair was then
+    /// replaced by a coherent pair built from altered rows — the crash-at-seal
+    /// shape: the pair verifies against itself while the sealed catalog and
+    /// the retained raw disagree with it on every identity axis.
+    private func divergentPairFixture(
+        alteredCreatedAt: Date = Date(timeIntervalSince1970: 5_000)
+    ) async throws -> (fixture: Fixture, chunkID: String) {
+        let fixture = try legacyFixture(
+            rowsBySource: [[
+                record(unix: 1_800_000_000),
+                record(unix: 1_800_000_001),
+            ]]
+        )
+        let initial = try await materializeNext(
+            fixture,
+            now: Date(timeIntervalSince1970: 3_000)
+        )
+        XCTAssertTrue(initial.isComplete)
+        let chunkID = "legacy-legacy-a"
+        try makeDivergentPair(
+            fixture,
+            chunkID: chunkID,
+            alteredRows: [
+                record(unix: 1_800_000_050),
+                record(unix: 1_800_000_051),
+                record(unix: 1_800_000_052),
+            ],
+            createdAt: alteredCreatedAt
+        )
+        return (fixture, chunkID)
+    }
+
+    private func makeDivergentPair(
+        _ fixture: Fixture,
+        chunkID: String,
+        alteredRows: [HistoricalArchive.Record],
+        createdAt: Date
+    ) throws {
+        let artifacts = artifactURLs(fixture, chunkID: chunkID)
+        try? FileManager.default.removeItem(at: artifacts.aggregate)
+        try? FileManager.default.removeItem(at: artifacts.manifest)
+        let alteredURL = fixture.root.appendingPathComponent(
+            "altered-\(chunkID)-\(UUID().uuidString).jsonl"
+        )
+        try write(alteredRows, to: alteredURL)
+        let proof = try AtriaHistoricalAggregateBuilder
+            .buildRetainedRawShadowProof(
+                sourceURL: alteredURL,
+                chunkID: chunkID,
+                createdAt: createdAt
+            )
+        _ = try AtriaHistoricalRetentionTransaction(
+            now: { createdAt },
+            semanticVerifier: AtriaHistoricalAggregateBuilder.verify
+        ).commitRetainedRawShadow(.init(
+            transactionID: chunkID,
+            sourceURL: alteredURL,
+            aggregateDirectoryURL: fixture.aggregates,
+            manifestDirectoryURL: fixture.manifests,
+            proof: proof
+        ))
+        try FileManager.default.removeItem(at: alteredURL)
+    }
+
+    private func artifactURLs(
+        _ fixture: Fixture,
+        chunkID: String
+    ) -> (aggregate: URL, manifest: URL) {
+        (
+            fixture.aggregates.appendingPathComponent(
+                "aggregate-\(chunkID).json"
+            ),
+            fixture.manifests.appendingPathComponent(
+                "manifest-\(chunkID).json"
+            )
+        )
+    }
+
+    private func quarantineDirectory(_ fixture: Fixture) -> URL {
+        fixture.root.appendingPathComponent(
+            AtriaHistoricalSealedCatalogMaterializer.quarantineDirectoryName
+        )
+    }
+
+    private func quarantinedFilenames(_ fixture: Fixture) throws -> [String] {
+        let url = quarantineDirectory(fixture)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return []
+        }
+        return try FileManager.default.contentsOfDirectory(atPath: url.path)
+            .sorted()
+    }
+
+    private func streamedDigest(_ fixture: Fixture) -> String? {
+        AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: fixture.aggregates,
+            manifestDirectoryURL: fixture.manifests
+        ).streamedWholeArchiveDigest(
+            limits: AtriaHistoricalAggregateReader.LoadLimits
+                .unboundedConsumerProjection
+        )?.digest
     }
 
     private func write(

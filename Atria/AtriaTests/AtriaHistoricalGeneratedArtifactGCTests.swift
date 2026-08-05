@@ -213,6 +213,41 @@ final class AtriaHistoricalGeneratedArtifactGCTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
     }
 
+    func testAggregateRepairQuarantineIsNeverACollectionCandidate() throws {
+        let root = try makeRoot()
+        let quarantine = try directory(
+            root,
+            AtriaHistoricalSealedCatalogMaterializer.quarantineDirectoryName
+        )
+        let aggregate = quarantine.appendingPathComponent(
+            "quarantined-aggregate-chunk-a-0123456789abcdef.json"
+        )
+        let manifest = quarantine.appendingPathComponent(
+            "quarantined-manifest-chunk-a-fedcba9876543210.json"
+        )
+        try Data("divergent-aggregate".utf8).write(to: aggregate)
+        try Data("divergent-manifest".utf8).write(to: manifest)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        // Far beyond every quarantine window: reachability collection must
+        // still have no plan for this directory.
+        let ancient = now.addingTimeInterval(-365 * 24 * 60 * 60)
+        for url in [aggregate, manifest] {
+            try FileManager.default.setAttributes(
+                [.modificationDate: ancient],
+                ofItemAtPath: url.path
+            )
+        }
+
+        let result = try AtriaHistoricalGeneratedArtifactGC(
+            archiveRoot: root,
+            now: now
+        ).prune()
+
+        XCTAssertEqual(result.removedFiles, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: aggregate.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manifest.path))
+    }
+
     private func makeRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("AtriaHistoricalGeneratedArtifactGCTests")
