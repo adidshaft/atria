@@ -2115,3 +2115,40 @@ log hex frames + ASLR slide at start. Symbolicate:
     -s <slide> <addresses>
 Gauntlet #6 armed (flag file + launch). The next burst_stack lines
 name the exact function — no more lane guessing.
+
+## 15.19 COMPLETE PICTURE: superposition, not a single killer (2026-08-05 ~11:15)
+
+Gauntlet #8 (all fixes aboard) + deep-eye symbolication of every burst:
+- fulldrain_* notes fired; the terminal materialization ran on dying
+  threads and RECLAIMED (footprint oscillates 779→2539→875→1981→2549
+  with real drops) — the round-7 fix works.
+- Death still came at +156s (was +60s): the dominant burst stack is
+  verifyFiles→sha256 INSIDE publishPendingConsumersUsingLatestFullScan
+  ON the dying thread (bounded, reclaims at teardown) — but it peaks
+  ~1.5-2GB DURING its stretch and ran CONCURRENTLY with the SECOND
+  recompute cycle (post_swap at 2539MB). Other symbolicated lanes in
+  the same window: aggregateSleepCandidates→percentileHR sort (under
+  makeSleepReviewNightForCache), recoveredSnapshot RR Beat sort
+  (projection's own, expected), replaySavedRRLedger→localMedianRR.
+
+CONCLUSION: after seven rounds, every lane is individually bounded and
+reclaimed. The remaining death is PURE SUPERPOSITION — any two GB-
+scale lanes concurrent cross 3.4GB. The heavy-lane guard already
+serializes history refreshes / receipt scan / compaction against the
+recompute coordinator, but the BLE terminal materialization and the
+coordinator ignore each other, and sleep-review/RR-replay lanes float
+free.
+
+THE FIX (next cycle, fresh budget): ONE global heavy-work gate — a
+shared single-permit lane acquired off-main at the start of each GB-
+scale stretch (recompute projection→publish, terminal materialization,
+compaction pass, sleep-review aggregation, RR replay), released at
+stretch end. Blocked lanes wait on their own background threads (never
+main); coordinator lease timeouts fail closed (retain previous
+publication) so a starved cycle is safe by design. Peak becomes
+working-set + ONE lane ≈ 2.5GB < 3.4GB ceiling.
+
+Deep-eye protocol notes for reuse: per-pid ASLR slide (grep the pid's
+own aslr line, NOT tail -1 — two processes share the log), atos -s
+<slide> against build-device dSYM (UUID-verify first), burst_stack
+fires on ≥150MB/250ms jumps.
