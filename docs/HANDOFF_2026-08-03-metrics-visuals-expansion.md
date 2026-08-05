@@ -2455,3 +2455,18 @@ the F2/F3/F4 corrections — next session's implementation item.
 ship-device.sh hardened (TMPDIR mktemp) and already earned its keep:
 hard-stopped a compile error that the old pipe pattern would have
 shipped stale.
+
+## 15.32 BEFORE numbers in — compaction GO (2026-08-05 ~18:45)
+
+Edit-0 breadcrumb (first reuse publish, 18:13): hr=759K rr=434K
+skin=739K grav=750K(cap) motionIDs=750K(cap) strapIdMaxLen=36
+physMB=783. Counts match the design's assumptions; strapIdMaxLen=36
+(UUID) confirms Edit 3 is warranted (36B > 15B inline threshold →
+every strap-ID is a heap String, ~739K of them). F1 go/no-go: GO.
+
+Edits 1-3 implementation delegated (motion-identity inline digests /
+RR digest keys + NEW multi-scan-prune parity test per F3 / strap-ID
+interning through BOTH appendRecoveredRecord call sites per F2).
+Review + ship + AFTER breadcrumb comparison when it reports. Device
+otherwise healthy: durable_history_ledger_ready, flush debt low
+(197 records).
