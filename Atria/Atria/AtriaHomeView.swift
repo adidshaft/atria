@@ -8347,7 +8347,7 @@ final class AtriaHomeModel {
         var rangeLossBackfillPending: Bool
         var historicalRecoveryPresentation: AtriaBLEManager.HistoricalRecoveryPresentation
 
-        var batteryText: String { batteryLevel >= 0 ? "\(batteryLevel)%" : "—" }
+        var batteryText: String { batteryLevel >= 0 ? "\(batteryLevel)%" : "--" }
         var batteryChargeText: String {
             guard batteryLevel >= 0 else { return "No fresh reading" }
             switch batteryChargeStatus {
@@ -8403,7 +8403,7 @@ final class AtriaHomeModel {
             return "Strap battery \(batteryText), \(batteryAccessibilityChargeText)."
         }
         var batteryStatusSummaryText: String {
-            guard batteryLevel >= 0 else { return "—" }
+            guard batteryLevel >= 0 else { return "--" }
             // Compact surfaces communicate external power with the battery
             // symbol's bolt; repeating "Charging" wastes space and truncates.
             if batteryShowsPowered || batteryChargeStatus == .full {

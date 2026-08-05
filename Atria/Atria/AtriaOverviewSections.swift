@@ -12295,6 +12295,10 @@ private struct AtriaDetailPeriodSummary: Equatable, Sendable {
         case "h": return .sleep
         case "ms": return .hrv
         case "bpm": return .restingHeartRate
+        // 2026-08-05 audit: "/min" is the canonical respiratory label (not
+        // "rpm"). Routing it to .respiratory keeps respiratory values off the
+        // strain formatter's 0-21 clamp.
+        case "/min": return .respiratory
         default: return .strain
         }
     }
@@ -14843,7 +14847,7 @@ private struct AtriaJournalImpactGlanceBoard: View, Equatable {
                            systemImage: "calendar.badge.checkmark",
                            tint: .cyan)
                 glanceChip(title: "Patterns",
-                           value: patternCount > 0 ? "\(patternCount)" : "—",
+                           value: summaries.isEmpty ? "--" : "\(patternCount)",
                            systemImage: "waveform.path.ecg",
                            tint: .mint)
                 glanceChip(title: "Focus",

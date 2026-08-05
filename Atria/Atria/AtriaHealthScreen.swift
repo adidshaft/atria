@@ -1376,7 +1376,9 @@ struct AtriaHealthScreen: View {
             // line, where it belongs -- the value line carries a numeral or "--".
             return AtriaCompactMetricPresentation.noValue
         }
-        return String(format: "%.1f rpm", value)
+        // "/min" matches the Vitals/Overview surfaces and the detail sheet this
+        // row opens (2026-08-05 audit: "rpm" reads as revolutions per minute).
+        return String(format: "%.1f/min", value)
     }
 
     private var respiratoryDetail: String {
@@ -1503,7 +1505,7 @@ struct AtriaHealthScreen: View {
 
     private var respiratoryRangeText: String? {
         guard let stats = vitalsStore.state.sleepHistorySnapshot.respiratoryBaselineStats, stats.count > 1 else { return nil }
-        return Self.typicalRangeText(mean: stats.mean, sd: stats.sd, unit: "rpm", decimals: 1)
+        return Self.typicalRangeText(mean: stats.mean, sd: stats.sd, unit: "/min", decimals: 1)
     }
 
     private static func typicalRangeText(mean: Double, sd: Double, unit: String, decimals: Int) -> String {

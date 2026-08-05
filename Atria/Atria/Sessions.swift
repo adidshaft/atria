@@ -37574,9 +37574,9 @@ private struct SessionDetailSummary {
             && session.peak > 0
             && readiness.streamCoveragePercent >= AtriaWorkoutMetricPresentation.minimumNumericCoveragePercent
         coverageText = "\(readiness.streamCoveragePercent)% HR coverage · metrics incomplete"
-        resting = metricsComplete ? "\(session.resting)" : "—"
-        average = metricsComplete ? "\(session.avg)" : "—"
-        peak = metricsComplete ? "\(session.peak)" : "—"
+        resting = metricsComplete ? "\(session.resting)" : "--"
+        average = metricsComplete ? "\(session.avg)" : "--"
+        peak = metricsComplete ? "\(session.peak)" : "--"
         // Strain uses the SAME baseline rest + profile maxHR as the day/trend
         // rollups (2026-07-08 consistency audit) so a workout's strain
         // reconciles everywhere. It previously used session.restingStable +

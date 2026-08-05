@@ -10,6 +10,9 @@ final class AtriaMetricHeroValueTextTests: XCTestCase {
         XCTAssertEqual(AtriaMetricHeroValueText.split("54 ms").value, "54")
         XCTAssertEqual(AtriaMetricHeroValueText.split("54 ms").unit, "ms")
         XCTAssertEqual(AtriaMetricHeroValueText.split("58 bpm").unit, "bpm")
+        // 2026-08-05 audit: respiratory stays on the canonical "/min" label
+        // ("rpm" reads as revolutions per minute); the space-separated form is
+        // what AtriaMetricFormat.respiratory emits for the detail hero.
         XCTAssertEqual(AtriaMetricHeroValueText.split("16.2 /min").unit, "/min")
         XCTAssertEqual(AtriaMetricHeroValueText.split("7.4 h").unit, "h")
     }

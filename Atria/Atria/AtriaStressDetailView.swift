@@ -648,7 +648,7 @@ private struct AtriaStressGauge: View {
     }
 
     private var scoreText: String {
-        score?.formatted(.number.precision(.fractionLength(1))) ?? "—"
+        score?.formatted(.number.precision(.fractionLength(1))) ?? "--"
     }
 }
 
