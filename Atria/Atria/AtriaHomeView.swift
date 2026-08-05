@@ -5864,6 +5864,7 @@ private struct AtriaWorkoutDetectionBanner: View, Equatable {
     let prompt: AtriaWorkoutDetectionPrompt
     let onDismiss: () -> Void
     let onStart: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static func == (lhs: AtriaWorkoutDetectionBanner, rhs: AtriaWorkoutDetectionBanner) -> Bool {
         lhs.prompt == rhs.prompt
@@ -5940,17 +5941,19 @@ private struct AtriaWorkoutDetectionBanner: View, Equatable {
             evidenceBar(title: "Effort",
                         valueText: "\(prompt.heartRate) bpm · +\(prompt.bpmOverRest)",
                         fraction: min(max(Double(prompt.bpmOverRest) / 80.0, 0), 1),
-                        tint: .orange)
+                        tint: .orange,
+                        rollValue: prompt.heartRate)
             evidenceBar(title: "Strain",
                         valueText: String(format: "%.1f", prompt.strain),
                         fraction: min(max(prompt.strain / 12.0, 0), 1),
-                        tint: Metrics.electricStrain)
+                        tint: Metrics.electricStrain,
+                        rollValue: prompt.strain)
         }
         .padding(12)
         .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
-    private func evidenceBar(title: String, valueText: String, fraction: Double, tint: Color) -> some View {
+    private func evidenceBar(title: String, valueText: String, fraction: Double, tint: Color, rollValue: some Equatable) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 Text(title)
@@ -5959,6 +5962,9 @@ private struct AtriaWorkoutDetectionBanner: View, Equatable {
                 Text(valueText)
                     .font(.caption.monospacedDigit().weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .contentTransition(reduceMotion ? .identity : .numericText())
+                    .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic),
+                               value: rollValue)
             }
             GeometryReader { proxy in
                 let width = proxy.size.width
