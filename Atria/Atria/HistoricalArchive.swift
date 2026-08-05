@@ -3511,7 +3511,14 @@ enum HistoricalArchive {
         recoveredDataCacheLock.lock()
         defer { recoveredDataCacheLock.unlock() }
 
-        let reusableCache = recoveredDataCache.flatMap { cache in
+        // TEMP repro lever (2026-08-05): forces plan=rebuild regardless of the
+        // in-memory cache so the backlogged cold-launch gauntlet is a
+        // one-command repro instead of needing organic overnight backlog.
+        // Work-only (rebuilds are idempotent cache rebuilds). Remove with the
+        // memprobe.
+        let forceRebuild = ProcessInfo.processInfo.arguments
+            .contains("--atria-debug-force-recovered-rebuild")
+        let reusableCache = forceRebuild ? nil : recoveredDataCache.flatMap { cache in
             cache.budget == budget
                 && cache.coveredSince <= cutoff
                 && cutoff - cache.coveredSince <= recoveredDataCacheMaximumWindowDrift

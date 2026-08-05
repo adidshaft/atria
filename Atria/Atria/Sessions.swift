@@ -13929,6 +13929,18 @@ final class SessionStore: ObservableObject {
                 self.compactHistoricalArchiveIfUseful(reason: "archive_did_update")
             }
         }
+        // TEMP repro lever (2026-08-05): pairs with the force-rebuild flag in
+        // makeRecoveredDataSnapshot — requests one recompute shortly after
+        // launch so the full rebuild gauntlet runs deterministically. Remove
+        // with the memprobe.
+        if ProcessInfo.processInfo.arguments
+            .contains("--atria-debug-force-recovered-rebuild") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                _ = self?.requestRecoveredDataRecomputation(
+                    reason: "debug_forced_rebuild"
+                )
+            }
+        }
         self.motionBankOffloadObserver = NotificationCenter.default.addObserver(
             forName: AtriaWhoop4MotionBankCoverageLedger
                 .didFinalizeOffloadNotification,
