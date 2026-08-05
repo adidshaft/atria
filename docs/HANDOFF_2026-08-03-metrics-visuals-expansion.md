@@ -2803,3 +2803,19 @@ shipped + launched (trust persisted, no prompt).
 READ RULE for tomorrow: buckets before ~19:35 carry the overstated
 sync_cutover; reconcile pre-fix hours against ledger closed
 intervals if precision matters. Post-19:35 buckets are clean.
+
+## 15.47 Post-fix verification + TIMESTAMP CORRECTION (2026-08-05 19:25 IST, wall-clock checked)
+
+§15.46's "~19:35" was ~10min inflated (narrative estimate). Ground
+truth: armed-aware fix shipped/relaunched ≈19:18-19:19 (ledger
+openStart 19:19:25). READ RULE CORRECTED: pre-≈19:19 buckets carry
+the overstated sync_cutover; post-19:19 clean.
+
+Verification pull 19:25: lastReason=armed noted 22s ago, armed 707s
+and growing, bank armed-for-connection since 19:19:25, boundaryOK
+19:17 (normal cadence), debt low 216. Post-fix build healthy.
+sync_cutover 761s lifetime = pre-fix misattribution + legitimate
+unarmed reinstall windows. pendingOffloads 6→9 (reinstalls closed
+short windows → new small tickets); tonight's starvation test now
+covers 9. Lesson recorded: stamp handoff times from `date`, not
+cycle-count estimates.
