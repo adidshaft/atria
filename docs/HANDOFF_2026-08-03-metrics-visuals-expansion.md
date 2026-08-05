@@ -3316,3 +3316,26 @@ MORNING VISUAL CHECKS added: monthly-report row on Today (if
 early-month gate allows), Insights tile shows behavior patterns,
 Customize preview shows "Example values", fitness-age detail shows
 signed yr values, charts break at gaps.
+
+## 15.70 PUBLICATION DEADLOCK root cause — MORNING ITEM #1 (02:25)
+
+3h without publication despite 2 cold launches. NOT trigger absence:
+offlineSync.lastStatus = terminal_consumer_coverage_snapshot_
+unchanged (lastReason full_scan_archive_committed) — attempts run,
+then shouldSuppressTerminalConsumerDependencyRetry (15-min cycle,
+AtriaBLEManager:2553) sees an UNCHANGED dependency fingerprint and
+re-suppresses. The cached terminalConsumerDependencyMismatch.v1
+fingerprint references a Jul-25/26 window (1785004200000..
+1785104606322) — the July range-loss era whose data is PERMANENTLY
+unrecoverable (seek dead, §atria-fulldrain-nonconvergent). If the
+consumer dependency chain requires coverage of such a window, the
+loop can never converge: coverage can't change → suppress →
+recheck → unchanged. Result: gapResolvedConsumersPending forever;
+past-24h Activity timeline (user's gym data) unpublished.
+FIX DIRECTION (morning, fixture-grade): dependency satisfaction
+must treat documented permanently-lost windows as final (excluded
+from required coverage), OR the proof snapshot must mark them
+honest-missing-final; verify against the a1c4acf2 proof-snapshot
+merge semantics + the Jul-24 gap ledger. Forensics saved:
+authority.json + h49 plist in scratchpad; §15.66b/c chain.
+Do NOT clear the mismatch key by hand — fix the convergence rule.
