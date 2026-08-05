@@ -2492,3 +2492,28 @@ breadcrumb comparison (vs BEFORE physMB=783, 18:13) reads on the next
 recompute publish. UI branch also brought: native selectors, Dynamic
 Island HR zones, lock-screen recovery gauge, stress range-line graph,
 manual-sleep hypnogram card.
+
+## 15.34 ✅ Compaction VERIFIED on-device — third campaign closed (2026-08-05 ~20:45)
+
+AFTER breadcrumb (merged build f19f6c35, 20:38, plan=SCAN — the
+heavier publish moment): physMB=626 with MORE data (hr 767K, skin
+747K, identity sets at 750K caps) vs BEFORE physMB=783 at a cheap
+REUSE publish. ≥157MB measured reduction under a harder condition;
+same windows, same caps, bit-identical outputs (374/0 on the merged
+tree incl. the new parity tests). The breadcrumb stays as the
+permanent regression tripwire; the next natural reuse publish gives
+the like-for-like number.
+
+DAY LEDGER (all closed): 3.4GB cold-launch jetsam (8 fixes, 10 forced
+gauntlets) · July-gap wedge (window fix + repair hardening, authority
+RESOLVED, recurring work retired) · working-set compaction (~150-200MB
+retained reduction, measured) · UI branch merged + both branches
+unified at f19f6c35 + pushed · flush pipeline caught_up (~17-183
+records all day) · ship-device.sh hard-stop tooling · durable
+forensic channels (prefs diagnostics, site tags, footprint
+breadcrumb) documented.
+
+REMAINING (ranked, future sessions): icon-distinctness test fix (UI
+session), July replay-family tests, fingerprint-latch, reuse=0
+refresh coalescing, Jul-24 range-loss windows (defers on live link by
+design), readVerifiedConsumerSources bounded reads.
