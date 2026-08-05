@@ -1025,6 +1025,12 @@ struct AtriaLiveActivityWidget: Widget {
 
                 DynamicIslandExpandedRegion(.bottom) {
                     VStack(spacing: 8) {
+                        // Live HR-zone bar (design 2026-08-05): a glanceable
+                        // intensity scale, shown only with a live signal so it
+                        // never adds height to the waiting/stale island.
+                        if heartAvailability == .live {
+                            liveActivityZoneBar(for: context.state, availability: heartAvailability)
+                        }
                         HStack(spacing: 12) {
                             Label {
                                 liveActivityTimer(state: context.state,
@@ -1272,6 +1278,43 @@ private func liveActivityZoneColor(for state: AtriaLiveActivityAttributes.Conten
     case 5: return .red
     default: return .secondary
     }
+}
+
+/// Per-segment color for the Dynamic Island HR-zone bar. The active zone is
+/// full-strength in its zone color; the rest are dimmed so the bar reads as a
+/// glanceable "where am I on the 1-5 scale" without a number.
+private func liveActivityZoneSegmentColor(zone: Int,
+                                          state: AtriaLiveActivityAttributes.ContentState,
+                                          availability: AtriaLiveSensorAvailability) -> Color {
+    let base: Color
+    switch zone {
+    case 1: base = .blue
+    case 2: base = .green
+    case 3: base = .yellow
+    case 4: base = .orange
+    default: base = .red
+    }
+    guard availability == .live, let active = state.heartRateZoneIndex, active >= 1 else {
+        return Color.secondary.opacity(0.22)
+    }
+    return zone == active ? base : base.opacity(0.22)
+}
+
+/// Five-segment HR-zone bar for the Dynamic Island expanded region (design
+/// 2026-08-05): mirrors the in-app live-workout zone bar. Callers gate it on a
+/// live signal so it never grows the island in the waiting/stale state.
+@ViewBuilder
+private func liveActivityZoneBar(for state: AtriaLiveActivityAttributes.ContentState,
+                                 availability: AtriaLiveSensorAvailability) -> some View {
+    HStack(spacing: 3) {
+        ForEach(1...5, id: \.self) { zone in
+            Capsule(style: .continuous)
+                .fill(liveActivityZoneSegmentColor(zone: zone, state: state, availability: availability))
+                .frame(height: 4)
+        }
+    }
+    .frame(maxWidth: .infinity)
+    .accessibilityHidden(true)
 }
 
 private struct AtriaLiveActivityStepsPresentation {
