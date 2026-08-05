@@ -2668,12 +2668,15 @@ enum HistoricalArchive {
         var clockOffsetByPayload: [String: Int] = [:]
         var clockResolutionByPayload:
             [String: MotionTickPayloadClockResolution] = [:]
-        let scan = AtriaHistoricalJSONLRecentScanner.scan(
-            sources: descriptors.map { .init(descriptor: $0, startOffset: 0) },
-            cutoff: scanStart.addingTimeInterval(
-                -(tolerance + maximumClockOffset)
-            ).timeIntervalSince1970
-        ) { line in
+        // Budgeted passes on dying threads (2026-08-05 climber fix): this
+        // daily read previously ran ONE continuous budget-less scan on the
+        // long-lived projection queue. Under the iOS 27 reclaim law that
+        // stretch accumulated every line's transient parse garbage — on a
+        // ~1GB backlogged archive it ballooned ~350MB/s to jetsam (the +65s
+        // cold-launch climber, workflow-verified). Same driver pattern as the
+        // recovered scan: resumable 32MB passes, each on a thread that dies.
+        AtriaMemprobe.note("step_receipt_day_scan files=\(descriptors.count)")
+        func consumeDayEvidenceLine(_ line: Data) {
             guard let object = try? JSONSerialization.jsonObject(with: line)
                     as? [String: Any],
                   (object["sequence"] as? NSNumber)?.intValue
@@ -2749,7 +2752,64 @@ enum HistoricalArchive {
             )
             clockOffsetByPayload[payloadHex] = accepted.clockOffsetSeconds
         }
-        guard scan.complete else { return .incomplete }
+        let dayScanCutoff = scanStart.addingTimeInterval(
+            -(tolerance + maximumClockOffset)
+        ).timeIntervalSince1970
+        let passByteBudget = 32 * 1024 * 1024
+        let maximumPasses = 256
+        var remainingSources = descriptors.map {
+            AtriaHistoricalJSONLRecentScanner.Source(descriptor: $0, startOffset: 0)
+        }
+        var mergedDayScanStates:
+            [String: AtriaHistoricalJSONLRecentScanner.FileState] = [:]
+        var dayScanComplete = true
+        var dayScanPassIndex = 0
+        while !remainingSources.isEmpty {
+            dayScanPassIndex += 1
+            var passResult = AtriaHistoricalJSONLRecentScanner.Result(
+                states: [:],
+                statistics: .init(),
+                complete: false)
+            let passDone = DispatchSemaphore(value: 0)
+            let passSources = remainingSources
+            let passThread = Thread {
+                passResult = autoreleasepool {
+                    AtriaHistoricalJSONLRecentScanner.scan(
+                        sources: passSources,
+                        cutoff: dayScanCutoff,
+                        byteBudget: passByteBudget,
+                        consumeCandidate: consumeDayEvidenceLine)
+                }
+                passDone.signal()
+            }
+            passThread.name = "atria.step-receipt-day.pass\(dayScanPassIndex)"
+            passThread.qualityOfService = .utility
+            passThread.start()
+            passDone.wait()
+            passResult.states.forEach { mergedDayScanStates[$0.key] = $0.value }
+            if !passResult.exhaustedByteBudget {
+                dayScanComplete = passResult.complete
+                break
+            }
+            remainingSources = remainingSources.compactMap { source in
+                guard let state = mergedDayScanStates[source.descriptor.path] else {
+                    return source
+                }
+                guard !source.descriptor.isCompressed else { return nil }
+                guard state.processedOffset < source.descriptor.size else {
+                    return nil
+                }
+                return AtriaHistoricalJSONLRecentScanner.Source(
+                    descriptor: source.descriptor,
+                    startOffset: state.processedOffset)
+            }
+            guard dayScanPassIndex < maximumPasses else {
+                dayScanComplete = false
+                break
+            }
+        }
+        AtriaMemprobe.note("step_receipt_day_scan_done passes=\(dayScanPassIndex) rows=\(rows.count)")
+        guard dayScanComplete else { return .incomplete }
         if let compactMigrationStore {
             let migrationPoints = rows.compactMap {
                 payloadHex,
