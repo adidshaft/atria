@@ -5949,13 +5949,12 @@ struct AtriaSleepStageSummary: View, Equatable {
             // the recovery-relevant share of the night, shown as a proportional
             // stage-composition bar with a restorative callout (upgrades the
             // former text-only strip). Pure re-presentation of the same stage
-            // evidence above; hidden when stages carry no duration.
-            let stageOrder: [SleepStageKind] = [.deep, .sws, .rem, .light, .awake]
-            let stageDurations = stageOrder.map { ($0, night.stageDuration($0)) }
-            let totalStaged = stageDurations.reduce(0.0) { $0 + $1.1 }
-            let restorativeSeconds = night.stageDuration(.rem)
-                + night.stageDuration(.sws)
-                + night.stageDuration(.deep)
+            // evidence above; hidden when stages carry no duration. Stage
+            // aggregation lives in the computed helpers below, off the render
+            // path.
+            let stageDurations = compositionStageDurations
+            let totalStaged = totalStagedDuration
+            let restorativeSeconds = restorativeStageSeconds
             if totalStaged > 0 {
                 VStack(alignment: .leading, spacing: 7) {
                     HStack(spacing: 6) {
@@ -6000,6 +5999,26 @@ struct AtriaSleepStageSummary: View, Equatable {
         .atriaInsetCard(tint: .cyan)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(night.evidenceLabel) \(night.stageEvidence.label). Awake \(night.stageText(.awake)), Light \(night.stageText(.light)), REM \(night.stageText(.rem)), SWS \(night.stageText(.sws)), Deep \(night.stageText(.deep)).")
+    }
+
+    /// Restorative stages (deep→SWS→REM) lead, then light and awake, so the
+    /// recovery share reads as the leading block of the composition bar.
+    private static let compositionStageOrder: [SleepStageKind] = [.deep, .sws, .rem, .light, .awake]
+
+    // Precomputed off the render path (static-gate rule: no aggregation
+    // inside `some View` blocks).
+    private var compositionStageDurations: [(SleepStageKind, TimeInterval)] {
+        Self.compositionStageOrder.map { ($0, night.stageDuration($0)) }
+    }
+
+    private var totalStagedDuration: TimeInterval {
+        compositionStageDurations.reduce(0.0) { $0 + $1.1 }
+    }
+
+    private var restorativeStageSeconds: TimeInterval {
+        night.stageDuration(.rem)
+            + night.stageDuration(.sws)
+            + night.stageDuration(.deep)
     }
 
     static func symbol(for stage: SleepStageKind) -> String {
