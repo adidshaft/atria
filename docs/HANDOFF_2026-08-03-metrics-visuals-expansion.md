@@ -2965,3 +2965,20 @@ Spec backlog now: H4 (radius sweep) + O8 (line gradient) — BOTH
 need visual verification (sim screenshot pass or device look);
 O9 + battery chip = judgment calls, deferred per spec.
 NOT installed on phone tonight (install moratorium per §15.50).
+
+## 15.56 O8 shipped-in-source — reviewer caught a real gradient trap (2026-08-05 ~21:15)
+
+O8 implemented data-driven: gradient stops from the plotted points'
+own (value,tint) pairs, precomputed in AtriaMetricChartPreparedData
+.init (render-pure); nil stops → flat tint unchanged. ADVERSARIAL
+REVIEW WIN: reviewer proved empirically (headless ImageRenderer
+probe) that Swift Charts resolves gradient foregroundStyle against
+each SERIES' bounding box, not the plot area — per-run resolution
+would break same-value→same-color across contiguous runs (the exact
+honesty idiom). Fix: .alignsMarkStylesWithPlotArea() on the run
+LineMark (plot area == chartYScale(domain) == stop-normalization
+space). Day-gap breaks preserved; build succeeded; gate 4 baseline
+(stash-diff proven). RECORD: any future gradient foregroundStyle on
+multi-series marks needs alignsMarkStylesWithPlotArea.
+Spec scoreboard: 11/14 done. Remaining: H4 (radius sweep — needs
+screenshots), O9 + battery chip (judgment, deferred per spec).
