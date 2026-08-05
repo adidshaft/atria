@@ -3047,3 +3047,12 @@ identical hidden mismatch. UI-SESSION DECISION: recommend snapping
 the draft to the nearest available window on init (e.g. .day→.week)
 AND deciding what the chartSlot selector shows for ranges outside
 its own set. Fix belongs with the range-model owner.
+
+## 15.59b Pin migration + process note (2026-08-05 ~21:40)
+
+ia62 pin migrated (hrv-detail case gained the chart-options alias;
+dated comment). Gate back to 4. PROCESS TRAP recorded: `python3
+gate | tail -1 && git push` pushes on tail's exit code, not the
+gate's — a 5-failure run reached the remote for ~2min. Rule: parse
+the failure COUNT and gate the push on == 4, or run gate and push
+in separate steps after reading the output.
