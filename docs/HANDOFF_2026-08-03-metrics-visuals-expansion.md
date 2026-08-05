@@ -2925,3 +2925,31 @@ weakened (tickets clear when transport serves them; question is now
 scheduling frequency, not capability). Charge test tonight decides
 for the remaining 6 (incl. the 32h-old Aug-4 2m ticket). Diag:
 armed +377s / sync +333s since 20:10 — mixed link ownership, normal.
+
+## 15.54 UI merge + 8 High design items SHIPPED-IN-SOURCE (2026-08-05 ~20:45)
+
+MERGE: local claude/ui-design-2026-08-05 (8 UI commits, 7d8ceff9)
+merged clean as 0c9b3c83; both refs pushed and now unified again.
+Merge brought a render-purity regression (gate 4→6: .reduce in the
+restorative-sleep bar's body) — fixed as 7dc2f63d (hoisted to
+computed helpers; behavior identical; gate back to 4).
+
+DESIGN PASS (77da3ac9, per OVERVIEW_DESIGN_HANDOFF.md at repo root):
+all 8 High items — H1 H2 O1 O2 O3 O4 O5 O6. Workflow-verified:
+3 parallel implementers → sim build (** BUILD SUCCEEDED **) + gate
+(exactly 4 baseline) + 3 adversarial per-file spec reviews (0
+problems). Notable implementation facts: Motion.emphatic token used
+for .snappy durations (== 0.3, house style); O2 needed explicit
+static == (Env property breaks synthesized Equatable — Glance
+precedent); O6 added label property to private AtriaReportPeriod;
+strain Text gained .monospacedDigit() (spec assumed present).
+No stock segmented Picker remains on Overview.
+
+REMAINING SPEC BACKLOG: Med H3 (detection-banner numbers), H4
+(radius-token sweep, needs eyeball), O7 (strain gauge), O8 (metric
+chart line gradient, keep contiguousDayRuns); judgment O9 (sleep-plan
+de-nest), battery chip (leave as-is per spec).
+PENDING: visual sign-off on device (phone unplugged; selector swaps
+are sim-verifiable — screenshot pass on next UI-session look or
+next device attach). Rolling digits are animation-only: build-verify
+was the spec's stated bar.
