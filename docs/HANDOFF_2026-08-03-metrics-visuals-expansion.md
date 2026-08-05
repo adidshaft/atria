@@ -3011,3 +3011,20 @@ STILL UNSHOT: O3 chart-options sheet, O4 sleep-plan card (below
 fold/behind taps; no fixture route found — consider adding DEBUG
 fixture hooks like sleep-scope precedent), O8 gradient (needs
 seeded chart data). H4 radius sweep can now use this loop.
+
+## 15.58 Ring merge + copy fixes + INSTALLED ON PHONE (2026-08-05 21:28 IST)
+
+Merged 3 ring commits (645d5ff7/dca34a29/1d54de74 — WHOOP-style
+Separate ring layout + Settings toggle + share-card support +
+Customize-sheet live preview) as 149737a3, clean. Also shipped: copy
+fixes (W-chip → WeeklyPlan.dateRangeText which existed since Jul-8
+audit; "1 workout of 10+ strain" pluralized; "x4" → "· 4 nights")
++ AtriaRoutineTests weekStart compile repair (UI merge had broken
+the TEST TARGET build — their session didn't run the suite; caught
+by running the classes).
+Verified: gate 4 baseline, 7/7 targeted tests, TEST SUCCEEDED, sim
+runtime sanity (boots+renders), device install at ~21:25 per user
+order (install moratorium lifted by user) — POST-INSTALL CLEAN:
+armed 2s after pull, no bluetooth-off recurrence, cleanest install
+of the day. LESSON for UI session: run the test suite — source-pin
+XCTests + struct-field additions break the test target silently.
