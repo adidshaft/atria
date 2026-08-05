@@ -3085,3 +3085,21 @@ want a look on a real scroll.
 SPEC SCOREBOARD: 13/14 done+verified. Remaining: O9 (sleep-plan
 de-nest) + battery chip = explicit judgment calls the spec defers;
 O4 visual + O8 gradient visual need real data (phone/mirroring).
+
+## 15.62 USER REPORT "battery pill missing" — honest-hiding, not regression (2026-08-05 ~22:00)
+
+Diagnosis (device detached; code + diff evidence): all 159 commits
+today touch battery display only via O2's .animation modifier —
+visibility (`live.batteryLevel >= 0`) and the honesty gate
+(AtriaBLEManager.displayableBatteryLevel ~4341) unchanged. The 21:25
+reinstall invalidated the battery evidence chain (fresh 2A19 /
+lease / reconnect baseline), so displayableBatteryLevel = nil → all
+surfaces hide the pill BY DESIGN until the next accepted battery
+notification. EXPECT self-restore during connected wear.
+IF NOT restored after a few hours connected: real bug in
+lease-restore; forensics on attach = BatteryDefaults.source /
+requiresFreshConfirmation / notificationLeaseAt vs now.
+UI-SESSION QUEUE (transient-message theme): battery surfaces hide
+with zero explanation — consider a subdued "confirming battery…"
+placeholder while the gate is unsatisfied, mirroring the BT-off
+remediation-copy item from §15.50.
