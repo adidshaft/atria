@@ -2610,3 +2610,27 @@ while coverage < X%" policy prototype — the documented drain-vs-
 capture tradeoff (memory: steps latency is a drain tradeoff, needs
 real-day validation, NOT a blind fix). Decide after observing
 tomorrow's numbers on the now-healthy pipeline.
+
+## 15.39 User Qs: zones breakdown, efficiency "--", the three clocks (2026-08-05 ~23:45)
+
+Diagnosed live: (1) sleep efficiency "--" = displaySleepEfficiency
+withholds until hasValidatedMotionEvidence (HR-only "efficiency" is
+capture-coverage; false-100% history) — last night's motion is still
+in pending bank offloads, backfills after tonight's charge.
+(2) HR zones: makeTodayHRZoneMinutes carries ALL zones' seconds; the
+"Z2 · 2m"-only display is presentation.
+
+FOR THE UI SESSION (queue):
+- 5-zone breakdown with bpm ranges on the zones surface (data ready:
+  TodayHRZoneMinutes totals + Metrics.heartRateZone ranges from
+  rest/maxHR; WHOOP shows all zones with ranges).
+- Audit every efficiency "--" surface to carry the existing
+  sleepEfficiencyFootnote ("Needs motion data") — a bare "--"
+  confused the user tonight.
+
+USER-FACING MODEL (recorded for copy work): three clocks — live
+stream (seconds), banked motion (offload chunks, completes on
+charge/idle), calibration windows (days). "Caught up" = clock 1.
+Honesty means clocks 2-3 show "--"/building rather than unverified
+numbers. Candidate copy improvement: surfaces gated on clock 2 could
+say "verifying tonight" instead of generic building language.
